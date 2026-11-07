@@ -1,0 +1,53 @@
+{
+  "stage": 4,
+  "slice": "S4-19c",
+  "title": "Secondary #PF, #DF delivery, and shutdown",
+  "date": "2026-11-06",
+  "status": "reviewed",
+  "scope": {
+    "profile": "Long64 CPL0, same-CPL interrupt gate, IST=0, tracked 4 KiB RAM paging",
+    "first_delivery": "Actual page fault during vector-14 delivery triggers one vector-8 attempt",
+    "double_fault_error_code": 0,
+    "double_fault_saved_rip": "Original pre-entry RIP retained for diagnostics only; not restartable",
+    "double_fault_saved_rflags_forced_rf": false,
+    "double_fault_changes_cr2": false,
+    "page_fault_during_double_fault_delivery": "Set CpuActivity::Shutdown; no further delivery",
+    "shutdown_blocks_next_fetch_and_memory_access": true,
+    "backend_or_profile_error_synthesizes_shutdown": false,
+    "effects": "Retain and report committed writes and A/D updates across both attempts in order",
+    "handler_instruction": "MOV RAX,[RBX] after successful #DF",
+    "excluded": ["other exception pairs", "TSS/IST", "privilege transitions", "guest PTE repair", "INVLPG", "IRETQ", "fault retry", "complete vCPU lifecycle"]
+  },
+  "checks": [
+    {"command": "cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1", "result": "passed", "passed": 26, "failed": 0},
+    {"command": "cargo test -p od-isa --lib paged_cr0_wp_probe_tests --offline -- --test-threads=1", "result": "passed", "passed": 15, "failed": 0},
+    {"command": "cargo test -p od-isa --lib mov_cr3_profile_tests::shutdown_blocks_mov_cr3_and_cr0_wp_mov_cr3_before_fetch --offline -- --test-threads=1", "result": "passed", "passed": 1, "failed": 0},
+    {"command": "cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1", "result": "passed", "passed": 2, "failed": 0},
+    {"command": "cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1", "result": "passed", "passed": 19, "failed": 0},
+    {"command": "cargo check -p od-machine -p od-testkit --all-targets --offline", "result": "passed"},
+    {"command": "cargo test -p od-testkit --lib integer_snapshot_export_rejects_shutdown_activity_without_panicking --offline -- --test-threads=1", "result": "passed", "passed": 1, "failed": 0},
+    {"command": "cargo fmt --all -- --check", "result": "passed"},
+    {"command": "cargo check --workspace --all-targets --offline", "result": "passed", "warnings": "pre-existing od-jit and od-host warnings"},
+    {"command": "git diff --check, changed-document relative-link validation and JSON validation", "result": "passed"}
+  ],
+  "review": {
+    "architecture": "gpt-6-astra/high approved bounded #PF-to-#DF and shutdown semantics before implementation",
+    "implementation": "gpt-6.1-terra/medium",
+    "independent_code_review": "gpt-6.1-sol/high found two P2 and two P3 issues; all corrected and closed on repeat review, no residual P0-P3"
+  },
+  "graphify": {
+    "full_update": "incremental scan stalled in Python 3.15 fnmatch during repository scan and was interrupted",
+    "ast_refresh": "Graphify code update re-extracted 33 changed files, with 5/31 AST cache hits and 26 extractions",
+    "cluster_only": "passed; regenerated graph.json, graph.html, GRAPH_REPORT.md and community labels",
+    "counts": {"nodes": 27353, "edges": 68576, "communities": 1207},
+    "query": "verified DoubleFaultRecord, PagedExceptionDeliveryOutcome, deliver_exception and #DF tests in the updated graph",
+    "built_at_commit": "stamped to final S4-19c commit in ignored graphify-out/graph.json"
+  },
+  "limitations": [
+    "Only actual page fault during bounded #PF delivery is converted to #DF",
+    "Only actual page fault during #DF delivery sets architectural shutdown state",
+    "Other exception pairs and backend/profile delivery failures are not classified as shutdown",
+    "Guest page-table repair, invalidation, IRETQ and precise retry remain open in parent S4-19",
+    "Shutdown is intentionally not representable by the existing V2 testkit snapshot"
+  ]
+}

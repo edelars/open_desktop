@@ -23,5 +23,13 @@ serde_json = "=1.0.151"
 name = "stage3_dword_store_corpus"
 path = "../../tests/cpu/stage3_dword_store_corpus.rs"
 
+[[test]]
+name = "stage4_memory_fault"
+path = "../../tests/system/stage4_memory_fault.rs"
+
+[[test]]
+name = "stage4_exception_delivery"
+path = "../../tests/system/stage4_exception_delivery.rs"
+
 [lints]
 workspace = true

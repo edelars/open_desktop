@@ -1,0 +1,23 @@
+{
+  "slice": "S4-25c",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "xAPIC ICR Fixed self-IPI, recording the request in local IRR and reusing existing acknowledge/EOI state transitions",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A, §§13.6.1–13.6.2.3, Table 13-3, §§13.8.3–13.8.5",
+  "review": "independent gpt-6.1-sol/high review passed; P2 read-only Delivery Status handling finding fixed and confirmed closed",
+  "checks": {
+    "focused_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 6 passed",
+    "machine_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,591 nodes, 69,969 edges, 997 communities",
+    "layout_check": "fails only on pre-existing unmapped root smoke/ (ISSUE-056); S4-25c local links resolve"
+  },
+  "limitations": [
+    "only Fixed delivery with Self shorthand is supported; other destinations, modes and level delivery are unsupported",
+    "internal IPI send is synchronous and does not mean CPU interrupt acceptance or handler execution",
+    "APIC bus, ESR, CPU interrupt delivery, IF/IDT, HLT wakeup, IOAPIC and default board wiring are not implemented",
+    "local DeviceError failures are not guest exception delivery",
+    "parent S4-25 and Stage 4 remain open"
+  ]
+}

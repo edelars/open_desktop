@@ -1,0 +1,25 @@
+{
+  "slice": "S4-27b",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Guest Local APIC Dword EOI, same-CPL0 IRETQ over the existing five-qword frame, and caller-driven resume of one interrupted instruction",
+  "review": "Independent gpt-6.1-sol/high review passed with no P0-P3 findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 12 passed",
+    "local_apic_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 10 passed",
+    "diagnostic_vcpu_api_tests": "cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1: 8 passed",
+    "iretq_tests": "cargo test -p od-isa --lib iretq::tests --offline -- --test-threads=1: 25 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Post-commit: 27,757 nodes, 70,414 edges, 1,011 communities",
+    "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056)"
+  },
+  "limitations": [
+    "caller-driven same-CPL0 diagnostic flat identity RAM path only",
+    "guest EOI, IRETQ and resumed instruction are explicit separate session calls; no automatic scheduling",
+    "IRETQ read abort does not undo prior EOI and makes the session terminal without retry",
+    "paged IRETQ, privilege transitions, HLT wakeup, general interrupt inhibition scheduling, JIT integration, board registration and Linux acceptance remain unimplemented",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

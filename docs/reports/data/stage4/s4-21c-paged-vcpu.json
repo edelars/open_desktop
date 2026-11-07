@@ -1,0 +1,34 @@
+{
+  "slice": "S4-21c",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "test_command": "cargo test -p od-machine --lib --offline",
+  "owner_targeted_test": {
+    "command": "cargo test -p od-machine --lib paged_vcpu_session --offline",
+    "passed": 4,
+    "failed": 0
+  },
+  "test_result": {
+    "passed": 120,
+    "failed": 0
+  },
+  "additional_test_suites": {
+    "paged_probe_quantum": 21,
+    "uart_rx_events": 7
+  },
+  "scope": "fixed Stage4FlatProbe image; synchronous paged owner and bounded UART RX reset",
+  "limitations": [
+    "runner integration and completion/cancellation remain open",
+    "IRQ wakeup and architectural x86 reset are outside scope",
+    "owner generation exhaustion injection not performed",
+    "store and fault scenarios use private test mutation"
+  ],
+  "review": "independent gpt-6.1-sol/high review passed with no P0-P3 findings",
+  "checks": {
+    "fmt": "passed",
+    "cargo_check_od_machine_all_targets_offline": "passed",
+    "diff_check": "passed",
+    "layout": "failed: existing unmapped root directory smoke",
+    "graphify_update": "passed: 27609 nodes, 69357 edges; code graph only"
+  }
+}

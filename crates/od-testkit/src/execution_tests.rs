@@ -10979,6 +10979,8 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
         &[0xf3, 0x66, 0xa4][..],
     ] {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,

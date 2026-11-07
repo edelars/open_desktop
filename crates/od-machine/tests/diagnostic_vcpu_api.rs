@@ -76,6 +76,10 @@ fn accepts_all_terminal_causes(value: DiagnosticTerminalExit) {
         DiagnosticTerminalExit::Unsupported { .. } => {}
         DiagnosticTerminalExit::BackendError(_) => {}
         DiagnosticTerminalExit::StopAddress => {}
+        DiagnosticTerminalExit::InterruptDeliveryAborted { phase: _, cause: _ } => {}
+        DiagnosticTerminalExit::InterruptSelectionChanged => {}
+        DiagnosticTerminalExit::IretqUnsupported => {}
+        DiagnosticTerminalExit::IretqReadAborted { .. } => {}
     }
 }
 
@@ -87,6 +91,21 @@ fn terminal_exit_is_available_to_external_callers() {
         DiagnosticExit::Terminal(cause),
         DiagnosticExit::Terminal(DiagnosticTerminalExit::Halted)
     );
+}
+
+#[test]
+fn iretq_profile_failure_is_visible_and_terminal_to_callers() {
+    let mut cpu = session(&[0x90], PrivilegeLevel::Ring0, INTEGER_FLAGS, 1, false);
+    let before = cpu.state().clone();
+    assert_eq!(
+        cpu.run_same_cpl0_iretq().unwrap(),
+        od_machine::DiagnosticIretqResult::Terminal(DiagnosticTerminalExit::IretqUnsupported)
+    );
+    assert_eq!(cpu.state(), &before);
+    assert!(matches!(
+        cpu.run_same_cpl0_iretq(),
+        Err(DiagnosticVcpuControlError::NotRunnable(_))
+    ));
 }
 
 #[test]

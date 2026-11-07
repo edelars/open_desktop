@@ -724,6 +724,32 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** inject намеренное различие и убедиться, что comparator его обнаруживает; undefined поля сравнивать по явной маске. Hardware evidence S4-34 подключать отдельно, не маркировать локальные cases как native.
 - **Готово:** можно воспроизвести и уменьшить mismatch без копии CPU/MMU семантики в testkit; общий walker не считается независимым oracle.
 
+#### S4-17a. Paged qword load: uncached interpreter против published JIT
+
+- [x] Принято после независимого ревью.
+- **Case:** один exact `48 8B 03` (`MOV RAX,[RBX]`), фиксированный Long64/CPL0
+  paging snapshot, независимые RAM instances, успех и настоящий missing-leaf
+  `#PF`. Code/data находятся в разных PML4 ветвях; code-path A bits заранее
+  установлены, чтобы сравнивать только data-path A effects.
+- **Нормализованный результат:** все 16 GPR, RIP, masked RFLAGS и definedness,
+  retirement/outcome, PageFault vector/PFEC/faulting RIP/CR2 value,
+  architectural CR2 availability отдельно, физические RAM deltas, упорядоченные
+  committed-write ranges и device-event observation. Сценарий зарегистрирован
+  как `od-host` integration target `stage4_memory_fault`.
+- **Проверка:** uncached `od_machine::step_paged_mov` против опубликованного
+  `PublishedCode::execute_paged_mov_rax_rbx_v2`; literal assertions для RAX/RIP,
+  #PF PFEC `0`, CR2 value и сохранения destination; comparator получает
+  намеренно изменённый post-run A-bit delta и обязан назвать physical address
+  и differing bit. Unit tests проверяют undefined/defined flag mask,
+  отсутствующие observation и JSON strictness.
+- **Граница:** cached interpreter явно представлен как unsupported: существующая
+  translation-probe cache не исполняет CPU и не сохраняет tracked A/D semantics.
+  Reducer, прочие memory формы, MMIO/device events, stores, cross-page, fetch
+  faults и hardware evidence остаются в родительском S4-17/S4-34. Общий walker
+  не является независимым x86 oracle; S4-17 и Stage 4 остаются открытыми.
+- См. [S4-17a report](../reports/STAGE_4_S4-17A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-17a-paged-mov-differential-2026-11-06.json).
+
 ### S4-18. GDT, IDT и TSS через настоящую память
 
 - [ ] Принято после ревью.
@@ -748,13 +774,211 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Результат:** [S4-18a report](../reports/STAGE_4_S4-18A_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-18a-paged-lidt-2026-11-06.json).
 
+#### S4-18b — bounded paged LGDT and guest-loaded GDT delivery
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Case:** CPU исполняет exact `0F 01 5C 24 ib` LIDT, затем exact
+  `0F 01 55 ib` LGDT через paged RAM, после чего настоящий WP fault доставляется
+  через guest-loaded IDT/GDT и исполняется первая handler `MOV RAX,[RBX]`.
+  Между этими инструкциями host не подменяет IDTR/GDTR.
+- **Профиль:** Long64/CPL0, один CPU, private 4 KiB paging, fixed CR0/CR4/EFER
+  и CPU-owned CR3. LGDT читает один canonical ten-byte pseudo-descriptor внутри
+  одной guest page; использует существующие decoder и `load_gdtr` семантику,
+  не читает новый GDT и не обновляет segment caches.
+- **Проверка:** точный GDTR/IDTR/RIP commit, сохранение всех segment caches,
+  faulting store с PFEC `3`, отсутствие store/retirement, CR2, полный exception
+  frame, GDT-based delivery и сохранение sentinel. Негативные случаи включают
+  privilege/fetch/operand faults, неверный base, cross-page source, unsupported
+  form/control state, ограничение instruction fetch на границе гостевой
+  страницы (включая RIP wraparound), и RAM-only отказ без MMIO dispatch.
+- **Граница:** этот срез делает LIDT/LGDT гостевыми инструкциями для одного
+  проверяемого delivery path. Он не реализует TSS/IST, selector cache loading,
+  descriptor Accessed writes, `#DF`, shutdown или fault recovery.
+- **Архитектурный анализ:** bounded implementation order and component split
+  reviewed by `gpt-6-astra/high`.
+- **Независимое ревью:** все замечания закрыты, включая границу fetch и RIP
+  wraparound; результаты зафиксированы в [S4-18b report](../reports/STAGE_4_S4-18B_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-18b-paged-lgdt-2026-11-06.json).
+
+#### S4-18c — bounded target CS descriptor Accessed-bit update during paged #PF delivery
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Порядок:** Intel SDM Vol. 1 §6.14.1 перечисляет same-CPL frame/error-code
+  stores до загрузки нового CS:EIP; Vol. 3A §3.4.5 задаёт установку descriptor
+  Accessed bit при загрузке selector. Эти разделы сами по себе не гарантируют
+  fault-visible ordering implicit A-bit write относительно frame stores при
+  competing faults. Этот bounded emulator slice явно выбирает порядок
+  frame stores → A-bit write → commit handler CS/RIP/RSP/flags для пути
+  без alias. До frame stores чистый preflight сверяет qword operands с target
+  descriptor byte, GDT trace и page-table entries достижимых stack slots;
+  возможные page-walker A/D writes сверяются с descriptor и GDT trace. Это сохраняет отображения
+  будущих frame slots; alias отклоняется без frame write. Preflight прекращает
+  проверку на первой неуспешной stack access, чтобы tracked path сохранил её
+  исходную PF/backend классификацию и недостижимый slot не влиял на результат.
+  На последующем отказе записи сохраняются завершённые RAM/page-walk effects и CR2 вторичного `#PF`, но CPU
+  entry не коммитится. Delivery исходного `#PF` с этой ошибкой требует `#DF`;
+  поскольку `#DF` ещё не реализован, report будет terminal undelivered, а
+  сохранённое CPU state нельзя считать возобновляемым или аппаратно
+  restartable.
+- **Сделать:** разрешить A=0 у уже валидного GDT target code descriptor в
+  существующем Long64/CPL0/same-CPL/IST=0 профиле. Через paged tracked RAM
+  записывать только access byte, устанавливая бит A и сохраняя остальные
+  descriptor bits; CS cache публиковать с обновлёнными attributes только после
+  успешной записи. A=1 не должен порождать descriptor write.
+- **Проверка:** guest LIDT → LGDT → WP #PF → доставка → первая handler load с
+  исходным A=0; точный frame и callback order, единственная descriptor-bit
+  перемена и cache commit. Дополнительно проверить A=1 на read-only GDT и
+  WP secondary #PF при A=0: точные phase/address/PFEC, сохранённый frame и
+  отсутствие CPU entry commit. Невалидный descriptor не записывать; direct
+  physical alias и frame rewrite GDT leaf PTE (включая redirect) отклонять до
+  frame stores. Сохранить RAM-only/backend distinction.
+- **Граница:** только один byte write из descriptor-table context; stack writes
+  остаются page-contained qword. Не добавлять TSS/IST, privilege change,
+  descriptor generalization, `#DF`/shutdown, PTE repair, INVLPG, IRETQ или retry.
+  S4-18 и S4-19 остаются открытыми.
+- **Нормативная основа:** Intel SDM version 090, [Vol. 1 §6.14.1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf)
+  и [Vol. 3A §3.4.5](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
+
+<a id="s4-19-доставка-исключений-и-восстановление-после-fault"></a>
+
 ### S4-19. Доставка исключений и восстановление после fault
 
-- [ ] Принято после ревью.
+- [x] Принято после независимого review и проверок ограниченного same-CPL
+  Long64 recovery path; cached-TLB behavior остаётся вне этого результата.
 - **Где:** delivery CPU state machine в `od-isa`, orchestration `od-machine`.
 - **Сделать:** единый путь delivery с правильным frame/error code, retry RIP и return. Явно обработать fault при descriptor/stack access, правила `#DF` и machine outcome при невозможности его delivery.
 - **Проверка:** guest handler `#PF` исправляет PTE, выполняет нужную invalidation и повторяет faulting instruction ровно с допустимыми effects; сломанный handler/stack приводит к ожидаемому secondary fault/shutdown.
 - **Готово:** исключение реально доставлено guest handler и execution продолжается; возвращённый host enum без delivery не закрывает задачу.
+
+#### S4-19a. Carry architectural CR2 in CPU state
+
+- [x] Реализация и независимое ревью пройдены.
+- **Сделать:** добавить optional CR2 в `LongModeState` с `None` у старых
+  профилей; мигрировать только struct literals без `..Default`. Snapshot и
+  fragment conversions, которые CR2 не представляют, должны явно отказывать,
+  а не терять значение.
+- **Проверка:** default/clone сохраняют контракт CR2; конвертеры reject
+  `Some(CR2)`; workspace build охватывает все инициализаторы и call sites.
+- **Граница:** в этом срезе нет инструкции MOV CR2. Page-fault delivery,
+  установка CR2 при fault и exception recovery реализуются в S4-19b и следующих
+  частях S4-19.
+- **Результат:** [S4-19a report](../reports/STAGE_4_S4-19A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-19a-cr2-state-2026-11-06.json).
+
+#### S4-19b. Bounded paged #PF delivery and handler entry
+
+- [x] Ограниченный срез принят после независимого code review и повторного review исправлений.
+- **Case:** Long64/CPL0, один CPU, private RAM, same-CPL interrupt gate с IST=0.
+  Guest выполняет `MOV [RBX],RCX` в present supervisor read-only страницу при
+  `CR0.WP=1`, получает настоящий `#PF` с PFEC `3`, прежним RIP, без retirement
+  и без изменения данных. Delivery фиксирует CR2, читает IDT/GDT через paged
+  tracked memory и строит шестисловный 64-bit frame с PFEC; затем guest
+  обработчик исполняет первую `MOV RAX,[RBX]` и наблюдает прежний sentinel.
+- **Проверка:** literal state и все шесть qword frame, полный fault record,
+  CR2, RF=1 в сохранённом RFLAGS образе fault-class `#PF`, page-table A/D
+  effects и ordered callbacks. Синхронный `#PF` доставляется и при IF=0.
+  Исходный невыравненный RSP сохраняется в frame при аппаратном выравнивании
+  нового stack. Отрицательные случаи покрывают profile rejection, selector TI
+  и code descriptor Accessed=0, IDT/GDT read fault, stack write failure после
+  частичного commit и backend failure. Ошибка fetch первой handler instruction
+  учитывается отдельно от уже успешной доставки.
+- **Граница:** один #PF vector, CPL0→CPL0, IST=0, фиксированные 4 KiB tables,
+  frame/table accesses в заранее ограниченных RAM mappings. Target code
+  descriptor — GDT, Accessed=1, base=0, effective limit 4 GiB; доставка не
+  синтезирует его Accessed-bit write. Secondary faults при delivery —
+  терминальный недоставленный результат; автоматическая `#DF`, shutdown
+  classification, исправление PTE, INVLPG, IRETQ и retry остаются следующими
+  частями S4-19. `MOV RAX,[RBX]` доступен только в новом selector этого slice;
+  родительский S4-12d probe сохраняет свой прежний allowlist. Не называть этот
+  slice полным recovery.
+- **Нормативная основа:** Intel SDM Vol. 3A §6.14.2, [64-Bit Mode Stack
+  Frame](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf)
+  и Vol. 3B §20.3.1.1, [RF in the fault-class exception frame](https://cdrdv2-public.intel.com/874250/253669-090-sdm-vol-3b.pdf).
+- **Результат:** реализация и проверки записаны в
+  [S4-19b report](../reports/STAGE_4_S4-19B_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-19b-paged-pf-delivery-2026-11-06.json).
+
+#### S4-19c. Secondary #PF, #DF delivery, and shutdown
+
+- [x] Ограниченный срез принят после независимого code review; замечания P2/P3 исправлены и повторно проверены.
+- **Case:** в существующем Long64/CPL0/same-CPL/IST=0 profile настоящий #PF
+  при доставке исходного #PF инициирует ровно одну попытку vector 8. Успешная
+  доставка #DF строит frame с error code 0, сохраняет исходный RIP только для
+  диагностики, не добавляет RF и оставляет CR2 равным последнему реальному
+  page fault. Page fault при доставке #DF переводит `CpuActivity` в
+  `Shutdown`; нового exception delivery не выполняется. Backend/profile
+  failures сами по себе не синтезируют shutdown.
+- **Проверка:** A=0 target descriptor на read-only GDT даёт nested #PF, затем
+  #DF и выполнение первой handler MOV; отдельный stack case проверяет #PF во
+  время #DF frame, последнее CR2, сохранённый частичный frame и отсутствие
+  fetch/памяти после shutdown. Проверены #DF error-code slot и RFLAGS без RF.
+- **Граница:** только #PF → #DF для фактического page fault при ограниченной
+  доставке #PF и shutdown для page fault при доставке #DF. Другие пары
+  исключений, TSS/IST, privilege transitions, guest PTE repair, INVLPG,
+  IRETQ, retry исходной инструкции и общий vCPU lifecycle остаются открытыми.
+  Старый V2 testkit snapshot не кодирует Shutdown и явно отклоняет такую
+  конверсию.
+- **Результат:** см. [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19c-double-fault-shutdown-2026-11-06.json).
+
+#### S4-19d. Guest PTE repair and INVLPG
+
+- [x] Принято после независимого ревью и проверок.
+- **Case:** после реального #PF при WP=1 handler через отдельный exact qword
+  `MOV [RDI],RSI` записывает новый RW leaf PTE в writable alias page-table
+  page, затем исполняет настоящий `INVLPG [RBX]` для исходной faulting GVA.
+  Fixture задаёт RDI и RSI так, чтобы менять только нужный leaf PTE; сам
+  selector этого alias/value не ограничивает. RBX/RCX остаются без изменений.
+- **Проверка:** PTE меняется только гостевой инструкцией, A и supervisor-only
+  U/S=0 сохраняются, D задаётся tracked store для alias mapping, исходные данные остаются прежними,
+  CR2 остаётся исходным, INVLPG ретируется ровно один раз с faulting GVA.
+- **Граница:** guest IRETQ и retry исходного MOV не выполняются; кэшированной
+  translation в tracked execution path нет, поэтому этот срез не утверждает
+  необходимость INVLPG для видимости нового PTE или eviction stale TLB entry.
+  Cross-page qword operands отклоняются до operand access.
+  Следующие S4-19e1/e2 покрывают guest stack adjustment, paged IRETQ, retry и
+  завершение записи.
+- **Результат:** см. [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19d-guest-pte-repair-invlpg-2026-11-06.json).
+
+#### S4-19e1. Guest error-code discard and paged IRETQ
+
+- [x] Принято после независимого ревью и проверок; исходную запись ещё не повторяем.
+- **Case:** после S4-19d handler гостевой точной `LEA RSP,[RSP+8]`
+  (`48 8D 64 24 08`) удаляет error-code slot, затем paged `IRETQ` (`48 CF`)
+  читает настоящий пяти-qword same-CPL frame и CS/SS descriptors через
+  tracked RAM. Возврат восстанавливает faulting RIP, исходный невыравненный
+  RSP и RF=1. SS descriptor настоящий, CPL0 writable, заранее Accessed.
+- **Граница профиля:** Long64 CPL0→CPL0, WP=1, точные формы инструкций,
+  заранее accessed валидные CS/SS, private synchronous RAM и выключенные
+  FRED/CET/shadow-stack/VMX/SMM. Live RF должен быть 0 перед LEA и IRETQ;
+  сохранённый RF принимается из fault frame и восстанавливается только при
+  успешном IRETQ. Ошибка tracked чтения обновляет CR2 и не частично коммитит
+  возврат; уже завершённые A/D effects остаются наблюдаемыми.
+- **Проверка:** весь guest путь от настоящего WP #PF через repair/INVLPG и
+  error-code discard возвращает RIP к исходному MOV, сохраняет CR2, control
+  registers и GPR, возвращает точный RSP/RFLAGS, не меняя faulting data.
+  Хост не подменяет RIP/RSP/PTE после начала сценария.
+- **Не заявлено:** повтор faulting MOV, его RF-clear timing и commit данных
+  остаются в S4-19e2. Tracked path не кеширует translation, поэтому INVLPG
+  necessity/stale-TLB eviction не проверяются.
+- **Результат:** см. [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19e1-guest-paged-iretq-2026-11-06.json).
+
+#### S4-19e2. Faulting MOV retry and data commit
+
+- [x] Принято после независимого review и проверок.
+- **Case:** после успешного S4-19e1 IRETQ гостевой CPU повторно исполняет
+  исходный exact `MOV [RBX],RCX` с сохранённого RIP. Исправленный supervisor
+  PTE допускает одну запись; следующая guest load читает новое значение.
+- **Проверка:** одна успешная data write и одна retirement, RIP проходит к
+  следующей guest instruction, восстановленный RF очищается в начале повторной
+  инструкции по профилю Intel, итоговое значение и canary подтверждены.
+- **Граница:** только same-CPL Long64 WP=1, частный RAM и заданный faulting
+  store. Общая обработка debug breakpoints, FP exceptions, иных RF-переходов и
+  cached TLB остаётся вне этого среза.
+- **Результат:** см. [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19e2-guest-fault-retry-2026-11-06.json).
 
 ### S4-20. CPL3 и системные вызовы/возвраты
 
@@ -763,6 +987,197 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** реализовать переходы CPL и нужные Linux entry/return механизмы из S4-00, связанные MSR/flags и stack rules. Не расширять same-CPL IRETQ fixture claim на все формы.
 - **Проверка:** CPL3 read/write/fetch protection, запрещённые privileged instructions, вход в kernel, изменение kernel-visible данных, возврат к следующей user instruction; неправильные selectors/addresses/flags на return.
 - **Готово:** собственный guest CPL3 probe проходит полный roundtrip; error paths не оставляют частично переключённые привилегии.
+
+#### S4-20a. Synthetic paged IRETQ outer-privilege CPU semantics
+
+- [x] CPU-only срез принят после независимого Sol/high review без замечаний
+  P0–P3; machine integration S4-20b и родительский S4-20 остаются открытыми.
+- **Профиль:** synthetic CPU с 48-bit linear addresses, CPUID leaf 7 равен нулю,
+  `CR4.LA57=0`; Long64, один CPU и CPU-owned state для four-level paging.
+  Этот профиль исключает LA57 transition только внутри данного сценария и не
+  утверждает, что Linux loader уже реализован или выбранный Ubuntu artifact
+  загружен. Unit tests используют guest-memory test double, а не tracked
+  page-walk backend.
+- **Сценарий:** CPU исполняет точный `48 CF` при CPL0 и пятисловном
+  outer-return frame; user CS — плоский GDT descriptor `access=0xfb, flags=0xa`,
+  user SS — плоский writable GDT descriptor `access=0xf3, flags=0xc`; оба
+  заранее имеют Accessed=1. DS/ES/FS/GS selectors должны быть нулевыми.
+  Входной live RF обязан быть очищен; сохранённые RFLAGS допускают только
+  текущую маску integer flags, IF, IOPL и RF. Успешный
+  commit меняет RIP, RSP, CS/SS selectors и caches, flags, сохраняя остальные
+  CPU registers. Входные проверки требуют CR4.LA57=0.
+- **Проверка:** корректные RPL/DPL/type/present для user CS/SS; неверные
+  selectors/descriptors, RIP/RSP и flags завершаются `Unsupported` ограниченного
+  профиля без частичного CPU commit. Guest page faults при fetch/frame/descriptor
+  reads возвращаются как `Fault`; backend failures остаются `ReadAborted`.
+  Архитектурные ошибки selector/return,
+  требующие #GP/#SS и точной error priority за пределами принятого profile,
+  остаются не реализованы. CPU не откатывает side effects, уже совершённые
+  переданным memory backend, но этот slice не проверяет tracked A/D updates.
+  Сохранять Intel read/fault ordering: RIP/CS/RFLAGS,
+  затем проверка CS descriptor, затем RSP/SS, canonicality saved RIP и SS
+  descriptor.
+- **Граница:** только CPU-семантика Long64 CPL0→CPL3 с этим пятисловным frame.
+  Machine-derived CPL context и исполнение user MOV выделены в S4-20b.
+  SYSCALL/SYSRET, TSS stack switch, exceptions из CPL3, general-purpose IRETQ,
+  полный Linux roundtrip и принятие родительского S4-20 остаются открытыми.
+- **Нормативная основа:** Intel SDM revision 090, Vol. 2A `IRET/IRETD/IRETQ`
+  и Vol. 3A §§7.14.2–7.14.3; [combined PDF](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf).
+- **Результат:** [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-20a-paged-iretq-cpl3-2026-11-06.json).
+
+#### S4-20b. Machine CPL context and one CPL3 paged MOV
+
+- [x] Отдельный межкомпонентный срез принят после независимого
+  `gpt-6.1-sol/high` review; подтверждённых замечаний P0–P3 не осталось.
+- **Сценарий:** один machine wrapper выполняет paged IRETQ CPL0→CPL3, строит
+  `AccessContext` только из committed CS RPL/cache и исполняет следующую exact
+  `48 8B 03` (`MOV RAX,[RBX]`) на CPL3. Wrapper не принимает внешний privilege
+  context или альтернативный CR3; CPU-owned CR3 остаётся активным.
+- **Ограничение fetch:** все три байта инструкции должны находиться в одной
+  guest page; допускается RIP offset `0xffd`. Cross-page instruction fetch и
+  fault второй fetch-страницы остаются за границей этого среза.
+- **Проверка:** user fetch и data read успешны; supervisor-only fetch даёт
+  PFEC `0x15`, data read — PFEC `0x05` при NXE=1, с точными CR2 и saved RIP.
+  Проверить user U/S protection на всех уровнях, сохранение завершённых A
+  updates, отсутствие D updates/data writes у load и разделение guest faults
+  от backend errors. Fault второй инструкции не откатывает уже committed
+  переход CPL3; wrapper возвращает отдельные результаты IRETQ и MOV.
+- **Граница:** одна точная load-форма и фиксированный four-level profile;
+  user stores, cross-page instruction fetch, доставка исключений из CPL3 и
+  syscall roundtrip остаются открытыми.
+- **Результат:** [S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20b-machine-iretq-cpl3-load-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b) и
+  [verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
+
+#### S4-20c. Bounded paged SYSCALL → kernel store → SYSRETQ → user load
+
+- [x] Ограниченный CPU/machine vertical slice принят после независимого
+  Sol/high review без замечаний P0–P3; parent S4-20 и Stage 4 остаются открытыми.
+- **Начальное состояние:** синтетическое CPU-owned CPL3 state после внешней
+  fixture. До исполнения заданы `EFER=0xd01`, `STAR`, `LSTAR`, `FMASK`, CR3 и
+  четырёхуровневые таблицы; generic WRMSR и запуск через IRETQ в этот slice не
+  входят. CPU API не принимает параллельные external CPL/CR3/EFER values.
+- **Сценарий:** точные четыре retirement без host-перезаписи CPU/RAM между
+  инструкциями: CPL3 `0F 05` (`SYSCALL`); CPL0 `4C 89 17`
+  (`MOV [RDI],R10`) по supervisor-only LSTAR; CPL0 `48 0F 07` (`SYSRETQ`);
+  CPL3 `48 8B 03` (`MOV RAX,[RBX]`) по адресу, сохранённому SYSCALL в RCX.
+  `RDI` и `RBX` отображают одну физическую data page как kernel RW и user RO.
+  Начальный RAX и исходное содержимое страницы отличаются от nonce в R10,
+  чтобы отдельный user load был наблюдаемым.
+- **CPU contract:** только Long64, canonical48, physical36, 4 KiB pages,
+  `CR0=0x80010033`, `CR4=0x20`, один running CPU, без STI shadow и async event.
+  Отдельное opt-in syscall-state bundle ограничивает EFER/STAR/LSTAR/FMASK,
+  selector layout и flags; `SCE=0` даёт #UD для SYSCALL и SYSRETQ, SYSRETQ из
+  CPL3 и noncanonical RCX дают #GP(0) без частичного privilege commit. Проверить
+  RFLAGS mask SYSRETQ, OF, очистку reserved bit 15 и definedness. IF=1
+  маскируется в kernel через FMASK и восстанавливается из R11. Проверить
+  допустимый STAR layout, включая вычисление SS из исходного selector field;
+  учитывать definedness для RCX/R11/RFLAGS, selector caches и точные RSP effects.
+  Каждый отдельный шаг требует текущие `RFLAGS.TF=0` и `RFLAGS.RF=0`;
+  при нарушении профиль возвращает `Rejected` до fetch без изменений CPU.
+  SYSRETQ дополнительно отклоняет `R11.TF=1` после проверок SCE, CPL и
+  canonical RCX; CPU не изменяется, но уже выполненные page-walk A updates и
+  соответствующие callbacks при fetch сохраняются.
+- **Проверка:** четыре точные кодировки, все instruction fetch/data accesses
+  проходят tracked paging с CPL из committed CS. Проверить RCX/R11, FMASK,
+  CS/SS selectors/caches, неизменность RSP/CR3, одну kernel write, user load
+  по RBX и nonce в RAX; оба alias используют реальные U/S permissions.
+  SYSCALL/SYSRETQ не читают GDT и не переключают RSP в этом сценарии. Проверить
+  PFEC/CR2/RIP, A/D updates и сохранение уже завершённого перехода/записи при
+  последующей ошибке; backend errors остаются отдельно от guest faults.
+- **Граница:** fetch каждой инструкции и каждый qword operand должны целиком
+  помещаться в одну guest page; cross-page fetch/operand остаются вне профиля.
+  Межинструкционный stop/resume относится к S4-21.
+- **Граница:** нет stack switch, TSS/IST, SWAPGS, async events, general WRMSR,
+  compatibility SYSRET или Linux entry assembly. Начальный CPL3 fixture
+  задан явно; профиль не объявляет syscall feature в DiagnosticV1 и не закрывает
+  S4-00, Linux userspace или родительский S4-20.
+- **Нормативная основа:** Intel SDM revision 093, Vol. 2B, `SYSCALL` и
+  `SYSRET`; Vol. 3A, IA32_EFER/STAR/LSTAR/FMASK и 64-bit mode state
+  ([official manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+- **Результат:** [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c) и
+  [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
+
+#### S4-20d. CPL3 paged store → load после IRETQ
+
+- [x] Ограниченный срез принят после независимого Sol/high review без
+  замечаний P0–P3; родительский S4-20 и Stage 4 остаются открытыми.
+- **Профиль:** Long64, canonical48, physical36, 4 KiB, четырёхуровневые
+  таблицы, `CR0=0x80010033`, `CR4=0x20`, `EFER=0xd00`, один running CPU.
+  Новый opt-in вход выводит CPL из committed CS, CR3 — из CPU; не требует
+  syscall MSR и не меняет прежний load-only контракт. Текущие TF, RF и AC
+  должны быть очищены до fetch; инструкция и qword operand находятся каждый
+  целиком в одной странице. Для обеих форм сначала после fetch/decode проверяется
+  пересечение qword с границей страницы по исходному RBX; только затем проверяется
+  canonicality. При одновременном crossing и noncanonical адресе результат —
+  `Rejected(CrossPageOperand)` без доступа к операнду; предшествующий fetch
+  мог уже обновить A bits. Этот порядок относится только к новому opt-in входу;
+  legacy load-only entry и его page-aware adapter сохраняют прежнее поведение.
+  Новый вход также
+  отклоняет остальные store-кодировки до доступа к операнду.
+- **Сценарий:** принятый paged IRETQ выполняет существующий S4-20b `48 8B 03`
+  load. Затем новый entry отдельно исполняет `48 89 0B` (запись RCX в `[RBX]`)
+  и `48 8B 03` (повторное чтение в RAX). Nonce отличается от исходной памяти;
+  каждый MOV имеет отдельное retirement; после каждого шага сохраняются CPL3,
+  CS/SS, RSP и CR3. Следующая ошибка не откатывает завершённые переход или
+  запись.
+- **Приёмка:** tracked paging и фактическая запись/чтение nonce; user RO store
+  и supervisor-only store дают #PF PFEC `0x07`, supervisor-only read — `0x05`;
+  supervisor-only instruction fetch на каждом из четырёх уровней и NX fetch дают
+  PFEC `0x15`; nonpresent user data read/store дают соответственно `0x04`/`0x06`,
+  а nonpresent user instruction fetch — `0x14`.
+  Для fetch-fault матрицы IRETQ завершается отдельным machine entry без user
+  access; новый CPL3 MOV является первой пользовательской выборкой, и все его
+  PTE A bits проверяются очищенными до шага. Проверить независимо заданные
+  ordered callbacks и полные PTE A/D readbacks для первого fetch, nonpresent
+  data и store-fault cases;
+  защита не записывает операнд и не устанавливает D. Physical backend store
+  abort подтверждается как `OperandPhysical` с точным GPA. Проверить границы
+  одной страницы, ограничение flags и сохранение ранее выполненных эффектов.
+- **Граница:** общие debug/alignment-check semantics, межстраничные обращения,
+  privileged instructions, invalid-selector IRETQ и доставка исключений CPL3
+  остаются за пределами среза.
+- **Основа:** Intel SDM revision 093, Vol. 3A §§5.6–5.7
+  ([Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+- **Результат:** [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20d-paged-cpl3-store-load-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d) и
+  [verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
+
+#### S4-20e. CPL3 paged MOV CR0 после IRETQ
+
+- [x] Ограниченный срез принят после независимых Sol code/docs reviews без
+  оставшихся замечаний; родительский S4-20 и этап 4 остаются открытыми.
+- **Профиль:** Long64, canonical48, physical36, четыре уровня по 4 KiB,
+  `CR0=0x80010033`, `CR4=0x20`, `EFER=0xd00`. CPL и CR3 берутся из CPU;
+  некорректный CS, TF, RF и AC отклоняются до fetch. Смещение RIP больше
+  `0xff1` исключено до fetch.
+- **Цель:** после IRETQ пользовательский `0F 22 C0` вызывает #GP(0),
+  `F0 0F 22 C0` вызывает #UD; fault при fetch имеет приоритет. Изменения
+  A от завершённых page walks сохраняются; CR0 и состояние инструкции не
+  фиксируются. Доставка исключения и переключение стека остаются вне среза.
+- **Результаты:** direct system entry test подтверждает #GP(0), LOCK #UD,
+  fetch precedence, supervisor-only/NX fetch PFEC `0x15` и nonpresent fetch
+  PFEC `0x14` с точными linear address, CR2, saved RIP, A effects и callbacks;
+  также проверены физический fetch backend, сохранение предыдущего store,
+  граница RIP и profile admission. Page-walk A-write отказ проверен на общем
+  writer seam, но не внедрён end-to-end через machine report adapter.
+- **Проверки:** 10 `cpl3_` ISA тестов; 39 system test functions с одной
+  дополнительной nonpresent-fetch assertion case внутри suite; targeted
+  `cpl3_mov_cr0_first_fetch_enforces_user_page_permissions`; page-walk
+  A-write failure matrix и fetch-specific case; `cargo check -p od-machine
+  --all-targets --offline`, fmt и diff-check пройдены. Graphify после кода:
+  27 555 узлов, 69 202 связи. Повторное независимое Sol code review после
+  исправления P3 прошло без замечаний P0–P3; docs review также завершено без
+  оставшихся замечаний.
+- **Результат:** [S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+  [manifest](../reports/data/stage4/s4-20e-paged-cpl3-mov-cr0-2026-11-07.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-cr0-after-iretq-s4-20e) и
+  [verification record](../testing/MACHINE.md#s4-20e-paged-cpl3-mov-cr0-after-iretq).
 
 ### S4-21. Жизненный цикл одного vCPU
 
@@ -791,6 +1206,21 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Evidence:** [отчёт S4-21b](../reports/STAGE_4_S4-21B_2026-11-05.md), [JSON](../reports/data/stage4/s4-21b-paged-probe.json), [методика](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum). `od-isa`: 2,014 unit + 25 integration; `od-machine`: 116; workspace check, fmt, layout и diff успешны. `graphify update .` обновил code graph; docs-aware semantic extraction не завершена.
 - **Не заявлено:** Linux или собственное kernel boot, IRQ/APIC, exception delivery/CR2, полный S4-21, S4-24 или S4-32. Этап 4 остаётся открытым.
 
+#### S4-21c. Bounded paged owner и reset UART RX
+
+- [x] Ограниченный срез принят после независимого Sol/high review без
+  замечаний P0–P3; родительский S4-21 остаётся открытым.
+- **Контракт:** `PagedVcpuSession` принимает только fixed Stage4FlatProbe image; loader создаёт согласованные CPU, RAM, bus и UART. STOP фиксируется владельцем, pause/resume сохраняет guest activity; halted и остановленная сессии не исполняют quantum и не доставляют RX.
+- **Reset:** replacement image и no-fetch CPU/paging checks выполняются до checked reset существующего RX pump; после успеха очередь очищена, generation увеличено, handle перенаправлен и машина заменена. Caller-owned time не изменяется. Generation token не входит в публичный API owner.
+- **Проверки:** `cargo test -p od-machine --lib --offline` (120); `cargo test -p od-machine --test paged_probe_quantum --test uart_rx_events --offline` (21 + 7); `cargo fmt --all -- --check`; `cargo check -p od-machine --all-targets --offline`; diff check. Store test подставляет инструкцию только внутри теста: штатный image profile содержит load/OUT/HLT. Layout check не проходит из-за ранее зарегистрированного `smoke/` (ISSUE-056). Детали: [отчёт](../reports/STAGE_4_S4-21C_2026-11-07.md), [manifest](../reports/data/stage4/s4-21c-paged-vcpu.json), [методика](../testing/MACHINE.md#s4-21c-bounded-paged-vcpu-owner).
+- **Границы:** нет runner integration, completion/cancellation predicate, IRQ wakeup или архитектурного x86 reset. S4-21 и Stage 4 остаются открытыми.
+
+#### S4-21d. Runner completion и deterministic cancellation
+
+- [x] Ограниченный срез принят после независимого `gpt-6.1-sol/high` ревью без замечаний к коду; замечание к формулировке README исправлено. S4-21 остаётся открытым.
+- **Контракт:** `--stage4-probe` использует `PagedVcpuSession`; HLT подтверждает `guest_completed` только при трёх инструкциях, совпадении ожидаемого nonce с RAX и единственного UART byte с его младшим байтом. Отдельные статусы для HLT, несовпадения, STOP, лимита и ошибок.
+- **Проверки и границы:** 8 runner CLI tests, 1 reproducible-build CLI test, 1 session drain unit test, runner all-targets check, fmt и diff прошли; см. [отчёт](../reports/STAGE_4_S4-21D_2026-11-07.md), [manifest](../reports/data/stage4/s4-21d-runner.json), [методику](../testing/MACHINE.md#s4-21d-runner-completion-and-cancellation). `--cancel-after` — детерминированный источник STOP; подключение VMHost/OS signals относится к S4-41.
+
 ### S4-22. Virtual clock и TSC
 
 - [ ] Принято после ревью.
@@ -806,6 +1236,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Границы:** clock начинается с `now_ns=0`, имеет ненулевой фиксированный `tsc_hz` и продвигается только явным `advance_time_ns` между вызовами в Runnable. TSC вычисляется как `floor(now_ns * tsc_hz / 1e9)` с checked overflow и atomic failure. Только bare Long64 RDTSC использует clock и существующие TSD/CPL checks. Нет host-time coupling, auto-advance, RDTSCP, MSR/CPUID advertisement, HLT, IRQ, deadlines или reset.
 - **Проверка:** clock rounding/large/overflow/split equivalence; реальный RDTSC через MachineBus; маска flags, EDX:EAX/RIP, split budgets, pause/STOP/zero budget, TSD/CPL/fetch failure и invalid defined mask.
 - **Готово:** bounded deterministic clock/RDTSC boundary реализованы; общий S4-22 остаётся открытым для согласования частоты Linux, host monotonic time и будущей progression для HLT/events.
+
+#### S4-22b. Часы PagedVcpuSession и UART RX
+
+- [x] Ограниченный S4-22b принят после независимого `gpt-6.1-sol/high` ревью без замечаний; родительские S4-21 и S4-22 остаются открытыми.
+- **Контракт:** `PagedVcpuSession::new` принимает явную ненулевую `tsc_hz` и владеет одним `VirtualClock`. `dispatch_rx` использует только `clock.now_ns()`, а абсолютные RX deadlines задаются в этом же домене. Выполнение, polling и число квантов часы не продвигают.
+- **Lifecycle:** явное время разрешено при host Active, включая guest HLT; продвижение не будит гостя и не разрешает RX dispatch в HLT. Paused/Stopped/Terminal отвергают продвижение. Reset сохраняет clock, частоту и текущее время, очищая RX очередь как прежде; arithmetic overflow не меняет часы.
+- **Проверки и границы:** `od-machine` unit tests (123), Stage 4 runner CLI (8), artifact build CLI (1), runner all-targets check, fmt и diff прошли; детали в [отчёте](../reports/STAGE_4_S4-22B_2026-11-07.md), [manifest](../reports/data/stage4/s4-22b-paged-clock.json) и [методике](../testing/MACHINE.md#s4-22b-paged-session-clock-and-uart-rx). Частота runner — диагностическая; guest CPUID/MSR, host monotonic coupling, HLT wakeup, IRQ и полный parent acceptance не заявлены.
 
 ### S4-23. Очередь событий и deadlines
 
@@ -839,6 +1276,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** 129 тестов `od-machine` (81 unit + 48 integration), включая `uart_rx_events` 7/7; package/workspace checks, fmt, layout и diff check. Подробности в [отчёте S4-23c](../reports/STAGE_4_S4-23C_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-23c-uart-rx-events.json).
 - **Готово:** bounded event-to-UART-RX delivery принята. Не заявляются IRQ/APIC, baud timing, HLT wakeup, host wait или Linux boot. S4-23, S4-24 и Stage 4 остаются открытыми.
 
+#### S4-23d. Generation-aware RX control через PagedVcpuSession
+
+- [x] Ограниченный S4-23d принят после независимого `gpt-6.1-sol/high` ревью без замечаний. S4-23 остаётся открытым.
+- **Зависимости среза:** принятые S4-21c, S4-22b и S4-23a/b/c. Это ограничение не снимает родительскую зависимость S4-23 → S4-22 → S4-21.
+- **Контракт:** session публикует текущее непрозрачное RX generation, ближайший абсолютный deadline, а schedule/cancel/reschedule требуют expected generation. Устаревшее поколение отклоняется прежде lifecycle admission и queue errors. Мутации разрешены только при Active и не-Halted; deadline inspection read-only доступна во всех состояниях.
+- **Проверка и границы:** 11 `paged_vcpu_session` unit tests прошли; `od-machine` all-targets check, fmt и diff check прошли. Смотрите [отчёт](../reports/STAGE_4_S4-23D_2026-11-07.md), [manifest](../reports/data/stage4/s4-23d-paged-rx-control.json), [методику](../testing/MACHINE.md#s4-23d-generation-aware-paged-rx-control). Срез не будит HLT, не реализует IRQ или host wait.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.
@@ -871,6 +1315,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** `cargo test -p od-isa --all-targets --locked --offline` — 2014 unit, 6 paged и 7 legacy тестов; `cargo test -p od-machine --all-targets --locked --offline` — 105 тестов, включая 7 paged. Workspace check, fmt, layout, diff, JSON/link validation и independent review прошли.
 - **Не заявлено:** mixed runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT или Linux. Полный Stage 4 и parent S4-24 остаются открытыми.
 
+#### S4-24d. Guest UART RX→IN→OUT echo profile
+
+- [x] Ограниченный S4-24d принят после независимого `gpt-6.1-sol/high` ревью без замечаний P0–P3; S4-24 остаётся открытым.
+- **Зависимости среза:** S4-24a/b/c, S4-21c/d, S4-22b, S4-23c/d и S4-32a. Это не закрывает parent acceptance S4-21/22/23; IRQ-вариант S4-24 по-прежнему зависит от S4-27.
+- **Контракт:** отдельный `Stage4UartEchoProbeV1` raw image содержит только `IN AL,DX → OUT DX,AL → HLT` (`EC EE F4`) и использует прежний board/page-table handoff. Runner через RX event queue подаёт независимый byte; expected byte применяется только в host completion predicate. Success требует HLT, ровно 3 retirement, RIP `0x400003`, RAX равный ожиданию и реальный UART TX из одного совпадающего byte. Пустой RBR проходит штатным PIO error.
+- **Проверки и границы:** 13 `PagedVcpuSession` tests, 9 runner CLI tests, 2 builder→CLI tests, runner all-targets check, fmt и diff прошли. `check_layout.py` сообщает уже известный root `smoke/` (`ISSUE-056`). См. [отчёт](../reports/STAGE_4_S4-24D_2026-11-07.md), [manifest](../reports/data/stage4/s4-24d-uart-echo.json), [методику](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo). Гостевой LSR polling loop, IRQ/APIC, HLT wakeup, baud timing и общий scheduler не реализованы.
+
 ### S4-25. Local APIC одного CPU
 
 - [ ] Принято после ревью.
@@ -878,6 +1329,35 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** выбранный xAPIC register model, enable/base, APIC ID, masks/priority, IRR/ISR/TMR, EOI и требуемые LVT. x2APIC и multi-CPU startup не заявлять. Необходимые self-directed IPI/NMI пути определить по manifest.
 - **Проверка:** reset, masked vector, priority, pending/in-service transitions, spurious path, EOI. Ошибочные register accesses и reserved bits следуют принятой спецификации.
 - **Готово:** APIC state реально влияет на pending/deliverable interrupt, а не существует только как читаемый массив registers.
+
+#### S4-25a. Fixed-edge Local APIC register core
+
+- [x] Ограниченный S4-25a принят после независимого `gpt-6.1-sol/high` ревью; полный S4-25 остаётся открытым.
+- **Зависимости среза:** S4-05, S4-19 и необходимые event/reset части S4-23 (принятые S4-23a–d). Незакрытый parent S4-23 не считается выполненным.
+- **Контракт:** отдельный `LocalApic` реализует ограниченный one-CPU xAPIC профиль как `MachineBus` device по фиксированному MMIO base `0xFEE00000`, APIC ID 0. Поддержаны ID, TPR/PPR, SVR, EOI, ISR/TMR/IRR и fixed-edge запросы векторов `16..=255`; explicit acknowledge перемещает один eligible vector из IRR в ISR. Pending inspection не потребляет событие. Источник поведения: Intel SDM release 093, Vol. 3A, Chapter 13, §§13.4.1–13.4.3, 13.4.6–13.4.8, 13.8.3–13.8.5.
+- **Граница:** Version register намеренно недоступен; LVT, APIC-base MSR/relocation, x2APIC, IOAPIC/level routing, timer, CPU interrupt delivery, handler execution, IF/shadow/IDT и HLT wakeup отсутствуют. TMR показывает edge; ошибочные/неподдержанные доступы возвращают `DeviceError` и не меняют состояние. Тест подключает device через существующий `MachineBus`; это не доказывает default board wiring или guest Linux path.
+- **Проверки:** 2 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли. См. [отчёт](../reports/STAGE_4_S4-25A_2026-11-07.md), [manifest](../reports/data/stage4/s4-25a-local-apic-core.json) и [методику](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
+
+#### S4-25b. CPU-owned IA32_APIC_BASE enable
+
+- [x] Ограниченный S4-25b принят после независимого `gpt-6.1-sol/high` ревью; S4-25 и Stage 4 остаются открытыми.
+- **Контракт:** opt-in `ApicBaseCpu` исполняет только bare `RDMSR`/`WRMSR` к `IA32_APIC_BASE` (`0x1B`) в Long64/CPL0. Reset value `0xFEE00900` (fixed base `0xFEE00000`, BSP и global enable); global disable — `0xFEE00100`. Запись возвращает typed effect; `step_apic_base_msr` применяет его к xAPIC до возврата. Повторная запись того же значения не сбрасывает APIC. Global disable сбрасывает APIC state и блокирует MMIO/acknowledge; после re-enable требуется SVR software enable. Источник: Intel SDM release 093, Vol. 3A, §§13.4.3–13.4.5, 13.4.7.1–2.
+- **Граница:** base relocation, BSP changes, x2APIC, общий MSR dispatcher, `PagedVcpuSession` integration, CPU interrupt delivery, IF/shadow/IDT/handler и HLT wakeup не заявлены. Прямые вызовы `ApicBaseCpu::step` обязаны применить effect до следующей guest/device operation; `step_apic_base_msr` делает это синхронно для фиксированного Local APIC.
+- **Проверки:** 3 focused `od-isa` теста, 4 focused `local_apic` теста, all-targets check двух пакетов, fmt и diff прошли. Независимый Sol/high reviewer закрыл два P2 замечания. См. [отчёт](../reports/STAGE_4_S4-25B_2026-11-07.md), [manifest](../reports/data/stage4/s4-25b-apic-base.json) и [методику](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
+
+#### S4-25c. Fixed self-IPI через xAPIC ICR
+
+- [x] Ограниченный S4-25c принят после независимого `gpt-6.1-sol/high` ревью без замечаний; S4-25 и Stage 4 остаются открытыми.
+- **Контракт:** `ICR_HIGH` (`0x310`) сохраняет только destination byte и не отправляет IPI. Поддержан только aligned Dword `ICR_LOW` (`0x300`) с Fixed delivery, Self shorthand, edge trigger, asserted level и вектором `16..=255`; destination mode игнорируется. Read-only Delivery Status при записи игнорируется и после синхронной внутренней доставки читается как Idle. Запись low атомарно сохраняет writable fields и под тем же lock ставит fixed edge в IRR; это не означает CPU handler acceptance. Повторная команда создаёт запрос заново, а coalescing определяется IRR. Основа: Intel SDM release 093, Vol. 3A, §§13.6.1–13.6.2.3, Table 13-3, §§13.8.3–13.8.5.
+- **Граница:** no-shorthand/external destinations, lowest-priority, NMI/SMI/INIT/SIPI, level delivery, ESR, CPU handler/IDT/IF, HLT wakeup, IOAPIC и Linux path не реализованы. Unsupported/reserved writes возвращают локальный `DeviceError` без изменения состояния; это не гостевой `#GP`.
+- **Проверки:** 6 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли; независимое Sol/high ревью без замечаний. См. [отчёт](../reports/STAGE_4_S4-25C_2026-11-07.md), [manifest](../reports/data/stage4/s4-25c-xapic-self-ipi.json) и [методику](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
+
+#### S4-25d. Ограниченный CR8 ↔ xAPIC TPR
+
+- [x] Ограниченный срез принят после независимого Sol/high ревью.
+- **Контракт:** отдельный Long64 профиль исполняет только `44 0F 20 C0` и `44 0F 22 C0`, при работающем CPU, clear shadow и включённом global/software APIC. Чтение возвращает `TPR[7:4]`; запись класса `0..15` устанавливает `TPR = class << 4`. CPL вне 0 и зарезервированные биты записи вызывают `#GP(0)`, точные LOCK-формы — `#UD`. Остальные состояния и формы закрыты. Типизированный эффект применяется адаптером до возврата; вызывающая сторона обязана сериализовать все операции APIC на всё время вызова, включая fetch. Архитектурная сериализация инструкцией не заявлена. Основа: Intel SDM 093, Vol. 3A §§13.8.6–13.8.6.1 и Vol. 2B MOV to/from control registers.
+- **Проверки:** 5 focused `od-isa` tests, 3 focused `od-machine` tests, package all-targets check, fmt/diff и Graphify прошли. Sol/high подтвердил закрытие P2 canonical48 и P3 ISR-bank замечаний. См. [отчёт](../reports/STAGE_4_S4-25D_2026-11-07.md), [manifest](../reports/data/stage4/s4-25d-cr8-tpr.json) и [методику](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
+- **Граница:** общее исполнение MOV CR8, CPU interrupt delivery, IDT/IF, HLT wakeup, JIT и Linux acceptance остаются вне среза. S4-25 и этап 4 открыты.
 
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
@@ -887,6 +1367,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** masked edge, unmask, level assert/deassert, повторный level после EOI, недопустимый destination/vector; гостевые config writes меняют поведение.
 - **Готово:** один внешний device IRQ доходит до Local APIC и не теряется/не дублируется при предусмотренных mask/EOI transitions.
 
+#### S4-26a. Fixed-edge route IOAPIC к Local APIC
+
+- [x] Ограниченный S4-26a принят после независимого `gpt-6.1-sol/high` ревью; parent S4-26 и Stage 4 остаются открытыми.
+- **Зависимости среза:** S4-02, S4-05, S4-25a и S4-25b. Принятая часть S4-25 достаточна для fixed-edge доставки в IRR и тестов priority/acknowledge/EOI; S4-25c/d дают дополнительную регрессию Local APIC.
+- **Контракт:** отдельный opt-in `IoApic` в `od-machine` занимает MMIO base `0xFEC00000`. Поддержан единственный `INTIN4 → physical APIC ID 0` маршрут: IOREGSEL/IOWIN находятся по offsets `0x00`/`0x10`, redirection entry 4 — selector `0x18`/`0x19`. Low/high Dword доступны раздельно; route поддерживает Fixed, active-high, edge-triggered, vector `0x10..=0xFE` и mask. После reset маршрут замаскирован. Version register не публикуется для частичной таблицы. Read-only Delivery Status/Remote IRR биты в low Dword читаются нулём и игнорируются при записи.
+- **Переходы:** только low→high на незамаскированной линии запрашивает вектор у существующего Local APIC; edge при mask теряется, снятие mask и high→high сами по себе не доставляют IRQ. Повторный одинаковый vector coalesces через существующий IRR. Если Local APIC отклоняет edge, `set_intin4` возвращает ошибку и сохраняет прежнее состояние линии для повтора вызова. Владелец обязан сериализовать IOAPIC, Local APIC, reset и enable operations.
+- **Источник:** Intel 82093AA I/O APIC, document 290566-001 (preliminary), §§3.1–3.2.4: [datasheet](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF). Он обосновывает выбранный профиль, не обещает совместимость со всеми IOAPIC.
+- **Проверки:** 4 focused IOAPIC tests, 9 Local APIC regression tests, `od-machine --all-targets`, fmt/diff и Graphify прошли; независимый Sol/high review без оставшихся замечаний. См. [отчёт](../reports/STAGE_4_S4-26A_2026-11-07.md), [manifest](../reports/data/stage4/s4-26a-ioapic-fixed-edge.json) и [методику](../testing/MACHINE.md#s4-26a-fixed-edge-ioapic-route).
+- **Граница:** доступны только один edge route и выбранные регистры. Другие redirection entries, IOAPIC Version/ID/ARB, level trigger/Remote IRR delivery, logical destinations, APIC bus, CPU acceptance/handler/IDT/IF, HLT wakeup, default board wiring и Linux discovery не реализованы. `DeviceError` не является гостевым exception.
+
+#### S4-26b. Один level route с Remote IRR и атомарным EOI
+
+- [x] Ограниченный S4-26b принят после исправления замечания P2 и повторного независимого `gpt-6.1-sol/high` ревью без замечаний; parent S4-26 и Stage 4 остаются открытыми.
+- **Контракт:** сохраняется тот же единственный INTIN4 → physical APIC ID 0 маршрут. Опциональный active-high Fixed level режим выставляет Local APIC IRR и TMR при принятии запроса; Remote IRR отражает ожидающий EOI запрос. Уровень остаётся связан с запросом через acknowledge/ISR и снимается только matching EOI; если линия всё ещё активна и route размаскирован, новый запрос принимается атомарно в той же операции. Acceptance требует global и SVR software enable; TPR влияет на eligibility, но не отменяет acceptance. Выбранный level vector зарезервирован от edge/self-IPI использования даже для masked/inactive route.
+- **Атомарность и ограничения:** IOAPIC и Local APIC используют единый узкий owner state/lock; нет callback или вложенных locks. Если активный unmasked level assertion или unmask должен немедленно принять запрос, операция при выключенном Local APIC отклоняется до изменения линии/configuration; masked assertion может обновить уровень без доставки. Global и SVR software disable vetoed без мутации при установленном Remote IRR. Конфликтующие vector/trigger изменения отклоняются, пока линия активна, Remote IRR установлен или связанный vector pending/in-service. Существующие edge→edge перенастройки сохраняют прежнее поведение. Независимые reset сохраняют соседний контроллер; при установленном Remote IRR оба veto без мутации. `reset_pair` явно сбрасывает пару. Операции устройства и полный CPU helper вызов сериализуются вызывающей стороной; mutex не удерживается во время guest fetch.
+- **CPU effect:** `IA32_APIC_BASE` helper выполняет инструкцию на кандидате CPU ровно один раз и публикует CPU state только после успешного APIC enable transition. Отклонение host-side transition при Remote IRR не является гостевым `#GP` и не retire инструкцию; уже выполненные fetch/page-walk effects не откатываются.
+- **Источники:** Intel SDM 253668-093US, September 2026, Vol. 3A §§13.8.4–13.8.5 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Intel 82093AA I/O APIC, document 290566-001 preliminary, §3.2.4 ([datasheet](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF)).
+- **Проверки:** 11 IOAPIC tests (включая level retrigger, priority/EOI, edge compatibility, reserved vector, software-enable failure и независимые/парный reset), 10 Local APIC regression tests, `cargo check -p od-machine --all-targets --offline`, fmt/diff и повторное Sol/high review прошли. Результаты Graphify и layout check записаны в [отчёте](../reports/STAGE_4_S4-26B_2026-11-07.md) и [manifest](../reports/data/stage4/s4-26b-ioapic-level.json); методика — [S4-26b](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
+- **Граница:** только одна physical route, Fixed delivery, active-high и выбранные Dword registers; нет guest CPU handler/IDT/IF delivery, APIC bus, board wiring, Linux discovery, прочих IOAPIC entries, level-полярности, logical destinations или полного interrupt-controller reset semantics.
+
 ### S4-27. Соединить pending IRQ с CPU delivery
 
 - [ ] Принято после ревью.
@@ -894,6 +1394,24 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** выбирать deliverable event на корректной границе instructions/blocks; учитывать IF, STI/MOV SS shadow и нужные NMI rules, frame и EOI. Согласовать HLT wakeup и очередь событий.
 - **Проверка:** IRQ перед/после CLI/STI, shadow, HLT при разных условиях, pending during handler, fault при delivery; interpreter и поддержанный JIT дают одинаковую архитектурную последовательность.
 - **Готово:** handler действительно выполняется и возвращает управление; queued IRQ не теряется на JIT exit, fallback или pause.
+
+#### S4-27a. Caller-driven APIC IRQ entry и попытка первой handler instruction
+
+- [x] Ограниченный S4-27a принят после независимого `gpt-6.1-sol/high` ревью без замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** `DiagnosticVcpuSession::deliver_interrupt_and_step` выбирает один APIC-eligible vector, передаёт его существующему `od-isa::deliver_maskable_interrupt` через `IdentityMemoryAdapter`, после успешного entry подтверждает именно этот vector IRR→ISR и запускает handler с instruction budget 1. Это не гарантирует retirement: fetch/исполнение может fault, остановиться на unsupported opcode или halt; успешный CPU/APIC entry остаётся committed, возвращается обычный handler `DiagnosticRunResult`. CPU state и acknowledgement публикуются только после успешной IDT entry.
+- **Предусловия:** caller подтверждает завершённую instruction boundary, отсутствие pending synchronous exception/debug/NMI или другого interrupt inhibition, private synchronous RAM и сериализует полный вызов с APIC/IOAPIC operations. Поддержан только diagnostic flat identity Long64/CPL0 Running state с IF=1 и явным clear STI shadow, same-CPL interrupt gate и IST=0; остальные ограничения задаёт ISA delivery contract.
+- **Отказы:** IF=0, blocking STI shadow или отсутствие eligible vector оставляют CPU/APIC без изменений; TPR-blocked request остаётся в IRR. Unsupported entry возвращается без acknowledge. Delivery abort может сохранить уже записанный frame prefix; сессия становится terminal и автоматически повторить доставку нельзя.
+- **Проверки:** 9 `diagnostic_vcpu` unit tests, 10 Local APIC tests, 7 public API tests и ISA stack-store failure regression; `od-machine --all-targets`, fmt/diff и независимое Sol/high review прошли. Evidence в [отчёте](../reports/STAGE_4_S4-27A_2026-11-07.md), [manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json) и [методике](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry).
+- **Граница:** нет автоматического polling/run loop, доставки на произвольной instruction/block boundary, paged CPU delivery, MOV SS/NMI, HLT wakeup, IRET/guest EOI path, JIT exits или Linux/board acceptance. Полный критерий S4-27 остаётся открытым.
+
+#### S4-27b. Гостевой EOI, same-CPL IRETQ и resume
+
+- [x] Ограниченный S4-27b принят после независимого `gpt-6.1-sol/high` code review и повторного docs review без оставшихся замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** после S4-27a handler выполняет guest `MOV dword [LAPIC_EOI], EAX=0` через существующий `IdentityMemoryAdapter → MachineBus` MMIO path. Явный `run_same_cpl0_iretq` вызывает существующий `od-isa` `SameCpl0ValidFrameV1` с budget 1; после Retired обычный session `run(1)` возобновляет instruction по сохранённому RIP.
+- **Подтверждено:** один level request входит через пять qword frame, handler EOI очищает Remote IRR, IRETQ восстанавливает RIP/RSP/CS/SS/RFLAGS, затем реально исполняется прерванная RAM instruction. Проверены все 16 младших выравниваний исходного RSP; при удерживаемом INTIN4 EOI атомарно принимает ровно один новый запрос в IRR, а его CPU-доставка ждёт следующую явную caller boundary.
+- **Отказы:** после уже состоявшегося guest EOI fetch/frame/CS/SS read abort в IRETQ не публикует candidate CPU, не повторяет EOI и переводит сессию в terminal. Предыдущий EOI и его effects не откатываются.
+- **Проверки:** 12 `diagnostic_vcpu` tests, 8 API tests, 10 Local APIC tests, 25 `od-isa::iretq` tests; package all-targets, fmt/diff и независимый Sol/high review прошли. Graphify и layout details — в [отчёте](../reports/STAGE_4_S4-27B_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json); методика — [S4-27b](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume).
+- **Граница:** caller-driven same-CPL0 diagnostic flat identity path; нет автоматического interrupt polling, paged IRETQ, межуровневого return, полного IF/STI/MOV SS/NMI/HLT scheduler, JIT или Linux acceptance. Полный S4-27 остаётся открытым.
 
 ### S4-28. APIC timer
 

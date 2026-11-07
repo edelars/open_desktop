@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-20e",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scenario": "paged IRETQ to CPL3 followed by bounded MOV CR0 privilege fault",
+  "profile": {
+    "mode": "Long64",
+    "linear_address_width": 48,
+    "physical_address_width": 36,
+    "paging": "four-level, 4 KiB",
+    "cr0": "0x80010033",
+    "cr4": "0x20; LA57=0",
+    "efer": "0xd00",
+    "accepted_instruction": "0F 22 C0: MOV CR0,RAX",
+    "lock_form": "F0 0F 22 C0: #UD after complete fetch/decode",
+    "privilege_source": "committed CS selector/cache",
+    "cr3_source": "CPU state",
+    "pre_fetch_admission": "valid user CS and controls; TF=0, RF=0, AC=0; STI shadow clear",
+    "instruction_page_boundary": "RIP page offset <= 0xff1 accepted; >= 0xff2 rejected before fetch"
+  },
+  "results": {
+    "bare_mov_cr0_cpl3": "#GP(0), zero retirement, no partial CPU commit",
+    "lock_mov_cr0": "#UD after full fetch/decode",
+    "fetch_fault_precedence": "injected fault at each byte precedes #GP/#UD until decode completes",
+    "exception_delivery": "not implemented by this slice"
+  },
+  "fault_matrix": {
+    "supervisor_only_fetch": "PFEC 0x15 at each page-table level",
+    "nx_fetch": "PFEC 0x15",
+    "nonpresent_user_fetch": "PFEC 0x14 through step_paged_cpl3_mov_cr0; exact linear address, CR2 and saved RIP",
+    "physical_fetch_backend": "OperandPhysical at GPA 0x30000; no retirement",
+    "prior_user_store": "remains committed after subsequent #GP(0)"
+  },
+  "verification": {
+    "isa_cpl3_tests": "10 passed",
+    "stage4_exception_delivery": "39 test functions passed; one additional non-present-fetch assertion case is within the suite",
+    "targeted_system": "cpl3_mov_cr0_first_fetch_enforces_user_page_permissions passed",
+    "page_walk_accessed_write_failure": "existing matrix and fetch-specific test passed via internal writer seam; not injected through machine-entry report projection",
+    "od_machine_all_targets_check": "passed",
+    "fmt": "passed",
+    "diff_check": "passed",
+    "graphify": "updated after code changes; 27555 nodes, 69202 edges",
+    "review": "Independent Sol code and documentation reviews passed with no remaining findings"
+  },
+  "scope_limits": [
+    "generates #GP/#UD and page-fault results; does not deliver exceptions",
+    "no IDT/TSS stack switching or general CPL3 exception delivery",
+    "no other CR forms or cross-page instruction fetch",
+    "A-bit write failure injection covers shared walker seam, not end-to-end machine-entry report projection",
+    "parent S4-20 and Stage 4 remain open"
+  ]
+}

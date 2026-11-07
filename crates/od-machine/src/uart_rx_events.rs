@@ -118,6 +118,17 @@ impl UartRxEventPump {
         Ok(next)
     }
 
+    /// Invalidate pending work before switching to a freshly constructed UART.
+    pub(crate) fn reset_and_retarget(
+        &mut self,
+        generation: EventGeneration,
+        uart: Uart16550Handle,
+    ) -> Result<(), EventQueueError> {
+        self.reset(generation)?;
+        self.uart = uart;
+        Ok(())
+    }
+
     /// Deliver ready events in deadline/insertion order until STOP, the finite
     /// event budget, the next future deadline, an empty queue, or a full RX
     /// register is reached. STOP precedes budget, and budget precedes readiness.

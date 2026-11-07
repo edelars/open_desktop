@@ -8,8 +8,8 @@ admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-06c
 CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read and
 reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
-COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
-slices. S4-11e cross-page word read is implemented and accepted after independent
+COM1 polling TX, bounded S4-24b CPU PIO, bounded S4-24c paged CPU PIO and
+bounded S4-24d guest UART RX→IN→OUT echo slices. S4-11e cross-page word read is implemented and accepted after independent
 review; its findings were fixed and no P0—P3 items remain. S4-11f word-MOV
 cross-page fetch is implemented and accepted after independent review with no
 remaining P0—P3 findings. Этап 4 не завершён: S4-00—S4-01,
@@ -17,6 +17,31 @@ integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми. Ограниченный
 срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
 S4-32 и этап 4 остаются открытыми.
+
+Bounded S4-20c now completes a paged CPL3 `SYSCALL` → CPL0 kernel store →
+`SYSRETQ` → CPL3 load roundtrip and is accepted after independent review with
+no remaining P0–P3 findings. Its exact scope, checks and limitations are in the
+[S4-20c report](STAGE_4_S4-20C_2026-11-06.md) and
+[JSON evidence](data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json).
+Parent S4-20 and Stage 4 remain open.
+
+S4-20e implements a bounded CPL3 `MOV CR0,RAX` privilege-fault entry after
+IRETQ. The exact instruction produces `#GP(0)`, the exact LOCK form produces
+`#UD`, and tracked fetch faults retain precedence and paging effects. Direct
+system coverage now includes non-present fetch PFEC `0x14` for the new entry.
+The implementation checks and its remaining review status are recorded in the
+[S4-20e report](STAGE_4_S4-20E_2026-11-07.md) and
+[JSON evidence](data/stage4/s4-20e-paged-cpl3-mov-cr0-2026-11-07.json).
+The follow-up Sol finding was corrected; independent code and documentation
+reviews passed with no remaining findings. S4-20e is accepted; S4-20 and Stage
+4 remain open.
+
+S4-20d adds a bounded CPL3 paged store→load path after the accepted IRETQ and
+load, with tracked user/supervisor write protection and exact fault evidence.
+It is accepted after independent review with no P0–P3 findings. See the
+[S4-20d report](STAGE_4_S4-20D_2026-11-06.md) and
+[JSON evidence](data/stage4/s4-20d-paged-cpl3-store-load-2026-11-06.json).
+Parent S4-20 and Stage 4 remain open.
 
 ## S4-32a: reproducible freestanding flat probe
 
@@ -113,6 +138,16 @@ formatting, layout, diff, JSON/link checks прошли; независимое
 и [JSON evidence](data/stage4/s4-24c-paged-pio.json). Не заявляются mixed
 runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 или Linux support. Parent S4-24 и Stage 4 остаются открытыми.
+
+В S4-24d добавлен строгий freestanding `Stage4UartEchoProbeV1` (`IN AL,DX` →
+`OUT DX,AL` → `HLT`) и отдельный runner path. Внешний RX byte проходит через
+session RX generation/deadline queue и UART; success отдельно сверяет expected
+byte, guest RAX, RIP/retirement и фактически переданный UART TX. Пустой RBR
+остаётся PIO error. Runner CLI — 9/9, builder→CLI — 2/2, 13 paged-session tests,
+runner all-targets check, fmt и diff прошли. Layout check остаётся на известной
+ISSUE-056 (`smoke/`). Независимые code/docs reviews чистые. Не заявляются guest
+LSR polling loop, baud timing, IRQ/APIC, HLT wakeup или полное S4-24. Подробности:
+[отчёт](STAGE_4_S4-24D_2026-11-07.md), [manifest](data/stage4/s4-24d-uart-echo.json).
 
 В S4-24b реализован `DiagnosticCpl0PioU8V1`: один bare `EC`/`EE` за вызов,
 Long64 CPL0, CR0/CR4 `None`, instruction fetch через flat identity RAM.
@@ -336,6 +371,12 @@ permission fault и сохранение CPU state/нулевого retirement �
   сохранение `rflags_defined`, TSD/CPL/fetch checks и отсутствие auto-advance.
   RDTSCP, MSR/CPUID, HLT progression, IRQ/deadlines и host-clock coupling не
   реализованы.
+- S4-22b добавляет один явный `VirtualClock` владельцу `PagedVcpuSession`;
+  RX deadlines и dispatch теперь используют единый наносекундный домен.
+  Advancement явный и допустим во время guest HLT без wakeup, но отклоняется
+  при host pause/stop/terminal. Reset сохраняет время и частоту; overflow
+  атомарен. Частота runner диагностическая и не публикуется через CPUID/MSR.
+  См. [S4-22b report](STAGE_4_S4-22B_2026-11-07.md).
 - S4-23a добавляет bounded fixed-capacity очередь одноразовых absolute
   deadlines с deterministic `(deadline, sequence)` ordering, explicit cancel/
   reschedule и one-at-a-time `pop_due`. Очередь не двигает clock и не dispatch-ит
@@ -356,6 +397,12 @@ permission fault и сохранение CPU state/нулевого retirement �
   повтора. Reset/stale invalidation следует контракту очереди; clock, CPU и HLT
   не изменяются. Подробности в [отчёте S4-23c](STAGE_4_S4-23C_2026-11-05.md)
   и [JSON evidence](data/stage4/s4-23c-uart-rx-events.json).
+- S4-23d публикует через `PagedVcpuSession` queue-local generation, read-only
+  ближайший RX deadline и generation-aware schedule/cancel/reschedule. Stale
+  generation отклоняется раньше lifecycle admission; HLT, pause, STOP и terminal
+  не принимают мутации. Подробности в [отчёте S4-23d](STAGE_4_S4-23D_2026-11-07.md)
+  и [manifest](data/stage4/s4-23d-paged-rx-control.json). HLT wakeup и host wait
+  остаются открытыми требованиями S4-23.
 
 ## Проверки
 
@@ -472,3 +519,145 @@ alias case. See the [S4-33a slice report](STAGE_4_S4-33A_2026-11-05.md) and
 [evidence](data/stage4/s4-33a-ram-alias.json). This is uncached interpreter
 evidence only; independent `gpt-6.1-sol/high` review approved the bounded case
 with no P0–P2 findings. S4-33 and Stage 4 remain open.
+
+## S4-21c — bounded paged owner (accepted)
+
+The fixed-image paged owner implements caller-driven STOP, pause/resume and
+replacement reset with checked RX generation invalidation. The 120 od-machine
+unit tests, 21 paged-quantum tests and 7 UART RX tests passed. Independent
+Sol/high review found no P0–P3 issues. Evidence and limits are in the
+[S4-21c report](STAGE_4_S4-21C_2026-11-07.md). S4-21 and Stage 4 remain open;
+runner completion/cancellation is not implemented.
+
+## S4-21d — runner completion and deterministic cancellation (accepted)
+
+The fixed-image runner uses the paged owner and requires an expected nonce,
+three retired instructions and exact UART output before reporting guest
+completion. STOP and work limit are distinct. Independent review passed; the
+README error wording was clarified. See [report](STAGE_4_S4-21D_2026-11-07.md).
+S4-21 and Stage 4 remain open; VMHost/OS signal integration belongs to S4-41.
+
+## S4-25a — fixed-edge Local APIC register core
+
+The bounded `LocalApic` device exposes the selected xAPIC MMIO register
+subset and keeps fixed-edge request, priority eligibility, acknowledge and EOI
+state. Two focused state/bus tests and the `od-machine` all-targets check,
+formatting and diff validation passed; independent Sol/high review closed its
+three test-coverage findings. This does not close S4-25: the version register,
+LVT, APIC-base MSR, default board wiring, IOAPIC, timer and CPU interrupt
+delivery remain open. See the [slice report](STAGE_4_S4-25A_2026-11-07.md)
+and [evidence manifest](data/stage4/s4-25a-local-apic-core.json).
+
+## S4-25b — CPU-owned IA32_APIC_BASE enable
+
+The bounded opt-in `ApicBaseCpu` executes bare `RDMSR`/`WRMSR` for index
+`0x1B` in Long64/CPL0, with reset value `0xFEE00900` and fixed-base global
+disable value `0xFEE00100`. Successful writes return a typed CPU effect; the
+machine helper applies it to the standalone xAPIC before returning. Same-value
+writes preserve APIC state; global disable resets it and blocks MMIO, and
+re-enable requires SVR software enable. Three focused ISA tests, four Local
+APIC tests, both package all-targets checks, formatting and diff validation
+passed. Independent Sol/high review fixed and confirmed closure of two P2
+boundary findings. This does not add the profile to `PagedVcpuSession` or
+default board wiring, and does not implement relocation, x2APIC, CPU interrupt
+delivery or HLT wakeup. See [report](STAGE_4_S4-25B_2026-11-07.md) and
+[evidence](data/stage4/s4-25b-apic-base.json). Parent S4-25 and Stage 4 remain
+open.
+
+## S4-25c — xAPIC Fixed self-IPI
+
+The Local APIC now accepts an aligned Dword write of the bounded Fixed Self
+edge command to ICR low, stores ICR high destination byte without dispatch,
+and records the vector in IRR on ICR low. Tests cover readback, high-only
+writes, repeat/coalescing behavior, priority, acknowledge/ISR/EOI, software
+and global disable, reset, and failure atomicity. Six focused APIC tests,
+`od-machine` all-targets check, format/diff validation and independent
+Sol/high review passed. This is synchronous internal one-CPU device delivery
+only; a written read-only Delivery Status bit is ignored and readback remains
+Idle. The P2 review finding on this behavior was fixed and re-reviewed. It does
+not claim CPU handler acceptance, APIC bus transmission,
+external destinations, IOAPIC or HLT wakeup. See [report](STAGE_4_S4-25C_2026-11-07.md)
+and [evidence](data/stage4/s4-25c-xapic-self-ipi.json). Parent S4-25 and Stage 4
+remain open.
+
+## S4-25d — bounded CR8 ↔ xAPIC TPR
+
+An opt-in Long64/CPL0 exact-encoding profile connects `MOV RAX, CR8` and
+`MOV CR8, RAX` to the standalone Local APIC TPR. It maps CR8's low nibble to
+TPR priority class, applies writes before the machine helper returns, and
+demonstrates a pending self-IPI becoming eligible when TPR drops below its
+priority. Instruction fetch enforces canonical48. Record final focused tests,
+checks, Graphify counts, and Sol/high review outcome in the
+[slice report](STAGE_4_S4-25D_2026-11-07.md) and
+[evidence](data/stage4/s4-25d-cr8-tpr.json). The caller must serialize APIC
+operations across the complete helper call. General CR8 decoding, CPU handler
+delivery, session/JIT integration and default board wiring are not included;
+parent S4-25 and Stage 4 remain open.
+
+## S4-26a — fixed-edge IOAPIC route
+
+The opt-in `od-machine` IOAPIC exposes a single programmable INTIN4 route to
+physical Local APIC ID 0. Dword IOREGSEL/IOWIN accesses configure the route's
+vector and mask; only active-high Fixed edge mode is supported. A low-to-high
+line transition forwards to the Local APIC IRR, where the existing TPR,
+acknowledge and EOI model determines eligibility and service. Masked edges are
+ignored without replay on unmask, and read-only Delivery Status/Remote IRR
+writes do not alter stored state. Four IOAPIC tests, nine Local APIC regression
+tests, `od-machine` all-targets check, fmt/diff and independent Sol/high review
+passed. Only one edge route is modeled; level routing, other entries, CPU
+handler delivery, board wiring and Linux discovery are not established. See
+the [slice report](STAGE_4_S4-26A_2026-11-07.md) and
+[evidence](data/stage4/s4-26a-ioapic-fixed-edge.json). Parent S4-26 and Stage 4
+remain open.
+
+## S4-26b — bounded fixed-level IOAPIC route
+
+The single INTIN4 route now supports active-high Fixed level mode with Local
+APIC TMR and IOAPIC Remote IRR state, matching EOI and atomic retrigger while
+the line remains asserted. A shared owner lock makes route acceptance and EOI
+transitions atomic. Independent resets preserve the other controller and veto
+without mutation during outstanding Remote IRR; pair reset is explicit. The
+APIC-base helper publishes CPU state only after its APIC transition succeeds.
+Eleven IOAPIC tests, ten Local APIC tests, the `od-machine` all-targets check,
+formatting, diff validation, Graphify and repeat Sol/high review passed. The
+review's initial P2 reset regression was fixed and confirmed closed. This does
+not implement guest CPU handler delivery or board registration. See the
+[slice report](STAGE_4_S4-26B_2026-11-07.md) and
+[evidence](data/stage4/s4-26b-ioapic-level.json). Parent S4-26 and Stage 4
+remain open.
+
+## S4-27a — caller-driven APIC interrupt entry
+
+The diagnostic vCPU session now selects one APIC-eligible vector, runs the
+existing Long64/CPL0 IDT-entry helper on a CPU candidate through flat identity
+RAM, acknowledges that exact vector only after successful entry, and runs the
+handler with a one-instruction budget. A fetch/execute fault or unsupported
+handler instruction does not undo successful entry or acknowledgement. The
+end-to-end fixture checks the five-qword frame,
+IF clearing, RAM sentinel read, ISR state and Remote IRR retention until EOI.
+Blocked requests remain pending; an aborted frame can retain its committed
+prefix and makes the session terminal without acknowledgement or retry. Nine
+session tests, ten Local APIC tests, seven public API tests, the ISA stack-store
+failure canary, `od-machine` all-targets check, formatting, Graphify and
+independent Sol/high review passed. This is a caller-serialized diagnostic
+flat identity path; it does not add paged delivery, automatic event polling,
+IRET/guest EOI, HLT wakeup, JIT or board registration. See the
+[slice report](STAGE_4_S4-27A_2026-11-07.md) and
+[evidence](data/stage4/s4-27a-apic-cpu-entry.json). Parent S4-27 and Stage 4
+remain open.
+
+## S4-27b — guest EOI, same-CPL IRETQ and resume
+
+The diagnostic handler now issues a guest Dword EOI write through the existing
+MachineBus MMIO path. An explicit same-CPL0 IRETQ profile consumes the five-
+qword frame; the next caller-driven run executes the interrupted instruction.
+Tests cover all 16 original RSP alignments, restored CPU state, deasserted EOI,
+held-line request acceptance into IRR at EOI with CPU delivery at the next caller boundary, and IRETQ fetch/frame/CS/SS
+read aborts after EOI without CPU commit or retry. Twelve diagnostic-session
+tests, eight public API tests, ten Local APIC tests, 25 `od-isa::iretq` tests,
+all-targets check, formatting, Graphify and independent Sol/high review passed. This remains a
+caller-driven flat identity diagnostic profile without paged IRETQ, automatic
+polling, HLT wakeup, JIT or board registration. See the
+[slice report](STAGE_4_S4-27B_2026-11-07.md) and
+[evidence](data/stage4/s4-27b-guest-eoi-iretq.json). Parent S4-27 and Stage 4
+remain open.

@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-063-s4-secondary-page-fault-requires-double-fault-delivery"></a>
+
+### ISSUE-063 — Secondary page fault during exception delivery is terminal
+
+- **Дата обнаружения:** 2026-11-06.
+- **Компонент:** `od-isa` page-fault delivery and `od-machine` paged exception adapter.
+- **Статус:** решена в пределах S4-19c для фактического page fault во время bounded #PF/#DF delivery. Другие exception pairs и недоступность #DF handler из-за backend/profile failure остаются вне этого результата.
+- **Суть и последствия:** ранее nested `#PF` оставлял только terminal diagnostic. Теперь page fault при доставке #PF вызывает ровно одну попытку #DF; page fault при доставке #DF приводит к `CpuActivity::Shutdown`. Частичные frame/page-walk эффекты остаются диагностическими и shutdown state не возобновляется.
+- **Основание и проверка:** S4-19c проверяет read-only GDT с A=0 и успешный #DF handler, а также page fault в #DF stack delivery, latest CR2, retained writes и отсутствие дальнейшего fetch/effects. См. [S4-19c report](reports/STAGE_4_S4-19C_2026-11-06.md), [machine contract](specs/MACHINE_CONTRACT.md#secondary-pf-df-delivery-and-shutdown-s4-19c) и [verification record](testing/MACHINE.md#s4-19c-secondary-pf-double-fault-delivery-and-shutdown).
+- **Остаток этапа:** полный S4-19 ещё требует guest PTE repair, соответствующей invalidation, IRETQ и точного retry. План: [S4-19](plans/STAGE_4.md#s4-19-доставка-исключений-и-восстановление-после-fault).
+
 <a id="issue-054-s4-11-cross-page-cpu-integration"></a>
 
 ### ISSUE-054 — Cross-page, partial-execution and general rollback integration is not established

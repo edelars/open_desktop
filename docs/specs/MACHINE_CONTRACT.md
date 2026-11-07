@@ -292,6 +292,30 @@ update. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md),
 [CPU contract](CPU_CONTRACT.md#bounded-paged-cpu-to-pio-profile-pagedcpl0piou8v1-s4-24c)
 and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
 
+## Stage 4 guest UART echo image (S4-24d)
+
+`Stage4UartEchoProbeV1` is an explicit strict profile over the fixed Stage 4
+board and page-table layout. Its code bytes are exactly `EC EE F4` (`IN AL,DX`,
+`OUT DX,AL`, `HLT`). The profile loader checks this sequence; the legacy
+`Stage4FlatProbeV1` loader continues to reject it. `PagedVcpuSession` retains
+the selected profile and only resets with another image matching that profile.
+
+The CLI injects at most one externally supplied RX byte by scheduling and
+dispatching one bounded UART RX event before guest execution. `--expect-byte` is
+an independent host expectation; it is not passed to the guest or used to
+produce TX. Empty RBR retains the existing PIO error. Completion requires HLT,
+three retired instructions, `RIP=0x400003`, RAX equal to the expected byte, and
+actual UART TX exactly `[expected]`. The result reports `observed_rax`; the
+memory-specific `observed_data_qword` remains null for this profile.
+
+Budgets and deterministic cancellation expose the committed instruction prefix.
+Cancellation at zero is handled before RX delivery; later cancellation counts
+guest instruction-boundary polls. The profile does not add LSR polling loops,
+baud timing, FIFO behavior, IRQ/APIC, HLT wakeup, host threads or a scheduler.
+The builder verifies the assembled bytes/layout and artifact hashes. See the
+[S4-24d report](../reports/STAGE_4_S4-24D_2026-11-07.md) and
+[verification method](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo).
+
 ## Display device (S10-03)
 
 Нормативное guest-visible поведение — [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md);
@@ -1267,6 +1291,44 @@ delivery remain outside this bounded slice. See the
 [JSON evidence](../reports/data/stage4/s4-21b-paged-probe.json) and
 [verification method](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum).
 
+## Bounded fixed-image paged vCPU owner (S4-21c)
+
+`PagedVcpuSession` constructs its CPU, bus, RAM and UART together using the
+validated `Stage4FlatProbeV1` image loader. Its host state is independent of
+guest activity. `pause` and `resume` preserve CPU, RAM, flags and device state;
+HLT stays halted. Idempotent STOP is accepted after HLT or a terminal exit and
+blocks further quantum and RX dispatch until reset. The owner runs no polling
+loop. Quantum reports update the stored RFLAGS defined-mask. Guest faults and
+other terminal quantum exits require reset; HLT is not guest completion.
+
+`reset(image)` builds and checks a replacement, including no-fetch paging and
+fixed CPU-profile admission, before touching the current session. It then
+resets the existing RX pump with checked generation increment, clears payloads
+and retargets it to the new UART; after that only infallible replacement steps
+remain. Invalid image or queue reset failure leaves the session unchanged.
+The original S4-21c API exposed scheduling and bounded dispatch without
+generation tokens and accepted caller-supplied time at dispatch. S4-22b later
+moved dispatch time into the session-owned `VirtualClock`; S4-23d exposes the
+queue-local generation and requires it for RX scheduling/cancellation.
+A fresh UART belongs to the replacement bus; stale RX and TX device state is
+not inherited. The operation is a fixed-image re-entry, not x86 reset-vector
+semantics. Runner completion/cancellation, IRQ wakeup and general scheduling
+are outside this slice. Independent Sol/high review passed with no P0–P3
+findings.
+
+## Fixed-image runner completion and cancellation (S4-21d)
+
+The owner exposes `drain_tx` to complete and consume committed polling-UART TX
+without exposing the UART handle. The runner invokes one bounded owner quantum.
+Only HLT with exactly three retired instructions, RAX matching the supplied
+nonce and TX equal to its single low byte is `guest_completed`. HLT without an
+expectation is `guest_halted`; a failed comparison is `completion_mismatch`.
+`--cancel-after N` allows N instruction polls then requests STOP, producing
+`host_cancelled` with the committed prefix; budget exhaustion is `work_limit`.
+Guest faults, backend, port I/O, loader and input failures remain distinct.
+The cancellation source is deterministic; VMHost and OS signal wiring is S4-41.
+See [S4-21d report](../reports/STAGE_4_S4-21D_2026-11-07.md).
+
 ## Caller-driven virtual clock and RDTSC boundary
 
 S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной
@@ -1281,6 +1343,22 @@ Long64 `RDTSC`, сохраняя существующие TSD/CPL checks, `EDX:E
 `rflags_defined`. Legacy constructor остаётся без clock/RDTSC source. RDTSCP,
 MSR/CPUID frequency advertisement, host monotonic coupling, HLT progression,
 IRQ/deadlines и reset не входят в срез; полный S4-22 остаётся открытым.
+
+## Paged vCPU clock and UART RX deadlines (S4-22b)
+
+`PagedVcpuSession` принимает явный ненулевой `tsc_hz` и владеет одним
+`VirtualClock`. `schedule_rx` принимает абсолютные deadlines в наносекундном
+домене этого clock; `dispatch_rx` считывает текущее время из владельца и не
+принимает внешний `now_ns`. Run, polling и host call count не продвигают время.
+
+`advance_time_ns` допустим только при host state `Active`; guest HLT сам по
+себе ему не препятствует. Это сохраняет HLT и не dispatch-ит RX: гостевое
+пробуждение не реализовано. Pause, Stop и Terminal отвергают advancement.
+Reset очищает RX очередь и увеличивает её generation, но сохраняет clock и абсолютное время;
+ошибка reset и переполнение времени/TSC не меняют состояние clock. Частота,
+выбранная Stage 4 diagnostic runner, не является Linux-visible CPUID/MSR
+объявлением. Host monotonic coupling, HLT wakeup, IRQ delivery, RDTSCP и полный
+S4-21/S4-22 остаются вне этого среза. См. [S4-22b report](../reports/STAGE_4_S4-22B_2026-11-07.md).
 
 ## Bounded one-shot deadline queue boundary
 
@@ -1338,6 +1416,284 @@ work. The pump does not change `VirtualClock` or CPU state, execute guest code,
 or wake HLT. IRQ/APIC delivery, baud timing, HLT wakeup and host waiting remain
 outside this bounded slice and open in S4-23/S4-24.
 
+## Generation-aware RX control through PagedVcpuSession (S4-23d)
+
+`PagedVcpuSession` exposes the current opaque queue-local `EventGeneration`
+through `rx_generation()`, and a read-only `next_rx_deadline()` in the session
+clock's absolute nanosecond domain. `schedule_rx`, `cancel_rx` and
+`reschedule_rx` require the caller's expected generation. A generation from
+before reset is rejected even if its key is reused in the replacement queue.
+
+Control operations check staleness before lifecycle admission; a current
+generation then requires host `Active` and guest not `Halted`, after which the
+underlying queue returns duplicate/full/not-found results. A stale request thus
+returns `StaleGeneration` even when the session is paused, stopped, terminal or
+halted. Deadline inspection is side-effect free and available in every state.
+Reset clears pending events and advances the generation while preserving the
+clock; successful reset replaces a halted guest with a fresh image. RX control
+does not wake HLT. Scheduling preserves `(deadline, insertion sequence)` order;
+rescheduling assigns a new insertion position, including when the deadline is
+unchanged. Deadline inspection and dispatch do not change queue ordering.
+
+The generation is scoped to this queue instance; it does not identify a session
+across owners or distinguish separate uses of a key within one generation.
+Dispatch remains bounded and caller-driven. HLT wakeup, IRQ/APIC, periodic
+timers, host wait and complete S4-21/S4-22/S4-23 acceptance are not claimed.
+See [S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
+
+## Fixed-edge Local APIC register core (S4-25a)
+
+`LocalApic` is a one-CPU, fixed-profile xAPIC `BusDevice` at MMIO base
+`0xFEE00000`, with APIC ID 0. It supports aligned 32-bit accesses on the
+16-byte register stride for ID (`0x020`), TPR (`0x080`), PPR (`0x0A0`), EOI
+(`0x0B0`), SVR (`0x0F0`), ISR (`0x100..0x170`), TMR (`0x180..0x1F0`) and IRR
+(`0x200..0x270`). Fixed-edge requests for vectors 16 through 255 set the
+corresponding IRR bit; repeated requests coalesce. TMR remains zero because
+this profile accepts edge requests only.
+
+Reset clears TPR, IRR and ISR and restores SVR to `0xFF` (software disabled).
+Eligibility requires the SVR software-enable bit and an interrupt priority
+class strictly above PPR. PPR uses the higher priority class from TPR and the
+highest vector in ISR, preserving TPR's low nibble when its class wins or ties.
+`pending` and `eligible` are read-only. `acknowledge` transfers one highest
+eligible vector from IRR to ISR; it is a device-state operation and does not
+deliver a CPU interrupt or execute a handler. EOI clears the highest ISR bit.
+
+The xAPIC version register (`0x030`) is unsupported; no Version value is
+advertised because this slice has no implemented LVT entries. LVT, APIC-base
+MSR/relocation, x2APIC, IOAPIC/level routing, APIC timer, CPU interrupt
+delivery, IDT/IF/shadow interaction, HLT wakeup, and default board wiring are
+outside S4-25a. Non-supported offsets, widths, alignment and reserved writes
+return a `DeviceError` without mutating APIC state; this is the local bus
+contract, not guest exception delivery.
+
+Behavior follows Intel's [64 and IA-32 SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190), Chapter 13 (register map,
+enable state, priority, interrupt request/service state and EOI). This bounded
+profile is not full Local APIC compatibility. See the [S4-25a report](../reports/STAGE_4_S4-25A_2026-11-07.md) and [verification method](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
+
+## CPU-owned IA32_APIC_BASE enable (S4-25b)
+
+The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and
+`WRMSR` to index `0x1B` in Long64/CPL0. Its reset value is `0xFEE00900`: fixed
+xAPIC base `0xFEE00000`, BSP bit set and global enable set. The supported
+disabled value is `0xFEE00100`. `RDMSR` returns the value in EDX:EAX. A
+successful `WRMSR` retires once and returns an `ApicBaseEffect`;
+`step_apic_base_msr` synchronously applies it to the matching
+`LocalApicHandle` before returning. The helper rejects mismatched CPU and
+device enable state before executing. Same-value writes preserve device state.
+A global enabled-to-disabled transition resets local APIC state and blocks
+MMIO and acknowledge; re-enabling it leaves SVR software-disabled until the
+guest explicitly enables SVR.
+
+Reserved low bits and physical-address bits above this profile's 36-bit range
+fault with `#GP(0)`. Unsupported fixed-profile values, including relocation,
+BSP changes and x2APIC enable, fail closed without retirement. Active STI
+shadow is rejected before fetch because this slice does not integrate
+interrupt delivery. This caller-selected profile does not broaden existing
+MSR profiles or automatically attach to `PagedVcpuSession`. Direct users of
+`ApicBaseCpu::step` must apply a returned effect before the next guest or
+device operation; the machine helper provides this ordering for the fixed
+xAPIC device. CPU interrupt delivery, IDT/IF/handler semantics and HLT wakeup
+remain outside the contract. See the [S4-25b report](../reports/STAGE_4_S4-25B_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
+
+## xAPIC Fixed self-IPI through ICR (S4-25c)
+
+The fixed xAPIC exposes the ICR low/high doublewords at offsets `0x300` and
+`0x310`. `ICR_HIGH` stores only the destination byte; writing it alone does
+not send. The supported command is an aligned Dword write to `ICR_LOW` with
+Fixed delivery, Self destination shorthand, edge trigger, asserted level and
+vector `16..=255`. Destination mode is ignored for Self. A valid low write
+stores the command and sets the vector's IRR bit under the same device-state
+lock. The internal one-CPU self-delivery completes synchronously, so Delivery
+Status reads Idle after the operation; a written Delivery Status bit is
+ignored because it is read-only. Idle means sending completed, not that the CPU
+accepted the interrupt or executed a handler. Repeated commands are issued
+again and outstanding equal vectors coalesce through IRR. Software disable
+permits the request to enter IRR but blocks eligibility/acknowledge;
+global APIC disable rejects ICR MMIO, and reset/global disable clears both ICR
+halves.
+
+Only the Fixed Self edge combination is supported. Other delivery modes,
+shorthands, level trigger, invalid vector/reserved bits and invalid widths or
+alignment fail without mutation through the local `DeviceError` contract,
+not guest exception delivery. No IPI bus, external destination, ESR, CPU
+interrupt acceptance, handler delivery or HLT wakeup is modeled. Behavior is
+based on Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+§§13.6.1–13.6.2.3, Table 13-3 and §§13.8.3–13.8.5. See the [S4-25c report](../reports/STAGE_4_S4-25C_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
+
+## Bounded CR8 ↔ xAPIC TPR (S4-25d)
+
+The opt-in `Cr8Long64V1` ISA profile admits only `44 0F 20 C0`
+(`MOV RAX, CR8`) and `44 0F 22 C0` (`MOV CR8, RAX`) in Long64 at CPL0.
+The standalone machine adapter additionally requires a running CPU, clear
+interrupt shadow, and enabled global and software Local APIC. Reads return
+zero-extended `TPR[7:4]`; writes accept only values whose bits `63:4` are zero,
+then set `TPR[7:4]` from `CR8[3:0]` and clear `TPR[3:0]`. TPR remains the sole
+state source in `LocalApic`.
+
+Privilege and reserved-bit violations produce `#GP(0)`; the exact prefixed
+LOCK forms produce `#UD`. The profile checks each instruction-fetch address
+for canonical48 before accessing guest memory. Unsupported encodings and
+machine states stay closed. A successful write returns a typed effect, which
+the machine helper applies before returning. Callers must serialize all APIC
+operations across the full helper call, including fetch and effect application.
+The instruction/helper makes no architectural serialization guarantee.
+
+This profile does not implement general MOV CR8, interrupt/handler delivery,
+IDT/IF, HLT wakeup, JIT/session integration, or default board wiring. Behavior
+follows Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+§§13.8.6–13.8.6.1, and [Volume 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+MOV to/from control registers. See the [S4-25d report](../reports/STAGE_4_S4-25D_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
+
+## Fixed-edge IOAPIC route (S4-26a)
+
+The opt-in `IoApic` model occupies MMIO base `0xFEC00000` and supports one
+route: INTIN4 to physical Local APIC ID 0. Dword accesses use IOREGSEL and
+IOWIN at offsets `0x00` and `0x10`; redirection entry 4 is selected with
+`0x18` (low) and `0x19` (high). The route accepts only Fixed delivery, physical
+destination 0, active-high edge mode, mask and vectors `0x10..=0xFE`. Reset
+leaves it masked. Other selectors/registers and routes are unsupported; no
+Version value is exposed for the partial table.
+
+The external line API records INTIN4 level. Only low-to-high transitions
+through an unmasked route request a Local APIC fixed edge. A masked edge is
+ignored; unmask and high-to-high do not replay it. Repeated accepted vectors
+coalesce in the existing Local APIC IRR. If the destination rejects the
+request, the call errors without consuming the line transition, so the owner
+can retry. The owner must serialize operations on both APICs, including reset
+and enable changes. The low redirection word's read-only Delivery Status and
+Remote IRR bits read zero and are ignored when written.
+
+This is not a full IOAPIC: other entries, level/Remote-IRR delivery, logical
+destinations, APIC bus behavior, CPU acceptance/handler delivery, HLT wakeup,
+default board wiring and Linux discovery are outside the contract. Device
+errors do not model guest exception delivery. Register behavior follows Intel
+[82093AA I/O APIC document 290566-001](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF),
+preliminary release, §§3.1–3.2.4. See the [S4-26a report](../reports/STAGE_4_S4-26A_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-26a-fixed-edge-ioapic-route).
+
+## Fixed-level IOAPIC route and Local APIC EOI (S4-26b)
+
+The same single INTIN4 → physical Local APIC ID 0 route may be configured for
+active-high Fixed level delivery. On acceptance, the Local APIC sets the vector
+in IRR and TMR and the IOAPIC sets Remote IRR. Acceptance is independent of
+TPR eligibility. Acknowledge moves the vector to ISR without clearing TMR or
+Remote IRR. A matching Local APIC EOI clears ISR and Remote IRR; if INTIN4 is
+still asserted and the route is unmasked, the next request is accepted
+atomically with that EOI. Deassertion does not cancel an already accepted
+request. Masking after acceptance does not cancel it; EOI while masked clears
+Remote IRR without retrigger, and unmasking an asserted line may accept a new
+request. Acceptance requires both Local APIC global enable and
+`SVR.SoftwareEnable`; an assertion that would immediately deliver an
+unmasked level request, or unmasking an asserted level route, fails before the
+line/configuration transition if acceptance is disabled. A masked assertion
+may still record the high input level without delivery. TPR affects
+eligibility only.
+
+The configured level vector is reserved from the bounded edge/self-IPI path,
+even while its route is masked or its line is inactive, so one vector's TMR/EOI
+cannot ambiguously identify edge and level requests. This profile supports no
+other level routes or vector sharing.
+
+One shared owner state serializes route and Local APIC transitions under a
+single mutex. There are no cross-device callbacks or nested locks. A level
+route cannot change vector or trigger mode while its line is high, Remote IRR
+is set, or either related vector is pending/in service. Edge→edge vector
+reprogramming preserves the S4-26a behavior, including an already pending old
+vector. Independent device resets preserve the other controller; they fail
+without mutation while Remote IRR is outstanding. `reset_pair` is the explicit
+coordinated operation that discards both controllers' state. The caller
+serializes the full CPU helper and device operations; guest instruction fetch
+does not run under the pair mutex. Global disable and SVR software disable are
+also vetoed without mutation while Remote IRR is outstanding.
+
+The APIC-base CPU helper executes on a candidate CPU state and publishes it
+only after the corresponding Local APIC transition succeeds. A host-side
+transition veto while Remote IRR is set leaves CPU retirement and device state
+unchanged. This is a `DeviceError`, not a guest `#GP`; any fetch or page-walk
+effects already committed before the veto are not rolled back.
+
+TMR acceptance and EOI semantics follow Intel [SDM 253668-093US, September
+2026, Volume 3A §§13.8.4–13.8.5](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+The bounded IOAPIC route follows [Intel 82093AA I/O APIC document 290566-001,
+preliminary release, §3.2.4](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF).
+See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
+[verification method](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
+
+## Caller-driven APIC interrupt entry (S4-27a)
+
+`DiagnosticVcpuSession::deliver_interrupt_and_step` is a synchronous
+diagnostic bridge over the already implemented Local APIC, IOAPIC and
+`od-isa::deliver_maskable_interrupt`. At a caller-certified completed
+instruction boundary it selects one APIC-eligible vector and invokes the
+Long64/CPL0 interrupt-entry helper against a candidate CPU state and the
+session's flat identity `MachineBus` memory adapter. It does not hold the APIC
+mutex while reading descriptors or writing the stack. After successful entry,
+the selected vector is revalidated and moved from IRR to ISR while the CPU
+candidate is published under the APIC owner lock; then the session runs the
+handler with an instruction budget of one. This attempts at most one handler
+instruction and returns its ordinary `DiagnosticRunResult`. The instruction
+may fault, be unsupported, halt, or fail on backend memory before retiring. In
+those cases the successful entry and APIC acknowledgement remain committed,
+and the session reports its resulting run/terminal state.
+
+The caller must serialize the complete operation with APIC/IOAPIC activity and
+certify a fresh instruction boundary, no pending synchronous exception,
+debug/NMI event, or other interrupt inhibition, private synchronous RAM, and
+disabled CET/VMX/SMM/shadow-stack mechanisms required by the underlying ISA
+helper. Supported state is Long64/CPL0, Running, IF set, explicit clear STI
+shadow, same-CPL present interrupt gate with IST=0, and the existing
+descriptor/profile constraints. This method is caller-driven; it does not poll
+or schedule IRQs automatically.
+
+With IF clear, blocking STI shadow, or no APIC-eligible vector, the operation
+returns without changing CPU/APIC state. TPR-blocked requests remain pending
+in IRR. An ISA `OutsideProfile` result does not acknowledge the request. A
+`DeliveryAborted` may leave the already committed stack-write prefix in RAM;
+the session enters a terminal state, the APIC request remains pending, and the
+caller must not retry that session. On successful entry, the same vector enters
+ISR and remains there until a later EOI; level Remote IRR remains asserted
+until that EOI. The one-instruction-budget handler run does not add IRET or a
+guest EOI routine.
+
+See the [S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry),
+and [evidence manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json).
+
+## S4-27b. Guest EOI, same-CPL IRETQ and resume
+
+The S4-27a diagnostic handler can issue one guest Dword store of zero to the
+Local APIC EOI register at `0xFEE000B0`. The existing flat identity adapter
+routes data writes through `MachineBus`, which dispatches this aligned Dword to
+the Local APIC; instruction fetch remains RAM-only. No host-side EOI substitute
+is used by the fixture.
+
+`DiagnosticVcpuSession::run_same_cpl0_iretq` executes the existing
+`od-isa::run_with_iretq_profile` with `SameCpl0ValidFrameV1` and a one-instruction
+budget. A retired IRETQ consumes the five-qword same-CPL frame, restores the
+interrupted RIP/RSP/CS/SS/RFLAGS, and commits the candidate CPU. The caller then
+uses the ordinary diagnostic run boundary to execute the resumed instruction.
+The profile requires private synchronous RAM, a valid same-CPL ring-0 frame,
+`rflags_defined = INTEGER_FLAGS`, and the disabled mechanisms and CPU state
+required by the underlying IRETQ contract; see
+[CPU_CONTRACT.md](CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq).
+
+The EOI is an architectural device side effect and is not rolled back if a
+subsequent IRETQ fetch/frame/CS/SS read aborts. Such a read abort leaves the
+pre-IRETQ CPU state uncommitted, makes the session terminal, and prevents
+automatic retry or repeated EOI. With INTIN4 deasserted before EOI, Remote IRR
+clears and no new request appears. If it remains asserted, matching EOI accepts
+one new level request atomically into IRR; CPU delivery of that request waits
+for a later explicit caller boundary. The diagnostic path does not add automatic polling,
+cross-privilege IRETQ, paged IRETQ, JIT, or scheduler integration.
+
+See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume),
+and [evidence manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing
@@ -1390,9 +1746,350 @@ range faults before operand access. Physical holes remain backend errors;
 this adapter never dispatches MMIO/PIO. CPU state changes only after the full
 descriptor read and canonical base check, and the loaded IDT base is not
 translated. Tests compare exact callback ranges, relevant page-table entries,
-fault metadata and full CPU state. This bounded slice does not implement LGDT,
-descriptor caching, IDT gate checks, exception delivery, cross-page descriptor
-reads, or production paging ownership. Independent review is pending.
+fault metadata and full CPU state. S4-18a did not implement descriptor caching,
+IDT gate checks, exception delivery, cross-page descriptor reads, or production
+paging ownership. The bounded slice was independently
+reviewed and accepted; its result is recorded in the S4-18a report.
+
+## Paged `LGDT` adapter (S4-18b)
+
+`step_paged_lgdt` composes the exact `PagedLgdtLong64V1` CPU entry with the
+same uncached tracked four-level RAM walker. It accepts only bare
+`0F 01 55 ib` in its fixed Long64/CPL0 profile, reads one ten-byte
+pseudo-descriptor from a canonical source contained in one 4 KiB guest page,
+and commits only GDTR and RIP after the complete read and loaded-base check.
+Instruction decoding cannot fetch outside the guest code page; the four-byte
+form at offset `0xffc` remains admissible, and a wrapped fetch at the top of
+the address space is rejected before it can address page zero.
+Actual fetch and operand Accessed-bit writes are reported in order; the
+descriptor read sets no Dirty bit. Crossing sources are rejected before the
+operand walk, physical holes stay backend errors, and descriptor access never
+routes through MMIO/PIO. LGDT does not read the loaded GDT or modify segment
+caches. A guest-loaded IDT and GDT are then exercised in the same CPU sequence
+by the S4-18b end-to-end delivery case; no host register patch occurs between
+LIDT/LGDT, the faulting store, and handler entry. This does not implement
+TSS/IST, descriptor Accessed writes, `#DF`, shutdown, or fault recovery. The
+bounded slice passed independent review and is accepted; its result is recorded
+in the S4-18b report.
+
+## Paged #PF target descriptor Accessed update (S4-18c)
+
+`deliver_page_fault` accepts the already-validated GDT target code descriptor
+with A=0 in the existing Long64/CPL0/same-CPL/IST=0 profile. The selected
+emulator sequence is six tracked frame qword stores, one tracked write of the
+descriptor access byte with only A set, then commit of the target CS cache,
+RSP, RIP and live flags. This order is an explicit partial-effects contract of
+the bounded profile; Intel SDM Vol. 1 §6.14.1 and Vol. 3A §3.4.5 describe the
+frame/CS operations and the Accessed-bit effect, but do not guarantee this
+fault-visible ordering for competing faults. [Vol. 1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf),
+[Vol. 3](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
+
+An A=1 target makes no descriptor write, so a read-only GDT remains usable. The
+adapter routes the one-byte A update and all stack writes through tracked
+RAM-only translation. Before any frame store, a preflight checks every planned
+qword mapping and possible page-walker A/D write against the target descriptor
+byte and the GDT page-table entries. It rejects physical aliases before frame
+effects and preserves the descriptor's preflighted physical mapping for the
+later A update. It also checks frame operands against page-table entries used
+by reachable stack slots, preventing a frame store from remapping a later
+slot; possible stack-walk A/D writes are checked against the descriptor and GDT
+protection ranges. Preflight stops at the first stack access that would
+fail; the tracked path then reports that original page-fault or physical
+backend classification without considering unreachable later slots. No MMIO
+dispatch is added.
+
+A secondary #PF during original #PF delivery requires #DF; S4-18c returned a
+terminal undelivered diagnostic result before the bounded #DF path was added.
+See the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-18c-target-descriptor-accessed-update).
+
+<a id="secondary-pf-df-delivery-and-shutdown-s4-19c"></a>
+
+## Secondary #PF, #DF delivery, and shutdown (S4-19c)
+
+Within the existing Long64/CPL0/same-CPL/IST=0 exception profile, an actual
+architectural #PF while delivering the original vector-14 frame constructs a
+`DoubleFaultRecord` containing both page-fault records and makes exactly one
+vector-8 delivery attempt. The #DF frame's error-code slot is zero. It keeps
+the pre-entry RIP as a diagnostic value (not a restart address), does not set
+RF in saved RFLAGS, and does not change CR2 itself. CR2 remains the nested #PF
+linear address. Partial stack and paging effects from the failed #PF attempt
+are retained and the #DF attempt uses the original uncommitted entry registers.
+
+A real #PF during the #DF attempt sets `CpuActivity::Shutdown`; the adapter
+does not attempt another delivery. Subsequent paged CPU execution reports
+`PagedProbeExit::Shutdown` before instruction fetch or memory access. Backend
+and profile errors remain undelivered diagnostics and are not reclassified as
+architectural shutdown. Reports retain the initial #PF delivery result, its
+secondary fault, the #DF record/result, any #DF delivery fault/backend error,
+and cumulative ordered A/D and physical-write effects.
+
+The end-to-end cases cover a read-only GDT target descriptor whose Accessed-bit
+write causes nested #PF followed by a successfully executed #DF handler, and a
+missing stack page that causes #PF during #DF delivery and terminal shutdown.
+This does not implement other exception-pair classifications, TSS/IST or
+privilege transitions, guest page-table repair, INVLPG, IRETQ, instruction
+retry, or complete vCPU lifecycle. Legacy V2 snapshots explicitly reject
+Shutdown because their activity schema contains only Running and Halted. See
+the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-19c-secondary-pf-double-fault-delivery-and-shutdown).
+
+## Guest PTE repair and INVLPG (S4-19d)
+
+The bounded #PF handler profile adds one separate exact `MOV [RDI],RSI`
+qword-store selector. It does not widen the established `MOV [RBX],RCX` / `MOV
+RAX,[RBX]` allowlist. After the actual WP=1 write fault and successful vector-14
+entry through IDTR/GDTR values initialized in the fixture, the handler writes
+a repaired leaf PTE through a writable guest alias to the page-table page,
+then executes the existing exact
+`INVLPG [RBX]` profile for the original faulting linear address. RBX and RCX
+remain available for the original store and are not host-patched after fault
+entry. The instruction selector admits only the exact store form; the fixture
+sets RDI to the alias and RSI to the repaired PTE value, and those fixture
+preconditions preserve Present, Accessed, supervisor-only U/S=0, the physical
+page address and the selected other bits. The qword operand must remain within one 4 KiB page; a
+crossing address is rejected before operand access. Tracked writes and
+page-table A/D changes remain visible in execution order.
+
+This bounded stop point verifies the guest's PTE store and retired INVLPG;
+data has not yet been modified. The tracked execution path is uncached, so this
+does not prove a stale translation would otherwise be observed or that INVLPG
+is necessary for visibility. Guest error-code discard, IRETQ, fault retry and
+successful data commit remain for S4-19e. See the
+[S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-19d-guest-pte-repair-and-invlpg).
+
+## Guest error-code discard and paged IRETQ (S4-19e1)
+
+After the guest has repaired the supervisor-only leaf PTE and retired INVLPG,
+the bounded handler executes only exact `LEA RSP,[RSP+8]` to discard the
+eight-byte #PF error-code slot, followed by exact `48 CF` IRETQ. The separate
+paged IRETQ selector validates Long64 CPL0 state and the active CR0/CR3/CR4
+and EFER profile. It reads the five-qword same-CPL frame and the real CS and
+SS descriptors through tracked guest memory; CS is read and validated before
+saved SS selector/bounds are checked. Descriptors must be valid and already
+Accessed, with SS a writable CPL0 data segment.
+
+Live RF=1 is outside this profile and is rejected before fetch. RF=1 in the
+saved fault frame is accepted and restored only after the complete frame and
+both descriptors pass validation. CPU return state is committed atomically;
+page-walk A/D writes from reads already completed remain visible on later
+failure. A tracked #PF is reported separately from backend errors and updates
+CR2. The system fixture verifies restoration of the original faulting RIP,
+unaligned RSP, RF and unchanged control registers while faulting data remains
+untouched. It stops before retrying the original store.
+
+Intel SDM Vol. 3A §6.14 describes the 64-bit exception frame and notes that
+IRET does not pop the error code, so the handler removes it. Intel SDM Vol. 3B
+§20.3.1.1 describes RF in fault frames, transfer by IRETQ and clearing at the
+start of the next instruction. This bounded profile does not cover other IRETQ
+forms or demonstrate stale-TLB invalidation because tracked execution is
+uncached. See the [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md)
+and [verification record](../testing/MACHINE.md#s4-19e1-guest-error-code-discard-and-paged-iretq).
+
+## Faulting MOV retry and RF clear (S4-19e2)
+
+After successful guest paged IRETQ restores RF=1 and the original faulting RIP,
+the bounded MOV-only CR0.WP profile starts the admitted exact qword
+`MOV [RBX],RCX` or `MOV RAX,[RBX]` with RF set. After fetch/decode/profile
+admission, it clears live RF before the architectural operand address check
+and before tracked memory access. The clear remains if an operand #GP/#PF or
+backend error occurs; fetch/profile exits and the bounded cross-page store
+rejection leave RF as received. The defined-flags mask is unchanged.
+
+The end-to-end case retries the original faulting store exactly once, observes
+the tracked leaf PTE transition `0xe023 → 0xe063` (Dirty set; Accessed and
+supervisor-only U/S=0 retained), then the qword data write, in that callback
+order. The next guest MOV load reads the new value and the adjacent qword
+canary remains unchanged. The page walk is tracked but uncached; this does not
+establish stale-TLB eviction or INVLPG necessity. Intel SDM Vol. 3B
+§20.3.1.1 revision 090US defines RF clearing at instruction start after the
+specified preliminary checks. See the [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md)
+and [verification record](../testing/MACHINE.md#s4-19e2-faulting-mov-retry-and-data-commit).
+
+## Synthetic paged IRETQ outer return to CPL3 (S4-20a)
+
+`step_paged_iretq_to_cpl3(PagedCpl0ToCpl3V1, ...)` admits only the synthetic
+four-level profile: `CpuidProfile::DiagnosticV1` (basic leaf limit 1, leaf 7
+zero), Long64, CPU-owned `CR0=0x80010033`, `CR4=0x20` (`LA57=0`), a bounded
+36-bit CR3, and `EFER=0xd00`. The current CS cache must be the flat CPL0 code
+descriptor; DS/ES/FS/GS visible selectors must be null. This condition excludes
+the five-level selection path for this CPU-only scenario. It does not establish
+a Linux loader handoff or boot profile.
+
+The guest executes exact `48 CF` from CPL0. The five-qword outer-return frame
+and GDT user descriptors are read through the supplied `GuestMemory` interface.
+This CPU-only slice does not connect that interface to the tracked page walker.
+The supported
+user code descriptor is flat `access=0xfb, flags=0xa`; the writable user stack
+descriptor is flat `access=0xf3, flags=0xc`; both are already Accessed. Read
+ordering follows the bounded Intel IRETQ path: RIP/CS/RFLAGS, validate/read CS
+descriptor, read saved RSP/SS, check saved RIP canonicality, then read/validate
+SS descriptor. CPU state is committed only after all admitted reads and checks.
+The CPU profile does not roll back effects already committed by the supplied
+memory backend. Its unit tests use a guest-memory test double and do not exercise
+tracked translations or page-walk A/D updates.
+
+Live RF must be clear at entry; RF may be restored from saved RFLAGS along with
+the supported integer flags, IF and IOPL mask. Unsupported selector/descriptor,
+address and flag shapes return `Unsupported` in this narrow profile. Tracked
+guest paging faults remain `Fault`; backend access failures remain
+`ReadAborted`. Architectural #GP/#SS classification for rejected return state
+is not implemented here. The slice proves CPU-state transition only; deriving
+machine `AccessContext` from committed CS and executing user memory operations
+are deferred to S4-20b. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20a-synthetic-paged-iretq-outer-return).
+
+## Machine IRETQ followed by one CPL3 load (S4-20b)
+
+`step_paged_iretq_and_user_load` performs the bounded S4-20a paged return and,
+only after successful retirement and validation of the committed flat user CS,
+executes one exact `48 8B 03` (`MOV RAX,[RBX]`). It derives the explicit CPL3
+access context from committed CS selector RPL and cache, and reads CR3 from the
+CPU state. The wrapper accepts neither an external access context nor a CR3
+argument. IRETQ and load results are reported separately; a guest fault or
+backend abort during the load leaves the already committed CPL3 transition in
+place. A non-retired IRETQ produces no load result.
+
+The load profile admits exactly the three bytes `48 8B 03`, with all bytes in
+one guest page (RIP offset at most `0xffd`). Cross-page instruction fetch is
+unsupported in this slice. Four-level tracked paging checks U/S at every level:
+the tested user mapping loads the qword; supervisor-only instruction fetch and
+data read fault with PFEC `0x15` and `0x05`, respectively, while retaining the
+faulting RIP and setting CR2 to the faulting linear address. Successful and
+faulting walks report their Accessed updates; a read-only load does not set
+Dirty or write the operand. Backend physical-read failures remain distinct
+from guest page faults and do not retire the instruction or commit its load
+destination. Effects already committed by IRETQ and eligible page-walk A-bit
+updates remain visible. After successful fetch and instruction admission, this
+MOV profile clears RF before operand access; a subsequent data-access abort
+leaves RF cleared. A fetch fault occurs before this RF update. See the
+[S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
+
+## Paged SYSCALL, kernel store, SYSRETQ and user load (S4-20c)
+
+`step_paged_syscall_profile` executes one admitted instruction using the CPU's
+owned syscall bundle and paging state. `run_paged_syscall_roundtrip` executes
+the bounded sequence: CPL3 `0F 05` (`SYSCALL`), CPL0 `4C 89 17`
+(`MOV [RDI],R10`), CPL0 `48 0F 07` (`SYSRETQ`), and CPL3 `48 8B 03`
+(`MOV RAX,[RBX]`). The caller does not supply a parallel CPL, CR3, or EFER.
+The machine derives privilege from committed CS and uses the current CPU CR3.
+
+This profile is Long64 with four-level 4 KiB paging and canonical 48-bit
+addresses. Every instruction fetch and qword operand must fit in one guest
+page. It admits no cross-page fetch or operand. `SYSCALL` takes its target from
+LSTAR, stores the next user RIP in RCX and saved flags in R11, applies FMASK,
+and loads bounded fixed CS/SS caches derived from STAR without GDT reads or an
+RSP switch. `SYSRETQ` validates CPL and canonical RCX before committing user
+CS/SS caches and the supported RFLAGS subset. Its flags mask is `0x3c7fd7` with
+bit 1 forced; definedness is validated alongside values. The handler store
+uses the supervisor RW mapping and the final load uses a user RO alias to the
+same physical qword in the roundtrip fixture. These are scenario mappings, not
+API requirements; the machine checks the permissions relevant to each access.
+The successful scenario uses EFER `0xd01`; the bounded API also admits `0xd00`
+to verify #UD when SCE is disabled.
+
+Each standalone step rejects live TF or RF before instruction fetch. SYSRETQ
+also rejects TF in saved R11 after the existing SCE, CPL and canonical-address
+checks; it leaves CPU state unchanged, while completed fetch page-walk effects
+and their callbacks remain committed. Tracked page walks report exact A/D
+changes and committed physical write ranges. Guest page faults retain PFEC,
+CR2 and saved RIP; physical backend errors remain distinct. A later failure
+does not undo an earlier retired privilege transition or kernel store.
+
+There is no TSS/IST or stack switch, SWAPGS, asynchronous event delivery,
+general WRMSR, compatibility SYSRET, exception delivery from CPL3, Linux entry
+assembly, or Linux boot claim. The synthetic initial CPL3 CPU state is supplied
+by the fixture. See the [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+  [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
+
+<a id="paged-cpl3-mov-store-load-after-iretq-s4-20d"></a>
+
+## Paged CPL3 MOV store/load after IRETQ (S4-20d)
+
+`step_paged_cpl3_mov` is a separate opt-in entry for exact `48 89 0B`
+(`MOV [RBX],RCX`) and `48 8B 03` (`MOV RAX,[RBX]`). It preserves the existing
+load-only `step_paged_cpl3_load` contract. The entry derives CPL from the
+committed CS selector/cache and CR3 from `LongModeState`; it takes no alternate
+privilege or address-space input and does not require syscall MSRs.
+
+The accepted sequence is paged IRETQ to CPL3, the existing S4-20b user load,
+then the new store and reload. The machine uses the established Long64,
+canonical48, physical36, four-level 4 KiB profile (`CR0=0x80010033`, `CR4=0x20`,
+`EFER=0xd00`). Live TF, RF, and AC must be clear before fetch. Each exact
+three-byte instruction and qword operand fits within one guest page. For both
+MOV forms, after fetch/decode the profile checks qword page crossing before
+canonicality; a combined crossing/noncanonical address returns
+`Rejected(CrossPageOperand)` without operand access. Fetch already occurred
+and may have committed page-walk A updates. This order applies only to the new
+opt-in entry; the load-only entry and its page-aware adapter retain their
+previous behavior.
+
+The positive fixture stores RCX's nonce to user RW data and reads it back into
+RAX. Protection cases distinguish user RO and supervisor-only store #PF
+(`PFEC=0x07`), supervisor-only read (`0x05`), supervisor-only or NX fetch
+(`0x15`), non-present user instruction fetch (`0x14`), and non-present user
+read/store (`0x04`/`0x06`, NXE=1). The four-level matrices verify U/S and R/W
+effects, CR2 and saved RIP. Exact A/D PTE values and callback order are checked
+for the first user fetch-fault, non-present data, and store-fault paths;
+supervisor-only read and late non-present fetch paths check the fault record
+and prior committed effects. Protection faults do not write the operand or set
+D. Backend physical-store failure remains
+`OperandPhysical` and distinct from guest #PF. Earlier IRETQ, load, and store
+commits remain visible after a later fault.
+
+This slice does not add general CPL3 exception delivery, privileged-instruction
+#GP/#UD behavior, invalid-selector IRETQ classification, cross-page accesses,
+or Linux boot. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
+
+<a id="paged-cpl3-mov-cr0-after-iretq-s4-20e"></a>
+
+## Paged CPL3 MOV CR0 after IRETQ (S4-20e)
+
+`step_paged_cpl3_mov_cr0` is a separate opt-in machine entry for the bounded
+privileged-instruction check after the accepted paged IRETQ to CPL3. It derives
+CPL from the committed CS selector and cache and CR3 from CPU state. Its fixed
+profile is Long64, canonical48, physical36, four-level 4 KiB paging,
+`CR0=0x80010033`, `CR4=0x20`, and `EFER=0xd00`. A malformed user CS, unsupported
+controls, live TF/RF/AC, or active STI shadow is rejected before instruction
+fetch. The instruction RIP offset must be at most `0xff1`; `0xff2` and above
+are rejected before fetch so the decoder's maximum instruction length stays
+within one page.
+
+The exact bare `0F 22 C0` (`MOV CR0,RAX`) fetches and decodes, then raises
+`#GP(0)` at CPL3. This result is independent of RAX and IOPL and does not
+retire or commit CR0 or other instruction CPU state. Exact `F0 0F 22 C0`
+raises `#UD` only after full fetch/decode; an instruction-fetch fault takes
+precedence until decoding completes. Fetch page walks may already have
+committed A-bit updates and their callbacks before either execution fault.
+The entry reports those effects separately from guest faults and backend
+errors. It does not deliver the exception through an IDT, switch stacks, or
+perform CPL3 exception handling.
+
+Tracked fetch tests cover supervisor-only permissions at all four paging
+levels, NX, and a non-present user leaf (`PFEC=0x14`) through this new entry.
+They check CR2, faulting RIP, no retirement, preservation of CPU state except
+the architecturally updated CR2, exact A-bit PTE values, and callback ranges.
+The physical instruction-fetch failure is reported as `OperandPhysical` at GPA
+`0x30000`, without retirement. A separate page-walk unit test injects failures
+at the internal table-writer seam for fetch A-bit writes and checks
+`TableWrite`, level/address/bit, and the committed update prefix; this checks
+the shared walker path rather than injecting through the machine entry.
+The IRETQ → user load → user store → `MOV CR0,RAX` case confirms that the
+earlier store remains committed after `#GP(0)`.
+
+This slice generates #GP/#UD results but does not deliver exceptions. Other
+CR forms, general CPL3 exception delivery, IDT/TSS stack switching, and
+cross-page instruction fetch remain outside its contract. See the
+[S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20e-paged-cpl3-mov-cr0-after-iretq).
 
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 

@@ -1,0 +1,105 @@
+{
+  "stage": 4,
+  "slice": "S4-17a",
+  "title": "Paged MOV qword-load differential: uncached interpreter and JIT",
+  "date": "2026-11-06",
+  "status": "implementation_under_review",
+  "scope": {
+    "instruction": "48 8B 03 (MOV RAX,[RBX])",
+    "mode": "Long64",
+    "privilege": "CPL0",
+    "paging": "fixed four-level 4 KiB, separate code/data PML4 branches",
+    "backends": ["uncached_interpreter", "published_jit_v2_memory_load"],
+    "cached_interpreter": {
+      "status": "unsupported",
+      "reason": "current translation-probe cache does not execute the interpreter or preserve tracked A/D semantics"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "s4-17a-paged-mov-success",
+      "instruction_bytes": "488b03",
+      "code_linear": "0x00401000",
+      "code_physical": "0x8000",
+      "operand_linear": "0x8000000120",
+      "operand_physical": "0x9120",
+      "expected_rax": "0x0123456789abcdef",
+      "expected_rip": "0x00401003",
+      "retired": 1,
+      "expected_data_walk_ad_ranges": ["0x5000/8", "0x7000/8"]
+    },
+    {
+      "case_id": "s4-17a-paged-mov-missing-pte",
+      "instruction_bytes": "488b03",
+      "code_linear": "0x00401000",
+      "operand_linear": "0x8000000120",
+      "fault": {
+        "vector": 14,
+        "pfec": "0x0",
+        "faulting_rip": "0x00401000",
+        "cr2_value": "0x8000000120"
+      },
+      "destination_rax_unchanged": true,
+      "retired": 0,
+      "expected_committed_ad_range": "0x5000/8"
+    }
+  ],
+  "normalization": {
+    "schema_version": 1,
+    "fields": [
+      "case id and input SHA-256",
+      "all 16 GPRs",
+      "RIP, RFLAGS, explicit RFLAGS definedness mask",
+      "retirement and completion/page-fault outcome",
+      "page fault vector, PFEC, saved RIP and intended CR2 value",
+      "architectural CR2 availability distinct from intended CR2 value",
+      "changed physical RAM ranges and ordered committed-write ranges",
+      "device-event observation"
+    ],
+    "device_events": "observed empty; RAM-only memory map",
+    "cr2_register": "unavailable; step APIs do not commit architectural CR2"
+  },
+  "mismatch_injection": {
+    "method": "clear PDE Accessed bit in a clone of one normalized result after execution",
+    "physical_address": "0x5000",
+    "differing_bit": "0x20",
+    "expected_comparator_detection": true
+  },
+  "checks": [
+    {
+      "command": "cargo test -p od-host --test stage4_memory_fault --offline -- --test-threads=1",
+      "result": "passed",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p od-testkit --lib --offline memory_fault::tests -- --test-threads=1",
+      "result": "passed",
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check && git diff --check",
+      "result": "passed"
+    }
+  ],
+  "review": {
+    "architecture": "gpt-6-astra/high recommended this bounded slice and confirmed existing ownership boundaries",
+    "implementation": "passed after fixes: full page-fault equality, observed flag definedness, platform gate, exact A-bit deltas",
+    "documentation": "passed; Graphify refresh limitation recorded"
+  },
+  "graphify": {
+    "updated": true,
+    "nodes": 27068,
+    "edges": 67782,
+    "communities": 1118,
+    "latest_update_attempt": "Failed during Python 3.15 pathlib filesystem detection; the existing graph remains queryable"
+  },
+  "limitations": [
+    "Two local backends share the page walker; not independent hardware evidence",
+    "No cached tracked-interpreter backend",
+    "No mismatch reducer in this slice",
+    "No other memory instruction, store, MMIO/device effect, cross-page access, fetch fault, remap or exception delivery",
+    "No performance measurement or speed claim"
+  ]
+}

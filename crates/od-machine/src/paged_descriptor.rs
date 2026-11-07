@@ -1,11 +1,11 @@
-//! Narrow CPU-connected paging adapter for a 10-byte LIDT pseudo-descriptor.
+//! Narrow CPU-connected paging adapters for 10-byte LIDT/LGDT pseudo-descriptors.
 
 use crate::{
     GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, ProbeConfigError,
     RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::{
-    PagedLidtLong64V1,
+    PagedLgdtLong64V1, PagedLidtLong64V1,
     memory::{
         AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
     },
@@ -19,6 +19,18 @@ pub enum PagedLidtError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedLidtReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub memory_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedLgdtError {
+    Configuration(ProbeConfigError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedLgdtReport {
     pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
     pub page_fault: Option<PageFaultRecord>,
     pub memory_error: Option<TrackedAccessError>,
@@ -39,10 +51,11 @@ pub fn step_paged_lidt(
     let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
         .map_err(PagedLidtError::Configuration)?;
     let instruction_rip = state.rip;
-    let mut memory = PagedLidtMemory {
+    let mut memory = PagedDescriptorMemory {
         bus,
         paging,
         instruction_rip,
+        instruction_name: "LIDT",
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
@@ -65,16 +78,60 @@ pub fn step_paged_lidt(
     })
 }
 
-struct PagedLidtMemory<'a> {
+/// Execute the exact bounded LGDT profile through RAM-only tracked paging.
+/// The pseudo-descriptor is read as one ten-byte operand contained in one
+/// guest page, and committed page-table A updates reach the write callback.
+pub fn step_paged_lgdt(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedLgdtReport, PagedLgdtError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedLgdtError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedDescriptorMemory {
+        bus,
+        paging,
+        instruction_rip,
+        instruction_name: "LGDT",
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+    };
+    let cpu = od_isa::step_paged_lgdt(
+        PagedLgdtLong64V1,
+        state,
+        &mut memory,
+        AccessContext {
+            origin: AccessOrigin::Explicit,
+            ..context
+        },
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedLgdtReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Shared RAM-only tracked-memory contract for the bounded LGDT/LIDT adapters.
+struct PagedDescriptorMemory<'a> {
     bus: &'a mut MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
+    instruction_name: &'static str,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
 }
 
-impl PagedLidtMemory<'_> {
+impl PagedDescriptorMemory<'_> {
     fn access(
         &mut self,
         address: u64,
@@ -98,19 +155,23 @@ impl PagedLidtMemory<'_> {
             }
             error => {
                 self.memory_error = Some(error.clone());
-                MemoryError::Backend(format!("paged LIDT RAM access failed: {error:?}"))
+                MemoryError::Backend(format!(
+                    "paged {} RAM access failed: {error:?}",
+                    self.instruction_name
+                ))
             }
         })
     }
 }
 
-impl GuestMemory for PagedLidtMemory<'_> {
+impl GuestMemory for PagedDescriptorMemory<'_> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         match self.access(address, context, RamAccessOperation::Fetch)? {
             TrackedAccessOutcome::Fetched(byte) => Ok(byte),
-            _ => Err(MemoryError::Backend(
-                "paged LIDT fetch returned a non-fetch result".into(),
-            )),
+            _ => Err(MemoryError::Backend(format!(
+                "paged {} fetch returned a non-fetch result",
+                self.instruction_name
+            ))),
         }
     }
 
@@ -121,9 +182,10 @@ impl GuestMemory for PagedLidtMemory<'_> {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         if destination.len() != 10 {
-            return Err(MemoryError::Backend(
-                "paged LIDT only reads a 10-byte pseudo-descriptor".into(),
-            ));
+            return Err(MemoryError::Backend(format!(
+                "paged {} only reads a 10-byte pseudo-descriptor",
+                self.instruction_name
+            )));
         }
         let last = address.checked_add(9);
         if !canonical48(address) || last.is_none_or(|end| !canonical48(end)) {
@@ -140,7 +202,8 @@ impl GuestMemory for PagedLidtMemory<'_> {
             };
             self.memory_error = Some(error.clone());
             return Err(MemoryError::Backend(format!(
-                "paged LIDT RAM access failed: {error:?}"
+                "paged {} RAM access failed: {error:?}",
+                self.instruction_name
             )));
         }
         match self.access(address, context, RamAccessOperation::ReadPseudoDescriptor)? {
@@ -148,16 +211,18 @@ impl GuestMemory for PagedLidtMemory<'_> {
                 destination.copy_from_slice(&bytes);
                 Ok(())
             }
-            _ => Err(MemoryError::Backend(
-                "paged LIDT read returned a non-descriptor result".into(),
-            )),
+            _ => Err(MemoryError::Backend(format!(
+                "paged {} read returned a non-descriptor result",
+                self.instruction_name
+            ))),
         }
     }
 
     fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
-        Err(MemoryError::Backend(
-            "paged LIDT does not write guest memory".into(),
-        ))
+        Err(MemoryError::Backend(format!(
+            "paged {} does not write guest memory",
+            self.instruction_name
+        )))
     }
     fn atomic_exchange_integer(
         &mut self,
@@ -166,9 +231,10 @@ impl GuestMemory for PagedLidtMemory<'_> {
         _: od_isa::OperandSize,
         _: u64,
     ) -> Result<u64, MemoryError> {
-        Err(MemoryError::Backend(
-            "paged LIDT does not perform atomic memory operations".into(),
-        ))
+        Err(MemoryError::Backend(format!(
+            "paged {} does not perform atomic memory operations",
+            self.instruction_name
+        )))
     }
     fn atomic_fetch_add_integer(
         &mut self,
@@ -177,9 +243,10 @@ impl GuestMemory for PagedLidtMemory<'_> {
         _: od_isa::OperandSize,
         _: u64,
     ) -> Result<u64, MemoryError> {
-        Err(MemoryError::Backend(
-            "paged LIDT does not perform atomic memory operations".into(),
-        ))
+        Err(MemoryError::Backend(format!(
+            "paged {} does not perform atomic memory operations",
+            self.instruction_name
+        )))
     }
     fn atomic_compare_exchange_integer(
         &mut self,
@@ -189,14 +256,16 @@ impl GuestMemory for PagedLidtMemory<'_> {
         _: u64,
         _: u64,
     ) -> Result<u64, MemoryError> {
-        Err(MemoryError::Backend(
-            "paged LIDT does not perform atomic memory operations".into(),
-        ))
+        Err(MemoryError::Backend(format!(
+            "paged {} does not perform atomic memory operations",
+            self.instruction_name
+        )))
     }
     fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
-        Err(MemoryError::Backend(
-            "paged LIDT does not perform fences".into(),
-        ))
+        Err(MemoryError::Backend(format!(
+            "paged {} does not perform fences",
+            self.instruction_name
+        )))
     }
 }
 
@@ -210,7 +279,7 @@ mod tests {
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
     use od_isa::{
         INTEGER_FLAGS,
-        state::{CpuActivity, Idtr, StiShadow},
+        state::{CpuActivity, Gdtr, Idtr, StiShadow},
     };
     use std::sync::{
         Arc,
@@ -479,6 +548,95 @@ mod tests {
         assert_eq!(
             report.cpu.exit,
             od_isa::PagedProbeExit::Fault(record.fault().clone())
+        );
+    }
+
+    #[test]
+    fn missing_lgdt_descriptor_page_reports_fault_and_committed_fetch_walks() {
+        let mut bus = bus(0);
+        put_bytes(&mut bus, 0x7000, &[0x0f, 0x01, 0x55, 0x00]);
+        let mut cpu = state(0);
+        cpu.gpr[od_isa::Register::Rbp as usize] = 0x0080_0000;
+        cpu.gdtr = Some(Gdtr {
+            base: 0x2222,
+            limit: 0x3333,
+        });
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_lgdt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        let record = report.page_fault.as_ref().unwrap();
+        assert_eq!(record.saved_rip(), CODE);
+        assert_eq!(record.cr2_value(), 0x0080_0000);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Read);
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Fault(record.fault().clone())
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.memory_error, None);
+        assert_eq!(cpu, before);
+        assert_eq!(
+            callbacks,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x3020].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
+        );
+    }
+
+    #[test]
+    fn mmio_lgdt_descriptor_is_a_backend_error_without_device_dispatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut bus = bus_with_mmio_descriptor(Arc::clone(&calls));
+        put_bytes(&mut bus, 0x7000, &[0x0f, 0x01, 0x55, 0x00]);
+        let mut cpu = state(0);
+        cpu.gpr[od_isa::Register::Rbp as usize] = 0x0080_0000;
+        cpu.gdtr = Some(Gdtr {
+            base: 0x2222,
+            limit: 0x3333,
+        });
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_lgdt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Backend(_)
+        ));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.page_fault, None);
+        assert!(matches!(
+            report.memory_error,
+            Some(TrackedAccessError::OperandPhysical { .. })
+        ));
+        assert_eq!(cpu, before);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            callbacks,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x3020, 0x5000].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
         );
     }
 
@@ -796,10 +954,11 @@ mod tests {
         // physical range starts in RAM at GPA 0x8006 and its tail exceeds RAM.
         let paging = Long64ProbeConfig::from_cpu_state(&cpu, ROOT, EFER).unwrap();
         let mut notify = |_| {};
-        let mut memory = PagedLidtMemory {
+        let mut memory = PagedDescriptorMemory {
             bus: &mut bus,
             paging,
             instruction_rip: CODE,
+            instruction_name: "LIDT",
             committed_write: &mut notify,
             page_fault: None,
             memory_error: None,

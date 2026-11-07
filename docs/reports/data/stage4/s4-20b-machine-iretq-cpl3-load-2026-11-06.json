@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-20b",
+  "date": "2026-11-06",
+  "status": "verification_passed_review_passed",
+  "scenario": "machine paged IRETQ CPL0 to CPL3 followed by exact user MOV RAX,[RBX]",
+  "profile": {
+    "cpuid": "DiagnosticV1: maximum basic leaf 1; leaf 7 zero",
+    "cr0": "0x80010033",
+    "cr4": "0x20; LA57=0",
+    "cr3": "CPU-owned; bounded to 36 bits",
+    "efer": "0xd00",
+    "iretq": "synthetic five-qword outer return, flat pre-accessed user CS/SS",
+    "user_instruction": "exact bytes 48 8B 03; three-byte fetch contained in one page; RIP offset <= 0xffd"
+  },
+  "coverage": {
+    "user_fetch_and_data_read": "success and value checked",
+    "supervisor_only_fetch": "PFEC 0x15; exact CR2 and saved RIP",
+    "supervisor_only_data_read": "PFEC 0x05; exact CR2 and saved RIP",
+    "page_walk_permissions": "U/S checked at each of four levels",
+    "accessed_dirty": "exact A updates and PTE values checked on success, data #PF and backend abort; D remains clear; no operand write",
+    "late_iretq_fault": "SS descriptor #PF; no MOV and no partial CPU commit",
+    "backend_abort": "physical-hole read remains distinct from guest #PF; CPL3 return remains committed",
+    "rflags": "RF clears before operand data access and remains cleared on data-access abort"
+  },
+  "boundaries": [
+    "cross-page instruction fetch is unsupported in this slice",
+    "no user stores, CPL3 exception delivery, syscall roundtrip, or Linux boot",
+    "S4-20 and Stage 4 remain open"
+  ],
+  "verification": {
+    "isa_admission_tests": "2 passed",
+    "machine_system_tests": "26 passed",
+    "cargo_check_od_machine_all_targets_offline": "passed",
+    "fmt": "passed",
+    "diff_check": "passed",
+    "graphify": "updated; 27480 nodes, 68957 edges",
+    "independent_review": "passed; no P0-P3 findings remain after fixes"
+  }
+}

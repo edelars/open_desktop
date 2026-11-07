@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-20d",
+  "date": "2026-11-06",
+  "status": "verification_passed_review_passed",
+  "scenario": "paged IRETQ to CPL3, accepted user load, CPL3 store, CPL3 reload",
+  "profile": {
+    "mode": "Long64",
+    "linear_address_width": 48,
+    "physical_address_width": 36,
+    "paging": "four-level, 4 KiB",
+    "cr0": "0x80010033",
+    "cr4": "0x20; LA57=0",
+    "efer": "0xd00",
+    "accepted_instructions": ["48 89 0B: MOV [RBX],RCX", "48 8B 03: MOV RAX,[RBX]"],
+    "address_contract": "one-page instruction/operand; crossing is rejected before canonicality for both forms",
+    "privilege_source": "committed CS selector/cache",
+    "cr3_source": "CPU state",
+    "pre_fetch_flags": "TF=0, RF=0, AC=0"
+  },
+  "verification": {
+    "isa_cpl3_tests": "9 passed",
+    "stage4_exception_delivery": "35 passed",
+    "od_machine_all_targets_check": "passed",
+    "fmt": "passed",
+    "diff_check": "passed",
+    "graphify": "updated; 27540 nodes, 69099 edges",
+    "independent_review": "passed_no_P0_to_P3_findings",
+    "warning": "existing unrelated od-jit::block::CodeMemory::one_instruction dead_code warning"
+  },
+  "fault_matrix": {
+    "user_read_only_store_pfec": "0x07",
+    "supervisor_only_store_pfec": "0x07",
+    "supervisor_only_read_pfec": "0x05",
+    "supervisor_only_fetch_pfec": "0x15 at each page-table level",
+    "nx_fetch_pfec": "0x15",
+    "nonpresent_fetch_pfec": "0x14",
+    "nonpresent_read_pfec": "0x04",
+    "nonpresent_store_pfec": "0x06",
+    "backend_store": "OperandPhysical at GPA 0x30000; no operand commit"
+  },
+  "boundaries": [
+    "legacy CPL3 load-only API remains load-only",
+    "no privileged-instruction #GP/#UD or invalid-selector IRETQ classification",
+    "no CPL3 exception delivery, cross-page access, general debug/alignment-check semantics or Linux boot",
+    "parent S4-20 and Stage 4 remain open"
+  ],
+  "architecture_source": "Intel SDM revision 093, Vol. 3A §§5.6–5.7, https://cdrdv2.intel.com/v1/dl/getContent/671190"
+}

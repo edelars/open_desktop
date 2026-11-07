@@ -1,0 +1,68 @@
+{
+  "stage": 4,
+  "slice": "S4-19a",
+  "title": "Architectural CR2 state foundation",
+  "date": "2026-11-06",
+  "status": "accepted",
+  "scope": {
+    "state_field": "LongModeState.cr2: Option<u64>",
+    "default": null,
+    "clone_preserves_value": true,
+    "unsupported_conversions_reject_populated_cr2": [
+      "od-isa FragmentState",
+      "od-testkit IntegerState snapshot v2"
+    ],
+    "initializer_migration": {
+      "count": 89,
+      "value": null,
+      "existing_default_update_initializers_unchanged": true
+    }
+  },
+  "checks": [
+    {
+      "command": "cargo check --workspace --all-targets --offline",
+      "result": "passed",
+      "scope_note": "Run with S4-19a plus the then-present uncommitted S4-19b draft in interrupt.rs and memory.rs; combined tree compiled, not an isolated S4-19a checkout"
+    },
+    {
+      "command": "cargo test -p od-isa --lib cr2 --offline",
+      "result": "passed",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p od-testkit --lib integer_state_schema_rejects_unmodeled_cr2_instead_of_dropping_it --offline",
+      "result": "passed",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check && git diff --check",
+      "result": "passed"
+    }
+  ],
+  "review": {
+    "architecture": "gpt-6-astra/high recommended CR2 as architectural state and a bounded preparatory migration",
+    "implementation": "gpt-6.1-sol/high passed; no actionable findings",
+    "documentation": "gpt-6.1-sol/high passed; no actionable findings"
+  },
+  "graphify": {
+    "current_graph_artifact_counts": {
+      "nodes": 27124,
+      "edges": 67888,
+      "communities": 1091
+    },
+    "graph_report_base_commit": "134f7496",
+    "latest_update_attempt": {
+      "result": "Graph artifacts refreshed; CLI interrupted afterward",
+      "reason": "The command was interrupted while Python 3.15.2 pathlib Path.__hash__ was on the stack; refreshed graph.json and GRAPH_REPORT.md contain S4-19a symbols and current counts",
+      "counts_source": "graphify-out/GRAPH_REPORT.md"
+    }
+  },
+  "limitations": [
+    "Page-fault execution does not yet populate CR2; S4-19b owns delivery",
+    "MOV CR2 is not implemented",
+    "No exception delivery, repair, IRETQ or retry is claimed",
+    "S4-19 and Stage 4 remain open"
+  ]
+}

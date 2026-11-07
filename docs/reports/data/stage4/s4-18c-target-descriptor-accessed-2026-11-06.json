@@ -1,0 +1,38 @@
+{
+  "stage": 4,
+  "slice": "S4-18c",
+  "title": "Bounded target CS descriptor Accessed update during paged #PF delivery",
+  "date": "2026-11-06",
+  "status": "implemented_and_independently_reviewed",
+  "scope": {
+    "profile": "Long64 CPL0, single CPU, same-CPL vector-14 interrupt gate, IST=0, tracked 4 KiB RAM paging",
+    "chosen_emulator_order": ["six frame qword stores", "target descriptor access-byte A-bit write", "CS/RSP/RIP/flags entry commit"],
+    "intel_fault_visible_ordering_claim": false,
+    "descriptor_a_zero": "write only access-byte bit 0 after frame; cache updated descriptor only after successful write",
+    "descriptor_a_one": "no descriptor write; read-only GDT remains valid",
+    "frame_and_page_table_physical_alias": "preflight rejects before frame effects, including frame writes that would remap later stack slots",
+    "first_stack_failure": "preflight stops at the first failing stack access so the tracked path retains its page-fault or physical-backend classification; unreachable later slots are ignored",
+    "secondary_fault": "secondary #PF would require #DF; current bounded API returns terminal undelivered diagnostic result",
+    "excluded": ["automatic #DF", "shutdown classification", "TSS/IST", "privilege transitions", "PTE repair", "INVLPG", "IRETQ", "retry", "physical hardware acceptance"]
+  },
+  "checks": [
+    {"command": "cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1", "result": "passed", "passed": 24, "failed": 0},
+    {"command": "cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1", "result": "passed", "passed": 2, "failed": 0},
+    {"command": "cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1", "result": "passed", "passed": 17, "failed": 0},
+    {"command": "cargo fmt --all -- --check", "result": "passed"},
+    {"command": "cargo check --workspace --all-targets --offline", "result": "passed", "warnings": ["od-jit dead_code", "od-host unused variable/mut/import"]},
+    {"command": "git diff --check and local Markdown/JSON checks", "result": "passed"}
+  ],
+  "review": {
+    "architecture": "gpt-6-astra/high; explicit profile order is an emulator choice, not a hardware-ordering claim; #DF and diagnostic-only retained state caveats incorporated",
+    "implementation": "initial code gpt-6-luna/high; alias-preflight refinement gpt-6.1-terra/medium",
+    "independent_code_review": "gpt-6.1-sol/high found and prompted fixes for linear-alias ordering cases; final review found no code defects, and its two P3 documentation findings were corrected and confirmed closed"
+  },
+  "graphify": {
+    "full_update": "interrupted after reproducing Python 3.15 pathlib scan failure",
+    "targeted_ast_refresh": "passed for all changed Rust, test, Markdown and JSON files; merged into graph",
+    "cluster_only": "passed; Graphify query resolves descriptor preflight, stack aliases and delivery symbols",
+    "counts": {"nodes": 27436, "edges": 68165, "communities": 1070}
+  },
+  "commit": null
+}

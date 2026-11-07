@@ -37,6 +37,54 @@ privilege matrix: IOPL/TSS, остальные widths/forms, IRQ4 и маршр�
 APIC/IOAPIC остаются открытыми. Поэтому целевой Linux serial console и полная
 16550A совместимость не подтверждены.
 
+Для S4-25a добавлен отдельный one-CPU fixed-edge Local APIC device по xAPIC
+MMIO base `0xFEE00000` с APIC ID 0. Это самостоятельный `MachineBus` device
+slice, без default board manifest/wiring, version/LVT, IOAPIC routes, timer и
+CPU interrupt delivery. Он не меняет описание Linux discovery или объявленный
+APIC-профиль гостю.
+
+S4-25b adds an explicitly selected CPU profile for bare `RDMSR`/`WRMSR`
+`IA32_APIC_BASE` at the fixed base. The machine helper applies enable/disable
+effects synchronously to the standalone S4-25a Local APIC. The profile is not
+part of the general paged vCPU session or default board wiring; relocation,
+x2APIC, interrupt delivery and Linux APIC discovery remain unimplemented.
+
+S4-25c lets guest software issue one fixed self-IPI through xAPIC ICR. The
+Local APIC records it in IRR and the existing explicit acknowledge/EOI model
+can move it through device state. This remains a standalone device path: no
+CPU handler execution, default board registration, IOAPIC route or Linux APIC
+discovery is established.
+
+S4-25d adds an opt-in exact-encoding Long64/CPL0 CR8 profile connected to the
+standalone Local APIC TPR. It demonstrates self-IPI priority gating inside the
+device model, without enabling CPU interrupt acceptance or adding the profile
+to the default board, paged session, or JIT.
+
+S4-26a adds an opt-in standalone IOAPIC profile at `0xFEC00000` with one
+INTIN4 fixed-edge route to Local APIC ID 0. It is not registered in the default
+board and does not establish device-to-pin mapping, CPU interrupt handling or
+guest OS discovery.
+
+S4-26b adds an optional active-high Fixed level mode for that same route, with
+Local APIC TMR and IOAPIC Remote IRR tracking through matching EOI and atomic
+retrigger. The two models share one narrow state owner, while independent reset
+preserves the other controller and an explicit pair reset clears both. This
+remains an opt-in device test profile, not default board registration or CPU
+handler delivery.
+
+S4-27a adds a caller-driven diagnostic bridge that takes one eligible request
+from this APIC profile through a Long64/CPL0 interrupt gate and attempts at
+most one handler instruction using flat identity RAM. A handler fault does not
+undo successful entry or APIC acknowledgement. It does not register APIC
+devices on the default board or provide automatic IRQ scheduling, paged
+delivery, guest EOI/IRET, HLT wakeup or Linux discovery.
+
+S4-27b's bounded fixture uses a guest Dword write to the Local APIC EOI
+register, executes same-CPL0 IRETQ, and resumes one interrupted instruction.
+An asserted level route can re-pend at EOI; delivery remains caller-driven.
+This does not add default board registration, paged IRETQ, HLT wakeup or Linux
+interrupt support.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

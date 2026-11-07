@@ -1,0 +1,21 @@
+{
+  "slice": "S4-25a",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "one-CPU fixed-profile xAPIC MMIO register subset with fixed-edge pending, eligibility, acknowledge and EOI state",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A, Chapter 13",
+  "review": "independent gpt-6.1-sol/high review passed; three P3 test gaps fixed and confirmed closed",
+  "checks": {
+    "focused_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 2 passed",
+    "machine_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "graphify update .: 27705 nodes, 69643 edges, 1119 communities"
+  },
+  "limitations": [
+    "version register, LVT and APIC-base MSR/relocation unsupported",
+    "device tested through explicitly constructed MachineBus; default board wiring and guest CPU path unverified",
+    "no x2APIC, IOAPIC, level-triggered routes, timer, CPU interrupt delivery, handler execution, HLT wakeup or Linux discovery",
+    "unsupported bus accesses return DeviceError and do not implement guest exception delivery"
+  ]
+}

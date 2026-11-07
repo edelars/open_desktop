@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub mod binary_float;
 pub mod cli;
 pub mod cpuid;
+pub mod cr8;
 pub mod execute;
 mod finite_arithmetic;
 pub mod hlt;
@@ -24,20 +25,24 @@ pub mod sep;
 pub mod state;
 pub mod sti;
 pub mod swapgs;
+pub mod syscall;
 pub mod x87;
 pub use cli::CliProfile;
 pub use execute::{
     Cr0Profile, InvlpgExit, InvlpgLong64V1, InvlpgResult, InvlpgWpLong64V1, MovCr0WpLong64V1,
     MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, MovCr3WpLong64V1,
-    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedLidtLong64V1, PagedProbeExit,
-    PagedProbeRejection, PagedProbeResult, TranslationContextChange, TranslationInvalidation,
-    step_invlpg, step_invlpg_wp, step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp,
-    step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_lidt,
+    PagedCpl0Cr0WpMovV1, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0PageTableRepairMovV1,
+    PagedLgdtLong64V1, PagedLidtLong64V1, PagedProbeExit, PagedProbeRejection, PagedProbeResult,
+    TranslationContextChange, TranslationInvalidation, step_invlpg, step_invlpg_wp,
+    step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_cr0_wp_probe, step_paged_cr3_probe,
+    step_paged_lgdt, step_paged_lidt,
 };
 pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
-    deliver_maskable_interrupt,
+    PageFaultDeliveryOutsideProfile, PageFaultDeliveryPhase, PageFaultDeliveryResult,
+    PageFaultFrameSlot, deliver_double_fault, deliver_maskable_interrupt, deliver_page_fault,
 };
 pub use iretq::{
     IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,
@@ -48,8 +53,8 @@ pub use lretq::{
     run_with_lretq_profile, step_with_lretq_profile,
 };
 pub use memory::{
-    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
-    MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, GuestMemory,
+    InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
 };
 pub use port_io::PortIo;
 pub use state::{

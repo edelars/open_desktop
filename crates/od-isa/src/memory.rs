@@ -25,6 +25,8 @@ pub enum InstructionMode {
 pub enum AccessOrigin {
     /// An explicit instruction fetch or data operand access.
     Explicit,
+    /// An implicit access made while the processor constructs a stack frame.
+    ImplicitStack,
     /// An implicit access to a segment descriptor table entry, including writes.
     DescriptorTable,
 }
@@ -42,7 +44,7 @@ impl AccessContext {
     /// Page-protection privilege for this individual linear-memory access.
     pub const fn page_privilege(self) -> PrivilegeLevel {
         match self.origin {
-            AccessOrigin::Explicit => self.privilege,
+            AccessOrigin::Explicit | AccessOrigin::ImplicitStack => self.privilege,
             AccessOrigin::DescriptorTable => PrivilegeLevel::Ring0,
         }
     }
@@ -147,6 +149,32 @@ impl PageFaultRecord {
     }
 }
 
+/// A double fault caused by a page fault while delivering an earlier #PF.
+/// The original RIP is retained for diagnostics only; #DF is an abort and the
+/// saved RIP is not a restartable instruction address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoubleFaultRecord {
+    original: PageFaultRecord,
+    secondary: PageFaultRecord,
+}
+
+impl DoubleFaultRecord {
+    pub const fn new(original: PageFaultRecord, secondary: PageFaultRecord) -> Self {
+        Self {
+            original,
+            secondary,
+        }
+    }
+
+    pub const fn original(&self) -> &PageFaultRecord {
+        &self.original
+    }
+
+    pub const fn secondary(&self) -> &PageFaultRecord {
+        &self.secondary
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MemoryError {
     Architectural(ArchitecturalFault),
@@ -205,6 +233,21 @@ pub trait GuestMemory {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError>;
+
+    /// Checks whether a delayed descriptor Accessed-bit write can safely
+    /// follow the supplied frame writes. Implementations must account for
+    /// aliases and translation metadata, preserving earlier access failures.
+    /// Backends without such a check refuse this delivery by default.
+    fn preflight_descriptor_accessed_write(
+        &mut self,
+        _descriptor_access_address: u64,
+        _descriptor_context: AccessContext,
+        _stack_writes: &[(u64, usize)],
+    ) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(
+            "descriptor Accessed-bit write preflight is unsupported".into(),
+        ))
+    }
 
     /// Atomically exchanges one integer operand with guest memory.
     ///

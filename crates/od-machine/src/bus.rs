@@ -1,11 +1,12 @@
 use crate::{
-    GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineMemoryMap,
-    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, RamAccessOperation,
-    RamLimits, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport, TrackedAccessRequest,
+    GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig,
+    MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory,
+    ProbeReport, RamAccessOperation, RamLimits, TrackedAccessError, TrackedAccessOutcome,
+    TrackedAccessReport, TrackedAccessRequest,
 };
 use od_isa::{
     PortIo,
-    memory::{AccessContext, AccessOrigin},
+    memory::{AccessContext, AccessKind, AccessOrigin},
 };
 use std::fmt;
 
@@ -578,6 +579,22 @@ impl MachineBus {
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> TrackedAccessReport {
         crate::page_walk::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
+    }
+
+    pub(crate) fn probe_tracked_ram_access(
+        &self,
+        paging: &Long64ProbeConfig,
+        address: GuestLinearAddress,
+        access: AccessKind,
+        context: AccessContext,
+    ) -> ProbeReport {
+        crate::page_walk::probe_long64_4k(&self.memory, paging, address, access, context)
+    }
+
+    pub(crate) fn tracked_physical_range_is_ram(&self, range: GuestPhysicalRange) -> bool {
+        self.memory
+            .locate_region_kind(range.start(), range.len())
+            .is_ok_and(|kind| kind == MemoryRegionKind::Ram)
     }
 
     pub(crate) fn read_tracked_bounded_ram_read(

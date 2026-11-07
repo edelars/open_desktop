@@ -57,6 +57,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let state = machine.state();
     let exit = match report.exit {
         PagedProbeExit::Halted => "halted",
+        PagedProbeExit::Shutdown => "shutdown",
         PagedProbeExit::BudgetExhausted => "budget_exhausted",
         PagedProbeExit::Stopped => "stopped",
         PagedProbeExit::Rejected(_) => "rejected",

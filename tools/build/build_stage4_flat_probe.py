@@ -189,6 +189,7 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
     code_end, _ = elf_symbol(elf, "stage4_code_end")
     code = {
         "flat-probe": bytes.fromhex("488b03eef4"),
+        "uart-echo-probe": bytes.fromhex("eceef4"),
         "store-load-probe": bytes.fromhex("48890b488b03eef4"),
         "stack-probe": bytes.fromhex("5158eef4"),
         "alias-probe": bytes.fromhex("48890b58eef4"),
@@ -199,7 +200,7 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
             "assembled entry must match the selected profile at its linked address; "
             f"got address=0x{code_symbol:x}, symbol_size={code_size}, end_delta={code_end - code_symbol}"
         )
-    code_segment_size = 4 if profile == "stack-probe" else 8
+    code_segment_size = 4 if profile in ("stack-probe", "uart-echo-probe") else 8
     expected_segments = [
         (0x1000, 0x1000, 0x6000, 6),
         (CODE_GVA, CODE_GPA, code_segment_size, 5),
@@ -319,6 +320,7 @@ def build(args: argparse.Namespace) -> int:
     profile = args.profile
     fixture_name = {
         "flat-probe": "flat_probe",
+        "uart-echo-probe": "uart_echo_probe",
         "store-load-probe": "store_load_probe",
         "stack-probe": "stack_probe",
         "alias-probe": "alias_probe",
@@ -405,6 +407,7 @@ def build(args: argparse.Namespace) -> int:
         "schema": "stage4-flat-probe-build-v1",
         "profile": {
             "flat-probe": "Stage4FlatProbeV1",
+            "uart-echo-probe": "Stage4UartEchoProbeV1",
             "store-load-probe": "Stage4StoreLoadProbeV1",
             "stack-probe": "Stage4StackProbeV1",
             "alias-probe": "Stage4AliasProbeV1",
@@ -455,7 +458,7 @@ def parse_payload(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe", "stack-probe", "alias-probe"), default="flat-probe")
+    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe", "stack-probe", "alias-probe", "uart-echo-probe"), default="flat-probe")
     parser.add_argument("--payload", type=parse_payload, default=0x5354473441424331)
     parser.add_argument("--initial-value", type=parse_payload)
     parser.add_argument("--store-value", type=parse_payload)

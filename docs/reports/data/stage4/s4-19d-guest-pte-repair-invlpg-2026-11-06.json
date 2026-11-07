@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-19d",
+  "date": "2026-11-06",
+  "status": "accepted",
+  "scenario": "guest repairs a faulting leaf PTE through a writable alias and retires INVLPG for the original GVA",
+  "boundaries": [
+    "stops before guest error-code discard, IRETQ, fault retry, and data commit",
+    "tracked execution has no translation cache; stale TLB eviction and INVLPG necessity are not established",
+    "selector admits exact MOV [RDI], RSI only; fixture supplies and checks alias and PTE semantics"
+  ],
+  "verification": {
+    "format": "cargo fmt --all -- --check: passed",
+    "isa_profile_tests": "22 passed",
+    "stage4_exception_delivery": "20 passed",
+    "workspace_check": "passed_with_existing_warnings",
+    "independent_review": "passed_no_P0_to_P3_findings"
+  }
+}

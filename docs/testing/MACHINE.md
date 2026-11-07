@@ -136,6 +136,33 @@ git diff --check
     event/payload; `ReceiverBusy` preserves the earliest event, payload,
     deadline and order for retry. Reset invalidates stale pending work without
     changing `VirtualClock`, CPU state or HLT state.
+42. S4-22b checks that `PagedVcpuSession` owns one explicitly configured
+    `VirtualClock`, RX readiness uses only its `now_ns`, and neither run nor
+    polling advances time. Split and whole advances match; pause, STOP and
+    terminal states reject advancement, while active guest HLT permits clock
+    progression without wakeup or RX dispatch. Reset preserves time; invalid
+    frequency and checked arithmetic overflow do not mutate state.
+43. S4-23d checks the owner-facing RX controls: stale generations are rejected
+    before lifecycle/queue admission even after reset and key reuse; cancel and
+    reschedule retain `EventQueue` ordering; ReceiverBusy preserves payload
+    semantics; duplicate/full/not-found and pause/STOP/HLT/terminal failures
+    leave queue contents, CPU and clock unchanged. Next-deadline queries
+    are read-only in all states. No event wakes HLT.
+
+## S4-23d generation-aware paged RX control
+
+`cargo test -p od-machine --lib paged_vcpu_session::tests --offline --
+--test-threads=1` passed 11 tests. They check stale schedule/cancel/reschedule
+requests after successful reset and key reuse, and that failed reset preserves
+the old generation. Due-event cancellation and earlier/later/equal-deadline
+rescheduling retain the queue ordering contract. Under `ReceiverBusy`, a
+pending payload can be moved or cancelled without duplicate delivery. Stale,
+duplicate, full, not-found and lifecycle errors preserve queue contents, CPU
+state and clock; a read-only next-deadline query remains available. Paused,
+stopped, terminal and halted owners reject current-generation mutations, and no
+event wakes HLT. `cargo check -p od-machine --all-targets --offline`, workspace fmt
+and diff check passed. Independent Sol/high review found no code findings. See
+[S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
 
 ## Интерпретация
 
@@ -144,8 +171,9 @@ flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission and bounded S4-11b qword read, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
-caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue, S4-23b
-reset-generation boundary and S4-23c bounded UART RX event delivery.
+caller-driven clock/RDTSC boundary, S4-22b paged-session time ownership,
+S4-23a bounded deadline queue, S4-23b reset-generation boundary, S4-23c
+bounded UART RX event delivery and S4-23d owner-facing RX control.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
@@ -384,6 +412,177 @@ check passed; workspace check, JSON/link validation and independent
 exception delivery/CR2 update, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 or Linux behavior. Parent S4-24 remains open.
 
+## S4-24d: guest UART RX→IN→OUT echo
+
+`cargo test -p od-machine --lib paged_vcpu_session::tests --offline --
+--test-threads=1` passed 13 tests, including strict profile selection,
+profile-preserving reset and receiver release after guest `IN`. The runner CLI
+suite passed 9 tests: RX values `0x00`, `0x80`, `0xff`, exact RAX/RIP/TX
+prefixes under budgets and cancellation, empty-RBR PIO failure, mismatched or
+absent expectation, invalid bytes/options, and filenames equal to option names.
+The build CLI suite passed 2 tests, including identical ELF and raw artifacts
+from two builds followed by the real builder→runner echo path.
+
+`cargo check -p od-runner --all-targets --offline`, formatting and diff checks
+passed. `python3 tools/check_layout.py` remains blocked by the pre-existing
+unmapped root `smoke/` (`ISSUE-056`). Independent Sol/high code and documentation
+reviews passed without remaining findings. This proves one-shot polling echo;
+it does not prove guest LSR polling loops, IRQ/APIC, HLT wakeup, baud timing or
+the full S4-24 acceptance. See [report](../reports/STAGE_4_S4-24D_2026-11-07.md).
+
+## S4-25a: fixed-edge Local APIC register core
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline --
+--test-threads=1` for the focused register/state matrix. The tests attach the
+device through `MachineBus` at `0xFEE00000` and cover reset, software
+enable/disable with retained IRR/ISR, TPR/PPR priority classes, pending
+inspection, one-time acknowledge, same-vector retrigger while in service, EOI,
+read-only banks, unsupported offsets/width/alignment/reserved values and
+rejection atomicity. `cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` also passed.
+
+This is local device evidence only. The xAPIC version register, LVT, base-MSR
+control, default board registration, IOAPIC, level interrupts, timers, CPU IRQ
+delivery, handler execution, IDT/IF/shadow behavior, HLT wakeup and Linux boot
+are not covered. The selected register behavior is based on Intel SDM release
+093, Volume 3A, Chapter 13. See the [slice report](../reports/STAGE_4_S4-25A_2026-11-07.md).
+
+## S4-25b: CPU-owned IA32_APIC_BASE enable
+
+Run `cargo test -p od-isa --lib apic_base_tests --offline` and
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The CPU profile tests bare `RDMSR`/`WRMSR` readback, exact fixed values,
+retirement, reserved-bit `#GP(0)`, unsupported relocation/BSP/x2APIC values,
+Ring3 privilege fault, STOP/budget/fetch exits, active STI-shadow rejection
+before fetch and unrelated decoder forms remaining outside the profile. The
+machine tests verify the typed write effect is applied before the helper
+returns, disable reset/MMIO blocking, same-value preservation, re-enable and
+SVR behavior. `cargo check -p od-isa -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Independent
+Sol/high review found two P2 boundary issues; both were fixed and confirmed
+closed. See the [slice report](../reports/STAGE_4_S4-25B_2026-11-07.md).
+
+This does not integrate the profile into `PagedVcpuSession` or default board
+wiring. Direct CPU-step callers must apply a returned effect before another
+guest/device operation; only `step_apic_base_msr` supplies synchronous device
+application. xAPIC base relocation, x2APIC, CPU interrupt delivery, IDT/IF,
+handler execution, HLT wakeup and Linux discovery are not covered.
+
+## S4-25c: xAPIC Fixed self-IPI
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The six focused tests include ICR readback, high-only write without dispatch,
+low-write dispatch, the Fixed Self path from IRR through priority eligibility,
+acknowledge/ISR and EOI, repeated same-vector commands before and after
+acknowledge, TPR priority blocking, software-disable and global-disable
+behavior, reset clearing both ICR halves, and rejection atomicity for invalid
+delivery/shorthand/vector/trigger/level/reserved/width/alignment. Also run
+`cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; all passed. Independent
+Sol/high review found and closed one P2 issue: the read-only Delivery Status
+bit is ignored on write, while it continues to read Idle; reserved bits remain
+rejected. The source is Intel SDM release 093, Volume 3A,
+§§13.6.1–13.6.2.3 and 13.8.3–13.8.5. See the [slice report](../reports/STAGE_4_S4-25C_2026-11-07.md).
+
+These checks establish only local APIC device-state transitions. They do not
+establish APIC bus messaging, CPU interrupt acceptance or handler execution,
+IF/IDT semantics, HLT wakeup, external destinations, IOAPIC, default board
+wiring or Linux boot.
+
+## S4-25d: bounded CR8 ↔ xAPIC TPR
+
+Run `cargo test -p od-isa --lib cr8::tests --offline` and
+`cargo test -p od-machine --lib cr8 --offline -- --test-threads=1`. The focused
+coverage checks exact MOV encodings, CPL and reserved-bit faults, LOCK/fetch/
+STOP/budget boundaries, canonical48 fetch boundaries, APIC admission, TPR
+readback and low-nibble clearing, and self-IPI vector `0x51` blocked at TPR
+class 5 then made eligible at class 4 before acknowledge/EOI. It also confirms
+pending/ISR persistence and failure non-retirement. Run
+`cargo check -p od-isa -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; record the actual result
+in the slice report. Independent Sol/high review must close findings before
+acceptance. The profile does not test general CR8 decoding, CPU handler
+delivery, `PagedVcpuSession`, JIT, default board wiring or guest boot. See the
+[slice report](../reports/STAGE_4_S4-25D_2026-11-07.md).
+
+## S4-26a: fixed-edge IOAPIC route
+
+Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`
+and `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The four IOAPIC tests cover reset and selector/readback, independent route
+halves, read-only status writes, masked edge loss, no dispatch on unmask or
+high-to-high, new-edge vector updates, pending IRR behavior, TPR blocking,
+acknowledge/EOI, disabled-destination retry, and failure atomicity. Nine Local
+APIC tests provide adjacent device regression coverage. Also run
+`cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; all passed. Independent
+Sol/high review found and closed the P2 on read-only Delivery Status/Remote IRR
+writes; no findings remain. The tests do not establish level delivery, other
+IOAPIC routes, default board wiring, CPU handler execution or Linux boot. See
+the [slice report](../reports/STAGE_4_S4-26A_2026-11-07.md).
+
+## S4-26b: fixed-level IOAPIC route
+
+Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`
+and `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The eleven IOAPIC tests cover level acceptance and TMR/Remote IRR state, TPR
+eligibility, acknowledge/EOI retrigger, asserted/deasserted and masked/unmasked
+transitions, nested edge compatibility, route-change conflict rejection,
+disabled-destination edge retry, vector reservation while a level route is
+masked/inactive, SVR-disabled assert/unmask rejection, software-disable veto,
+and independent versus coordinated reset.
+The reset regression verifies that each independent reset preserves the other
+controller and that outstanding Remote IRR vetoes both without mutation. Ten
+Local APIC tests cover adjacent register, priority, self-IPI, CR8 and APIC-base
+behavior. `cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Independent
+Sol/high review initially found a P2 reset-state regression; it was fixed and
+the changed slice passed repeat review. Graphify and layout results are in the
+[S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md). This does not
+establish guest CPU interrupt/handler delivery, board registration or Linux
+discovery.
+
+## S4-27a: caller-driven APIC interrupt entry
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1`,
+and `cargo test -p od-isa --lib interrupt::tests::every_stack_store_failure_keeps_cpu_state_and_prior_memory_writes --offline -- --test-threads=1`.
+The end-to-end fixture configures INTIN4 as an active level route, accepts it
+into the Local APIC, enters through the selected IDT gate, and successfully
+retires the one-budget handler instruction that reads a RAM sentinel. It checks the exact same-CPL
+five-qword frame, cleared IF, IRR→ISR transition, and Remote IRR retention until
+EOI. Adjacent cases cover no eligible/masked route, IF masking, blocking STI
+shadow, TPR ineligibility and a partial stack-write abort; the abort preserves
+the pending APIC request, makes the session terminal and prevents retry.
+`cargo check -p od-machine --all-targets --offline`, formatting and diff
+validation passed. Independent Sol/high review found no remaining findings.
+The caller must also certify no pending synchronous exception, debug/NMI event
+or other interrupt inhibition, as required by the underlying ISA delivery
+contract. A handler fault after successful entry does not roll back the entry
+or APIC acknowledgement.
+This does not test automatic instruction-boundary polling, IRET, guest EOI,
+HLT wakeup, paged delivery or JIT. See the
+[S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md).
+
+## S4-27b. Guest EOI, same-CPL IRETQ and resume
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1`,
+and the existing `od-isa` same-CPL IRETQ frame/failure tests. The 12 diagnostic
+session cases include guest `MOV dword [0xFEE000B0],EAX` EOI through the
+MachineBus MMIO path, the fixed IRETQ profile, and resumption of one interrupted
+instruction. All 16 original RSP low-nibble alignments must restore the exact
+RSP, RIP, CS, SS and RFLAGS; the resumed instruction reads a RAM sentinel.
+Further cases cover deasserted and held level lines, one new request accepted
+into IRR at EOI with CPU delivery deferred until the next caller boundary, and fetch/frame/CS/SS IRETQ read aborts after
+EOI without CPU commit or repeat EOI; aborted sessions become terminal.
+`cargo check -p od-machine --all-targets --offline`, fmt/diff, and independent
+Sol/high review passed. This remains a caller-driven flat identity profile; it
+does not establish paged IRETQ, automatic polling, HLT wakeup, JIT or Linux
+acceptance. See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the
@@ -497,3 +696,372 @@ multiple payloads and reject an injected remapping that still reaches HLT but
 does not satisfy the alias-result oracle. The manifest's `mappings` and `stack`
 fields must agree. This is uncached interpreter evidence; TLB/JIT, Linux and
 physical hardware claims are outside the case.
+
+## S4-17a: paged MOV differential harness
+
+Run the cross-component harness with:
+
+```text
+cargo test -p od-host --test stage4_memory_fault --offline -- --test-threads=1
+cargo test -p od-testkit --lib --offline memory_fault::tests -- --test-threads=1
+```
+
+The integration target runs on Apple Silicon macOS, the platform supported by
+`PublishedCode` executable-memory publication. On other hosts this target is
+compiled out; the testkit comparator unit tests remain portable.
+
+The deterministic Long64/CPL0 case is exact `48 8B 03` (`MOV RAX,[RBX]`),
+with code linear address `0x00401000` and operand linear address
+`0x8000000120` mapping to a separate physical RAM page. The harness creates an
+independent `MachineBus` from the same case descriptor for the uncached
+interpreter and published JIT. It checks both a successful qword load and a
+non-present leaf PTE fault. Code-side page-table A bits are initialized before
+execution so interpreter instruction fetch does not add effects absent from
+the published JIT path; data-side A updates remain observable in physical RAM
+deltas and ordered callbacks. The test verifies that each changed entry differs
+by exactly the Accessed bit, and that each backend's complete #PF exit agrees
+with its `PageFaultRecord`.
+
+`od_testkit::memory_fault::MemoryFaultObservation` records the case digest,
+all GPRs, RIP, RFLAGS plus its definedness mask, retirement, outcome, intended
+fault CR2 value, actual architectural CR2 availability, table-byte deltas,
+ordered physical write ranges, and device-event availability. This bounded
+RAM-only case declares an observed empty device-event list. The page-fault
+record supplies a CR2 value but these step APIs do not commit architectural
+CR2, so that state is recorded unavailable. A post-execution injected
+missing-A-bit result must compare unequal at its physical address and bit.
+Cached interpreter execution is explicitly unsupported: the current cached
+translation probe is not a cached instruction interpreter and does not carry
+tracked A/D effects. This compares two local paths that share the page walker;
+it is not independent hardware evidence. Reducer coverage and broader
+S4-17 cases remain open. See the [S4-17a report](../reports/STAGE_4_S4-17A_2026-11-06.md).
+
+## S4-18c: target descriptor Accessed update
+
+Reproduce the bounded delivery checks with:
+
+```text
+cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1
+cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The system target covers guest `LIDT → LGDT → MOV [RBX],RCX → #PF` delivery
+through the guest-loaded tables with target descriptor A=0, exact six-qword
+frame, tracked GDT PTE Accessed/Dirty transitions, a one-byte descriptor update
+and handler load. Negative controls cover an A=1 descriptor on a read-only GDT,
+an invalid A=0 target, and a read-only A=0 update fault with its secondary PFEC,
+CR2, retained frame and no CPU entry commit. A distinct-linear-address
+GDT/stack physical alias is rejected before frame stores. Additional cases
+make the saved RIP overwrite the GDT leaf PTE with a read-only mapping and a
+redirect to another RAM page; preflight preserves the PTE and redirected
+target, with no frame write committed. Another case makes an earlier frame
+slot rewrite a stack PTE used by a later slot, which is rejected before any
+frame write. Missing-page and physical-hole cases confirm the first stack
+failure keeps its original fault/backend classification even when an
+unreachable later slot aliases the descriptor. The emulator's chosen store order is not claimed as
+universal hardware fault ordering; a secondary #PF would require #DF, which
+remains unsupported here. This does not demonstrate recovery, restartability,
+physical-hardware equivalence, or the rest of Stage 4. Results are recorded in
+the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md).
+
+<a id="s4-19c-secondary-pf-double-fault-delivery-and-shutdown"></a>
+
+## S4-19c: secondary #PF, double-fault delivery, and shutdown
+
+Run the bounded delivery checks with:
+
+```text
+cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1
+cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The positive system case makes the target #PF code descriptor's Accessed-bit
+write fault on a read-only GDT. It checks the original and secondary page-fault
+records, exactly one vector-8 delivery, zero #DF error code, no forced RF in the
+#DF frame, preserved CR2, all six frame slots, and execution of the first
+handler MOV. The shutdown case faults while writing the #DF frame to an absent
+stack page; it checks the newest CR2, retained frame-prefix writes, shutdown
+activity, no handler step, and a subsequent paged step with zero fetches,
+accesses, A/D updates, or writes. Existing IDT/GDT/stack failure cases also
+check their final attempt outcomes. The focused ISA group covers #DF frame
+construction and failure ordering.
+
+This is local emulator evidence for #PF → #DF and #DF-delivery #PF → shutdown
+inside the bounded profile. It does not establish other exception-pair
+precedence, hardware ordering, handler repair, INVLPG, IRETQ, or retry. Results
+are recorded in the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md).
+
+<a id="s4-19d-guest-pte-repair-and-invlpg"></a>
+
+## S4-19d: guest PTE repair and INVLPG
+
+The system scenario raises a real write-protection #PF, delivers it through
+the IDTR/GDTR values set in its initial fixture state, then executes guest
+`MOV [RDI],RSI` to change the selected writable alias PTE-page mapping's leaf
+data PTE from read-only to read-write while retaining A and supervisor-only
+U/S=0. It next executes guest `INVLPG [RBX]` for the
+original faulting address. Checks cover unchanged faulting data, unchanged
+RBX/RCX, CR2, retired instruction count, exact PTE value, invalidation address,
+and tracked A/D and callback order. No host PTE patch occurs after the initial
+fixture setup.
+
+This stops before IRETQ and retry. Since the tracked paged path does not keep a
+translation cache, the scenario demonstrates guest invalidation execution but
+not stale-TLB eviction or that the invalidation is needed. Results are recorded
+in the [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md).
+
+<a id="s4-19e1-guest-error-code-discard-and-paged-iretq"></a>
+
+## S4-19e1: guest error-code discard and paged IRETQ
+
+The system scenario extends the actual #PF → guest PTE repair → INVLPG path.
+Guest `LEA RSP,[RSP+8]` removes the error-code slot and guest `IRETQ` reads the
+five-qword frame plus real CS/SS descriptors through the tracked Long64 walker.
+It checks return to the original faulting RIP, exact restoration of the
+unaligned RSP and RF=1, unchanged CR2/control registers/GPR and unchanged data.
+The fixture provides a real pre-accessed writable CPL0 SS descriptor. No host
+instruction patches the frame or return state.
+
+Read page faults update CR2 and retain already completed tracked A/D effects;
+backend failures remain separate. Paged IRETQ validates CS before checking
+saved SS selector/bounds and does not commit partial CPU state. This stops at
+the original MOV before retry. The tracked path has no translation cache.
+Results are recorded in the
+[S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md).
+
+<a id="s4-19e2-faulting-mov-retry-and-data-commit"></a>
+
+## S4-19e2: faulting MOV retry and data commit
+
+After the guest return in S4-19e1, the exact original `MOV [RBX],RCX` is
+executed again from its faulting RIP. The test checks one retirement, one
+qword data write, the preceding tracked D-bit update (`0xe023 → 0xe063`), RF=0
+after the retried instruction, and a following guest `MOV RAX,[RBX]` readback.
+The adjacent qword canary is unchanged before and after the readback. No host
+instruction patches RIP, RSP or PTE after the guest fault begins.
+
+RF-clear tests cover successful MOV, operand #GP, data #PF/backend error and
+pre-start exits. `rflags_defined` remains unchanged. This is the bounded
+Long64 CPL0/WP=1 private-RAM profile; the tracked path has no translation
+cache, so stale-TLB behavior is not claimed. See the
+[S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md).
+
+<a id="s4-20a-synthetic-paged-iretq-outer-return"></a>
+
+## S4-20a: synthetic paged IRETQ outer return to CPL3
+
+This CPU-only profile checks the outer-privilege return path for exact paged
+`48 CF`. The initial state is the synthetic four-level Long64 profile with
+`CR4.LA57=0`, CPUID leaf 7 zero, a CPL0 CS cache and null DS/ES/FS/GS selectors.
+The guest frame contains RIP, CS, RFLAGS, RSP and SS. User CS/SS descriptors
+are the bounded flat, already-Accessed GDT forms recorded in the
+[machine contract](../specs/MACHINE_CONTRACT.md#synthetic-paged-iretq-outer-return-to-cpl3-s4-20a).
+
+Unit tests verify exact CPU state after success, atomic rejection of malformed
+selectors/descriptors/addresses/flags, separate guest paging faults and backend
+read errors, and first-fault ordering across the frame and CS/SS descriptor
+reads. Run:
+
+```sh
+cargo test -p od-isa --lib iretq::tests --offline -- --test-threads=1
+```
+
+This slice does not execute the next user instruction or prove machine
+`AccessContext` derives CPL from CS; that integration is S4-20b. It does not
+establish Linux boot or implement #GP/#SS classification for rejected return
+state. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md).
+
+<a id="s4-20b-machine-iretq-and-cpl3-load"></a>
+
+## S4-20b: machine IRETQ followed by one CPL3 load
+
+The machine wrapper returns from CPL0 to CPL3 and executes exactly
+`48 8B 03` (`MOV RAX,[RBX]`) using CR3 from CPU state and CPL derived from the
+committed CS selector/cache. It does not accept caller-supplied privilege or
+CR3 values. The bounded instruction fetch must fit in one guest page; offset
+`0xffd` is covered, while cross-page instruction fetch is outside this slice.
+
+System tests cover successful user fetch/data read, supervisor-only fetch and
+data mappings at every page-table level, PFEC `0x15`/`0x05`, exact CR2 and saved
+RIP, Accessed updates, no Dirty or operand write, a physical-hole backend abort,
+and a late SS-descriptor page fault before IRETQ state commit. A second
+instruction fault preserves the already completed CPL3 transition; an IRETQ
+fault does not run the load. ISA profile tests reject nearby encodings without
+operand reads or retirement; instruction fetch may already have occurred
+during bounded decoding. The MOV clears RF before operand access, so that
+defined flags effect remains if the later data access aborts.
+
+Run the focused admission test and the complete machine system target:
+
+```sh
+cargo test -p od-isa --lib cpl3_load_ --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The profile does not support cross-page instruction fetch, user stores,
+exceptions delivered from CPL3, syscalls, or Linux boot. See the
+[S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md) and
+[machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b).
+
+## S4-20c: paged SYSCALL → kernel store → SYSRETQ → user load
+
+The four-step machine test exercises the exact instruction bytes through
+tracked paging, with a supervisor RW mapping and a user RO alias to one data
+qword. It verifies the nonce written by the kernel in CPL0 is observed by the
+final CPL3 load, the CPL transitions and selector caches, RCX/R11/FMASK and
+RFLAGS definedness, and unchanged RSP/CR3. STAR selector derivation, SYSRETQ's
+`0x3c7fd7` flags mask, reserved-bit handling and definedness are covered by ISA
+tests.
+
+Failure tests cover SCE-disabled #UD, invalid SYSRETQ CPL/canonical address,
+saved TF rejection, live TF/RF admission, page permissions and fetch/data
+faults, physical backend aborts, and instruction/operand page boundaries. The
+ISA test checks that saved-TF rejection occurs after required fetch with no CPU
+commit. A separate machine-level probe during independent review (outside the
+33-test target) confirmed the exact fetch A-bit PTE update and
+`committed_write` callback on that path. Exact A/D PTE values and callback
+order are checked by the system target for success, kernel-store #PF/backend
+abort, and late user fetch/read failures; already committed SYSCALL state and
+kernel-store writes remain visible.
+
+Run the focused ISA, complete machine-system, and affected machine checks:
+
+```sh
+cargo test -p od-isa --lib syscall --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+cargo check -p od-machine --all-targets --offline
+```
+
+All 5 focused ISA tests and all 33 system tests passed. Formatting and the
+machine all-target check passed; the build reports the existing unrelated
+`od-jit::block::CodeMemory::one_instruction` dead-code warning. Graphify was
+updated after code changes (27,525 nodes, 69,045 edges). Independent
+Sol/high review accepted the slice with no P0–P3 findings. Cross-page accesses,
+single-step/debug behavior, asynchronous events, stack switching, exception
+delivery from CPL3 and Linux boot remain outside this slice. See the
+[S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c).
+
+<a id="s4-20d-paged-cpl3-mov-store-load-after-iretq"></a>
+
+## S4-20d: paged CPL3 MOV store/load after IRETQ
+
+The end-to-end sequence performs paged IRETQ, the accepted S4-20b user load,
+then exact `48 89 0B` store and `48 8B 03` reload. The nonce is different from
+initial data. Checks cover separate retirement and RIP progression, CPL3
+selector caches, unchanged RSP/CR3, one operand write, and the nonce in RAX.
+The legacy load-only entry still rejects the store encoding.
+
+The system target tests user RO and supervisor-only stores with PFEC `0x07`,
+supervisor-only read `0x05`, supervisor-only fetch on every page-table level
+and NX fetch `0x15`, non-present instruction fetch `0x14`, and non-present
+read/store `0x04`/`0x06`. It checks exact CR2/saved RIP, no retirement or
+operand/D write on faults, and physical backend failure as `OperandPhysical`.
+A clean first user fetch-fault fixture independently checks expected A-bit PTE
+values and ordered callback ranges. Exact A/D readbacks and callback order are
+also checked for non-present data and store-fault paths. Supervisor-only read
+and late non-present fetch cases verify fault records and retention of earlier
+committed effects without a separate exact A/D/callback assertion.
+
+Run the focused ISA group, full machine-system target and affected machine
+check:
+
+```sh
+cargo test -p od-isa --lib cpl3_ --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+cargo check -p od-machine --all-targets --offline
+```
+
+All 9 matching ISA tests and 35 system tests passed, as did formatting, the
+machine all-target check and `git diff --check`. Graphify was updated after
+code changes (27,540 nodes, 69,099 edges). Independent Sol/high review accepted
+the slice with no P0–P3 findings. Live TF/RF/AC, cross-page accesses, privileged
+instructions, invalid-selector IRETQ and CPL3 exception delivery remain outside
+this slice. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d).
+
+<a id="s4-20e-paged-cpl3-mov-cr0-after-iretq"></a>
+
+## S4-20e: paged CPL3 MOV CR0 after IRETQ
+
+`cpl3_mov_cr0_first_fetch_enforces_user_page_permissions` executes the new
+`step_paged_cpl3_mov_cr0` entry as the first user instruction after paged
+IRETQ. The matrix covers supervisor-only fetch at each paging level, NX, and a
+non-present leaf. For the non-present case it asserts `PFEC=0x14`, linear
+address/CR2 and saved RIP equal to the user instruction address, zero
+retirement, and unchanged CPU state except CR2. It checks the three completed
+A-bit updates, exact readbacks of the three present ancestor entries, and
+ordered write callbacks; no D-bit update or operand write occurs. The
+non-present leaf is not read back after the fault.
+
+`cpl3_mov_cr0_faults_without_committing_cpu_state` checks `#GP(0)` for the
+bare instruction for varied RAX and IOPL values, and `#UD` for the exact LOCK
+form. It verifies no retirement, no partial CPU commit, and preservation of
+the CR2 sentinel. The same fixture checks rejection before fetch/callbacks for
+invalid CS, CR0/CR4, TF/RF/AC and active STI shadow, and checks an unlisted
+instruction without operand access. `cpl3_mov_cr0_instruction_offset_boundary_is_exact`
+checks `0xff1` acceptance and `0xff2` pre-fetch rejection.
+`cpl3_mov_cr0_physical_fetch_failure_keeps_walk_effects_without_retirement`
+checks `OperandPhysical` at GPA `0x30000` and retention of successful earlier
+A updates. ISA fetch-fault tests inject a fault at each byte of bare and LOCK
+encodings to verify fetch precedence over #GP/#UD. The page-walk test
+`fetch_accessed_write_failures_are_tracked_before_physical_fetch` injects
+`TableWrite` failures at each A-bit level through the internal writer seam;
+this validates the shared walker, not the machine-entry report projection.
+
+The established S4-20e evidence includes 10 `cpl3_` ISA tests and 39 system
+test functions, with one additional non-present-fetch assertion case added
+inside the system suite. The targeted first-fetch test also passed separately.
+The page-walk A-write matrix and its new fetch-specific case passed, as did
+`cargo check -p od-machine --all-targets --offline`, formatting and
+`git diff --check`. Graphify was updated after the code changes in the primary
+checkout (27,555 nodes, 69,202 edges). Sol review identified that non-present PFEC `0x14` needed to
+exercise the new entry; the direct system case was added and its targeted test
+passed. Independent Sol code and documentation reviews passed with no
+remaining findings. See the
+[S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-cr0-after-iretq-s4-20e),
+and [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты).
+
+## S4-21c bounded paged vCPU owner
+
+`cargo test -p od-machine --lib --offline` passed 120 unit tests, including the
+four `paged_vcpu_session` tests. `cargo test -p od-machine --test
+paged_probe_quantum --test uart_rx_events --offline` passed 21 paged-quantum
+and 7 UART RX tests. They cover STOP before fetch and between instructions,
+pause/resume, HLT, fixed-image reset from paused/stopped/halted/faulted, stale
+generation, pending due/future RX, replacement UART and invalid-image
+atomicity. The store/OUT case patches code through private test access after
+loading; the public fixed image remains load/OUT/HLT. Generation exhaustion is
+covered by the existing EventQueue unit test, not injected through this owner.
+Independent Sol/high review found no P0–P3 issues. No runner, IRQ or hardware
+reset acceptance is claimed. See [report](../reports/STAGE_4_S4-21C_2026-11-07.md).
+
+## S4-21d runner completion and cancellation
+
+`cargo test -p od-runner --test stage4_probe_cli --offline -- --test-threads=1`
+passed 8 tests; the corresponding `stage4_probe_build_cli` command passed 1.
+They cover exact nonce and byte completion, absent and mismatched expectation,
+STOP before fetch and after load and OUT, work limit, malformed arguments and
+loader refusal. The `PagedVcpuSession::drain_tx` unit test passed, as did
+`cargo check -p od-runner --all-targets --offline`, workspace formatting and
+diff checks. A separate runner unit test checks error category mapping. The
+fixed loader does not expose fault injection through the CLI. Independent
+Sol/high review passed. See [report](../reports/STAGE_4_S4-21D_2026-11-07.md).
+
+## S4-22b Paged session clock and UART RX
+
+`cargo test -p od-machine --lib --offline` passed 123 unit tests. The new
+`clock_drives_rx_and_split_advances_match` test verifies that RX dispatch reads
+the session clock, advancement is explicit, and split advancement matches a
+single advancement. `clock_guards_halt_reset_and_overflow` checks zero frequency,
+pause/STOP/terminal guards, active guest HLT progression without RX dispatch,
+reset time preservation, and atomic time/TSC overflow. The run and polling path
+does not move time. Stage 4 runner CLI tests passed 8 cases and the artifact
+build CLI passed 1; runner all-targets check, formatting, and diff checks also
+passed. The independent Sol/high review found no code findings. The runner's
+frequency is diagnostic and is not advertised to the guest. See [report](../reports/STAGE_4_S4-22B_2026-11-07.md).

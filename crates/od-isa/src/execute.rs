@@ -2026,6 +2026,7 @@ pub struct InvlpgResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MovCr3Exit {
+    Shutdown,
     TranslationContextChange(TranslationContextChange),
     Fault(ArchitecturalFault),
     Unsupported { opcode: u8 },
@@ -2075,6 +2076,18 @@ pub struct PagedCpl0Cr3ProbeV1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr0WpProbeV1;
 
+/// Explicit opt-in for one exact paged data MOV under the CPU-owned CR0.WP profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0Cr0WpMovV1;
+
+/// Exact paged `MOV [RDI], RSI` for a CPL0 page-table repair handler.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0PageTableRepairMovV1;
+
+/// Exact paged `LEA RSP,[RSP+8]` for discarding an exception error code.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0ExceptionStackDiscardV1;
+
 /// Explicit opt-in marker for the paged probe profile that additionally
 /// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2098,6 +2111,10 @@ pub struct MovCr3WpLong64V1;
 /// Exact opt-in CPU profile for paged `LIDT [RSP+sign_extend(disp8)]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedLidtLong64V1;
+
+/// Exact opt-in CPU profile for paged `LGDT [RBP+sign_extend(disp8)]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedLgdtLong64V1;
 
 /// Exact opt-in CPU profile for one bare `MOV CR0, RAX` WP toggle in Long64.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2139,6 +2156,8 @@ pub struct PioU8Result<E> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedProbeRejection {
     InvalidRflagsDefined { value: u64 },
+    ResumeFlagSet,
+    UserMovFlagsOutsideProfile,
     WrongMode,
     WrongPrivilege,
     ControlRegistersMissing,
@@ -2147,12 +2166,14 @@ pub enum PagedProbeRejection {
     NotRunning,
     StiShadowMissing,
     StiShadowActive,
+    CrossPageOperand { address: u64, length: usize },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedProbeExit<E> {
     Retired,
     Halted,
+    Shutdown,
     TranslationContextChange(TranslationContextChange),
     Unsupported { opcode: u8 },
     Fault(ArchitecturalFault),
@@ -16271,9 +16292,154 @@ pub fn step_paged_lidt(
     }
 }
 
+/// Execute exactly one bare `0F 01 55 ib` LGDT under the fixed paged
+/// Long64 profile. Its ten-byte SS-based source must remain in one guest page.
+pub fn step_paged_lgdt(
+    _profile: PagedLgdtLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+        || state.gdtr.is_none()
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff >= 0xffd {
+        return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let mut fetch_capture = FetchCapture::bounded_to_page(memory, state.rip);
+    let decoded = long_decode::decode(&mut fetch_capture, state.rip, context);
+    let raw = fetch_capture.captured_bytes();
+    if fetch_capture.page_boundary_reached {
+        return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
+    }
+    let regular = decoded.as_ref().is_ok_and(|instruction| {
+        instruction.length == 4
+            && matches!(
+                instruction.operation,
+                long_decode::Operation::LoadGdtr { .. }
+            )
+            && raw.len() == 4
+            && raw.starts_with(&[0x0f, 0x01, 0x55])
+    });
+    let locked_ud = matches!(
+        &decoded,
+        Err(long_decode::DecodeError::Invalid { length: 5, .. })
+            if raw.as_slice().starts_with(&[0xf0, 0x0f, 0x01, 0x55]) && raw.len() == 5
+    );
+    if !regular && !locked_ud {
+        return match decoded {
+            Err(long_decode::DecodeError::Memory(MemoryError::Architectural(fault))) => {
+                result(PagedProbeExit::Fault(fault), 0)
+            }
+            Err(long_decode::DecodeError::Memory(error)) => {
+                result(PagedProbeExit::Backend(error), 0)
+            }
+            _ => result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0),
+        };
+    }
+
+    if locked_ud {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+
+    drop(fetch_capture);
+    let Ok(long_decode::Instruction {
+        operation: long_decode::Operation::LoadGdtr { source },
+        ..
+    }) = decoded
+    else {
+        unreachable!("the exact LGDT byte gate matches the decoded operation")
+    };
+    let next_rip = state.rip.wrapping_add(4);
+    let source_address = source.effective_address(state, next_rip);
+    let source_last = source_address.checked_add(9);
+    if !canonical(source_address) || source_last.is_none_or(|last| !canonical(last)) {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if source_address & 0xfff > 0xff6 {
+        return result(PagedProbeExit::Unsupported { opcode: 0x01 }, 0);
+    }
+    match load_gdtr(state, memory, context, next_rip, source) {
+        Ok(()) => {
+            state.rip = next_rip;
+            result(PagedProbeExit::Retired, 1)
+        }
+        Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
+}
+
 struct FetchCapture<'a, M> {
     inner: &'a mut M,
     bytes: Vec<(u64, u8)>,
+    fetch_page: Option<u64>,
+    page_boundary_reached: bool,
+    replay_captured: bool,
 }
 
 impl<'a, M> FetchCapture<'a, M> {
@@ -16281,6 +16447,19 @@ impl<'a, M> FetchCapture<'a, M> {
         Self {
             inner,
             bytes: Vec::new(),
+            fetch_page: None,
+            page_boundary_reached: false,
+            replay_captured: false,
+        }
+    }
+
+    fn bounded_to_page(inner: &'a mut M, rip: u64) -> Self {
+        Self {
+            inner,
+            bytes: Vec::new(),
+            fetch_page: Some(rip >> 12),
+            page_boundary_reached: false,
+            replay_captured: false,
         }
     }
 
@@ -16291,6 +16470,20 @@ impl<'a, M> FetchCapture<'a, M> {
 
 impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        if self.replay_captured {
+            return self
+                .bytes
+                .iter()
+                .find(|(at, _)| *at == address)
+                .map(|(_, byte)| *byte)
+                .ok_or_else(|| MemoryError::Backend("fetch outside captured instruction".into()));
+        }
+        if self.fetch_page.is_some_and(|page| address >> 12 != page) {
+            self.page_boundary_reached = true;
+            return Err(MemoryError::Backend(
+                "bounded instruction fetch crossed its guest page".into(),
+            ));
+        }
         let byte = self.inner.fetch(address, context)?;
         self.bytes.push((address, byte));
         Ok(byte)
@@ -16343,6 +16536,13 @@ fn step_mov_cr3_with_profiles(
     cr0_profile: Cr0Profile,
     cr4_profile: Cr4Profile,
 ) -> Result<MovCr3Result, MovCr3InputError> {
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return Ok(MovCr3Result {
+            exit: MovCr3Exit::Shutdown,
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        });
+    }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return Err(MovCr3InputError::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -16552,6 +16752,9 @@ pub fn step_paged_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
+        false,
+        false,
         0,
         state,
         memory,
@@ -16728,7 +16931,10 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
         false,
+        false,
+        false,
         true,
+        false,
         false,
         false,
         efer,
@@ -16740,9 +16946,11 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
     )
 }
 
-/// Execute one instruction from the bounded CPU-owned CR0.WP profile.
-/// Unlike the machine runner, this CPU entry accepts any CPL so exact
-/// MOV CR0 can fetch and then produce its architectural #GP(0) at CPL1–3.
+/// Execute one instruction from the parent CPU-owned CR0.WP profile. It admits
+/// MOV CR0 and the exact paged qword store; S4-19b's load form has a separate
+/// selector. The machine supplies translation through `GuestMemory`. This CPU
+/// entry accepts any CPL so MOV CR0 can fetch and then produce its architectural
+/// #GP(0) at CPL1–3.
 pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
     _profile: PagedCpl0Cr0WpProbeV1,
     state: &mut LongModeState,
@@ -16755,12 +16963,355 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
     step_paged_probe_inner(
         false,
         false,
+        false,
+        false,
         true,
         false,
+        true,
         efer,
         state,
         memory,
         pio,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute exactly bare `MOV [RDI], RSI` with paging and CR0.WP enabled.
+pub fn step_paged_cr0_wp_page_table_repair_mov(
+    _profile: PagedCpl0PageTableRepairMovV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr3.is_none() || state.cr4.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state
+            .cr3
+            .is_some_and(|value| value & !((1u64 << 36) - 1) != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    for (offset, expected) in [0x48, 0x89, 0x37].into_iter().enumerate() {
+        let address = state.rip.checked_add(offset as u64);
+        if address.is_none_or(|address| address >> 47 != 0 && address >> 47 != 0x1ffff) {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        let byte = match memory.fetch(address.unwrap(), context) {
+            Ok(byte) => byte,
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        };
+        if byte != expected {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: if offset == 2 { 0x89 } else { byte },
+                },
+                0,
+            );
+        }
+    }
+    let destination = MemoryOperand {
+        base: AddressBase::Register(Register::Rdi),
+        index: None,
+        scale: 1,
+        displacement: 0,
+        address_size: OperandSize::Qword,
+        size: OperandSize::Qword,
+    };
+    let next_rip = state.rip.wrapping_add(3);
+    let start = match destination.linear_address_48(state, next_rip) {
+        Ok(start) => start,
+        Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
+    };
+    if start & 0xfff > 0xff8 {
+        return reject(PagedProbeRejection::CrossPageOperand {
+            address: start,
+            length: 8,
+        });
+    }
+    let address = match destination.access_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(MemoryError::Architectural(fault)) => return result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+    };
+    if let Err(error) = memory.write_integer(
+        address,
+        context,
+        OperandSize::Qword,
+        state.gpr[Register::Rsi as usize],
+    ) {
+        return match error {
+            MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+            error => result(PagedProbeExit::Backend(error), 0),
+        };
+    }
+    state.rip = next_rip;
+    result(PagedProbeExit::Retired, 1)
+}
+
+/// Execute exact `48 8D 64 24 08`, discarding one error-code slot without a data-memory access.
+pub fn step_paged_exception_stack_discard(
+    _profile: PagedCpl0ExceptionStackDiscardV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if state.rflags & (1 << 16) != 0 {
+        return reject(PagedProbeRejection::ResumeFlagSet);
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr3.is_none() || state.cr4.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state
+            .cr3
+            .is_some_and(|value| value & !((1u64 << 36) - 1) != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    for (offset, expected) in [0x48, 0x8d, 0x64, 0x24, 0x08].into_iter().enumerate() {
+        let address = state.rip.checked_add(offset as u64);
+        if address.is_none_or(|address| address >> 47 != 0 && address >> 47 != 0x1ffff) {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        let byte = match memory.fetch(address.unwrap(), context) {
+            Ok(byte) => byte,
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        };
+        if byte != expected {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: if offset >= 2 { 0x8d } else { byte },
+                },
+                0,
+            );
+        }
+    }
+    state.gpr[Register::Rsp as usize] = state.gpr[Register::Rsp as usize].wrapping_add(8);
+    state.rip = state.rip.wrapping_add(5);
+    result(PagedProbeExit::Retired, 1)
+}
+
+/// Execute only the exact qword data MOV forms admitted by the CPU-owned
+/// CR0.WP profile. CR0 writes and non-CPL0 data accesses are excluded.
+pub fn step_paged_cr0_wp_mov(
+    _profile: PagedCpl0Cr0WpMovV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let rejected = |reason| PagedProbeResult {
+        exit: PagedProbeExit::Rejected(reason),
+        instructions_executed: 0,
+        rflags_defined: initial_rflags_defined,
+    };
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return rejected(PagedProbeRejection::WrongPrivilege);
+    }
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!("paged MOV profile cannot perform port reads")
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!("paged MOV profile cannot perform port writes")
+        }
+    }
+    step_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute only the bounded CPL3 `48 8B 03` using CPU-owned paging controls.
+pub fn step_paged_cpl3_load(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+    }
+    step_paged_probe_inner(
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute either exact CPL3 qword MOV using CPU-owned paging controls.
+pub fn step_paged_cpl3_mov(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+    }
+    step_paged_probe_inner(
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
         context,
         initial_rflags_defined,
     )
@@ -16790,6 +17341,9 @@ pub fn step_mov_cr0_wp(
     step_paged_probe_inner(
         false,
         false,
+        false,
+        false,
+        true,
         true,
         true,
         efer,
@@ -16813,7 +17367,10 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
+        false,
+        false,
         true,
+        false,
         false,
         false,
         false,
@@ -16827,10 +17384,13 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
 }
 
 fn step_paged_probe_inner<P: crate::PortIo>(
+    user_mov: bool,
+    user_load_only: bool,
     allow_stack_forms: bool,
     allow_cr3: bool,
     allow_cr0_wp: bool,
     cr0_mov_only: bool,
+    allow_mov_cr0: bool,
     efer: u64,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -16845,6 +17405,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     };
     let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
 
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return reject(PagedProbeRejection::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -16852,6 +17415,17 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     }
     if context.mode != InstructionMode::Long64 {
         return reject(PagedProbeRejection::WrongMode);
+    }
+    if user_load_only
+        && (context.privilege != PrivilegeLevel::Ring3 || state.cr0 != Some(Cr0Profile::BASE))
+    {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if user_mov && context.privilege != PrivilegeLevel::Ring3 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if user_mov && state.cr0 != Some(Cr0Profile::BASE) {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
     }
     if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
@@ -16871,6 +17445,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
     } else if allow_cr0_wp {
         efer == 0xd00
+            && (!user_mov || state.cr0 == Some(Cr0Profile::BASE))
             && state
                 .cr3
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
@@ -16904,7 +17479,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
-    if (allow_cr3 || allow_cr0_wp) && state.rip & 0xfff >= 0xff2 {
+    if user_mov && state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
+        return reject(PagedProbeRejection::UserMovFlagsOutsideProfile);
+    }
+    if ((allow_cr3 || (allow_cr0_wp && !user_load_only && !user_mov)) && state.rip & 0xfff >= 0xff2)
+        || ((user_load_only || user_mov) && state.rip & 0xfff > 0xffd)
+    {
         return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
     }
 
@@ -16912,7 +17492,31 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         origin: AccessOrigin::Explicit,
         ..context
     };
-    let instruction = match long_decode::decode(memory, state.rip, context) {
+    // Admit the exact three-byte form before invoking the general decoder.  Replay
+    // the captured bytes so guest fetches and their side effects occur only once.
+    let decoded = if user_load_only || user_mov {
+        let mut captured = FetchCapture::new(memory);
+        let mut opcode = 0;
+        for offset in 0..3 {
+            match captured.fetch(state.rip.wrapping_add(offset as u64), context) {
+                Ok(byte) if offset == 0 && byte == 0x48 => {}
+                Ok(byte) if offset == 1 && (byte == 0x8b || (user_mov && byte == 0x89)) => {
+                    opcode = byte;
+                }
+                Ok(byte) if offset == 2 && byte == if opcode == 0x8b { 0x03 } else { 0x0b } => {}
+                Ok(byte) => return result(PagedProbeExit::Unsupported { opcode: byte }, 0),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+        }
+        captured.replay_captured = true;
+        long_decode::decode(&mut captured, state.rip, context)
+    } else {
+        long_decode::decode(memory, state.rip, context)
+    };
+    let instruction = match decoded {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
             return result(
@@ -16990,17 +17594,28 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         return unsupported();
     }
     if allow_cr0_wp
-        && !(matches!(instruction.operation, Operation::WriteCr0)
+        && !((allow_mov_cr0 && matches!(instruction.operation, Operation::WriteCr0))
             || (!cr0_mov_only
-                && matches!(
-                    instruction.operation,
-                    Operation::Mov {
-                        dst: Operand::Memory(_),
-                        src: Operand::Register(_),
-                    }
-                )))
+                && if allow_mov_cr0 {
+                    is_paged_mov_store_instruction(&instruction)
+                } else {
+                    is_paged_mov_instruction(&instruction)
+                }))
     {
         return unsupported();
+    }
+    if user_load_only
+        && !(instruction.opcode.byte == 0x8b && is_paged_mov_instruction(&instruction))
+    {
+        return unsupported();
+    }
+    if allow_cr0_wp
+        && !user_load_only
+        && !user_mov
+        && context.privilege != PrivilegeLevel::Ring0
+        && is_paged_mov_instruction(&instruction)
+    {
+        return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
         Operation::WriteCr0
@@ -17115,6 +17730,18 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
+            if user_mov && state.gpr[Register::Rbx as usize] & 0xfff > 0xff8 {
+                return result(
+                    PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                        address: state.gpr[Register::Rbx as usize],
+                        length: 8,
+                    }),
+                    0,
+                );
+            }
+            if allow_cr0_wp {
+                state.rflags &= !(1 << 16);
+            }
             let address = match source.access_address_48(state, next_rip) {
                 Ok(address) => address,
                 Err(MemoryError::Architectural(fault)) => {
@@ -17153,19 +17780,34 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
-            if allow_cr0_wp && context.privilege != PrivilegeLevel::Ring0 {
+            if allow_cr0_wp && !user_mov && context.privilege != PrivilegeLevel::Ring0 {
                 return reject(PagedProbeRejection::WrongPrivilege);
+            }
+            if user_mov && state.gpr[Register::Rbx as usize] & 0xfff > 0xff8 {
+                return result(
+                    PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                        address: state.gpr[Register::Rbx as usize],
+                        length: 8,
+                    }),
+                    0,
+                );
             }
             let start = if allow_cr0_wp {
                 match destination.linear_address_48(state, next_rip) {
                     Ok(start) => start,
-                    Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
+                    Err(fault) => {
+                        state.rflags &= !(1 << 16);
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
                 }
             } else {
                 0
             };
             if allow_cr0_wp && start & 0xfff > 0xff8 {
                 return unsupported();
+            }
+            if allow_cr0_wp {
+                state.rflags &= !(1 << 16);
             }
             let address = match destination.access_address_48(state, next_rip) {
                 Ok(address) => address,
@@ -23809,6 +24451,10 @@ fn is_paged_mov_instruction(instruction: &long_decode::Instruction) -> bool {
             }
             _ => false,
         }
+}
+
+fn is_paged_mov_store_instruction(instruction: &long_decode::Instruction) -> bool {
+    instruction.opcode.byte == 0x89 && is_paged_mov_instruction(instruction)
 }
 
 fn is_paged_mov_dword_read(instruction: &long_decode::Instruction) -> bool {
@@ -51926,6 +52572,8 @@ mod tests {
     fn direct_relative_branches_use_next_rip_and_preserve_flags() {
         let flags = crate::CF | crate::PF | crate::ZF;
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52012,6 +52660,8 @@ mod tests {
     #[test]
     fn indirect_register_jmp_updates_rip_or_faults_before_commit() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52065,6 +52715,8 @@ mod tests {
         assert_eq!(defined, crate::CF | crate::ZF);
 
         let before = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52123,6 +52775,8 @@ mod tests {
     fn indirect_memory_jmp_reads_exact_qword_before_target_validation() {
         let base = 0x2000;
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52167,6 +52821,8 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 8)]);
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52235,6 +52891,8 @@ mod tests {
     #[test]
     fn indirect_memory_call_reads_source_then_pushes_and_faults_without_commit() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52312,6 +52970,8 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -52359,6 +53019,8 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52411,6 +53073,8 @@ mod tests {
     #[test]
     fn popfq_updates_only_profile_flags_and_commits_after_stack_read() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52472,6 +53136,8 @@ mod tests {
     #[test]
     fn popfq_stack_fault_and_out_of_profile_event_flags_do_not_commit() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52589,6 +53255,8 @@ mod tests {
     #[test]
     fn pushfq_stores_the_sdm_mask_and_preserves_flags() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52641,6 +53309,8 @@ mod tests {
     #[test]
     fn pushfq_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52696,6 +53366,8 @@ mod tests {
     #[test]
     fn pushfw_stores_the_low_flags_word_and_preserves_flags() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52745,6 +53417,8 @@ mod tests {
     #[test]
     fn pushfw_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52801,6 +53475,8 @@ mod tests {
     fn ret_imm16_reads_qword_then_commits_pop_and_zero_extended_adjustment() {
         for (immediate, expected_rsp) in [(0u16, 0x1008u64), (0x20, 0x1028), (u16::MAX, 0x1_1007)] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -52850,6 +53526,8 @@ mod tests {
     #[test]
     fn ret_imm16_truncation_stack_read_and_noncanonical_target_do_not_commit() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52931,6 +53609,8 @@ mod tests {
     fn direct_branch_wraps_rip_and_taken_noncanonical_target_faults_without_commit() {
         let base = u64::MAX - 1;
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52972,6 +53652,8 @@ mod tests {
 
         let base = 0x0000_7fff_ffff_fffd;
         let before = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53032,6 +53714,8 @@ mod tests {
             &[0xf3, 0xeb, 0][..],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53074,6 +53758,8 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53157,6 +53843,8 @@ mod tests {
             ), // REX.R / ignored ModRM.reg does not change AL destination
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53216,6 +53904,8 @@ mod tests {
     fn setcc_memory_store_is_one_byte_and_faults_do_not_commit() {
         let code = [0x0f, 0x94, 0x45, 0x00]; // SETZ byte ptr [RBP]
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53316,6 +54006,8 @@ mod tests {
     #[test]
     fn setcc_accepts_address_override_and_rejects_unsupported_repeat_or_segment_forms() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53363,6 +54055,8 @@ mod tests {
             &[0x64, 0x0f, 0x94, 0x00][..],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53410,6 +54104,8 @@ mod tests {
     fn cmovcc_reads_memory_even_when_false_and_commits_only_after_success() {
         let code = [0x0f, 0x44, 0x03]; // CMOVE EAX, dword ptr [RBX]
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53463,6 +54159,8 @@ mod tests {
         assert_eq!(defined, crate::INTEGER_FLAGS);
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53512,6 +54210,8 @@ mod tests {
     fn cmovcc_false_memory_read_faults_before_any_architectural_commit() {
         let code = [0x0f, 0x44, 0x45, 0x00]; // CMOVE EAX, dword ptr [RBP]
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53592,6 +54292,8 @@ mod tests {
     #[test]
     fn cmovcc_accepts_operand_and_address_overrides_and_rejects_group1_and_fs_gs_memory() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53641,6 +54343,8 @@ mod tests {
             &[0x65, 0x0f, 0x44, 0x00][..],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53713,6 +54417,8 @@ mod tests {
                     let mut memory = Memory::new(&code);
                     let before_ram = memory.bytes.clone();
                     let mut state = LongModeState {
+                        syscall: None,
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -53799,6 +54505,8 @@ mod tests {
     #[test]
     fn high_byte_register_mov_load_and_store_use_legacy_aliases() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53873,6 +54581,8 @@ mod tests {
                 );
                 code.extend_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()[..size.bytes()]);
                 let mut state = LongModeState {
+                    syscall: None,
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -53951,6 +54661,8 @@ mod tests {
     #[test]
     fn multiply_forms_write_the_correct_halves_and_truncated_result() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54094,6 +54806,8 @@ mod tests {
 
         for (code, target, initial_rax, initial_target, expected) in cases {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54240,6 +54954,8 @@ mod tests {
         });
         // AX / BL produces a quotient above AL's representable range.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54287,6 +55003,8 @@ mod tests {
 
         // The byte signed minimum divided by -1 has a quotient outside i8.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54333,6 +55051,8 @@ mod tests {
         assert_eq!(state, before);
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54389,6 +55109,8 @@ mod tests {
 
         // This exact case exercises signed 128-bit minimum divided by -1.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54435,6 +55157,8 @@ mod tests {
 
         // Zero divisor has the same architectural exception and exact RIP.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54510,6 +55234,8 @@ mod tests {
     #[test]
     fn memory_bit_scan_read_fault_does_not_commit_cpu_or_definedness() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54608,6 +55334,8 @@ mod tests {
                 memory.error = Some(error.clone());
                 let before_ram = memory.bytes.clone();
                 let mut state = LongModeState {
+                    syscall: None,
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -54756,6 +55484,8 @@ mod tests {
             (&[0x4c, 0xc7, 0xc0, 1, 0, 0, 0], 1), // REX.R ignored for /0
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54851,6 +55581,8 @@ mod tests {
                     );
                     code.extend_from_slice(&0x1001u64.to_le_bytes()[..if addr32 { 4 } else { 8 }]);
                     let mut state = LongModeState {
+                        syscall: None,
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -54944,6 +55676,8 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55022,6 +55756,8 @@ mod tests {
             (&[0x48, 0x8d, 0x05, 0xff, 0xff, 0xff, 0xff], 0, 6),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55074,6 +55810,8 @@ mod tests {
     fn xchg_captures_aliases_before_writes_and_distinguishes_nop_from_eax_self_write() {
         for code in [&[0x90][..], &[0x40, 0x90], &[0x48, 0x90], &[0x66, 0x90]] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55137,6 +55875,8 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55186,6 +55926,8 @@ mod tests {
     fn locked_qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0xf0, 0x48, 0x87, 0x00]; // LOCK XCHG [RAX], RAX
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55258,6 +56000,8 @@ mod tests {
             MemoryError::Backend("atomic exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55326,6 +56070,8 @@ mod tests {
     fn qword_memory_xadd_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0x48, 0x0f, 0xc1, 0x00]; // XADD [RAX], RAX
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55395,6 +56141,8 @@ mod tests {
             MemoryError::Backend("atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55464,6 +56212,8 @@ mod tests {
     fn lock_qword_memory_xadd_uses_one_atomic_call_and_delays_commit_on_error() {
         let code = [0xf0, 0x48, 0x0f, 0xc1, 0x00]; // LOCK XADD [RAX], RAX
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55533,6 +56283,8 @@ mod tests {
             MemoryError::Backend("locked atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55602,6 +56354,8 @@ mod tests {
     fn qword_memory_cmpxchg_uses_one_atomic_call_and_preserves_prestate_on_error() {
         let code = [0x48, 0x0f, 0xb1, 0x00]; // CMPXCHG [RAX], RAX
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55671,6 +56425,8 @@ mod tests {
             MemoryError::Backend("atomic compare-exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55740,6 +56496,8 @@ mod tests {
     fn qword_register_xadd_alias_doubles_destination_and_sets_add_flags() {
         let code = [0x48, 0x0f, 0xc1, 0xc0]; // XADD RAX, RAX
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55798,6 +56556,8 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut extended_state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55855,6 +56615,8 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        syscall: None,
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -55928,6 +56690,8 @@ mod tests {
             &[0x48, 0xc7, 0x03, 1, 2, 3, 4],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56148,6 +56912,8 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56242,6 +57008,8 @@ mod tests {
                 }
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        syscall: None,
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -56315,6 +57083,8 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        syscall: None,
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -56491,6 +57261,8 @@ mod tests {
             (&[0xf7, 0xd0][..], 0xffff_ffff_0000_0000, 0, 0xffff_ffff),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56535,6 +57307,8 @@ mod tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56590,6 +57364,8 @@ mod tests {
             &[0x48, 0xf7, 0x03, 0xff, 0xff, 0xff, 0xff],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56650,6 +57426,8 @@ mod tests {
             &[0x48, 0xf7, 0xc0, 0, 0, 0, 0x80],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56710,6 +57488,8 @@ mod tests {
                     continue;
                 }
                 let mut state = LongModeState {
+                    syscall: None,
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -56763,6 +57543,8 @@ mod tests {
             }
             for cut in 0..code.len() {
                 let mut state = LongModeState {
+                    syscall: None,
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -56838,6 +57620,8 @@ mod tests {
             (&[0x31, 0xc0, 0x48, 0x21, 0x03][..], 0xcc7, 1), // unmapped AND fault
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56915,6 +57699,8 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56971,6 +57757,8 @@ mod tests {
         // Rotates reduce the loop count modulo the ring, but flag definedness
         // still follows the architectural masked count before that reduction.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57023,6 +57811,8 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57075,6 +57865,8 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57127,6 +57919,8 @@ mod tests {
             (&[0x41, 0xc1, 0xe0, 0][..], 8, 0x1234_5678), // SHL R8D,0
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57170,6 +57964,8 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57222,6 +58018,8 @@ mod tests {
 
         // Through-carry rotation of AL includes the incoming CF as a ninth bit.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57268,6 +58066,8 @@ mod tests {
 
         // SHLD RAX,RCX,1 moves RAX's MSB to CF and RCX's MSB into bit 0.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57321,6 +58121,8 @@ mod tests {
             &[0x66, 0x0f, 0xac, 0xc8, 17][..],
         ] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57374,6 +58176,8 @@ mod tests {
         // dword alias still applies normal register write semantics.
         let code = [0x48, 0xc1, 0xe0, 0x40];
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57425,6 +58229,8 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57554,6 +58360,8 @@ mod tests {
         // 66 selects the SDM's undefined 16-bit result; execution must leave
         // the entire state untouched while reporting the encoding unsupported.
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57769,6 +58577,8 @@ mod tests {
     #[test]
     fn bit_immediate_truncation_and_memory_boundaries_do_not_commit() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58565,6 +59375,8 @@ mod tests {
 
         for (code, kind, dst, src, width, source, old_dst, expected_index) in cases {
             let mut state = LongModeState {
+                syscall: None,
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58635,6 +59447,8 @@ mod tests {
     #[test]
     fn fs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58682,6 +59496,8 @@ mod tests {
     #[test]
     fn gs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            syscall: None,
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -146538,6 +147354,17 @@ mod tests {
         }
     }
 
+    fn paged_lgdt_state(rbp: u64) -> LongModeState {
+        let mut state = lgdt_state(rbp);
+        state.rip = 0x400;
+        state.cr0 = Some(Cr0Profile::BASE);
+        state.cr3 = Some(0x1000);
+        state.cr4 = Some(Cr4Profile::BASE);
+        state.activity = Some(crate::CpuActivity::Running);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        state
+    }
+
     #[test]
     fn lgdt_loads_ten_byte_descriptor_from_signed_rbp_disp8_and_preserves_other_state() {
         let loaded = crate::state::Gdtr {
@@ -146723,6 +147550,405 @@ mod tests {
             assert_eq!(state, before);
             assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
         }
+    }
+
+    #[test]
+    fn paged_lgdt_reads_exact_signed_rbp_source_and_commits_only_gdtr_rip() {
+        let loaded = crate::state::Gdtr {
+            base: 0xffff_8000_1234_5678,
+            limit: 0x9abc,
+        };
+        let mut state = paged_lgdt_state(0x1ffe);
+        let mut expected = state.clone();
+        expected.gdtr = Some(loaded);
+        expected.rip += 4;
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.data_base = 0x1ff0;
+        memory.bytes[6..8].copy_from_slice(&loaded.limit.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&loaded.base.to_le_bytes());
+        let defined = crate::INTEGER_FLAGS & !crate::ZF;
+
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            defined,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(state, expected);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1ff6, 10)]);
+        assert_eq!(memory.contexts[0].1.origin, AccessOrigin::Explicit);
+    }
+
+    #[test]
+    fn paged_lgdt_rejects_profile_gates_before_fetch() {
+        let profile_rejection =
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile);
+        let check = |mut state: LongModeState,
+                     context: AccessContext,
+                     efer: u64,
+                     defined: u64,
+                     expected: PagedProbeExit<std::convert::Infallible>| {
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                context,
+                efer,
+                defined,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        };
+
+        let context = lgdt_ring0();
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr0 = Some(Cr0Profile::BASE ^ 1);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr3 = Some(1 << 36);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr4 = Some(Cr4Profile::BASE | (1 << 9));
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        check(
+            paged_lgdt_state(0x1008),
+            context,
+            0xd01,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.gdtr = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection,
+        );
+        check(
+            paged_lgdt_state(0x1008),
+            context,
+            0xd00,
+            1 << 63,
+            PagedProbeExit::Rejected(PagedProbeRejection::InvalidRflagsDefined { value: 1 << 63 }),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.activity = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::ActivityMissing),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.activity = Some(crate::CpuActivity::Halted);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Halted,
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.sti_shadow = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::StiShadowMissing),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::StiShadowActive),
+        );
+    }
+
+    #[test]
+    fn paged_lgdt_bounds_decode_fetches_to_the_current_guest_page() {
+        let mut state = paged_lgdt_state(0x1010);
+        state.rip = 0xffc;
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.bytes[8..10].copy_from_slice(&0x17u16.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&0x0000_7fff_0000_1234u64.to_le_bytes());
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(state.rip, 0x1000);
+        assert_eq!(memory.fetches, [0xffc, 0xffd, 0xffe, 0xfff]);
+
+        for code in [&[0x48, 0xb8, 0, 0][..], &[0xf0, 0x0f, 0x01, 0x55][..]] {
+            let mut state = paged_lgdt_state(0x1010);
+            state.rip = 0xffc;
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, [0xffc, 0xffd, 0xffe, 0xfff]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for code in [&[0x48, 0xb8, 0, 0][..], &[0xf0, 0x0f, 0x01, 0x55][..]] {
+            let mut state = paged_lgdt_state(0x1010);
+            state.rip = 0xffff_ffff_ffff_fffc;
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+            assert_eq!(state, before);
+            assert_eq!(
+                memory.fetches,
+                [
+                    0xffff_ffff_ffff_fffc,
+                    0xffff_ffff_ffff_fffd,
+                    0xffff_ffff_ffff_fffe,
+                    0xffff_ffff_ffff_ffff,
+                ]
+            );
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_lgdt_preserves_fetch_and_operand_faults_without_commit() {
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let fetch_fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(16),
+            linear_address: Some(state.rip + 3),
+        };
+        memory.fetch_error = Some((
+            state.rip + 3,
+            MemoryError::Architectural(fetch_fault.clone()),
+        ));
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fetch_fault));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for error in [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(1),
+                linear_address: Some(0x1008),
+            }),
+            MemoryError::Backend("injected paged LGDT read failure".into()),
+        ] {
+            let mut state = paged_lgdt_state(0x1010);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Read);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                }
+                MemoryError::Backend(message) => {
+                    assert_eq!(
+                        result.exit,
+                        PagedProbeExit::Backend(MemoryError::Backend(message))
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        }
+    }
+
+    #[test]
+    fn paged_lgdt_rejects_cross_page_source_before_read_and_preserves_ss_faults() {
+        let mut state = paged_lgdt_state(0x1ff8);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x01 });
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x0000_8000_0000_0000);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_lgdt_orders_lock_and_cpl_faults_after_fetch_and_rejects_noncanonical_base() {
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0x55, 0xf8], state.rip);
+        let locked = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            locked.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403, 0x404]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        let ring3 = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..lgdt_ring0()
+        };
+        let denied = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            ring3,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            denied.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.data_base = 0x1008;
+        memory.bytes[..2].copy_from_slice(&0x17u16.to_le_bytes());
+        memory.bytes[2..10].copy_from_slice(&0x0000_8000_0000_0000u64.to_le_bytes());
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
     }
 
     #[test]
@@ -148051,6 +149277,48 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn shutdown_blocks_mov_cr3_and_cr0_wp_mov_cr3_before_fetch() {
+        let mut state = make_state(0x1000, 0x3000);
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        for use_wp_profile in [false, true] {
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = if use_wp_profile {
+                step_mov_cr3_wp(
+                    MovCr3WpLong64V1,
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege: PrivilegeLevel::Ring0,
+                        origin: AccessOrigin::Explicit,
+                    },
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                )
+                .unwrap()
+            } else {
+                run(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege: PrivilegeLevel::Ring0,
+                        origin: AccessOrigin::Explicit,
+                    },
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                )
+            };
+            assert_eq!(result.exit, MovCr3Exit::Shutdown);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
     fn wp_profile_admits_only_the_two_wp_values_and_legacy_stays_wp1_only() {
         for cr0 in [Cr0Profile::BASE, Cr0Profile::BASE & !(1 << 16)] {
             let mut state = make_state(0x1000, 0x2000);
@@ -148778,6 +150046,652 @@ mod paged_cr0_wp_probe_tests {
         }
     }
 
+    #[test]
+    fn cpl3_mov_store_load_and_flag_admission() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b, 0x48, 0x8b, 0x03]);
+        for expected_rip in [3, 6] {
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, expected_rip);
+        }
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_def0);
+        assert_eq!(&memory.bytes[..8], &0x1234_5678_9abc_def0u64.to_le_bytes());
+        let mut wp_cleared = make_state(Cr0Profile::BASE & !(1 << 16));
+        let mut wp_memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let rejected = step_paged_cpl3_mov(
+            &mut wp_cleared,
+            &mut wp_memory,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            rejected.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(wp_memory.fetches.is_empty());
+        for flag in [1 << 8, 1 << 16, 1 << 18] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= flag;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::UserMovFlagsOutsideProfile)
+            );
+            assert!(memory.fetches.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn cpl3_mov_rejects_crossing_before_noncanonicality_for_both_forms() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let address = 0x0000_8000_0000_0ff9;
+        for code in [&[0x48, 0x89, 0x0b][..], &[0x48, 0x8b, 0x03][..]] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                    address,
+                    length: 8
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn cpl3_mov_entry_rejects_unlisted_store_encoding() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x03]);
+        let result = step_paged_cpl3_mov(
+            &mut state,
+            &mut memory,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn cpl3_mov_respects_single_page_boundaries() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        for code in [&[0x48, 0x89, 0x0b][..], &[0x48, 0x8b, 0x03][..]] {
+            for crossing in [false, true] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rip = if crossing { 0xffe } else { 0xffd };
+                state.gpr[Register::Rbx as usize] = 0x1000;
+                let mut memory = Memory::at(code, state.rip);
+                let result = step_paged_cpl3_mov(
+                    &mut state,
+                    &mut memory,
+                    context,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(matches!(result.exit, PagedProbeExit::Retired), !crossing);
+                if crossing {
+                    assert!(memory.fetches.is_empty());
+                }
+            }
+            for crossing in [false, true] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.gpr[Register::Rbx as usize] = if crossing { 0x1ff9 } else { 0x1ff8 };
+                let mut memory = Memory::new(code);
+                memory.data_base = 0x1ff8;
+                let result = step_paged_cpl3_mov(
+                    &mut state,
+                    &mut memory,
+                    context,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(matches!(result.exit, PagedProbeExit::Retired), !crossing);
+                if crossing {
+                    assert!(memory.accesses.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpl3_load_admits_only_cpu_owned_cr3_and_exact_load() {
+        for (code, cr3, accepted) in [
+            (&[0x48, 0x8b, 0x03][..], Some(0x1000), true),
+            (&[0x48, 0x89, 0x0b][..], Some(0x1000), false),
+            (&[0x48, 0x8b, 0x07][..], Some(0x1000), false), // base RDI
+            (&[0x48, 0x8b, 0x0b][..], Some(0x1000), false), // destination RCX
+            (&[0x48, 0x8b, 0x43, 0x00][..], Some(0x1000), false), // displacement
+            (&[0x8b, 0x03][..], Some(0x1000), false),       // dword
+            (&[0x66, 0x48, 0x8b, 0x03][..], Some(0x1000), false), // prefix
+            (&[0x48, 0x8b, 0x04, 0x23][..], Some(0x1000), false), // SIB
+            (&[0x48, 0x8b, 0x03][..], None, false),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.cr3 = cr3;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring3,
+                    origin: AccessOrigin::Explicit,
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(matches!(result.exit, PagedProbeExit::Retired), accepted);
+            assert_eq!(state.cr3, cr3);
+            if !accepted {
+                assert!(memory.accesses.is_empty());
+                assert_eq!(state, before);
+                if cr3.is_some() {
+                    assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpl3_load_predecode_stops_at_first_mismatch_and_propagates_fetch_faults() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let rip = 0x2ffd;
+        for (code, expected_fetches, retired) in [
+            (&[0x48, 0x8b, 0x43][..], 3, false),
+            (&[0xf0, 0x0f, 0x22, 0xc0][..], 1, false),
+            (&[0x48, 0x8b, 0x03][..], 3, true),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rip = rip;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let mut memory = Memory::at(code, rip);
+            memory.fetch_error =
+                Some((rip + 3, MemoryError::Backend("fourth byte fetched".into())));
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            if retired {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(state.rip, rip + 3);
+            } else {
+                assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+                assert_eq!(state.rip, rip);
+            }
+            assert_eq!(
+                memory.fetches,
+                (rip..rip + expected_fetches).collect::<Vec<_>>()
+            );
+        }
+        for offset in 0..3 {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rip = rip;
+            let fault = ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x15),
+                linear_address: Some(rip + offset),
+            };
+            let mut memory = Memory::at(&[0x48, 0x8b, 0x03], rip);
+            memory.fetch_error = Some((rip + offset, MemoryError::Architectural(fault.clone())));
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+            assert_eq!(memory.fetches, (rip..=rip + offset).collect::<Vec<_>>());
+            assert_eq!(state.rip, rip);
+        }
+    }
+
+    fn repair(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+    ) -> PagedProbeResult<std::convert::Infallible> {
+        step_paged_cr0_wp_page_table_repair_mov(
+            PagedCpl0PageTableRepairMovV1,
+            state,
+            memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        )
+    }
+
+    fn discard(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+    ) -> PagedProbeResult<std::convert::Infallible> {
+        step_paged_exception_stack_discard(
+            PagedCpl0ExceptionStackDiscardV1,
+            state,
+            memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS,
+        )
+    }
+
+    #[test]
+    fn exception_stack_discard_exact_encoding_preserves_state_and_wraps_rsp() {
+        for rsp in [0x1235, u64::MAX - 3] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rsp as usize] = rsp;
+            state.gpr[Register::Rax as usize] = 0x9876;
+            let mut expected = state.clone();
+            expected.gpr[Register::Rsp as usize] = rsp.wrapping_add(8);
+            expected.rip = 5;
+            let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+            let result = discard(&mut state, &mut memory);
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(
+                result.rflags_defined,
+                crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS
+            );
+            assert_eq!(state, expected);
+            assert_eq!(memory.fetches, [0, 1, 2, 3, 4]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn exception_stack_discard_refuses_other_encodings_and_invalid_profile() {
+        for code in [
+            &[0x48, 0x8d, 0x64, 0x24, 0x10][..],
+            &[0x48, 0x8d, 0x44, 0x24, 0x08],
+            &[0x66, 0x48, 0x8d, 0x64, 0x24, 0x08],
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = discard(&mut state, &mut memory);
+            assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        let result = step_paged_exception_stack_discard(
+            PagedCpl0ExceptionStackDiscardV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring3,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        assert_eq!(
+            discard(&mut state, &mut memory).exit,
+            PagedProbeExit::Shutdown
+        );
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn exception_stack_discard_rejects_resume_flag_before_fetch() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rflags |= 1 << 16;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ResumeFlagSet)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            result.rflags_defined,
+            crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS
+        );
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn exception_stack_discard_fetch_faults_and_canonical_boundary_do_not_retire() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(2),
+        };
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        memory.fetch_error = Some((2, MemoryError::Architectural(fault.clone())));
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        state.rip = 0x0000_7fff_ffff_fffe;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x48, 0x8d], state.rip);
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+    }
+
+    #[test]
+    fn page_table_repair_mov_writes_unaligned_and_preserves_registers_and_flags() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0x1001;
+        state.gpr[Register::Rsi as usize] = 0x1234_5678_9abc_def3;
+        state.gpr[Register::Rbx as usize] = 0x8765;
+        state.gpr[Register::Rcx as usize] = 0x4321;
+        let mut expected = state.clone();
+        expected.rip = 3;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, expected);
+        assert_eq!(&memory.bytes[1..9], &0x1234_5678_9abc_def3u64.to_le_bytes());
+        assert_eq!(memory.fetches, [0, 1, 2]);
+    }
+
+    #[test]
+    fn page_table_repair_mov_checks_each_fetch_address_before_fetch() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rip = 0x0000_7fff_ffff_fffe;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x48, 0x89], state.rip);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+        assert!(memory.accesses.is_empty());
+
+        let mut memory = Memory::at(&[0x48, 0x89], state.rip);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(before.rip + 1),
+        };
+        memory.fetch_error = Some((before.rip + 1, MemoryError::Architectural(fault.clone())));
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(fault)
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+
+        state.rip = u64::MAX;
+        let before_wrap = state.clone();
+        let mut memory = Memory::at(&[0x48], state.rip);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before_wrap);
+        assert_eq!(memory.fetches, [u64::MAX]);
+    }
+
+    #[test]
+    fn page_table_repair_mov_rejects_cross_page_operand_before_access() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0x1ff9;
+        state.gpr[Register::Rsi as usize] = 0x1234;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                address: 0x1ff9,
+                length: 8,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_handles_canonical_address_boundaries() {
+        for address in [0x0000_7fff_ffff_fff9, 0xffff_ffff_ffff_fff9] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rdi as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+            assert_eq!(
+                repair(&mut state, &mut memory).exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                    address,
+                    length: 8,
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0xffff_ffff_ffff_fff8;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        memory.data_base = 0xffff_ffff_ffff_fff8;
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Retired
+        );
+        assert_eq!(
+            memory.accesses,
+            [(crate::AccessKind::Write, 0xffff_ffff_ffff_fff8, 8)]
+        );
+
+        state.rip = 0;
+        state.gpr[Register::Rdi as usize] = 0x0000_8000_0000_0ff9;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_reports_opcode_for_unsupported_modrm() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Unsupported { opcode: 0x89 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_faults_and_rejections_do_not_retire() {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1000),
+        };
+        for fetch_fault in [true, false] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rdi as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+            if fetch_fault {
+                memory.fetch_error = Some((1, MemoryError::Architectural(fault.clone())));
+            } else {
+                memory.error = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let result = repair(&mut state, &mut memory);
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            if fetch_fault {
+                assert!(memory.accesses.is_empty());
+            }
+        }
+        for code in [
+            &[0x48, 0x89, 0x0b][..],
+            &[0x48, 0x8b, 0x37],
+            &[0x66, 0x48, 0x89, 0x37],
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            assert!(matches!(
+                repair(&mut state, &mut memory).exit,
+                PagedProbeExit::Unsupported { .. }
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = make_state(Cr0Profile::BASE & !(1 << 16));
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(memory.fetches.is_empty());
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Shutdown
+        );
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_form_is_not_admitted_by_existing_mov_profile() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+        assert!(memory.accesses.is_empty());
+    }
+
     fn step(
         state: &mut LongModeState,
         memory: &mut Memory,
@@ -148939,6 +150853,46 @@ mod paged_cr0_wp_probe_tests {
     }
 
     #[test]
+    fn cpl3_mov_cr0_fetch_faults_precede_gp_and_lock_ud() {
+        let ring3 = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..AccessContext::default()
+        };
+        for code in [&[0x0f, 0x22, 0xc0][..], &[0xf0, 0x0f, 0x22, 0xc0][..]] {
+            for offset in 0..code.len() {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rip = 0x1000;
+                let before = state.clone();
+                let fault = ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0x15),
+                    linear_address: Some(0x1000 + offset as u64),
+                };
+                let mut memory = Memory::at(code, 0x1000);
+                memory.fetch_error = Some((
+                    0x1000 + offset as u64,
+                    MemoryError::Architectural(fault.clone()),
+                ));
+                let result = step_mov_cr0_wp(
+                    MovCr0WpLong64V1,
+                    &mut state,
+                    &mut memory,
+                    ring3,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert_eq!(
+                    memory.fetches,
+                    (0x1000..=0x1000 + offset as u64).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mov_cr0_wp_commits_typed_effect_flags_and_identical_writes() {
         let wp_clear = Cr0Profile::BASE & !(1 << 16);
         for (old_cr0, new_cr0) in [
@@ -149016,6 +150970,283 @@ mod paged_cr0_wp_probe_tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_rf_clear_timing() {
+        let flags_defined = crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1000),
+        };
+        for (code, load) in [
+            (&[0x48, 0x89, 0x0b][..], false),
+            (&[0x48, 0x8b, 0x03][..], true),
+        ] {
+            for error in [
+                None,
+                Some(MemoryError::Architectural(fault.clone())),
+                Some(MemoryError::Backend("data".into())),
+            ] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rflags |= 1 << 16;
+                state.gpr[Register::Rbx as usize] = 0x1000;
+                state.gpr[Register::Rcx as usize] = 0x1234_5678;
+                state.gpr[Register::Rax as usize] = 0x9876;
+                let before = state.clone();
+                let mut memory = Memory::new(code);
+                let bytes = memory.bytes.clone();
+                memory.error = error.clone();
+                let result = step_paged_cr0_wp_mov(
+                    PagedCpl0Cr0WpMovV1,
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    0xd00,
+                    flags_defined,
+                );
+                assert_eq!(result.rflags_defined, flags_defined);
+                assert_eq!(state.rflags, before.rflags & !(1 << 16));
+                match error {
+                    None => {
+                        assert_eq!(result.exit, PagedProbeExit::Retired);
+                        assert_eq!(result.instructions_executed, 1);
+                        assert_eq!(state.rip, before.rip + 3);
+                        if load {
+                            assert_eq!(
+                                state.gpr[Register::Rax as usize],
+                                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                            );
+                        } else {
+                            assert_eq!(
+                                &memory.bytes[..8],
+                                &before.gpr[Register::Rcx as usize].to_le_bytes()
+                            );
+                        }
+                    }
+                    Some(error) => {
+                        let expected = match error {
+                            MemoryError::Architectural(fault) => PagedProbeExit::Fault(fault),
+                            other => PagedProbeExit::Backend(other),
+                        };
+                        assert_eq!(result.exit, expected);
+                        assert_eq!(result.instructions_executed, 0);
+                        let mut expected_state = before;
+                        expected_state.rflags &= !(1 << 16);
+                        assert_eq!(state, expected_state);
+                        assert_eq!(memory.bytes, bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_pre_start_exits_preserve_rf() {
+        for (code, address, fetch_fault) in [
+            (&[0x48, 0x89, 0x03][..], 0x1000, false),
+            (&[0x48, 0x89, 0x0b][..], 0x1ff9, false),
+            (&[0x48, 0x89, 0x0b][..], 0x1000, true),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= 1 << 16;
+            state.gpr[Register::Rbx as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            if fetch_fault {
+                memory.fetch_error = Some((1, MemoryError::Backend("fetch".into())));
+            }
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_ne!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_noncanonical_operand_clears_rf() {
+        for code in [&[0x48, 0x8b, 0x03][..], &[0x48, 0x89, 0x0b][..]] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= 1 << 16;
+            state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+            let mut before = state.clone();
+            before.rflags &= !(1 << 16);
+            let mut memory = Memory::new(code);
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_profile_rejection_preserves_rf() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rflags |= 1 << 16;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring3,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_shutdown_has_no_memory_effects() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Shutdown);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_only_profile_excludes_control_register_writes() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x22 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_cr0_wp_probe_rejects_nonzero_cpl_data_load_before_access() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+            let result = step(&mut state, &mut memory, privilege);
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8b });
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(memory.fetches, [0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_selector_rejects_nonzero_cpl_before_fetch() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+            );
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty() && memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_probe_preserves_parent_allowlist_by_rejecting_data_load() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8b });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

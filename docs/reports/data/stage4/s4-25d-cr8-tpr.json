@@ -1,0 +1,23 @@
+{
+  "slice": "S4-25d",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Exact-encoding Long64 MOV CR8 read/write backed by the standalone xAPIC TPR, with self-IPI priority gating",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A §§13.8.6–13.8.6.1 and Volume 2B MOV to/from control registers",
+  "review": "independent gpt-6.1-sol/high review passed; P2 canonical48 fetch boundary and P3 ISR bank assertion findings fixed and confirmed closed",
+  "checks": {
+    "isa_tests": "cargo test -p od-isa --lib cr8::tests --offline: 5 passed",
+    "machine_tests": "cargo test -p od-machine --lib cr8 --offline -- --test-threads=1: 3 passed",
+    "package_check": "cargo check -p od-isa -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,636 nodes, 70,108 edges, 1,013 communities",
+    "layout_check": "reports only the pre-existing unmapped root smoke/ (ISSUE-056)"
+  },
+  "limitations": [
+    "only exact MOV RAX,CR8 and MOV CR8,RAX encodings in the opt-in Long64 profile are admitted",
+    "APIC operations must be serialized by the caller across the complete helper call, including fetch and effect application; no architectural serialization guarantee is claimed",
+    "general CR8 decoding, CPU interrupt acceptance and handler delivery, IDT/IF, HLT wakeup, paged-session/JIT integration, and default board wiring are not implemented",
+    "parent S4-25 and Stage 4 remain open"
+  ]
+}
