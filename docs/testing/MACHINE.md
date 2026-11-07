@@ -648,3 +648,28 @@ pre-start exits. `rflags_defined` remains unchanged. This is the bounded
 Long64 CPL0/WP=1 private-RAM profile; the tracked path has no translation
 cache, so stale-TLB behavior is not claimed. See the
 [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md).
+
+<a id="s4-20a-synthetic-paged-iretq-outer-return"></a>
+
+## S4-20a: synthetic paged IRETQ outer return to CPL3
+
+This CPU-only profile checks the outer-privilege return path for exact paged
+`48 CF`. The initial state is the synthetic four-level Long64 profile with
+`CR4.LA57=0`, CPUID leaf 7 zero, a CPL0 CS cache and null DS/ES/FS/GS selectors.
+The guest frame contains RIP, CS, RFLAGS, RSP and SS. User CS/SS descriptors
+are the bounded flat, already-Accessed GDT forms recorded in the
+[machine contract](../specs/MACHINE_CONTRACT.md#synthetic-paged-iretq-outer-return-to-cpl3-s4-20a).
+
+Unit tests verify exact CPU state after success, atomic rejection of malformed
+selectors/descriptors/addresses/flags, separate guest paging faults and backend
+read errors, and first-fault ordering across the frame and CS/SS descriptor
+reads. Run:
+
+```sh
+cargo test -p od-isa --lib iretq::tests --offline -- --test-threads=1
+```
+
+This slice does not execute the next user instruction or prove machine
+`AccessContext` derives CPL from CS; that integration is S4-20b. It does not
+establish Linux boot or implement #GP/#SS classification for rejected return
+state. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md).

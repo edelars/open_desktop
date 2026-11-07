@@ -988,6 +988,56 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** CPL3 read/write/fetch protection, запрещённые privileged instructions, вход в kernel, изменение kernel-visible данных, возврат к следующей user instruction; неправильные selectors/addresses/flags на return.
 - **Готово:** собственный guest CPL3 probe проходит полный roundtrip; error paths не оставляют частично переключённые привилегии.
 
+#### S4-20a. Synthetic paged IRETQ outer-privilege CPU semantics
+
+- [x] CPU-only срез принят после независимого Sol/high review без замечаний
+  P0–P3; machine integration S4-20b и родительский S4-20 остаются открытыми.
+- **Профиль:** synthetic CPU с 48-bit linear addresses, CPUID leaf 7 равен нулю,
+  `CR4.LA57=0`; Long64, один CPU и CPU-owned state для four-level paging.
+  Этот профиль исключает LA57 transition только внутри данного сценария и не
+  утверждает, что Linux loader уже реализован или выбранный Ubuntu artifact
+  загружен. Unit tests используют guest-memory test double, а не tracked
+  page-walk backend.
+- **Сценарий:** CPU исполняет точный `48 CF` при CPL0 и пятисловном
+  outer-return frame; user CS — плоский GDT descriptor `access=0xfb, flags=0xa`,
+  user SS — плоский writable GDT descriptor `access=0xf3, flags=0xc`; оба
+  заранее имеют Accessed=1. DS/ES/FS/GS selectors должны быть нулевыми.
+  Входной live RF обязан быть очищен; сохранённые RFLAGS допускают только
+  текущую маску integer flags, IF, IOPL и RF. Успешный
+  commit меняет RIP, RSP, CS/SS selectors и caches, flags, сохраняя остальные
+  CPU registers. Входные проверки требуют CR4.LA57=0.
+- **Проверка:** корректные RPL/DPL/type/present для user CS/SS; неверные
+  selectors/descriptors, RIP/RSP и flags завершаются `Unsupported` ограниченного
+  профиля без частичного CPU commit. Guest page faults при fetch/frame/descriptor
+  reads возвращаются как `Fault`; backend failures остаются `ReadAborted`.
+  Архитектурные ошибки selector/return,
+  требующие #GP/#SS и точной error priority за пределами принятого profile,
+  остаются не реализованы. CPU не откатывает side effects, уже совершённые
+  переданным memory backend, но этот slice не проверяет tracked A/D updates.
+  Сохранять Intel read/fault ordering: RIP/CS/RFLAGS,
+  затем проверка CS descriptor, затем RSP/SS, canonicality saved RIP и SS
+  descriptor.
+- **Граница:** только CPU-семантика Long64 CPL0→CPL3 с этим пятисловным frame.
+  Machine-derived CPL context и исполнение user MOV выделены в S4-20b.
+  SYSCALL/SYSRET, TSS stack switch, exceptions из CPL3, general-purpose IRETQ,
+  полный Linux roundtrip и принятие родительского S4-20 остаются открытыми.
+- **Нормативная основа:** Intel SDM revision 090, Vol. 2A `IRET/IRETD/IRETQ`
+  и Vol. 3A §§7.14.2–7.14.3; [combined PDF](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf).
+- **Результат:** [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-20a-paged-iretq-cpl3-2026-11-06.json).
+
+#### S4-20b. Machine CPL context and one CPL3 paged MOV
+
+- [ ] Отдельный межкомпонентный срез после принятия S4-20a.
+- **Сценарий:** machine строит `AccessContext` для fetch/data из committed
+  CS RPL/cache после IRETQ; CPU-owned CR3 остаётся активным. Исполнить один
+  точный `MOV RAX,[RBX]` на CPL3 с uncached четырёхуровневым paging.
+- **Проверка:** user page доступна; supervisor-only fetch/data дают точный
+  user #PF. Host не может передать устаревший Ring0 context после возврата.
+- **Граница:** одна точная load-форма и ограниченная конфигурация таблиц
+  страниц; user stores, доставка исключений из CPL3 и syscall roundtrip
+  остаются открытыми.
+
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.

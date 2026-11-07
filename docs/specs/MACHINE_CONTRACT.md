@@ -1337,6 +1337,40 @@ establish stale-TLB eviction or INVLPG necessity. Intel SDM Vol. 3B
 specified preliminary checks. See the [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md)
 and [verification record](../testing/MACHINE.md#s4-19e2-faulting-mov-retry-and-data-commit).
 
+## Synthetic paged IRETQ outer return to CPL3 (S4-20a)
+
+`step_paged_iretq_to_cpl3(PagedCpl0ToCpl3V1, ...)` admits only the synthetic
+four-level profile: `CpuidProfile::DiagnosticV1` (basic leaf limit 1, leaf 7
+zero), Long64, CPU-owned `CR0=0x80010033`, `CR4=0x20` (`LA57=0`), a bounded
+36-bit CR3, and `EFER=0xd00`. The current CS cache must be the flat CPL0 code
+descriptor; DS/ES/FS/GS visible selectors must be null. This condition excludes
+the five-level selection path for this CPU-only scenario. It does not establish
+a Linux loader handoff or boot profile.
+
+The guest executes exact `48 CF` from CPL0. The five-qword outer-return frame
+and GDT user descriptors are read through the supplied `GuestMemory` interface.
+This CPU-only slice does not connect that interface to the tracked page walker.
+The supported
+user code descriptor is flat `access=0xfb, flags=0xa`; the writable user stack
+descriptor is flat `access=0xf3, flags=0xc`; both are already Accessed. Read
+ordering follows the bounded Intel IRETQ path: RIP/CS/RFLAGS, validate/read CS
+descriptor, read saved RSP/SS, check saved RIP canonicality, then read/validate
+SS descriptor. CPU state is committed only after all admitted reads and checks.
+The CPU profile does not roll back effects already committed by the supplied
+memory backend. Its unit tests use a guest-memory test double and do not exercise
+tracked translations or page-walk A/D updates.
+
+Live RF must be clear at entry; RF may be restored from saved RFLAGS along with
+the supported integer flags, IF and IOPL mask. Unsupported selector/descriptor,
+address and flag shapes return `Unsupported` in this narrow profile. Tracked
+guest paging faults remain `Fault`; backend access failures remain
+`ReadAborted`. Architectural #GP/#SS classification for rejected return state
+is not implemented here. The slice proves CPU-state transition only; deriving
+machine `AccessContext` from committed CS and executing user memory operations
+are deferred to S4-20b. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20a-synthetic-paged-iretq-outer-return).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

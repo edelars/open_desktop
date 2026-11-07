@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-20a",
+  "date": "2026-11-06",
+  "status": "verification_passed_review_passed",
+  "scenario": "synthetic four-level paged IRETQ outer return from CPL0 to CPL3",
+  "profile": {
+    "cpuid": "DiagnosticV1: maximum basic leaf 1; leaf 7 zero",
+    "cr0": "0x80010033",
+    "cr4": "0x20; LA57=0",
+    "cr3": "36-bit bounded profile",
+    "efer": "0xd00",
+    "frame": "five qwords: RIP, CS, RFLAGS, RSP, SS",
+    "user_cs": "flat GDT descriptor; access=0xfb, flags=0xa; Accessed=1",
+    "user_ss": "flat writable GDT descriptor; access=0xf3, flags=0xc; Accessed=1"
+  },
+  "boundaries": [
+    "CPU-only semantics; machine CPL-derived AccessContext and user MOV are S4-20b",
+    "unsupported malformed returns are not architectural #GP/#SS implementation",
+    "does not establish Linux boot or loader handoff",
+    "GuestMemory test double; tracked translations and page-walk A/D updates are not exercised"
+  ],
+  "verification": {
+    "iretq_unit_tests": "25 passed",
+    "fmt": "passed",
+    "diff_check": "passed",
+    "layout_check": "blocked_by_existing_issue_056_unmapped_root_smoke",
+    "graphify": "updated",
+    "independent_review": "passed_no_P0_to_P3_findings"
+  },
+  "architecture_source": "Intel SDM revision 090, Vol. 2A IRET/IRETD/IRETQ and Vol. 3A sections 7.14.2-7.14.3"
+}
