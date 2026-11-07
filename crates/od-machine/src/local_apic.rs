@@ -129,6 +129,22 @@ impl LocalApicHandle {
             Some(v)
         })
     }
+
+    /// Commit the selected request and CPU entry together. The caller must
+    /// serialize all APIC operations across selection and delivery.
+    pub(crate) fn acknowledge_vector(&self, vector: u8, publish: impl FnOnce()) -> bool {
+        self.with_state(|s| {
+            if s.eligible() != Some(vector) {
+                return false;
+            }
+            let index = usize::from(vector / 32);
+            let bit = 1 << (vector % 32);
+            s.irr[index] &= !bit;
+            s.isr[index] |= bit;
+            publish();
+            true
+        })
+    }
 }
 
 /// Execute the bounded CPU MSR operation and apply any retired write before

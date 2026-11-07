@@ -542,6 +542,29 @@ the changed slice passed repeat review. Graphify and layout results are in the
 establish guest CPU interrupt/handler delivery, board registration or Linux
 discovery.
 
+## S4-27a: caller-driven APIC interrupt entry
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1`,
+and `cargo test -p od-isa --lib interrupt::tests::every_stack_store_failure_keeps_cpu_state_and_prior_memory_writes --offline -- --test-threads=1`.
+The end-to-end fixture configures INTIN4 as an active level route, accepts it
+into the Local APIC, enters through the selected IDT gate, and successfully
+retires the one-budget handler instruction that reads a RAM sentinel. It checks the exact same-CPL
+five-qword frame, cleared IF, IRR→ISR transition, and Remote IRR retention until
+EOI. Adjacent cases cover no eligible/masked route, IF masking, blocking STI
+shadow, TPR ineligibility and a partial stack-write abort; the abort preserves
+the pending APIC request, makes the session terminal and prevents retry.
+`cargo check -p od-machine --all-targets --offline`, formatting and diff
+validation passed. Independent Sol/high review found no remaining findings.
+The caller must also certify no pending synchronous exception, debug/NMI event
+or other interrupt inhibition, as required by the underlying ISA delivery
+contract. A handler fault after successful entry does not roll back the entry
+or APIC acknowledgement.
+This does not test automatic instruction-boundary polling, IRET, guest EOI,
+HLT wakeup, paged delivery or JIT. See the
+[S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

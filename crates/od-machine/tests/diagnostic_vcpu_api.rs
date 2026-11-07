@@ -76,6 +76,8 @@ fn accepts_all_terminal_causes(value: DiagnosticTerminalExit) {
         DiagnosticTerminalExit::Unsupported { .. } => {}
         DiagnosticTerminalExit::BackendError(_) => {}
         DiagnosticTerminalExit::StopAddress => {}
+        DiagnosticTerminalExit::InterruptDeliveryAborted { phase: _, cause: _ } => {}
+        DiagnosticTerminalExit::InterruptSelectionChanged => {}
     }
 }
 

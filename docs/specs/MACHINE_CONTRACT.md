@@ -1409,6 +1409,46 @@ preliminary release, §3.2.4](https://intel-vintage-developer.eu5.org/DESIGN/PCI
 See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
 [verification method](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
 
+## Caller-driven APIC interrupt entry (S4-27a)
+
+`DiagnosticVcpuSession::deliver_interrupt_and_step` is a synchronous
+diagnostic bridge over the already implemented Local APIC, IOAPIC and
+`od-isa::deliver_maskable_interrupt`. At a caller-certified completed
+instruction boundary it selects one APIC-eligible vector and invokes the
+Long64/CPL0 interrupt-entry helper against a candidate CPU state and the
+session's flat identity `MachineBus` memory adapter. It does not hold the APIC
+mutex while reading descriptors or writing the stack. After successful entry,
+the selected vector is revalidated and moved from IRR to ISR while the CPU
+candidate is published under the APIC owner lock; then the session runs the
+handler with an instruction budget of one. This attempts at most one handler
+instruction and returns its ordinary `DiagnosticRunResult`. The instruction
+may fault, be unsupported, halt, or fail on backend memory before retiring. In
+those cases the successful entry and APIC acknowledgement remain committed,
+and the session reports its resulting run/terminal state.
+
+The caller must serialize the complete operation with APIC/IOAPIC activity and
+certify a fresh instruction boundary, no pending synchronous exception,
+debug/NMI event, or other interrupt inhibition, private synchronous RAM, and
+disabled CET/VMX/SMM/shadow-stack mechanisms required by the underlying ISA
+helper. Supported state is Long64/CPL0, Running, IF set, explicit clear STI
+shadow, same-CPL present interrupt gate with IST=0, and the existing
+descriptor/profile constraints. This method is caller-driven; it does not poll
+or schedule IRQs automatically.
+
+With IF clear, blocking STI shadow, or no APIC-eligible vector, the operation
+returns without changing CPU/APIC state. TPR-blocked requests remain pending
+in IRR. An ISA `OutsideProfile` result does not acknowledge the request. A
+`DeliveryAborted` may leave the already committed stack-write prefix in RAM;
+the session enters a terminal state, the APIC request remains pending, and the
+caller must not retry that session. On successful entry, the same vector enters
+ISR and remains there until a later EOI; level Remote IRR remains asserted
+until that EOI. The one-instruction-budget handler run does not add IRET or a
+guest EOI routine.
+
+See the [S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry),
+and [evidence manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

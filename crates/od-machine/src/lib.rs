@@ -33,8 +33,8 @@ pub use bus::{
 };
 
 pub use diagnostic_vcpu::{
-    DiagnosticExit, DiagnosticRunResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
-    DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
+    DiagnosticExit, DiagnosticInterruptResult, DiagnosticRunResult, DiagnosticTerminalExit,
+    DiagnosticVcpuControlError, DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

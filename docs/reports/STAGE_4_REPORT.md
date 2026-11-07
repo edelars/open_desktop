@@ -625,3 +625,23 @@ not implement guest CPU handler delivery or board registration. See the
 [slice report](STAGE_4_S4-26B_2026-11-07.md) and
 [evidence](data/stage4/s4-26b-ioapic-level.json). Parent S4-26 and Stage 4
 remain open.
+
+## S4-27a — caller-driven APIC interrupt entry
+
+The diagnostic vCPU session now selects one APIC-eligible vector, runs the
+existing Long64/CPL0 IDT-entry helper on a CPU candidate through flat identity
+RAM, acknowledges that exact vector only after successful entry, and runs the
+handler with a one-instruction budget. A fetch/execute fault or unsupported
+handler instruction does not undo successful entry or acknowledgement. The
+end-to-end fixture checks the five-qword frame,
+IF clearing, RAM sentinel read, ISR state and Remote IRR retention until EOI.
+Blocked requests remain pending; an aborted frame can retain its committed
+prefix and makes the session terminal without acknowledgement or retry. Nine
+session tests, ten Local APIC tests, seven public API tests, the ISA stack-store
+failure canary, `od-machine` all-targets check, formatting, Graphify and
+independent Sol/high review passed. This is a caller-serialized diagnostic
+flat identity path; it does not add paged delivery, automatic event polling,
+IRET/guest EOI, HLT wakeup, JIT or board registration. See the
+[slice report](STAGE_4_S4-27A_2026-11-07.md) and
+[evidence](data/stage4/s4-27a-apic-cpu-entry.json). Parent S4-27 and Stage 4
+remain open.

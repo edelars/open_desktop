@@ -1,10 +1,14 @@
 //! Synchronous, bounded diagnostic execution over one owned CPU and machine.
 
-use crate::{IdentityMemoryAdapter, MachineBus};
+use crate::{IdentityMemoryAdapter, LocalApicHandle, MachineBus};
 use crate::{VirtualClock, VirtualClockError};
 use od_isa::execute::{
     RdtscControls, RunConfig, RunExit, run_with_rflags_defined,
     run_with_rflags_defined_and_rdtsc_source,
+};
+use od_isa::interrupt::{
+    InterruptDeliveryPhase, InterruptDeliveryResult, InterruptOutsideProfile,
+    deliver_maskable_interrupt,
 };
 use od_isa::memory::{AccessContext, ArchitecturalFault, MemoryError};
 use od_isa::{INTEGER_FLAGS, LongModeState};
@@ -13,9 +17,27 @@ use od_isa::{INTEGER_FLAGS, LongModeState};
 pub enum DiagnosticTerminalExit {
     Halted,
     Fault(ArchitecturalFault),
-    Unsupported { opcode: u8 },
+    Unsupported {
+        opcode: u8,
+    },
     BackendError(MemoryError),
     StopAddress,
+    InterruptDeliveryAborted {
+        phase: InterruptDeliveryPhase,
+        cause: MemoryError,
+    },
+    InterruptSelectionChanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticInterruptResult {
+    NoDelivery,
+    OutsideProfile(InterruptOutsideProfile),
+    Delivered {
+        vector: u8,
+        handler: DiagnosticRunResult,
+    },
+    Terminal(DiagnosticTerminalExit),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +75,7 @@ pub enum DiagnosticVcpuControlError {
     CannotResume(DiagnosticVcpuState),
     ExecutionInput(od_isa::execute::RunInputError),
     Clock(VirtualClockError),
+    InterruptBoundaryUnsupported,
 }
 
 /// One caller-driven vCPU session. It owns its CPU state and machine bus and
@@ -246,6 +269,60 @@ impl DiagnosticVcpuSession {
         })
     }
 
+    /// Deliver one pending IRQ at a caller-certified completed instruction
+    /// boundary, then execute one handler instruction. The caller certifies
+    /// private synchronous RAM for delivery and serializes the entire operation
+    /// with all operations on this APIC and its IOAPIC.
+    pub fn deliver_interrupt_and_step(
+        &mut self,
+        apic: &LocalApicHandle,
+    ) -> Result<DiagnosticInterruptResult, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        if self.state.rflags & (1 << 9) == 0
+            || self.state.sti_shadow == Some(od_isa::StiShadow::Blocking)
+        {
+            return Ok(DiagnosticInterruptResult::NoDelivery);
+        }
+        if self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow != Some(od_isa::StiShadow::Clear)
+        {
+            return Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported);
+        }
+        let Some(vector) = apic.eligible() else {
+            return Ok(DiagnosticInterruptResult::NoDelivery);
+        };
+        let mut candidate = self.state.clone();
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        match deliver_maskable_interrupt(
+            &mut candidate,
+            &mut memory,
+            vector,
+            self.access_context,
+            self.rflags_defined,
+        ) {
+            InterruptDeliveryResult::OutsideProfile(reason) => {
+                Ok(DiagnosticInterruptResult::OutsideProfile(reason))
+            }
+            InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
+                let terminal = DiagnosticTerminalExit::InterruptDeliveryAborted { phase, cause };
+                self.terminal(terminal.clone());
+                Ok(DiagnosticInterruptResult::Terminal(terminal))
+            }
+            InterruptDeliveryResult::Delivered { .. } => {
+                if !apic.acknowledge_vector(vector, || self.state = candidate) {
+                    let terminal = DiagnosticTerminalExit::InterruptSelectionChanged;
+                    self.terminal(terminal.clone());
+                    return Ok(DiagnosticInterruptResult::Terminal(terminal));
+                }
+                let handler = self.run(1, || false)?;
+                Ok(DiagnosticInterruptResult::Delivered { vector, handler })
+            }
+        }
+    }
+
     fn terminal(&mut self, cause: DiagnosticTerminalExit) -> DiagnosticExit {
         self.status = DiagnosticVcpuState::Terminal(cause.clone());
         DiagnosticExit::Terminal(cause)
@@ -297,6 +374,269 @@ mod tests {
 
     fn run(session: &mut DiagnosticVcpuSession, budget: u64) -> DiagnosticRunResult {
         session.run(budget, || false).unwrap()
+    }
+
+    fn irq_session(rsp: u64) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {
+        use crate::{IO_APIC_MMIO_BASE, IoApic, LOCAL_APIC_MMIO_BASE, LocalApic, MmioBinding};
+        let local = LocalApic::new();
+        let apic = local.handle();
+        let io = IoApic::new(apic.clone());
+        let io_handle = io.handle();
+        let specs = [
+            (0x1000, 0x7000, MemoryRegionKind::Ram),
+            (IO_APIC_MMIO_BASE, 0x1000, MemoryRegionKind::Mmio),
+            (LOCAL_APIC_MMIO_BASE, 0x1000, MemoryRegionKind::Mmio),
+        ];
+        let map = MachineMemoryMap::new(
+            36,
+            specs
+                .into_iter()
+                .map(|(base, len, kind)| {
+                    MemoryRegionSpec::new(
+                        GuestPhysicalRange::new(GuestPhysicalAddress::new(base), len).unwrap(),
+                        kind,
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(0x7000),
+            vec![Box::new(io), Box::new(local)],
+            vec![
+                MmioBinding {
+                    region_start: GuestPhysicalAddress::new(IO_APIC_MMIO_BASE),
+                    device_index: 0,
+                },
+                MmioBinding {
+                    region_start: GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE),
+                    device_index: 1,
+                },
+            ],
+            vec![],
+        )
+        .unwrap();
+        fn write(bus: &mut MachineBus, addr: u64, width: AccessWidth, value: u64) {
+            bus.write_physical(GuestPhysicalAddress::new(addr), width, value, |_| {})
+                .unwrap();
+        }
+        write(
+            &mut bus,
+            LOCAL_APIC_MMIO_BASE + 0xf0,
+            AccessWidth::Dword,
+            0x1ff,
+        );
+        write(&mut bus, IO_APIC_MMIO_BASE, AccessWidth::Dword, 0x18);
+        write(
+            &mut bus,
+            IO_APIC_MMIO_BASE + 0x10,
+            AccessWidth::Dword,
+            0x8051,
+        );
+        // Present 64-bit interrupt gate and already-accessed ring-0 code descriptor.
+        write(
+            &mut bus,
+            0x3000 + 0x51 * 16,
+            AccessWidth::Qword,
+            0x8e00_0020_4000,
+        );
+        write(&mut bus, 0x3008 + 0x51 * 16, AccessWidth::Qword, 0);
+        write(&mut bus, 0x2020, AccessWidth::Qword, 0x0020_9b00_0000_0000);
+        for (i, byte) in [0x48, 0x8b, 0x03, 0x90].into_iter().enumerate() {
+            write(&mut bus, 0x4000 + i as u64, AccessWidth::Byte, byte);
+        }
+        write(&mut bus, 0x5000, AccessWidth::Qword, 0x1234_5678_9abc_def0);
+        let mut state = LongModeState::default();
+        state.rip = 0x4100;
+        state.rflags = 0x202;
+        state.gpr[od_isa::Register::Rsp as usize] = rsp;
+        state.gpr[od_isa::Register::Rbx as usize] = 0x5000;
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 2,
+        });
+        state.ss_selector = Some(0x10);
+        state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x93,
+            flags: 0,
+        });
+        state.gdtr = Some(od_isa::state::Gdtr {
+            base: 0x2000,
+            limit: 0x2f,
+        });
+        state.idtr = Some(od_isa::state::Idtr {
+            base: 0x3000,
+            limit: 0xfff,
+        });
+        state.activity = Some(od_isa::CpuActivity::Running);
+        state.sti_shadow = Some(od_isa::StiShadow::Clear);
+        (
+            DiagnosticVcpuSession::new(state, bus, context(), 0).unwrap(),
+            io_handle,
+            apic,
+        )
+    }
+
+    #[test]
+    fn irq_level_delivery_runs_one_handler_instruction() {
+        let (mut session, io, apic) = irq_session(0x7000);
+        let before = session.state.clone();
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::Delivered {
+                vector: 0x51,
+                handler: DiagnosticRunResult {
+                    instructions_executed: 1,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(session.state.rip, 0x4003);
+        assert_eq!(session.state.gpr[0], 0x1234_5678_9abc_def0);
+        assert_eq!(session.state.rflags & 0x200, 0);
+        assert_eq!(apic.pending(), None);
+        for (addr, value) in [
+            (0x6ff8, 0x10),
+            (0x6ff0, 0x7000),
+            (0x6fe8, before.rflags),
+            (0x6fe0, 8),
+            (0x6fd8, before.rip),
+        ] {
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(GuestPhysicalAddress::new(addr), AccessWidth::Qword)
+                    .unwrap(),
+                value
+            );
+        }
+        let read = |bus: &mut MachineBus, addr| {
+            bus.read_physical(GuestPhysicalAddress::new(addr), AccessWidth::Dword)
+                .unwrap()
+        };
+        assert_eq!(
+            read(&mut session.bus, crate::LOCAL_APIC_MMIO_BASE + 0x120) & (1 << 17),
+            1 << 17
+        );
+        assert_ne!(
+            read(&mut session.bus, crate::IO_APIC_MMIO_BASE + 0x10) & (1 << 14),
+            0
+        );
+        io.set_intin4(false).unwrap();
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0xb0),
+                AccessWidth::Dword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            read(&mut session.bus, crate::IO_APIC_MMIO_BASE + 0x10) & (1 << 14),
+            0
+        );
+    }
+
+    #[test]
+    fn irq_blocked_states_preserve_request_and_cpu() {
+        let (mut session, io, apic) = irq_session(0x7000);
+        let before = session.state.clone();
+        assert_eq!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::NoDelivery
+        );
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                AccessWidth::Dword,
+                0x18051,
+                |_| {},
+            )
+            .unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::NoDelivery
+        );
+        assert_eq!(session.state, before);
+        assert_eq!(apic.pending(), None);
+        io.set_intin4(false).unwrap();
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                AccessWidth::Dword,
+                0x8051,
+                |_| {},
+            )
+            .unwrap();
+        io.set_intin4(true).unwrap();
+        for case in 0..3 {
+            session.state = before.clone();
+            if case == 0 {
+                session.state.rflags &= !0x200;
+            }
+            if case == 1 {
+                session.state.sti_shadow = Some(od_isa::StiShadow::Blocking);
+            }
+            if case == 2 {
+                session
+                    .bus
+                    .write_physical(
+                        GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                        AccessWidth::Dword,
+                        0x50,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            let snapshot = session.state.clone();
+            assert_eq!(
+                session.deliver_interrupt_and_step(&apic).unwrap(),
+                DiagnosticInterruptResult::NoDelivery
+            );
+            assert_eq!(session.state, snapshot);
+            assert_eq!(apic.pending(), Some(0x51));
+        }
+    }
+
+    #[test]
+    fn irq_aborted_frame_is_terminal_and_keeps_prefix() {
+        let (mut session, io, apic) = irq_session(0x1020);
+        let before = session.state.clone();
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::Terminal(
+                DiagnosticTerminalExit::InterruptDeliveryAborted { .. }
+            )
+        ));
+        assert_eq!(session.state, before);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x1018), AccessWidth::Qword)
+                .unwrap(),
+            0x10
+        );
+        assert!(matches!(
+            session.deliver_interrupt_and_step(&apic),
+            Err(DiagnosticVcpuControlError::NotRunnable(_))
+        ));
+        assert!(matches!(
+            session.run(1, || false),
+            Err(DiagnosticVcpuControlError::NotRunnable(_))
+        ));
     }
 
     #[test]

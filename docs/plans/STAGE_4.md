@@ -1395,6 +1395,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** IRQ перед/после CLI/STI, shadow, HLT при разных условиях, pending during handler, fault при delivery; interpreter и поддержанный JIT дают одинаковую архитектурную последовательность.
 - **Готово:** handler действительно выполняется и возвращает управление; queued IRQ не теряется на JIT exit, fallback или pause.
 
+#### S4-27a. Caller-driven APIC IRQ entry и попытка первой handler instruction
+
+- [x] Ограниченный S4-27a принят после независимого `gpt-6.1-sol/high` ревью без замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** `DiagnosticVcpuSession::deliver_interrupt_and_step` выбирает один APIC-eligible vector, передаёт его существующему `od-isa::deliver_maskable_interrupt` через `IdentityMemoryAdapter`, после успешного entry подтверждает именно этот vector IRR→ISR и запускает handler с instruction budget 1. Это не гарантирует retirement: fetch/исполнение может fault, остановиться на unsupported opcode или halt; успешный CPU/APIC entry остаётся committed, возвращается обычный handler `DiagnosticRunResult`. CPU state и acknowledgement публикуются только после успешной IDT entry.
+- **Предусловия:** caller подтверждает завершённую instruction boundary, отсутствие pending synchronous exception/debug/NMI или другого interrupt inhibition, private synchronous RAM и сериализует полный вызов с APIC/IOAPIC operations. Поддержан только diagnostic flat identity Long64/CPL0 Running state с IF=1 и явным clear STI shadow, same-CPL interrupt gate и IST=0; остальные ограничения задаёт ISA delivery contract.
+- **Отказы:** IF=0, blocking STI shadow или отсутствие eligible vector оставляют CPU/APIC без изменений; TPR-blocked request остаётся в IRR. Unsupported entry возвращается без acknowledge. Delivery abort может сохранить уже записанный frame prefix; сессия становится terminal и автоматически повторить доставку нельзя.
+- **Проверки:** 9 `diagnostic_vcpu` unit tests, 10 Local APIC tests, 7 public API tests и ISA stack-store failure regression; `od-machine --all-targets`, fmt/diff и независимое Sol/high review прошли. Evidence в [отчёте](../reports/STAGE_4_S4-27A_2026-11-07.md), [manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json) и [методике](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry).
+- **Граница:** нет автоматического polling/run loop, доставки на произвольной instruction/block boundary, paged CPU delivery, MOV SS/NMI, HLT wakeup, IRET/guest EOI path, JIT exits или Linux/board acceptance. Полный критерий S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

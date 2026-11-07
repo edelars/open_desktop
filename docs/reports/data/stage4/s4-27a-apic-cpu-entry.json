@@ -1,0 +1,25 @@
+{
+  "slice": "S4-27a",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Caller-driven diagnostic Local APIC IRQ delivery through Long64/CPL0 IDT entry followed by a handler run with a one-instruction budget",
+  "review": "Independent gpt-6.1-sol/high review passed with no P0-P3 findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 9 passed",
+    "local_apic_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 10 passed",
+    "diagnostic_vcpu_api_tests": "cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1: 7 passed",
+    "isa_stack_failure_test": "cargo test -p od-isa --lib interrupt::tests::every_stack_store_failure_keeps_cpu_state_and_prior_memory_writes --offline -- --test-threads=1: 1 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,725 nodes, 70,356 edges, 996 communities",
+    "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056)"
+  },
+  "limitations": [
+    "caller-driven fresh instruction boundary only; caller serializes vCPU and APIC/IOAPIC operations",
+    "flat identity Long64/CPL0 private synchronous RAM profile only",
+    "at most one handler instruction is attempted after successful entry; entry and APIC acknowledgement remain committed if the handler attempt faults or is unsupported",
+    "automatic event polling, paged delivery, MOV SS/NMI, HLT wakeup, IRET/guest EOI, JIT integration, board registration and Linux acceptance remain unimplemented",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

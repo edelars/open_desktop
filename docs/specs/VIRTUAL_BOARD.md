@@ -72,6 +72,13 @@ preserves the other controller and an explicit pair reset clears both. This
 remains an opt-in device test profile, not default board registration or CPU
 handler delivery.
 
+S4-27a adds a caller-driven diagnostic bridge that takes one eligible request
+from this APIC profile through a Long64/CPL0 interrupt gate and attempts at
+most one handler instruction using flat identity RAM. A handler fault does not
+undo successful entry or APIC acknowledgement. It does not register APIC
+devices on the default board or provide automatic IRQ scheduling, paged
+delivery, guest EOI/IRET, HLT wakeup or Linux discovery.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.
