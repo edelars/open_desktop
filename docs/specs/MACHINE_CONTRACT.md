@@ -1399,6 +1399,44 @@ leaves RF cleared. A fetch fault occurs before this RF update. See the
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
 
+## Paged SYSCALL, kernel store, SYSRETQ and user load (S4-20c)
+
+`step_paged_syscall_profile` executes one admitted instruction using the CPU's
+owned syscall bundle and paging state. `run_paged_syscall_roundtrip` executes
+the bounded sequence: CPL3 `0F 05` (`SYSCALL`), CPL0 `4C 89 17`
+(`MOV [RDI],R10`), CPL0 `48 0F 07` (`SYSRETQ`), and CPL3 `48 8B 03`
+(`MOV RAX,[RBX]`). The caller does not supply a parallel CPL, CR3, or EFER.
+The machine derives privilege from committed CS and uses the current CPU CR3.
+
+This profile is Long64 with four-level 4 KiB paging and canonical 48-bit
+addresses. Every instruction fetch and qword operand must fit in one guest
+page. It admits no cross-page fetch or operand. `SYSCALL` takes its target from
+LSTAR, stores the next user RIP in RCX and saved flags in R11, applies FMASK,
+and loads bounded fixed CS/SS caches derived from STAR without GDT reads or an
+RSP switch. `SYSRETQ` validates CPL and canonical RCX before committing user
+CS/SS caches and the supported RFLAGS subset. Its flags mask is `0x3c7fd7` with
+bit 1 forced; definedness is validated alongside values. The handler store
+uses the supervisor RW mapping and the final load uses a user RO alias to the
+same physical qword in the roundtrip fixture. These are scenario mappings, not
+API requirements; the machine checks the permissions relevant to each access.
+The successful scenario uses EFER `0xd01`; the bounded API also admits `0xd00`
+to verify #UD when SCE is disabled.
+
+Each standalone step rejects live TF or RF before instruction fetch. SYSRETQ
+also rejects TF in saved R11 after the existing SCE, CPL and canonical-address
+checks; it leaves CPU state unchanged, while completed fetch page-walk effects
+and their callbacks remain committed. Tracked page walks report exact A/D
+changes and committed physical write ranges. Guest page faults retain PFEC,
+CR2 and saved RIP; physical backend errors remain distinct. A later failure
+does not undo an earlier retired privilege transition or kernel store.
+
+There is no TSS/IST or stack switch, SWAPGS, asynchronous event delivery,
+general WRMSR, compatibility SYSRET, exception delivery from CPL3, Linux entry
+assembly, or Linux boot claim. The synthetic initial CPL3 CPU state is supplied
+by the fixture. See the [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

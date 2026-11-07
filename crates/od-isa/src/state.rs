@@ -219,6 +219,8 @@ pub struct LongModeState {
     pub cr2: Option<u64>,
     /// Optional authoritative CR3 value carried only by explicit paging profiles.
     pub cr3: Option<u64>,
+    /// CPU-owned state for the bounded syscall profile.
+    pub syscall: Option<crate::syscall::SyscallState>,
     /// FS base in the limited canonical48 data-address profile.
     pub fs_base: u64,
     /// GS base in the limited canonical48 data-address profile.
@@ -336,6 +338,7 @@ impl Default for LongModeState {
             cr4: None,
             cr2: None,
             cr3: None,
+            syscall: None,
             fs_base: 0,
             gs_base: 0,
             kernel_gs_base: None,
@@ -383,6 +386,7 @@ impl LongModeState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FragmentAdapterError {
+    UnsupportedSyscallState,
     UnsupportedCr0(u64),
     UnsupportedCr3(u64),
     UnsupportedCr4(u64),
@@ -426,6 +430,9 @@ impl TryFrom<&LongModeState> for FragmentState {
     type Error = FragmentAdapterError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.syscall.is_some() {
+            return Err(FragmentAdapterError::UnsupportedSyscallState);
+        }
         if let Some(cr0) = state.cr0 {
             return Err(FragmentAdapterError::UnsupportedCr0(cr0));
         }
@@ -748,6 +755,7 @@ mod tests {
                     OperandSize::Qword,
                 ] {
                     let mut state = LongModeState {
+                        syscall: None,
                         cr2: None,
                         cr3: None,
                         cr4: None,

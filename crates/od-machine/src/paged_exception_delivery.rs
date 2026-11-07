@@ -479,6 +479,80 @@ fn is_architectural_page_fault_abort(result: &PageFaultDeliveryResult) -> bool {
     )
 }
 
+/// One syscall-profile instruction and the paging effects committed before its exit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedSyscallStepReport {
+    pub cpu: od_isa::syscall::SyscallStepResult,
+    pub page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub ad_updates: Vec<AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+pub fn step_paged_syscall_profile(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    defined: u64,
+    instruction: od_isa::syscall::SyscallInstruction,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedSyscallStepReport, PagedExceptionDeliveryError> {
+    let cr3 = state.cr3.ok_or(PagedExceptionDeliveryError::Configuration(
+        ProbeConfigError::MissingCpuRegister { register: "CR3" },
+    ))?;
+    let efer = state
+        .syscall
+        .ok_or(PagedExceptionDeliveryError::Configuration(
+            ProbeConfigError::MissingCpuRegister { register: "EFER" },
+        ))?
+        .efer;
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let cpu = od_isa::syscall::step(state, &mut memory, defined, instruction);
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedSyscallStepReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
+/// The returned entries are individual boundaries; a later failure retains all earlier effects.
+pub fn run_paged_syscall_roundtrip(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    mut defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<Vec<PagedSyscallStepReport>, PagedExceptionDeliveryError> {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    let mut reports = Vec::new();
+    for instruction in [Syscall, KernelStore, Sysret, UserLoad] {
+        let report =
+            step_paged_syscall_profile(state, bus, defined, instruction, &mut committed_write)?;
+        defined = report.cpu.rflags_defined;
+        let retired = report.cpu.exit == SyscallStepExit::Retired;
+        reports.push(report);
+        if !retired {
+            break;
+        }
+    }
+    Ok(reports)
+}
+
 struct PagedExceptionMemory<'a> {
     bus: &'a mut MachineBus,
     paging: Long64ProbeConfig,

@@ -705,3 +705,43 @@ The profile does not support cross-page instruction fetch, user stores,
 exceptions delivered from CPL3, syscalls, or Linux boot. See the
 [S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md) and
 [machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b).
+
+## S4-20c: paged SYSCALL → kernel store → SYSRETQ → user load
+
+The four-step machine test exercises the exact instruction bytes through
+tracked paging, with a supervisor RW mapping and a user RO alias to one data
+qword. It verifies the nonce written by the kernel in CPL0 is observed by the
+final CPL3 load, the CPL transitions and selector caches, RCX/R11/FMASK and
+RFLAGS definedness, and unchanged RSP/CR3. STAR selector derivation, SYSRETQ's
+`0x3c7fd7` flags mask, reserved-bit handling and definedness are covered by ISA
+tests.
+
+Failure tests cover SCE-disabled #UD, invalid SYSRETQ CPL/canonical address,
+saved TF rejection, live TF/RF admission, page permissions and fetch/data
+faults, physical backend aborts, and instruction/operand page boundaries. The
+ISA test checks that saved-TF rejection occurs after required fetch with no CPU
+commit. A separate machine-level probe during independent review (outside the
+33-test target) confirmed the exact fetch A-bit PTE update and
+`committed_write` callback on that path. Exact A/D PTE values and callback
+order are checked by the system target for success, kernel-store #PF/backend
+abort, and late user fetch/read failures; already committed SYSCALL state and
+kernel-store writes remain visible.
+
+Run the focused ISA, complete machine-system, and affected machine checks:
+
+```sh
+cargo test -p od-isa --lib syscall --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+cargo check -p od-machine --all-targets --offline
+```
+
+All 5 focused ISA tests and all 33 system tests passed. Formatting and the
+machine all-target check passed; the build reports the existing unrelated
+`od-jit::block::CodeMemory::one_instruction` dead-code warning. Graphify was
+updated after code changes (27,525 nodes, 69,045 edges). Independent
+Sol/high review accepted the slice with no P0–P3 findings. Cross-page accesses,
+single-step/debug behavior, asynchronous events, stack switching, exception
+delivery from CPL3 and Linux boot remain outside this slice. See the
+[S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c).

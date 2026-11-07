@@ -21553,6 +21553,7 @@ mod tests {
             let mut memory = Memory::new(&bytes);
             assert!(memory.decode().is_ok());
             let mut state = crate::LongModeState {
+                syscall: None,
                 cr2: None,
                 cr3: None,
                 cr4: None,

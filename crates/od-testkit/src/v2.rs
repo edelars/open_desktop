@@ -1229,6 +1229,12 @@ impl TryFrom<&LongModeState> for IntegerState {
     type Error = FormatError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.syscall.is_some() {
+            return Err(invalid(
+                "state.syscall",
+                "not represented by this snapshot schema",
+            ));
+        }
         if state.activity == Some(od_isa::CpuActivity::Shutdown) {
             return Err(FormatError::InvalidField {
                 field: "state.activity",
@@ -1336,6 +1342,7 @@ impl IntegerState {
     pub fn to_cpu_for(&self, profile: Profile) -> Result<LongModeState, FormatError> {
         self.validate_for(profile)?;
         Ok(LongModeState {
+            syscall: None,
             cr2: None,
             cr3: None,
             sti_shadow: self.sti_shadow.map(|shadow| match shadow {
@@ -1966,6 +1973,12 @@ impl IntegerState {
     }
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
+        if state.syscall.is_some() {
+            return Err(invalid(
+                "state.syscall",
+                "not represented by this snapshot schema",
+            ));
+        }
         if state.activity == Some(od_isa::CpuActivity::Shutdown) {
             return Err(invalid(
                 "state.activity",

@@ -2273,3 +2273,879 @@ fn user_return_preserves_cpl3_on_backend_read_abort() {
         [report.iretq.committed_writes, mov.committed_writes].concat()
     );
 }
+
+fn syscall_fixture() -> (MachineBus, LongModeState) {
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+    put_qword(&mut bus, 0x4010, 0x9023); // kernel code, supervisor
+    put_qword(&mut bus, 0x6000, DATA_PHYSICAL | 3); // supervisor RW alias
+    put_qword(&mut bus, 0x1008, 0xf007);
+    put_qword(&mut bus, 0xf000, 0x10007);
+    put_qword(&mut bus, 0x10000, 0x11007);
+    put_qword(&mut bus, 0x11000, DATA_PHYSICAL | 5); // user RO alias
+    put_bytes(&mut bus, 0x8000, &[0x0f, 0x05, 0x48, 0x8b, 0x03]);
+    put_bytes(&mut bus, 0x9000, &[0x4c, 0x89, 0x17, 0x48, 0x0f, 0x07]);
+    let mut state = initial_state(0x202);
+    state.cs_selector = Some(0x23);
+    state.ss_selector = Some(0x1b);
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xfb,
+        flags: 0xa,
+    });
+    state.ss_cache = Some(DataSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xf3,
+        flags: 0xc,
+    });
+    state.syscall = Some(od_isa::syscall::SyscallState {
+        efer: 0xd01,
+        star: (0x10u64 << 48) | (8u64 << 32),
+        lstar: HANDLER_RIP,
+        fmask: 0x200,
+        r11_flags_defined: None,
+    });
+    state.gpr[Register::Rax as usize] = 0x1234;
+    state.gpr[Register::R10 as usize] = 0xaabb_ccdd_1234_5678;
+    state.gpr[Register::Rdi as usize] = DATA_LINEAR;
+    state.gpr[Register::Rbx as usize] = 0x80_0000_0000;
+    (bus, state)
+}
+
+#[test]
+fn syscall_roundtrip_uses_paged_aliases_and_preserves_rsp() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    let (mut bus, mut state) = syscall_fixture();
+    // The transition must not consult GDT or stack mappings.
+    put_qword(&mut bus, 0x5008, 0);
+    put_qword(&mut bus, 0x5810, 0);
+    let mut writes = Vec::new();
+    let mut defined = od_isa::syscall::SYSCALL_FLAGS;
+    for (index, instruction) in [Syscall, KernelStore, Sysret, UserLoad]
+        .into_iter()
+        .enumerate()
+    {
+        let report = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            defined,
+            instruction,
+            |r| writes.push(r),
+        )
+        .unwrap();
+        assert_eq!(
+            report.cpu.exit,
+            SyscallStepExit::Retired,
+            "step {index}: {report:?}"
+        );
+        for update in &report.ad_updates {
+            let current = bus
+                .read_physical(update.address, AccessWidth::Qword)
+                .unwrap();
+            assert_eq!(current & update.after, update.after);
+            assert!(
+                report
+                    .committed_writes
+                    .iter()
+                    .any(|range| range.start() == update.address)
+            );
+        }
+        assert!(writes.ends_with(&report.committed_writes));
+        defined = report.cpu.rflags_defined;
+        assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+        assert_eq!(state.cr3, Some(CR3));
+        match index {
+            0 => {
+                assert_eq!(state.rip, HANDLER_RIP);
+                assert_eq!(state.cs_selector, Some(8));
+                assert_eq!(state.ss_selector, Some(0x10));
+                assert_eq!(state.gpr[1], FAULT_RIP + 2);
+                assert_eq!(state.gpr[11], 0x202);
+                assert_eq!(state.rflags & 0x200, 0);
+                assert_ne!(defined & 0x200, 0);
+                assert_eq!(
+                    state.cs_cache.unwrap(),
+                    CodeSegmentDescriptorCache {
+                        base: 0,
+                        limit: u32::MAX,
+                        access: 0x9b,
+                        flags: 0xa
+                    }
+                );
+                assert_eq!(
+                    state.ss_cache.unwrap(),
+                    DataSegmentDescriptorCache {
+                        base: 0,
+                        limit: u32::MAX,
+                        access: 0x93,
+                        flags: 0xc
+                    }
+                );
+            }
+            1 => {
+                assert_eq!(state.rip, HANDLER_RIP + 3);
+            }
+            2 => {
+                assert_eq!(state.rip, FAULT_RIP + 2);
+                assert_eq!(state.cs_selector, Some(0x23));
+                assert_eq!(state.ss_selector, Some(0x1b));
+                assert_eq!(state.rflags & 0x200, 0x200);
+                assert_ne!(defined & 0x200, 0);
+                assert_eq!(
+                    state.cs_cache.unwrap(),
+                    CodeSegmentDescriptorCache {
+                        base: 0,
+                        limit: u32::MAX,
+                        access: 0xfb,
+                        flags: 0xa
+                    }
+                );
+                assert_eq!(
+                    state.ss_cache.unwrap(),
+                    DataSegmentDescriptorCache {
+                        base: 0,
+                        limit: u32::MAX,
+                        access: 0xf3,
+                        flags: 0xc
+                    }
+                );
+                assert_eq!(state.gpr[1], FAULT_RIP + 2);
+                assert_eq!(state.gpr[11], 0x202);
+            }
+            _ => {
+                assert_eq!(state.rip, FAULT_RIP + 5);
+                assert_eq!(state.gpr[0], 0xaabb_ccdd_1234_5678);
+            }
+        }
+    }
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        0xaabb_ccdd_1234_5678
+    );
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|r| r.start().get() == DATA_PHYSICAL)
+            .count(),
+        1
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        DATA_PHYSICAL | 0x63
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x11000), AccessWidth::Qword)
+            .unwrap(),
+        DATA_PHYSICAL | 0x25
+    );
+}
+
+#[test]
+fn syscall_profile_faults_preserve_committed_boundaries() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    // SCE=0 produces #UD before changing privilege state.
+    let (mut bus, mut state) = syscall_fixture();
+    state.syscall.as_mut().unwrap().efer = 0xd00;
+    let before = state.clone();
+    let report = od_machine::step_paged_syscall_profile(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        Syscall,
+        |_| {},
+    )
+    .unwrap();
+    assert!(matches!(report.cpu.exit, SyscallStepExit::Fault(ref f) if f.vector == 6));
+    assert_eq!(state, before);
+
+    // Kernel write to a supervisor read-only mapping faults after SYSCALL retired.
+    let (mut bus, mut state) = syscall_fixture();
+    put_qword(&mut bus, 0x6000, DATA_PHYSICAL | 1);
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].cpu.exit, SyscallStepExit::Retired);
+    let fault = reports[1].page_fault.as_ref().unwrap();
+    assert_eq!(
+        (
+            fault.fault().error_code,
+            fault.saved_rip(),
+            fault.cr2_value()
+        ),
+        (Some(3), HANDLER_RIP, DATA_LINEAR)
+    );
+    assert_eq!(state.cs_selector, Some(8));
+    assert_eq!(state.rip, HANDLER_RIP);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        DATA_PHYSICAL | 0x21
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        SENTINEL
+    );
+
+    // User read of supervisor mapping faults after both transitions and the store.
+    let (mut bus, mut state) = syscall_fixture();
+    put_qword(&mut bus, 0x11000, DATA_PHYSICAL | 1);
+    let mut callbacks = Vec::new();
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |range| callbacks.push(range),
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 4);
+    assert!(
+        reports[..3]
+            .iter()
+            .all(|r| r.cpu.exit == SyscallStepExit::Retired)
+    );
+    let fault = reports[3].page_fault.as_ref().unwrap();
+    assert_eq!(
+        (
+            fault.fault().error_code,
+            fault.saved_rip(),
+            fault.cr2_value()
+        ),
+        (Some(5), FAULT_RIP + 2, 0x80_0000_0000)
+    );
+    assert_eq!(state.cs_selector, Some(0x23));
+    assert_eq!(state.rip, FAULT_RIP + 2);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x11000), AccessWidth::Qword)
+            .unwrap(),
+        DATA_PHYSICAL | 0x21
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        0xaabb_ccdd_1234_5678
+    );
+
+    let ranges = |addresses: &[u64]| {
+        addresses
+            .iter()
+            .map(|&address| GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        callbacks,
+        ranges(&[
+            0x3020,
+            0x6000,
+            0x6000,
+            DATA_PHYSICAL,
+            0x1008,
+            0xf000,
+            0x10000,
+            0x11000
+        ])
+    );
+    assert_eq!(
+        reports[3].committed_writes,
+        ranges(&[0x1008, 0xf000, 0x10000, 0x11000])
+    );
+    for (address, expected) in [
+        (0x3020, 0x6027),
+        (0x6000, DATA_PHYSICAL | 0x63),
+        (0x1008, 0xf027),
+        (0xf000, 0x10027),
+        (0x10000, 0x11027),
+        (0x11000, DATA_PHYSICAL | 0x21),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+
+    // SYSRETQ #GP for CPL3 and noncanonical RCX leaves CPU unchanged.
+    for wrong_cpl in [true, false] {
+        let (mut bus, mut state) = syscall_fixture();
+        if wrong_cpl {
+            put_bytes(&mut bus, 0x8000, &[0x48, 0x0f, 0x07]);
+        } else {
+            let r = od_machine::step_paged_syscall_profile(
+                &mut state,
+                &mut bus,
+                od_isa::INTEGER_FLAGS,
+                Syscall,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(r.cpu.exit, SyscallStepExit::Retired);
+            put_bytes(&mut bus, 0x9000, &[0x48, 0x0f, 0x07]);
+            state.gpr[1] = 0x0000_8000_0000_0000;
+        }
+        let before = state.clone();
+        let report = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            Sysret,
+            |_| {},
+        )
+        .unwrap();
+        assert!(
+            matches!(report.cpu.exit, SyscallStepExit::Fault(ref f) if f.vector == 13 && f.error_code == Some(0))
+        );
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn syscall_profile_fetch_and_backend_faults_are_distinct() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    let (mut bus, mut state) = syscall_fixture();
+    // The post-SYSRET instruction is on a separate supervisor page.
+    put_bytes(&mut bus, 0x8ffe, &[0x0f, 0x05]);
+    put_qword(&mut bus, 0x4010, 0x9003);
+    put_qword(&mut bus, 0x4018, 0xa003);
+    put_bytes(&mut bus, 0xa000, &[0x4c, 0x89, 0x17, 0x48, 0x0f, 0x07]);
+    state.rip = FAULT_RIP + 0xffe;
+    state.syscall.as_mut().unwrap().lstar = 0x0040_3000;
+    let mut callbacks = Vec::new();
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |range| callbacks.push(range),
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 4);
+    assert!(
+        reports[..3]
+            .iter()
+            .all(|r| r.cpu.exit == SyscallStepExit::Retired)
+    );
+    let fault = reports[3].page_fault.as_ref().unwrap();
+    assert_eq!(
+        (
+            fault.fault().error_code,
+            fault.saved_rip(),
+            fault.cr2_value()
+        ),
+        (Some(0x15), HANDLER_RIP, HANDLER_RIP)
+    );
+    assert_eq!(state.cs_selector, Some(0x23));
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        0xaabb_ccdd_1234_5678
+    );
+
+    let ranges = |addresses: &[u64]| {
+        addresses
+            .iter()
+            .map(|&address| GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        callbacks,
+        ranges(&[0x4018, 0x3020, 0x6000, 0x6000, DATA_PHYSICAL, 0x4010])
+    );
+    assert_eq!(reports[3].committed_writes, ranges(&[0x4010]));
+    for (address, expected) in [
+        (0x4018, 0xa023),
+        (0x4010, 0x9023),
+        (0x3020, 0x6027),
+        (0x6000, DATA_PHYSICAL | 0x63),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+
+    let (mut bus, mut state) = syscall_fixture();
+    put_qword(&mut bus, 0x11000, 0x30000 | 5); // valid PTE, physical operand outside RAM
+    let old_cr2 = state.cr2;
+    let mut callbacks = Vec::new();
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |range| callbacks.push(range),
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 4);
+    assert!(matches!(reports[3].cpu.exit, SyscallStepExit::Backend(_)));
+    assert!(reports[3].page_fault.is_none());
+    assert!(reports[3].access_error.is_some());
+    assert_eq!(state.cr2, old_cr2);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x11000), AccessWidth::Qword)
+            .unwrap(),
+        0x30025
+    );
+    assert_eq!(state.cs_selector, Some(0x23));
+    assert_eq!(state.rip, FAULT_RIP + 2);
+
+    assert_eq!(
+        callbacks,
+        ranges(&[
+            0x3020,
+            0x6000,
+            0x6000,
+            DATA_PHYSICAL,
+            0x1008,
+            0xf000,
+            0x10000,
+            0x11000
+        ])
+    );
+    assert_eq!(
+        reports[3].committed_writes,
+        ranges(&[0x1008, 0xf000, 0x10000, 0x11000])
+    );
+    for (address, expected) in [
+        (0x3020, 0x6027),
+        (0x6000, DATA_PHYSICAL | 0x63),
+        (0x1008, 0xf027),
+        (0xf000, 0x10027),
+        (0x10000, 0x11027),
+        (0x11000, 0x30025),
+        (DATA_PHYSICAL, 0xaabb_ccdd_1234_5678),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+
+    // A mismatch on the last byte must not fetch a fourth byte from the next page.
+    let (mut bus, mut state) = syscall_fixture();
+    state.rip = FAULT_RIP + 0xffd;
+    put_bytes(&mut bus, 0x8ffd, &[0x48, 0x8b, 0x43]);
+    put_qword(&mut bus, 0x4010, 0);
+    let report = od_machine::step_paged_syscall_profile(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        UserLoad,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.cpu.exit, SyscallStepExit::Unsupported);
+    assert!(report.page_fault.is_none());
+}
+
+#[test]
+fn syscall_user_permissions_all_page_levels() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    for (instruction, entries, expected_fault, address) in [
+        (Syscall, [0x1000, 0x2000, 0x3010, 0x4008], 0x15, FAULT_RIP),
+        (
+            UserLoad,
+            [0x1008, 0xf000, 0x10000, 0x11000],
+            0x05,
+            0x80_0000_0000,
+        ),
+    ] {
+        for entry in entries {
+            let (mut bus, mut state) = syscall_fixture();
+            if instruction == UserLoad {
+                state.rip = FAULT_RIP + 2;
+            }
+            let value = bus
+                .read_physical(GuestPhysicalAddress::new(entry), AccessWidth::Qword)
+                .unwrap();
+            put_qword(&mut bus, entry, value & !4);
+            let report = od_machine::step_paged_syscall_profile(
+                &mut state,
+                &mut bus,
+                od_isa::INTEGER_FLAGS,
+                instruction,
+                |_| {},
+            )
+            .unwrap();
+            assert!(matches!(report.cpu.exit, SyscallStepExit::Fault(_)));
+            let fault = report.page_fault.unwrap();
+            assert_eq!(
+                (
+                    fault.fault().error_code,
+                    fault.cr2_value(),
+                    fault.saved_rip()
+                ),
+                (Some(expected_fault), address, state.rip)
+            );
+            assert_eq!(state.cr2, Some(address));
+        }
+    }
+}
+
+#[test]
+fn syscall_late_faults_preserve_completed_transition_and_store() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    let (mut bus, mut state) = syscall_fixture();
+    put_qword(&mut bus, 0x4010, 0);
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].cpu.exit, SyscallStepExit::Retired);
+    let fault = reports[1].page_fault.as_ref().unwrap();
+    assert_eq!(
+        (fault.cr2_value(), fault.saved_rip()),
+        (HANDLER_RIP, HANDLER_RIP)
+    );
+    assert_eq!(state.cs_selector, Some(8));
+
+    let (mut bus, mut state) = syscall_fixture();
+    for instruction in [Syscall, KernelStore] {
+        let report = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            instruction,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.cpu.exit, SyscallStepExit::Retired);
+    }
+    state.gpr[1] = 0x8000_0000_0000;
+    let before = state.clone();
+    let report = od_machine::step_paged_syscall_profile(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        Sysret,
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        matches!(report.cpu.exit, SyscallStepExit::Fault(f) if f.vector == 13 && f.error_code == Some(0))
+    );
+    assert_eq!(state, before);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        0xaabb_ccdd_1234_5678
+    );
+
+    let (mut bus, mut state) = syscall_fixture();
+    put_qword(&mut bus, 0x6000, 0x30003);
+    let old_cr2 = state.cr2;
+    let reports = od_machine::run_paged_syscall_roundtrip(
+        &mut state,
+        &mut bus,
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert!(matches!(reports[1].cpu.exit, SyscallStepExit::Backend(_)));
+    assert!(reports[1].page_fault.is_none());
+    assert!(reports[1].access_error.is_some());
+    assert_eq!(state.cr2, old_cr2);
+    assert_eq!(state.cs_selector, Some(8));
+}
+
+#[test]
+fn syscall_instruction_and_operand_page_boundaries_fail_closed() {
+    use od_isa::syscall::{SyscallInstruction::*, SyscallStepExit};
+    for (instruction, bytes) in [
+        (Syscall, &b"\x0f\x05"[..]),
+        (KernelStore, &b"\x4c\x89\x17"[..]),
+        (Sysret, &b"\x48\x0f\x07"[..]),
+        (UserLoad, &b"\x48\x8b\x03"[..]),
+    ] {
+        for crossing in [false, true] {
+            let (mut bus, mut state) = syscall_fixture();
+            if matches!(instruction, KernelStore | Sysret) {
+                let r = od_machine::step_paged_syscall_profile(
+                    &mut state,
+                    &mut bus,
+                    od_isa::INTEGER_FLAGS,
+                    Syscall,
+                    |_| {},
+                )
+                .unwrap();
+                assert_eq!(r.cpu.exit, SyscallStepExit::Retired);
+            }
+            let offset = 0x1000 - bytes.len() as u64 + u64::from(crossing);
+            let (linear, physical) = if matches!(instruction, KernelStore | Sysret) {
+                (HANDLER_RIP, 0x9000)
+            } else {
+                (FAULT_RIP, 0x8000)
+            };
+            state.rip = linear + offset;
+            if instruction == Sysret {
+                state.gpr[1] = FAULT_RIP;
+            }
+            put_bytes(&mut bus, physical + offset, bytes);
+            let before = state.clone();
+            let report = od_machine::step_paged_syscall_profile(
+                &mut state,
+                &mut bus,
+                od_isa::INTEGER_FLAGS,
+                instruction,
+                |_| {},
+            )
+            .unwrap();
+            if crossing {
+                assert_eq!(report.cpu.exit, SyscallStepExit::Unsupported);
+                assert_eq!(state, before);
+                assert!(report.page_fault.is_none());
+            } else {
+                assert_eq!(report.cpu.exit, SyscallStepExit::Retired);
+            }
+        }
+    }
+    for crossing in [false, true] {
+        let (mut bus, mut state) = syscall_fixture();
+        state.rip = FAULT_RIP + 2;
+        state.gpr[Register::Rbx as usize] = 0x80_0000_0000 + if crossing { 0xff9 } else { 0xff8 };
+        put_qword(&mut bus, DATA_PHYSICAL + 0xff8, 0x12345678);
+        let before = state.clone();
+        let r = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            UserLoad,
+            |_| {},
+        )
+        .unwrap();
+        if crossing {
+            assert_eq!(r.cpu.exit, SyscallStepExit::Rejected);
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(r.cpu.exit, SyscallStepExit::Retired);
+            assert_eq!(state.gpr[Register::Rax as usize], 0x12345678);
+        }
+    }
+    for crossing in [false, true] {
+        let (mut bus, mut state) = syscall_fixture();
+        let r = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            Syscall,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(r.cpu.exit, SyscallStepExit::Retired);
+        state.gpr[Register::Rdi as usize] = DATA_LINEAR + if crossing { 0xff9 } else { 0xff8 };
+        let before = state.clone();
+        let mut writes = vec![];
+        let r = od_machine::step_paged_syscall_profile(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            KernelStore,
+            |w| writes.push(w),
+        )
+        .unwrap();
+        if crossing {
+            assert_eq!(r.cpu.exit, SyscallStepExit::Rejected);
+            assert_eq!(state, before);
+            assert!(writes.iter().all(|w| w.start().get() < DATA_PHYSICAL));
+        } else {
+            assert_eq!(r.cpu.exit, SyscallStepExit::Retired);
+            assert_eq!(
+                bus.read_physical(
+                    GuestPhysicalAddress::new(DATA_PHYSICAL + 0xff8),
+                    AccessWidth::Qword
+                )
+                .unwrap(),
+                0xaabb_ccdd_1234_5678
+            );
+        }
+    }
+}
+
+#[test]
+fn syscall_paging_effects_exact_on_success_and_store_failures() {
+    use od_isa::syscall::SyscallStepExit;
+    use od_machine::{AdBit::*, PageTableLevel::*};
+
+    for scenario in ["success", "page_fault", "backend"] {
+        let (mut bus, mut state) = syscall_fixture();
+        put_qword(&mut bus, 0x4008, 0x8007); // user instruction fetch sets A
+        put_qword(&mut bus, 0x4010, 0x9003); // kernel instruction fetch sets A
+        let leaf = match scenario {
+            "page_fault" => DATA_PHYSICAL | 1,
+            "backend" => 0x30003,
+            _ => DATA_PHYSICAL | 3,
+        };
+        put_qword(&mut bus, 0x6000, leaf);
+        let old_cr2 = state.cr2;
+        let mut callbacks = Vec::new();
+        let reports = od_machine::run_paged_syscall_roundtrip(
+            &mut state,
+            &mut bus,
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(reports.len(), if scenario == "success" { 4 } else { 2 });
+        assert_eq!(reports[0].cpu.exit, SyscallStepExit::Retired);
+        assert_eq!(
+            reports[0]
+                .ad_updates
+                .iter()
+                .map(|u| (u.level, u.address.get(), u.before, u.after, u.bit))
+                .collect::<Vec<_>>(),
+            [(Pt, 0x4008, 0x8007, 0x8027, Accessed)]
+        );
+
+        let mut store_updates = vec![
+            (Pt, 0x4010, 0x9003, 0x9023, Accessed),
+            (Pd, 0x3020, 0x6007, 0x6027, Accessed),
+            (Pt, 0x6000, leaf, leaf | 0x20, Accessed),
+        ];
+        let mut store_writes = vec![0x4010, 0x3020, 0x6000];
+        if scenario == "success" {
+            store_updates.push((Pt, 0x6000, leaf | 0x20, leaf | 0x60, Dirty));
+            store_writes.extend([0x6000, DATA_PHYSICAL]);
+            assert_eq!(reports[1].cpu.exit, SyscallStepExit::Retired);
+        } else if scenario == "page_fault" {
+            let fault = reports[1].page_fault.as_ref().unwrap();
+            assert_eq!(
+                (
+                    fault.fault().error_code,
+                    fault.cr2_value(),
+                    fault.saved_rip()
+                ),
+                (Some(3), DATA_LINEAR, HANDLER_RIP)
+            );
+            assert!(matches!(reports[1].cpu.exit, SyscallStepExit::Fault(_)));
+            assert_eq!(state.cr2, Some(DATA_LINEAR));
+        } else {
+            assert!(matches!(reports[1].cpu.exit, SyscallStepExit::Backend(_)));
+            assert!(reports[1].page_fault.is_none());
+            assert!(matches!(
+                reports[1].access_error,
+                Some(od_machine::TrackedAccessError::OperandPhysical { .. })
+            ));
+            assert_eq!(state.cr2, old_cr2);
+        }
+        let actual_updates = |report: &od_machine::PagedSyscallStepReport| {
+            report
+                .ad_updates
+                .iter()
+                .map(|u| (u.level, u.address.get(), u.before, u.after, u.bit))
+                .collect::<Vec<_>>()
+        };
+        let ranges = |addresses: &[u64]| {
+            addresses
+                .iter()
+                .map(|&address| {
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reports[0].committed_writes, ranges(&[0x4008]));
+        assert_eq!(actual_updates(&reports[1]), store_updates, "{scenario}");
+        assert_eq!(
+            reports[1].committed_writes,
+            ranges(&store_writes),
+            "{scenario}"
+        );
+        let mut expected_callbacks = vec![0x4008];
+        expected_callbacks.extend(store_writes);
+        if scenario == "success" {
+            assert_eq!(reports[2].cpu.exit, SyscallStepExit::Retired);
+            assert!(reports[2].ad_updates.is_empty());
+            assert!(reports[2].committed_writes.is_empty());
+            assert_eq!(reports[3].cpu.exit, SyscallStepExit::Retired);
+            assert_eq!(
+                actual_updates(&reports[3]),
+                [
+                    (Pml4, 0x1008, 0xf007, 0xf027, Accessed),
+                    (Pdpt, 0xf000, 0x10007, 0x10027, Accessed),
+                    (Pd, 0x10000, 0x11007, 0x11027, Accessed),
+                    (
+                        Pt,
+                        0x11000,
+                        DATA_PHYSICAL | 5,
+                        DATA_PHYSICAL | 0x25,
+                        Accessed
+                    ),
+                ]
+            );
+            let user_writes = [0x1008, 0xf000, 0x10000, 0x11000];
+            assert_eq!(reports[3].committed_writes, ranges(&user_writes));
+            expected_callbacks.extend(user_writes);
+            assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_1234_5678);
+        } else {
+            // SYSCALL retired before the failed store; no operand write occurred.
+            assert_eq!(state.cs_selector, Some(8));
+            assert_eq!(state.rip, HANDLER_RIP);
+            assert_eq!(state.gpr[Register::Rcx as usize], FAULT_RIP + 2);
+        }
+        assert_eq!(callbacks, ranges(&expected_callbacks), "{scenario}");
+        for (address, expected) in [
+            (0x4008, 0x8027),
+            (0x4010, 0x9023),
+            (0x3020, 0x6027),
+            (
+                0x6000,
+                leaf | if scenario == "success" { 0x60 } else { 0x20 },
+            ),
+            (
+                0x1008,
+                if scenario == "success" {
+                    0xf027
+                } else {
+                    0xf007
+                },
+            ),
+            (
+                0xf000,
+                if scenario == "success" {
+                    0x10027
+                } else {
+                    0x10007
+                },
+            ),
+            (
+                0x10000,
+                if scenario == "success" {
+                    0x11027
+                } else {
+                    0x11007
+                },
+            ),
+            (
+                0x11000,
+                DATA_PHYSICAL | if scenario == "success" { 0x25 } else { 5 },
+            ),
+            (
+                DATA_PHYSICAL,
+                if scenario == "success" {
+                    0xaabb_ccdd_1234_5678
+                } else {
+                    SENTINEL
+                },
+            ),
+        ] {
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap(),
+                expected,
+                "{scenario}: {address:#x}"
+            );
+        }
+    }
+}

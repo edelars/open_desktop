@@ -18,6 +18,13 @@ integration, hardware cases и Linux userspace остаются открытым
 срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
 S4-32 и этап 4 остаются открытыми.
 
+Bounded S4-20c now completes a paged CPL3 `SYSCALL` → CPL0 kernel store →
+`SYSRETQ` → CPL3 load roundtrip and is accepted after independent review with
+no remaining P0–P3 findings. Its exact scope, checks and limitations are in the
+[S4-20c report](STAGE_4_S4-20C_2026-11-06.md) and
+[JSON evidence](data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json).
+Parent S4-20 and Stage 4 remain open.
+
 ## S4-32a: reproducible freestanding flat probe
 
 The accepted bounded S4-32a slice adds a real assembly/linker fixture, a strict

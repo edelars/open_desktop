@@ -1051,6 +1051,57 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   [machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b) и
   [verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
 
+#### S4-20c. Bounded paged SYSCALL → kernel store → SYSRETQ → user load
+
+- [x] Ограниченный CPU/machine vertical slice принят после независимого
+  Sol/high review без замечаний P0–P3; parent S4-20 и Stage 4 остаются открытыми.
+- **Начальное состояние:** синтетическое CPU-owned CPL3 state после внешней
+  fixture. До исполнения заданы `EFER=0xd01`, `STAR`, `LSTAR`, `FMASK`, CR3 и
+  четырёхуровневые таблицы; generic WRMSR и запуск через IRETQ в этот slice не
+  входят. CPU API не принимает параллельные external CPL/CR3/EFER values.
+- **Сценарий:** точные четыре retirement без host-перезаписи CPU/RAM между
+  инструкциями: CPL3 `0F 05` (`SYSCALL`); CPL0 `4C 89 17`
+  (`MOV [RDI],R10`) по supervisor-only LSTAR; CPL0 `48 0F 07` (`SYSRETQ`);
+  CPL3 `48 8B 03` (`MOV RAX,[RBX]`) по адресу, сохранённому SYSCALL в RCX.
+  `RDI` и `RBX` отображают одну физическую data page как kernel RW и user RO.
+  Начальный RAX и исходное содержимое страницы отличаются от nonce в R10,
+  чтобы отдельный user load был наблюдаемым.
+- **CPU contract:** только Long64, canonical48, physical36, 4 KiB pages,
+  `CR0=0x80010033`, `CR4=0x20`, один running CPU, без STI shadow и async event.
+  Отдельное opt-in syscall-state bundle ограничивает EFER/STAR/LSTAR/FMASK,
+  selector layout и flags; `SCE=0` даёт #UD для SYSCALL и SYSRETQ, SYSRETQ из
+  CPL3 и noncanonical RCX дают #GP(0) без частичного privilege commit. Проверить
+  RFLAGS mask SYSRETQ, OF, очистку reserved bit 15 и definedness. IF=1
+  маскируется в kernel через FMASK и восстанавливается из R11. Проверить
+  допустимый STAR layout, включая вычисление SS из исходного selector field;
+  учитывать definedness для RCX/R11/RFLAGS, selector caches и точные RSP effects.
+  Каждый отдельный шаг требует текущие `RFLAGS.TF=0` и `RFLAGS.RF=0`;
+  при нарушении профиль возвращает `Rejected` до fetch без изменений CPU.
+  SYSRETQ дополнительно отклоняет `R11.TF=1` после проверок SCE, CPL и
+  canonical RCX; CPU не изменяется, но уже выполненные page-walk A updates и
+  соответствующие callbacks при fetch сохраняются.
+- **Проверка:** четыре точные кодировки, все instruction fetch/data accesses
+  проходят tracked paging с CPL из committed CS. Проверить RCX/R11, FMASK,
+  CS/SS selectors/caches, неизменность RSP/CR3, одну kernel write, user load
+  по RBX и nonce в RAX; оба alias используют реальные U/S permissions.
+  SYSCALL/SYSRETQ не читают GDT и не переключают RSP в этом сценарии. Проверить
+  PFEC/CR2/RIP, A/D updates и сохранение уже завершённого перехода/записи при
+  последующей ошибке; backend errors остаются отдельно от guest faults.
+- **Граница:** fetch каждой инструкции и каждый qword operand должны целиком
+  помещаться в одну guest page; cross-page fetch/operand остаются вне профиля.
+  Межинструкционный stop/resume относится к S4-21.
+- **Граница:** нет stack switch, TSS/IST, SWAPGS, async events, general WRMSR,
+  compatibility SYSRET или Linux entry assembly. Начальный CPL3 fixture
+  задан явно; профиль не объявляет syscall feature в DiagnosticV1 и не закрывает
+  S4-00, Linux userspace или родительский S4-20.
+- **Нормативная основа:** Intel SDM revision 093, Vol. 2B, `SYSCALL` и
+  `SYSRET`; Vol. 3A, IA32_EFER/STAR/LSTAR/FMASK и 64-bit mode state
+  ([official manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+- **Результат:** [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c) и
+  [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
+
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.

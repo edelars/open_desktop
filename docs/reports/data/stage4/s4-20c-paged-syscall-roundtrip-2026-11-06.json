@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-20c",
+  "date": "2026-11-06",
+  "status": "verification_passed_review_passed",
+  "scenario": "four-step tracked CPL3 SYSCALL to CPL0 store to SYSRETQ to CPL3 load",
+  "profile": {
+    "mode": "Long64",
+    "linear_address_width": 48,
+    "physical_address_width": 36,
+    "paging": "four-level, 4 KiB",
+    "cr0": "0x80010033",
+    "cr4": "0x20; LA57=0",
+    "accepted_efer_values": ["0xd00", "0xd01"],
+    "steps": [
+      "0F 05: CPL3 SYSCALL",
+      "4C 89 17: CPL0 MOV [RDI],R10",
+      "48 0F 07: CPL0 SYSRETQ",
+      "48 8B 03: CPL3 MOV RAX,[RBX]"
+    ],
+    "roundtrip_scenario": {
+      "efer": "0xd01",
+      "aliases": "fixture maps the same physical qword as supervisor RW and user RO"
+    },
+    "single_page_boundaries": "each instruction fetch and qword operand fits within one guest page",
+    "debug_flags": "each step requires live TF=0 and RF=0; SYSRETQ rejects saved R11.TF"
+  },
+  "verification": {
+    "focused_isa_tests": "5 passed",
+    "stage4_exception_delivery": "33 passed",
+    "od_machine_all_targets_check": "passed",
+    "fmt": "passed",
+    "diff_check": "passed",
+    "graphify": "updated; 27525 nodes, 69045 edges",
+    "independent_review": "passed_no_P0_to_P3_findings",
+    "review_probe": "separate machine-level probe confirmed saved-R11.TF rejection retains exact fetch A-bit update and committed_write callback; not included in the 33-test target",
+    "warning": "existing unrelated od-jit::block::CodeMemory::one_instruction dead_code warning"
+  },
+  "boundaries": [
+    "not a general syscall ABI or Linux entry path",
+    "no TSS/IST or stack switch, SWAPGS, compatibility SYSRET, WRMSR, async event delivery or CPL3 exception delivery",
+    "cross-page instruction fetch and qword operand are unsupported",
+    "initial CPL3 state is supplied by a synthetic fixture",
+    "parent S4-20 and Stage 4 remain open"
+  ],
+  "architecture_source": "Intel SDM revision 093, Vol. 2B SYSCALL/SYSRET and Vol. 3A system state; https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
+}

@@ -24,6 +24,7 @@ pub mod sep;
 pub mod state;
 pub mod sti;
 pub mod swapgs;
+pub mod syscall;
 pub mod x87;
 pub use cli::CliProfile;
 pub use execute::{
