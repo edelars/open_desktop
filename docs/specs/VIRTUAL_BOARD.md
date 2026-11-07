@@ -8,11 +8,11 @@
 
 | Подсистема | Проект v0.1 | Основание и статус проверки |
 |---|---|---|
-| Загрузочный путь | Прямая загрузка Linux через Linux/x86 Boot Protocol для отладки; Windows — только через собственную UEFI. Legacy BIOS/CSM не входит в профиль. | Разделяет быстрый Linux CPU bring-up и обязательный UEFI Windows path. Linux kernel/initramfs и Windows image ещё не прогонялись. Передача управления прошивке и handoff block описываются контрактом `FIRMWARE_BOOT.md` (создаёт S7-02, [план этапа 7](../plans/STAGE_7.md)); до S7-02 контракт отсутствует. |
+| Загрузочный путь | Прямая загрузка Linux через Linux/x86 Boot Protocol для отладки; Windows — только через собственную UEFI. Legacy BIOS/CSM не входит в профиль. | Разделяет быстрый Linux CPU bring-up и обязательный UEFI Windows path. Linux kernel/initramfs и Windows image ещё не прогонялись. Передача управления прошивке (собственный Long64 boot entry, не reset vector), handoff block, окна ROM/NVRAM и boot reservations описаны контрактом [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью; [план этапа 7](../plans/STAGE_7.md)); реализации нет — её делают S7-03 (машина) и S7-04 (прошивка). |
 | CPU / vCPU | Windows board profile требует не менее 2 vCPU по опубликованной Microsoft reference-конфигурации VM; начальный S0-09 runner остаётся одновекторным и отдельно ограниченным. | Не следует путать прототип с board CPU. Точный CPUID/MSR/ISA профиль не выбран; см. [CPU contract](CPU_CONTRACT.md). |
 | Гостевая RAM | Начальный boot target — 4 GiB как публичный минимум Windows 11; приложение и рабочий объём памяти уточнить на выбранных сценариях. | 4 GiB — минимум платформы, а не обещание комфортной работы. Диапазоны RAM и MMIO должны быть непересекающимися. |
 | Единоличный владелец физической карты гостя | `od-machine` владеет guest physical map и маршрутизацией RAM/MMIO. UEFI memory map, ACPI и Linux `boot_params`/E820 строятся как согласованные представления одной карты. | Не допускать отдельных несогласованных карт в firmware, CPU и устройствах. Реализация не начата. |
-| Firmware | Собственная x86-64 UEFI; UEFI 2.11. Постоянные UEFI variables хранятся отдельно от диска гостя. Secure Boot capable как целевое свойство; включение, ключи и проверка подписи — отдельные приёмочные условия. | Windows target не использует сторонний firmware runtime. ISO и EFI-обращения ещё не исследованы. Секретные ключи не хранить в Git. План реализации — [этап 7](../plans/STAGE_7.md). Контракты `FIRMWARE_BOOT.md` (создаёт S7-02), `UEFI_PROFILE.md` (S7-05) и `VTPM.md` (S7-21): до S7-02/S7-05/S7-21 контракт отсутствует. |
+| Firmware | Собственная x86-64 UEFI; UEFI 2.11. Постоянные UEFI variables хранятся отдельно от диска гостя. Secure Boot capable как целевое свойство; включение, ключи и проверка подписи — отдельные приёмочные условия. | Windows target не использует сторонний firmware runtime. ISO и EFI-обращения ещё не исследованы. Секретные ключи не хранить в Git. План реализации — [этап 7](../plans/STAGE_7.md). Контракт входа — [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью, не реализован); `UEFI_PROFILE.md` (S7-05) и `VTPM.md` (S7-21): до S7-05/S7-21 контракт отсутствует. |
 | Платформенные таблицы | ACPI 6.6; начать с RSDP/XSDT/FADT/MADT/MCFG и минимальных описаний устройств по фактическим обращениям Windows/Linux. SMBIOS 3.9 — инвентаризационная таблица после проверки, что её требует выбранный путь. | Использовать один источник данных платы; не заполнять таблицы фиктивными устройствами. Набор таблиц предварительный и требует trace выбранного media. Таблицы по плану строятся из handoff block (контракт — S7-02, состав — S7-13; [план этапа 7](../plans/STAGE_7.md); контракт `ACPI_SMBIOS_TABLES.md` создают S7-12/S7-13, пока файла нет — контракт отсутствует). |
 | Прерывания и таймер | Начать с одинарного Local APIC + IOAPIC и явной таблицы маршрутизации; x2APIC, SMP и hot-plug отложить. Выбрать один виртуальный источник системного времени после CPU profile и boot trace. | Типовой x86-64 путь, но точные MSR/interrupt/timer requirements Windows build ещё не сняты. Скорость не использовалась как аргумент. |
 | PCIe | Один root complex, один сегмент и статическая топология; PCIe Base 7.1 программный интерфейс, ACPI MCFG для ECAM. Сначала только необходимые BAR, конфигурация и MSI/MSI-X/INTx варианты, реально нужные выбранным устройствам. | Не реализовывать всю PCIe спецификацию. Набор функций и адресные окна определить после выбора device models. |
@@ -84,6 +84,21 @@ register, executes same-CPL0 IRETQ, and resumes one interrupted instruction.
 An asserted level route can re-pend at EOI; delivery remains caller-driven.
 This does not add default board registration, paged IRETQ, HLT wakeup or Linux
 interrupt support.
+
+## Карта адресов firmware board v1 (S7-02)
+
+Контракт подготовлен задачей S7-02 и ожидает ревью; в `od-machine` этой карты пока нет (реализует S7-03). Полная таблица, boot reservations, handoff block и проверки пересечений — [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), разделы 2 и 15. Ширина физического адреса 36.
+
+| Диапазон | Назначение |
+|---|---|
+| `[0x0000_0000, min(R, 0xF400_0000))` | Нижняя RAM; внутри неё handoff block `0x0010_0000` (64 KiB), временный стек, shadow-копия прошивки `[0x0020_0000, 0x0060_0000)`, временные таблицы страниц с `0x0060_0000` |
+| `[0xF400_0000, 0xFC00_1000)` | Дисплей (`DISPLAY_DEVICE.md` §3, §16.3) |
+| `0xFEC0_0000`, `0xFED4_0000`, `0xFEE0_0000` | IOAPIC, TPM CRB, Local APIC |
+| `[0xFF00_0000, 0xFF04_1000)` | Окно NVRAM: store 256 KiB + страница регистров (устройство — S7-10) |
+| `[0xFFC0_0000, 0x1_0000_0000)` | ROM прошивки 4 MiB, read-only; исполняется shadow-копия в RAM, не ROM |
+| `[0x1_0000_0000, …)` | Верхняя RAM, `R − 0xF400_0000`, не выше `2^36` |
+
+Общий объём RAM `R`: от 128 MiB до `0xF_F400_0000`, кратно 2 MiB. Окна ECAM, HPET и ACPI fixed hardware не назначены (S4-30, S7-14).
 
 ## Владение состоянием и адресами
 

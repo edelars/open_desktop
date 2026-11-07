@@ -26,6 +26,11 @@
   карты, до allocation).
 - Port I/O, E820, boot reservations, aliases и remapping пока не реализованы и
   не должны моделироваться перекрывающимися RAM regions.
+- Карта firmware board v1 (окна ROM и NVRAM, boot reservations внутри одного
+  `Ram`, handoff block, временные таблицы страниц) и семантика `Rom` для неё
+  (чтение данных, запись и fetch — backend-ошибки) описаны в
+  [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью). Это контракт,
+  а не реализованный срез: ROM backing и профиль платы создаёт S7-03.
 
 ## RAM ownership и доступ
 
