@@ -153,3 +153,10 @@
 - Место: настоящее исчерпание места не воспроизводится на рабочем томе. Достаточно автоматических проверок с подставленной ёмкостью и запуска `OpenDesktop --simulate-host-event low-space` (test-only аргумент; машина должна быть `running` через секунду после запуска): ожидаемо `PAUSE reason=disk_space`, строка «Машина приостановлена: на диске почти нет места», машина не продолжается сама, «Продолжить» снимает паузу (если «место» всё ещё симулируется, следующая проверка через 30 с поставит паузу снова).
 - Память: `OpenDesktop --simulate-host-event memory` показывает баннер уровня `critical` при живой машине; настоящее давление памяти не создаётся. Приложение ничего не останавливает.
 - Что считается результатом: наблюдаемый факт со скриншотом. «Вид баннера» и «вид строки» глазами записываются отдельно от unit-тестов.
+
+## 7. Сводка S11-14 (сценарий и измерения)
+
+- Команды: `python3 tests/system/desktop_lifecycle_smoke.py` (5 повторов; `--skip-build` для готового bundle) и `python3 tools/bench/desktop_lifecycle_bench.py` (5 учтённых повторов и прогрев; нужны `python3 tools/build/build_app_bundle.py` и `cd apps && swift build`).
+- Данные: `docs/reports/data/stage11/s11-14-*-2026-11-06.json` с полями `task`, `metric`, `unit`, `command`, `fingerprint`, `warmup`, `samples`, `min`, `median`, `max`, `label`, `notes`, `series`, `conditions`.
+- Результаты 2026-11-06 (Mac15,11, macOS 26.7.1, bundle release, test-only, без гостя): START → running median 2.04 мс; PAUSE → paused median 0.109 мс; PREPARE_DISK 64 GiB median 0.135 мс (sparse, выделено 0 байт); RSS VMHost около 43.4 MiB; RSS приложения около 89 MiB.
+- Окно приложения проверяется его наличием в списке окон; состояние «на экране» зависит от активации и в прогонах не подтверждено.

@@ -488,6 +488,7 @@
 ### S11-14. Сквозной срез оболочки и измерения
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализован (сценарий 5 повторов и измерения с фингерпринтом), **не принят**. Детали, условия и ограничения — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `tests/system/desktop_lifecycle_smoke.py` (новый: собирает bundle S11-05b, прогоняет `odctl` S11-13, запускает приложение с `--open <bundle>` и `--simulate-host-event` нет — только открытие — и проверяет события через `vmhost.log`), `tools/bench/desktop_lifecycle_bench.py` (новый), `docs/reports/data/stage11/`, раздел в `STAGE_11_REPORT.md`, сводка в `DESKTOP_APP.md`.
 - **Сделать:**
   1. Сценарий: сборка → `odctl create` → `odctl run --script` (start/pause/resume/stop) → запуск приложения с `--open` и ручной пункт окна (или offscreen-дамп viewer) → `odctl delete --files`; 5 повторов.
