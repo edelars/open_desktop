@@ -1,0 +1,22 @@
+{
+  "slice": "S4-27d",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Exact bare HLT retirement into an owned wait state and explicit maskable APIC wake through the existing interrupt entry path",
+  "review": "Independent gpt-6.1-sol/high review found one P2 STOP-lifecycle issue; it was fixed, and repeat review passed with no findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 22 passed (rerun after STOP regression fix)",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,821 nodes, 70,566 edges, 941 communities",
+    "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056); local links and anchors resolve"
+  },
+  "limitations": [
+    "synchronous caller polling only; no asynchronous event arrival or background wake",
+    "flat identity Long64/CPL0 diagnostic profile only",
+    "handler, guest EOI and IRETQ remain separate caller operations",
+    "NMI/debug/MOV-SS wake, APIC timers, general scheduler, JIT, automatic handler execution and Linux acceptance remain unimplemented",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

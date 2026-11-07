@@ -1519,6 +1519,46 @@ See the [S4-27c report](../reports/STAGE_4_S4-27C_2026-11-07.md),
 [verification method](../testing/MACHINE.md#s4-27c-caller-driven-sti-profile-apic-quantum),
 and [evidence manifest](../reports/data/stage4/s4-27c-sti-apic-quantum.json).
 
+## S4-27d. Explicit HLT wait and maskable APIC wake
+
+`DiagnosticVcpuSession::into_halt_wait` consumes an eligible diagnostic
+session and attempts exactly one bare HLT with the existing
+`HaltProfile::Long64V1`. Profile rejection, non-HLT, guest fault or memory
+error returns ownership of the original uncommitted session. Successful HLT
+retires once, leaves the CPU Halted at post-HLT RIP, and consumes a permitted
+blocking STI shadow according to the ISA contract.
+
+`DiagnosticHaltWait` owns the halted session. `poll_apic` performs no
+instruction execution. IF clear or no `LocalApicHandle::eligible()` vector
+returns Waiting without guest-memory access; priority-blocked vectors remain
+pending. When a vector is eligible, the existing maskable entry helper uses a
+candidate CPU and the flat identity memory adapter. Only a successful frame
+write followed by acknowledgement of the same vector publishes the CPU as
+Running and allows `into_running` to return the session. The saved RIP is the
+post-HLT address. Handler execution, guest EOI and IRETQ remain explicit caller
+operations; after IRETQ, ordinary execution resumes at the post-HLT RIP.
+
+STOP while Waiting prevents future polling. STOP after successful entry keeps
+the committed CPU/frame/APIC acknowledgement but changes session status to
+Stopped and prevents recovery for handler execution. A delivery abort can
+leave an already written frame prefix; CPU remains Halted, the request remains
+pending, the wait becomes terminal, and retry is disallowed. Repeated polling
+after successful entry reports the committed vector without selecting another
+request. The caller serializes CPU/APIC/IOAPIC activity and certifies one vCPU,
+private synchronous RAM, no pending synchronous/debug/NMI/MOV-SS inhibition,
+and all existing ISA entry prerequisites.
+
+The profile is limited to Runnable Long64/CPL0 sessions with explicit Running
+activity and STI shadow, `rflags_defined = INTEGER_FLAGS`, no TSC/RDTSC and no
+CR0/CR3/CR4. It requires a tracked completed boundary; a partial REP
+iteration-budget exit is rejected. It adds no asynchronous arrival, timer,
+general scheduler, other wake source, JIT integration or automatic handler
+execution.
+
+See the [S4-27d report](../reports/STAGE_4_S4-27D_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27d-explicit-hlt-wait-and-maskable-apic-wake),
+and [evidence manifest](../reports/data/stage4/s4-27d-hlt-apic-wake.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

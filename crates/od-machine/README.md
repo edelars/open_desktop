@@ -18,8 +18,8 @@ device splitting remain unsupported. S4-11c adds a separate exact `MOV EAX,[RBX]
 change the qword allowlist. An opt-in one-entry immutable-snapshot cache is
 only a pure-probe experiment for S4-13a; it does not implement production TLB
 invalidation or cache tracked A/D effects. Full CPU/MMU paging and fault
-delivery, UART/APIC/PCI, production vCPU scheduling, JIT integration и Linux
-boot ещё не реализованы.
+delivery, guest-visible UART/APIC/PCI integration, production vCPU scheduling,
+JIT integration и Linux boot ещё не реализованы.
 S4-09b adds a private tracked-walker test seam and verifies injected A-write
 failure at each page-table level plus D-write failure after the complete A
 prefix. Committed `AdUpdate` and callback order, exact `TableWrite` metadata,
@@ -45,7 +45,12 @@ progression, events, and RDTSCP/MSR/CPUID support remain outside this slice.
 Bounded S4-23a adds a fixed-capacity deterministic one-shot deadline queue.
 It uses absolute nanosecond deadlines, explicit extraction and stable ordering;
 it does not advance the virtual clock or dispatch CPU/device/IRQ work. Full
-event lifecycle, reset/generation, HLT wakeup and host waiting remain open.
+event lifecycle, reset/generation, production HLT wakeup and host waiting remain open.
+Bounded S4-27a/b/c/d add one-route caller-driven APIC entry, guest EOI,
+same-CPL IRETQ/resume, an exact STI-profile quantum, and explicit HLT wait with
+maskable APIC wake. They are diagnostic one-vCPU flat-identity paths; this
+does not provide production scheduling, asynchronous event delivery, general
+interruptibility, or JIT integration.
 Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не

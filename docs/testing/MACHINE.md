@@ -607,6 +607,27 @@ profile. HLT wakeup, MOV SS/NMI, TSC/RDTSC, REP continuation inside the quantum,
 JIT, automatic EOI/IRET and Linux acceptance remain open. See the
 [S4-27c report](../reports/STAGE_4_S4-27C_2026-11-07.md).
 
+## S4-27d: explicit HLT wait and maskable APIC wake
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo check -p od-machine --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The 22 diagnostic session tests include exact bare-HLT
+retirement, failed HLT profile/fetch with original session recovery, repeated
+Waiting without state mutation for IF=0/no request/TPR blocking, APIC wake with
+the post-HLT RIP in the exact five-qword frame, and caller-controlled handler,
+guest EOI, IRETQ and post-HLT sentinel resume across all 16 RSP alignments.
+Further cases cover eligibility gating for `into_running`, STOP before wake and
+after committed entry, delivery abort with pending IRQ/no retry, and REP
+partial boundary rejection. The post-entry STOP test confirms that committed
+frame and APIC acknowledgement remain while handler execution is forbidden.
+Independent Sol/high review passed after one P2 STOP-lifecycle fix.
+
+The caller serializes CPU/APIC/IOAPIC access, supplies the private synchronous
+RAM and ISA entry guarantees, and polls explicitly. No background wakeup,
+asynchronous event arrival, NMI/debug/MOV-SS, timer, general scheduler, JIT or
+automatic handler/EOI/IRET is implemented. See the
+[S4-27d report](../reports/STAGE_4_S4-27D_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

@@ -3,8 +3,8 @@
 use crate::{IdentityMemoryAdapter, LocalApicHandle, MachineBus};
 use crate::{VirtualClock, VirtualClockError};
 use od_isa::execute::{
-    RdtscControls, RunConfig, RunExit, run_with_rflags_defined,
-    run_with_rflags_defined_and_rdtsc_source, run_with_sti_profile,
+    RdtscControls, RunConfig, RunExit, StepOutcome, run_with_rflags_defined,
+    run_with_rflags_defined_and_rdtsc_source, run_with_sti_profile, step_with_halt_profile,
 };
 use od_isa::interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptOutsideProfile,
@@ -121,7 +121,170 @@ pub struct DiagnosticVcpuSession {
     completed_boundary: bool,
 }
 
+/// A failed HLT attempt returns the original session to its caller.
+pub struct DiagnosticHaltEnterFailure {
+    pub session: DiagnosticVcpuSession,
+    pub reason: DiagnosticHaltEnterReason,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticHaltEnterReason {
+    ProfileRejected,
+    Step(StepOutcome),
+    MemoryError(MemoryError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticHaltWakeResult {
+    Waiting,
+    Entered { vector: u8 },
+    OutsideProfile(InterruptOutsideProfile),
+    Stopped,
+    Terminal(DiagnosticTerminalExit),
+}
+
+enum HaltWaitState {
+    Waiting,
+    Entered(u8),
+    Stopped,
+    Terminal(DiagnosticTerminalExit),
+}
+
+/// Owns the halted CPU until an explicit APIC poll commits interrupt entry.
+pub struct DiagnosticHaltWait {
+    session: DiagnosticVcpuSession,
+    state: HaltWaitState,
+}
+
+impl DiagnosticHaltWait {
+    pub fn state(&self) -> &LongModeState {
+        &self.session.state
+    }
+
+    /// The caller serializes the whole operation with CPU, APIC and IOAPIC
+    /// operations and certifies the ISA interrupt profile's machine assumptions.
+    pub fn poll_apic(&mut self, apic: &LocalApicHandle) -> DiagnosticHaltWakeResult {
+        match &self.state {
+            HaltWaitState::Entered(vector) => {
+                return DiagnosticHaltWakeResult::Entered { vector: *vector };
+            }
+            HaltWaitState::Stopped => return DiagnosticHaltWakeResult::Stopped,
+            HaltWaitState::Terminal(cause) => {
+                return DiagnosticHaltWakeResult::Terminal(cause.clone());
+            }
+            HaltWaitState::Waiting => {}
+        }
+        if self.session.state.rflags & (1 << 9) == 0 {
+            return DiagnosticHaltWakeResult::Waiting;
+        }
+        let Some(vector) = apic.eligible() else {
+            return DiagnosticHaltWakeResult::Waiting;
+        };
+        let mut candidate = self.session.state.clone();
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.session.bus, &mut committed_write);
+        match deliver_maskable_interrupt(
+            &mut candidate,
+            &mut memory,
+            vector,
+            self.session.access_context,
+            self.session.rflags_defined,
+        ) {
+            InterruptDeliveryResult::OutsideProfile(reason) => {
+                DiagnosticHaltWakeResult::OutsideProfile(reason)
+            }
+            InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
+                let terminal = DiagnosticTerminalExit::InterruptDeliveryAborted { phase, cause };
+                self.session.terminal(terminal.clone());
+                self.state = HaltWaitState::Terminal(terminal.clone());
+                DiagnosticHaltWakeResult::Terminal(terminal)
+            }
+            InterruptDeliveryResult::Delivered { .. } => {
+                if !apic.acknowledge_vector(vector, || self.session.state = candidate) {
+                    let terminal = DiagnosticTerminalExit::InterruptSelectionChanged;
+                    self.session.terminal(terminal.clone());
+                    self.state = HaltWaitState::Terminal(terminal.clone());
+                    return DiagnosticHaltWakeResult::Terminal(terminal);
+                }
+                self.state = HaltWaitState::Entered(vector);
+                DiagnosticHaltWakeResult::Entered { vector }
+            }
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if matches!(
+            self.state,
+            HaltWaitState::Waiting | HaltWaitState::Entered(_)
+        ) {
+            self.session.stop();
+            self.state = HaltWaitState::Stopped;
+        }
+    }
+
+    pub fn into_running(self) -> Result<DiagnosticVcpuSession, Self> {
+        if matches!(self.state, HaltWaitState::Entered(_)) {
+            Ok(self.session)
+        } else {
+            Err(self)
+        }
+    }
+}
+
 impl DiagnosticVcpuSession {
+    /// Attempt the exact bare HLT at a caller-certified completed boundary.
+    /// The caller certifies private synchronous RAM, one vCPU, and absence of
+    /// pending synchronous/debug/NMI events and unmodelled inhibition.
+    pub fn into_halt_wait(mut self) -> Result<DiagnosticHaltWait, DiagnosticHaltEnterFailure> {
+        if self.status != DiagnosticVcpuState::Runnable
+            || self.access_context.mode != InstructionMode::Long64
+            || self.access_context.privilege != PrivilegeLevel::Ring0
+            || self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow.is_none()
+            || (self.state.sti_shadow == Some(od_isa::StiShadow::Blocking)
+                && self.state.rflags & (1 << 9) == 0)
+            || self.state.cr0.is_some()
+            || self.state.cr3.is_some()
+            || self.state.cr4.is_some()
+            || self.rflags_defined != INTEGER_FLAGS
+            || self.clock.is_some()
+            || self.rdtsc_controls.is_some()
+            || !self.completed_boundary
+        {
+            return Err(DiagnosticHaltEnterFailure {
+                session: self,
+                reason: DiagnosticHaltEnterReason::ProfileRejected,
+            });
+        }
+        let mut candidate = self.state.clone();
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        let outcome = step_with_halt_profile(
+            &mut candidate,
+            &mut memory,
+            self.access_context,
+            &od_isa::HaltProfile::Long64V1,
+        );
+        match outcome {
+            Ok(StepOutcome::Advanced)
+                if candidate.activity == Some(od_isa::CpuActivity::Halted) =>
+            {
+                self.state = candidate;
+                Ok(DiagnosticHaltWait {
+                    session: self,
+                    state: HaltWaitState::Waiting,
+                })
+            }
+            Ok(outcome) => Err(DiagnosticHaltEnterFailure {
+                session: self,
+                reason: DiagnosticHaltEnterReason::Step(outcome),
+            }),
+            Err(error) => Err(DiagnosticHaltEnterFailure {
+                session: self,
+                reason: DiagnosticHaltEnterReason::MemoryError(error),
+            }),
+        }
+    }
     pub fn new(
         state: LongModeState,
         bus: MachineBus,
@@ -757,6 +920,259 @@ mod tests {
         (session, io, apic)
     }
 
+    fn halt_fixture(rsp: u64) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {
+        let (mut session, io, apic) = irq_return_session(rsp);
+        for (address, byte) in [
+            (0x4100, 0xf4),
+            (0x4101, 0x48),
+            (0x4102, 0x8b),
+            (0x4103, 0x03),
+        ] {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Byte,
+                    byte,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        (session, io, apic)
+    }
+
+    fn enter_wait(session: DiagnosticVcpuSession) -> DiagnosticHaltWait {
+        match session.into_halt_wait() {
+            Ok(wait) => wait,
+            Err(failure) => panic!("HLT failed: {:?}", failure.reason),
+        }
+    }
+
+    #[test]
+    fn halt_wait_entry_eoi_iretq_resumes_after_hlt() {
+        for low in 0..16 {
+            let (mut session, io, apic) = halt_fixture(0x7000 + low);
+            session.state.sti_shadow = Some(od_isa::StiShadow::Blocking);
+            let mut wait = enter_wait(session);
+            assert_eq!(wait.state().rip, 0x4101);
+            assert_eq!(wait.state().activity, Some(od_isa::CpuActivity::Halted));
+            assert_eq!(wait.state().sti_shadow, Some(od_isa::StiShadow::Clear));
+            wait = match wait.into_running() {
+                Err(wait) => wait,
+                Ok(_) => panic!("woke without interrupt"),
+            };
+            assert_eq!(wait.poll_apic(&apic), DiagnosticHaltWakeResult::Waiting);
+            io.set_intin4(true).unwrap();
+            io.set_intin4(false).unwrap();
+            assert_eq!(
+                wait.poll_apic(&apic),
+                DiagnosticHaltWakeResult::Entered { vector: 0x51 }
+            );
+            assert_eq!(
+                wait.poll_apic(&apic),
+                DiagnosticHaltWakeResult::Entered { vector: 0x51 }
+            );
+            let mut session = match wait.into_running() {
+                Ok(session) => session,
+                Err(_) => panic!("entry did not wake"),
+            };
+            assert_eq!(session.state.activity, Some(od_isa::CpuActivity::Running));
+            assert_eq!(session.state.rip, 0x4000);
+            for (addr, value) in [
+                (0x6ff8, 0x10),
+                (0x6ff0, 0x7000 + low),
+                (0x6fe8, 0x202),
+                (0x6fe0, 8),
+                (0x6fd8, 0x4101),
+            ] {
+                assert_eq!(
+                    session
+                        .bus
+                        .read_physical(GuestPhysicalAddress::new(addr), AccessWidth::Qword)
+                        .unwrap(),
+                    value
+                );
+            }
+            assert_eq!(run(&mut session, 1).instructions_executed, 1);
+            assert_eq!(
+                session.run_same_cpl0_iretq().unwrap(),
+                DiagnosticIretqResult::Retired
+            );
+            assert_eq!(session.state.rip, 0x4101);
+            assert_eq!(run(&mut session, 1).instructions_executed, 1);
+            assert_eq!(session.state.gpr[0], 0x1234_5678_9abc_def0);
+        }
+    }
+
+    #[test]
+    fn halt_wait_rejection_preserves_session_and_boundary() {
+        for case in 0..8 {
+            let (mut session, _, _) = halt_fixture(0x7000);
+            match case {
+                0 => session.completed_boundary = false,
+                1 => session.state.cr0 = Some(0),
+                2 => session.state.cr3 = Some(0),
+                3 => session.state.cr4 = Some(0),
+                4 => session.state.sti_shadow = None,
+                5 => session.rflags_defined = 0,
+                6 => {
+                    session.state.sti_shadow = Some(od_isa::StiShadow::Blocking);
+                    session.state.rflags &= !0x200;
+                }
+                _ => session.pause().unwrap(),
+            }
+            let before = session.state.clone();
+            let failure = match session.into_halt_wait() {
+                Err(failure) => failure,
+                Ok(_) => panic!("accepted invalid profile"),
+            };
+            assert_eq!(failure.reason, DiagnosticHaltEnterReason::ProfileRejected);
+            assert_eq!(failure.session.state, before);
+        }
+        for (rip, bytes) in [
+            (0x4100, Some(0x90)),
+            (0x9000, None),
+            (0x0000_8000_0000_0000, None),
+        ] {
+            let (mut session, _, _) = halt_fixture(0x7000);
+            session.state.rip = rip;
+            if let Some(byte) = bytes {
+                session
+                    .bus
+                    .write_physical(
+                        GuestPhysicalAddress::new(rip),
+                        AccessWidth::Byte,
+                        byte,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            let before = session.state.clone();
+            let failure = match session.into_halt_wait() {
+                Err(failure) => failure,
+                Ok(_) => panic!("accepted non-HLT"),
+            };
+            if rip == 0x0000_8000_0000_0000 {
+                assert!(matches!(
+                    failure.reason,
+                    DiagnosticHaltEnterReason::Step(StepOutcome::Fault(_))
+                ));
+            }
+            assert!(matches!(
+                failure.reason,
+                DiagnosticHaltEnterReason::Step(StepOutcome::Unsupported { .. })
+                    | DiagnosticHaltEnterReason::Step(StepOutcome::Fault(_))
+                    | DiagnosticHaltEnterReason::MemoryError(_)
+            ));
+            assert_eq!(failure.session.state, before);
+            assert_eq!(failure.session.status, DiagnosticVcpuState::Runnable);
+        }
+    }
+
+    #[test]
+    fn halt_wait_stop_after_entry_preserves_committed_interrupt() {
+        let (session, io, apic) = halt_fixture(0x7000);
+        let mut wait = enter_wait(session);
+        io.set_intin4(true).unwrap();
+        assert_eq!(
+            wait.poll_apic(&apic),
+            DiagnosticHaltWakeResult::Entered { vector: 0x51 }
+        );
+        let committed = wait.state().clone();
+        assert_eq!(committed.activity, Some(od_isa::CpuActivity::Running));
+        assert_eq!(committed.rip, 0x4000);
+        wait.stop();
+        assert_eq!(wait.poll_apic(&apic), DiagnosticHaltWakeResult::Stopped);
+        let mut wait = match wait.into_running() {
+            Err(wait) => wait,
+            Ok(_) => panic!("stopped session recovered"),
+        };
+        assert_eq!(wait.session.status, DiagnosticVcpuState::Stopped);
+        assert_eq!(wait.state(), &committed);
+        assert_eq!(apic.pending(), None);
+        for (addr, value) in [
+            (0x6ff8, 0x10),
+            (0x6ff0, 0x7000),
+            (0x6fe8, 0x202),
+            (0x6fe0, 8),
+            (0x6fd8, 0x4101),
+        ] {
+            assert_eq!(
+                wait.session
+                    .bus
+                    .read_physical(GuestPhysicalAddress::new(addr), AccessWidth::Qword)
+                    .unwrap(),
+                value
+            );
+        }
+        assert_ne!(
+            wait.session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x120),
+                    AccessWidth::Dword,
+                )
+                .unwrap()
+                & (1 << 17),
+            0
+        );
+        assert_ne!(
+            wait.session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                    AccessWidth::Dword,
+                )
+                .unwrap()
+                & (1 << 14),
+            0
+        );
+    }
+
+    #[test]
+    fn halt_wait_blocked_stop_and_delivery_abort() {
+        let (mut session, io, apic) = halt_fixture(0x7000);
+        session.state.rflags &= !0x200;
+        let mut wait = enter_wait(session);
+        io.set_intin4(true).unwrap();
+        assert_eq!(wait.poll_apic(&apic), DiagnosticHaltWakeResult::Waiting);
+        assert_eq!(apic.pending(), Some(0x51));
+        wait.stop();
+        assert_eq!(wait.poll_apic(&apic), DiagnosticHaltWakeResult::Stopped);
+        assert!(wait.into_running().is_err());
+
+        let (mut session, io, apic) = halt_fixture(0x7000);
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                AccessWidth::Dword,
+                0x50,
+                |_| {},
+            )
+            .unwrap();
+        let mut wait = enter_wait(session);
+        io.set_intin4(true).unwrap();
+        assert_eq!(wait.poll_apic(&apic), DiagnosticHaltWakeResult::Waiting);
+        assert_eq!(apic.pending(), Some(0x51));
+
+        let (session, io, apic) = halt_fixture(0x1020);
+        let mut wait = enter_wait(session);
+        let before = wait.state().clone();
+        io.set_intin4(true).unwrap();
+        let result = wait.poll_apic(&apic);
+        assert!(matches!(
+            result,
+            DiagnosticHaltWakeResult::Terminal(
+                DiagnosticTerminalExit::InterruptDeliveryAborted { .. }
+            )
+        ));
+        assert_eq!(wait.state(), &before);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(wait.poll_apic(&apic), result);
+        assert!(wait.into_running().is_err());
+    }
+
     #[test]
     fn guest_eoi_iretq_resumes_all_stack_alignments() {
         for low in 0..16 {
@@ -1380,6 +1796,14 @@ mod tests {
         ));
         assert_eq!(cpu.state, before);
         assert_eq!(apic.pending(), Some(0x51));
+        let failure = match cpu.into_halt_wait() {
+            Err(failure) => failure,
+            Ok(_) => panic!("partial REP admitted to HLT wait"),
+        };
+        assert_eq!(failure.reason, DiagnosticHaltEnterReason::ProfileRejected);
+        let mut cpu = failure.session;
+        assert_eq!(cpu.state, before);
+        assert!(!cpu.completed_boundary);
         assert_eq!(run(&mut cpu, 1).instructions_executed, 1);
         assert!(cpu.completed_boundary);
         assert!(matches!(

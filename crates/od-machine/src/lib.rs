@@ -33,9 +33,10 @@ pub use bus::{
 };
 
 pub use diagnostic_vcpu::{
-    DiagnosticExit, DiagnosticInterruptResult, DiagnosticIretqResult, DiagnosticRunResult,
-    DiagnosticStiApicQuantumResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
-    DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
+    DiagnosticExit, DiagnosticHaltEnterFailure, DiagnosticHaltEnterReason, DiagnosticHaltWait,
+    DiagnosticHaltWakeResult, DiagnosticInterruptResult, DiagnosticIretqResult,
+    DiagnosticRunResult, DiagnosticStiApicQuantumResult, DiagnosticTerminalExit,
+    DiagnosticVcpuControlError, DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

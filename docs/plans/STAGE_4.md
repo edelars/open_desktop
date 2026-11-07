@@ -1422,6 +1422,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 18 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27C_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27c-sti-apic-quantum.json); методика — [S4-27c](../testing/MACHINE.md#s4-27c-caller-driven-sti-profile-apic-quantum).
 - **Граница:** только exact STI profile и caller-driven flat identity diagnostic path; нет произвольного instruction stream, MOV SS/NMI delivery, REP continuation внутри нового quantum, HLT wakeup, TSC/RDTSC, JIT, автоматического возврата/EOI или Linux acceptance. Полный S4-27 остаётся открытым.
 
+#### S4-27d. Explicit HLT wait and maskable APIC wake
+
+- [x] Ограниченный S4-27d принят после исправления P2 по STOP и повторного независимого `gpt-6.1-sol/high` review без оставшихся замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** `DiagnosticVcpuSession::into_halt_wait` исполняет ровно bare HLT через существующий ISA `step_with_halt_profile` и передаёт владение отдельному `DiagnosticHaltWait`. `poll_apic` не исполняет guest instruction: при IF=0/нет eligible vector остаётся в ожидании; при deliverable vector использует candidate CPU, строит frame, подтверждает точный APIC vector и только после этого позволяет получить обратно session через `into_running`.
+- **Resume:** успешный wake сохраняет post-HLT RIP в same-CPL interrupt frame; caller отдельно выполняет handler, гостевой EOI и `run_same_cpl0_iretq`, после чего обычный `run()` продолжает post-HLT instruction. Повторный poll после entry идемпотентно сообщает тот же vector и не подтверждает второй запрос.
+- **STOP/отказы:** STOP в Waiting предотвращает wake; STOP после уже committed entry сохраняет CPU/frame/acknowledge, ставит session Stopped и запрещает `into_running`. Ошибка HLT возвращает исходную session без CPU commit; delivery abort может оставить frame-write prefix, но CPU остаётся Halted, APIC request pending, ожидание terminal и повтор запрещён. REP partial, отсутствующий shadow, неверная definedness, TSC или CR0/3/4 отклоняются до fetch.
+- **Проверки:** 22 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и повторное независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27D_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27d-hlt-apic-wake.json); методика — [S4-27d](../testing/MACHINE.md#s4-27d-explicit-hlt-wait-and-maskable-apic-wake).
+- **Граница:** только synchronous caller polling и maskable APIC wake на flat identity path. Нет asynchronous arrival, NMI/debug/MOV SS wake, timer/deadline source, general scheduler, JIT, автоматического handler execution или Linux acceptance. Полный S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.
