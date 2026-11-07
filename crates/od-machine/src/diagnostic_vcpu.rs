@@ -15,6 +15,24 @@ use od_isa::memory::{
     AccessContext, ArchitecturalFault, InstructionMode, MemoryError, PrivilegeLevel,
 };
 use od_isa::{INTEGER_FLAGS, LongModeState};
+use od_jit::block::{CodeView, S0_09NopAdmission};
+use od_jit::dispatch::{
+    ControlledBlockExecutor, DispatchControl, DispatchError, FallbackDispatchResult,
+};
+
+#[derive(Debug)]
+pub enum DiagnosticJitError<E> {
+    ProfileRejected,
+    CodeRangeRejected,
+    CodeMismatch,
+    AdmissionRejected,
+    Dispatch(DispatchError<E>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticJitResult {
+    pub dispatch: FallbackDispatchResult,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticTerminalExit {
@@ -245,6 +263,91 @@ impl DiagnosticHaltWait {
 }
 
 impl DiagnosticVcpuSession {
+    /// The caller guarantees private RAM and no code mutation for the entire call.
+    /// The event source remains owned by the caller and is never cleared here.
+    pub fn run_jit_nop<E: ControlledBlockExecutor>(
+        &mut self,
+        code_start: u64,
+        expected_code: &[u8],
+        budget: u64,
+        control: DispatchControl<'_>,
+        executor: &mut E,
+    ) -> Result<DiagnosticJitResult, DiagnosticJitError<E::Error>> {
+        if self.status != DiagnosticVcpuState::Runnable
+            || self.access_context.mode != InstructionMode::Long64
+            || self.access_context.privilege != PrivilegeLevel::Ring0
+            || self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow != Some(od_isa::StiShadow::Clear)
+            || self.state.cr0.is_some()
+            || self.state.cr3.is_some()
+            || self.state.cr4.is_some()
+            || self.rflags_defined != INTEGER_FLAGS
+            || !self.completed_boundary
+        {
+            return Err(DiagnosticJitError::ProfileRejected);
+        }
+        let start = code_start;
+        let length = u64::try_from(expected_code.len())
+            .map_err(|_| DiagnosticJitError::CodeRangeRejected)?;
+        let end = start
+            .checked_add(length)
+            .filter(|_| length != 0)
+            .ok_or(DiagnosticJitError::CodeRangeRejected)?;
+        if start / 4096 != (end - 1) / 4096 {
+            return Err(DiagnosticJitError::CodeRangeRejected);
+        }
+        for offset in 0..length {
+            let address = crate::GuestPhysicalAddress::new(start + offset);
+            let range = crate::GuestPhysicalRange::new(address, 1)
+                .map_err(|_| DiagnosticJitError::CodeRangeRejected)?;
+            if !self.bus.tracked_physical_range_is_ram(range) {
+                return Err(DiagnosticJitError::CodeRangeRejected);
+            }
+        }
+        for (offset, expected) in expected_code.iter().enumerate() {
+            let address = crate::GuestPhysicalAddress::new(start + offset as u64);
+            let byte = self
+                .bus
+                .read_physical(address, crate::AccessWidth::Byte)
+                .map_err(|_| DiagnosticJitError::CodeRangeRejected)?;
+            if byte != u64::from(*expected) {
+                return Err(DiagnosticJitError::CodeMismatch);
+            }
+        }
+        let code = CodeView::new(start, expected_code)
+            .map_err(|_| DiagnosticJitError::CodeRangeRejected)?;
+        let admission = S0_09NopAdmission::from_code(code)
+            .map_err(|_| DiagnosticJitError::AdmissionRejected)?;
+        if !admission.contains(self.state.rip) {
+            return Err(DiagnosticJitError::AdmissionRejected);
+        }
+        let mut candidate = self.state.clone();
+        match od_jit::dispatch::run_with_nop_fallback(
+            code,
+            &admission,
+            &mut candidate,
+            budget,
+            control,
+            executor,
+        ) {
+            Ok(dispatch) => {
+                self.state = candidate;
+                if matches!(
+                    dispatch.exit,
+                    od_jit::dispatch::DispatchExit::Runtime(
+                        od_jit::runtime::RuntimeExitTag::StopRequested
+                    )
+                ) {
+                    self.stop();
+                }
+                Ok(DiagnosticJitResult { dispatch })
+            }
+            Err(error) => {
+                self.stop();
+                Err(DiagnosticJitError::Dispatch(error))
+            }
+        }
+    }
     /// Attempt the exact bare HLT at a caller-certified completed boundary.
     /// The caller certifies private synchronous RAM, one vCPU, and absence of
     /// pending synchronous/debug/NMI events and unmodelled inhibition.
@@ -800,6 +903,232 @@ mod tests {
 
     fn run(session: &mut DiagnosticVcpuSession, budget: u64) -> DiagnosticRunResult {
         session.run(budget, || false).unwrap()
+    }
+
+    #[test]
+    fn jit_code_binding_rejects_before_executor_and_error_does_not_commit() {
+        use od_jit::dispatch::{BlockExecutionReport, DispatchControl};
+        use std::sync::atomic::AtomicU8;
+        struct Fail(usize);
+        impl ControlledBlockExecutor for Fail {
+            type Error = ();
+            fn execute_one_block_controlled(
+                &mut self,
+                _: &od_jit::block_compile::CompiledBlock,
+                state: &mut LongModeState,
+                _: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                self.0 += 1;
+                state.rip += 1;
+                Err(())
+            }
+        }
+        let code = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let mut s = session(&code, RAM_START);
+        s.rflags_defined = INTEGER_FLAGS;
+        s.state.activity = Some(od_isa::CpuActivity::Running);
+        s.state.sti_shadow = Some(od_isa::StiShadow::Clear);
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut executor = Fail(0);
+        assert!(matches!(
+            s.run_jit_nop(RAM_START, &[0x90], 1, control, &mut executor),
+            Err(DiagnosticJitError::CodeMismatch)
+        ));
+        assert!(matches!(
+            s.run_jit_nop(RAM_START, &[], 1, control, &mut executor),
+            Err(DiagnosticJitError::CodeRangeRejected)
+        ));
+        assert_eq!(executor.0, 0);
+        let original = s.state.clone();
+        assert!(matches!(
+            s.run_jit_nop(RAM_START, &code, 1, control, &mut executor),
+            Err(DiagnosticJitError::Dispatch(_))
+        ));
+        assert_eq!(s.state, original);
+        assert_eq!(s.status, DiagnosticVcpuState::Stopped);
+        assert_eq!(executor.0, 1);
+        assert!(matches!(
+            s.run_jit_nop(RAM_START, &code, 1, control, &mut executor),
+            Err(DiagnosticJitError::ProfileRejected)
+        ));
+        assert_eq!(executor.0, 1);
+    }
+
+    #[test]
+    fn jit_resume_uses_full_code_and_checks_boundary_and_all_bytes() {
+        use od_jit::dispatch::{BlockExecutionReport, DispatchControl, DispatchExit};
+        use std::sync::atomic::{AtomicBool, AtomicU8};
+        struct NoExecution;
+        impl ControlledBlockExecutor for NoExecution {
+            type Error = ();
+            fn execute_one_block_controlled(
+                &mut self,
+                _: &od_jit::block_compile::CompiledBlock,
+                _: &mut LongModeState,
+                _: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                panic!("unexpected native entry")
+            }
+        }
+        // The backwards JNZ targets the NOP in the prefix.
+        let code = [0x90, 0x75, 0xfd];
+        let mut s = session(&code, RAM_START + 1);
+        s.rflags_defined = INTEGER_FLAGS;
+        s.state.activity = Some(od_isa::CpuActivity::Running);
+        s.state.sti_shadow = Some(od_isa::StiShadow::Clear);
+        let stop = AtomicU8::new(0);
+        let event = AtomicBool::new(true);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: Some(&event),
+        };
+        let mut executor = NoExecution;
+        let result = s
+            .run_jit_nop(RAM_START, &code, 4, control, &mut executor)
+            .unwrap();
+        assert_eq!(result.dispatch.exit, DispatchExit::EventPending);
+        assert_eq!(s.state.rip, RAM_START + 1);
+        for rip in [RAM_START - 1, RAM_START + 2, RAM_START + 4] {
+            s.state.rip = rip;
+            assert!(matches!(
+                s.run_jit_nop(RAM_START, &code, 4, control, &mut executor),
+                Err(DiagnosticJitError::AdmissionRejected)
+            ));
+        }
+        s.state.rip = RAM_START + 1;
+        assert!(matches!(
+            s.run_jit_nop(RAM_START, &[0x91, 0x75, 0xfd], 4, control, &mut executor),
+            Err(DiagnosticJitError::CodeMismatch)
+        ));
+        s.state.rip = RAM_START + code.len() as u64;
+        assert_eq!(
+            s.run_jit_nop(RAM_START, &code, 4, control, &mut executor)
+                .unwrap()
+                .dispatch
+                .exit,
+            DispatchExit::CodeEnd
+        );
+    }
+
+    #[test]
+    fn jit_code_range_rejections_preserve_session_ram_and_device() {
+        use crate::{BusDevice, DeviceAccess, DeviceError, MmioBinding};
+        use od_jit::dispatch::{BlockExecutionReport, DispatchControl};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU8, AtomicUsize, Ordering},
+        };
+
+        struct CountingDevice(Arc<AtomicUsize>);
+        impl BusDevice for CountingDevice {
+            fn read(&mut self, _: DeviceAccess) -> Result<u64, DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(0)
+            }
+            fn write(&mut self, _: DeviceAccess, _: u64) -> Result<(), DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        struct CountingExecutor(usize);
+        impl ControlledBlockExecutor for CountingExecutor {
+            type Error = ();
+            fn execute_one_block_controlled(
+                &mut self,
+                _: &od_jit::block_compile::CompiledBlock,
+                _: &mut LongModeState,
+                _: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                self.0 += 1;
+                Err(())
+            }
+        }
+
+        const MMIO_START: u64 = 0x3000;
+        let range =
+            |start, len| GuestPhysicalRange::new(GuestPhysicalAddress::new(start), len).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(range(RAM_START, RAM_LEN), MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(range(MMIO_START, 0x1000), MemoryRegionKind::Mmio),
+            ],
+        )
+        .unwrap();
+        let device_calls = Arc::new(AtomicUsize::new(0));
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(RAM_LEN),
+            vec![Box::new(CountingDevice(device_calls.clone()))],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(MMIO_START),
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        for (address, value) in [(RAM_START, 0xa5), (RAM_START + RAM_LEN - 1, 0x5a)] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Byte,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let mut state = LongModeState::default();
+        state.activity = Some(od_isa::CpuActivity::Running);
+        state.sti_shadow = Some(od_isa::StiShadow::Clear);
+        let mut s = DiagnosticVcpuSession::new(state, bus, context(), 0).unwrap();
+        s.rflags_defined = INTEGER_FLAGS;
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut executor = CountingExecutor(0);
+        for (rip, code) in [
+            (RAM_START + RAM_LEN - 1, &[0x5a, 0x90][..]), // cross 4 KiB boundary
+            (u64::MAX, &[0x90][..]),                      // exclusive end overflows
+            (0x2000, &[0x90][..]),                        // unmapped
+            (MMIO_START, &[0x90][..]),                    // MMIO must never be read
+        ] {
+            s.state.rip = rip;
+            let original = s.state.clone();
+            let flags = s.rflags_defined;
+            let boundary = s.completed_boundary;
+            assert!(
+                matches!(
+                    s.run_jit_nop(rip, code, 1, control, &mut executor),
+                    Err(DiagnosticJitError::CodeRangeRejected)
+                ),
+                "rip={rip:#x}"
+            );
+            assert_eq!(s.state, original);
+            assert_eq!(s.status, DiagnosticVcpuState::Runnable);
+            assert_eq!(s.rflags_defined, flags);
+            assert_eq!(s.completed_boundary, boundary);
+            assert_eq!(executor.0, 0);
+            assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+            for (address, value) in [(RAM_START, 0xa5), (RAM_START + RAM_LEN - 1, 0x5a)] {
+                assert_eq!(
+                    s.bus
+                        .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Byte)
+                        .unwrap(),
+                    value
+                );
+            }
+        }
     }
 
     fn irq_session(rsp: u64) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {

@@ -115,6 +115,7 @@ name = "od-machine"
 version = "0.1.0"
 dependencies = [
  "od-isa",
+ "od-jit",
 ]
 
 [[package]]

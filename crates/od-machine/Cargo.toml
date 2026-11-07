@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 od-isa = { path = "../od-isa" }
+od-jit = { path = "../od-jit" }
 
 [features]
 experimental-translation-probe-cache = []

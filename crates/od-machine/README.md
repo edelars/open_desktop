@@ -49,9 +49,10 @@ event lifecycle, reset/generation, production HLT wakeup and host waiting remain
 Bounded S4-27a/b/c/d/e add one-route caller-driven APIC entry, guest EOI,
 same-CPL IRETQ/resume, exact STI and ordinary APIC quanta, explicit HLT wait
 with maskable APIC wake, and pending IRQ delivery at the next post-IRET
-boundary. They are diagnostic one-vCPU flat-identity paths; this
-does not provide production scheduling, asynchronous event delivery, general
-interruptibility, or JIT integration.
+boundary. S4-27f1 adds a separate bounded RAM-bound JIT diagnostic path with
+cooperative event handoff through a real host executor. These remain diagnostic
+one-vCPU paths; they do not provide production scheduling, asynchronous event
+delivery, general interruptibility, or APIC/JIT event composition.
 Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не

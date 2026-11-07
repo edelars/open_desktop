@@ -3587,9 +3587,30 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
             }
         };
 
-        let report = executor
-            .execute_one_block_controlled(&block, state, remaining, control)
-            .map_err(DispatchError::Executor)?;
+        let entry_state = state.clone();
+        let report = match executor
+            .execute_one_block_controlled_with_event(&block, state, remaining, control)
+            .map_err(DispatchError::Executor)?
+        {
+            ControlledBlockExecution::Executed(report) => report,
+            ControlledBlockExecution::Yield(exit) => {
+                if *state != entry_state
+                    || control_exit(state.rip, code.code_end(), remaining, control)
+                        .or_else(|| event_exit(control))
+                        != Some(exit)
+                {
+                    return Err(DispatchError::ZeroProgress { rip: state.rip });
+                }
+                return fallback_result(
+                    exit,
+                    total_budget,
+                    remaining,
+                    retired_native,
+                    retired_interpreter,
+                    blocks_executed,
+                );
+            }
+        };
         validate_counters(
             report,
             remaining,
@@ -3954,6 +3975,63 @@ mod tests {
         ExecutionContextSnapshot::native_register_v1_fixture(
             ExecutionContextId::from_u64(generation).expect("test context ID is nonzero"),
         )
+    }
+
+    #[test]
+    fn nop_fallback_accepts_event_yield_after_publication() {
+        struct PublicationEvent<'a>(&'a AtomicBool);
+        impl ControlledBlockExecutor for PublicationEvent<'_> {
+            type Error = ();
+            fn execute_one_block_controlled(
+                &mut self,
+                _: &crate::block_compile::CompiledBlock,
+                _: &mut LongModeState,
+                _: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                panic!("unexpected native entry")
+            }
+            fn execute_one_block_controlled_with_event(
+                &mut self,
+                _: &crate::block_compile::CompiledBlock,
+                _: &mut LongModeState,
+                _: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<ControlledBlockExecution, ()> {
+                self.0.store(true, Ordering::Release);
+                Ok(ControlledBlockExecution::Yield(DispatchExit::EventPending))
+            }
+        }
+        let bytes = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let code = CodeView::new(0x1000, &bytes).unwrap();
+        let admission = InterpreterFallbackAdmission::from_code(code).unwrap();
+        let mut state = LongModeState {
+            rip: 0x1000,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        let event = AtomicBool::new(false);
+        let stop = AtomicU8::new(0);
+        let result = run_with_nop_fallback(
+            code,
+            &admission,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut PublicationEvent(&event),
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::EventPending);
+        assert_eq!(result.remaining_budget, 4);
+        assert_eq!(result.retired_native, 0);
+        assert_eq!(result.retired_interpreter, 0);
+        assert_eq!(result.blocks_executed, 0);
+        assert_eq!(state, before);
+        assert!(event.load(Ordering::Acquire));
     }
 
     #[derive(Default)]

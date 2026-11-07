@@ -1440,6 +1440,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 29 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и повторное независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27E_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27e-apic-quantum.json); методика — [S4-27e](../testing/MACHINE.md#s4-27e-ordinary-apic-quantum).
 - **Граница:** обычная caller-driven interpreter session с fixed one-instruction budget; нет автоматической доставки в многоинструкционном run/JIT block, общего event queue arbitration, MOV SS/NMI, HLT wake integration, автоматического EOI/IRET или Linux acceptance. Полный S4-27 остаётся открытым.
 
+#### S4-27f1. Bounded JIT event handoff
+
+- [x] Ограниченный S4-27f1 принят после исправления трёх P2 и независимого повторного `gpt-6.1-sol/high` review без замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** opt-in `DiagnosticVcpuSession::run_jit_nop` принимает стабильный `code_start`, полный ожидаемый byte range, budget, dispatch control, контролируемый executor и caller-owned event flag; exact `S0_09NopAdmission` строится внутри из bytes. Каждый вызов проверяет диапазон без overflow в одной guest 4 KiB page, его полное RAM backing и все байты; RIP должен соответствовать допустимой границе в этом полном range. Dispatcher использует event-aware execution: событие в publication window возвращает `Yield(EventPending)` до входа в native code, а executor yield корректно становится event exit без искусственного progress/counters.
+- **Resume и ошибки:** event flag не сбрасывается автоматически. Владелец события явно очищает его; повторный запуск передаёт исходный полный диапазон, поэтому ветви назад и уже пройденный prefix остаются доступны. Отказы профиля, диапазона, байтов или admission происходят до executor и сохраняют сессию. Ошибка dispatch может следовать за вызовом executor: candidate CPU не публикуется, исходный CPU сохраняется, сессия становится `Stopped`, event flag остаётся у caller.
+- **Проверки:** 32 `diagnostic_vcpu` tests, 412 `od-jit` unit tests, 2 ARM64 host integration tests с настоящим `PublishedBlockExecutor`, package all-target check для `od-machine`, `od-jit`, `od-host`, fmt и diff check прошли. Layout check сообщил только существующий unmapped root `smoke/` (ISSUE-056). Graphify и evidence — в [отчёте](../reports/STAGE_4_S4-27F1_2026-11-07.md), [manifest](../reports/data/stage4/s4-27f1-jit-event-handoff.json) и [методике](../testing/MACHINE.md#s4-27f1-bounded-jit-event-handoff).
+- **Граница:** проверен bounded NOP fallback и host-native block handoff на ARM64, но asynchronous interruption внутри native block не реализована. Этот срез не связывает JIT exit с APIC entry/handler/EOI/IRETQ, production scheduler, event queue, paged execution или Linux acceptance; это остаётся частью открытого parent S4-27.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

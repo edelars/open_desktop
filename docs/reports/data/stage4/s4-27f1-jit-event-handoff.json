@@ -1,0 +1,23 @@
+{
+  "slice": "S4-27f1",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "RAM-bound diagnostic NOP JIT execution with cooperative event handoff",
+  "review": "Independent gpt-6.1-sol/high review found three P2 issues; fixed and repeat review passed with no P0-P3 findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 32 passed",
+    "od_jit_tests": "cargo test -p od-jit --lib --offline: 412 passed",
+    "host_native_tests": "cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1: 2 passed on ARM64 with PublishedBlockExecutor",
+    "package_check": "cargo check -p od-machine -p od-jit -p od-host --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "layout_check": "exit 1 only for existing unmapped root smoke/ directory (ISSUE-056)",
+    "graphify_update": "Post-code update: 27,899 nodes, 70,733 edges, 938 communities; post-documentation update: 27,907 nodes, 70,743 edges, 967 communities"
+  },
+  "limitations": [
+    "event handoff is cooperative at dispatcher boundaries; no asynchronous interruption inside native execution",
+    "no APIC delivery or composition with APIC handler, guest EOI and IRETQ",
+    "bounded diagnostic NOP admission only; no production scheduler or paged JIT admission",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

@@ -406,7 +406,7 @@ impl S0_09NopAdmission {
         self.boundaries.matches_code(code)
     }
 
-    pub(crate) fn contains(&self, rip: u64) -> bool {
+    pub fn contains(&self, rip: u64) -> bool {
         self.boundaries.contains(rip)
     }
 

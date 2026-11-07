@@ -647,6 +647,31 @@ arbitration inside longer runs or JIT blocks, general event-queue dispatch,
 MOV-SS/NMI, HLT integration or Linux acceptance. See the
 [S4-27e report](../reports/STAGE_4_S4-27E_2026-11-07.md).
 
+## S4-27f1: bounded JIT event handoff
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`
+(32 passed), `cargo test -p od-jit --lib --offline` (412 passed), and
+`cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1`
+(2 passed on ARM64). The host tests execute the actual `PublishedBlockExecutor`:
+one observes an event during publication and proves no native entry; the other
+executes a native prefix, yields before NOP on a persistent event, then resumes
+after the owner clears it and verifies continuation through NOP and the native
+suffix without re-executing the prefix. The dispatcher unit regression covers
+executor `Yield(EventPending)` and zero progress counters.
+
+The machine tests check stable full-range resume, backward branch context,
+instruction-boundary admission, byte revalidation, RAM-only preflight,
+overflow, cross-page and MMIO/unmapped rejection, no rejected device callback,
+pre-executor profile rejection without session mutation, and no CPU commit
+after dispatch error. Also run
+`cargo check -p od-machine -p od-jit -p od-host --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check`. The layout checker currently
+reports the pre-existing unmapped root `smoke/` directory (ISSUE-056).
+
+This is cooperative event handoff at dispatcher boundaries. It does not
+interrupt an executing native block asynchronously or deliver the event via
+APIC. See the [S4-27f1 report](../reports/STAGE_4_S4-27F1_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

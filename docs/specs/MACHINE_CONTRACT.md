@@ -1596,6 +1596,47 @@ See the [S4-27e report](../reports/STAGE_4_S4-27E_2026-11-07.md),
 [verification method](../testing/MACHINE.md#s4-27e-ordinary-apic-quantum),
 and [evidence manifest](../reports/data/stage4/s4-27e-apic-quantum.json).
 
+## S4-27f1. Bounded JIT event handoff
+
+`DiagnosticVcpuSession::run_jit_nop` is a separate opt-in diagnostic entry. The
+caller supplies a stable `code_start`, the complete expected code bytes, an
+instruction budget, dispatch control, a controlled block executor and a
+caller-owned event flag. The method builds the exact `S0_09NopAdmission`
+internally from the supplied code. Admission rejects an empty range, address overflow, a range crossing a
+guest 4 KiB page, any non-RAM backing, or a byte mismatch before invoking the
+executor. Every call revalidates the entire range; the current RIP must be a
+valid admission boundary in that range. Keeping the original base and bytes on
+resume preserves backward branches and previously executed prefix bytes.
+
+The session must be Runnable in Long64/CPL0 with Running activity, an explicit
+Clear STI shadow, no configured CR0/CR3/CR4 snapshot, `INTEGER_FLAGS`
+definedness, and a caller-certified completed instruction boundary. The caller
+serializes machine access, provides private synchronous RAM, and keeps code
+bytes stable for the duration of the call.
+
+The dispatch path uses the event-aware controlled executor. A pending event
+observed during publication yields before native entry. `Yield(EventPending)`
+from an executor is returned as an event exit after higher-priority exits, with
+no guest progress counters attributed. The API never clears the caller's event
+flag. The owner decides when the event is consumed and cleared before a later
+call. Successful CPU state is published only for a valid successful dispatch
+result. Profile, range, byte and admission rejections occur before executor
+entry and preserve the session. A dispatch error may occur after executor entry;
+it leaves the original CPU state uncommitted, marks the session Stopped and
+preserves the caller's event flag. RAM-only preflight does not invoke a device
+callback.
+
+This evidence covers a bounded NOP fallback plus a real ARM64
+`PublishedBlockExecutor` block, publication-window yield, explicit event clear,
+and continuation through the same full code range without repeating the
+prefix. It does not interrupt native execution asynchronously, deliver the
+event through APIC, or compose JIT exits with APIC handler/EOI/IRETQ. General
+scheduling, paged code admission and Linux acceptance remain outside this
+slice; parent S4-27 remains open. See the
+[S4-27f1 report](../reports/STAGE_4_S4-27F1_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27f1-bounded-jit-event-handoff),
+and [evidence manifest](../reports/data/stage4/s4-27f1-jit-event-handoff.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing
