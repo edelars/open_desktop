@@ -12,8 +12,9 @@ use crate::{
     DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestPhysicalAddress,
     GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE,
     LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MemoryAccessError,
-    MemoryRegionKind, MemoryRegionSpec, MmioBinding, PagedProbeExit, PagedProbeQuantumReport,
-    PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
+    MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig,
+    NvmeConfigError, NvmeDevice, NvmeHandle, PagedProbeExit, PagedProbeQuantumReport, PortAddress,
+    PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
     Uart16550PollingTx, VirtualClock, VirtualClockError, run_paged_probe,
 };
 use od_isa::memory::{
@@ -58,7 +59,8 @@ const HANDOFF_MAGIC: &[u8; 8] = b"ODHANDOF";
 const HANDOFF_HEADER_BYTES: usize = 0xA0;
 const REGION_ENTRY_BYTES: usize = 32;
 const DEVICE_ENTRY_BYTES: usize = 48;
-const DEVICE_COUNT: usize = 7;
+/// Devices of handoff v1.0; the optional NVMe entry of v1.1 follows them.
+const BASE_DEVICE_COUNT: usize = 7;
 const MAX_REGIONS: usize = 128;
 const BOARD_PROFILE: u32 = 1;
 const NO_OWNER: u32 = 0xFFFF_FFFF;
@@ -80,6 +82,12 @@ const DEV_COM1: usize = 0;
 const DEV_LAPIC: usize = 1;
 const DEV_IOAPIC: usize = 2;
 const DEV_DISPLAY: usize = 3;
+/// Device-table index and bus index of the optional NVMe controller (device code 8).
+const DEV_NVME_TABLE: usize = 7;
+const DEV_NVME_BUS: usize = 4;
+const DEVICE_CODE_NVME: u32 = 8;
+/// Handoff minor version emitted when the NVMe entry is present.
+const HANDOFF_MINOR_NVME: u16 = 1;
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,6 +101,9 @@ pub struct FirmwareBoardConfig {
     pub system_uuid: [u8; 16],
     /// ASCII `0x20..=0x7E`, at most 64 bytes; empty means no serial number.
     pub serial: Vec<u8>,
+    /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
+    /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
+    pub nvme: Option<NvmeConfig>,
 }
 
 impl Default for FirmwareBoardConfig {
@@ -103,6 +114,7 @@ impl Default for FirmwareBoardConfig {
             tsc_hz: 1_000_000_000,
             system_uuid: [0; 16],
             serial: Vec::new(),
+            nvme: None,
         }
     }
 }
@@ -128,6 +140,7 @@ pub enum FirmwareBoardError {
         computed: u32,
     },
     Config(&'static str),
+    Nvme(NvmeConfigError),
     BootTablesDoNotFit {
         required_end: u64,
         ram_end: u64,
@@ -205,7 +218,7 @@ fn le_u64(bytes: &[u8], offset: usize) -> Result<u64, FirmwareBoardError> {
 }
 
 /// Validate the `ODFWIMG1` header (FIRMWARE_BOOT.md 3.2) and return `entry_offset`.
-fn validate_image(image: &[u8]) -> Result<u64, FirmwareBoardError> {
+fn validate_image(image: &[u8], required_minor: u16) -> Result<u64, FirmwareBoardError> {
     if image.len() != FIRMWARE_IMAGE_BYTES {
         return Err(FirmwareBoardError::ImageSize {
             expected: FIRMWARE_IMAGE_BYTES,
@@ -235,8 +248,11 @@ fn validate_image(image: &[u8]) -> Result<u64, FirmwareBoardError> {
     if le_u16(image, 0x28)? != 1 {
         return bad("handoff_major", u64::from(le_u16(image, 0x28)?));
     }
-    // The machine emits handoff v1.0, so the image must understand minor 0.
-    // `handoff_minor_max` is a u16, so every value is >= 0: nothing to reject.
+    // The machine emits handoff v1.0 unless the NVMe entry is configured (v1.1),
+    // so the image must understand that minor; for 0 every u16 value passes.
+    if le_u16(image, 0x2A)? < required_minor {
+        return bad("handoff_minor_max", u64::from(le_u16(image, 0x2A)?));
+    }
     if le_u32(image, 0x2C)? != 0 {
         return bad("flags", u64::from(le_u32(image, 0x2C)?));
     }
@@ -313,8 +329,9 @@ impl DeviceEntry {
 }
 
 /// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM, TPM CRB
-/// and ECAM are `PRESENT = 0` until S7-10, S7-22 and S4-30 add them.
-fn board_devices() -> [DeviceEntry; DEVICE_COUNT] {
+/// and ECAM are `PRESENT = 0` until S7-10, S7-22 and S4-30 add them. With `nvme`
+/// the table gets the eighth entry, device code 8 (FIRMWARE_BOOT.md 6.3).
+fn board_devices(nvme: bool) -> Vec<DeviceEntry> {
     let mmio = |code, base, length| DeviceEntry {
         code,
         flags: DEVICE_PRESENT,
@@ -325,7 +342,7 @@ fn board_devices() -> [DeviceEntry; DEVICE_COUNT] {
         param0: 0,
         param1: 0,
     };
-    [
+    let mut devices = vec![
         DeviceEntry {
             code: 1,
             flags: DEVICE_PRESENT | DEVICE_PIO,
@@ -342,7 +359,13 @@ fn board_devices() -> [DeviceEntry; DEVICE_COUNT] {
         DeviceEntry::absent(5),
         DeviceEntry::absent(6),
         DeviceEntry::absent(7),
-    ]
+    ];
+    debug_assert_eq!(devices.len(), BASE_DEVICE_COUNT);
+    if nvme {
+        // Polling only: no IRQ route in slice A (`gsi = 0xFFFF_FFFF`).
+        devices.push(mmio(DEVICE_CODE_NVME, NVME_MMIO_BASE, NVME_MMIO_BYTES));
+    }
+    devices
 }
 
 fn range(start: u64, len: u64) -> Result<GuestPhysicalRange, FirmwareBoardError> {
@@ -569,7 +592,15 @@ fn build_handoff(
     };
     block[..8].copy_from_slice(HANDOFF_MAGIC);
     put16(&mut block, 0x08, 1);
-    put16(&mut block, 0x0A, 0);
+    put16(
+        &mut block,
+        0x0A,
+        if devices.len() > BASE_DEVICE_COUNT {
+            HANDOFF_MINOR_NVME
+        } else {
+            0
+        },
+    );
     put32(&mut block, 0x0C, HANDOFF_HEADER_BYTES as u32);
     put32(&mut block, 0x10, total_size as u32);
     // 0x14 crc32 is filled last.
@@ -629,6 +660,7 @@ pub struct LoadedFirmwareBoard {
     state: LongModeState,
     uart: Uart16550Handle,
     display: DisplayHandle,
+    nvme: Option<NvmeHandle>,
     clock: VirtualClock,
     handoff: Vec<u8>,
     page_table_bytes: u64,
@@ -661,6 +693,11 @@ impl LoadedFirmwareBoard {
 
     pub fn display(&self) -> DisplayHandle {
         self.display.clone()
+    }
+
+    /// Handle of the NVMe controller; `None` unless `FirmwareBoardConfig::nvme` was set.
+    pub fn nvme(&self) -> Option<NvmeHandle> {
+        self.nvme.clone()
     }
 
     pub const fn cr3(&self) -> u64 {
@@ -729,10 +766,27 @@ impl LoadedFirmwareBoard {
         let mut retired = 0u64;
         let mut quanta = 0u64;
         self.com1_log.clear();
+        let nvme = self.nvme.clone();
+        // Doorbells the host rang before the run are executed before the guest starts.
+        if let Some(nvme) = &nvme {
+            nvme.service(&mut self.bus, |_| {});
+        }
         loop {
             let uart = self.uart.clone();
-            let report = self.run(remaining, || uart.holding_occupied(), |_| {});
+            let report = self.run(
+                remaining,
+                || {
+                    uart.holding_occupied()
+                        || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                },
+                |_| {},
+            );
             quanta += 1;
+            // Doorbell writes only record queue pointers: execute the submitted
+            // commands and post completions between quanta (NVME_DEVICE.md).
+            if let Some(nvme) = &nvme {
+                nvme.service(&mut self.bus, |_| {});
+            }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
             while uart.transfer_holding_to_shift() {
@@ -766,10 +820,15 @@ pub fn load_firmware_image(
     image: &[u8],
     config: &FirmwareBoardConfig,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
-    let entry_offset = validate_image(image)?;
+    let required_minor = if config.nvme.is_some() {
+        HANDOFF_MINOR_NVME
+    } else {
+        0
+    };
+    let entry_offset = validate_image(image, required_minor)?;
     validate_config(config)?;
 
-    let devices = board_devices();
+    let devices = board_devices(config.nvme.is_some());
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
@@ -796,20 +855,34 @@ pub fn load_firmware_image(
     } else {
         DisplayDevice::new_with_handle()
     };
-    // Device order is the device-table order: COM1, LAPIC, IOAPIC, display.
-    let bus_devices: Vec<Box<dyn crate::BusDevice>> = vec![
+    // Bus order: COM1, LAPIC, IOAPIC, display, then the optional NVMe controller.
+    let mut bus_devices: Vec<Box<dyn crate::BusDevice>> = vec![
         Box::new(uart_device),
         Box::new(lapic),
         Box::new(ioapic),
         Box::new(display_device),
     ];
-    let mmio = [DEV_LAPIC, DEV_IOAPIC, DEV_DISPLAY]
+    let mut mmio: Vec<MmioBinding> = [DEV_LAPIC, DEV_IOAPIC, DEV_DISPLAY]
         .iter()
         .map(|&index| MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[index].base),
             device_index: index,
         })
         .collect();
+    // The device exists on the bus only when the manifest entry is PRESENT.
+    let mut nvme = None;
+    if let Some(nvme_config) = &config.nvme
+        && devices[DEV_NVME_TABLE].present()
+    {
+        let (device, handle) =
+            NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+        bus_devices.push(Box::new(device));
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_NVME_TABLE].base),
+            device_index: DEV_NVME_BUS,
+        });
+        nvme = Some(handle);
+    }
     let com1 = PortRange::new(
         PortAddress::new(devices[DEV_COM1].base as u16),
         devices[DEV_COM1].length as u32,
@@ -882,6 +955,7 @@ pub fn load_firmware_image(
         state,
         uart,
         display,
+        nvme,
         clock,
         handoff,
         page_table_bytes,
@@ -1018,7 +1092,7 @@ mod tests {
                 second_screen,
                 ..FirmwareBoardConfig::default()
             };
-            let devices = board_devices();
+            let devices = board_devices(false);
             // `MachineMemoryMap::new` itself rejects overlaps and width overflow.
             let map = board_map(&config, &devices).unwrap();
             let table_bytes = boot_page_table_count(&map) * PAGE;
@@ -1419,5 +1493,147 @@ mod tests {
             vec![(0xF400_0000, 1), (0xF800_0000, 0)],
             "attrs carry the screen number"
         );
+    }
+
+    fn nvme_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            nvme: Some(NvmeConfig::default()),
+            ..reference_config()
+        }
+    }
+
+    /// An image that declares support for handoff minor 1.
+    fn nvme_image(code: &[u8]) -> Vec<u8> {
+        test_image(code, &[(0x2A, &1u16.to_le_bytes())])
+    }
+
+    #[test]
+    fn nvme_entry_extends_the_handoff_to_v1_1_and_binds_the_window() {
+        let mut board = load_firmware_image(&nvme_image(&[0xf4]), &nvme_config()).unwrap();
+        let block = board.handoff_block().to_vec();
+        assert_eq!(le_u16(&block, 0x0A).unwrap(), 1, "version_minor");
+        assert_eq!(le_u32(&block, 0x34).unwrap(), 13, "one more MMIO region");
+        assert_eq!(le_u32(&block, 0x40).unwrap(), 8, "device_count");
+        let device_table = le_u32(&block, 0x3C).unwrap() as usize;
+        assert_eq!(device_table, 0xA0 + 32 * 13);
+        assert_eq!(
+            le_u32(&block, 0x10).unwrap() as usize,
+            device_table + 48 * 8
+        );
+        assert_eq!(block.len(), device_table + 48 * 8);
+        let entry = &block[device_table + 7 * 48..device_table + 8 * 48];
+        assert_eq!(le_u32(entry, 0x00).unwrap(), 8, "device code");
+        assert_eq!(le_u32(entry, 0x04).unwrap(), 1, "PRESENT, MMIO");
+        assert_eq!(le_u64(entry, 0x08).unwrap(), 0xFC00_1000);
+        assert_eq!(le_u64(entry, 0x10).unwrap(), 0x2000);
+        assert_eq!(le_u32(entry, 0x18).unwrap(), 0xFFFF_FFFF, "no IRQ route");
+        assert_eq!(le_u32(entry, 0x1C).unwrap(), 0);
+        // The window is an MMIO region owned by the new entry.
+        let regions: Vec<&[u8]> = (0..13)
+            .map(|i| &block[0xA0 + 32 * i..0xA0 + 32 * (i + 1)])
+            .collect();
+        let window = regions
+            .iter()
+            .find(|region| le_u64(region, 8).unwrap() == NVME_MMIO_BASE)
+            .expect("NVMe window region");
+        assert_eq!(le_u32(window, 0).unwrap(), REGION_MMIO);
+        assert_eq!(le_u64(window, 0x10).unwrap(), NVME_MMIO_BYTES);
+        assert_eq!(le_u32(window, 0x18).unwrap(), 7, "owner_device");
+        // The block is self-consistent: CRC over the whole block with the field zeroed.
+        let mut zeroed = block.clone();
+        zeroed[0x14..0x18].copy_from_slice(&[0; 4]);
+        assert_eq!(le_u32(&block, 0x14).unwrap(), crc32_ieee(&[&zeroed]));
+        // The device is on the bus and reads CAP.MQES.
+        assert!(board.nvme().is_some());
+        let cap = board
+            .bus_mut()
+            .read_physical(
+                GuestPhysicalAddress::new(NVME_MMIO_BASE),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        assert_eq!(cap & 0xFFFF, 1023);
+    }
+
+    #[test]
+    fn without_the_nvme_entry_the_window_is_not_mapped() {
+        let mut board = load(&hlt_image());
+        assert!(board.nvme().is_none());
+        assert!(
+            board
+                .bus_mut()
+                .read_physical(
+                    GuestPhysicalAddress::new(NVME_MMIO_BASE),
+                    AccessWidth::Dword
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn nvme_needs_an_image_that_understands_handoff_minor_1_and_a_valid_config() {
+        assert_eq!(
+            load_firmware_image(&hlt_image(), &nvme_config()).err(),
+            Some(FirmwareBoardError::ImageHeader {
+                field: "handoff_minor_max",
+                value: 0
+            })
+        );
+        let config = FirmwareBoardConfig {
+            nvme: Some(NvmeConfig {
+                namespace_sectors: 0,
+                ..NvmeConfig::default()
+            }),
+            ..reference_config()
+        };
+        assert_eq!(
+            load_firmware_image(&nvme_image(&[0xf4]), &config).err(),
+            Some(FirmwareBoardError::Nvme(NvmeConfigError::EmptyNamespace))
+        );
+    }
+
+    #[test]
+    fn run_boot_executes_commands_submitted_before_the_guest_starts() {
+        const ASQ: u64 = 0x0100_0000;
+        const ACQ: u64 = 0x0100_1000;
+        const DATA: u64 = 0x0100_2000;
+        let mut board = load_firmware_image(&nvme_image(&[0xf4]), &nvme_config()).unwrap();
+        let mmio = |offset: u64| GuestPhysicalAddress::new(NVME_MMIO_BASE + offset);
+        let bus = board.bus_mut();
+        let mut program = |offset: u64, width: AccessWidth, value: u64| {
+            bus.write_physical(mmio(offset), width, value, |_| {})
+                .unwrap();
+        };
+        program(0x24, AccessWidth::Dword, 0x000F_000F); // AQA: 16 entries each
+        program(0x28, AccessWidth::Qword, ASQ);
+        program(0x30, AccessWidth::Qword, ACQ);
+        program(0x14, AccessWidth::Dword, 0x0046_0001); // CC: EN, IOSQES 6, IOCQES 4
+        // Identify Controller, cid 0x42, then the admin SQ tail doorbell.
+        let mut sqe = [0u8; 64];
+        sqe[0..4].copy_from_slice(&(0x06u32 | (0x42 << 16)).to_le_bytes());
+        sqe[24..32].copy_from_slice(&DATA.to_le_bytes());
+        sqe[40..44].copy_from_slice(&1u32.to_le_bytes());
+        bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ), &sqe, |_| {})
+            .unwrap();
+        bus.write_physical(mmio(0x1000), AccessWidth::Dword, 1, |_| {})
+            .unwrap();
+        let nvme = board.nvme().unwrap();
+        assert!(nvme.doorbell_pending());
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 1);
+        assert!(!nvme.doorbell_pending());
+        let mut cqe = [0u8; 16];
+        let bus = board.bus_mut();
+        bus.read_flat_bytes(GuestPhysicalAddress::new(ACQ), &mut cqe)
+            .unwrap();
+        let dw3 = u32::from_le_bytes([cqe[12], cqe[13], cqe[14], cqe[15]]);
+        assert_eq!(dw3 & 0xFFFF, 0x42, "CID");
+        assert_eq!((dw3 >> 16) & 1, 1, "phase tag");
+        assert_eq!(dw3 >> 17, 0, "success");
+        let mut serial = [0u8; 12];
+        bus.read_flat_bytes(GuestPhysicalAddress::new(DATA + 4), &mut serial)
+            .unwrap();
+        assert_eq!(&serial, b"OD-NVME-0001");
     }
 }

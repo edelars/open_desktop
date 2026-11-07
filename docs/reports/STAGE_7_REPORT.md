@@ -11,8 +11,8 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 0 | — |
-| `in_progress` | 9 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
-| `not_started` | 29 | остальные задачи, см. таблицу ниже |
+| `in_progress` | 10 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-16 (срез A выполнен исполнителем, ожидает ревью, коммита нет; срез B не начат); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
+| `not_started` | 28 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_7.md` §0 отмечаются только после ревью.
 
@@ -36,7 +36,7 @@
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | not_started | — | — | ACPI fixed hardware в `od-machine`: PM1, PM timer, reset register, RTC/CMOS, HPET |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | not_started | — | — | Минимальный NVMe-контроллер в `od-machine` |
+| S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срез A — admin — выполнен исполнителем, ожидает ревью, коммита нет; срез B — I/O `Read`/`Write`/`Flush` — не начат; значения спецификации не сверены) |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
 | S7-18 | not_started | — | — | Собственная FAT и Simple File System |
 | S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
@@ -316,6 +316,32 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 - **Отклонение от плана:** таблица каталогов плана (`docs/plans/STAGE_7.md`, строка ~134) относит host-тесты к `firmware/uefi/tests/`; фактически тесты лежат внутри библиотеки (`#[cfg(test)]`, `firmware/uefi/src/acpi/**/tests.rs`). Причина: `cargo test` на aarch64-host не собирает бинарь с inline-asm `out dx, al`, а интеграционные тесты в `tests/` заставили бы его собирать. Сам план не менялся; решение к утверждению ревью. Подробности: интеграционные тесты в `firmware/uefi/tests/` заставили бы `cargo test` собирать бинарь, который на host (aarch64) не собирается. По той же причине `cargo check --manifest-path firmware/uefi/Cargo.toml --offline` без `--lib`/`--target` падает на `main.rs` (inline-ассемблер) и до этой задачи; проверено `--lib` и `--target x86_64-unknown-none`.
 
 Проверки (2026-11-07, worktree `/private/tmp/open_desktop-s9`, HEAD `b459e10` + незакоммиченные изменения): результаты команд перечислены в сообщении исполнителя оркестратору; независимое ревью не выполнено.
+
+### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез A)
+
+Статус: `in_progress`. **Срез A выполнен исполнителем, ожидает ревью, коммита нет. Срез B (I/O `Read`/`Write`/`Flush`, backend диска, прерывания) не начат.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+
+Создано: `docs/specs/NVME_DEVICE.md`; `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend,tests}.rs`. Изменено: `firmware_board.rs` (`FirmwareBoardConfig::nvme`, запись device code 8, `LoadedFirmwareBoard::nvme()`, `run_boot` обслуживает контроллер), `lib.rs` (экспорты), `FIRMWARE_BOOT.md` (§2, §6.3), `MACHINE_CONTRACT.md` (раздел «NVMe controller»), `VIRTUAL_BOARD.md` (строка «Boot storage»), `STAGE_7.md` (статус S7-16).
+
+Что работает (подтверждено тестами, `cargo test -p od-machine --offline`: 289 тестов, было 232; новые — 53 в модуле `nvme` и 4 в `firmware_board`):
+
+- Регистры `CAP`, `VS`, `INTMS`, `INTMC`, `CC`, `CSTS`, `AQA`, `ASQ`, `ACQ` (в том числе половины 64-битных регистров по `Dword`), doorbells; ошибки ширины/выравнивания/доступа — `DeviceError`; `CC.EN` 0→1 создаёт admin-очереди и ставит `RDY`, неверный `CC` ставит `CFS`, `CC.EN` 1→0 сбрасывает очереди и features; `SHN` выставляет `SHST`.
+- Admin-очереди и I/O-очереди (до четырёх пар), SQE 64 байта, CQE 16 байт, фазовый бит с переворотом на проходе, заполненная CQ останавливает извлечение команд, PRP1/PRP2/PRP list/цепочка листов, DMA только в RAM.
+- Admin-команды: `Identify` (CNS 00/01/02/03; структуры Identify Controller и Namespace проверены побайтно), `Create/Delete I/O SQ/CQ` (SQ без CQ — `Completion Queue Invalid`, CQ с SQ — `Invalid Queue Deletion`), `Set/Get Features` (Arbitration, Power Management, Temperature Threshold, Error Recovery, Number of Queues, Interrupt Coalescing, Interrupt Vector Configuration, Write Atomicity Normal, Asynchronous Event Configuration), `Get Log Page` (Error Information с живыми записями, SMART/Health, Firmware Slot), `Asynchronous Event Request` (остаётся в очереди, завершается событием doorbell-ошибки), `Abort`. Неподдержанный opcode — `Invalid Command Opcode`.
+- Плата: `FirmwareBoardConfig::nvme = None` (по умолчанию) оставляет handoff v1.0 байт в байт (`REFERENCE_HANDOFF_HEX` не менялся); `Some` добавляет запись кода 8, регион `MMIO` `[0xFC00_1000, +0x2000)`, `version_minor = 1`, подключает устройство к шине; образ с `handoff_minor_max = 0` отклоняется.
+
+Не сделано и разрывы со спецификацией (записаны, не подогнаны):
+
+- **Нет I/O `Read`/`Write`/`Flush` — разрыв с обязательными командами NVM command set (срез B).** Сейчас I/O-команда завершается `Invalid Command Opcode`; контроллер диск не читает. `NvmeBackend` — только интерфейс без реализации. Доказательство для S7-17 и этапа 5 срезом A не получено.
+- **Значения сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с текстом NVMe Base 2.4.** Текст NVMe Base 2.4 (и Command Set 1.3, PCIe Transport 1.4) получить не удалось: страница спецификаций не содержит прямых ссылок, PDF 2.4 по предполагаемому адресу — 404, PDF 2.3 из архива `WebFetch` не принял (больше 10 MiB), индексатор вернул сырые потоки PDF без текста. Сверено с заголовком Linux: регистры и doorbells, биты CC/CSTS/CAP (MQES, TO, CSS, MPSMIN), admin-opcode и I/O Flush/Write/Read, CNS 0–3, FID, LID 0x01–0x03, статусы, смещения Identify и log pages. NOT VERIFIED: `CAP.CQR`, AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00`/`0x05`, `VS` 2.0 против 2.4 (NVME_DEVICE.md §1 и §11, шапки файлов). Заявлена версия `VS = 2.0.0`, а не 2.4.0.
+- **Открытый вопрос (вероятное отклонение).** `CSTS.CFS` выставляется при `CC.EN = 1` с `IOSQES ≠ 6` или `IOCQES ≠ 4` (`controller.rs`, `enable`); по спецификации (неподтверждённо) эти поля проверяются при создании I/O-очереди, а не при включении. Поведение и тесты не менялись; помечено в коде и NVME_DEVICE.md §11.
+- **Разрыв в тестах.** Путь «гость пишет doorbell → квант останавливается по `doorbell_pending` → `service` между квантами» тестом не покрыт: интерпретатор поддерживает 64-битный `mov [rbx], rcx`, а doorbell — 32-битный (`Dword`), поэтому запись doorbell гостем end-to-end не тестируется. На host-стороне `service` покрыт (`run_boot_executes_commands_submitted_before_the_guest_starts`). Код не менялся (NVME_DEVICE.md §3, §12).
+- `VID`, `SSVID`, `IEEE` = 0 (PCI vendor ID и OUI проекту не выданы); `Power On Hours` и `Controller Busy Time` = 0 (у устройства нет времени); Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы — их обязательность не сверена. Это открытые вопросы среза A (первый кандидат в дефекты, вместе с `VS = 2.0.0`; NVME_DEVICE.md §11).
+- Прерывания не доставляются (`gsi = 0xFFFF_FFFF`, `INTMS/INTMC`, `IEN`, coalescing хранятся без эффекта); контроллер виден только прошивке (PCI-привязка blocked до S4-30), ОС его не найдут — S7-31, S7-32 остаются blocked.
+- Команды завершаются в `NvmeHandle::service` между квантами, а не сразу после doorbell; время исполнения не моделируется. Прошивка репозитория пока не читает запись NVMe (handoff v1.1) — S7-17.
+- Не делалось по заданию: Namespace Management, firmware download/commit, несколько NS, SGL, `Device Self-test`, RTC/PM (S7-14), PCI-привязка (S4-30).
+
+Проверки (2026-11-07, worktree `/private/tmp/open_desktop-s9`): `cargo test -p od-machine --offline` — 289 passed; `cargo fmt -p od-machine -- --check` — чисто; `cargo clippy -p od-machine --offline --all-targets` — 0 предупреждений в `nvme/`, остальные предупреждения прежнего кода (`od-isa`, `io_apic.rs`, `firmware_board.rs:278` и др.) не трогались; `cargo check --workspace --all-targets --offline` — успешно; `python3 tools/check_layout.py` — 45 `ERROR` (как до изменений); `git diff --check` — чисто; в `nvme/` вне тестов нет `unwrap`/`expect`/`panic!`/`println!`. Независимое ревью не выполнялось (ожидается).
 
 ## 4. Открытые ограничения
 

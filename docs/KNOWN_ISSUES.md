@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-066-s7-16-nvme-spec-values-not-verified"></a>
+
+### ISSUE-066 — S7-16: значения NVMe в `od-machine` частично сверены (Linux `nvme.h`, не спецификация), остальное не сверено, I/O не реализован
+
+- **Дата обнаружения:** 2026-11-07, при реализации S7-16 (срез A).
+- **Компонент:** `crates/od-machine/src/nvme/`, [NVME_DEVICE.md](specs/NVME_DEVICE.md).
+- **Статус:** открыта.
+- **Суть и последствия:** текст NVMe Base 2.4, NVM Command Set 1.3 и PCIe Transport 1.4 получить не удалось (страница спецификаций не даёт прямых ссылок, PDF 2.4 не найден, PDF 2.3 не извлекается через `WebFetch` и индексатор). Значения, перечисленные в [NVME_DEVICE.md §1](specs/NVME_DEVICE.md), сверены с заголовком Linux `include/linux/nvme.h` (master, 2026-11-07), **не** с текстом NVMe Base 2.4. NOT VERIFIED остаются: `CAP.CQR` (бит 16), AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00` и `0x05`, `VS` 2.0.0 против 2.4.0. Открытые вопросы среза A: (1) проверка `IOSQES`/`IOCQES` при `CC.EN = 1` (`CFS`) против проверки при Create I/O SQ/CQ — вероятное отклонение (`controller.rs`, `enable`); (2) Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы, обязательность не сверена — первый кандидат в дефекты; (3) `VS = 2.0.0`; (4) запись doorbell гостем не покрыта тестом end-to-end (см. NVME_DEVICE.md §3). Кроме того, срез A не реализует обязательные I/O-команды `Read`/`Write`/`Flush` (срез B): контроллер не читает диск, прошивка (S7-17) им воспользоваться не может.
+- **Основание:** [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md), раздел S7-16; NVME_DEVICE.md §1, §10, §11.
+- **Следующий шаг:** до ревью среза A и до S7-17 получить текст спецификаций и сверить значения, помеченные NOT VERIFIED (NVME_DEVICE.md §11); решить вопрос `IOSQES`/`IOCQES`; реализовать срез B; после сверки снять пометки `NOT VERIFIED` в исходниках и документе.
+
 <a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
 
 ### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes

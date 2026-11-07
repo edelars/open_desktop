@@ -9,6 +9,7 @@ mod firmware_board;
 mod identity_memory_adapter;
 mod io_apic;
 mod local_apic;
+mod nvme;
 mod page_walk;
 mod paged_descriptor;
 mod paged_exception_delivery;
@@ -114,6 +115,11 @@ pub use stage4_flat_probe::{
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;
+
+pub use nvme::{
+    BackendError, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeBackend, NvmeConfig, NvmeConfigError,
+    NvmeDevice, NvmeHandle, NvmeServiceReport,
+};
 
 pub use pio_step::step_diagnostic_pio_u8;
 

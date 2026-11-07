@@ -2225,14 +2225,49 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   возникает, пока листья ROM помечены NX.
 - Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
   ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
-  NVMe (S7-16), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  NVMe в части ввода-вывода (S7-16: срез A выполнен, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
   UUID/серийного номера из командной строки runner (используются значения по
   умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
 - Расширение handoff block (новые поля и устройства) повышает `version_minor`
   по правилам раздела 6.4 FIRMWARE_BOOT.md; машина выдаёт v1.0 и принимает образы
-  с любым `handoff_minor_max`.
+  с любым `handoff_minor_max`; v1.1 (запись NVMe) — только при `FirmwareBoardConfig::nvme = Some(..)`
+  и образе с `handoff_minor_max ≥ 1`.
 
 Проверки: `cargo test -p od-machine --offline` (модуль `firmware_board`, `physical_memory`),
 `cargo test -p od-runner --offline --test firmware_boot_cli`,
 `python3 -m unittest tools/build/test_build_firmware.py`; методика —
 [FIRMWARE.md](../testing/FIRMWARE.md).
+
+## NVMe controller (S7-16, срез A)
+
+**Статус: срез A (управление) реализован исполнителем, ожидает ревью; ввод-вывод
+(`Read`, `Write`, `Flush`) не реализован — срез B не начат.** Контракт устройства,
+регистры, команды, границы, разрывы и значения без сверки со спецификацией —
+[NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
+
+- **Шина.** Контроллер — `BusDevice` на одном `Mmio`-регионе `[0xFC00_1000, +0x2000)`
+  (`NVME_MMIO_BASE`, `NVME_MMIO_BYTES`), как дисплей; `MachineBus` не менялся.
+  Ошибки доступа к окну — `DeviceError` по классам контракта шины:
+  `UnsupportedWidth` (байт, слово, `Qword` на doorbell), `Misaligned`,
+  `CrossesRegister` (`Qword` через границу регистров), `ReadOnly`, `WriteOnly`
+  (чтение doorbell), `Busy` (запись `AQA/ASQ/ACQ` при `CC.EN = 1`), `UnknownOffset`
+  (doorbell за пределами пяти очередей), `UnsupportedConfiguration` (doorbell при
+  `CSTS.RDY = 0`). Ошибка возвращается до изменения состояния устройства.
+- **DMA.** `BusDevice` не видит RAM, поэтому doorbell только запоминает указатели;
+  команды исполняются в `NvmeHandle::service(&mut MachineBus, committed_write)`,
+  который владелец машины вызывает между квантами. Доступ к памяти — только RAM
+  (через `MachineBus::memory_kind` и `read_flat_bytes`/`write_flat_bytes`); записи
+  проходят через `committed_write`. PRP в MMIO, ROM, framebuffer и вне карты —
+  статус `Data Transfer Error` команды, не доступ и не паника. Обращение к очереди
+  не в RAM — `CSTS.CFS`.
+- **Плата.** `FirmwareBoardConfig::nvme: Option<NvmeConfig>` (по умолчанию `None`):
+  при `Some` в таблицу устройств handoff block добавляется запись кода 8 (`version_minor = 1`),
+  в карту — регион `Mmio`, на шину — устройство; `LoadedFirmwareBoard::nvme()` отдаёт handle;
+  `run_boot` останавливает квант после doorbell-записи и вызывает `service` между квантами и один
+  раз перед запуском. Без конфигурации окна нет (`Unmapped`), handoff остаётся v1.0, эталон
+  `REFERENCE_HANDOFF_HEX` не изменился.
+- **Не реализовано:** I/O-команды (срез B), backend диска (`NvmeBackend` — только интерфейс),
+  прерывания (нет IRQ-маршрута), PCI-привязка (S4-30), SGL, Namespace Management, firmware
+  download/commit, несколько NS, `Device Self-test`. Время исполнения команд не моделируется.
+
+Проверки: `cargo test -p od-machine --offline` (модули `nvme`, `firmware_board`).
