@@ -18,6 +18,7 @@ let package = Package(
     products: [
         .executable(name: "OpenDesktop", targets: ["OpenDesktop"]),
         .executable(name: "od-vmhost", targets: ["od-vmhost"]),
+        .executable(name: "odctl", targets: ["odctl"]),
         .executable(name: "open-desktop-display-viewer", targets: ["open-desktop-display-viewer"]),
         .executable(name: "open-desktop-launcher-smoke", targets: ["open-desktop-launcher-smoke"]),
     ],
@@ -47,6 +48,13 @@ let package = Package(
                 .linkedFramework("Security"), .linkedFramework("SystemConfiguration"),
                 .linkedFramework("CoreFoundation"), .linkedFramework("CoreServices"), .linkedFramework("Foundation"),
             ]
+        ),
+        // The command line tool (S11-13, ADR-0006 (в), (г)). Control v2 client, catalog and error catalog of `ODShared`; no AppKit, no engine,
+        // no libod_host.a (it starts `od-vmhost` from its own directory or from `--vmhost`).
+        .executableTarget(
+            name: "odctl",
+            dependencies: ["ODShared"],
+            path: "cli/Sources/odctl"
         ),
         // The application (S11-05b). SwiftUI window; finds VMHost inside its bundle; no engine, no libod_host.a.
         .executableTarget(

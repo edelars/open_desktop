@@ -474,6 +474,7 @@
 ### S11-13. CLI `odctl` на том же контракте
 
 - [ ] Принято после ревью. Начинать после S11-06 (общий клиент принят) и решения S11-00 (в)/(г).
+- **Текущий статус (2026-11-06):** реализован, ревью пройдено, **не принят**. Отступления — в [отчёте](../reports/STAGE_11_REPORT.md) и `docs/specs/CLI.md` §7.
 - **Где:** `apps/cli/Sources/odctl/` (новый каталог; добавить в машиночитаемый перечень `PROJECT_LAYOUT.md`), цель `odctl` в `apps/Package.swift`, общая цель `ODShared` (клиент v2, каталог, каталог ошибок), `docs/specs/CLI.md` (новый), `apps/cli/README.md`, `tests/system/odctl_lifecycle_smoke.py` (новый).
 - **Сделать:**
   1. Команды без VMHost: `odctl list [--json]`, `odctl inspect <name|path> [--json]`, `odctl delete <name|path> --confirm <name> [--files]`. Команда с VMHost на время её выполнения: `odctl create --name N --profile P --memory-mib M [--disk-gib G] [--library DIR]` (при `--disk-gib` запускает VMHost, `PREPARE_DISK`, `STOP`). Команда-сессия: `odctl run <name|path> --script FILE [--json-events]` — запускает VMHost, выполняет строки сценария (`start`, `wait <state> [timeout_ms]`, `pause`, `resume`, `sleep <ms>`, `query`, `stop`) и завершается вместе с VMHost; машина, запущенная приложением, даёт `busy` по `flock`. Фоновых процессов и endpoint у CLI нет; связь CLI ↔ приложение — вне этапа (записать в `CLI.md`).

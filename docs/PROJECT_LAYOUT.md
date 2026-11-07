@@ -160,6 +160,7 @@ apps/macos/Configuration
 apps/macos/Tests
 apps/macos/Sources/Shared
 apps/macos/Sources/ODAtomics/include
+apps/cli/Sources/odctl
 apps/vmhost/Sources
 apps/vmhost/Sources/ODHostABI/include
 apps/vmhost/Configuration

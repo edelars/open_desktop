@@ -562,6 +562,13 @@ public final class ControlClientV2 {
         send(.attachResource(ControlV2Attach(role: role, index: index)), descriptor: descriptor, completion: completion)
     }
 
+    /// Closes the connection and leaves the process alone: the VMHost sees EOF between frames. In `stopped` without a request in flight
+    /// that is a normal end with status 0 (CONTROL_PROTOCOL_V2.md 11, 12.3), the only way to end a machine with `disks` before S9-06
+    /// (7.2, explanation 5). A process that does not exit within `exitGrace` after the EOF is ended by the teardown policy (as in `terminate`).
+    public func closeConnection() {
+        socket.shutdown()
+    }
+
     /// Ends the connection and stops the process by the policy of the protocol (section 11): the socket is shut down, SIGTERM, up to
     /// 500 ms, SIGKILL; the status is collected. Not a normal stop: use `stop()` for that.
     public func terminate() {
