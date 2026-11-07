@@ -1334,6 +1334,33 @@ follows Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getCon
 MOV to/from control registers. See the [S4-25d report](../reports/STAGE_4_S4-25D_2026-11-07.md)
 and [verification method](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
 
+## Fixed-edge IOAPIC route (S4-26a)
+
+The opt-in `IoApic` model occupies MMIO base `0xFEC00000` and supports one
+route: INTIN4 to physical Local APIC ID 0. Dword accesses use IOREGSEL and
+IOWIN at offsets `0x00` and `0x10`; redirection entry 4 is selected with
+`0x18` (low) and `0x19` (high). The route accepts only Fixed delivery, physical
+destination 0, active-high edge mode, mask and vectors `0x10..=0xFE`. Reset
+leaves it masked. Other selectors/registers and routes are unsupported; no
+Version value is exposed for the partial table.
+
+The external line API records INTIN4 level. Only low-to-high transitions
+through an unmasked route request a Local APIC fixed edge. A masked edge is
+ignored; unmask and high-to-high do not replay it. Repeated accepted vectors
+coalesce in the existing Local APIC IRR. If the destination rejects the
+request, the call errors without consuming the line transition, so the owner
+can retry. The owner must serialize operations on both APICs, including reset
+and enable changes. The low redirection word's read-only Delivery Status and
+Remote IRR bits read zero and are ignored when written.
+
+This is not a full IOAPIC: other entries, level/Remote-IRR delivery, logical
+destinations, APIC bus behavior, CPU acceptance/handler delivery, HLT wakeup,
+default board wiring and Linux discovery are outside the contract. Device
+errors do not model guest exception delivery. Register behavior follows Intel
+[82093AA I/O APIC document 290566-001](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF),
+preliminary release, §§3.1–3.2.4. See the [S4-26a report](../reports/STAGE_4_S4-26A_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-26a-fixed-edge-ioapic-route).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

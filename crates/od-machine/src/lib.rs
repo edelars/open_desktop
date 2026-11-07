@@ -4,6 +4,7 @@ mod bus;
 mod diagnostic_vcpu;
 mod event_queue;
 mod identity_memory_adapter;
+mod io_apic;
 mod local_apic;
 mod page_walk;
 mod paged_descriptor;
@@ -38,6 +39,7 @@ pub use diagnostic_vcpu::{
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
+pub use io_apic::{IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, IoApicHandle};
 pub use local_apic::{
     LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, step_apic_base_msr,
     step_local_apic_cr8,

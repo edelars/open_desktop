@@ -60,6 +60,11 @@ standalone Local APIC TPR. It demonstrates self-IPI priority gating inside the
 device model, without enabling CPU interrupt acceptance or adding the profile
 to the default board, paged session, or JIT.
 
+S4-26a adds an opt-in standalone IOAPIC profile at `0xFEC00000` with one
+INTIN4 fixed-edge route to Local APIC ID 0. It is not registered in the default
+board and does not establish device-to-pin mapping, CPU interrupt handling or
+guest OS discovery.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

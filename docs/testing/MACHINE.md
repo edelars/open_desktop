@@ -505,6 +505,22 @@ acceptance. The profile does not test general CR8 decoding, CPU handler
 delivery, `PagedVcpuSession`, JIT, default board wiring or guest boot. See the
 [slice report](../reports/STAGE_4_S4-25D_2026-11-07.md).
 
+## S4-26a: fixed-edge IOAPIC route
+
+Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`
+and `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The four IOAPIC tests cover reset and selector/readback, independent route
+halves, read-only status writes, masked edge loss, no dispatch on unmask or
+high-to-high, new-edge vector updates, pending IRR behavior, TPR blocking,
+acknowledge/EOI, disabled-destination retry, and failure atomicity. Nine Local
+APIC tests provide adjacent device regression coverage. Also run
+`cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; all passed. Independent
+Sol/high review found and closed the P2 on read-only Delivery Status/Remote IRR
+writes; no findings remain. The tests do not establish level delivery, other
+IOAPIC routes, default board wiring, CPU handler execution or Linux boot. See
+the [slice report](../reports/STAGE_4_S4-26A_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

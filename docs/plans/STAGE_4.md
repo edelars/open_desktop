@@ -1367,6 +1367,16 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** masked edge, unmask, level assert/deassert, повторный level после EOI, недопустимый destination/vector; гостевые config writes меняют поведение.
 - **Готово:** один внешний device IRQ доходит до Local APIC и не теряется/не дублируется при предусмотренных mask/EOI transitions.
 
+#### S4-26a. Fixed-edge route IOAPIC к Local APIC
+
+- [x] Ограниченный S4-26a принят после независимого `gpt-6.1-sol/high` ревью; parent S4-26 и Stage 4 остаются открытыми.
+- **Зависимости среза:** S4-02, S4-05, S4-25a и S4-25b. Принятая часть S4-25 достаточна для fixed-edge доставки в IRR и тестов priority/acknowledge/EOI; S4-25c/d дают дополнительную регрессию Local APIC.
+- **Контракт:** отдельный opt-in `IoApic` в `od-machine` занимает MMIO base `0xFEC00000`. Поддержан единственный `INTIN4 → physical APIC ID 0` маршрут: IOREGSEL/IOWIN находятся по offsets `0x00`/`0x10`, redirection entry 4 — selector `0x18`/`0x19`. Low/high Dword доступны раздельно; route поддерживает Fixed, active-high, edge-triggered, vector `0x10..=0xFE` и mask. После reset маршрут замаскирован. Version register не публикуется для частичной таблицы. Read-only Delivery Status/Remote IRR биты в low Dword читаются нулём и игнорируются при записи.
+- **Переходы:** только low→high на незамаскированной линии запрашивает вектор у существующего Local APIC; edge при mask теряется, снятие mask и high→high сами по себе не доставляют IRQ. Повторный одинаковый vector coalesces через существующий IRR. Если Local APIC отклоняет edge, `set_intin4` возвращает ошибку и сохраняет прежнее состояние линии для повтора вызова. Владелец обязан сериализовать IOAPIC, Local APIC, reset и enable operations.
+- **Источник:** Intel 82093AA I/O APIC, document 290566-001 (preliminary), §§3.1–3.2.4: [datasheet](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF). Он обосновывает выбранный профиль, не обещает совместимость со всеми IOAPIC.
+- **Проверки:** 4 focused IOAPIC tests, 9 Local APIC regression tests, `od-machine --all-targets`, fmt/diff и Graphify прошли; независимый Sol/high review без оставшихся замечаний. См. [отчёт](../reports/STAGE_4_S4-26A_2026-11-07.md), [manifest](../reports/data/stage4/s4-26a-ioapic-fixed-edge.json) и [методику](../testing/MACHINE.md#s4-26a-fixed-edge-ioapic-route).
+- **Граница:** доступны только один edge route и выбранные регистры. Другие redirection entries, IOAPIC Version/ID/ARB, level trigger/Remote IRR delivery, logical destinations, APIC bus, CPU acceptance/handler/IDT/IF, HLT wakeup, default board wiring и Linux discovery не реализованы. `DeviceError` не является гостевым exception.
+
 ### S4-27. Соединить pending IRQ с CPU delivery
 
 - [ ] Принято после ревью.

@@ -1,0 +1,24 @@
+{
+  "slice": "S4-26a",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "One opt-in INTIN4 active-high Fixed edge route from the IOAPIC to physical Local APIC ID 0",
+  "source": "Intel 82093AA I/O APIC document 290566-001, preliminary release, §§3.1–3.2.4",
+  "review": "independent gpt-6.1-sol/high review passed; P2 read-only Delivery Status/Remote IRR write handling fixed and confirmed closed",
+  "checks": {
+    "ioapic_tests": "cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1: 4 passed",
+    "local_apic_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 9 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,669 nodes, 70,218 edges, 923 communities",
+    "layout_check": "reports only the pre-existing unmapped root smoke/ (ISSUE-056)"
+  },
+  "limitations": [
+    "only IOREDTBL4 is supported for INTIN4 to physical Local APIC ID 0, in active-high Fixed edge mode",
+    "the partial device exposes no Version/ID/ARB registers or other redirection entries",
+    "level delivery, logical destinations, APIC bus, CPU interrupt/handler delivery, default board wiring and Linux discovery are not implemented",
+    "callers must serialize IOAPIC and Local APIC operations, including reset and enable changes",
+    "parent S4-26 and Stage 4 remain open"
+  ]
+}

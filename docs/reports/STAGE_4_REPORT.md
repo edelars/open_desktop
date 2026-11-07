@@ -593,3 +593,19 @@ checks, Graphify counts, and Sol/high review outcome in the
 operations across the complete helper call. General CR8 decoding, CPU handler
 delivery, session/JIT integration and default board wiring are not included;
 parent S4-25 and Stage 4 remain open.
+
+## S4-26a — fixed-edge IOAPIC route
+
+The opt-in `od-machine` IOAPIC exposes a single programmable INTIN4 route to
+physical Local APIC ID 0. Dword IOREGSEL/IOWIN accesses configure the route's
+vector and mask; only active-high Fixed edge mode is supported. A low-to-high
+line transition forwards to the Local APIC IRR, where the existing TPR,
+acknowledge and EOI model determines eligibility and service. Masked edges are
+ignored without replay on unmask, and read-only Delivery Status/Remote IRR
+writes do not alter stored state. Four IOAPIC tests, nine Local APIC regression
+tests, `od-machine` all-targets check, fmt/diff and independent Sol/high review
+passed. Only one edge route is modeled; level routing, other entries, CPU
+handler delivery, board wiring and Linux discovery are not established. See
+the [slice report](STAGE_4_S4-26A_2026-11-07.md) and
+[evidence](data/stage4/s4-26a-ioapic-fixed-edge.json). Parent S4-26 and Stage 4
+remain open.
