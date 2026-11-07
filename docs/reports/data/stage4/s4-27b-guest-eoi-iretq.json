@@ -12,7 +12,7 @@
     "package_check": "cargo check -p od-machine --all-targets --offline: passed",
     "fmt": "cargo fmt --all -- --check: passed",
     "diff_check": "git diff --check: passed",
-    "graphify_update": "27,748 nodes, 70,401 edges, 999 communities",
+    "graphify_update": "Post-commit: 27,757 nodes, 70,414 edges, 1,011 communities",
     "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056)"
   },
   "limitations": [
