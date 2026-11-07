@@ -17,6 +17,8 @@ mod tests_b;
 mod tests_c1;
 #[path = "tests_c2.rs"]
 mod tests_c2;
+#[path = "tests_c3.rs"]
+mod tests_c3;
 #[path = "tests_obj.rs"]
 mod tests_obj;
 
@@ -563,10 +565,12 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         // Slice C2: Certify, PolicySecret, HMAC, Quote, ContextLoad/Save, PolicyAuthValue,
         // PolicyCommandCode, PolicyOR, PolicyPCR, PolicyRestart, PolicyGetDigest.
         0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
+        // Slice C3: NV_Increment, NV_SetBits, NV_Extend, GetTime.
+        0x134, 0x135, 0x136, 0x14C,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 56);
+    assert_eq!(expected.len(), 60);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -590,7 +594,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(56)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(60)[..]].concat()
     );
 }
 
@@ -616,8 +620,8 @@ fn capability_commands_paging_and_more_data() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 12);
-    // RSA, HMAC, AES, KEYEDHASH, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 13);
+    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -629,6 +633,8 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x05, 0, 0, 1, 4],
             &[0x00, 0x06, 0, 0, 0, 10],
             &[0x00, 0x08, 0, 0, 0, 12],
+            // XOR "H S" (slice C3).
+            &[0x00, 0x0A, 0, 0, 0, 6],
             &[0x00, 0x0B, 0, 0, 0, 4],
             &[0x00, 0x14, 0, 0, 1, 1],
             &[0x00, 0x15, 0, 0, 2, 1],

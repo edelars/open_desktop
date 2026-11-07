@@ -28,7 +28,16 @@
 //! `PolicyNvWritten`, `PolicyTemplate`, `PolicyAuthorizeNV`, `PolicyCapability`,
 //! `PolicyParameters`. `TPM2_PolicySecret` takes `expiration` 0 only (a non-zero value needs the
 //! session timeout and the tickets: `TPM_RC_VALUE`, parameter 4) and always returns a NULL ticket
-//! and an empty `timeout`.
+//! and an empty `timeout`. Slice C3 re-read Part 3 v184, clauses 23.2.2, 23.2.4, 23.2.5 and 23.4
+//! and kept the restriction: the text fixes the timeout rule (`|expiration|` seconds after the
+//! session start, or from the current `Time` for an empty `nonceTPM`; a timeout can only
+//! shrink; `TPM_RC_EXPIRED` when it passed or the `timeEpoch` changed) and the ticket HMAC input
+//! (`tag || cpHash || policyRef || authName || timeout || [timeEpoch] || [resetCount]`), but
+//! leaves the `timeout` value, `timeEpoch` and `resetCount` encodings "implementation-specific",
+//! and a negative `expiration` (ticket) is useful only with `TPM2_PolicyTicket`, which is not
+//! implemented. Implementing it needs session start time, `timeEpoch` state and the ticket path
+//! together; NOT VERIFIED against TPM 2.0 Library v185/v184 which of these encodings Windows
+//! relies on (not before S7-30/S7-32).
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (Part 4 is not available): the numbers of the
 //! handle and parameter modifiers of the codes below; `TPM_RC_VALUE` (handle 1/2) for a session

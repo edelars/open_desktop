@@ -4,23 +4,39 @@
 //! `TPMA_NV_WRITEDEFINE`, `TPMA_NV_WRITE_STCLEAR` and `TPMA_NV_READ_STCLEAR` can take effect and
 //! `TPMA_NV_WRITELOCKED`/`READLOCKED` are reachable).
 //!
-//! Supported index type: `TPM_NT_ORDINARY` (opaque data written by `TPM2_NV_Write`). Counters,
-//! bit fields, extend indices and PIN indices need `TPM2_NV_Increment`, `SetBits`, `Extend` and
-//! are slice B: defining one is `TPM_RC_ATTRIBUTES` (Part 3, clause 31.3.1: "if the implementation
-//! does not support ... the TPM shall return TPM_RC_ATTRIBUTES"). Attributes that need machinery
-//! the slice lacks are refused the same way: `TPMA_NV_POLICYREAD`/`POLICYWRITE` (policy sessions),
-//! `POLICY_DELETE` (`TPM2_NV_UndefineSpaceSpecial`), `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`),
-//! `ORDERLY`, `CLEAR_STCLEAR` (PTP 1.07, Table 12: not required). `TPMA_NV_NO_DA` is stored (there
-//! is no dictionary-attack logic to bypass).
+//! Supported index types: `TPM_NT_ORDINARY` (opaque data written by `TPM2_NV_Write`) and, since
+//! slice C3, `TPM_NT_COUNTER` (8 octets, `TPM2_NV_Increment`), `TPM_NT_BITS` (8 octets,
+//! `TPM2_NV_SetBits`) and `TPM_NT_EXTEND` (a SHA-256 digest, `TPM2_NV_Extend`). PIN indices
+//! (`TPM_NT_PIN_FAIL`, `TPM_NT_PIN_PASS`) and reserved types are `TPM_RC_ATTRIBUTES` (Part 3,
+//! clause 31.3.1: "if the implementation does not support ... the TPM shall return
+//! TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
+//! Attributes that need machinery the implementation lacks are refused the same way:
+//! `TPMA_NV_POLICYREAD`/`POLICYWRITE` (no `PolicyNV`-style NV policy access), `POLICY_DELETE`
+//! (`TPM2_NV_UndefineSpaceSpecial`), `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`), `ORDERLY`,
+//! `CLEAR_STCLEAR` (PTP 1.07, Table 12: not required). `TPMA_NV_NO_DA` is stored (there is no
+//! dictionary-attack logic to bypass).
+//!
+//! **Sizes by type** (Part 3, clause 31.3.1): a counter or bit field has `dataSize` 8, an extend
+//! index the digest size of its `nameAlg` (only SHA-256 is supported: 32); any other size is
+//! `TPM_RC_SIZE`. `TPM2_NV_Write` of a counter, bit field or extend index is `TPM_RC_ATTRIBUTES`
+//! (clause 31.7.1); `TPM2_NV_Read` reads any type.
+//!
+//! **Counters** (clause 31.2): the first increment of a counter starts from the largest value
+//! any counter has had (kept in [`NvStore`], persistent: snapshot v3) and adds one, so a counter
+//! that is deleted and defined again never goes back ("greater than any value a counter Index ...
+//! has had", clause 31.2; the text allows tracking the largest count of deleted and defined
+//! counters). `TPM2_NV_Increment` on a counter that is at `u64::MAX` is `TPM_RC_NV_RANGE` and
+//! changes nothing.
 //!
 //! Limits (this implementation; PTP 1.07 minimum: 68 indices, 11026 octets, Table 2 and clause
 //! 4.6.2): [`MAX_NV_INDICES`] indices, [`NV_POOL_SIZE`] octets of data in total,
 //! [`MAX_NV_INDEX_SIZE`] octets per index (`TPM_PT_NV_INDEX_MAX`, PTP minimum 8500) and
 //! [`NV_BUFFER_MAX`] octets per read or write (`TPM_PT_NV_BUFFER_MAX`, PTP minimum 512).
 //!
-//! Persistence: the NV store is part of [`crate::state::Persistent`] and survives `_TPM_Init`,
-//! but it is NOT part of the snapshot yet (slice C, "Persistent state v1"): `restore` returns a
-//! TPM without indices.
+//! Persistence: the NV store (indices and the largest counter value seen) is part of
+//! [`crate::state::Persistent`], survives `_TPM_Init` and is in the snapshot (the type of an index
+//! is in its `TPMA_NV` attributes; `snapshot.rs` checks that attributes, size and data of every
+//! restored index are consistent with its type).
 //!
 //! Access control (Part 3, clause 31.1; Part 2, Table 43): an index created with
 //! `TPMA_NV_PLATFORMCREATE` is accessible only while `phEnableNV` is SET, one created without it
@@ -37,6 +53,10 @@
 //! before the lock state", clauses 31.7.1 and 31.13.1).
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (the open text states the rule, not the code):
+//! `TPM_RC_NV_RANGE` for the overflow of a counter (the text does not say what a counter at the
+//! maximum does); the order of the type check and the lock check in `TPM2_NV_Write` (lock first,
+//! as the clause lists them) versus `Increment`/`Extend`/`SetBits` (type first); the strict
+//! restore-time consistency rules of the snapshot (no index with data while `WRITTEN` is CLEAR);
 //! `TPM_RC_AUTH_TYPE` when the authorization handle's role is not enabled by the index attributes;
 //! `TPM_RC_RESERVED_BITS` for reserved `TPMA_NV` bits in `TPM2_NV_DefineSpace`; `TPM_RC_ATTRIBUTES`
 //! for the unsupported attributes and index types listed above; `TPM_RC_SIZE` for a `publicInfo`
@@ -96,8 +116,27 @@ pub mod attr {
     pub const READ_STCLEAR: u32 = 1 << 31;
 }
 
-/// `TPM_NT_ORDINARY` (Part 2, Table 231).
-const NT_ORDINARY: u32 = 0x0;
+/// `TPM_NT` values (Part 2, Table 231).
+pub(crate) mod nt {
+    pub const ORDINARY: u32 = 0x0;
+    pub const COUNTER: u32 = 0x1;
+    pub const BITS: u32 = 0x2;
+    pub const EXTEND: u32 = 0x4;
+}
+
+/// Size of a counter and of a bit field (Part 3, clause 31.3.1).
+pub(crate) const COUNTER_SIZE: usize = 8;
+/// Size of an extend index with `nameAlg` SHA-256.
+pub(crate) const EXTEND_SIZE: usize = 32;
+
+/// Highest `TPMA_NV` attribute bits that this implementation can honour, as a mask of those it
+/// refuses.
+const UNSUPPORTED: u32 = attr::POLICYREAD
+    | attr::POLICYWRITE
+    | attr::POLICY_DELETE
+    | attr::GLOBALLOCK
+    | attr::ORDERLY
+    | attr::CLEAR_STCLEAR;
 
 /// One defined index.
 pub(crate) struct NvIndex {
@@ -110,6 +149,46 @@ pub(crate) struct NvIndex {
 }
 
 impl NvIndex {
+    /// `TPM_NT` of the index (bits 7:4 of the attributes).
+    pub(crate) fn nt(&self) -> u32 {
+        (self.attributes & attr::NT_MASK) >> 4
+    }
+
+    /// The data size an index of this type must have (`None`: any size, an ordinary index).
+    fn required_size(attributes: u32) -> Option<usize> {
+        match (attributes & attr::NT_MASK) >> 4 {
+            nt::COUNTER | nt::BITS => Some(COUNTER_SIZE),
+            nt::EXTEND => Some(EXTEND_SIZE),
+            _ => None,
+        }
+    }
+
+    /// `true` if a restored index is consistent: no reserved bit, a supported type, no feature
+    /// the implementation refuses at definition, the size of its type, the data zero while
+    /// `WRITTEN` is CLEAR, and (for the commands that need it) both read and write access.
+    pub(crate) fn is_consistent(&self) -> bool {
+        let a = self.attributes;
+        let size_ok = match Self::required_size(a) {
+            Some(n) => self.data.len() == n,
+            None => true,
+        };
+        a & (attr::RESERVED_LOW | attr::RESERVED_HIGH | UNSUPPORTED) == 0
+            && matches!(
+                self.nt(),
+                nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
+            )
+            && size_ok
+            && a & (attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD) != 0
+            && a & (attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE) != 0
+            && (a & attr::WRITTEN != 0 || self.data.iter().all(|b| *b == 0))
+    }
+
+    /// The counter value (an 8-octet counter or bit field).
+    fn value_u64(&self) -> Option<u64> {
+        let b: [u8; 8] = self.data.as_slice().try_into().ok()?;
+        Some(u64::from_be_bytes(b))
+    }
+
     /// `TPMS_NV_PUBLIC` (Part 2, Table 235) with the current attributes.
     pub(crate) fn public(&self) -> Vec<u8> {
         let mut w = Writer::new();
@@ -133,6 +212,9 @@ impl NvIndex {
 #[derive(Default)]
 pub(crate) struct NvStore {
     indices: Vec<NvIndex>,
+    /// The largest value any counter has had: a counter's first increment starts above it
+    /// (Part 3, clause 31.2). Persistent.
+    counter_max: u64,
 }
 
 impl NvStore {
@@ -153,21 +235,42 @@ impl NvStore {
         self.indices.iter()
     }
 
-    /// Rebuilds the store from restored indices (any order); `None` for a duplicate handle, a
-    /// handle outside the NV index range, more than [`MAX_NV_INDICES`] indices or more than
-    /// [`NV_POOL_SIZE`] octets of data.
-    pub(crate) fn from_indices(mut indices: Vec<NvIndex>) -> Option<NvStore> {
+    /// The largest counter value seen, for the snapshot.
+    pub(crate) fn counter_max(&self) -> u64 {
+        self.counter_max
+    }
+
+    /// Rebuilds the store from restored indices (any order) and the largest counter value; `None`
+    /// for a duplicate handle, a handle outside the NV index range, more than [`MAX_NV_INDICES`]
+    /// indices, more than [`NV_POOL_SIZE`] octets of data, an index that is not consistent with
+    /// its type (`NvIndex::is_consistent`) or a written counter above `counter_max` (a counter
+    /// can never exceed the largest value seen: restoring such a state would let a counter that
+    /// was deleted and defined again start below its old value).
+    pub(crate) fn from_indices(mut indices: Vec<NvIndex>, counter_max: u64) -> Option<NvStore> {
         if indices.len() > MAX_NV_INDICES
             || indices.iter().map(|i| i.data.len()).sum::<usize>() > NV_POOL_SIZE
-            || indices.iter().any(|i| !is_nv_handle(i.handle))
+            || indices
+                .iter()
+                .any(|i| !is_nv_handle(i.handle) || !i.is_consistent())
         {
+            return None;
+        }
+        let counter_over_max = indices.iter().any(|i| {
+            i.nt() == nt::COUNTER
+                && i.attributes & attr::WRITTEN != 0
+                && i.value_u64().is_none_or(|v| v > counter_max)
+        });
+        if counter_over_max {
             return None;
         }
         indices.sort_unstable_by_key(|i| i.handle);
         if indices.windows(2).any(|w| w[0].handle == w[1].handle) {
             return None;
         }
-        Some(NvStore { indices })
+        Some(NvStore {
+            indices,
+            counter_max,
+        })
     }
 
     /// Data octets in use.
@@ -264,7 +367,11 @@ impl Tpm {
             crate::codes::cc::NV_READ_PUBLIC => {
                 self.nv_index_at(handles[0], 1)?;
             }
-            crate::codes::cc::NV_WRITE | crate::codes::cc::NV_WRITE_LOCK => {
+            crate::codes::cc::NV_WRITE
+            | crate::codes::cc::NV_WRITE_LOCK
+            | crate::codes::cc::NV_INCREMENT
+            | crate::codes::cc::NV_EXTEND
+            | crate::codes::cc::NV_SET_BITS => {
                 self.check_nv_authorization(handles, Access::Write)?;
             }
             crate::codes::cc::NV_READ | crate::codes::cc::NV_READ_LOCK => {
@@ -356,23 +463,26 @@ impl Tpm {
             return Err(Rc::NV_DEFINED);
         }
         let platform = inv.handles[0] == h::RH_PLATFORM;
-        let unsupported = attr::POLICYREAD
-            | attr::POLICYWRITE
-            | attr::POLICY_DELETE
-            | attr::GLOBALLOCK
-            | attr::ORDERLY
-            | attr::CLEAR_STCLEAR;
         let read = attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD;
         let write = attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE;
-        if (attributes & attr::NT_MASK) >> 4 != NT_ORDINARY
-            || attributes & (attr::WRITTEN | attr::READLOCKED | attr::WRITELOCKED) != 0
-            || attributes & unsupported != 0
+        if !matches!(
+            (attributes & attr::NT_MASK) >> 4,
+            nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
+        ) || attributes & (attr::WRITTEN | attr::READLOCKED | attr::WRITELOCKED) != 0
+            || attributes & UNSUPPORTED != 0
             || attributes & read == 0
             || attributes & write == 0
             // `PLATFORMCREATE` must say who defined the index (clause 31.3.1).
             || (attributes & attr::PLATFORMCREATE != 0) != platform
         {
             return Err(Rc::ATTRIBUTES.in_param(2));
+        }
+        // A counter and a bit field are 8 octets, an extend index a digest of its `nameAlg`
+        // (clause 31.3.1: `TPM_RC_SIZE`).
+        if let Some(n) = NvIndex::required_size(attributes)
+            && data_size != n
+        {
+            return Err(Rc::SIZE.in_param(2));
         }
         if data_size > MAX_NV_INDEX_SIZE
             || (attributes & attr::WRITEALL != 0 && data_size > NV_BUFFER_MAX)
@@ -434,8 +544,9 @@ impl Tpm {
     }
 
     /// `TPM2_NV_Write` (clause 31.7): `data` at `offset`; `TPM_RC_NV_LOCKED` after the
-    /// authorization when the index is write-locked; `TPM_RC_NV_RANGE` beyond the data area or,
-    /// with `TPMA_NV_WRITEALL`, for a size different from the data area. Sets `WRITTEN`.
+    /// authorization when the index is write-locked; `TPM_RC_ATTRIBUTES` for an index that is not
+    /// ordinary; `TPM_RC_NV_RANGE` beyond the data area or, with `TPMA_NV_WRITEALL`, for a size
+    /// different from the data area. Sets `WRITTEN`.
     pub(crate) fn cmd_nv_write(
         &mut self,
         inv: &Invocation,
@@ -454,6 +565,10 @@ impl Tpm {
         if index.attributes & attr::WRITELOCKED != 0 {
             return Err(Rc::NV_LOCKED);
         }
+        // A counter, a bit field and an extend index change only by their own commands.
+        if index.nt() != nt::ORDINARY {
+            return Err(Rc::ATTRIBUTES);
+        }
         if index.attributes & attr::WRITEALL != 0 && data.len() != index.data.len() {
             return Err(Rc::NV_RANGE);
         }
@@ -461,6 +576,88 @@ impl Tpm {
             return Err(Rc::NV_RANGE);
         }
         index.data[offset..offset + data.len()].copy_from_slice(data);
+        index.attributes |= attr::WRITTEN;
+        Ok(Output::default())
+    }
+
+    /// The index of a counter, extend or bit-field command (`nvIndex` is handle 2): the type
+    /// check comes before the lock check (clauses 31.8.1, 31.9.1, 31.10.1).
+    fn nv_typed_index(&mut self, handle: u32, expected: u32) -> Result<&mut NvIndex, Rc> {
+        let index = self
+            .persistent
+            .nv
+            .get_mut(handle)
+            .ok_or(Rc::HANDLE.in_handle(2))?;
+        if index.nt() != expected {
+            return Err(Rc::ATTRIBUTES);
+        }
+        if index.attributes & attr::WRITELOCKED != 0 {
+            return Err(Rc::NV_LOCKED);
+        }
+        Ok(index)
+    }
+
+    /// `TPM2_NV_Increment` (clause 31.8): the 8-octet counter grows by one; the first increment
+    /// starts from the largest value any counter has had (clause 31.2). `TPM_RC_ATTRIBUTES` for
+    /// an index that is not a counter, `TPM_RC_NV_LOCKED` when write-locked, `TPM_RC_NV_RANGE`
+    /// when the counter cannot grow (NOT VERIFIED: the text does not name this case). Sets
+    /// `WRITTEN`.
+    pub(crate) fn cmd_nv_increment(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.finish()?;
+        let max = self.persistent.nv.counter_max;
+        let index = self.nv_typed_index(inv.handles[1], nt::COUNTER)?;
+        let current = if index.attributes & attr::WRITTEN != 0 {
+            index.value_u64().ok_or(Rc::FAILURE)?
+        } else {
+            max
+        };
+        let next = current.checked_add(1).ok_or(Rc::NV_RANGE)?;
+        index.data.copy_from_slice(&next.to_be_bytes());
+        index.attributes |= attr::WRITTEN;
+        let store = &mut self.persistent.nv;
+        store.counter_max = store.counter_max.max(next);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_NV_Extend` (clause 31.9): `data_new = SHA-256(data_old || data)`, the old value
+    /// being the zero digest while `WRITTEN` is CLEAR (the data area starts as zeros). `data`
+    /// may be any size up to `TPM2B_MAX_NV_BUFFER`. Sets `WRITTEN`.
+    pub(crate) fn cmd_nv_extend(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let data = p.tpm2b(NV_BUFFER_MAX)?;
+        p.finish()?;
+        let index = self.nv_typed_index(inv.handles[1], nt::EXTEND)?;
+        let digest = Sha256::new()
+            .chain_update(&index.data[..])
+            .chain_update(data)
+            .finalize();
+        index.data.copy_from_slice(&digest);
+        index.attributes |= attr::WRITTEN;
+        Ok(Output::default())
+    }
+
+    /// `TPM2_NV_SetBits` (clause 31.10): the 64-bit field is ORed with `bits` (an unwritten
+    /// index counts as all zero, which its data area already is). Sets `WRITTEN`, even when no
+    /// bit changes.
+    pub(crate) fn cmd_nv_set_bits(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let bits = p.u64()?;
+        p.finish()?;
+        let index = self.nv_typed_index(inv.handles[1], nt::BITS)?;
+        let now = index.value_u64().ok_or(Rc::FAILURE)?;
+        index.data.copy_from_slice(&(now | bits).to_be_bytes());
         index.attributes |= attr::WRITTEN;
         Ok(Output::default())
     }

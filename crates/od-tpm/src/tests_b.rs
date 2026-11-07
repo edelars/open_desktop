@@ -83,7 +83,7 @@ pub(super) fn trimmed(v: &[u8]) -> Vec<u8> {
 }
 
 /// KDFa written out here: SP 800-108 counter mode (Part 1, clause 9.4.10.2) for one block.
-fn kdfa_256(key: &[u8], label: &[u8], u: &[u8], v: &[u8]) -> Vec<u8> {
+pub(super) fn kdfa_256(key: &[u8], label: &[u8], u: &[u8], v: &[u8]) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_be_bytes());
     data.extend_from_slice(label);
@@ -955,20 +955,44 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
             Rc::VALUE.in_param(3),
         );
     }
-    // Parameter encryption: AES-128-CFB and XOR(SHA-256).
+    // Parameter encryption (slice C3): AES-128-CFB and XOR(SHA-256) are accepted; every other
+    // `TPMT_SYM_DEF` is refused with parameter number 4.
     let aes = cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0043)]);
     let xor = cat(&[&u16b(0x000A), &u16b(alg::SHA256)]);
     for sym in [&aes[..], &xor[..]] {
+        let r = run(
+            &mut t,
+            start_cmd(
+                NULL,
+                NULL,
+                &ok_params(&[1; 16], &[], se::HMAC, sym, alg::SHA256),
+            ),
+        );
+        ok(&r);
+        ok(&super::tests_obj::flush(
+            &mut t,
+            u32::from_be_bytes([r[10], r[11], r[12], r[13]]),
+        ));
+    }
+    for (sym, expect) in [
+        (
+            cat(&[&u16b(0x0006), &u16b(256), &u16b(0x0043)]),
+            Rc::KEY_SIZE,
+        ),
+        (cat(&[&u16b(0x0006), &u16b(128), &u16b(0x0044)]), Rc::MODE),
+        (cat(&[&u16b(0x000A), &u16b(0x0004)]), Rc::HASH),
+        (u16b(0x0013), Rc::SYMMETRIC),
+    ] {
         err(
             &run(
                 &mut t,
                 start_cmd(
                     NULL,
                     NULL,
-                    &ok_params(&[1; 16], &[], se::HMAC, sym, alg::SHA256),
+                    &ok_params(&[1; 16], &[], se::HMAC, &sym, alg::SHA256),
                 ),
             ),
-            Rc::SYMMETRIC.in_param(4),
+            expect.in_param(4),
         );
     }
     // Hashes: SHA-1, NULL.
@@ -1645,9 +1669,6 @@ fn nv_define_space_errors() {
         attr::OWNERREAD,                 // no write access
         0,                               // neither
         OWNER_RW | attr::PLATFORMCREATE, // owner-defined with PLATFORMCREATE SET
-        OWNER_RW | 0x10,                 // TPM_NT_COUNTER
-        OWNER_RW | 0x20,                 // TPM_NT_BITS
-        OWNER_RW | 0x40,                 // TPM_NT_EXTEND
         OWNER_RW | 0x80,                 // TPM_NT_PIN_FAIL
         OWNER_RW | 0x90,                 // TPM_NT_PIN_PASS
         OWNER_RW | 0x30,                 // reserved TPM_NT
@@ -2310,8 +2331,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 56 commands less EvictControl (0x120).
-    assert_eq!(count, 55);
+    // From 0x121 on: 60 commands less EvictControl (0x120).
+    assert_eq!(count, 59);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))

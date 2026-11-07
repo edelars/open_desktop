@@ -10,8 +10,9 @@
 //!   a hierarchy authorization handle (owner, platform, endorsement, lockout): a bound session,
 //!   `sessionKey = KDFa(sessionAlg, authValue_bind, "ATH", nonceTPM, nonceCaller, bits)`
 //!   (Part 1, clause 17.6.10, Equation 20);
-//! - `authHash` SHA-256, `symmetric` = `TPM_ALG_NULL`: no parameter encryption (the attributes
-//!   `decrypt`/`encrypt` are refused) and no audit.
+//! - `authHash` SHA-256; `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
+//!   `paramenc.rs`: the attributes `decrypt`/`encrypt` need a symmetric algorithm, otherwise
+//!   `TPM_RC_SYMMETRIC`); no audit.
 //!
 //! Authorization HMAC (clause 17.6.5, Equation 17): `authHMAC = HMAC(sessionKey || authValue,
 //! pHash || nonceNewer || nonceOlder || sessionAttributes)` with `pHash` = cpHash for a command
@@ -36,7 +37,7 @@
 //! entity that is neither NULL nor a hierarchy authorization (slice A binds only to those);
 //! `TPM_RC_NONCE` for a `nonceCaller` larger than the session nonce; `TPM_RC_ATTRIBUTES` for the
 //! reserved or audit attribute bits and `TPM_RC_SYMMETRIC` for `decrypt`/`encrypt` (the session
-//! has no symmetric algorithm); `TPM_RC_HANDLE` with the parameter number for a flush handle that
+//! has no symmetric algorithm, `paramenc.rs`); `TPM_RC_HANDLE` with the parameter number for a flush handle that
 //! names no loaded session or object; that the bound-entity test compares the handle and the
 //! authValue (the reference text records "Name and authValue" and, for an NV index, the
 //! authValue as well); that the authValue used in `KDFa` has trailing zeros removed (clause
@@ -50,6 +51,7 @@ use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
 use crate::dispatch::Invocation;
 use crate::hash::{AuthValue, password_matches};
 use crate::marshal::{Reader, Writer, limits};
+use crate::paramenc::SessionSym;
 use crate::policy::PolicyState;
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -102,6 +104,8 @@ pub(crate) struct Session {
     pub kind: SessionKind,
     /// The policy context (`policy.rs`); the initial state for an HMAC session.
     pub policy: PolicyState,
+    /// `symmetric` of `TPM2_StartAuthSession`: how the session encrypts parameters.
+    pub symmetric: SessionSym,
 }
 
 /// Session slots; the handle of slot `n` is `0x02000000 + n` (`HMAC_SESSION_FIRST + n`).
@@ -251,10 +255,8 @@ pub(crate) fn check_hmac_session_attributes(attributes: u8, n: usize) -> Result<
     {
         return Err(Rc::ATTRIBUTES.in_session(num));
     }
-    // Parameter encryption needs a symmetric algorithm in the session; slice A has none.
-    if attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) != 0 {
-        return Err(Rc::SYMMETRIC.in_session(num));
-    }
+    // `decrypt` and `encrypt` are checked against the symmetric algorithm of the session and the
+    // command by the dispatcher (`paramenc.rs`).
     Ok(())
 }
 
@@ -273,12 +275,7 @@ impl Tpm {
         p.set_param(3);
         let session_type = p.u8()?;
         p.set_param(4);
-        let symmetric = p.u16()?;
-        if symmetric != alg::NULL {
-            // AES/XOR/... : parameter encryption is not implemented (the rest of the structure
-            // is not parsed).
-            return Err(Rc::SYMMETRIC.in_param(4));
-        }
+        let symmetric = SessionSym::unmarshal(p)?;
         p.set_param(5);
         let auth_hash = p.u16()?;
         p.finish()?;
@@ -332,6 +329,7 @@ impl Tpm {
                     bound: if kind.is_policy() { None } else { bound },
                     kind,
                     policy: PolicyState::new(),
+                    symmetric,
                 },
                 &reserved,
             )

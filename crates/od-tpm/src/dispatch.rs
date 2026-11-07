@@ -19,7 +19,9 @@
 //! session started by `TPM2_StartAuthSession`. An HMAC authorization is checked against the
 //! cpHash of the command and answered with a response HMAC over the rpHash (`session.rs`).
 //! No other sessions (audit, encrypt-only) are accepted: more sessions than authorized handles is
-//! `TPM_RC_AUTHSIZE`. `TPM2_FlushContext` takes no session at all (`TPM_RC_AUTH_CONTEXT`).
+//! `TPM_RC_AUTHSIZE`. Slice C3: the `decrypt` and `encrypt` attributes of an authorization session
+//! (`paramenc.rs`): the first command parameter is decrypted after the authorization (the cpHash
+//! covers the encrypted bytes), the first response parameter is encrypted before the rpHash. `TPM2_FlushContext` takes no session at all (`TPM_RC_AUTH_CONTEXT`).
 //! NOT VERIFIED against TPM 2.0 Library v185/v184: the Name of a sequence object in a cpHash is
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
@@ -48,6 +50,10 @@ use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
 use crate::object::is_object_hierarchy;
+use crate::paramenc::{
+    SessionSym, apply as apply_param_encryption, first_parameter_is_sized,
+    first_response_parameter_is_sized,
+};
 use crate::pcr::resolve_pcr_handle;
 use crate::response::{Output, Rc, SessionAck, error_response, success_response};
 use crate::session::{
@@ -101,7 +107,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 56] = [
+pub(crate) static COMMANDS: [CommandSpec; 60] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -110,6 +116,9 @@ pub(crate) static COMMANDS: [CommandSpec; 56] = [
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
+    spec(cc::NV_INCREMENT, 2, 1, false, true, false),
+    spec(cc::NV_SET_BITS, 2, 1, false, true, false),
+    spec(cc::NV_EXTEND, 2, 1, false, true, false),
     spec(cc::NV_WRITE, 2, 1, false, true, false),
     spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
     spec(cc::DICTIONARY_ATTACK_LOCK_RESET, 1, 1, false, true, false),
@@ -122,6 +131,7 @@ pub(crate) static COMMANDS: [CommandSpec; 56] = [
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
+    spec(cc::GET_TIME, 2, 2, false, false, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
     spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
     spec(cc::POLICY_SECRET, 2, 1, false, false, false),
@@ -316,8 +326,13 @@ enum SessionUse {
 }
 
 /// Format checks of the sessions (before any authValue is looked at).
-fn classify_sessions(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<Vec<SessionUse>, Rc> {
+fn classify_sessions(
+    tpm: &Tpm,
+    code: u32,
+    sessions: &[TpmsAuthCommand],
+) -> Result<Vec<SessionUse>, Rc> {
     let mut uses: Vec<SessionUse> = Vec::with_capacity(sessions.len());
+    let (mut decrypting, mut encrypting) = (false, false);
     for (i, s) in sessions.iter().enumerate() {
         let n = i + 1;
         let hmac_handle = s.session_handle != handle::RS_PW
@@ -349,6 +364,27 @@ fn classify_sessions(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<Vec<Sess
             .ok_or_else(|| Rc::reference_session(i))?;
         if s.nonce.len() > session.nonce_tpm.len() {
             return Err(Rc::NONCE.in_session(n as u8));
+        }
+        // Parameter encryption (`paramenc.rs`): the session needs a symmetric algorithm, the
+        // command a sized first parameter (response parameter), and only one session of the
+        // command may decrypt and one encrypt.
+        let num = n as u8;
+        if s.attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) != 0
+            && session.symmetric == SessionSym::Null
+        {
+            return Err(Rc::SYMMETRIC.in_session(num));
+        }
+        if s.attributes & session_attr::DECRYPT != 0 {
+            if !first_parameter_is_sized(code) || decrypting {
+                return Err(Rc::ATTRIBUTES.in_session(num));
+            }
+            decrypting = true;
+        }
+        if s.attributes & session_attr::ENCRYPT != 0 {
+            if !first_response_parameter_is_sized(code) || encrypting {
+                return Err(Rc::ATTRIBUTES.in_session(num));
+            }
+            encrypting = true;
         }
         uses.push(SessionUse::Hmac {
             slot,
@@ -412,13 +448,15 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     if sessions.len() > needed {
         return Err(Rc::AUTHSIZE);
     }
-    let mut uses = classify_sessions(tpm, &sessions)?;
+    let mut uses = classify_sessions(tpm, spec.code, &sessions)?;
     let params_start = command.len() - r.remaining();
     let parameters = &command[params_start..];
 
     // Verify every authorization. cpHash is computed once, with the first HMAC or policy
     // session's hash (SHA-256 is the only session hash).
     let mut cp_hash: Option<[u8; DIGEST]> = None;
+    // `authValue` of the entity of each session, for `sessionValue` of parameter encryption.
+    let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
         let admin = admin_role(spec.code, i);
@@ -431,6 +469,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             SessionUse::Password => None,
         };
         let auth = handle_auth(tpm, spec.code, &handles, i, admin, policy_slot.is_some())?;
+        entity_auths.push(Zeroizing::new(auth.as_slice().to_vec()));
         // Dictionary attack protection (`da.rs`): the lockout check comes before the authValue
         // check (Part 3, clause 5.6); a wrong authValue of a DA-protected entity is
         // `TPM_RC_AUTH_FAIL` and counts, of any other `TPM_RC_BAD_AUTH` (Part 1, clause 17.6.8).
@@ -515,9 +554,31 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         new_nonces.push(nonce);
     }
 
+    // Parameter decryption (after the authorization: the cpHash covers the encrypted bytes).
+    let mut plain_params = Zeroizing::new(parameters.to_vec());
+    for (i, s) in sessions.iter().enumerate() {
+        if s.attributes & session_attr::DECRYPT == 0 {
+            continue;
+        }
+        if let SessionUse::Hmac { slot, .. } = &uses[i]
+            && let Some(session) = tpm.sessions.get(*slot)
+        {
+            let mut value = Zeroizing::new(session.key.as_slice().to_vec());
+            value.extend_from_slice(&entity_auths[i]);
+            apply_param_encryption(
+                session.symmetric,
+                &value,
+                &s.nonce,
+                &session.nonce_tpm,
+                &mut plain_params,
+                false,
+            );
+        }
+    }
+
     let inv = Invocation { handles };
-    let mut p = Reader::new(parameters);
-    let out: Output = match spec.code {
+    let mut p = Reader::new(&plain_params);
+    let mut out: Output = match spec.code {
         cc::STARTUP => tpm.cmd_startup(&mut p)?,
         cc::SHUTDOWN => tpm.cmd_shutdown(&mut p)?,
         cc::SELF_TEST => tpm.cmd_self_test(&mut p)?,
@@ -574,9 +635,40 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::HMAC => tpm.cmd_hmac(&inv, &mut p)?,
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
+        cc::GET_TIME => tpm.cmd_get_time(&inv, &mut p)?,
+        cc::NV_INCREMENT => tpm.cmd_nv_increment(&inv, &mut p)?,
+        cc::NV_EXTEND => tpm.cmd_nv_extend(&inv, &mut p)?,
+        cc::NV_SET_BITS => tpm.cmd_nv_set_bits(&inv, &mut p)?,
         // Unreachable while the table and this match agree; a missing arm is the safe answer.
         _ => return Err(Rc::COMMAND_CODE),
     };
+
+    // Response parameter encryption (before the rpHash).
+    for (i, s) in sessions.iter().enumerate() {
+        if s.attributes & session_attr::ENCRYPT == 0 {
+            continue;
+        }
+        if let SessionUse::Hmac { slot, .. } = &uses[i]
+            && let Some(session) = tpm.sessions.get(*slot)
+        {
+            // `sessionValue` for the response uses the authValue as it is AFTER the command, the
+            // same value as the response HMAC (a command that changes the auth of its own
+            // authorization entity returns no parameters, so the order cannot show in a result).
+            // NOT VERIFIED: the text of Part 1, 19.1 does not say at which moment the authValue is
+            // taken for the encryption of a response (VTPM.md, item 59).
+            let now = response_auth(tpm, spec.code, &handles, i);
+            let mut value = Zeroizing::new(session.key.as_slice().to_vec());
+            value.extend_from_slice(now.as_slice());
+            apply_param_encryption(
+                session.symmetric,
+                &value,
+                &new_nonces[i],
+                &s.nonce,
+                &mut out.params,
+                true,
+            );
+        }
+    }
 
     // Acknowledgements; an HMAC session rolls its nonce and, with `continueSession` CLEAR, ends.
     let rp_hash = response_parameter_hash(spec.code, &out.params);
@@ -670,11 +762,19 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
         | cc::RSA_ENCRYPT
         | cc::RSA_DECRYPT
         | cc::ECDH_Z_GEN
-        | cc::HMAC
-        | cc::QUOTE => tpm.check_object_handle(handles[0], 0, false)?,
+        | cc::HMAC => tpm.check_object_handle(handles[0], 0, false)?,
+        // `signHandle` may be `TPM_RH_NULL` (Part 3, clause 18.1: `TPMI_DH_OBJECT+`).
+        cc::QUOTE => check_sign_handle(tpm, handles[0], 0)?,
         cc::CERTIFY => {
             tpm.check_object_handle(handles[0], 0, false)?;
-            tpm.check_object_handle(handles[1], 1, false)?;
+            check_sign_handle(tpm, handles[1], 1)?;
+        }
+        cc::GET_TIME => {
+            // `TPMI_RH_ENDORSEMENT` (Part 3, Table 99): `TPM_RH_ENDORSEMENT` only.
+            if handles[0] != handle::RH_ENDORSEMENT {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+            check_sign_handle(tpm, handles[1], 1)?;
         }
         cc::POLICY_RESTART
         | cc::POLICY_PCR
@@ -702,10 +802,22 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
         | cc::NV_WRITE
         | cc::NV_WRITE_LOCK
         | cc::NV_READ
-        | cc::NV_READ_LOCK => tpm.check_nv_handles(spec.code, handles)?,
+        | cc::NV_READ_LOCK
+        | cc::NV_INCREMENT
+        | cc::NV_EXTEND
+        | cc::NV_SET_BITS => tpm.check_nv_handles(spec.code, handles)?,
         _ => {}
     }
     Ok(())
+}
+
+/// A `signHandle` (`TPMI_DH_OBJECT+`): a loaded object or `TPM_RH_NULL`.
+fn check_sign_handle(tpm: &Tpm, h: u32, idx: usize) -> Result<(), Rc> {
+    if h == handle::RH_NULL {
+        Ok(())
+    } else {
+        tpm.check_object_handle(h, idx, false)
+    }
 }
 
 /// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` (salted sessions
@@ -753,6 +865,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 56);
+        assert_eq!(COMMANDS.len(), 60);
     }
 }

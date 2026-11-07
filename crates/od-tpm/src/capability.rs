@@ -15,8 +15,8 @@
 //! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
-//! ECC, with slice C1 also RSAES, OAEP and ECDH, with slice C2 HMAC (the `TPMA_ALGORITHM` bits follow the type column
-//! of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
+//! ECC, with slice C1 also RSAES, OAEP and ECDH, with slice C2 HMAC, with slice C3 XOR (the
+//! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
 //!
@@ -167,12 +167,15 @@ impl Tpm {
                 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
                 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
                 // are our reading of the "S O" and "E" types.
-                let algs: [(u16, u32); 12] = [
+                let algs: [(u16, u32); 13] = [
                     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
                     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
                     (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
+                    // `TPM_ALG_XOR` (0x000A, "H S" in Table 11): XOR parameter encryption of a session
+                    // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
+                    (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
                     (alg::SHA256, TPMA_ALGORITHM_HASH),
                     (
                         alg::RSASSA,

@@ -16,12 +16,12 @@
 //! protects them. They must not be logged or stored unprotected. Seeds and DRBG state are wiped on
 //! drop and never reach `Debug`.
 //!
-//! Format `ODTPMSTA` version 2 (all integers big-endian):
+//! Format `ODTPMSTA` version 3 (all integers big-endian):
 //!
 //! | offset | size | field |
 //! |---|---|---|
 //! | 0 | 8 | magic `ODTPMSTA` |
-//! | 8 | 2 | format version (2) |
+//! | 8 | 2 | format version (3) |
 //! | 10 | 2 | flags (0; non-zero is rejected) |
 //! | 12 | 4 | payload length `L` (at most 1 MiB) |
 //! | 16 | `L` | payload (layout in `snapshot.rs`) |
@@ -29,7 +29,10 @@
 //!
 //! Version 1 (seeds and counters only, 113 octets of payload) never left the tests; it is rejected
 //! as `UnsupportedVersion(1)` rather than restored into a TPM with silently empty authorization
-//! values and NV (recorded in `docs/specs/VTPM.md`).
+//! values and NV (recorded in `docs/specs/VTPM.md`). Version 2 (slice C1, ordinary NV indices
+//! only, no counter maximum) is rejected as `UnsupportedVersion(2)`: slice C3 added NV counters,
+//! bit fields and extend indices and the persistent counter maximum, and a version-2 snapshot
+//! cannot be read as version 3 without inventing the maximum.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -50,7 +53,7 @@ use crate::snapshot;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written and accepted.
-pub const SNAPSHOT_VERSION: u16 = 2;
+pub const SNAPSHOT_VERSION: u16 = 3;
 /// Header size: magic, version, flags, payload length.
 const HEADER_LEN: usize = 16;
 /// The largest payload `restore` accepts (the real maximum is about 60 KiB: 128 NV indices with
@@ -249,7 +252,7 @@ impl Tpm {
         dispatch::execute(self, locality, command)
     }
 
-    /// Bytes of the persistent state (format `ODTPMSTA` v2). **Sensitive data**: they contain the
+    /// Bytes of the persistent state (format `ODTPMSTA` v3). **Sensitive data**: they contain the
     /// seeds, the authorization values, the NV data and the private keys in clear text (S9-27
     /// protects them); do not log or store them unprotected. In the unreachable case that a
     /// private part cannot be marshaled the result is empty, which `restore` rejects.
@@ -357,10 +360,11 @@ mod tests {
         t.persistent.orderly = false;
         let bytes = t.persistent_snapshot();
         // 113 octets of seeds and counters, 3 empty auth values (3), hierarchy flags (1), DA (17),
-        // NV count (2), object count (1): 137 octets of payload for an empty TPM.
-        assert_eq!(bytes.len(), HEADER_LEN + 137 + 32);
+        // NV count (2), NV counter maximum (8), object count (1): 145 octets of payload for an
+        // empty TPM.
+        assert_eq!(bytes.len(), HEADER_LEN + 145 + 32);
         assert_eq!(&bytes[..8], b"ODTPMSTA");
-        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 2);
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 3);
         let r = Tpm::restore(&bytes, &[9u8; 48]).unwrap();
         assert_eq!(r.persistent.clock_base_ms, 1500);
         assert_eq!(r.persistent.reset_count, 4);
@@ -393,7 +397,7 @@ mod tests {
         b[0] ^= 1;
         assert_eq!(Tpm::restore(&b, &e).unwrap_err(), StateError::BadMagic);
         // The former version 1 and a future version are refused, whatever the rest looks like.
-        for v in [1u8, 3] {
+        for v in [1u8, 2, 4] {
             let mut b = bytes.clone();
             b[9] = v;
             assert_eq!(

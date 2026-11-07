@@ -65,6 +65,7 @@ use crate::marshal::{Reader, TpmtPublic, Writer, limits};
 use crate::object::{
     Object, Sensitive, aes128_cfb, name_of, sensitive_from_bytes, sensitive_to_bytes,
 };
+use crate::paramenc::SessionSym;
 use crate::policy::PolicyState;
 use crate::response::{Output, Rc};
 use crate::session::{BoundEntity, Session, SessionKind, session_handle};
@@ -351,6 +352,7 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
         None => w.u8(0),
     }
     w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1));
+    w.u8(s.symmetric.to_octet());
     Zeroizing::new(w.buf)
 }
 
@@ -399,6 +401,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     }
     policy.auth_value_needed = flags & 1 != 0;
     policy.password_needed = flags & 2 != 0;
+    let symmetric = SessionSym::from_octet(r.u8()?).ok_or(Rc::VALUE)?;
     r.finish()?;
     Ok(Session {
         nonce_tpm,
@@ -406,6 +409,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         bound,
         kind,
         policy,
+        symmetric,
     })
 }
 

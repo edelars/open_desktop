@@ -46,7 +46,7 @@ const V_SECRET_OWNER: &str = "9586343a9dc675ef35af0f7d375bf6554fd161bee76216eb67
 /// Python: PolicyAuthValue then PolicyCommandCode(TPM2_Sign).
 const V_AV_THEN_CC_SIGN: &str = "d9979a6b278c1d135ce124837caf9de446d714718eee9e3620b58c80a043a953";
 
-fn h256(parts: &[&[u8]]) -> Vec<u8> {
+pub(super) fn h256(parts: &[&[u8]]) -> Vec<u8> {
     let mut h = Sha256::new();
     for p in parts {
         h.update(p);
@@ -93,7 +93,7 @@ fn pol_or(t: &mut Tpm, s: &Hs, list: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Selection of PCR 0 and PCR 4 in the SHA-256 bank.
-fn sel04() -> Vec<u8> {
+pub(super) fn sel04() -> Vec<u8> {
     hex("00000001000b03110000")
 }
 
@@ -120,7 +120,7 @@ fn use_session(t: &mut Tpm, s: &mut Hs, c: &Hc, nh: usize, empty: bool, corrupt:
 }
 
 /// Creates and loads a child; `(handle, name, public)`.
-fn make_child(
+pub(super) fn make_child(
     t: &mut Tpm,
     parent: u32,
     public: &TpmtPublic,
@@ -936,7 +936,7 @@ fn certify_two_sessions(p: &Hs, c: &Hc, empty: bool) -> Vec<u8> {
     frame(st::SESSIONS, c.code, &c.handles, &auth, &c.params)
 }
 
-fn parse_attestation(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn parse_attestation(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut rd = Reader::new(params(resp, 0));
     let attest = rd.tpm2b(1024).unwrap().to_vec();
     let rest = rd.bytes(rd.remaining()).unwrap().to_vec();
@@ -1229,7 +1229,7 @@ fn hmac_key_templates_are_checked() {
 // ------------------------------------------------------------------------------- attestation
 
 /// `TPMS_ATTEST` assembled byte by byte from Part 2 v184, Table 151.
-fn attest_bytes(
+pub(super) fn attest_bytes(
     ty: u16,
     qn: &[u8],
     extra: &[u8],
@@ -1251,13 +1251,13 @@ fn attest_bytes(
     ])
 }
 
-const FIRMWARE: u64 = 0x0001_0000_0000_0000;
+pub(super) const FIRMWARE: u64 = 0x0001_0000_0000_0000;
 
-fn qualified(parent: u32, name: &[u8]) -> Vec<u8> {
+pub(super) fn qualified(parent: u32, name: &[u8]) -> Vec<u8> {
     cat(&[&u16b(alg::SHA256), &h256(&[&u32b(parent), name])])
 }
 
-fn quote(
+pub(super) fn quote(
     t: &mut Tpm,
     key: u32,
     pw: &[u8],
@@ -1276,7 +1276,7 @@ fn quote(
     )
 }
 
-fn certify(
+pub(super) fn certify(
     t: &mut Tpm,
     obj: u32,
     key: u32,
@@ -1299,7 +1299,7 @@ fn quote_attested() -> Vec<u8> {
     cat(&[&sel04(), &tpm2b(&hex(V_PCR_DIGEST))])
 }
 
-fn ecdsa_parts(sig: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn ecdsa_parts(sig: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut rd = Reader::new(sig);
     assert_eq!(rd.u16().unwrap(), alg::ECDSA);
     assert_eq!(rd.u16().unwrap(), alg::SHA256);
@@ -1392,7 +1392,7 @@ fn quote_signs_the_attest_structure_and_the_signature_verifies() {
     assert!(a3.ends_with(&cat(&[&hex("00000000"), &tpm2b(&hex(SHA256_EMPTY))])));
 }
 
-fn hexs(b: &[u8]) -> String {
+pub(super) fn hexs(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

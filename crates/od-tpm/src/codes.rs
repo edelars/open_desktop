@@ -15,6 +15,10 @@ pub mod cc {
     /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
+    pub const GET_TIME: u32 = 0x0000_014C;
+    pub const NV_INCREMENT: u32 = 0x0000_0134;
+    pub const NV_SET_BITS: u32 = 0x0000_0135;
+    pub const NV_EXTEND: u32 = 0x0000_0136;
     pub const POLICY_SECRET: u32 = 0x0000_0151;
     pub const HMAC: u32 = 0x0000_0155;
     pub const QUOTE: u32 = 0x0000_0158;
@@ -81,9 +85,11 @@ pub mod st {
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
     pub const HASHCHECK: u16 = 0x8024;
-    /// Attestation structure tags (Table 23): `TPM2_Certify` and `TPM2_Quote`.
+    /// Attestation structure tags (Table 23): `TPM2_Certify`, `TPM2_Quote` and `TPM2_GetTime`.
     pub const ATTEST_CERTIFY: u16 = 0x8017;
     pub const ATTEST_QUOTE: u16 = 0x8018;
+    /// `TPM2_GetTime` (Table 23).
+    pub const ATTEST_TIME: u16 = 0x8019;
     /// Ticket tag of `TPM2_PolicySecret` (Table 23).
     pub const AUTH_SECRET: u16 = 0x8023;
 }
@@ -175,6 +181,8 @@ pub mod alg {
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;
     pub const CFB: u16 = 0x0043;
+    /// `TPM_ALG_XOR`: the XOR obfuscation of parameters (`TPMT_SYM_DEF` of a session).
+    pub const XOR: u16 = 0x000A;
 }
 
 /// Table 12 (v184): `TPM_ECC_CURVE`.

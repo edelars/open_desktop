@@ -1,6 +1,6 @@
-//! The payload codec of the persistent-state snapshot `ODTPMSTA` version 2 (slice C1 of phase B,
-//! S7-23). The header, the SHA-256 check and the public entry points are in `state.rs`; the layout
-//! of the whole snapshot is documented there.
+//! The payload codec of the persistent-state snapshot `ODTPMSTA` version 3 (slice C1 of phase B,
+//! S7-23, introduced version 2; slice C3 raised it to 3). The header, the SHA-256 check and the
+//! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
 //! **Sensitive data.** The payload holds the hierarchy seeds, the authorization values of the
 //! owner, the endorsement and the lockout hierarchies, the authorization values and the data of the
@@ -25,13 +25,22 @@
 //! | `ownerAuth`, `endorsementAuth`, `lockoutAuth` (`lv8`, at most 32 octets each) | variable |
 //! | hierarchy flags (u8: bit 0 `ownerAuthSet`, 1 `endorsementAuthSet`, 2 `lockoutAuthSet`, 3 `disableClear`; others zero) | 1 |
 //! | DA: `failedTries`, `maxTries`, `recoveryTime`, `lockoutRecovery` (u32 each), `lockoutAuth` enabled (u8: 0/1) | 17 |
-//! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16), attributes (u32), `authPolicy` (`lv8`), `authValue` (`lv8`), data (`lv16`) | variable |
+//! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16), attributes (u32; bits 7:4 are `TPM_NT`: ordinary, counter, bit field or extend), `authPolicy` (`lv8`), `authValue` (`lv8`), data (`lv16`) | variable |
+//! | NV counter maximum: the largest value any counter has had (u64, slice C3) | 8 |
 //! | persistent objects: count (u8, at most 16), then per object: handle (u32), hierarchy (u32), `TPMT_PUBLIC` (`lv16`), Qualified Name (`lv8`), marshaled `TPM2B_SENSITIVE` (`lv16`) | variable |
 //!
 //! `decode` rejects, with `StateError::BadField`, a field that is out of range or inconsistent
 //! (a length above its limit, a duplicate or foreign handle, a handle outside the range of its
 //! hierarchy, a public area that does not unmarshal, a private part that does not belong to the
-//! public area, trailing octets); a truncated payload is `StateError::BadLength`.
+//! public area, trailing octets); a truncated payload is `StateError::BadLength`. An NV index must
+//! be consistent with its type (`TPM_NT` supported, size 8 for a counter or bit field and 32 for an
+//! extend index, no reserved or unsupported attribute, data zero while `WRITTEN` is CLEAR) and a
+//! written counter may not exceed the stored maximum (`NvStore::from_indices`).
+//!
+//! **Version history.** Version 2 (slice C1) had no counter maximum and only ordinary indices; it
+//! is refused as `UnsupportedVersion(2)` and never restored with silently empty state. The refusal
+//! is a choice, not a necessity: version 2 held no counters, so `counter_max` = 0 would have been
+//! exact; refusing was chosen so that an old format is not read implicitly.
 
 use zeroize::Zeroizing;
 
@@ -207,6 +216,7 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         e.lv8(i.auth.as_slice());
         e.lv16(&i.data);
     }
+    e.u64(p.nv.counter_max());
 
     let objects = p.objects.sorted();
     e.u8(objects.len() as u8);
@@ -302,7 +312,8 @@ fn decode_inner(payload: &[u8]) -> Result<Persistent, Bad> {
             data: Zeroizing::new(data.to_vec()),
         });
     }
-    let nv = NvStore::from_indices(indices).ok_or(Bad::Field)?;
+    let counter_max = c.u64().ok_or(Bad::Short)?;
+    let nv = NvStore::from_indices(indices, counter_max).ok_or(Bad::Field)?;
 
     let object_count = usize::from(c.u8().ok_or(Bad::Short)?);
     if object_count > MAX_PERSISTENT {

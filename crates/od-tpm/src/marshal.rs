@@ -939,11 +939,14 @@ pub enum TpmtSignature {
     Rsassa { hash: u16, sig: Vec<u8> },
     /// `TPMS_SIGNATURE_ECC`: hash, `signatureR`, `signatureS`.
     Ecdsa { hash: u16, r: Vec<u8>, s: Vec<u8> },
+    /// The NULL signature of an attestation with `signHandle` `TPM_RH_NULL`: `sigAlg` only.
+    Null,
 }
 
 impl TpmtSignature {
     pub fn marshal(&self, w: &mut Writer) {
         match self {
+            TpmtSignature::Null => w.u16(alg::NULL),
             TpmtSignature::Rsassa { hash, sig } => {
                 w.u16(alg::RSASSA);
                 w.u16(*hash);
