@@ -55,9 +55,9 @@ pub use paged_exception_delivery::{
     PagedExceptionDeliveryReport, PagedExceptionHandlerEntryReport,
     PagedExceptionStackDiscardReport, PagedIretqStepReport, PagedSyscallStepReport,
     PagedUserReturnReport, deliver_and_step_paged_pf_handler, deliver_paged_page_fault,
-    run_paged_syscall_roundtrip, step_paged_cr0_wp_mov, step_paged_cr0_wp_page_table_repair_mov,
-    step_paged_exception_stack_discard, step_paged_iretq, step_paged_iretq_and_user_load,
-    step_paged_syscall_profile,
+    run_paged_syscall_roundtrip, step_paged_cpl3_mov, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_exception_stack_discard, step_paged_iretq,
+    step_paged_iretq_and_user_load, step_paged_iretq_to_cpl3, step_paged_syscall_profile,
 };
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,

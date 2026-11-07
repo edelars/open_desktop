@@ -2157,6 +2157,7 @@ pub struct PioU8Result<E> {
 pub enum PagedProbeRejection {
     InvalidRflagsDefined { value: u64 },
     ResumeFlagSet,
+    UserMovFlagsOutsideProfile,
     WrongMode,
     WrongPrivilege,
     ControlRegistersMissing,
@@ -16753,6 +16754,7 @@ pub fn step_paged_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16930,6 +16932,7 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
     step_paged_probe_inner(
         false,
         false,
+        false,
         true,
         false,
         false,
@@ -16958,6 +16961,7 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
+        false,
         false,
         false,
         false,
@@ -17230,6 +17234,7 @@ pub fn step_paged_cr0_wp_mov(
         false,
         false,
         false,
+        false,
         true,
         false,
         false,
@@ -17261,7 +17266,43 @@ pub fn step_paged_cpl3_load(
         }
     }
     step_paged_probe_inner(
+        false,
         true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute either exact CPL3 qword MOV using CPU-owned paging controls.
+pub fn step_paged_cpl3_mov(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+    }
+    step_paged_probe_inner(
+        true,
+        false,
         false,
         false,
         true,
@@ -17301,6 +17342,7 @@ pub fn step_mov_cr0_wp(
         false,
         false,
         false,
+        false,
         true,
         true,
         true,
@@ -17326,6 +17368,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
         false,
+        false,
         true,
         false,
         false,
@@ -17341,6 +17384,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
 }
 
 fn step_paged_probe_inner<P: crate::PortIo>(
+    user_mov: bool,
     user_load_only: bool,
     allow_stack_forms: bool,
     allow_cr3: bool,
@@ -17377,6 +17421,12 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
+    if user_mov && context.privilege != PrivilegeLevel::Ring3 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if user_mov && state.cr0 != Some(Cr0Profile::BASE) {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
     if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
@@ -17395,6 +17445,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
     } else if allow_cr0_wp {
         efer == 0xd00
+            && (!user_mov || state.cr0 == Some(Cr0Profile::BASE))
             && state
                 .cr3
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
@@ -17428,8 +17479,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
-    if ((allow_cr3 || (allow_cr0_wp && !user_load_only)) && state.rip & 0xfff >= 0xff2)
-        || (user_load_only && state.rip & 0xfff > 0xffd)
+    if user_mov && state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
+        return reject(PagedProbeRejection::UserMovFlagsOutsideProfile);
+    }
+    if ((allow_cr3 || (allow_cr0_wp && !user_load_only && !user_mov)) && state.rip & 0xfff >= 0xff2)
+        || ((user_load_only || user_mov) && state.rip & 0xfff > 0xffd)
     {
         return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
     }
@@ -17440,11 +17494,16 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     };
     // Admit the exact three-byte form before invoking the general decoder.  Replay
     // the captured bytes so guest fetches and their side effects occur only once.
-    let decoded = if user_load_only {
+    let decoded = if user_load_only || user_mov {
         let mut captured = FetchCapture::new(memory);
-        for (offset, expected) in [0x48, 0x8b, 0x03].into_iter().enumerate() {
+        let mut opcode = 0;
+        for offset in 0..3 {
             match captured.fetch(state.rip.wrapping_add(offset as u64), context) {
-                Ok(byte) if byte == expected => {}
+                Ok(byte) if offset == 0 && byte == 0x48 => {}
+                Ok(byte) if offset == 1 && (byte == 0x8b || (user_mov && byte == 0x89)) => {
+                    opcode = byte;
+                }
+                Ok(byte) if offset == 2 && byte == if opcode == 0x8b { 0x03 } else { 0x0b } => {}
                 Ok(byte) => return result(PagedProbeExit::Unsupported { opcode: byte }, 0),
                 Err(MemoryError::Architectural(fault)) => {
                     return result(PagedProbeExit::Fault(fault), 0);
@@ -17552,6 +17611,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     }
     if allow_cr0_wp
         && !user_load_only
+        && !user_mov
         && context.privilege != PrivilegeLevel::Ring0
         && is_paged_mov_instruction(&instruction)
     {
@@ -17670,6 +17730,15 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
+            if user_mov && state.gpr[Register::Rbx as usize] & 0xfff > 0xff8 {
+                return result(
+                    PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                        address: state.gpr[Register::Rbx as usize],
+                        length: 8,
+                    }),
+                    0,
+                );
+            }
             if allow_cr0_wp {
                 state.rflags &= !(1 << 16);
             }
@@ -17711,8 +17780,17 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
-            if allow_cr0_wp && context.privilege != PrivilegeLevel::Ring0 {
+            if allow_cr0_wp && !user_mov && context.privilege != PrivilegeLevel::Ring0 {
                 return reject(PagedProbeRejection::WrongPrivilege);
+            }
+            if user_mov && state.gpr[Register::Rbx as usize] & 0xfff > 0xff8 {
+                return result(
+                    PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                        address: state.gpr[Register::Rbx as usize],
+                        length: 8,
+                    }),
+                    0,
+                );
             }
             let start = if allow_cr0_wp {
                 match destination.linear_address_48(state, next_rip) {
@@ -149965,6 +150043,168 @@ mod paged_cr0_wp_probe_tests {
             sti_shadow: Some(crate::StiShadow::Clear),
             rflags: 0x8d7,
             ..LongModeState::default()
+        }
+    }
+
+    #[test]
+    fn cpl3_mov_store_load_and_flag_admission() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b, 0x48, 0x8b, 0x03]);
+        for expected_rip in [3, 6] {
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, expected_rip);
+        }
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_def0);
+        assert_eq!(&memory.bytes[..8], &0x1234_5678_9abc_def0u64.to_le_bytes());
+        let mut wp_cleared = make_state(Cr0Profile::BASE & !(1 << 16));
+        let mut wp_memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let rejected = step_paged_cpl3_mov(
+            &mut wp_cleared,
+            &mut wp_memory,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            rejected.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(wp_memory.fetches.is_empty());
+        for flag in [1 << 8, 1 << 16, 1 << 18] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= flag;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::UserMovFlagsOutsideProfile)
+            );
+            assert!(memory.fetches.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn cpl3_mov_rejects_crossing_before_noncanonicality_for_both_forms() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let address = 0x0000_8000_0000_0ff9;
+        for code in [&[0x48, 0x89, 0x0b][..], &[0x48, 0x8b, 0x03][..]] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_cpl3_mov(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                    address,
+                    length: 8
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn cpl3_mov_entry_rejects_unlisted_store_encoding() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x03]);
+        let result = step_paged_cpl3_mov(
+            &mut state,
+            &mut memory,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn cpl3_mov_respects_single_page_boundaries() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        for code in [&[0x48, 0x89, 0x0b][..], &[0x48, 0x8b, 0x03][..]] {
+            for crossing in [false, true] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rip = if crossing { 0xffe } else { 0xffd };
+                state.gpr[Register::Rbx as usize] = 0x1000;
+                let mut memory = Memory::at(code, state.rip);
+                let result = step_paged_cpl3_mov(
+                    &mut state,
+                    &mut memory,
+                    context,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(matches!(result.exit, PagedProbeExit::Retired), !crossing);
+                if crossing {
+                    assert!(memory.fetches.is_empty());
+                }
+            }
+            for crossing in [false, true] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.gpr[Register::Rbx as usize] = if crossing { 0x1ff9 } else { 0x1ff8 };
+                let mut memory = Memory::new(code);
+                memory.data_base = 0x1ff8;
+                let result = step_paged_cpl3_mov(
+                    &mut state,
+                    &mut memory,
+                    context,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(matches!(result.exit, PagedProbeExit::Retired), !crossing);
+                if crossing {
+                    assert!(memory.accesses.is_empty());
+                }
+            }
         }
     }
 

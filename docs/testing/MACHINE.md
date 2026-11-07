@@ -745,3 +745,42 @@ delivery from CPL3 and Linux boot remain outside this slice. See the
 [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c).
+
+<a id="s4-20d-paged-cpl3-mov-store-load-after-iretq"></a>
+
+## S4-20d: paged CPL3 MOV store/load after IRETQ
+
+The end-to-end sequence performs paged IRETQ, the accepted S4-20b user load,
+then exact `48 89 0B` store and `48 8B 03` reload. The nonce is different from
+initial data. Checks cover separate retirement and RIP progression, CPL3
+selector caches, unchanged RSP/CR3, one operand write, and the nonce in RAX.
+The legacy load-only entry still rejects the store encoding.
+
+The system target tests user RO and supervisor-only stores with PFEC `0x07`,
+supervisor-only read `0x05`, supervisor-only fetch on every page-table level
+and NX fetch `0x15`, non-present instruction fetch `0x14`, and non-present
+read/store `0x04`/`0x06`. It checks exact CR2/saved RIP, no retirement or
+operand/D write on faults, and physical backend failure as `OperandPhysical`.
+A clean first user fetch-fault fixture independently checks expected A-bit PTE
+values and ordered callback ranges. Exact A/D readbacks and callback order are
+also checked for non-present data and store-fault paths. Supervisor-only read
+and late non-present fetch cases verify fault records and retention of earlier
+committed effects without a separate exact A/D/callback assertion.
+
+Run the focused ISA group, full machine-system target and affected machine
+check:
+
+```sh
+cargo test -p od-isa --lib cpl3_ --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+cargo check -p od-machine --all-targets --offline
+```
+
+All 9 matching ISA tests and 35 system tests passed, as did formatting, the
+machine all-target check and `git diff --check`. Graphify was updated after
+code changes (27,540 nodes, 69,099 edges). Independent Sol/high review accepted
+the slice with no P0–P3 findings. Live TF/RF/AC, cross-page accesses, privileged
+instructions, invalid-selector IRETQ and CPL3 exception delivery remain outside
+this slice. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d).

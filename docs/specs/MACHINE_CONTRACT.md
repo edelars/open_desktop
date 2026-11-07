@@ -1437,6 +1437,47 @@ by the fixture. See the [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md)
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
 
+<a id="paged-cpl3-mov-store-load-after-iretq-s4-20d"></a>
+
+## Paged CPL3 MOV store/load after IRETQ (S4-20d)
+
+`step_paged_cpl3_mov` is a separate opt-in entry for exact `48 89 0B`
+(`MOV [RBX],RCX`) and `48 8B 03` (`MOV RAX,[RBX]`). It preserves the existing
+load-only `step_paged_cpl3_load` contract. The entry derives CPL from the
+committed CS selector/cache and CR3 from `LongModeState`; it takes no alternate
+privilege or address-space input and does not require syscall MSRs.
+
+The accepted sequence is paged IRETQ to CPL3, the existing S4-20b user load,
+then the new store and reload. The machine uses the established Long64,
+canonical48, physical36, four-level 4 KiB profile (`CR0=0x80010033`, `CR4=0x20`,
+`EFER=0xd00`). Live TF, RF, and AC must be clear before fetch. Each exact
+three-byte instruction and qword operand fits within one guest page. For both
+MOV forms, after fetch/decode the profile checks qword page crossing before
+canonicality; a combined crossing/noncanonical address returns
+`Rejected(CrossPageOperand)` without operand access. Fetch already occurred
+and may have committed page-walk A updates. This order applies only to the new
+opt-in entry; the load-only entry and its page-aware adapter retain their
+previous behavior.
+
+The positive fixture stores RCX's nonce to user RW data and reads it back into
+RAX. Protection cases distinguish user RO and supervisor-only store #PF
+(`PFEC=0x07`), supervisor-only read (`0x05`), supervisor-only or NX fetch
+(`0x15`), non-present user instruction fetch (`0x14`), and non-present user
+read/store (`0x04`/`0x06`, NXE=1). The four-level matrices verify U/S and R/W
+effects, CR2 and saved RIP. Exact A/D PTE values and callback order are checked
+for the first user fetch-fault, non-present data, and store-fault paths;
+supervisor-only read and late non-present fetch paths check the fault record
+and prior committed effects. Protection faults do not write the operand or set
+D. Backend physical-store failure remains
+`OperandPhysical` and distinct from guest #PF. Earlier IRETQ, load, and store
+commits remain visible after a later fault.
+
+This slice does not add general CPL3 exception delivery, privileged-instruction
+#GP/#UD behavior, invalid-selector IRETQ classification, cross-page accesses,
+or Linux boot. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

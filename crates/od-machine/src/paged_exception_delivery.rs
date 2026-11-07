@@ -256,6 +256,57 @@ pub fn step_paged_iretq(
     })
 }
 
+/// Commit a paged CPL0→CPL3 IRETQ without performing a CPL3 memory access.
+pub fn step_paged_iretq_to_cpl3(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedIretqStepReport, PagedExceptionDeliveryError> {
+    let cr3 = state.cr3.ok_or(PagedExceptionDeliveryError::Configuration(
+        ProbeConfigError::MissingCpuRegister { register: "CR3" },
+    ))?;
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, 0xd00)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let context = AccessContext {
+        mode: od_isa::memory::InstructionMode::Long64,
+        privilege: od_isa::memory::PrivilegeLevel::Ring0,
+        origin: od_isa::memory::AccessOrigin::Explicit,
+    };
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let mut defined = rflags_defined;
+    let cpu = od_isa::iretq::step_paged_iretq_to_cpl3(
+        od_isa::iretq::PagedCpl0ToCpl3V1,
+        od_isa::cpuid::CpuidProfile::DiagnosticV1,
+        state,
+        &mut memory,
+        context,
+        &mut defined,
+        0xd00,
+    );
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedIretqStepReport {
+        cpu,
+        rflags_defined: defined,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
 /// The committed return and subsequent user instruction have separate outcomes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedUserReturnReport {
@@ -351,6 +402,57 @@ pub fn step_paged_iretq_and_user_load(
     Ok(PagedUserReturnReport {
         iretq,
         mov: Some(mov),
+    })
+}
+
+/// Step one exact user MOV with privilege and CR3 taken from committed CPU state.
+pub fn step_paged_cpl3_mov(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedCr0WpMovStepReport, PagedExceptionDeliveryError> {
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    let cr3 = state.cr3.ok_or(PagedExceptionDeliveryError::Configuration(
+        ProbeConfigError::MissingCpuRegister { register: "CR3" },
+    ))?;
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, 0xd00)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let valid_cs = state.cs_selector.is_some_and(|s| s & !7 != 0 && s & 7 == 3)
+        && state.cs_cache.is_some_and(|c| {
+            c.access == 0xfb && c.flags == 0xa && c.base == 0 && c.limit == u32::MAX
+        });
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: if valid_cs {
+            PrivilegeLevel::Ring3
+        } else {
+            PrivilegeLevel::Ring0
+        },
+        origin: AccessOrigin::Explicit,
+    };
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let cpu =
+        od_isa::execute::step_paged_cpl3_mov(state, &mut memory, context, 0xd00, rflags_defined);
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedCr0WpMovStepReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
     })
 }
 

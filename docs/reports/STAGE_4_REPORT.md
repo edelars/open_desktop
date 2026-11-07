@@ -25,6 +25,13 @@ no remaining P0–P3 findings. Its exact scope, checks and limitations are in th
 [JSON evidence](data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json).
 Parent S4-20 and Stage 4 remain open.
 
+S4-20d adds a bounded CPL3 paged store→load path after the accepted IRETQ and
+load, with tracked user/supervisor write protection and exact fault evidence.
+It is accepted after independent review with no P0–P3 findings. See the
+[S4-20d report](STAGE_4_S4-20D_2026-11-06.md) and
+[JSON evidence](data/stage4/s4-20d-paged-cpl3-store-load-2026-11-06.json).
+Parent S4-20 and Stage 4 remain open.
+
 ## S4-32a: reproducible freestanding flat probe
 
 The accepted bounded S4-32a slice adds a real assembly/linker fixture, a strict

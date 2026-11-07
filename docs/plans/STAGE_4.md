@@ -1102,6 +1102,52 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   [machine contract](../specs/MACHINE_CONTRACT.md#paged-syscall-kernel-store-sysretq-and-user-load-s4-20c) и
   [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
 
+#### S4-20d. CPL3 paged store → load после IRETQ
+
+- [x] Ограниченный срез принят после независимого Sol/high review без
+  замечаний P0–P3; родительский S4-20 и Stage 4 остаются открытыми.
+- **Профиль:** Long64, canonical48, physical36, 4 KiB, четырёхуровневые
+  таблицы, `CR0=0x80010033`, `CR4=0x20`, `EFER=0xd00`, один running CPU.
+  Новый opt-in вход выводит CPL из committed CS, CR3 — из CPU; не требует
+  syscall MSR и не меняет прежний load-only контракт. Текущие TF, RF и AC
+  должны быть очищены до fetch; инструкция и qword operand находятся каждый
+  целиком в одной странице. Для обеих форм сначала после fetch/decode проверяется
+  пересечение qword с границей страницы по исходному RBX; только затем проверяется
+  canonicality. При одновременном crossing и noncanonical адресе результат —
+  `Rejected(CrossPageOperand)` без доступа к операнду; предшествующий fetch
+  мог уже обновить A bits. Этот порядок относится только к новому opt-in входу;
+  legacy load-only entry и его page-aware adapter сохраняют прежнее поведение.
+  Новый вход также
+  отклоняет остальные store-кодировки до доступа к операнду.
+- **Сценарий:** принятый paged IRETQ выполняет существующий S4-20b `48 8B 03`
+  load. Затем новый entry отдельно исполняет `48 89 0B` (запись RCX в `[RBX]`)
+  и `48 8B 03` (повторное чтение в RAX). Nonce отличается от исходной памяти;
+  каждый MOV имеет отдельное retirement; после каждого шага сохраняются CPL3,
+  CS/SS, RSP и CR3. Следующая ошибка не откатывает завершённые переход или
+  запись.
+- **Приёмка:** tracked paging и фактическая запись/чтение nonce; user RO store
+  и supervisor-only store дают #PF PFEC `0x07`, supervisor-only read — `0x05`;
+  supervisor-only instruction fetch на каждом из четырёх уровней и NX fetch дают
+  PFEC `0x15`; nonpresent user data read/store дают соответственно `0x04`/`0x06`,
+  а nonpresent user instruction fetch — `0x14`.
+  Для fetch-fault матрицы IRETQ завершается отдельным machine entry без user
+  access; новый CPL3 MOV является первой пользовательской выборкой, и все его
+  PTE A bits проверяются очищенными до шага. Проверить независимо заданные
+  ordered callbacks и полные PTE A/D readbacks для первого fetch, nonpresent
+  data и store-fault cases;
+  защита не записывает операнд и не устанавливает D. Physical backend store
+  abort подтверждается как `OperandPhysical` с точным GPA. Проверить границы
+  одной страницы, ограничение flags и сохранение ранее выполненных эффектов.
+- **Граница:** общие debug/alignment-check semantics, межстраничные обращения,
+  privileged instructions, invalid-selector IRETQ и доставка исключений CPL3
+  остаются за пределами среза.
+- **Основа:** Intel SDM revision 093, Vol. 3A §§5.6–5.7
+  ([Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+- **Результат:** [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20d-paged-cpl3-store-load-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d) и
+  [verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
+
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.
