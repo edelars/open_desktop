@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>
+
+### ISSUE-064 — Selected `rsa` crate has no constant-time private operations (RUSTSEC-2023-0071)
+
+- **Дата обнаружения:** 2026-11-07.
+- **Компонент:** будущий `crates/od-tpm/` (приватные RSA-операции фазы B, S7-23); выбор зависимости — [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md#условие-d9-о-constant-time-rsa).
+- **Статус:** открыта, принятый риск по решению владельца D9 ([план этапа 7, §1.1](plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)). Кода, использующего `rsa`, ещё нет.
+- **Суть и последствия:** D9 требует для приватных операций RSA на host версию `rsa` с constant-time арифметикой. На 2026-11-07 такой версии нет: последняя стабильная `0.9.10`, предрелиз `0.10.0-rc.22`; advisory RUSTSEC-2023-0071 (Marvin, утечка приватного ключа по времени) имеет `patched = []`. Выбран `=0.10.0-rc.22`. Затронуты `TPM2_Sign`, `RSA_Decrypt`, salted `StartAuthSession`, `ActivateCredential`, `Import` с RSA-ключами; гостевой код может наблюдать время их исполнения. Проверка подписи в прошивке (операция с открытым ключом) не затронута.
+- **Основание:** `rustsec/advisory-db`, `crates/rsa/RUSTSEC-2023-0071.md` (прочитан 2026-11-07): «Still affected as of 2026-09-12: rsa 0.9.10 (latest stable) and rsa 0.10.0-rc.18»; README `rsa 0.10.0-rc.22` ссылается на продолжающуюся работу по constant-time hardening; версии — crates.io API.
+- **Следующий шаг:** S7-23 записывает в `VTPM.md`, какие команды используют приватный RSA, и не заявляет стойкость к timing-атакам. Закрыть, когда advisory получит `patched` или выйдет версия с подтверждённой constant-time реализацией: обновить версию в ADR-0009 и `Cargo.toml` с ревью.
+
 <a id="issue-063-s4-secondary-page-fault-requires-double-fault-delivery"></a>
 
 ### ISSUE-063 — Secondary page fault during exception delivery is terminal
