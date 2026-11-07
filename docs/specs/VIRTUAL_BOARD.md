@@ -37,6 +37,12 @@ privilege matrix: IOPL/TSS, остальные widths/forms, IRQ4 и маршр�
 APIC/IOAPIC остаются открытыми. Поэтому целевой Linux serial console и полная
 16550A совместимость не подтверждены.
 
+Для S4-25a добавлен отдельный one-CPU fixed-edge Local APIC device по xAPIC
+MMIO base `0xFEE00000` с APIC ID 0. Это пока самостоятельный `MachineBus`
+device slice: default board manifest/wiring, APIC-base MSR, version/LVT,
+IOAPIC routes, timer и CPU interrupt delivery не реализованы. Он не меняет
+описание Linux discovery или объявленный APIC-профиль гостю.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

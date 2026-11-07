@@ -1227,6 +1227,36 @@ Dispatch remains bounded and caller-driven. HLT wakeup, IRQ/APIC, periodic
 timers, host wait and complete S4-21/S4-22/S4-23 acceptance are not claimed.
 See [S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
 
+## Fixed-edge Local APIC register core (S4-25a)
+
+`LocalApic` is a one-CPU, fixed-profile xAPIC `BusDevice` at MMIO base
+`0xFEE00000`, with APIC ID 0. It supports aligned 32-bit accesses on the
+16-byte register stride for ID (`0x020`), TPR (`0x080`), PPR (`0x0A0`), EOI
+(`0x0B0`), SVR (`0x0F0`), ISR (`0x100..0x170`), TMR (`0x180..0x1F0`) and IRR
+(`0x200..0x270`). Fixed-edge requests for vectors 16 through 255 set the
+corresponding IRR bit; repeated requests coalesce. TMR remains zero because
+this profile accepts edge requests only.
+
+Reset clears TPR, IRR and ISR and restores SVR to `0xFF` (software disabled).
+Eligibility requires the SVR software-enable bit and an interrupt priority
+class strictly above PPR. PPR uses the higher priority class from TPR and the
+highest vector in ISR, preserving TPR's low nibble when its class wins or ties.
+`pending` and `eligible` are read-only. `acknowledge` transfers one highest
+eligible vector from IRR to ISR; it is a device-state operation and does not
+deliver a CPU interrupt or execute a handler. EOI clears the highest ISR bit.
+
+The xAPIC version register (`0x030`) is unsupported; no Version value is
+advertised because this slice has no implemented LVT entries. LVT, APIC-base
+MSR/relocation, x2APIC, IOAPIC/level routing, APIC timer, CPU interrupt
+delivery, IDT/IF/shadow interaction, HLT wakeup, and default board wiring are
+outside S4-25a. Non-supported offsets, widths, alignment and reserved writes
+return a `DeviceError` without mutating APIC state; this is the local bus
+contract, not guest exception delivery.
+
+Behavior follows Intel's [64 and IA-32 SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190), Chapter 13 (register map,
+enable state, priority, interrupt request/service state and EOI). This bounded
+profile is not full Local APIC compatibility. See the [S4-25a report](../reports/STAGE_4_S4-25A_2026-11-07.md) and [verification method](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

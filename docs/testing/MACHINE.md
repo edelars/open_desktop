@@ -430,6 +430,23 @@ reviews passed without remaining findings. This proves one-shot polling echo;
 it does not prove guest LSR polling loops, IRQ/APIC, HLT wakeup, baud timing or
 the full S4-24 acceptance. See [report](../reports/STAGE_4_S4-24D_2026-11-07.md).
 
+## S4-25a: fixed-edge Local APIC register core
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline --
+--test-threads=1` for the focused register/state matrix. The tests attach the
+device through `MachineBus` at `0xFEE00000` and cover reset, software
+enable/disable with retained IRR/ISR, TPR/PPR priority classes, pending
+inspection, one-time acknowledge, same-vector retrigger while in service, EOI,
+read-only banks, unsupported offsets/width/alignment/reserved values and
+rejection atomicity. `cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` also passed.
+
+This is local device evidence only. The xAPIC version register, LVT, base-MSR
+control, default board registration, IOAPIC, level interrupts, timers, CPU IRQ
+delivery, handler execution, IDT/IF/shadow behavior, HLT wakeup and Linux boot
+are not covered. The selected register behavior is based on Intel SDM release
+093, Volume 3A, Chapter 13. See the [slice report](../reports/STAGE_4_S4-25A_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

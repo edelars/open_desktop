@@ -536,3 +536,14 @@ three retired instructions and exact UART output before reporting guest
 completion. STOP and work limit are distinct. Independent review passed; the
 README error wording was clarified. See [report](STAGE_4_S4-21D_2026-11-07.md).
 S4-21 and Stage 4 remain open; VMHost/OS signal integration belongs to S4-41.
+
+## S4-25a — fixed-edge Local APIC register core
+
+The bounded `LocalApic` device exposes the selected xAPIC MMIO register
+subset and keeps fixed-edge request, priority eligibility, acknowledge and EOI
+state. Two focused state/bus tests and the `od-machine` all-targets check,
+formatting and diff validation passed; independent Sol/high review closed its
+three test-coverage findings. This does not close S4-25: the version register,
+LVT, APIC-base MSR, default board wiring, IOAPIC, timer and CPU interrupt
+delivery remain open. See the [slice report](STAGE_4_S4-25A_2026-11-07.md)
+and [evidence manifest](data/stage4/s4-25a-local-apic-core.json).

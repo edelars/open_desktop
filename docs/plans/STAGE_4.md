@@ -1330,6 +1330,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** reset, masked vector, priority, pending/in-service transitions, spurious path, EOI. Ошибочные register accesses и reserved bits следуют принятой спецификации.
 - **Готово:** APIC state реально влияет на pending/deliverable interrupt, а не существует только как читаемый массив registers.
 
+#### S4-25a. Fixed-edge Local APIC register core
+
+- [x] Ограниченный S4-25a принят после независимого `gpt-6.1-sol/high` ревью; полный S4-25 остаётся открытым.
+- **Зависимости среза:** S4-05, S4-19 и необходимые event/reset части S4-23 (принятые S4-23a–d). Незакрытый parent S4-23 не считается выполненным.
+- **Контракт:** отдельный `LocalApic` реализует ограниченный one-CPU xAPIC профиль как `MachineBus` device по фиксированному MMIO base `0xFEE00000`, APIC ID 0. Поддержаны ID, TPR/PPR, SVR, EOI, ISR/TMR/IRR и fixed-edge запросы векторов `16..=255`; explicit acknowledge перемещает один eligible vector из IRR в ISR. Pending inspection не потребляет событие. Источник поведения: Intel SDM release 093, Vol. 3A, Chapter 13, §§13.4.1–13.4.3, 13.4.6–13.4.8, 13.8.3–13.8.5.
+- **Граница:** Version register намеренно недоступен; LVT, APIC-base MSR/relocation, x2APIC, IOAPIC/level routing, timer, CPU interrupt delivery, handler execution, IF/shadow/IDT и HLT wakeup отсутствуют. TMR показывает edge; ошибочные/неподдержанные доступы возвращают `DeviceError` и не меняют состояние. Тест подключает device через существующий `MachineBus`; это не доказывает default board wiring или guest Linux path.
+- **Проверки:** 2 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли. См. [отчёт](../reports/STAGE_4_S4-25A_2026-11-07.md), [manifest](../reports/data/stage4/s4-25a-local-apic-core.json) и [методику](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
+
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
 - [ ] Принято после ревью.
