@@ -692,6 +692,25 @@ caller-driven composition at a completed boundary; it does not prove async
 interruption during native execution or general scheduler/event-queue behavior.
 See the [S4-27f2 report](../reports/STAGE_4_S4-27F2_2026-11-07.md).
 
+## S4-27g: queued IRQ and JIT/interpreter parity
+
+Run `cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1`
+(4 passed on ARM64). The new paired scenario schedules a due IRQ and a future
+event before execution. On the JIT path, the real `PublishedBlockExecutor`
+returns from the native prefix and the synchronous test caller pops the due
+queue entry, requests APIC and sets notification; dispatcher exits
+`EventPending` before NOP. The interpreter path executes the same two-instruction
+prefix, then consumes the same due entry. Both continue through APIC entry,
+handler saved-RIP/ISR reads, guest EOI, IRETQ, and the same resumed suffix.
+
+The test compares action order and complete final `LongModeState`, checks one
+queue pop and one acknowledged vector, and verifies notification plus future
+event survive pause/resume before entry. This validates caller-owned bounded
+composition only; it does not implement a production queue-to-APIC pump or
+queue-driven HLT wake. Also run `cargo check -p od-host --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check`. See the
+[S4-27g report](../reports/STAGE_4_S4-27G_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

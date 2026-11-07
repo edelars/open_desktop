@@ -1667,6 +1667,29 @@ acceptance. Parent S4-27 remains open. See the
 [verification method](../testing/MACHINE.md#s4-27f2-jitapiceoiiretq-resume),
 and [evidence manifest](../reports/data/stage4/s4-27f2-jit-apic-resume.json).
 
+## S4-27g. Queued IRQ and JIT/interpreter parity evidence
+
+The host integration test schedules one due and one future `ScheduledEvent`
+before guest execution. Its synchronous test caller consumes the due event at
+the completed native block boundary, requests one fixed Local APIC vector, and
+sets the existing caller-owned notification. The same deadline and routing
+sequence is replayed with the interpreter for the prefix. Both paths then use
+the same explicit APIC entry, guest EOI MMIO write, same-CPL IRETQ and resume
+contracts.
+
+Assertions cover the JIT `EventPending` boundary before NOP (RIP, remaining
+budget and separate counters), exactly one queue extraction, eligible vector
+and frame, ISR before and after EOI, pause/resume preservation of notification
+and the future event, and equality of final `LongModeState` and observed action
+order between JIT and interpreter.
+
+The queue-to-APIC routing here is test-caller orchestration only. It does not
+add a production event pump, queue-driven HLT wakeup, concurrent producers,
+automatic scheduling, or MOV-SS/NMI arbitration. Parent S4-27 remains open. See
+the [S4-27g report](../reports/STAGE_4_S4-27G_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27g-queued-irq-and-jitinterpreter-parity),
+and [evidence manifest](../reports/data/stage4/s4-27g-queued-irq-jit-parity.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

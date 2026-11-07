@@ -1456,6 +1456,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** целевой `diagnostic_jit_event` integration binary — 3 passed (включая два S4-27f1 cases), `cargo check -p od-host --all-targets --offline`, fmt/diff и независимое Sol/high review прошли. Graphify и evidence — в [отчёте](../reports/STAGE_4_S4-27F2_2026-11-07.md), [manifest](../reports/data/stage4/s4-27f2-jit-apic-resume.json) и [методике](../testing/MACHINE.md#s4-27f2-jitapiceoiiretq-resume).
 - **Граница:** только один caller-driven vector на завершённой границе, без async arrival внутри native block. Event flag — отдельное уведомление; APIC acknowledge происходит только после проверки eligible и успешного entry. Нет общего scheduler/event queue, автоматического maskable polling, MOV SS/NMI, paged delivery, error recovery после guest EOI или Linux acceptance; полный S4-27 остаётся открытым.
 
+#### S4-27g. Due EventQueue event through APIC with interpreter parity
+
+- [x] Ограниченный S4-27g принят после независимого `gpt-6.1-sol/high` review без замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** парный ARM64 host test заранее ставит due и future `ScheduledEvent` в существующий `EventQueue`. Синхронный caller bridge после завершения native JIT block снимает один due event, запрашивает фиксированный APIC vector и выставляет notification. Тот же deadline/queue/APIC schedule повторяется для interpreter prefix; обе ветки затем проходят одинаковые APIC entry, guest EOI, IRETQ и продолжение.
+- **Доказательства:** проверены `EventPending` до NOP с точным RIP/budget/counters, единичный queue pop, IRR→ISR acknowledgement, сохранённый frame, ISR до/после guest EOI, IRETQ, сохранение notification и future event через pause/resume и одинаковые финальный `LongModeState`/observable order для JIT и interpreter.
+- **Граница:** EventQueue→APIC bridge существует только как caller orchestration в тестовом сценарии; production queue routing, HLT wake из очереди, general scheduler, async producers и MOV SS/NMI не добавлены. Parent S4-27 остаётся открытым. См. [отчёт](../reports/STAGE_4_S4-27G_2026-11-07.md), [manifest](../reports/data/stage4/s4-27g-queued-irq-jit-parity.json) и [методику](../testing/MACHINE.md#s4-27g-queued-irq-and-jitinterpreter-parity).
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

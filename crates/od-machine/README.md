@@ -53,7 +53,9 @@ boundary. S4-27f1 adds a separate bounded RAM-bound JIT diagnostic path with
 cooperative event handoff through a real host executor. These remain diagnostic
 one-vCPU paths; they do not provide production scheduling, asynchronous event
 delivery, general interruptibility, or asynchronous interruption inside native
-execution. S4-27f2 covers only synchronous caller-driven APIC/JIT composition.
+execution. S4-27f2 covers synchronous caller-driven APIC/JIT composition;
+S4-27g demonstrates a test-only due-queue-to-APIC caller bridge and parity with
+the interpreter, not a production event pump.
 Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не

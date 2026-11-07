@@ -1,0 +1,21 @@
+{
+  "slice": "S4-27g",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Test-caller EventQueue-to-APIC handoff at a completed JIT/interpreter boundary with architectural sequence parity",
+  "review": "Independent gpt-6.1-sol/high review passed with no P0-P3 findings.",
+  "checks": {
+    "host_native_tests": "cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1: 4 passed on ARM64",
+    "package_check": "cargo check -p od-host --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "layout_check": "exit 1 only for the existing unmapped root smoke/ directory (ISSUE-056)",
+    "graphify_update": "Post-code update: 27,929 nodes, 70,794 edges, 1,018 communities; post-documentation update: 27,937 nodes, 70,804 edges, 1,029 communities"
+  },
+  "limitations": [
+    "EventQueue-to-APIC routing is test-caller orchestration, not a production event pump",
+    "no queue-driven HLT wakeup, concurrent producers or automatic scheduler",
+    "no MOV-SS/NMI handling or asynchronous interruption inside native execution",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

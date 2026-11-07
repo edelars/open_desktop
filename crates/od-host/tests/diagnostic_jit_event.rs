@@ -10,8 +10,9 @@ use od_jit::dispatch::{
 };
 use od_machine::{
     AccessWidth, DiagnosticApicQuantumResult, DiagnosticIretqResult, DiagnosticVcpuSession,
-    GuestPhysicalAddress, GuestPhysicalRange, LOCAL_APIC_MMIO_BASE, LocalApic, LocalApicHandle,
-    MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
+    EventQueue, GuestPhysicalAddress, GuestPhysicalRange, LOCAL_APIC_MMIO_BASE, LocalApic,
+    LocalApicHandle, MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
+    RamLimits,
 };
 
 const CODE_START: u64 = 0x1000;
@@ -56,6 +57,191 @@ fn session(code: &[u8]) -> DiagnosticVcpuSession {
         INTEGER_FLAGS,
     )
     .unwrap()
+}
+
+const IRQ_DEADLINE: u64 = 20;
+const IRQ_KEY: u64 = 0x61;
+
+// This bridge belongs to the synchronous test caller; it runs only after the
+// executor has returned from a completed native block.
+fn bridge_due(
+    queue: &mut EventQueue,
+    apic: &LocalApicHandle,
+    event: &AtomicBool,
+    order: &mut Vec<&'static str>,
+) {
+    let due = queue
+        .pop_due(queue.generation(), IRQ_DEADLINE)
+        .unwrap()
+        .unwrap();
+    assert_eq!((due.key, due.deadline_ns), (IRQ_KEY, IRQ_DEADLINE));
+    order.push("queue pop");
+    apic.request_fixed_edge(due.key as u8).unwrap();
+    order.push("request");
+    event.store(true, Ordering::Release);
+    order.push("notification");
+}
+
+struct QueueAfterNative<'a> {
+    queue: &'a mut EventQueue,
+    apic: &'a LocalApicHandle,
+    event: &'a AtomicBool,
+    order: &'a mut Vec<&'static str>,
+}
+
+impl ControlledBlockExecutor for QueueAfterNative<'_> {
+    type Error = PublishedBlockExecutionError;
+
+    fn execute_one_block_controlled(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut LongModeState,
+        budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<BlockExecutionReport, Self::Error> {
+        PublishedBlockExecutor.execute_one_block_controlled(block, state, budget, control)
+    }
+
+    fn execute_one_block_controlled_with_event(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut LongModeState,
+        budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<ControlledBlockExecution, Self::Error> {
+        let result = PublishedBlockExecutor
+            .execute_one_block_controlled_with_event(block, state, budget, control)?;
+        if matches!(result, ControlledBlockExecution::Executed(_)) {
+            assert_eq!(state.rip, CODE_START + 12);
+            bridge_due(self.queue, self.apic, self.event, self.order);
+        }
+        Ok(result)
+    }
+}
+
+#[test]
+fn queued_irq_jit_and_interpreter_have_same_observable_order() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    let mut outcomes = Vec::new();
+    for jit in [true, false] {
+        let (mut session, apic) = interrupt_session();
+        let mut queue = EventQueue::new(2);
+        let generation = queue.generation();
+        queue.schedule(generation, IRQ_KEY, IRQ_DEADLINE).unwrap();
+        queue.schedule(generation, 0x62, IRQ_DEADLINE + 1).unwrap();
+        assert_eq!(queue.pop_due(generation, IRQ_DEADLINE - 1).unwrap(), None);
+        let event = AtomicBool::new(false);
+        let stop = AtomicU8::new(0);
+        let mut order = Vec::new();
+        if jit {
+            let mut executor = QueueAfterNative {
+                queue: &mut queue,
+                apic: &apic,
+                event: &event,
+                order: &mut order,
+            };
+            let result = session
+                .run_jit_nop(
+                    CODE_START,
+                    &CODE,
+                    16,
+                    control(&stop, Some(&event)),
+                    &mut executor,
+                )
+                .unwrap()
+                .dispatch;
+            assert_eq!(
+                (
+                    result.exit,
+                    result.retired_native,
+                    result.retired_interpreter,
+                    result.blocks_executed,
+                    result.remaining_budget
+                ),
+                (DispatchExit::EventPending, 2, 0, 1, 14)
+            );
+        } else {
+            assert_eq!(session.run(2, || false).unwrap().instructions_executed, 2);
+            bridge_due(&mut queue, &apic, &event, &mut order);
+        }
+        assert_eq!(session.state().rip, CODE_START + 12);
+        assert_eq!(apic.eligible(), Some(0x61));
+        assert_eq!(queue.next_deadline(), Some(IRQ_DEADLINE + 1));
+        let boundary = session.state().clone();
+        session.pause().unwrap();
+        assert!(event.load(Ordering::Acquire));
+        assert_eq!(queue.next_deadline(), Some(IRQ_DEADLINE + 1));
+        assert_eq!(apic.eligible(), Some(0x61));
+        session.resume().unwrap();
+        assert_eq!(session.state(), &boundary);
+        assert!(event.load(Ordering::Acquire));
+        assert_eq!(queue.next_deadline(), Some(IRQ_DEADLINE + 1));
+        assert_eq!(apic.eligible(), Some(0x61));
+        order.push("eligible");
+        assert!(matches!(
+            session.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Delivered { vector: 0x61, .. }
+        ));
+        assert_eq!(apic.pending(), None);
+        assert_eq!(
+            session.state().gpr[od_isa::Register::Rax as usize],
+            CODE_START + 12
+        );
+        assert_eq!(session.state().gpr[od_isa::Register::Rsp as usize], 0x6fd8);
+        order.push("entry and saved rip");
+        assert_eq!(session.run(1, || false).unwrap().instructions_executed, 1);
+        assert_eq!(session.state().gpr[od_isa::Register::Rcx as usize], 2);
+        order.push("isr set");
+        assert_eq!(session.run(1, || false).unwrap().instructions_executed, 1);
+        order.push("guest eoi");
+        assert_eq!(session.run(1, || false).unwrap().instructions_executed, 1);
+        assert_eq!(session.state().gpr[od_isa::Register::Rbx as usize], 0);
+        order.push("isr clear");
+        assert_eq!(
+            session.run_same_cpl0_iretq().unwrap(),
+            DiagnosticIretqResult::Retired
+        );
+        assert_eq!(session.state().rip, CODE_START + 12);
+        order.push("iretq");
+        assert_eq!(apic.eligible(), None);
+        assert_eq!(queue.pop_due(generation, IRQ_DEADLINE).unwrap(), None);
+        event.store(false, Ordering::Release);
+        order.push("notification cleared");
+        if jit {
+            let result = session
+                .run_jit_nop(
+                    CODE_START,
+                    &CODE,
+                    14,
+                    control(&stop, Some(&event)),
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap()
+                .dispatch;
+            assert_eq!(
+                (
+                    result.exit,
+                    result.retired_native,
+                    result.retired_interpreter,
+                    result.blocks_executed,
+                    result.remaining_budget
+                ),
+                (DispatchExit::CodeEnd, 1, 1, 1, 12)
+            );
+        } else {
+            assert_eq!(session.run(2, || false).unwrap().instructions_executed, 2);
+        }
+        assert_eq!(session.state().rip, CODE_START + CODE.len() as u64);
+        assert_eq!(
+            session.state().gpr[od_isa::Register::Rax as usize],
+            CODE_START + 12
+        );
+        assert_eq!(session.state().gpr[od_isa::Register::Rbx as usize], 2);
+        assert_eq!(queue.next_deadline(), Some(IRQ_DEADLINE + 1));
+        order.push("resume complete");
+        outcomes.push((session.state().clone(), order));
+    }
+    assert_eq!(outcomes[0], outcomes[1]);
 }
 
 struct SignalAfterNativeBlock<'a> {
