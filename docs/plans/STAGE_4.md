@@ -1492,6 +1492,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** caller явно создаёт handle и передаёт clone в `LocalApic::with_shared_timer`, затем handle передаёт в `DiagnosticVcpuSession::new_with_clock_handle`; вторая session не может захватить те же часы, даже после drop первой. Session продвигает clock только в Runnable. При due deadline dispatch в Paused/Stopped/Terminal возвращает Busy и сохраняет событие. APIC lock не удерживается во время CPU execution. Нет автоматической dispatch, CPU delivery, HLT progression/wakeup или scheduler.
 - **Проверки:** `cargo test -p od-machine --lib --offline` — 190 passed; `cargo check -p od-machine --all-targets --offline`, fmt, diff check, JSON и ссылки прошли; Graphify обновлён после финального diff. Сквозной тест выполняет RDTSC до/после session advance, читает Current Count, проверяет expiry/IRR на тех же nanoseconds и отказ dispatch в Paused/Stopped; отдельный clock test проверяет эксклюзивное владение. Отчёт: [S4-28a2](../reports/STAGE_4_S4-28A2_2026-11-07.md), evidence: [manifest](../reports/data/stage4/s4-28a2-shared-clock.json).
 
+#### S4-28a3. Shared one-shot APIC timer wakes HLT wait
+
+- [ ] Ограниченный caller-driven child реализован; ожидает независимого ревью.
+- **Реализация:** `DiagnosticHaltWait` переносит единственный `VirtualClockAdvancer` и разрешает явный time advance только пока `Waiting`. Владелец отдельно вызывает `LocalApicHandle::dispatch_timer`, затем существующий `poll_apic`; это даёт one-shot timer expiry → IRR → maskable HLT wake без фонового scheduler.
+- **Атомарность и lifecycle:** APIC pair lock берётся перед shared clock gate; due-event consumption и IRR commit выполняются под обоими locks. Перед interrupt delivery gate закрывается и clock lock отпускается до memory callbacks; отсутствие eligible IRQ/`OutsideProfile` возвращают wait в dispatchable `Waiting`, `Entered`/STOP/Terminal закрывают gate, `into_running` открывает его. Reset инвалидирует timer event и не двигает clock. Overflow не меняет часы/TSC.
+- **Проверки:** integration case связывает один clock, HLT, истечение timer, повторный due vector во время entry, Entered gate, resume и RDTSC после IRETQ. `cargo test -p od-machine --lib --offline` — 191 passed; all-targets check, fmt, diff, JSON и локальные ссылки прошли. Graphify обновить после финального diff. См. [отчёт](../reports/STAGE_4_S4-28A3_2026-11-07.md) и [manifest](../reports/data/stage4/s4-28a3-hlt-timer.json). Periodic/TSC-deadline, автоматический event pump и host scheduling остаются открытыми.
+
 ### S4-29. Закрыть необходимые legacy зависимости
 
 - [ ] Локально принято после ревью либо scope исключён по source/config audit; Linux-проверка обязательна в S4-38.

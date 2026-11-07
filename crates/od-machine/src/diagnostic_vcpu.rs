@@ -175,6 +175,12 @@ pub enum DiagnosticHaltWakeResult {
     Terminal(DiagnosticTerminalExit),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticHaltWaitError {
+    NotWaiting,
+    Clock(VirtualClockError),
+}
+
 enum HaltWaitState {
     Waiting,
     Entered(u8),
@@ -193,6 +199,21 @@ impl DiagnosticHaltWait {
         &self.session.state
     }
 
+    /// Advance only this halted session's clock while it remains in Waiting.
+    pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), DiagnosticHaltWaitError> {
+        if !matches!(self.state, HaltWaitState::Waiting) {
+            return Err(DiagnosticHaltWaitError::NotWaiting);
+        }
+        self.session
+            .clock
+            .as_ref()
+            .ok_or(DiagnosticHaltWaitError::Clock(
+                VirtualClockError::ClockNotConfigured,
+            ))?
+            .advance_time_ns(delta_ns)
+            .map_err(DiagnosticHaltWaitError::Clock)
+    }
+
     /// The caller serializes the whole operation with CPU, APIC and IOAPIC
     /// operations and certifies the ISA interrupt profile's machine assumptions.
     pub fn poll_apic(&mut self, apic: &LocalApicHandle) -> DiagnosticHaltWakeResult {
@@ -206,10 +227,13 @@ impl DiagnosticHaltWait {
             }
             HaltWaitState::Waiting => {}
         }
+        self.session.set_clock_dispatch_allowed(false);
         if self.session.state.rflags & (1 << 9) == 0 {
+            self.session.set_clock_dispatch_allowed(true);
             return DiagnosticHaltWakeResult::Waiting;
         }
         let Some(vector) = apic.eligible() else {
+            self.session.set_clock_dispatch_allowed(true);
             return DiagnosticHaltWakeResult::Waiting;
         };
         let mut candidate = self.session.state.clone();
@@ -223,6 +247,7 @@ impl DiagnosticHaltWait {
             self.session.rflags_defined,
         ) {
             InterruptDeliveryResult::OutsideProfile(reason) => {
+                self.session.set_clock_dispatch_allowed(true);
                 DiagnosticHaltWakeResult::OutsideProfile(reason)
             }
             InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
@@ -256,6 +281,7 @@ impl DiagnosticHaltWait {
 
     pub fn into_running(self) -> Result<DiagnosticVcpuSession, Self> {
         if matches!(self.state, HaltWaitState::Entered(_)) {
+            self.session.set_clock_dispatch_allowed(true);
             Ok(self.session)
         } else {
             Err(self)
@@ -364,8 +390,7 @@ impl DiagnosticVcpuSession {
             || self.state.cr3.is_some()
             || self.state.cr4.is_some()
             || self.rflags_defined != INTEGER_FLAGS
-            || self.clock.is_some()
-            || self.rdtsc_controls.is_some()
+            || self.clock.is_some() != self.rdtsc_controls.is_some()
             || !self.completed_boundary
         {
             return Err(DiagnosticHaltEnterFailure {
@@ -511,7 +536,7 @@ impl DiagnosticVcpuSession {
         if self.status != DiagnosticVcpuState::Runnable {
             return Err(DiagnosticVcpuControlError::CannotPause(self.status.clone()));
         }
-        self.set_clock_runnable(false);
+        self.set_clock_dispatch_allowed(false);
         self.status = DiagnosticVcpuState::Paused;
         Ok(())
     }
@@ -522,7 +547,7 @@ impl DiagnosticVcpuSession {
                 self.status.clone(),
             ));
         }
-        self.set_clock_runnable(true);
+        self.set_clock_dispatch_allowed(true);
         self.status = DiagnosticVcpuState::Runnable;
         Ok(())
     }
@@ -532,14 +557,14 @@ impl DiagnosticVcpuSession {
     /// at its established internal poll points.
     pub fn stop(&mut self) {
         if !matches!(self.status, DiagnosticVcpuState::Terminal(_)) {
-            self.set_clock_runnable(false);
+            self.set_clock_dispatch_allowed(false);
             self.status = DiagnosticVcpuState::Stopped;
         }
     }
 
-    fn set_clock_runnable(&self, runnable: bool) {
+    fn set_clock_dispatch_allowed(&self, allowed: bool) {
         if let Some(clock) = &self.clock {
-            clock.set_runnable(runnable);
+            clock.set_dispatch_allowed(allowed);
         }
     }
 
@@ -601,7 +626,7 @@ impl DiagnosticVcpuSession {
                 DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget)
             }
             RunExit::StopRequested => {
-                self.set_clock_runnable(false);
+                self.set_clock_dispatch_allowed(false);
                 self.status = DiagnosticVcpuState::Stopped;
                 DiagnosticExit::Stopped
             }
@@ -886,7 +911,7 @@ impl DiagnosticVcpuSession {
     }
 
     fn terminal(&mut self, cause: DiagnosticTerminalExit) -> DiagnosticExit {
-        self.set_clock_runnable(false);
+        self.set_clock_dispatch_allowed(false);
         self.status = DiagnosticVcpuState::Terminal(cause.clone());
         DiagnosticExit::Terminal(cause)
     }
@@ -1267,8 +1292,15 @@ mod tests {
     }
 
     fn irq_session(rsp: u64) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {
-        use crate::{IO_APIC_MMIO_BASE, IoApic, LOCAL_APIC_MMIO_BASE, LocalApic, MmioBinding};
-        let local = LocalApic::new();
+        irq_session_with_apic(rsp, crate::LocalApic::new(), None)
+    }
+
+    fn irq_session_with_apic(
+        rsp: u64,
+        local: crate::LocalApic,
+        clock: Option<VirtualClockHandle>,
+    ) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {
+        use crate::{IO_APIC_MMIO_BASE, IoApic, LOCAL_APIC_MMIO_BASE, MmioBinding};
         let apic = local.handle();
         let io = IoApic::new(apic.clone());
         let io_handle = io.handle();
@@ -1366,11 +1398,20 @@ mod tests {
         });
         state.activity = Some(od_isa::CpuActivity::Running);
         state.sti_shadow = Some(od_isa::StiShadow::Clear);
-        (
-            DiagnosticVcpuSession::new(state, bus, context(), 0).unwrap(),
-            io_handle,
-            apic,
-        )
+        let session = if let Some(clock) = clock {
+            DiagnosticVcpuSession::new_with_clock_handle(
+                state,
+                bus,
+                context(),
+                INTEGER_FLAGS,
+                clock,
+                RdtscControls { cr4_tsd: false },
+            )
+            .unwrap()
+        } else {
+            DiagnosticVcpuSession::new(state, bus, context(), 0).unwrap()
+        };
+        (session, io_handle, apic)
     }
 
     #[test]
@@ -1491,6 +1532,118 @@ mod tests {
             Ok(wait) => wait,
             Err(failure) => panic!("HLT failed: {:?}", failure.reason),
         }
+    }
+
+    #[test]
+    fn shared_timer_advances_and_wakes_halt_wait() {
+        let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let local = crate::LocalApic::with_shared_timer(clock.clone(), 1_000_000_000).unwrap();
+        let (mut session, _, apic) = irq_session_with_apic(0x7000, local, Some(clock.clone()));
+        put(&mut session, 0x4100, &[0xf4, 0x0f, 0x31]);
+        put(&mut session, 0x4000, &[0x89, 0x07, 0x48, 0xcf]);
+        for (address, value) in [
+            (0x2008, 0x00af_9b00_0000_ffff),
+            (0x2010, 0x00cf_9300_0000_ffff),
+        ] {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        session.state.cs_selector = Some(8);
+        session.state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 2,
+        });
+        session.state.ss_selector = Some(0x10);
+        session.state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x93,
+            flags: 0,
+        });
+        session.state.gpr[od_isa::Register::Rdi as usize] = crate::LOCAL_APIC_MMIO_BASE + 0xb0;
+        session.state.gpr[od_isa::Register::Rax as usize] = 0;
+        for (address, value) in [(0x3400, 0x8e00_0020_4000), (0x3408, 0)] {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        for (offset, value) in [(0x320, 0x40), (0x3e0, 0xb), (0x380, 3)] {
+            session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + offset),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        }
+
+        let mut wait = enter_wait(session);
+        wait.advance_time_ns(1).unwrap();
+        assert_eq!(
+            wait.advance_time_ns(u64::MAX),
+            Err(DiagnosticHaltWaitError::Clock(
+                VirtualClockError::TimeOverflow
+            ))
+        );
+        assert_eq!(wait.session.virtual_clock().unwrap().now_ns(), 1);
+        assert!(!apic.dispatch_timer().unwrap());
+        wait.advance_time_ns(2).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x40));
+
+        // A second due vector must remain queued while interrupt entry commits.
+        for (offset, value) in [(0x320, 0x41), (0x380, 1)] {
+            wait.session
+                .bus
+                .write_physical(
+                    GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + offset),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        wait.advance_time_ns(2).unwrap();
+        assert_eq!(
+            wait.poll_apic(&apic),
+            DiagnosticHaltWakeResult::Entered { vector: 0x40 }
+        );
+        assert_eq!(apic.dispatch_timer(), Err(crate::DeviceError::Busy));
+        assert_eq!(
+            wait.advance_time_ns(1),
+            Err(DiagnosticHaltWaitError::NotWaiting)
+        );
+        let mut session = match wait.into_running() {
+            Ok(session) => session,
+            Err(_) => panic!("entry did not wake"),
+        };
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x41));
+
+        assert_eq!(run(&mut session, 1).instructions_executed, 1);
+        assert_eq!(
+            session.run_same_cpl0_iretq().unwrap(),
+            DiagnosticIretqResult::Retired
+        );
+        assert_eq!(run(&mut session, 1).instructions_executed, 1);
+        assert_eq!(session.state.gpr[od_isa::Register::Rax as usize], 5);
     }
 
     #[test]

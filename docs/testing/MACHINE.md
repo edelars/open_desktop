@@ -495,6 +495,10 @@ the [S4-28a2 report](../reports/STAGE_4_S4-28A2_2026-11-07.md). This proves
 clock identity for this device path only; automatic dispatch, CPU delivery,
 HLT progression/wakeup and production scheduling are outside this slice.
 
+## S4-28a3 shared timer wake from HLT
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests::shared_timer_advances_and_wakes_halt_wait --offline -- --exact`, then `cargo check -p od-machine --all-targets --offline` and `cargo test -p od-machine --lib --offline`. The integration case verifies `DiagnosticHaltWait` advances the shared clock only in Waiting, overflow preserves time, timer expiry posts IRR, APIC entry wakes HLT, a second due event remains pending while the wake is Entered, and `into_running` reopens dispatch. The guest handler executes IRETQ, after which RDTSC reads the time advanced during HLT. APIC/clock lock order is checked by review; all 191 package tests passed. No automatic polling, host-time source, periodic timer or production scheduler is exercised. See the [S4-28a3 report](../reports/STAGE_4_S4-28A3_2026-11-07.md).
+
 ## S4-25b: CPU-owned IA32_APIC_BASE enable
 
 Run `cargo test -p od-isa --lib apic_base_tests --offline` and

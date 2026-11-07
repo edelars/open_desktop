@@ -150,32 +150,33 @@ impl LocalApicHandle {
             .timer
             .as_ref()
             .ok_or(DeviceError::UnsupportedConfiguration)?;
+        let clock = timer.clock.clone();
+        let gated = !timer.can_advance_clock;
         let generation = timer.queue.generation();
-        let now = timer.clock.snapshot().now_ns();
-        if timer
-            .queue
-            .peek_due(generation, now)
-            .map_err(|_| DeviceError::UnsupportedConfiguration)?
-            .is_none()
-        {
-            return Ok(false);
-        }
-        if !timer.can_advance_clock && !timer.clock.is_runnable() {
-            return Err(DeviceError::Busy);
-        }
         let lvt = timer.lvt;
         let mut queue = timer.queue.clone();
-        queue
-            .remove_due(generation, now)
-            .map_err(|_| DeviceError::UnsupportedConfiguration)?;
-        if lvt & MASK == 0 {
-            pair.edge(lvt as u8)?;
-        }
-        // The private timer cannot disappear while the pair lock is held.
-        if let Some(timer) = pair.timer.as_mut() {
-            timer.queue = queue;
-        }
-        Ok(true)
+        clock.with_dispatch_guard(|clock, dispatch_allowed| {
+            let now = clock.now_ns();
+            if queue
+                .peek_due(generation, now)
+                .map_err(|_| DeviceError::UnsupportedConfiguration)?
+                .is_none()
+            {
+                return Ok(false);
+            }
+            if gated && !dispatch_allowed {
+                return Err(DeviceError::Busy);
+            }
+            queue
+                .remove_due(generation, now)
+                .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+            if lvt & MASK == 0 {
+                pair.edge(lvt as u8)?;
+            }
+            // Queue consumption and IRR publication share both locks.
+            pair.timer.as_mut().unwrap().queue = queue;
+            Ok(true)
+        })
     }
     /// Disable is rejected while a level request awaits EOI.
     pub fn set_global_enabled(&self, enabled: bool) -> Result<(), DeviceError> {

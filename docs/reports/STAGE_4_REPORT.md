@@ -677,3 +677,19 @@ findings were closed.
 No automatic event pump, CPU delivery, HLT progression or Linux timer behavior
 is claimed. See the [S4-28a2 report](STAGE_4_S4-28A2_2026-11-07.md) and
 [evidence](data/stage4/s4-28a2-shared-clock.json).
+
+## S4-28a3 — shared timer wake from HLT
+
+`DiagnosticHaltWait` carries the unique session clock capability and allows
+explicit time advancement only while Waiting. A caller then dispatches the
+one-shot APIC event and polls the existing maskable interrupt wake path. The
+APIC-pair → clock lock order keeps the timer gate, queue removal and IRR post
+atomic; wake/STOP closes the gate before callbacks and `into_running` reopens it
+after committed entry. The focused integration case covers overflow atomicity,
+two timer expiries around HLT entry, pending-event preservation, and RDTSC after
+IRETQ. Architecture review and repeat Sol/high code review passed; the review's
+P2 API-export finding was fixed. All 191 package tests, all-targets check,
+formatting and diff checks passed. No automatic scheduler, host-time source,
+periodic timer or Linux acceptance is claimed. See the
+[S4-28a3 report](STAGE_4_S4-28A3_2026-11-07.md) and
+[evidence](data/stage4/s4-28a3-hlt-timer.json).

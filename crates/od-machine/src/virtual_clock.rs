@@ -69,7 +69,7 @@ impl VirtualClock {
 struct VirtualClockState {
     clock: VirtualClock,
     advancer_claimed: bool,
-    runnable: bool,
+    dispatch_allowed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -96,8 +96,9 @@ impl VirtualClockHandle {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clock
     }
 
-    pub(crate) fn is_runnable(&self) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).runnable
+    pub(crate) fn with_dispatch_guard<R>(&self, f: impl FnOnce(VirtualClock, bool) -> R) -> R {
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        f(state.clock, state.dispatch_allowed)
     }
 
     pub(crate) fn advance_standalone(&self, delta_ns: u64) -> Result<(), VirtualClockError> {
@@ -114,7 +115,7 @@ impl VirtualClockHandle {
             return Err(VirtualClockError::ClockAlreadyOwned);
         }
         state.advancer_claimed = true;
-        state.runnable = true;
+        state.dispatch_allowed = true;
         Ok(VirtualClockAdvancer(Arc::clone(&self.0)))
     }
 }
@@ -124,8 +125,11 @@ impl VirtualClockAdvancer {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clock
     }
 
-    pub(crate) fn set_runnable(&self, runnable: bool) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).runnable = runnable;
+    pub(crate) fn set_dispatch_allowed(&self, allowed: bool) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dispatch_allowed = allowed;
     }
 
     pub(crate) fn advance_time_ns(&self, delta_ns: u64) -> Result<(), VirtualClockError> {
@@ -142,7 +146,7 @@ impl From<VirtualClock> for VirtualClockHandle {
         Self(Arc::new(Mutex::new(VirtualClockState {
             clock,
             advancer_claimed: false,
-            runnable: true,
+            dispatch_allowed: true,
         })))
     }
 }
@@ -150,7 +154,7 @@ impl From<VirtualClock> for VirtualClockHandle {
 impl Drop for VirtualClockAdvancer {
     fn drop(&mut self) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.runnable = false;
+        state.dispatch_allowed = false;
     }
 }
 

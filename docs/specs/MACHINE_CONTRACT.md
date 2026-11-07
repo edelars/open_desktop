@@ -1329,6 +1329,30 @@ deliver a CPU interrupt, progress time during HLT, or implement a scheduler.
 The prior `with_timer(VirtualClock, hz)` standalone caller-driven behavior
 remains available. See the [S4-28a2 report](../reports/STAGE_4_S4-28A2_2026-11-07.md).
 
+### Explicit HLT timer progression (S4-28a3)
+
+`DiagnosticVcpuSession::into_halt_wait` now accepts a configured shared clock
+and matching RDTSC controls. The unique clock advancement capability moves
+inside `DiagnosticHaltWait`. Its `advance_time_ns` succeeds only in `Waiting`;
+overflow returns a typed clock error and leaves time/TSC unchanged. The caller
+then explicitly dispatches the due APIC timer and polls `poll_apic`; a delivered
+maskable vector commits the existing interrupt frame and wakes the wait. After
+the caller executes the handler and IRETQ, RDTSC observes the advanced clock.
+
+For a shared timer, due-event queue removal and IRR publication hold the APIC
+pair lock and clock dispatch guard in that order. Before wake delivery, the wait
+closes the dispatch gate and releases the clock lock before guest memory access.
+If no eligible vector exists or admission returns `OutsideProfile`, it reopens
+the gate and remains Waiting. Successful `Entered`, STOP, terminal failure and
+advancer drop keep the gate closed; `into_running` opens it after committed
+entry. APIC reset cancels its timer deadline but does not reset or advance the
+session clock. No mutex is held across guest CPU execution or bus callbacks.
+
+This remains caller-driven: the wait never polls, advances host time, dispatches
+the timer, or executes the handler automatically. Periodic/TSC-deadline modes,
+NMI/debug wake, production scheduling and Linux acceptance are not established.
+See the [S4-28a3 report](../reports/STAGE_4_S4-28A3_2026-11-07.md).
+
 ## CPU-owned IA32_APIC_BASE enable (S4-25b)
 
 The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and
