@@ -645,3 +645,19 @@ IRET/guest EOI, HLT wakeup, JIT or board registration. See the
 [slice report](STAGE_4_S4-27A_2026-11-07.md) and
 [evidence](data/stage4/s4-27a-apic-cpu-entry.json). Parent S4-27 and Stage 4
 remain open.
+
+## S4-27b — guest EOI, same-CPL IRETQ and resume
+
+The diagnostic handler now issues a guest Dword EOI write through the existing
+MachineBus MMIO path. An explicit same-CPL0 IRETQ profile consumes the five-
+qword frame; the next caller-driven run executes the interrupted instruction.
+Tests cover all 16 original RSP alignments, restored CPU state, deasserted EOI,
+held-line request acceptance into IRR at EOI with CPU delivery at the next caller boundary, and IRETQ fetch/frame/CS/SS
+read aborts after EOI without CPU commit or retry. Twelve diagnostic-session
+tests, eight public API tests, ten Local APIC tests, 25 `od-isa::iretq` tests,
+all-targets check, formatting, Graphify and independent Sol/high review passed. This remains a
+caller-driven flat identity diagnostic profile without paged IRETQ, automatic
+polling, HLT wakeup, JIT or board registration. See the
+[slice report](STAGE_4_S4-27B_2026-11-07.md) and
+[evidence](data/stage4/s4-27b-guest-eoi-iretq.json). Parent S4-27 and Stage 4
+remain open.

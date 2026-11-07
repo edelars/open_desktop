@@ -79,6 +79,12 @@ undo successful entry or APIC acknowledgement. It does not register APIC
 devices on the default board or provide automatic IRQ scheduling, paged
 delivery, guest EOI/IRET, HLT wakeup or Linux discovery.
 
+S4-27b's bounded fixture uses a guest Dword write to the Local APIC EOI
+register, executes same-CPL0 IRETQ, and resumes one interrupted instruction.
+An asserted level route can re-pend at EOI; delivery remains caller-driven.
+This does not add default board registration, paged IRETQ, HLT wakeup or Linux
+interrupt support.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

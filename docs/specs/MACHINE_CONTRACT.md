@@ -1449,6 +1449,37 @@ See the [S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md),
 [verification method](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry),
 and [evidence manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json).
 
+## S4-27b. Guest EOI, same-CPL IRETQ and resume
+
+The S4-27a diagnostic handler can issue one guest Dword store of zero to the
+Local APIC EOI register at `0xFEE000B0`. The existing flat identity adapter
+routes data writes through `MachineBus`, which dispatches this aligned Dword to
+the Local APIC; instruction fetch remains RAM-only. No host-side EOI substitute
+is used by the fixture.
+
+`DiagnosticVcpuSession::run_same_cpl0_iretq` executes the existing
+`od-isa::run_with_iretq_profile` with `SameCpl0ValidFrameV1` and a one-instruction
+budget. A retired IRETQ consumes the five-qword same-CPL frame, restores the
+interrupted RIP/RSP/CS/SS/RFLAGS, and commits the candidate CPU. The caller then
+uses the ordinary diagnostic run boundary to execute the resumed instruction.
+The profile requires private synchronous RAM, a valid same-CPL ring-0 frame,
+`rflags_defined = INTEGER_FLAGS`, and the disabled mechanisms and CPU state
+required by the underlying IRETQ contract; see
+[CPU_CONTRACT.md](CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq).
+
+The EOI is an architectural device side effect and is not rolled back if a
+subsequent IRETQ fetch/frame/CS/SS read aborts. Such a read abort leaves the
+pre-IRETQ CPU state uncommitted, makes the session terminal, and prevents
+automatic retry or repeated EOI. With INTIN4 deasserted before EOI, Remote IRR
+clears and no new request appears. If it remains asserted, matching EOI accepts
+one new level request atomically into IRR; CPU delivery of that request waits
+for a later explicit caller boundary. The diagnostic path does not add automatic polling,
+cross-privilege IRETQ, paged IRETQ, JIT, or scheduler integration.
+
+See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume),
+and [evidence manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

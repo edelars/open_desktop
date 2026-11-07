@@ -10,6 +10,7 @@ use od_isa::interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptOutsideProfile,
     deliver_maskable_interrupt,
 };
+use od_isa::iretq::{IretqProfile, IretqReadPhase, IretqRunExit, run_with_iretq_profile};
 use od_isa::memory::{AccessContext, ArchitecturalFault, MemoryError};
 use od_isa::{INTEGER_FLAGS, LongModeState};
 
@@ -27,6 +28,17 @@ pub enum DiagnosticTerminalExit {
         cause: MemoryError,
     },
     InterruptSelectionChanged,
+    IretqUnsupported,
+    IretqReadAborted {
+        phase: IretqReadPhase,
+        cause: MemoryError,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticIretqResult {
+    Retired,
+    Terminal(DiagnosticTerminalExit),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,6 +335,50 @@ impl DiagnosticVcpuSession {
         }
     }
 
+    /// Attempt one same-CPL0 IRETQ. The caller certifies private synchronous
+    /// RAM and the remaining prerequisites of the ISA IRETQ profile.
+    pub fn run_same_cpl0_iretq(
+        &mut self,
+    ) -> Result<DiagnosticIretqResult, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        let mut candidate = self.state.clone();
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        let result = run_with_iretq_profile(
+            &mut candidate,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: self.access_context,
+            },
+            self.rflags_defined,
+            IretqProfile::SameCpl0ValidFrameV1,
+            || false,
+        );
+        if result.exit == IretqRunExit::InstructionBudgetExhausted
+            && result.instructions_executed == 1
+        {
+            self.state = candidate;
+            self.rflags_defined = result.rflags_defined;
+            return Ok(DiagnosticIretqResult::Retired);
+        }
+        let cause = match result.exit {
+            IretqRunExit::Fault(fault) => DiagnosticTerminalExit::Fault(fault),
+            IretqRunExit::ReadAborted { phase, cause } => {
+                DiagnosticTerminalExit::IretqReadAborted { phase, cause }
+            }
+            IretqRunExit::Unsupported => DiagnosticTerminalExit::IretqUnsupported,
+            // Fixed configuration makes these exits unreachable; treat any
+            // non-retiring outcome as terminal rather than publishing state.
+            _ => DiagnosticTerminalExit::IretqUnsupported,
+        };
+        self.terminal(cause.clone());
+        Ok(DiagnosticIretqResult::Terminal(cause))
+    }
+
     fn terminal(&mut self, cause: DiagnosticTerminalExit) -> DiagnosticExit {
         self.status = DiagnosticVcpuState::Terminal(cause.clone());
         DiagnosticExit::Terminal(cause)
@@ -543,6 +599,173 @@ mod tests {
             read(&mut session.bus, crate::IO_APIC_MMIO_BASE + 0x10) & (1 << 14),
             0
         );
+    }
+
+    fn irq_return_session(
+        rsp: u64,
+    ) -> (DiagnosticVcpuSession, crate::IoApicHandle, LocalApicHandle) {
+        let (mut session, io, apic) = irq_session(rsp);
+        let mut write = |addr, width, value| {
+            session
+                .bus
+                .write_physical(GuestPhysicalAddress::new(addr), width, value, |_| {})
+                .unwrap();
+        };
+        // MOV [RDI], EAX; IRETQ. The interrupted instruction loads a sentinel.
+        for (address, byte) in [
+            (0x4000, 0x89),
+            (0x4001, 0x07),
+            (0x4002, 0x48),
+            (0x4003, 0xcf),
+            (0x4100, 0x48),
+            (0x4101, 0x8b),
+            (0x4102, 0x03),
+        ] {
+            write(address, AccessWidth::Byte, byte);
+        }
+        write(0x2008, AccessWidth::Qword, 0x00af_9b00_0000_ffff);
+        write(0x2010, AccessWidth::Qword, 0x00cf_9300_0000_ffff);
+        session.state.gpr[od_isa::Register::Rdi as usize] = crate::LOCAL_APIC_MMIO_BASE + 0xb0;
+        session.state.gpr[od_isa::Register::Rax as usize] = 0;
+        session.rflags_defined = INTEGER_FLAGS;
+        (session, io, apic)
+    }
+
+    #[test]
+    fn guest_eoi_iretq_resumes_all_stack_alignments() {
+        for low in 0..16 {
+            let rsp = 0x7000 + low;
+            let (mut session, io, apic) = irq_return_session(rsp);
+            let before = session.state.clone();
+            io.set_intin4(true).unwrap();
+            io.set_intin4(false).unwrap();
+            assert!(matches!(
+                session.deliver_interrupt_and_step(&apic).unwrap(),
+                DiagnosticInterruptResult::Delivered {
+                    vector: 0x51,
+                    handler: DiagnosticRunResult {
+                        instructions_executed: 1,
+                        ..
+                    }
+                }
+            ));
+            assert_eq!(session.state.rip, 0x4002);
+            assert_eq!(apic.pending(), None);
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(
+                        GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                        AccessWidth::Dword
+                    )
+                    .unwrap()
+                    & (1 << 14),
+                0
+            );
+            assert_eq!(
+                session
+                    .bus
+                    .read_physical(
+                        GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x120),
+                        AccessWidth::Dword
+                    )
+                    .unwrap()
+                    & (1 << 17),
+                0
+            );
+            assert_eq!(
+                session.run_same_cpl0_iretq().unwrap(),
+                DiagnosticIretqResult::Retired
+            );
+            assert_eq!(session.state.rip, before.rip);
+            assert_eq!(session.state.gpr[od_isa::Register::Rsp as usize], rsp);
+            assert_eq!(session.state.cs_selector, before.cs_selector);
+            assert_eq!(session.state.ss_selector, before.ss_selector);
+            assert_eq!(session.state.rflags, before.rflags);
+            assert_ne!(session.state.rflags & 0x200, 0);
+            assert_eq!(run(&mut session, 1).instructions_executed, 1);
+            assert_eq!(
+                session.state.gpr[od_isa::Register::Rax as usize],
+                0x1234_5678_9abc_def0
+            );
+            assert_eq!(session.state.rip, 0x4103);
+        }
+    }
+
+    #[test]
+    fn held_level_retriggers_once_and_waits_for_caller_boundary() {
+        let (mut session, io, apic) = irq_return_session(0x7000);
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::Delivered { .. }
+        ));
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_ne!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                    AccessWidth::Dword
+                )
+                .unwrap()
+                & (1 << 14),
+            0
+        );
+        assert_eq!(
+            session.run_same_cpl0_iretq().unwrap(),
+            DiagnosticIretqResult::Retired
+        );
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(run(&mut session, 1).instructions_executed, 1);
+        assert_eq!(apic.pending(), Some(0x51));
+        io.set_intin4(false).unwrap();
+        // The next explicit boundary consumes the one pending request.
+        session.state.gpr[od_isa::Register::Rax as usize] = 0;
+        assert!(matches!(
+            session.deliver_interrupt_and_step(&apic).unwrap(),
+            DiagnosticInterruptResult::Delivered { vector: 0x51, .. }
+        ));
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn iretq_read_abort_after_guest_eoi_is_terminal_and_does_not_retry() {
+        for phase in [
+            IretqReadPhase::Fetch,
+            IretqReadPhase::Frame,
+            IretqReadPhase::CsDescriptor,
+            IretqReadPhase::SsDescriptor,
+        ] {
+            let (mut session, io, apic) = irq_return_session(0x7000);
+            io.set_intin4(true).unwrap();
+            assert!(matches!(
+                session.deliver_interrupt_and_step(&apic).unwrap(),
+                DiagnosticInterruptResult::Delivered { .. }
+            ));
+            assert_eq!(apic.pending(), Some(0x51));
+            match phase {
+                IretqReadPhase::Fetch => session.state.rip = 0x9000,
+                IretqReadPhase::Frame => session.state.gpr[od_isa::Register::Rsp as usize] = 0x9000,
+                IretqReadPhase::CsDescriptor => session.state.gdtr.as_mut().unwrap().base = 0x9000,
+                IretqReadPhase::SsDescriptor => session.state.gdtr.as_mut().unwrap().base = 0x7ff0,
+            }
+            let before = session.state.clone();
+            assert!(
+                matches!(session.run_same_cpl0_iretq().unwrap(), DiagnosticIretqResult::Terminal(DiagnosticTerminalExit::IretqReadAborted { phase: p, .. }) if p == phase)
+            );
+            assert_eq!(session.state, before);
+            assert_eq!(apic.pending(), Some(0x51));
+            assert!(matches!(
+                session.run_same_cpl0_iretq(),
+                Err(DiagnosticVcpuControlError::NotRunnable(_))
+            ));
+            assert!(matches!(
+                session.run(1, || false),
+                Err(DiagnosticVcpuControlError::NotRunnable(_))
+            ));
+            assert_eq!(apic.pending(), Some(0x51));
+        }
     }
 
     #[test]

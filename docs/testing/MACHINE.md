@@ -565,6 +565,24 @@ This does not test automatic instruction-boundary polling, IRET, guest EOI,
 HLT wakeup, paged delivery or JIT. See the
 [S4-27a report](../reports/STAGE_4_S4-27A_2026-11-07.md).
 
+## S4-27b. Guest EOI, same-CPL IRETQ and resume
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`,
+`cargo test -p od-machine --test diagnostic_vcpu_api --offline -- --test-threads=1`,
+and the existing `od-isa` same-CPL IRETQ frame/failure tests. The 12 diagnostic
+session cases include guest `MOV dword [0xFEE000B0],EAX` EOI through the
+MachineBus MMIO path, the fixed IRETQ profile, and resumption of one interrupted
+instruction. All 16 original RSP low-nibble alignments must restore the exact
+RSP, RIP, CS, SS and RFLAGS; the resumed instruction reads a RAM sentinel.
+Further cases cover deasserted and held level lines, one new request accepted
+into IRR at EOI with CPU delivery deferred until the next caller boundary, and fetch/frame/CS/SS IRETQ read aborts after
+EOI without CPU commit or repeat EOI; aborted sessions become terminal.
+`cargo check -p od-machine --all-targets --offline`, fmt/diff, and independent
+Sol/high review passed. This remains a caller-driven flat identity profile; it
+does not establish paged IRETQ, automatic polling, HLT wakeup, JIT or Linux
+acceptance. See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

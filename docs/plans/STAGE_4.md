@@ -1404,6 +1404,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 9 `diagnostic_vcpu` unit tests, 10 Local APIC tests, 7 public API tests и ISA stack-store failure regression; `od-machine --all-targets`, fmt/diff и независимое Sol/high review прошли. Evidence в [отчёте](../reports/STAGE_4_S4-27A_2026-11-07.md), [manifest](../reports/data/stage4/s4-27a-apic-cpu-entry.json) и [методике](../testing/MACHINE.md#s4-27a-caller-driven-apic-interrupt-entry).
 - **Граница:** нет автоматического polling/run loop, доставки на произвольной instruction/block boundary, paged CPU delivery, MOV SS/NMI, HLT wakeup, IRET/guest EOI path, JIT exits или Linux/board acceptance. Полный критерий S4-27 остаётся открытым.
 
+#### S4-27b. Гостевой EOI, same-CPL IRETQ и resume
+
+- [x] Ограниченный S4-27b принят после независимого `gpt-6.1-sol/high` code review и повторного docs review без оставшихся замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** после S4-27a handler выполняет guest `MOV dword [LAPIC_EOI], EAX=0` через существующий `IdentityMemoryAdapter → MachineBus` MMIO path. Явный `run_same_cpl0_iretq` вызывает существующий `od-isa` `SameCpl0ValidFrameV1` с budget 1; после Retired обычный session `run(1)` возобновляет instruction по сохранённому RIP.
+- **Подтверждено:** один level request входит через пять qword frame, handler EOI очищает Remote IRR, IRETQ восстанавливает RIP/RSP/CS/SS/RFLAGS, затем реально исполняется прерванная RAM instruction. Проверены все 16 младших выравниваний исходного RSP; при удерживаемом INTIN4 EOI атомарно принимает ровно один новый запрос в IRR, а его CPU-доставка ждёт следующую явную caller boundary.
+- **Отказы:** после уже состоявшегося guest EOI fetch/frame/CS/SS read abort в IRETQ не публикует candidate CPU, не повторяет EOI и переводит сессию в terminal. Предыдущий EOI и его effects не откатываются.
+- **Проверки:** 12 `diagnostic_vcpu` tests, 8 API tests, 10 Local APIC tests, 25 `od-isa::iretq` tests; package all-targets, fmt/diff и независимый Sol/high review прошли. Graphify и layout details — в [отчёте](../reports/STAGE_4_S4-27B_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json); методика — [S4-27b](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume).
+- **Граница:** caller-driven same-CPL0 diagnostic flat identity path; нет автоматического interrupt polling, paged IRETQ, межуровневого return, полного IF/STI/MOV SS/NMI/HLT scheduler, JIT или Linux acceptance. Полный S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.
