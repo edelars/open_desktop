@@ -1,57 +1,35 @@
+use crate::apic_pair::{LEVEL, MASK, PairState, REMOTE_IRR};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
 use std::sync::{Arc, Mutex};
 
 pub const IO_APIC_MMIO_BASE: u64 = 0xfec0_0000;
 pub const IO_APIC_MMIO_SIZE: u64 = 0x1000;
-const MASK: u32 = 1 << 16;
-const READ_ONLY_STATUS: u32 = (1 << 12) | (1 << 14);
+const READ_ONLY_STATUS: u32 = (1 << 12) | REMOTE_IRR;
 
-/// A single opt-in INTIN4 fixed, physical, active-high edge route to APIC ID 0.
-/// Register definitions follow Intel 82093AA, 290566-001, sections 3.1–3.2.4.
-pub struct IoApic(Arc<Mutex<State>>);
+/// One fixed, physical, active-high INTIN4 route to APIC ID 0.
+pub struct IoApic(Arc<Mutex<PairState>>);
 #[derive(Clone)]
-pub struct IoApicHandle(Arc<Mutex<State>>);
-
-struct State {
-    selector: u8,
-    low: u32,
-    high_line: bool,
-    destination: LocalApicHandle,
-}
+pub struct IoApicHandle(Arc<Mutex<PairState>>);
 
 impl IoApic {
     pub fn new(destination: LocalApicHandle) -> Self {
-        Self(Arc::new(Mutex::new(State {
-            selector: 0,
-            low: MASK,
-            high_line: false,
-            destination,
-        })))
+        Self(destination.0)
     }
     pub fn handle(&self) -> IoApicHandle {
         IoApicHandle(Arc::clone(&self.0))
     }
 }
-
 impl IoApicHandle {
-    /// Reset this device's selector, route and input level, without resetting the Local APIC.
-    pub fn reset(&self) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.selector = 0;
-        state.low = MASK;
-        state.high_line = false;
+    /// Reset only the IOAPIC; a level request awaiting EOI vetoes reset.
+    pub fn reset(&self) -> Result<(), DeviceError> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).reset_io()
     }
-
-    /// Set INTIN4. A failed delivery leaves the input level unchanged, allowing retry.
-    /// The caller must serialize operations on this device and its destination APIC,
-    /// including reset and global-enable changes, for their complete duration.
+    /// Caller serializes complete device, reset and CPU helper operations.
     pub fn set_intin4(&self, high: bool) -> Result<(), DeviceError> {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if high && !state.high_line && state.low & MASK == 0 {
-            state.destination.request_fixed_edge(state.low as u8)?;
-        }
-        state.high_line = high;
-        Ok(())
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_line(high)
     }
 }
 
@@ -75,9 +53,16 @@ impl BusDevice for IoApic {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
         let offset = validate(access)?;
         let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        match (offset, state.selector) {
-            (0, _) => Ok(u64::from(state.selector)),
-            (0x10, 0x18) => Ok(u64::from(state.low)),
+        match (offset, state.route.selector) {
+            (0, _) => Ok(u64::from(state.route.selector)),
+            (0x10, 0x18) => Ok(u64::from(
+                state.route.low
+                    | if state.route.remote_irr {
+                        REMOTE_IRR
+                    } else {
+                        0
+                    },
+            )),
             (0x10, 0x19) => Ok(0),
             _ => Err(DeviceError::UnknownOffset),
         }
@@ -85,17 +70,16 @@ impl BusDevice for IoApic {
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         let offset = validate(access)?;
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        match (offset, state.selector) {
+        match (offset, state.route.selector) {
             (0, _) if value <= 0xff => {
-                state.selector = value as u8;
+                state.route.selector = value as u8;
                 Ok(())
             }
             (0x10, 0x18)
-                if value & !(u64::from(MASK | READ_ONLY_STATUS) | 0xff) == 0
+                if value & !(u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff) == 0
                     && (0x10..=0xfe).contains(&(value & 0xff)) =>
             {
-                state.low = value as u32 & !READ_ONLY_STATUS;
-                Ok(())
+                state.set_low(value as u32 & !READ_ONLY_STATUS)
             }
             (0x10, 0x19) if value == 0 => Ok(()),
             (0, _) | (0x10, 0x18 | 0x19) => Err(DeviceError::UnsupportedConfiguration),
@@ -116,7 +100,7 @@ mod tests {
     fn setup() -> (MachineBus, IoApicHandle, LocalApicHandle) {
         let local = LocalApic::new();
         let apic = local.handle();
-        apic.set_global_enabled(true);
+        apic.set_global_enabled(true).unwrap();
         let io = IoApic::new(apic.clone());
         let handle = io.handle();
         let regions = [
@@ -193,7 +177,7 @@ mod tests {
         select(&mut bus, 0x18);
         assert_eq!(read(&mut bus, 0x10), Ok(u64::from(MASK)));
         route(&mut bus, u64::from(MASK) | 0x51);
-        for invalid in [0, 15, 0xff, 0x151, 0x851, 0x2051, 0x8051, 0x20051] {
+        for invalid in [0, 15, 0xff, 0x151, 0x851, 0x2051, 0x20051] {
             assert_eq!(
                 write(&mut bus, IO_APIC_MMIO_BASE, 0x10, invalid),
                 Err(device_error(DeviceError::UnsupportedConfiguration))
@@ -232,7 +216,7 @@ mod tests {
         );
         assert_eq!(read(&mut bus, 0), Ok(1));
         io.set_intin4(true).unwrap();
-        io.reset();
+        io.reset().unwrap();
         assert_eq!(read(&mut bus, 0), Ok(0));
         select(&mut bus, 0x18);
         assert_eq!(read(&mut bus, 0x10), Ok(u64::from(MASK)));
@@ -290,15 +274,235 @@ mod tests {
     fn disabled_destination_fails_without_consuming_the_edge() {
         let (mut bus, io, apic) = setup();
         route(&mut bus, 0x70);
-        apic.set_global_enabled(false);
+        apic.set_global_enabled(false).unwrap();
         assert_eq!(
             io.set_intin4(true),
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(apic.pending(), None);
         assert_eq!(read(&mut bus, 0x10), Ok(0x70));
-        apic.set_global_enabled(true);
+        apic.set_global_enabled(true).unwrap();
         io.set_intin4(true).unwrap();
         assert_eq!(apic.pending(), Some(0x70));
+    }
+    fn local_read(bus: &mut MachineBus, offset: u64) -> u64 {
+        bus.read_physical(
+            GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+            AccessWidth::Dword,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn level_acceptance_eoi_mask_priority_and_nested_edge() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0x80, 0x50).unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(apic.eligible(), None);
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert_ne!(local_read(&mut bus, 0x1a0) & (1 << 17), 0);
+        io.set_intin4(true).unwrap();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0x80, 0).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        apic.request_fixed_edge(0x71).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x71));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert_eq!(apic.pending(), None);
+        for _ in 0..2 {
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+            assert_eq!(apic.pending(), Some(0x51));
+            assert_eq!(apic.acknowledge(), Some(0x51));
+        }
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x51);
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        assert_eq!(apic.pending(), None);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        assert_eq!(apic.pending(), Some(0x51));
+        io.set_intin4(false).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        assert_eq!(apic.pending(), None);
+        assert_ne!(local_read(&mut bus, 0x1a0) & (1 << 17), 0);
+    }
+
+    #[test]
+    fn level_deassert_after_ack_and_masked_assert_unmask() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x51);
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        route(&mut bus, u64::from(LEVEL | READ_ONLY_STATUS) | 0x51);
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        io.set_intin4(false).unwrap();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        assert_eq!(apic.pending(), None);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+    }
+
+    #[test]
+    fn masked_inactive_level_reserves_vector_against_edges() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x51);
+        let before = io.0.lock().unwrap().clone();
+        assert!(!before.route.high_line);
+        assert_eq!(
+            apic.request_fixed_edge(0x51),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(*io.0.lock().unwrap(), before);
+        assert_eq!(
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0x300, 0x4_4051),
+            Err(BusAccessError::Device {
+                device_index: 1,
+                source: DeviceError::UnsupportedConfiguration
+            })
+        );
+        assert_eq!(*io.0.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn level_delivery_requires_software_enable_and_vetoes_disable() {
+        let (mut bus, io, apic) = setup();
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        let before = io.0.lock().unwrap().clone();
+        assert_eq!(
+            io.set_intin4(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(*io.0.lock().unwrap(), before);
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x51);
+        io.set_intin4(true).unwrap();
+        let before = io.0.lock().unwrap().clone();
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(*io.0.lock().unwrap(), before);
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        let before = io.0.lock().unwrap().clone();
+        assert_eq!(
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0xff),
+            Err(BusAccessError::Device {
+                device_index: 1,
+                source: DeviceError::UnsupportedConfiguration
+            })
+        );
+        assert_eq!(*io.0.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn independent_resets_preserve_other_controller() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0x80, 0x20).unwrap();
+        apic.request_fixed_edge(0x61).unwrap();
+        route(&mut bus, 0x51);
+        io.set_intin4(true).unwrap();
+        let local_before = io.0.lock().unwrap().local.clone();
+        io.reset().unwrap();
+        assert_eq!(io.0.lock().unwrap().local, local_before);
+        assert_eq!(apic.pending(), Some(0x61));
+        assert_eq!(apic.acknowledge(), Some(0x61));
+
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x71);
+        io.set_intin4(true).unwrap();
+        select(&mut bus, 0x19);
+        let route_before = io.0.lock().unwrap().route.clone();
+        apic.reset().unwrap();
+        assert_eq!(io.0.lock().unwrap().route, route_before);
+        assert_eq!(read(&mut bus, 0).unwrap(), 0x19);
+        select(&mut bus, 0x18);
+        assert_eq!(
+            read(&mut bus, 0x10).unwrap(),
+            u64::from(LEVEL | MASK) | 0x71
+        );
+        assert!(io.0.lock().unwrap().route.high_line);
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn independent_resets_veto_accepted_level_without_mutation() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        io.set_intin4(true).unwrap();
+        for acknowledged in [false, true] {
+            if acknowledged {
+                assert_eq!(apic.acknowledge(), Some(0x51));
+                io.set_intin4(false).unwrap();
+            }
+            let before = io.0.lock().unwrap().clone();
+            assert_eq!(io.reset(), Err(DeviceError::UnsupportedConfiguration));
+            assert_eq!(*io.0.lock().unwrap(), before);
+            assert_eq!(apic.reset(), Err(DeviceError::UnsupportedConfiguration));
+            assert_eq!(*io.0.lock().unwrap(), before);
+        }
+        apic.reset_pair();
+        assert_eq!(*io.0.lock().unwrap(), PairState::default());
+    }
+
+    #[test]
+    fn level_configuration_conflicts_and_coordinated_reset() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x51).unwrap();
+        select(&mut bus, 0x18);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        route(&mut bus, u64::from(LEVEL | READ_ONLY_STATUS) | 0x51);
+        assert_eq!(read(&mut bus, 0x10).unwrap(), u64::from(LEVEL) | 0x51);
+        assert_eq!(
+            apic.request_fixed_edge(0x51),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0x300, 0x4_4051),
+            Err(BusAccessError::Device {
+                device_index: 1,
+                source: DeviceError::UnsupportedConfiguration
+            })
+        );
+        io.set_intin4(true).unwrap();
+        assert_eq!(
+            apic.set_global_enabled(false),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0xff),
+            Err(BusAccessError::Device {
+                device_index: 1,
+                source: DeviceError::UnsupportedConfiguration
+            })
+        );
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x61),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(apic.pending(), Some(0x51));
+        apic.reset_pair();
+        assert_eq!(apic.pending(), None);
+        select(&mut bus, 0x18);
+        assert_eq!(read(&mut bus, 0x10).unwrap(), u64::from(MASK));
+        assert_eq!(local_read(&mut bus, 0x1a0), 0);
     }
 }

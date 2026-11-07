@@ -65,6 +65,13 @@ INTIN4 fixed-edge route to Local APIC ID 0. It is not registered in the default
 board and does not establish device-to-pin mapping, CPU interrupt handling or
 guest OS discovery.
 
+S4-26b adds an optional active-high Fixed level mode for that same route, with
+Local APIC TMR and IOAPIC Remote IRR tracking through matching EOI and atomic
+retrigger. The two models share one narrow state owner, while independent reset
+preserves the other controller and an explicit pair reset clears both. This
+remains an opt-in device test profile, not default board registration or CPU
+handler delivery.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

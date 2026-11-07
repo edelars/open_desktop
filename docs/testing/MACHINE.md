@@ -521,6 +521,27 @@ writes; no findings remain. The tests do not establish level delivery, other
 IOAPIC routes, default board wiring, CPU handler execution or Linux boot. See
 the [slice report](../reports/STAGE_4_S4-26A_2026-11-07.md).
 
+## S4-26b: fixed-level IOAPIC route
+
+Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`
+and `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The eleven IOAPIC tests cover level acceptance and TMR/Remote IRR state, TPR
+eligibility, acknowledge/EOI retrigger, asserted/deasserted and masked/unmasked
+transitions, nested edge compatibility, route-change conflict rejection,
+disabled-destination edge retry, vector reservation while a level route is
+masked/inactive, SVR-disabled assert/unmask rejection, software-disable veto,
+and independent versus coordinated reset.
+The reset regression verifies that each independent reset preserves the other
+controller and that outstanding Remote IRR vetoes both without mutation. Ten
+Local APIC tests cover adjacent register, priority, self-IPI, CR8 and APIC-base
+behavior. `cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Independent
+Sol/high review initially found a P2 reset-state regression; it was fixed and
+the changed slice passed repeat review. Graphify and layout results are in the
+[S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md). This does not
+establish guest CPU interrupt/handler delivery, board registration or Linux
+discovery.
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

@@ -1361,6 +1361,54 @@ errors do not model guest exception delivery. Register behavior follows Intel
 preliminary release, §§3.1–3.2.4. See the [S4-26a report](../reports/STAGE_4_S4-26A_2026-11-07.md)
 and [verification method](../testing/MACHINE.md#s4-26a-fixed-edge-ioapic-route).
 
+## Fixed-level IOAPIC route and Local APIC EOI (S4-26b)
+
+The same single INTIN4 → physical Local APIC ID 0 route may be configured for
+active-high Fixed level delivery. On acceptance, the Local APIC sets the vector
+in IRR and TMR and the IOAPIC sets Remote IRR. Acceptance is independent of
+TPR eligibility. Acknowledge moves the vector to ISR without clearing TMR or
+Remote IRR. A matching Local APIC EOI clears ISR and Remote IRR; if INTIN4 is
+still asserted and the route is unmasked, the next request is accepted
+atomically with that EOI. Deassertion does not cancel an already accepted
+request. Masking after acceptance does not cancel it; EOI while masked clears
+Remote IRR without retrigger, and unmasking an asserted line may accept a new
+request. Acceptance requires both Local APIC global enable and
+`SVR.SoftwareEnable`; an assertion that would immediately deliver an
+unmasked level request, or unmasking an asserted level route, fails before the
+line/configuration transition if acceptance is disabled. A masked assertion
+may still record the high input level without delivery. TPR affects
+eligibility only.
+
+The configured level vector is reserved from the bounded edge/self-IPI path,
+even while its route is masked or its line is inactive, so one vector's TMR/EOI
+cannot ambiguously identify edge and level requests. This profile supports no
+other level routes or vector sharing.
+
+One shared owner state serializes route and Local APIC transitions under a
+single mutex. There are no cross-device callbacks or nested locks. A level
+route cannot change vector or trigger mode while its line is high, Remote IRR
+is set, or either related vector is pending/in service. Edge→edge vector
+reprogramming preserves the S4-26a behavior, including an already pending old
+vector. Independent device resets preserve the other controller; they fail
+without mutation while Remote IRR is outstanding. `reset_pair` is the explicit
+coordinated operation that discards both controllers' state. The caller
+serializes the full CPU helper and device operations; guest instruction fetch
+does not run under the pair mutex. Global disable and SVR software disable are
+also vetoed without mutation while Remote IRR is outstanding.
+
+The APIC-base CPU helper executes on a candidate CPU state and publishes it
+only after the corresponding Local APIC transition succeeds. A host-side
+transition veto while Remote IRR is set leaves CPU retirement and device state
+unchanged. This is a `DeviceError`, not a guest `#GP`; any fetch or page-walk
+effects already committed before the veto are not rolled back.
+
+TMR acceptance and EOI semantics follow Intel [SDM 253668-093US, September
+2026, Volume 3A §§13.8.4–13.8.5](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+The bounded IOAPIC route follows [Intel 82093AA I/O APIC document 290566-001,
+preliminary release, §3.2.4](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF).
+See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
+[verification method](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

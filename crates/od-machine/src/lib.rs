@@ -1,5 +1,6 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
+mod apic_pair;
 mod bus;
 mod diagnostic_vcpu;
 mod event_queue;

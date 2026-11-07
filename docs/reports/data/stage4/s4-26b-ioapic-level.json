@@ -1,0 +1,26 @@
+{
+  "slice": "S4-26b",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "One opt-in INTIN4 active-high Fixed level route to physical Local APIC ID 0 with atomic TMR, Remote IRR and EOI retrigger",
+  "sources": [
+    "Intel SDM 253668-093US, September 2026, Volume 3A §§13.8.4–13.8.5",
+    "Intel 82093AA I/O APIC document 290566-001, preliminary release, §3.2.4"
+  ],
+  "review": "Independent gpt-6.1-sol/high review found a P2 independent-reset regression; fix and regression tests were confirmed in repeat review with no remaining findings.",
+  "checks": {
+    "ioapic_tests": "cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1: 11 passed",
+    "local_apic_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 10 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "27,704 nodes, 70,312 edges, 903 communities",
+    "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056)"
+  },
+  "limitations": [
+    "only one physical INTIN4 route to Local APIC ID 0 is supported",
+    "only active-high Fixed delivery and selected Dword registers are implemented",
+    "guest CPU interrupt/handler delivery, IDT/IF, APIC bus behavior, default board wiring, other IOAPIC routes and Linux discovery remain unimplemented",
+    "parent S4-26 and Stage 4 remain open"
+  ]
+}

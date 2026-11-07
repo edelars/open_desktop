@@ -609,3 +609,19 @@ handler delivery, board wiring and Linux discovery are not established. See
 the [slice report](STAGE_4_S4-26A_2026-11-07.md) and
 [evidence](data/stage4/s4-26a-ioapic-fixed-edge.json). Parent S4-26 and Stage 4
 remain open.
+
+## S4-26b — bounded fixed-level IOAPIC route
+
+The single INTIN4 route now supports active-high Fixed level mode with Local
+APIC TMR and IOAPIC Remote IRR state, matching EOI and atomic retrigger while
+the line remains asserted. A shared owner lock makes route acceptance and EOI
+transitions atomic. Independent resets preserve the other controller and veto
+without mutation during outstanding Remote IRR; pair reset is explicit. The
+APIC-base helper publishes CPU state only after its APIC transition succeeds.
+Eleven IOAPIC tests, ten Local APIC tests, the `od-machine` all-targets check,
+formatting, diff validation, Graphify and repeat Sol/high review passed. The
+review's initial P2 reset regression was fixed and confirmed closed. This does
+not implement guest CPU handler delivery or board registration. See the
+[slice report](STAGE_4_S4-26B_2026-11-07.md) and
+[evidence](data/stage4/s4-26b-ioapic-level.json). Parent S4-26 and Stage 4
+remain open.
