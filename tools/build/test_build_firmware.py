@@ -134,6 +134,49 @@ class CrossValidatorTest(unittest.TestCase):
         self.assertEqual(BUILDER.validate_image(image)["image_crc32"], SAMPLE_IMAGE_CRC32)
 
 
+class SmokeImageTest(unittest.TestCase):
+    def test_smoke_image_is_a_valid_v1_image_with_the_expected_code(self) -> None:
+        image = BUILDER.build_smoke_image()
+        self.assertEqual(len(image), 0x0040_0000)
+        fields = BUILDER.validate_image(image)
+        self.assertEqual(fields["entry_offset"], 0x40)
+        # mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
+        self.assertEqual(image[0x40:0x48], bytes.fromhex("b058" "66baf803" "ee" "f4"))
+        self.assertEqual(image[0x48:], bytes(0x0040_0000 - 0x48))
+
+    def test_smoke_flag_writes_the_image_without_a_toolchain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "nested" / "mini.bin"
+            env = dict(os.environ, PATH="/nonexistent")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--smoke", "--out", str(out)],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=tmp,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = out.read_bytes()
+            self.assertEqual(data, BUILDER.build_smoke_image())
+            self.assertIn(hashlib.sha256(data).hexdigest(), result.stdout)
+
+    def test_smoke_default_out_is_mini_bin_never_the_firmware_image(self) -> None:
+        smoke = BUILDER.parse_args(["--smoke"])
+        self.assertEqual(smoke.out, BUILDER.ROOT / "work/stage7/mini.bin")
+        self.assertNotEqual(smoke.out, BUILDER.DEFAULT_OUT)
+        self.assertEqual(BUILDER.parse_args([]).out, BUILDER.ROOT / "work/stage7/firmware.bin")
+        self.assertEqual(BUILDER.parse_args(["--smoke", "--out", "x.bin"]).out, Path("x.bin"))
+
+    def test_smoke_and_efi_probe_are_mutually_exclusive(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--smoke", "--efi-probe", "x.efi"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("mutually exclusive", result.stderr)
+
+
 class MissingToolsTest(unittest.TestCase):
     def test_missing_clang_has_clear_message(self) -> None:
         env = {"PATH": "", "OD_FW_CLANG": "/nonexistent/clang"}

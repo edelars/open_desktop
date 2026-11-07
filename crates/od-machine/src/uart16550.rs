@@ -137,6 +137,13 @@ impl Uart16550Handle {
         self.with_state(UartState::transfer_holding_to_shift)
     }
 
+    /// Whether the transmit holding register is occupied. A caller-side STOP
+    /// predicate uses this to end a quantum right after a THR write
+    /// (FIRMWARE_BOOT.md section 11).
+    pub fn holding_occupied(&self) -> bool {
+        self.with_state(|state| state.holding.is_some())
+    }
+
     /// Completes and returns the shared device's current byte.
     pub fn complete_transmission(&self) -> Option<u8> {
         self.with_state(UartState::complete_transmission)

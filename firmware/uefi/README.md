@@ -1,6 +1,6 @@
 # Open Desktop firmware (`firmware/uefi/`)
 
-**Статус (S7-01): каркас сборки, а не прошивка.** Здесь доказано только, что freestanding `no_std` образ собирается, получает заголовок `ODFWIMG1` и дополняется до `0x400000` байт, а чистая логика тестируется на host. Прошивка ничего не реализует: нет разбора handoff block, памяти, страниц, аллокатора, System Table, Boot Services, PE loader, консоли, переменных, ACPI/SMBIOS, TPM и Secure Boot. Бинарь не запускался в машине (runner и ROM backing — S7-03/S7-04). «UEFI собирается» не означает «UEFI реализована».
+**Статус (S7-01): каркас сборки, а не прошивка.** Здесь доказано только, что freestanding `no_std` образ собирается, получает заголовок `ODFWIMG1` и дополняется до `0x400000` байт, а чистая логика тестируется на host. Прошивка ничего не реализует: нет разбора handoff block, памяти, страниц, аллокатора, System Table, Boot Services, PE loader, консоли, переменных, ACPI/SMBIOS, TPM и Secure Boot. Бинарь не запускался в машине: загрузчик образа, ROM backing и runner `boot-firmware` есть (S7-03), но вход прошивки в машине — S7-04. «UEFI собирается» не означает «UEFI реализована».
 
 Контракт образа и входа — [FIRMWARE_BOOT.md](../../docs/specs/FIRMWARE_BOOT.md); задача — [S7-01](../../docs/plans/STAGE_7.md#s7-01-выбрать-и-зафиксировать-сборку-прошивки-и-host-side-тестов); методика проверки — [FIRMWARE.md](../../docs/testing/FIRMWARE.md); правила каталога — [AGENTS.md](../AGENTS.md).
 
@@ -52,7 +52,15 @@ python3 -m unittest tools/build/test_build_firmware.py
 
 # Доказательство сборки PE32+ EFI-образа (probe; НЕ приложение S7-06 и НЕ RT-образ S7-11), раздел «EFI probe»
 python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
+
+# Мини-образ ODFWIMG1 для проверки загрузчика машины (S7-03): не прошивка, toolchain не нужен
+python3 tools/build/build_firmware.py --smoke --out work/stage7/mini.bin
+
+# Запуск образа в машине (S7-03): отчёт JSON, транскрипт COM1 в файл
+cargo run --offline -p od-runner -- boot-firmware --image work/stage7/mini.bin --com1-out work/stage7/mini_com1.txt --budget 100
 ```
+
+Без `--out` `--smoke` пишет в `work/stage7/mini.bin` (никогда в `work/stage7/firmware.bin` — путь настоящего образа прошивки). `--smoke` пишет образ ровно `0x400000` байт с обычным заголовком `ODFWIMG1` и входом `entry_offset = 0x40` с кодом `mov al,'X'; mov dx,0x3F8; out dx,al; hlt` (`B0 58 66 BA F8 03 EE F4`, 64-битный режим). **S7-03:** paged-квант машины допускает `MOV r8,imm8` (`B0+r ib`) и `66 MOV r16,imm16` (`66 B8+r iw`), поэтому `boot-firmware` на этом образе завершается `exit = halted`, `retired = 4`, код выхода `0`, и пишет в COM1 ровно `X`. Подробности — [MACHINE_CONTRACT.md](../../docs/specs/MACHINE_CONTRACT.md#firmware-board-v1-and-handoff-s7-03).
 
 Что делает скрипт: запускает `cargo build --release --target x86_64-unknown-none --offline` с рабочим каталогом `firmware/uefi/` (cargo читает `.cargo/config.toml` относительно текущего каталога) и `CARGO_TARGET_DIR=work/stage7/firmware-target`, проверяет ELF (`ET_EXEC`, один `PT_LOAD` по `0x0020_0000`, entry внутри кода), получает raw через `rust-objcopy`, сверяет его с ELF, записывает заголовок (`entry_offset = entry - 0x0020_0000`, CRC-32 по FIRMWARE_BOOT.md, раздел 6.6), дополняет нулями до `0x0040_0000`, валидирует результат заново и печатает размер, SHA-256, entry, CRC и версии инструментов. `RUSTFLAGS` из окружения сбрасывается: он заменил бы `.cargo/config.toml`.
 

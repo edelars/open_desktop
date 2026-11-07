@@ -835,11 +835,11 @@ impl MachineBus {
                         source,
                     })
             }
-            // Pixel memory is read as data like RAM.
-            MemoryRegionKind::Framebuffer => {
+            // Pixel memory is read as data like RAM; ROM bytes are read-only data.
+            MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom => {
                 read_ram(&self.memory, address, width).map_err(BusAccessError::Memory)
             }
-            MemoryRegionKind::Rom | MemoryRegionKind::Reserved => {
+            MemoryRegionKind::Reserved => {
                 Err(BusAccessError::Memory(MemoryAccessError::UnreadableRegion(
                     self.memory.locate_region_kind(address, len).unwrap(),
                 )))
@@ -935,7 +935,7 @@ impl MachineBus {
             .locate_region_kind(address, len)
             .map_err(map_memory_error)?;
         match kind {
-            MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer => self
+            MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom => self
                 .memory
                 .read_bytes(address, output)
                 .map_err(BusAccessError::Memory),
@@ -945,10 +945,22 @@ impl MachineBus {
                 output.copy_from_slice(&value.to_le_bytes()[..output.len()]);
                 Ok(())
             }
-            kind @ (MemoryRegionKind::Rom | MemoryRegionKind::Reserved) => Err(
-                BusAccessError::Memory(MemoryAccessError::UnreadableRegion(kind)),
-            ),
+            kind @ MemoryRegionKind::Reserved => Err(BusAccessError::Memory(
+                MemoryAccessError::UnreadableRegion(kind),
+            )),
         }
+    }
+
+    /// Machine-side one-time fill of the ROM region (firmware image at power
+    /// on). Guest-visible writes keep returning `ReadOnlyRegion(Rom)`.
+    pub(crate) fn load_rom_bytes(
+        &mut self,
+        address: GuestPhysicalAddress,
+        input: &[u8],
+    ) -> Result<(), BusAccessError> {
+        self.memory
+            .load_rom_bytes(address, input)
+            .map_err(BusAccessError::Memory)
     }
 
     pub(crate) fn write_flat_bytes(

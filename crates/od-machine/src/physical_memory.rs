@@ -268,10 +268,13 @@ impl PhysicalMemory {
         for &spec in &map.regions {
             // Framebuffer backing is allocated like RAM but is not counted in
             // `requested_ram`; its size is bounded by the map validation.
-            // Page generations exist only for RAM: Framebuffer is never code.
+            // Page generations exist only for RAM: Framebuffer and ROM are never
+            // tracked code (FIRMWARE_BOOT.md 3.1: ROM is read-only and the image
+            // executes from its RAM shadow). ROM backing starts zeroed and is
+            // filled once by the machine loader through `load_rom_bytes`.
             let (backing, page_generations) = if matches!(
                 spec.kind,
-                MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer
+                MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom
             ) {
                 let len = usize::try_from(spec.range.len).map_err(|_| {
                     MemoryAccessError::AllocationFailed {
@@ -285,7 +288,10 @@ impl PhysicalMemory {
                         bytes: spec.range.len,
                     })?;
                 bytes.resize(len, 0);
-                if spec.kind == MemoryRegionKind::Framebuffer {
+                if matches!(
+                    spec.kind,
+                    MemoryRegionKind::Framebuffer | MemoryRegionKind::Rom
+                ) {
                     (Some(bytes), Vec::new())
                 } else {
                     let covered = (spec.range.start.get() & 0xfff)
@@ -367,7 +373,8 @@ impl PhysicalMemory {
         let len = checked_access_len(input.len())?;
         let (region_index, offset) = self.locate_index(address, len)?;
         let region = &mut self.regions[region_index];
-        if region.backing.is_none() {
+        // ROM has read backing but the guest and ordinary loaders never write it.
+        if region.backing.is_none() || region.spec.kind == MemoryRegionKind::Rom {
             return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
         }
         if region.spec.kind == MemoryRegionKind::Framebuffer {
@@ -412,6 +419,27 @@ impl PhysicalMemory {
             len,
         };
         committed_write(committed);
+        Ok(())
+    }
+
+    /// Machine-side one-time fill of a ROM region (the firmware image at power
+    /// on). This is the only ROM writer; `write_bytes` keeps rejecting ROM.
+    pub(crate) fn load_rom_bytes(
+        &mut self,
+        address: GuestPhysicalAddress,
+        input: &[u8],
+    ) -> Result<(), MemoryAccessError> {
+        let len = checked_access_len(input.len())?;
+        let (region_index, offset) = self.locate_index(address, len)?;
+        let region = &mut self.regions[region_index];
+        if region.spec.kind != MemoryRegionKind::Rom {
+            return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
+        }
+        let backing = region
+            .backing
+            .as_mut()
+            .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
+        backing[offset..offset + input.len()].copy_from_slice(input);
         Ok(())
     }
 
@@ -654,10 +682,11 @@ mod tests {
             memory.read_u8(GuestPhysicalAddress::new(0x2000)),
             Err(MemoryAccessError::Unmapped(_))
         ));
-        assert!(matches!(
-            memory.read_u8(GuestPhysicalAddress::new(0x3000)),
-            Err(MemoryAccessError::UnreadableRegion(MemoryRegionKind::Rom))
-        ));
+        // S7-03: ROM has read backing (zeroed until the loader fills it).
+        assert_eq!(
+            memory.read_u8(GuestPhysicalAddress::new(0x3000)).unwrap(),
+            0
+        );
         assert!(matches!(
             memory.write_u8(GuestPhysicalAddress::new(0x3000), 1, |_| {}),
             Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
@@ -671,6 +700,46 @@ mod tests {
         assert!(matches!(
             memory.read_u16(GuestPhysicalAddress::new(u64::MAX)),
             Err(MemoryAccessError::AddressOverflow)
+        ));
+    }
+
+    #[test]
+    fn rom_is_readable_after_loader_fill_and_rejects_every_other_write() {
+        let mut memory = memory(&[
+            (0x1000, 0x1000, MemoryRegionKind::Ram),
+            (0x3000, 0x1000, MemoryRegionKind::Rom),
+        ]);
+        memory
+            .load_rom_bytes(GuestPhysicalAddress::new(0x3010), &[1, 2, 3, 4])
+            .unwrap();
+        assert_eq!(
+            memory.read_u32(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            0x0403_0201
+        );
+        // Guest-visible writes never reach ROM and never invoke the callback.
+        let mut commits = 0;
+        assert_eq!(
+            memory.write_u8(GuestPhysicalAddress::new(0x3010), 9, |_| commits += 1),
+            Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Rom))
+        );
+        assert_eq!(commits, 0);
+        assert_eq!(
+            memory.read_u8(GuestPhysicalAddress::new(0x3010)).unwrap(),
+            1
+        );
+        // No page generations: ROM is never tracked code.
+        assert_eq!(
+            memory.code_page_generation(GuestPhysicalAddress::new(0x3000)),
+            Err(MemoryAccessError::UnreadableRegion(MemoryRegionKind::Rom))
+        );
+        // The loader writes only ROM and only inside one region.
+        assert_eq!(
+            memory.load_rom_bytes(GuestPhysicalAddress::new(0x1000), &[1]),
+            Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Ram))
+        );
+        assert!(matches!(
+            memory.load_rom_bytes(GuestPhysicalAddress::new(0x3ffe), &[1, 2, 3]),
+            Err(MemoryAccessError::AccessCrossesRegion(_) | MemoryAccessError::Unmapped(_))
         ));
     }
 

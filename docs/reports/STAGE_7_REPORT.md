@@ -1,6 +1,6 @@
 # Этап 7. Отчёт: собственные UEFI, ACPI и платформа для Windows
 
-Статус отчёта: **промежуточный. Этап 7 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и проверками на ветке `feat/s9-stage` (исходная точка — коммит `bacffa0`, план этапа 7). Правило статусов: задача, выполненная исполнителем, — `in_progress`, пока ревью не примет её и не отметит чекбокс в плане (`STAGE_7.md` §0); S7-00, S7-01, S7-02, S7-20 и S7-30 сейчас `in_progress`, остальные задачи S7-NN не начаты. Наличие плана, этого отчёта или записей в карте проекта не закрывает ни одну задачу.
+Статус отчёта: **промежуточный. Этап 7 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и проверками на ветке `feat/s9-stage` (исходная точка — коммит `bacffa0`, план этапа 7). Правило статусов: задача, выполненная исполнителем, — `in_progress`, пока ревью не примет её и не отметит чекбокс в плане (`STAGE_7.md` §0); S7-00, S7-01, S7-02, S7-03, S7-20 и S7-30 сейчас `in_progress`, остальные задачи S7-NN не начаты. Наличие плана, этого отчёта или записей в карте проекта не закрывает ни одну задачу.
 
 Связанные документы: [план этапа 7](../plans/STAGE_7.md), [этап 7 дорожной карты](../ROADMAP.md#этап-7-собственные-uefi-acpi-и-платформа-для-windows), [виртуальная плата](../specs/VIRTUAL_BOARD.md), [состояние VM](../specs/VM_STATE.md), [реестр проблем](../KNOWN_ISSUES.md), [отчёт этапа 9](STAGE_9_REPORT.md), [отчёт этапа 11](STAGE_11_REPORT.md).
 
@@ -11,8 +11,8 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 0 | — |
-| `in_progress` | 5 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
-| `not_started` | 33 | остальные задачи, см. таблицу ниже |
+| `in_progress` | 6 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
+| `not_started` | 32 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_7.md` §0 отмечаются только после ревью.
 
@@ -23,7 +23,7 @@
 | S7-00 | in_progress | `c1ae3dd` | — | Scope, отчёт этапа, обновление платы и карты, запись переноса пунктов roadmap (выполнено, коммит `c1ae3dd`, ожидает принятия ревью) |
 | S7-01 | in_progress | `426c98a` | — | Сборка прошивки и EFI-приложений, host-side тесты, методика (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита на момент записи нет; каркас основного образа и доказательство сборки PE32+ probe; тестовые EFI-приложения — S7-06, боевой RT-образ и размещение в FV — S7-11) |
 | S7-02 | in_progress | `68cca38` | — | Контракт входа: окна, handoff, manifest платы, ABI/состояние вызова, таймеры, ROM, RT relocation (выполнено, ожидает ревью, коммита нет) |
-| S7-03 | not_started | — | — | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner |
+| S7-03 | in_progress | — | — | ROM backing/shadow, загрузчик образа, handoff block, профиль платы и runner (выполнено исполнителем, ожидает ревью, коммита нет; blocker снят реализацией решения архитектора — допуск `B0+r ib` и `66 B8+r iw` в `PagedCpl0ProbeV1`; образ `--smoke` в машине: выход 0, `halted`, `retired = 4`, COM1 ровно `X`, см. раздел 5 и раздел S7-03) |
 | S7-04 | not_started | — | — | Ядро прошивки: вход, таблицы страниц, аллокатор, memory map, COM1 |
 | S7-05 | not_started | — | — | System Table, Boot Services, база протоколов, события, `ExitBootServices` |
 | S7-06 | not_started | — | — | PE/COFF loader, Authenticode-дайджест, `LoadImage`/`StartImage`/`Exit`, Loaded Image, Device Path |
@@ -135,6 +135,48 @@
 
 Проверено: пересечения окон с `[0xF400_0000, 0xFC00_1000)`, `0xFEC0_0000`, `0xFED4_0000`, `0xFEE0_0000` и граница RAM `0xF400_0000` пересчитаны `python3`; совместимость с `MachineMemoryMap::new(36, …)`; `python3 tools/check_layout.py` — число ошибок не выросло (45); `git diff --check` чист; относительные ссылки изменённых файлов ведут на существующие файлы. Текст UEFI 2.11 §2.3.4 сверить не удалось (страница uefi.org вернула HTTP 403); сверку значений FCW/MXCSR выполняет S7-05.
 
+### S7-03. ROM backing, загрузчик образа, handoff block, профиль платы и runner
+
+Статус `in_progress`: выполнено исполнителем (Claude Sonnet), ожидает ревью; коммита и ревью нет. Blocker (мини-образ не печатал `X`) снят реализацией допуска `MOV imm` (абзац «Реализация решения» ниже). Реализованные границы — [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md), раздел «Firmware board v1 and handoff (S7-03)».
+
+Создано: `crates/od-machine/src/firmware_board.rs` (профиль платы, загрузчик образа, handoff block v1.0, временные таблицы страниц, `LoadedFirmwareBoard::run_boot`, 13 тестов), `tools/runner/src/firmware_boot.rs` (подкоманда `boot-firmware`, 2 unit-теста), `tools/runner/tests/firmware_boot_cli.rs` (5 тестов). Изменены: `physical_memory.rs` (read backing для `Rom`, `load_rom_bytes`, отказ записи; тест существующего поведения `accesses_check_boundaries_holes_rom_and_reserved_regions` обновлён: ROM теперь читается и возвращает нули до загрузки — это и есть изменение контракта, чтение разрешено S7-02; добавлен тест `rom_is_readable_after_loader_fill_and_rejects_every_other_write`), `bus.rs` (чтение ROM через `read_physical`/`read_flat_bytes`, `load_rom_bytes`), `uart16550.rs` (`Uart16550Handle::holding_occupied` для STOP-предиката), `lib.rs` (mod и экспорт), `tools/runner/src/main.rs` (диспетчер), `tools/build/build_firmware.py` и `test_build_firmware.py` (режим `--smoke`, 3 теста), `firmware/uefi/README.md`, `docs/testing/FIRMWARE.md`, `MACHINE_CONTRACT.md`, строка статуса в плане.
+
+Что работает (подтверждено тестами):
+
+- ROM читается, запись гостя и обычного загрузчика — `ReadOnlyRegion(Rom)` без callback; shadow `[0x0020_0000, 0x0060_0000)` — копия, прочитанная из ROM; page generations для ROM не создаются.
+- Handoff block (12 регионов, 880 байт, `N = 91`) побайтно совпадает с эталоном, сгенерированным отдельным скриптом по таблицам FIRMWARE_BOOT.md разделов 2, 4, 6 (hex в тесте `handoff_block_is_byte_identical_to_the_reference`, CRC `0xDFFE4F54`); число страниц таблиц совпадает с документом для трёх размеров RAM (110 / 2097 / 32780 при обоих экранах, NVRAM и TPM CRB; для текущей платы 91).
+- Образ неверного размера, magic, версии, `link_base`, `entry_offset`, `handoff_major`, `flags`, reserved и CRC отклоняется до запуска; неверная конфигурация (RAM, `tsc_hz`, серийный номер) — тоже.
+- Fetch из ROM по временным таблицам — `#PF`, error code `0x11`, линейный адрес — адрес fetch, backend-ошибки нет.
+- Исполнение из shadow через существующий `run_paged_probe`: кванты заканчиваются на записи THR, байты попадают в транскрипт, виртуальное время растёт на `retired × 1 ns` (образ `MOV RAX,[RBX]; OUT DX,AL ×3; HLT`, `RBX`/`RDX` выставляет тест; ожидаемый `XXX`, 5 инструкций, 4 кванта, 5 ns); исчерпание бюджета отдаётся как `BudgetExhausted`.
+
+Расхождения и ограничения (записаны, не подогнаны):
+
+- **Мини-образ `--smoke` не печатал `X` в машине (blocker, снят).** До реализации `step_paged_probe` исполнял только `MOV RAX,[RBX]`, `MOV [RBX],RCX`, `IN AL,DX`, `OUT DX,AL`, `HLT`; `MOV r8,imm8` и `MOV r16,imm16` давали `Unsupported { opcode: 0xb0 }`, `retired = 0`, а контракт входа обнуляет все GPR кроме `RSP` и `RDI`. **Решение (архитектор, 2026-11-07): вариант (а)** — в `PagedCpl0ProbeV1` допускаются ровно `B0+r ib` и `66 B8+r iw`; контракт входа не меняется. Контракт — [CPU_CONTRACT.md](../specs/CPU_CONTRACT.md), «Расширение S7-03». **Реализация (исполнитель, 2026-11-07):** см. абзац «Реализация решения» ниже; пункты плана «мини-образ пишет ожидаемый байт в COM1 через runner» выполнены.
+- `FIRMWARE_BOOT.md` раздел 5 не упоминает, что COM1 при входе уже настроен. Polling UART отклоняет запись THR до `LCR = 0x03` и ненулевого делителя, поэтому загрузчик, как flat probe, настраивает UART; прошивка по разделу 11 пишет те же значения. **Закрыто в документе:** в разделе 5 `FIRMWARE_BOOT.md` добавлена строка «COM1» (настроен машиной как у flat probe S4-32a), раздел 11 на неё ссылается.
+- Задание называло `CR4 = 0x620` при входе; контракт (разделы 5 и 7) — `0x20` при входе и `0x620` при вызове EFI-образа; paged-квант допускает только `0x20` (`Cr4Profile::PagedMovLong64V1`). Реализовано `0x20`. **Закрыто в документе:** сам `FIRMWARE_BOOT.md` противоречия не содержал (в разделе 2 значения `CR4` нет; раздел 5 — `0x20`, раздел 7 — `0x620` при вызове образа); разделы 5 и 7 теперь явно говорят, что `0x620` — не состояние входа и ставится прошивкой в S7-04.
+- Чтение ROM гостем через paged-квант по-прежнему отклоняется walker'ом (RAM-only); `page_walk.rs` не менялся. Физическое чтение ROM на шине машины — разрешено (read backing). Гостевое чтение ROM через трансляцию страниц в текущем paged-пути — отклоняется (`UnreadableRegion(Rom)`), потому что `page_walk` допускает только Ram и Framebuffer; образ исполняется из shadow, поэтому v1 это не требует. Решение о гостевом чтении ROM — открытый вопрос для S7-04. Раздел 3.1 `FIRMWARE_BOOT.md` дополнен этой пометкой.
+- Значение `gsi` для устройств без IRQ и отсутствующих устройств — `0xFFFF_FFFF` (документ: «или `0xFFFF_FFFF` — нет»; для `PRESENT = 0` он явно не сказано).
+- Runner использует значения по умолчанию (128 MiB, один экран, нулевой UUID, пустой серийный номер, `tsc_hz = 10^9`); опций командной строки для них нет. Строка `OD-FW STOP` разбирается только как последняя непустая строка транскрипта (STOP с последующим текстом — не STOP, выход 0; тест `fw_stop_is_recognised_only_as_the_last_non_empty_line`); при ошибке прогона (выход 5) транскрипт COM1 тоже записывается (тест `com1_bytes_survive_a_failed_run`); `--smoke` без `--out` пишет `work/stage7/mini.bin`, не `firmware.bin`; разбор заголовка образа без `expect` (`FirmwareBoardError::ImageTruncated`). Разбор `OD-FW STOP` проверен только unit-тестом на тексте (образа, печатающего её, в машине запустить нельзя по причине выше).
+- Не реализовано (чужие задачи): повторное копирование shadow при сбросе (S7-26), NVRAM, TPM, ECAM, NVMe, ACPI fixed hardware, доставка IRQ.
+
+**Реализация решения (исполнитель, 2026-11-07).** `crates/od-isa/src/execute.rs`, `step_paged_probe_inner`: добавлена переменная `base_profile` (истинна только для `step_paged_probe`: все флаги профилей CR3, CR0.WP, стека, CPL3 и `PagedCpl0PioU8V1` выключены) и ветка `Operation::MovImmediate { dst: Register, value }` с точным guard из раздела 5 (`opcode.map = Primary`; длина 2, `B0..=B7`, `Prefixes::default()`, цель `Byte`; либо длина 4, `B8..=BF`, ровно `operand_override`, цель `Word`); тело — `state.write(destination, value); state.rip = next_rip` (выход `Retired`, флаги не тронуты). Декодер `long_decode.rs` не менялся; обновлены doc-комментарий `step_paged_probe` и комментарий теста в `firmware_board.rs`. Тесты: `paged_probe_profile.rs` — `paged_probe_mov_r8_imm8_writes_only_the_target_byte` (все 8 форм `B0`–`B7`, включая AH/CH/DH/BH, шаблоны в 16 GPR), `paged_probe_mov_r16_imm16_writes_only_the_low_word` (8 форм `66 B8`–`BF`, биты 63:16 сохранены), `paged_probe_mov_immediate_neighbours_stay_unsupported` (14 форм), `other_paged_profiles_keep_mov_immediate_unsupported` (стековый, CR3, CR0.WP); `paged_probe_quantum.rs` — `paged_probe_mov_immediate_fetch_fault_on_immediate_commits_nothing` (`#PF`, error code `0x10`, адрес — начало следующей страницы, `RDX`/`RIP` не изменены, `instructions_executed = 0`); `firmware_board.rs` — `smoke_code_writes_x_to_com1_with_zero_gprs_at_entry` (все GPR кроме `RSP`/`RDI` нулевые, `Halted`, `retired = 4`, COM1 `X`, `virtual_ns = 4`); `firmware_boot_cli.rs` — `smoke_code_prints_x_and_halts` (выход 0, `halted`, `retired = 4`, `com1_bytes = 1`, транскрипт `X`).
+
+**Фактический результат декодера на соседних формах (риск из решения не реализовался):** все 14 соседних форм дают `Unsupported { opcode }` с ожидаемым байтом: `BA F8 03 00 00`, `48 B8 …`, `66 66 BA …`, `66 41 BA …` — `0xba`/`0xb8`; `41 B0`, `66 B0`, `67 B0`, `2E B0`, `F3 B0`, `F2 B0` — `0xb0`; `40 B4` — `0xb4`; `C6 C0 58` — `0xc6`; `66 C7 C2 …` и `C7 C2 …` — `0xc7`. `#UD` ни для одной формы не получен; декодер не менялся и тесты не подгонялись. Не проверялись `F0`-формы (тест не требовался решением).
+
+Проверки (2026-11-07, worktree `/private/tmp/open_desktop-s9`, HEAD `de701dd` + незакоммиченные изменения; обновлены после реализации допуска `MOV imm`):
+
+- `cargo fmt --all -- --check` — красный только в `crates/od-host/src/display.rs`, `crates/od-machine/src/lib.rs` (старый блок `pub use display_device`, строка 39; добавленные в `lib.rs` строки отформатированы), `tools/power-loss/src/main.rs` (долг `main`); изменённые и новые файлы — чисто (`rustfmt`).
+- `cargo test -p od-isa --offline` — все наборы ok (2131 unit; `paged_probe_profile` 17, было 13).
+- `cargo test -p od-machine --offline` — 230 passed (unit), остальные наборы ok.
+- `cargo test -p od-runner --offline` — все наборы ok (в т.ч. 175 unit, `firmware_boot_cli` 5).
+- `cargo check --workspace --all-targets --offline` — проходит (предупреждения прежние, в `od-jit` и тестах).
+- `cargo test --manifest-path firmware/uefi/Cargo.toml --offline` — 11 passed.
+- `python3 -m unittest tools/build/test_build_firmware.py` — 25 tests OK.
+- `python3 tools/check_layout.py 2>&1 | grep -c ERROR` — 45; `git diff --check` — чисто.
+- `python3 tools/build/build_firmware.py --smoke --out work/stage7/mini.bin` (SHA-256 `6746dd71…c59f`); `boot-firmware --image work/stage7/mini.bin --com1-out work/stage7/mini_com1.txt --budget 100` (бинарь `target/debug/od-runner`) — код выхода 0, `exit = halted`, `activity = Halted`, `retired = 4`, `quanta = 2`, `virtual_ns = 4`, `com1_bytes = 1`; `printf X | cmp - work/stage7/mini_com1.txt` — совпадает (транскрипт ровно `X`).
+
+Не проверено: исполнение настоящей прошивки (нет входа S7-04); большие RAM (4 GiB и более) загружены только как карта и счёт страниц без выделения backing; поведение при `handoff_minor_max > 0` в образе (поле не валидируется, `u16`).
+
 ### S7-20. ADR vTPM: размещение, криптозависимости, профиль, CRB, состояние
 
 Статус `in_progress`: выполнено архитектором (Claude Opus), ожидает архитектурного ревью; коммита нет. Изменены: [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (новый; номера 0007 и 0008 зарезервированы планом этапа 11), [VTPM.md](../specs/VTPM.md) (новый, только раздел «Состояние и границы»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md) (раздел о криптокрейтах со ссылкой на таблицу ADR), [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) (ISSUE-064), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md) (владелец `crates/od-tpm/`, стрелка `od-machine → od-tpm`, граница vTPM), [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) (строки «TPM / Secure Boot state» и «Firmware»), строка статуса S7-20 в плане. Кода, Cargo-манифестов, crate `od-tpm` и каталога `crates/od-tpm/` нет (S7-21).
@@ -181,3 +223,60 @@
 - Внешние блокеры по колонке «Зависимости» плана, §6: S7-26 — blocked до S4-21 (lifecycle vCPU); S7-16 — PCI-привязка blocked до S4-30; S7-31 — blocked до этапа 5 и до PCI-привязки S7-16 (S4-30); S7-32 — blocked до PCI-привязки S7-16 (S4-30), S4-10 (2 MiB страницы) и этапа 6 (2 vCPU), плюс зависит от S7-35, а S7-34 — по итогам S7-30.
 - Решения D8–D9 записаны в ADR-0009 (S7-20, ожидает ревью); D3–D7 ещё не воплощены в ADR — это делает S7-24.
 - S7-01 п.1 нужно уточнить: target `x86_64-unknown-uefi` допустим для RT-образа (EFI-драйвера), запрет касается основного образа ROM — решение S7-02, подтвердить при ревью S7-01.
+
+## 5. Решение S7-03 (blocker)
+
+**Решение (архитектор, 2026-11-07): вариант (а).** Декодер `long_decode` уже разбирает `B0`–`BF` в `Operation::MovImmediate` (запись части регистра — `LongModeState::write`), поэтому вариант (а) — одна ветка допуска в `step_paged_probe_inner` без изменения декодера и S4-контрактов других профилей. Вариант (б) нарушает контракт входа S7-02 («остальные GPR = 0») и не даёт прошивке задать ни одной константы самой. Статус: blocker снят решением; S7-03 остаётся `in_progress` до реализации, тестов и ревью (исполнитель отмечает результат в разделе S7-03 выше). План этапа не меняется.
+
+Нормативный текст — [CPU_CONTRACT.md](../specs/CPU_CONTRACT.md), «Расширение S7-03: `MOV` с непосредственным операндом в `PagedCpl0ProbeV1`»; состояние входа — [FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), раздел 5 (строки `CR4`, «COM1», «Исполнимые инструкции»).
+
+**Допускаются только** (Long64, CPL0, только `PagedCpl0ProbeV1`):
+
+- `B0+r ib`, `r = 0…7`, длина 2, `Prefixes::default()` (без REX): `MOV AL/CL/DL/BL/AH/CH/DH/BH, imm8`; пишется только целевой байт.
+- `66 B8+r iw`, `r = 0…7`, длина 4, префиксы ровно `Prefixes { operand_override: true, ..Default }`: `MOV AX/CX/DX/BX/SP/BP/SI/DI, imm16`; биты 63:16 сохраняются.
+
+**Остаются `Unsupported`:** `B8+r id` без `66`, любые REX-формы (`40`–`4F` + `B0`–`BF`, в т. ч. `48 B8 io`), `66 B0`–`B7`, повторный `66`, `67`, сегментные, `F2`/`F3`, `C6 /0`, `C7 /0`; `F0` сохраняет классификацию декодера. Профили CR3, CR0.WP, стековый, CPL3 и `PagedCpl0PioU8V1` не расширяются.
+
+### Список для исполнителя S7-03
+
+Код (`od-isa`, без изменения `long_decode.rs`):
+
+1. `crates/od-isa/src/execute.rs`, `fn step_paged_probe_inner`: в начале вычислить `let base_profile = !user_mov && !user_load_only && !allow_stack_forms && !allow_cr3 && !allow_cr0_wp && !cr0_mov_only && !allow_mov_cr0;`. В `match instruction.operation` перед `_ => return unsupported()` добавить ветку `Operation::MovImmediate { dst: Operand::Register(destination), value }` с guard: `base_profile && instruction.opcode.map == OpcodeMap::Primary && ((instruction.length == 2 && matches!(instruction.opcode.byte, 0xb0..=0xb7) && instruction.prefixes == Prefixes::default() && destination.size == OperandSize::Byte) || (instruction.length == 4 && matches!(instruction.opcode.byte, 0xb8..=0xbf) && instruction.prefixes == Prefixes { operand_override: true, ..Prefixes::default() } && destination.size == OperandSize::Word))`. Тело: `state.write(destination, value); state.rip = next_rip;` (выход `Retired`, флаги не трогать). Других мест не менять.
+2. Обновить doc-комментарий `step_paged_probe` (allowlist) и комментарий к тесту в `crates/od-machine/src/firmware_board.rs`.
+
+Тесты `od-isa` — `crates/od-isa/tests/paged_probe_profile.rs` (через существующий хелпер `step`):
+
+3. `paged_probe_mov_r8_imm8_writes_only_the_target_byte` — таблица `B0`–`B7` с `imm8 = 0x5A`, все GPR заранее заполнены разными 64-битными шаблонами: целевой байт (биты 7:0 или 15:8) = `0x5A`, остальные биты и все прочие GPR без изменений, `RIP += 2`, `Retired`, `instructions_executed = 1`, `rflags`/`rflags_defined` без изменений, нет записей памяти и PIO.
+4. `paged_probe_mov_r16_imm16_writes_only_the_low_word` — таблица `66 B8`–`BF` с `imm16 = 0x03F8`: биты 15:0 = `0x03F8`, биты 63:16 сохранены, `RIP += 4`, остальное как в п. 3.
+5. `paged_probe_mov_immediate_neighbours_stay_unsupported` — для каждой формы `instructions_executed = 0`, CPU без изменений, `rflags_defined` без изменений, ожидаемый `Unsupported { opcode }`: `BA F8 03 00 00` → `0xba`; `48 B8` + 8 байт → `0xb8`; `41 B0 58` → `0xb0`; `40 B4 58` → `0xb4`; `66 B0 58` → `0xb0`; `66 66 BA F8 03` → `0xba`; `66 41 BA F8 03` → `0xba`; `67 B0 58` → `0xb0`; `2E B0 58` → `0xb0`; `F3 B0 58` → `0xb0`; `C6 C0 58` → `0xc6`; `66 C7 C2 F8 03` → `0xc7`. Если декодер классифицирует какую-то форму иначе (например, `#UD`), записать фактический результат в тест и отчёт; декодер не менять.
+6. `other_paged_profiles_keep_mov_immediate_unsupported` — `B0 58` и `66 BA F8 03` через `step_paged_stack_probe`, `step_paged_cr3_probe` и `step_paged_cr0_wp_probe` (существующие фикстуры этих профилей в `execute.rs`/тестах): `Unsupported { opcode: 0xb0 }` и `Unsupported { opcode: 0xba }` соответственно, `instructions_executed = 0`, состояние без изменений.
+
+Тесты `od-machine`:
+
+7. `crates/od-machine/tests/paged_probe_quantum.rs`: `paged_probe_mov_immediate_fetch_fault_on_immediate_commits_nothing` — `66 BA` в последних двух байтах отображённой страницы кода, следующая страница не отображена: выход `Fault` `#PF`, error code `0x10`, линейный адрес — начало следующей страницы, `RDX` и `RIP` без изменений, `instructions_executed = 0`.
+8. `crates/od-machine/src/firmware_board.rs`: заменить `mov_immediate_is_not_yet_executable_in_the_paged_quantum` на `smoke_code_writes_x_to_com1_with_zero_gprs_at_entry` — образ `B0 58 66 BA F8 03 EE F4`, без выставления GPR тестом; проверить при входе все GPR, кроме `RSP`/`RDI`, равны нулю; `run_boot(10)` → `Halted`, `retired = 4`, `com1 == b"X"`, `virtual_ns = 4`.
+
+Тесты `od-runner`:
+
+9. `tools/runner/tests/firmware_boot_cli.rs`: заменить `smoke_code_is_rejected_by_the_paged_quantum_until_mov_immediate_is_admitted` на `smoke_code_prints_x_and_halts` — код выхода `0`, `exit = "halted"`, `retired = 4`, `com1_bytes = 1`, транскрипт ровно `X`.
+
+Документы после реализации (без изменения адресов, формул и плана): `docs/specs/MACHINE_CONTRACT.md`, раздел «Firmware board v1 and handoff (S7-03)» — пункт «Гостевой код ограничен allowlist…» (новый allowlist, мини-образ печатает `X`) и пункт «COM1 при входе настроен…» (убрать «раздел 5 этого не перечисляет»); `docs/testing/FIRMWARE.md` (строка таблицы уровня 3 и абзац про `--smoke`); раздел S7-03 этого отчёта — результат и проверки; строку статуса в `CPU_CONTRACT.md` («реализация — S7-03») заменить ссылкой на тесты.
+
+Команды проверки (worktree `/private/tmp/open_desktop-s9`):
+
+```sh
+cargo fmt --all -- --check            # известный красный долг: od-host/display.rs, od-machine/lib.rs:39, power-loss
+cargo test -p od-isa --offline --test paged_probe_profile
+cargo test -p od-isa --offline
+cargo test -p od-machine --offline
+cargo test -p od-runner --offline
+cargo test --offline -p od-isa -p od-machine -p od-runner -p od-jit
+cargo check --workspace --all-targets --offline
+python3 -m unittest tools/build/test_build_firmware.py
+python3 tools/build/build_firmware.py --smoke --out work/stage7/mini.bin
+cargo run --offline -p od-runner -- boot-firmware --image work/stage7/mini.bin \
+  --com1-out work/stage7/mini_com1.txt --budget 100; echo "exit=$?"   # ожидается exit=0, "exit": "halted", "retired": 4
+printf X | cmp - work/stage7/mini_com1.txt                           # транскрипт ровно X
+python3 tools/check_layout.py 2>&1 | grep -c ERROR                    # 45
+git diff --check
+```

@@ -12,6 +12,10 @@ skeleton that proves the toolchain works; it is not a firmware implementation.
 `x86_64-unknown-uefi`, checks the PE32+ headers (Machine, magic, Subsystem, `.reloc`, base
 relocation directory) and writes the .efi to <path>. It is a build proof only: not a test
 application (S7-06) and not the runtime image (S7-11).
+
+`--smoke` is a third, toolchain-free mode (S7-03): it writes a minimal 0x400000-byte `ODFWIMG1` image
+whose entry code is `mov al,'X'; mov dx,0x3F8; out dx,al; hlt` (64-bit). It is a machine-loader test
+input, not firmware.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from typing import Mapping
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE_DIR = ROOT / "firmware/uefi"
 DEFAULT_OUT = ROOT / "work/stage7/firmware.bin"
+DEFAULT_SMOKE_OUT = ROOT / "work/stage7/mini.bin"
 DEFAULT_TARGET_DIR = ROOT / "work/stage7/firmware-target"
 
 TARGET = "x86_64-unknown-none"
@@ -54,6 +59,9 @@ LINK_BASE = 0x0020_0000
 HANDOFF_MAJOR = 1
 HANDOFF_MINOR_MAX = 0
 CRC_OFFSET = 0x30
+
+# --smoke entry code (64-bit): mov al,'X' ; mov dx,0x3F8 ; out dx,al ; hlt
+SMOKE_CODE = bytes([0xB0, 0x58, 0x66, 0xBA, 0xF8, 0x03, 0xEE, 0xF4])
 
 ET_EXEC = 2
 PT_LOAD = 1
@@ -441,7 +449,12 @@ def tool_versions(tools: Tools) -> list[str]:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output image (default: {DEFAULT_OUT.relative_to(ROOT)})")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"output image (default: {DEFAULT_OUT.relative_to(ROOT)}; with --smoke: {DEFAULT_SMOKE_OUT.relative_to(ROOT)})",
+    )
     parser.add_argument(
         "--efi-probe",
         type=Path,
@@ -450,12 +463,40 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "check its headers and write the .efi to PATH",
     )
     parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="instead of the ROM image: write the minimal smoke image (entry code writes 'X' to COM1) to --out (default: work/stage7/mini.bin, never the real firmware.bin); "
+        "needs no toolchain",
+    )
+    parser.add_argument(
         "--target-dir",
         type=Path,
         default=DEFAULT_TARGET_DIR,
         help=f"cargo target directory (default: {DEFAULT_TARGET_DIR.relative_to(ROOT)})",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.out is None:
+        args.out = DEFAULT_SMOKE_OUT if args.smoke else DEFAULT_OUT
+    return args
+
+
+def build_smoke_image() -> bytes:
+    """The --smoke image: the v1 header followed directly by SMOKE_CODE (entry_offset = header size)."""
+    image = assemble_image(bytes(HEADER_SIZE) + SMOKE_CODE, HEADER_SIZE)
+    validate_image(image)
+    return image
+
+
+def main_smoke(args: argparse.Namespace) -> int:
+    image = build_smoke_image()
+    out = args.out.absolute()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(image)
+    print(f"smoke image: {out}")
+    print(f"size: {len(image):#x} ({len(image)} bytes)")
+    print(f"sha256: {hashlib.sha256(image).hexdigest()}")
+    print(f"entry_offset: {HEADER_SIZE:#x} (RIP = {LINK_BASE + HEADER_SIZE:#x}), code: {SMOKE_CODE.hex()}")
+    return 0
 
 
 def main_efi_probe(args: argparse.Namespace) -> int:
@@ -486,6 +527,11 @@ def main_efi_probe(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.smoke:
+        if args.efi_probe is not None:
+            print("error: --smoke and --efi-probe are mutually exclusive", file=sys.stderr)
+            return 2
+        return main_smoke(args)
     if args.efi_probe is not None:
         return main_efi_probe(args)
     try:

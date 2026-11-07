@@ -17,8 +17,10 @@
 - `MachineMemoryMap::new(width, regions)` сортирует regions, проверяет width
   1—64, checked bounds и запрещает overlap. Карта не меняется после создания.
 - `MemoryRegionKind` различает `Ram`, `Rom`, `Reserved`, `Mmio` и `Framebuffer`.
-  Backing создаётся для RAM и для `Framebuffer`; ROM/reserved/MMIO
+  Backing создаётся для RAM, `Framebuffer` и (S7-03) `Rom`; reserved/MMIO
   классифицируются и отклоняют доступ до появления соответствующих владельцев.
+  `Rom` читается, любая запись отклоняется `ReadOnlyRegion(Rom)`, наполняет её
+  только машинный загрузчик (раздел «Firmware board v1 and handoff»).
   `Framebuffer` — память дисплейного устройства (раздел «Display device
   (S10-03)»): её backing не входит в `RamLimits`, карта принимает не больше одного
   такого региона, начало и длина кратны 4 KiB, длина не больше `0x0240_0000`
@@ -28,9 +30,9 @@
   не должны моделироваться перекрывающимися RAM regions.
 - Карта firmware board v1 (окна ROM и NVRAM, boot reservations внутри одного
   `Ram`, handoff block, временные таблицы страниц) и семантика `Rom` для неё
-  (чтение данных, запись и fetch — backend-ошибки) описаны в
-  [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью). Это контракт,
-  а не реализованный срез: ROM backing и профиль платы создаёт S7-03.
+  (чтение данных; запись — backend-ошибка; fetch — `#PF` по NX) описаны в
+  [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью); реализованная
+  часть и её границы — раздел «Firmware board v1 and handoff» ниже (S7-03).
 
 ## RAM ownership и доступ
 
@@ -2125,3 +2127,112 @@ device accesses, instruction fetch through JIT memory, TLB caching, executable
 alias invalidation or interpreter fallback orchestration. It is evidence for
 one V2 load on the production machine RAM owner, not acceptance of parent
 S4-15. See the [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md).
+
+## Firmware board v1 and handoff (S7-03)
+
+**Статус: реализовано исполнителем, ожидает ревью.** Контракт — [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md);
+код — `crates/od-machine/src/firmware_board.rs` (`load_firmware_image`,
+`FirmwareBoardConfig`, `LoadedFirmwareBoard`), ROM backing — `physical_memory.rs`
+и `bus.rs`. `od-machine` не знает UEFI, PE и ACPI: он проверяет плоский образ
+`ODFWIMG1`, кладёт его в ROM и в RAM-shadow, строит временные таблицы и handoff
+block, отдаёт `LongModeState`. Это не reset vector и не real mode.
+
+**Реализовано.**
+
+- **ROM.** Регион `Rom` имеет read backing (при создании нули). Данные читаются через
+  `PhysicalMemory::read_bytes`, `MachineBus::read_physical` и `read_flat_bytes`.
+  Любая запись гостя или обычного загрузчика (`write_bytes`, `write_physical`,
+  `write_flat_bytes`) возвращает `ReadOnlyRegion(Rom)` и не вызывает callback;
+  единственный писатель — `pub(crate)` `load_rom_bytes`, который вызывает только
+  `load_firmware_image`. Page generations и code tracking для ROM не создаются
+  (`code_page_generation` отклоняет `Rom`).
+- **Плата.** Карта строится из `FirmwareBoardConfig` (`ram_bytes` кратно 2 MiB в
+  `[128 MiB, 0xF_F400_0000]`, `second_screen`, `tsc_hz`, UUID, серийный номер) и
+  таблицы устройств: RAM (нижняя `[0, min(R, 0xF400_0000))`, верхняя от 4 GiB),
+  ROM `[0xFFC0_0000, 2^32)`, framebuffer экрана 0 (и экрана 1 при
+  `second_screen`), `Mmio` регистров дисплея, IOAPIC и Local APIC, порт COM1
+  `0x3F8` (8 портов). Одна и та же таблица из семи записей строит шину, окна карты
+  и устройства handoff block. NVRAM, TPM CRB, ECAM — записи с `PRESENT = 0`, в
+  карту и на шину не добавляются.
+- **Образ.** Принимается только образ ровно `0x0040_0000` байт с заголовком v1
+  (FIRMWARE_BOOT.md 3.2): magic, `format_version`, `header_size`, `image_size`,
+  `link_base`, `entry_offset ∈ [0x40, image_size)`, `handoff_major = 1`,
+  `flags = 0`, reserved нули, CRC-32. Любое несовпадение — `FirmwareBoardError`
+  до создания шины и vCPU. Образ копируется в ROM, затем **читается из ROM** и
+  записывается в shadow `[0x0020_0000, 0x0060_0000)` одной записью (page
+  generations shadow растут обычным путём).
+- **Таблицы страниц.** Identity, только 4 KiB, с `CR3 = 0x0060_0000`: листья RAM
+  `P|RW`, ROM `P|NX`, `Mmio`/`Framebuffer` `P|RW|NX`, промежуточные уровни `P|RW`,
+  `Reserved` не отображается. Размер `N` считается по формуле раздела 4 и сверен
+  тестом с таблицей документа (110, 2097, 32780 страниц для трёх размеров RAM;
+  при минимальной RAM текущей платы — 91). Порядок страниц: PML4, затем PDPT/PD/PT
+  по первому использованию при обходе регионов по возрастанию адреса.
+- **Handoff block v1.0** по GPA `0x0010_0000` строится одним кодом из той же карты и
+  таблицы устройств: заголовок `0xA0`, `region_table_offset = 0xA0`,
+  `device_table_offset = 0xA0 + 32·N`, 7 устройств по 48 байт, CRC-32, UUID и
+  серийный номер из конфигурации (по умолчанию нули и пусто), `tsc_hz` из
+  конфигурации (по умолчанию `1_000_000_000`). Типы регионов 1–4, 6–10 заполняются;
+  тип 5 (`NVRAM`) не возникает. Тест сравнивает блок побайтно с эталоном,
+  сгенерированным независимым скриптом по таблицам документа.
+- **Состояние входа.** Long64/CPL0, `CR0 = 0x8001_0033`, `CR4 = 0x20`,
+  `EFER = 0xD00`, `CR3 = 0x0060_0000`, `RIP = 0x0020_0000 + entry_offset`,
+  `RSP = 0x0015_0000`, `RDI = 0x0010_0000`, остальные GPR 0, `RFLAGS = 2`.
+  `CR4 = 0x20`, а не `0x620`: `0x620` — состояние вызова EFI-образа, которое
+  ставит сама прошивка (FIRMWARE_BOOT.md, разделы 5 и 7), и paged-квант принимает
+  только `CR4 = 0x20`.
+- **Запуск.** `LoadedFirmwareBoard::run` — один квант существующего
+  `run_paged_probe`. `run_boot(budget)` повторяет кванты: STOP-предикат —
+  `Uart16550Handle::holding_occupied()` (квант завершается на записи THR, раздел 11
+  FIRMWARE_BOOT.md); после каждого кванта holding → shift → транскрипт, затем
+  `advance_time_ns(retired × 1 ns)` явным вызовом `VirtualClock`; останов по
+  `HLT`, ошибке или бюджету (`Stopped` при исчерпанном бюджете отдаётся как
+  `BudgetExhausted`).
+- **COM1 при входе настроен** (`LCR = 0x03`, делитель 1), как у flat probe: иначе
+  polling UART отклоняет запись THR (`UnsupportedConfiguration`). Это состояние
+  входа перечислено в FIRMWARE_BOOT.md, раздел 5 (строка «COM1»); инициализация
+  прошивки по разделу 11 записывает те же значения и остаётся допустимой.
+- **Runner.** `od-runner boot-firmware --image <bin> --com1-out <file> --budget <steps>`
+  печатает JSON-отчёт (шаги, кванты, причина останова, `rip`, SHA-256 образа и
+  handoff block, виртуальное время, разобранная строка `OD-FW STOP`) и записывает
+  транскрипт COM1. Строка `OD-FW STOP` разбирается только как ПОСЛЕДНЯЯ непустая
+  строка транскрипта (FIRMWARE_BOOT.md, раздел 12): STOP, за которым идёт ещё
+  текст, не считается STOP (код 0). Коды выхода: 0 — `HLT` без строки `OD-FW STOP`
+  последней строкой; 3 — неверные аргументы или файл; 4 — отказ загрузчика
+  (транскрипт не пишется); 5 — гость не остановился по `HLT` или ошибка прогона
+  (транскрипт COM1 с уже записанными байтами пишется и в этом случае, даже пустой);
+  6 — `HLT` после `OD-FW STOP` последней строкой.
+
+**Границы (не реализовано и не доказано).**
+
+- **Гостевой код ограничен allowlist paged-кванта.** `step_paged_probe` исполняет
+  только `MOV RAX,[RBX]`, `MOV [RBX],RCX`, `IN AL,DX`, `OUT DX,AL`, `HLT` (без
+  префиксов) и, по решению S7-03 ([CPU_CONTRACT.md](CPU_CONTRACT.md), «Расширение
+  S7-03»), `MOV r8,imm8` (`B0+r ib`, без префиксов) и `MOV r16,imm16`
+  (`66 B8+r iw`, ровно один `66`). Остальные формы `MOV imm` (`B8+r id`, REX,
+  `C6`/`C7`) остаются `Unsupported`. Контракт входа обнуляет все GPR кроме `RSP` и
+  `RDI`, поэтому образ `build_firmware.py --smoke` (`mov al,'X'; mov dx,0x3F8;
+  out dx,al; hlt`) сам задаёт `AL` и `DX`: в машине он завершается `Halted`,
+  `retired = 4`, COM1 содержит ровно `X` (тест
+  `smoke_code_writes_x_to_com1_with_zero_gprs_at_entry`, runner —
+  `smoke_code_prints_x_and_halts`). Исполнение настоящей прошивки (GDT/IDT, `LRETQ`,
+  `MOV CR4`, `STI`, `CMP`, `Jcc`, `CALL`) по-прежнему требует расширения
+  CPU-профиля — blocker S7-04, см. FIRMWARE_BOOT.md раздел 7.
+- **Чтение ROM гостем через paged-кванты** по-прежнему отклоняется walker'ом как
+  RAM-only (`UnreadableRegion`); прямое чтение ROM доступно на уровне шины и
+  физической памяти. Для v1 это не требуется: образ исполняется из shadow.
+- Fetch из ROM — `#PF`, error code `0x11`, адрес fetch (тест
+  `instruction_fetch_from_rom_is_a_page_fault_by_nx`); backend-ошибка не
+  возникает, пока листья ROM помечены NX.
+- Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
+  ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
+  NVMe (S7-16), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  UUID/серийного номера из командной строки runner (используются значения по
+  умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
+- Расширение handoff block (новые поля и устройства) повышает `version_minor`
+  по правилам раздела 6.4 FIRMWARE_BOOT.md; машина выдаёт v1.0 и принимает образы
+  с любым `handoff_minor_max`.
+
+Проверки: `cargo test -p od-machine --offline` (модуль `firmware_board`, `physical_memory`),
+`cargo test -p od-runner --offline --test firmware_boot_cli`,
+`python3 -m unittest tools/build/test_build_firmware.py`; методика —
+[FIRMWARE.md](../testing/FIRMWARE.md).
