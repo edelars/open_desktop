@@ -387,6 +387,12 @@ permission fault и сохранение CPU state/нулевого retirement �
   повтора. Reset/stale invalidation следует контракту очереди; clock, CPU и HLT
   не изменяются. Подробности в [отчёте S4-23c](STAGE_4_S4-23C_2026-11-05.md)
   и [JSON evidence](data/stage4/s4-23c-uart-rx-events.json).
+- S4-23d публикует через `PagedVcpuSession` queue-local generation, read-only
+  ближайший RX deadline и generation-aware schedule/cancel/reschedule. Stale
+  generation отклоняется раньше lifecycle admission; HLT, pause, STOP и terminal
+  не принимают мутации. Подробности в [отчёте S4-23d](STAGE_4_S4-23D_2026-11-07.md)
+  и [manifest](data/stage4/s4-23d-paged-rx-control.json). HLT wakeup и host wait
+  остаются открытыми требованиями S4-23.
 
 ## Проверки
 

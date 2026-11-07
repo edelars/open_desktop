@@ -1276,6 +1276,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** 129 тестов `od-machine` (81 unit + 48 integration), включая `uart_rx_events` 7/7; package/workspace checks, fmt, layout и diff check. Подробности в [отчёте S4-23c](../reports/STAGE_4_S4-23C_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-23c-uart-rx-events.json).
 - **Готово:** bounded event-to-UART-RX delivery принята. Не заявляются IRQ/APIC, baud timing, HLT wakeup, host wait или Linux boot. S4-23, S4-24 и Stage 4 остаются открытыми.
 
+#### S4-23d. Generation-aware RX control через PagedVcpuSession
+
+- [x] Ограниченный S4-23d принят после независимого `gpt-6.1-sol/high` ревью без замечаний. S4-23 остаётся открытым.
+- **Зависимости среза:** принятые S4-21c, S4-22b и S4-23a/b/c. Это ограничение не снимает родительскую зависимость S4-23 → S4-22 → S4-21.
+- **Контракт:** session публикует текущее непрозрачное RX generation, ближайший абсолютный deadline, а schedule/cancel/reschedule требуют expected generation. Устаревшее поколение отклоняется прежде lifecycle admission и queue errors. Мутации разрешены только при Active и не-Halted; deadline inspection read-only доступна во всех состояниях.
+- **Проверка и границы:** 11 `paged_vcpu_session` unit tests прошли; `od-machine` all-targets check, fmt и diff check прошли. Смотрите [отчёт](../reports/STAGE_4_S4-23D_2026-11-07.md), [manifest](../reports/data/stage4/s4-23d-paged-rx-control.json), [методику](../testing/MACHINE.md#s4-23d-generation-aware-paged-rx-control). Срез не будит HLT, не реализует IRQ или host wait.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.

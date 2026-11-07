@@ -1,0 +1,20 @@
+{
+  "slice": "S4-23d",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "generation-aware RX scheduling, cancellation and rescheduling through PagedVcpuSession",
+  "review": "independent gpt-6.1-sol/high review passed with no P0-P3 findings",
+  "checks": {
+    "paged_vcpu_session": "cargo test -p od-machine --lib paged_vcpu_session::tests --offline -- --test-threads=1: 11 passed",
+    "machine_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "post-commit update passed: 27650 nodes, 69498 edges; graph metadata matches HEAD; code graph only"
+  },
+  "limitations": [
+    "EventGeneration is scoped to one queue instance and does not identify sessions across owners",
+    "keys may be reused within a generation after cancellation",
+    "no HLT wakeup, IRQ/APIC, periodic timers or host waiting",
+    "S4-21, S4-22 and S4-23 remain open"
+  ]
+}

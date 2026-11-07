@@ -1,10 +1,10 @@
 //! Caller-driven lifecycle for the fixed Stage4FlatProbeV1 board.
 
 use crate::{
-    EventQueueError, GuestPhysicalRange, LoadedStage4FlatProbe, Long64ProbeConfig, PagedProbeExit,
-    PagedProbeQuantumReport, ProbeConfigError, Stage4FlatProbeLoadError, UartRxDispatchExit,
-    UartRxDispatchReport, UartRxEventPump, UartRxPumpError, VirtualClock, VirtualClockError,
-    load_stage4_flat_probe,
+    EventGeneration, EventQueueError, GuestPhysicalRange, LoadedStage4FlatProbe, Long64ProbeConfig,
+    PagedProbeExit, PagedProbeQuantumReport, ProbeConfigError, Stage4FlatProbeLoadError,
+    UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError, VirtualClock,
+    VirtualClockError, load_stage4_flat_probe,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, StiShadow};
 
@@ -101,6 +101,14 @@ impl PagedVcpuSession {
         self.rx.len()
     }
 
+    pub fn rx_generation(&self) -> EventGeneration {
+        self.rx.generation()
+    }
+
+    pub fn next_rx_deadline(&self) -> Option<u64> {
+        self.rx.next_deadline()
+    }
+
     /// Complete and return bytes committed to the bounded polling UART TX path.
     /// Repeated calls do not return already drained bytes.
     pub fn drain_tx(&mut self) -> Vec<u8> {
@@ -157,16 +165,48 @@ impl PagedVcpuSession {
         Ok(())
     }
 
+    // A stale request must fail before lifecycle or queue admission checks.
+    fn ensure_rx_control(&self, generation: EventGeneration) -> Result<(), PagedVcpuError> {
+        if generation != self.rx.generation() {
+            return Err(PagedVcpuError::Queue(EventQueueError::StaleGeneration));
+        }
+        self.ensure_dispatchable()
+    }
+
     /// Schedule against the session clock's absolute nanosecond domain.
     pub fn schedule_rx(
         &mut self,
+        expected_generation: EventGeneration,
         key: u64,
         deadline_ns: u64,
         value: u8,
     ) -> Result<(), PagedVcpuError> {
-        self.ensure_dispatchable()?;
+        self.ensure_rx_control(expected_generation)?;
         self.rx
-            .schedule(self.rx.generation(), key, deadline_ns, value)
+            .schedule(expected_generation, key, deadline_ns, value)
+            .map_err(PagedVcpuError::Queue)
+    }
+
+    pub fn cancel_rx(
+        &mut self,
+        expected_generation: EventGeneration,
+        key: u64,
+    ) -> Result<(), PagedVcpuError> {
+        self.ensure_rx_control(expected_generation)?;
+        self.rx
+            .cancel(expected_generation, key)
+            .map_err(PagedVcpuError::Queue)
+    }
+
+    pub fn reschedule_rx(
+        &mut self,
+        expected_generation: EventGeneration,
+        key: u64,
+        deadline_ns: u64,
+    ) -> Result<(), PagedVcpuError> {
+        self.ensure_rx_control(expected_generation)?;
+        self.rx
+            .reschedule(expected_generation, key, deadline_ns)
             .map_err(PagedVcpuError::Queue)
     }
 
@@ -239,11 +279,192 @@ mod tests {
         s.run(n, || false, |_| {}).unwrap()
     }
 
+    fn read_rx(s: &mut PagedVcpuSession) -> u32 {
+        s.machine
+            .bus_mut()
+            .read_port(
+                PortAddress::new(STAGE4_FLAT_PROBE_UART_BASE),
+                AccessWidth::Byte,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn rx_control_rejects_stale_generation_after_reset_and_key_reuse() {
+        let mut s = PagedVcpuSession::new(&image(), 2, 1_000_000_000).unwrap();
+        let old = s.rx_generation();
+        s.advance_time_ns(9).unwrap();
+        s.schedule_rx(old, 1, 3, 0x11).unwrap();
+        assert!(s.reset(&[]).is_err());
+        assert_eq!(s.rx_generation(), old);
+        s.reset(&image()).unwrap();
+        let current = s.rx_generation();
+        assert_ne!(old, current);
+        assert_eq!(s.clock().now_ns(), 9);
+        s.schedule_rx(current, 1, 9, 0x22).unwrap();
+        let stale = Err(PagedVcpuError::Queue(EventQueueError::StaleGeneration));
+        assert_eq!(s.schedule_rx(old, 2, 0, 0x33), stale);
+        assert_eq!(s.cancel_rx(old, 1), stale);
+        assert_eq!(s.reschedule_rx(old, 1, 0), stale);
+        assert_eq!(s.next_rx_deadline(), Some(9));
+        assert_eq!(s.dispatch_rx(1, || false).unwrap().delivered, 1);
+        assert_eq!(read_rx(&mut s), 0x22);
+        s.reset(&image()).unwrap();
+        assert_ne!(s.rx_generation(), current);
+        assert_eq!(s.next_rx_deadline(), None);
+        assert_eq!(s.cancel_rx(current, 1), stale);
+    }
+
+    #[test]
+    fn rx_control_cancel_due_and_reschedule_order() {
+        let mut s = PagedVcpuSession::new(&image(), 5, 1_000_000_000).unwrap();
+        let g = s.rx_generation();
+        for (key, deadline) in [(1, 0), (2, 20), (3, 30), (4, 10), (5, 10)] {
+            s.schedule_rx(g, key, deadline, key as u8).unwrap();
+        }
+        s.cancel_rx(g, 1).unwrap();
+        s.reschedule_rx(g, 2, 5).unwrap();
+        s.reschedule_rx(g, 3, 10).unwrap();
+        s.reschedule_rx(g, 4, 40).unwrap();
+        s.reschedule_rx(g, 5, 10).unwrap();
+        s.advance_time_ns(40).unwrap();
+        for value in [2, 3, 5, 4] {
+            assert_eq!(s.dispatch_rx(1, || false).unwrap().delivered, 1);
+            assert_eq!(read_rx(&mut s), value);
+        }
+        assert_eq!(s.next_rx_deadline(), None);
+        assert_eq!(
+            s.dispatch_rx(1, || false).unwrap().exit,
+            UartRxDispatchExit::NoEvent
+        );
+    }
+
+    #[test]
+    fn rx_control_handles_busy_payload_without_duplicate_delivery() {
+        let mut s = PagedVcpuSession::new(&image(), 3, 1_000_000_000).unwrap();
+        let g = s.rx_generation();
+        for key in 1..=3 {
+            s.schedule_rx(g, key, 0, key as u8).unwrap();
+        }
+        let report = s.dispatch_rx(3, || false).unwrap();
+        assert_eq!(
+            (report.delivered, report.exit),
+            (1, UartRxDispatchExit::ReceiverBusy)
+        );
+        s.reschedule_rx(g, 2, 10).unwrap();
+        assert_eq!(read_rx(&mut s), 1);
+        assert_eq!(s.dispatch_rx(2, || false).unwrap().delivered, 1);
+        assert_eq!(read_rx(&mut s), 3);
+        s.advance_time_ns(10).unwrap();
+        s.machine.uart().inject_received_byte(0xaa).unwrap();
+        assert_eq!(
+            s.dispatch_rx(1, || false).unwrap().exit,
+            UartRxDispatchExit::ReceiverBusy
+        );
+        s.cancel_rx(g, 2).unwrap();
+        assert_eq!(read_rx(&mut s), 0xaa);
+        assert_eq!(
+            s.dispatch_rx(1, || false).unwrap().exit,
+            UartRxDispatchExit::NoEvent
+        );
+    }
+
+    #[test]
+    fn rx_control_errors_are_atomic_and_lifecycle_precedence_is_stable() {
+        for mode in 0..4 {
+            let mut s = PagedVcpuSession::new(&image(), 1, 1_000_000_000).unwrap();
+            let stale = s.rx_generation();
+            s.reset(&image()).unwrap();
+            let g = s.rx_generation();
+            s.schedule_rx(g, 1, 50, 0x77).unwrap();
+            assert_eq!(
+                s.schedule_rx(g, 1, 0, 0),
+                Err(PagedVcpuError::Queue(EventQueueError::DuplicateKey))
+            );
+            assert_eq!(
+                s.schedule_rx(g, 2, 0, 0),
+                Err(PagedVcpuError::Queue(EventQueueError::Full))
+            );
+            assert_eq!(
+                s.cancel_rx(g, 2),
+                Err(PagedVcpuError::Queue(EventQueueError::NotFound))
+            );
+            assert_eq!(
+                s.reschedule_rx(g, 2, 0),
+                Err(PagedVcpuError::Queue(EventQueueError::NotFound))
+            );
+            let expected = match mode {
+                0 => {
+                    s.pause().unwrap();
+                    PagedVcpuError::NotActive(PagedVcpuHostState::Paused)
+                }
+                1 => {
+                    s.stop();
+                    PagedVcpuError::NotActive(PagedVcpuHostState::Stopped)
+                }
+                2 => {
+                    assert_eq!(run(&mut s, 3).exit, PagedProbeExit::Halted);
+                    PagedVcpuError::Halted
+                }
+                _ => {
+                    s.machine
+                        .bus_mut()
+                        .write_physical(
+                            GuestPhysicalAddress::new(0x4000),
+                            AccessWidth::Qword,
+                            0,
+                            |_| {},
+                        )
+                        .unwrap();
+                    assert!(matches!(run(&mut s, 1).exit, PagedProbeExit::Fault(_)));
+                    PagedVcpuError::NotActive(PagedVcpuHostState::Terminal)
+                }
+            };
+            let before_state = s.state().clone();
+            let before_clock = *s.clock();
+            for result in [
+                s.schedule_rx(stale, 1, 0, 0),
+                s.cancel_rx(stale, 1),
+                s.reschedule_rx(stale, 1, 0),
+            ] {
+                assert_eq!(
+                    result,
+                    Err(PagedVcpuError::Queue(EventQueueError::StaleGeneration))
+                );
+            }
+            assert_eq!(s.schedule_rx(g, 1, 0, 0), Err(expected));
+            let expected = if mode == 2 {
+                PagedVcpuError::Halted
+            } else {
+                PagedVcpuError::NotActive(s.host_state())
+            };
+            assert_eq!(s.cancel_rx(g, 1), Err(expected));
+            let expected = if mode == 2 {
+                PagedVcpuError::Halted
+            } else {
+                PagedVcpuError::NotActive(s.host_state())
+            };
+            assert_eq!(s.reschedule_rx(g, 1, 0), Err(expected));
+            assert_eq!(s.next_rx_deadline(), Some(50));
+            assert_eq!(s.pending_rx(), 1);
+            assert_eq!(*s.clock(), before_clock);
+            assert_eq!(*s.state(), before_state);
+            if mode == 0 {
+                s.resume().unwrap();
+                s.advance_time_ns(50).unwrap();
+                assert_eq!(s.dispatch_rx(1, || false).unwrap().delivered, 1);
+                assert_eq!(read_rx(&mut s), 0x77);
+            }
+        }
+    }
+
     #[test]
     fn clock_drives_rx_and_split_advances_match() {
         let mut split = PagedVcpuSession::new(&image(), 2, 3).unwrap();
         let mut whole = PagedVcpuSession::new(&image(), 2, 3).unwrap();
-        split.schedule_rx(1, 10, 0x42).unwrap();
+        split
+            .schedule_rx(split.rx_generation(), 1, 10, 0x42)
+            .unwrap();
         split.advance_time_ns(4).unwrap();
         assert_eq!(split.dispatch_rx(2, || false).unwrap().delivered, 0);
         // Running and polling do not advance time.
@@ -436,8 +657,8 @@ mod tests {
         let mut s = PagedVcpuSession::new(&image(), 4, 1_000_000_000).unwrap();
         s.advance_time_ns(100).unwrap();
         let old_generation = s.rx.generation();
-        s.schedule_rx(1, 5, 0x11).unwrap();
-        s.schedule_rx(2, 100, 0x22).unwrap();
+        s.schedule_rx(s.rx_generation(), 1, 5, 0x11).unwrap();
+        s.schedule_rx(s.rx_generation(), 2, 100, 0x22).unwrap();
         let old_uart = s.machine.uart();
         old_uart.inject_received_byte(0x33).unwrap();
         run(&mut s, 2); // load and OUT, leaving TX holding occupied
@@ -452,7 +673,7 @@ mod tests {
             Err(UartRxPumpError::Queue(EventQueueError::StaleGeneration))
         ));
         assert_eq!(s.dispatch_rx(2, || false).unwrap().delivered, 0);
-        s.schedule_rx(3, 100, 0x44).unwrap();
+        s.schedule_rx(s.rx_generation(), 3, 100, 0x44).unwrap();
         assert_eq!(s.dispatch_rx(2, || false).unwrap().delivered, 1);
         let byte = s
             .machine

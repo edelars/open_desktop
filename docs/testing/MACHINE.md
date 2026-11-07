@@ -142,6 +142,27 @@ git diff --check
     terminal states reject advancement, while active guest HLT permits clock
     progression without wakeup or RX dispatch. Reset preserves time; invalid
     frequency and checked arithmetic overflow do not mutate state.
+43. S4-23d checks the owner-facing RX controls: stale generations are rejected
+    before lifecycle/queue admission even after reset and key reuse; cancel and
+    reschedule retain `EventQueue` ordering; ReceiverBusy preserves payload
+    semantics; duplicate/full/not-found and pause/STOP/HLT/terminal failures
+    leave queue contents, CPU and clock unchanged. Next-deadline queries
+    are read-only in all states. No event wakes HLT.
+
+## S4-23d generation-aware paged RX control
+
+`cargo test -p od-machine --lib paged_vcpu_session::tests --offline --
+--test-threads=1` passed 11 tests. They check stale schedule/cancel/reschedule
+requests after successful reset and key reuse, and that failed reset preserves
+the old generation. Due-event cancellation and earlier/later/equal-deadline
+rescheduling retain the queue ordering contract. Under `ReceiverBusy`, a
+pending payload can be moved or cancelled without duplicate delivery. Stale,
+duplicate, full, not-found and lifecycle errors preserve queue contents, CPU
+state and clock; a read-only next-deadline query remains available. Paused,
+stopped, terminal and halted owners reject current-generation mutations, and no
+event wakes HLT. `cargo check -p od-machine --all-targets --offline`, workspace fmt
+and diff check passed. Independent Sol/high review found no code findings. See
+[S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
 
 ## Интерпретация
 
@@ -151,8 +172,8 @@ PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission and bounded S4-11b qword read, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
 caller-driven clock/RDTSC boundary, S4-22b paged-session time ownership,
-S4-23a bounded deadline queue, S4-23b
-reset-generation boundary and S4-23c bounded UART RX event delivery.
+S4-23a bounded deadline queue, S4-23b reset-generation boundary, S4-23c
+bounded UART RX event delivery and S4-23d owner-facing RX control.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

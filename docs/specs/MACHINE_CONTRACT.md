@@ -1068,8 +1068,10 @@ fixed CPU-profile admission, before touching the current session. It then
 resets the existing RX pump with checked generation increment, clears payloads
 and retargets it to the new UART; after that only infallible replacement steps
 remain. Invalid image or queue reset failure leaves the session unchanged.
-The owner exposes scheduling and bounded dispatch without exposing generation
-tokens. Absolute deadlines use caller-owned time, which reset does not change.
+The original S4-21c API exposed scheduling and bounded dispatch without
+generation tokens and accepted caller-supplied time at dispatch. S4-22b later
+moved dispatch time into the session-owned `VirtualClock`; S4-23d exposes the
+queue-local generation and requires it for RX scheduling/cancellation.
 A fresh UART belongs to the replacement bus; stale RX and TX device state is
 not inherited. The operation is a fixed-image re-entry, not x86 reset-vector
 semantics. Runner completion/cancellation, IRQ wakeup and general scheduling
@@ -1175,6 +1177,31 @@ Reset and stale-generation rejection follow `EventQueue` and invalidate pending
 work. The pump does not change `VirtualClock` or CPU state, execute guest code,
 or wake HLT. IRQ/APIC delivery, baud timing, HLT wakeup and host waiting remain
 outside this bounded slice and open in S4-23/S4-24.
+
+## Generation-aware RX control through PagedVcpuSession (S4-23d)
+
+`PagedVcpuSession` exposes the current opaque queue-local `EventGeneration`
+through `rx_generation()`, and a read-only `next_rx_deadline()` in the session
+clock's absolute nanosecond domain. `schedule_rx`, `cancel_rx` and
+`reschedule_rx` require the caller's expected generation. A generation from
+before reset is rejected even if its key is reused in the replacement queue.
+
+Control operations check staleness before lifecycle admission; a current
+generation then requires host `Active` and guest not `Halted`, after which the
+underlying queue returns duplicate/full/not-found results. A stale request thus
+returns `StaleGeneration` even when the session is paused, stopped, terminal or
+halted. Deadline inspection is side-effect free and available in every state.
+Reset clears pending events and advances the generation while preserving the
+clock; successful reset replaces a halted guest with a fresh image. RX control
+does not wake HLT. Scheduling preserves `(deadline, insertion sequence)` order;
+rescheduling assigns a new insertion position, including when the deadline is
+unchanged. Deadline inspection and dispatch do not change queue ordering.
+
+The generation is scoped to this queue instance; it does not identify a session
+across owners or distinguish separate uses of a key within one generation.
+Dispatch remains bounded and caller-driven. HLT wakeup, IRQ/APIC, periodic
+timers, host wait and complete S4-21/S4-22/S4-23 acceptance are not claimed.
+See [S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
 
 ## S4-32c: freestanding stack probe
 
