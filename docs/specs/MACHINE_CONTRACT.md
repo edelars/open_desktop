@@ -1283,6 +1283,32 @@ xAPIC device. CPU interrupt delivery, IDT/IF/handler semantics and HLT wakeup
 remain outside the contract. See the [S4-25b report](../reports/STAGE_4_S4-25B_2026-11-07.md)
 and [verification method](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
 
+## xAPIC Fixed self-IPI through ICR (S4-25c)
+
+The fixed xAPIC exposes the ICR low/high doublewords at offsets `0x300` and
+`0x310`. `ICR_HIGH` stores only the destination byte; writing it alone does
+not send. The supported command is an aligned Dword write to `ICR_LOW` with
+Fixed delivery, Self destination shorthand, edge trigger, asserted level and
+vector `16..=255`. Destination mode is ignored for Self. A valid low write
+stores the command and sets the vector's IRR bit under the same device-state
+lock. The internal one-CPU self-delivery completes synchronously, so Delivery
+Status reads Idle after the operation; a written Delivery Status bit is
+ignored because it is read-only. Idle means sending completed, not that the CPU
+accepted the interrupt or executed a handler. Repeated commands are issued
+again and outstanding equal vectors coalesce through IRR. Software disable
+permits the request to enter IRR but blocks eligibility/acknowledge;
+global APIC disable rejects ICR MMIO, and reset/global disable clears both ICR
+halves.
+
+Only the Fixed Self edge combination is supported. Other delivery modes,
+shorthands, level trigger, invalid vector/reserved bits and invalid widths or
+alignment fail without mutation through the local `DeviceError` contract,
+not guest exception delivery. No IPI bus, external destination, ESR, CPU
+interrupt acceptance, handler delivery or HLT wakeup is modeled. Behavior is
+based on Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+§§13.6.1–13.6.2.3, Table 13-3 and §§13.8.3–13.8.5. See the [S4-25c report](../reports/STAGE_4_S4-25C_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

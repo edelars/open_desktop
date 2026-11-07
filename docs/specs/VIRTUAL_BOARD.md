@@ -49,6 +49,12 @@ effects synchronously to the standalone S4-25a Local APIC. The profile is not
 part of the general paged vCPU session or default board wiring; relocation,
 x2APIC, interrupt delivery and Linux APIC discovery remain unimplemented.
 
+S4-25c lets guest software issue one fixed self-IPI through xAPIC ICR. The
+Local APIC records it in IRR and the existing explicit acknowledge/EOI model
+can move it through device state. This remains a standalone device path: no
+CPU handler execution, default board registration, IOAPIC route or Linux APIC
+discovery is established.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

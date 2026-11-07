@@ -1345,6 +1345,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** base relocation, BSP changes, x2APIC, общий MSR dispatcher, `PagedVcpuSession` integration, CPU interrupt delivery, IF/shadow/IDT/handler и HLT wakeup не заявлены. Прямые вызовы `ApicBaseCpu::step` обязаны применить effect до следующей guest/device operation; `step_apic_base_msr` делает это синхронно для фиксированного Local APIC.
 - **Проверки:** 3 focused `od-isa` теста, 4 focused `local_apic` теста, all-targets check двух пакетов, fmt и diff прошли. Независимый Sol/high reviewer закрыл два P2 замечания. См. [отчёт](../reports/STAGE_4_S4-25B_2026-11-07.md), [manifest](../reports/data/stage4/s4-25b-apic-base.json) и [методику](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
 
+#### S4-25c. Fixed self-IPI через xAPIC ICR
+
+- [x] Ограниченный S4-25c принят после независимого `gpt-6.1-sol/high` ревью без замечаний; S4-25 и Stage 4 остаются открытыми.
+- **Контракт:** `ICR_HIGH` (`0x310`) сохраняет только destination byte и не отправляет IPI. Поддержан только aligned Dword `ICR_LOW` (`0x300`) с Fixed delivery, Self shorthand, edge trigger, asserted level и вектором `16..=255`; destination mode игнорируется. Read-only Delivery Status при записи игнорируется и после синхронной внутренней доставки читается как Idle. Запись low атомарно сохраняет writable fields и под тем же lock ставит fixed edge в IRR; это не означает CPU handler acceptance. Повторная команда создаёт запрос заново, а coalescing определяется IRR. Основа: Intel SDM release 093, Vol. 3A, §§13.6.1–13.6.2.3, Table 13-3, §§13.8.3–13.8.5.
+- **Граница:** no-shorthand/external destinations, lowest-priority, NMI/SMI/INIT/SIPI, level delivery, ESR, CPU handler/IDT/IF, HLT wakeup, IOAPIC и Linux path не реализованы. Unsupported/reserved writes возвращают локальный `DeviceError` без изменения состояния; это не гостевой `#GP`.
+- **Проверки:** 6 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли; независимое Sol/high ревью без замечаний. См. [отчёт](../reports/STAGE_4_S4-25C_2026-11-07.md), [manifest](../reports/data/stage4/s4-25c-xapic-self-ipi.json) и [методику](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
+
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
 - [ ] Принято после ревью.

@@ -563,3 +563,19 @@ default board wiring, and does not implement relocation, x2APIC, CPU interrupt
 delivery or HLT wakeup. See [report](STAGE_4_S4-25B_2026-11-07.md) and
 [evidence](data/stage4/s4-25b-apic-base.json). Parent S4-25 and Stage 4 remain
 open.
+
+## S4-25c — xAPIC Fixed self-IPI
+
+The Local APIC now accepts an aligned Dword write of the bounded Fixed Self
+edge command to ICR low, stores ICR high destination byte without dispatch,
+and records the vector in IRR on ICR low. Tests cover readback, high-only
+writes, repeat/coalescing behavior, priority, acknowledge/ISR/EOI, software
+and global disable, reset, and failure atomicity. Six focused APIC tests,
+`od-machine` all-targets check, format/diff validation and independent
+Sol/high review passed. This is synchronous internal one-CPU device delivery
+only; a written read-only Delivery Status bit is ignored and readback remains
+Idle. The P2 review finding on this behavior was fixed and re-reviewed. It does
+not claim CPU handler acceptance, APIC bus transmission,
+external destinations, IOAPIC or HLT wakeup. See [report](STAGE_4_S4-25C_2026-11-07.md)
+and [evidence](data/stage4/s4-25c-xapic-self-ipi.json). Parent S4-25 and Stage 4
+remain open.

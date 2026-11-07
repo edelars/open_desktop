@@ -468,6 +468,27 @@ guest/device operation; only `step_apic_base_msr` supplies synchronous device
 application. xAPIC base relocation, x2APIC, CPU interrupt delivery, IDT/IF,
 handler execution, HLT wakeup and Linux discovery are not covered.
 
+## S4-25c: xAPIC Fixed self-IPI
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The six focused tests include ICR readback, high-only write without dispatch,
+low-write dispatch, the Fixed Self path from IRR through priority eligibility,
+acknowledge/ISR and EOI, repeated same-vector commands before and after
+acknowledge, TPR priority blocking, software-disable and global-disable
+behavior, reset clearing both ICR halves, and rejection atomicity for invalid
+delivery/shorthand/vector/trigger/level/reserved/width/alignment. Also run
+`cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; all passed. Independent
+Sol/high review found and closed one P2 issue: the read-only Delivery Status
+bit is ignored on write, while it continues to read Idle; reserved bits remain
+rejected. The source is Intel SDM release 093, Volume 3A,
+§§13.6.1–13.6.2.3 and 13.8.3–13.8.5. See the [slice report](../reports/STAGE_4_S4-25C_2026-11-07.md).
+
+These checks establish only local APIC device-state transitions. They do not
+establish APIC bus messaging, CPU interrupt acceptance or handler execution,
+IF/IDT semantics, HLT wakeup, external destinations, IOAPIC, default board
+wiring or Linux boot.
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

@@ -20,6 +20,8 @@ struct State {
     global_enabled: bool,
     tpr: u8,
     svr: u16,
+    icr_low: u32,
+    icr_high: u32,
     irr: [u32; 8],
     isr: [u32; 8],
 }
@@ -30,6 +32,8 @@ impl Default for State {
             global_enabled: true,
             tpr: 0,
             svr: 0xff,
+            icr_low: 0,
+            icr_high: 0,
             irr: [0; 8],
             isr: [0; 8],
         }
@@ -37,6 +41,9 @@ impl Default for State {
 }
 
 impl State {
+    fn request_fixed_edge(&mut self, vector: u8) {
+        self.irr[usize::from(vector / 32)] |= 1 << (vector % 32);
+    }
     fn highest(bits: &[u32; 8]) -> Option<u8> {
         bits.iter().enumerate().rev().find_map(|(i, word)| {
             (*word != 0).then(|| (i * 32 + 31 - word.leading_zeros() as usize) as u8)
@@ -103,7 +110,7 @@ impl LocalApicHandle {
             if !s.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
             }
-            s.irr[usize::from(vector / 32)] |= 1 << (vector % 32);
+            s.request_fixed_edge(vector);
             Ok(())
         })
     }
@@ -181,6 +188,8 @@ impl BusDevice for LocalApic {
                 0xa0 => u32::from(s.ppr()),
                 0xb0 => return Err(DeviceError::WriteOnly),
                 0xf0 => u32::from(s.svr),
+                0x300 => s.icr_low,
+                0x310 => s.icr_high,
                 _ if bank(offset, 0x100).is_some() => s.isr[bank(offset, 0x100).unwrap()],
                 _ if bank(offset, 0x180).is_some() => 0, // fixed edge only
                 _ if bank(offset, 0x200).is_some() => s.irr[bank(offset, 0x200).unwrap()],
@@ -210,7 +219,25 @@ impl BusDevice for LocalApic {
                     }
                     Ok(())
                 }
-                0x80 | 0xb0 | 0xf0 => Err(DeviceError::UnsupportedConfiguration),
+                // Fixed, edge-triggered, asserted self-IPI. Destination mode
+                // is ignored for self shorthand. Delivery completes here.
+                0x300
+                    if value & !0x4_58ff == 0
+                        && value & 0x4_4000 == 0x4_4000
+                        && value & 0xff >= 16 =>
+                {
+                    // Delivery Status is device-owned and remains Idle in
+                    // this synchronous self-delivery profile.
+                    let command = value & !(1 << 12);
+                    s.icr_low = command as u32;
+                    s.request_fixed_edge(command as u8);
+                    Ok(())
+                }
+                0x310 if value & !0xff00_0000 == 0 => {
+                    s.icr_high = value as u32;
+                    Ok(())
+                }
+                0x80 | 0xb0 | 0xf0 | 0x300 | 0x310 => Err(DeviceError::UnsupportedConfiguration),
                 0x20 | 0xa0 => Err(DeviceError::ReadOnly),
                 _ if bank(offset, 0x100).is_some()
                     || bank(offset, 0x180).is_some()
@@ -380,6 +407,117 @@ mod tests {
     }
 
     #[test]
+    fn icr_self_ipi_delivery_retrigger_and_priority() {
+        let (mut bus, apic) = setup();
+        const SELF_ASSERT: u64 = 0x4_4000;
+        assert_eq!(read(&mut bus, 0x300), Ok(0));
+        assert_eq!(read(&mut bus, 0x310), Ok(0));
+        write(&mut bus, 0x310, 0xab00_0000).unwrap();
+        assert_eq!(read(&mut bus, 0x310), Ok(0xab00_0000));
+        assert_eq!(apic.pending(), None);
+
+        // Software disable does not prevent an IPI from entering IRR.
+        write(&mut bus, 0x300, SELF_ASSERT | 0x1000 | 0x41).unwrap();
+        assert_eq!(read(&mut bus, 0x300), Ok(SELF_ASSERT | 0x41));
+        assert_eq!(read(&mut bus, 0x220), Ok(1 << 1));
+        assert_eq!(apic.eligible(), None);
+        assert_eq!(apic.acknowledge(), None);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x80, 0x40).unwrap();
+        assert_eq!(apic.eligible(), None);
+        write(&mut bus, 0x80, 0).unwrap();
+        // Two commands before acknowledge coalesce.
+        write(&mut bus, 0x300, SELF_ASSERT | 0x41).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x41));
+        assert_eq!(read(&mut bus, 0x220), Ok(0));
+        assert_eq!(read(&mut bus, 0x120), Ok(1 << 1));
+        // The same command after acknowledge queues another request.
+        write(&mut bus, 0x300, SELF_ASSERT | 0x41).unwrap();
+        assert_eq!(apic.eligible(), None);
+        write(&mut bus, 0x300, SELF_ASSERT | 0x800 | 0x62).unwrap();
+        assert_eq!(read(&mut bus, 0x300), Ok(SELF_ASSERT | 0x800 | 0x62));
+        assert_eq!(apic.acknowledge(), Some(0x62));
+        assert_eq!(read(&mut bus, 0x130), Ok(1 << 2));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.eligible(), None);
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x41));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.pending(), None);
+        assert_eq!(read(&mut bus, 0x120), Ok(0));
+    }
+
+    #[test]
+    fn icr_rejections_are_atomic_and_global_reset_clears_registers() {
+        let (mut bus, apic) = setup();
+        const SELF_ASSERT: u64 = 0x4_4000;
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x310, 0x7f00_0000).unwrap();
+        write(&mut bus, 0x300, SELF_ASSERT | 0x50).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x50));
+        write(&mut bus, 0x300, SELF_ASSERT | 0x60).unwrap();
+        let before = apic.with_state(|s| s.clone());
+        for invalid in [
+            SELF_ASSERT | 15,                        // illegal vector
+            SELF_ASSERT | 0x100 | 0x60,              // delivery mode
+            0x4000 | 0x60,                           // no shorthand
+            0x8_4000 | 0x60,                         // another shorthand
+            SELF_ASSERT | 0x8000 | 0x60,             // level-triggered
+            0x4_0000 | 0x60,                         // deassert
+            SELF_ASSERT | 0x20_0000 | 0x60,          // reserved
+            SELF_ASSERT | 0x1000 | 0x20_0000 | 0x60, // status does not legalize reserved bits
+        ] {
+            assert_eq!(
+                write(&mut bus, 0x300, invalid),
+                Err(error(DeviceError::UnsupportedConfiguration))
+            );
+            assert_eq!(apic.with_state(|s| s.clone()), before);
+        }
+        assert_eq!(
+            write(&mut bus, 0x310, 1),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            write(&mut bus, 0x304, SELF_ASSERT | 0x60),
+            Err(error(DeviceError::Misaligned))
+        );
+        assert_eq!(
+            bus.write_physical(
+                GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + 0x300),
+                AccessWidth::Byte,
+                0x60,
+                |_| {}
+            ),
+            Err(error(DeviceError::UnsupportedWidth))
+        );
+        assert_eq!(apic.with_state(|s| s.clone()), before);
+        apic.set_global_enabled(false);
+        let disabled = apic.with_state(|s| s.clone());
+        assert_eq!(
+            write(&mut bus, 0x300, SELF_ASSERT | 0x60),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            write(&mut bus, 0x310, 0x1200_0000),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            read(&mut bus, 0x300),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(apic.with_state(|s| s.clone()), disabled);
+        apic.set_global_enabled(true);
+        assert_eq!(read(&mut bus, 0x300), Ok(0));
+        assert_eq!(read(&mut bus, 0x310), Ok(0));
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0x300, SELF_ASSERT | 0xff).unwrap();
+        apic.reset();
+        assert_eq!(read(&mut bus, 0x300), Ok(0));
+        assert_eq!(read(&mut bus, 0x310), Ok(0));
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
     fn priority_acknowledge_retrigger_eoi_and_reset() {
         let (mut bus, apic) = setup();
         assert_eq!(read(&mut bus, 0x20), Ok(0));
@@ -490,7 +628,7 @@ mod tests {
             (0x1a0, 0, DeviceError::ReadOnly),
             (0x230, 0, DeviceError::ReadOnly),
             (0x30, 0, DeviceError::UnknownOffset),
-            (0x300, 0, DeviceError::UnknownOffset),
+            (0x300, 0, DeviceError::UnsupportedConfiguration),
             (0x84, 0, DeviceError::Misaligned),
         ] {
             assert_eq!(write(&mut bus, offset, value), Err(error(expected)));
