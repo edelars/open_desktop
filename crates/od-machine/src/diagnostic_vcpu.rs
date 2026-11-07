@@ -1,7 +1,8 @@
 //! Synchronous, bounded diagnostic execution over one owned CPU and machine.
 
+use crate::virtual_clock::VirtualClockAdvancer;
 use crate::{IdentityMemoryAdapter, LocalApicHandle, MachineBus};
-use crate::{VirtualClock, VirtualClockError};
+use crate::{VirtualClock, VirtualClockError, VirtualClockHandle};
 use od_isa::execute::{
     RdtscControls, RunConfig, RunExit, StepOutcome, run_with_rflags_defined,
     run_with_rflags_defined_and_rdtsc_source, run_with_sti_profile, step_with_halt_profile,
@@ -147,7 +148,7 @@ pub struct DiagnosticVcpuSession {
     access_context: AccessContext,
     rflags_defined: u64,
     status: DiagnosticVcpuState,
-    clock: Option<VirtualClock>,
+    clock: Option<VirtualClockAdvancer>,
     rdtsc_controls: Option<RdtscControls>,
     completed_boundary: bool,
 }
@@ -433,6 +434,26 @@ impl DiagnosticVcpuSession {
         tsc_hz: u64,
         rdtsc_controls: RdtscControls,
     ) -> Result<Self, DiagnosticVcpuControlError> {
+        let clock = VirtualClockHandle::new(tsc_hz).map_err(DiagnosticVcpuControlError::Clock)?;
+        Self::new_with_clock_handle(
+            state,
+            bus,
+            access_context,
+            rflags_defined,
+            clock,
+            rdtsc_controls,
+        )
+    }
+
+    /// Construct a session sharing its caller-created time domain with devices.
+    pub fn new_with_clock_handle(
+        state: LongModeState,
+        bus: MachineBus,
+        access_context: AccessContext,
+        rflags_defined: u64,
+        clock: VirtualClockHandle,
+        rdtsc_controls: RdtscControls,
+    ) -> Result<Self, DiagnosticVcpuControlError> {
         if rflags_defined & !INTEGER_FLAGS != 0 {
             return Err(DiagnosticVcpuControlError::ExecutionInput(
                 od_isa::execute::RunInputError::InvalidRflagsDefined {
@@ -440,7 +461,9 @@ impl DiagnosticVcpuSession {
                 },
             ));
         }
-        let clock = VirtualClock::new(tsc_hz).map_err(DiagnosticVcpuControlError::Clock)?;
+        let clock = clock
+            .claim_advancer()
+            .map_err(DiagnosticVcpuControlError::Clock)?;
         Ok(Self {
             state,
             bus,
@@ -453,8 +476,8 @@ impl DiagnosticVcpuSession {
         })
     }
 
-    pub const fn virtual_clock(&self) -> Option<&VirtualClock> {
-        self.clock.as_ref()
+    pub fn virtual_clock(&self) -> Option<VirtualClock> {
+        self.clock.as_ref().map(VirtualClockAdvancer::snapshot)
     }
 
     /// Advance virtual time only between runnable calls.
@@ -463,7 +486,7 @@ impl DiagnosticVcpuSession {
             return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
         }
         self.clock
-            .as_mut()
+            .as_ref()
             .ok_or(DiagnosticVcpuControlError::Clock(
                 VirtualClockError::ClockNotConfigured,
             ))?
@@ -488,6 +511,7 @@ impl DiagnosticVcpuSession {
         if self.status != DiagnosticVcpuState::Runnable {
             return Err(DiagnosticVcpuControlError::CannotPause(self.status.clone()));
         }
+        self.set_clock_runnable(false);
         self.status = DiagnosticVcpuState::Paused;
         Ok(())
     }
@@ -498,6 +522,7 @@ impl DiagnosticVcpuSession {
                 self.status.clone(),
             ));
         }
+        self.set_clock_runnable(true);
         self.status = DiagnosticVcpuState::Runnable;
         Ok(())
     }
@@ -507,7 +532,14 @@ impl DiagnosticVcpuSession {
     /// at its established internal poll points.
     pub fn stop(&mut self) {
         if !matches!(self.status, DiagnosticVcpuState::Terminal(_)) {
+            self.set_clock_runnable(false);
             self.status = DiagnosticVcpuState::Stopped;
+        }
+    }
+
+    fn set_clock_runnable(&self, runnable: bool) {
+        if let Some(clock) = &self.clock {
+            clock.set_runnable(runnable);
         }
     }
 
@@ -529,7 +561,7 @@ impl DiagnosticVcpuSession {
         };
         let result = if let (Some(clock), Some(rdtsc_controls)) = (&self.clock, self.rdtsc_controls)
         {
-            let mut source = || clock.tsc();
+            let mut source = || clock.snapshot().tsc();
             run_with_rflags_defined_and_rdtsc_source(
                 &mut self.state,
                 &mut memory,
@@ -569,6 +601,7 @@ impl DiagnosticVcpuSession {
                 DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget)
             }
             RunExit::StopRequested => {
+                self.set_clock_runnable(false);
                 self.status = DiagnosticVcpuState::Stopped;
                 DiagnosticExit::Stopped
             }
@@ -853,6 +886,7 @@ impl DiagnosticVcpuSession {
     }
 
     fn terminal(&mut self, cause: DiagnosticTerminalExit) -> DiagnosticExit {
+        self.set_clock_runnable(false);
         self.status = DiagnosticVcpuState::Terminal(cause.clone());
         DiagnosticExit::Terminal(cause)
     }
@@ -903,6 +937,107 @@ mod tests {
 
     fn run(session: &mut DiagnosticVcpuSession, budget: u64) -> DiagnosticRunResult {
         session.run(budget, || false).unwrap()
+    }
+
+    #[test]
+    fn rdtsc_and_apic_timer_share_session_clock() {
+        let apic_base = GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE);
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(RAM_START), RAM_LEN).unwrap();
+        let apic_range = GuestPhysicalRange::new(apic_base, crate::LOCAL_APIC_MMIO_SIZE).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(apic_range, MemoryRegionKind::Mmio),
+            ],
+        )
+        .unwrap();
+        let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let device = crate::LocalApic::with_shared_timer(clock.clone(), 1_000_000_000).unwrap();
+        let apic = device.handle();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(RAM_LEN),
+            vec![Box::new(device)],
+            vec![crate::MmioBinding {
+                region_start: apic_base,
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        for (offset, byte) in [0x0f_u8, 0x31, 0x0f, 0x31].into_iter().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(RAM_START + offset as u64),
+                AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+        let mut state = LongModeState::default();
+        state.rip = RAM_START;
+        let mut cpu = DiagnosticVcpuSession::new_with_clock_handle(
+            state,
+            bus,
+            context(),
+            INTEGER_FLAGS,
+            clock,
+            RdtscControls { cr4_tsd: false },
+        )
+        .unwrap();
+        let write_mmio = |cpu: &mut DiagnosticVcpuSession, offset: u64, value: u64| {
+            cpu.bus
+                .write_physical(
+                    GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + offset),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        };
+        let read_mmio = |cpu: &mut DiagnosticVcpuSession, offset: u64| {
+            cpu.bus
+                .read_physical(
+                    GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + offset),
+                    AccessWidth::Dword,
+                )
+                .unwrap()
+        };
+
+        write_mmio(&mut cpu, 0xf0, 0x1ff);
+        write_mmio(&mut cpu, 0x320, 0x40);
+        write_mmio(&mut cpu, 0x3e0, 0xb);
+        write_mmio(&mut cpu, 0x380, 4);
+        cpu.advance_time_ns(2).unwrap();
+        assert_eq!(run(&mut cpu, 1).instructions_executed, 1);
+        assert_eq!(cpu.state().gpr[od_isa::Register::Rax as usize], 2);
+        assert_eq!(read_mmio(&mut cpu, 0x390), 2);
+        assert_eq!(
+            apic.advance_timer_ns(1),
+            Err(crate::DeviceError::UnsupportedConfiguration)
+        );
+
+        cpu.advance_time_ns(2).unwrap();
+        assert_eq!(run(&mut cpu, 1).instructions_executed, 1);
+        assert_eq!(cpu.state().gpr[od_isa::Register::Rax as usize], 4);
+        assert_eq!(read_mmio(&mut cpu, 0x390), 0);
+        cpu.pause().unwrap();
+        assert_eq!(apic.dispatch_timer(), Err(crate::DeviceError::Busy));
+        assert_eq!(apic.pending(), None);
+        cpu.resume().unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x40));
+
+        apic.reset_checked().unwrap();
+        write_mmio(&mut cpu, 0xf0, 0x1ff);
+        write_mmio(&mut cpu, 0x320, 0x40);
+        write_mmio(&mut cpu, 0x380, 1);
+        cpu.advance_time_ns(2).unwrap();
+        cpu.stop();
+        assert_eq!(apic.dispatch_timer(), Err(crate::DeviceError::Busy));
+        assert_eq!(apic.pending(), None);
+        assert_eq!(cpu.virtual_clock().unwrap().now_ns(), 6);
     }
 
     #[test]
@@ -2144,7 +2279,13 @@ mod tests {
             match case {
                 0 => cpu.rflags_defined = 0,
                 1 => cpu.state.sti_shadow = None,
-                2 => cpu.clock = Some(VirtualClock::new(1).unwrap()),
+                2 => {
+                    cpu.clock = Some(
+                        VirtualClockHandle::from(VirtualClock::new(1).unwrap())
+                            .claim_advancer()
+                            .unwrap(),
+                    )
+                }
                 3 => cpu.state.activity = None,
                 4 => cpu.access_context.privilege = PrivilegeLevel::Ring3,
                 5 => cpu.pause().unwrap(),
@@ -2195,7 +2336,11 @@ mod tests {
         for cpu in [&mut a, &mut b] {
             put(cpu, 0x4100, &[0x0f, 0x31, 0x90]);
             cpu.rflags_defined = 0x40;
-            cpu.clock = Some(VirtualClock::new(1_000_000_000).unwrap());
+            cpu.clock = Some(
+                VirtualClockHandle::from(VirtualClock::new(1_000_000_000).unwrap())
+                    .claim_advancer()
+                    .unwrap(),
+            );
             cpu.rdtsc_controls = Some(RdtscControls { cr4_tsd: false });
             cpu.advance_time_ns(1234).unwrap();
         }

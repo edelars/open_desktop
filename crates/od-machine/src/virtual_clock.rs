@@ -1,10 +1,13 @@
 //! Explicit caller-driven virtual time and its deterministic TSC conversion.
 
+use std::sync::{Arc, Mutex};
+
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VirtualClockError {
     ClockNotConfigured,
+    ClockAlreadyOwned,
     ZeroTscFrequency,
     TimeOverflow,
     TscOverflow,
@@ -55,6 +58,99 @@ impl VirtualClock {
         self.now_ns = now_ns;
         self.tsc = tsc as u64;
         Ok(())
+    }
+}
+
+/// Cloneable observation handle for one virtual time domain.
+///
+/// The vCPU session remains the only public time advancer. Devices can share
+/// this handle so guest-visible timers and RDTSC observe the same clock.
+#[derive(Debug)]
+struct VirtualClockState {
+    clock: VirtualClock,
+    advancer_claimed: bool,
+    runnable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct VirtualClockHandle(Arc<Mutex<VirtualClockState>>);
+
+/// Unique advancement capability claimed by one vCPU session.
+#[derive(Debug)]
+pub(crate) struct VirtualClockAdvancer(Arc<Mutex<VirtualClockState>>);
+
+impl PartialEq for VirtualClockHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for VirtualClockHandle {}
+
+impl VirtualClockHandle {
+    pub fn new(tsc_hz: u64) -> Result<Self, VirtualClockError> {
+        Ok(VirtualClock::new(tsc_hz)?.into())
+    }
+
+    pub fn snapshot(&self) -> VirtualClock {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clock
+    }
+
+    pub(crate) fn is_runnable(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).runnable
+    }
+
+    pub(crate) fn advance_standalone(&self, delta_ns: u64) -> Result<(), VirtualClockError> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.advancer_claimed {
+            return Err(VirtualClockError::ClockAlreadyOwned);
+        }
+        state.clock.advance_time_ns(delta_ns)
+    }
+
+    pub(crate) fn claim_advancer(&self) -> Result<VirtualClockAdvancer, VirtualClockError> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.advancer_claimed {
+            return Err(VirtualClockError::ClockAlreadyOwned);
+        }
+        state.advancer_claimed = true;
+        state.runnable = true;
+        Ok(VirtualClockAdvancer(Arc::clone(&self.0)))
+    }
+}
+
+impl VirtualClockAdvancer {
+    pub(crate) fn snapshot(&self) -> VirtualClock {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clock
+    }
+
+    pub(crate) fn set_runnable(&self, runnable: bool) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).runnable = runnable;
+    }
+
+    pub(crate) fn advance_time_ns(&self, delta_ns: u64) -> Result<(), VirtualClockError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clock
+            .advance_time_ns(delta_ns)
+    }
+}
+
+impl From<VirtualClock> for VirtualClockHandle {
+    fn from(clock: VirtualClock) -> Self {
+        Self(Arc::new(Mutex::new(VirtualClockState {
+            clock,
+            advancer_claimed: false,
+            runnable: true,
+        })))
+    }
+}
+
+impl Drop for VirtualClockAdvancer {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.runnable = false;
     }
 }
 
@@ -114,6 +210,21 @@ mod tests {
         assert_eq!(
             VirtualClock::new(0),
             Err(VirtualClockError::ZeroTscFrequency)
+        );
+    }
+
+    #[test]
+    fn only_one_session_can_claim_clock_advancement() {
+        let clock = VirtualClockHandle::new(1).unwrap();
+        let owner = clock.claim_advancer().unwrap();
+        assert_eq!(
+            clock.claim_advancer().err(),
+            Some(VirtualClockError::ClockAlreadyOwned)
+        );
+        drop(owner);
+        assert_eq!(
+            clock.claim_advancer().err(),
+            Some(VirtualClockError::ClockAlreadyOwned)
         );
     }
 }

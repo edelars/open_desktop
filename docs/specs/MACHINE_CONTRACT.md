@@ -1305,6 +1305,30 @@ timer-profile evidence. The register and vector profile follows Intel's
 [64 and IA-32 SDM release 089, Volumes 1–4](https://cdrdv2-public.intel.com/868137/325462-sdm-vol-1-2abcd-3abcd-4.pdf),
 Volume 3A §§11.4.7.2, 12.5.2 and 12.5.4. See the [S4-28a1 report](../reports/STAGE_4_S4-28A1_2026-11-07.md).
 
+## Shared vCPU clock for APIC timer (S4-28a2)
+
+`VirtualClockHandle` is a cloneable reference to one `VirtualClock`. Its public
+API creates a nonzero-frequency clock and reads snapshots; a non-cloneable
+advancement capability can be claimed only once, for one vCPU session. The
+claim remains consumed after session drop; create a new handle for a new
+session. To connect an opt-in timer, construct
+`LocalApic::with_shared_timer(clock.clone(), timer_hz)`, attach that device to
+`MachineBus`, then pass `clock` to
+`DiagnosticVcpuSession::new_with_clock_handle`. Session RDTSC and guest timer
+MMIO (arm, Current Count and due checks) now observe the same nanosecond value.
+The APIC handle's standalone `advance_timer_ns` rejects this shared mode.
+
+The session advances only while Runnable. If a deadline is due while the
+session is Paused, Stopped or Terminal, `dispatch_timer` returns `Busy` and
+keeps the event pending; resume permits the caller to dispatch it. APIC state,
+deadline queue and IRR remain protected by the existing APIC-pair lock; no APIC
+lock is held while executing guest instructions. Arm derives deadline and
+elapsed-count origin from one clock snapshot. Reset invalidates the timer
+deadline but retains the shared session clock. This does not automatically dispatch an expiry,
+deliver a CPU interrupt, progress time during HLT, or implement a scheduler.
+The prior `with_timer(VirtualClock, hz)` standalone caller-driven behavior
+remains available. See the [S4-28a2 report](../reports/STAGE_4_S4-28A2_2026-11-07.md).
+
 ## CPU-owned IA32_APIC_BASE enable (S4-25b)
 
 The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and

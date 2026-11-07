@@ -78,6 +78,18 @@ impl LocalApic {
         };
         Ok(Self(Arc::new(Mutex::new(pair))))
     }
+    /// Create an opt-in one-shot timer observing a vCPU-owned clock.
+    /// The APIC cannot advance this clock; its vCPU session remains the owner.
+    pub fn with_shared_timer(
+        clock: crate::VirtualClockHandle,
+        timer_hz: u64,
+    ) -> Result<Self, DeviceError> {
+        let pair = PairState {
+            timer: Some(Timer::new_shared(clock, timer_hz)?),
+            ..PairState::default()
+        };
+        Ok(Self(Arc::new(Mutex::new(pair))))
+    }
     pub fn handle(&self) -> LocalApicHandle {
         LocalApicHandle(Arc::clone(&self.0))
     }
@@ -116,16 +128,19 @@ impl LocalApicHandle {
         pair.route = Default::default();
         Ok(())
     }
-    /// Advance only this timer's private virtual clock.
+    /// Advance only a timer configured with its private clock.
     pub fn advance_timer_ns(&self, delta: u64) -> Result<(), DeviceError> {
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let timer = pair
             .timer
             .as_mut()
             .ok_or(DeviceError::UnsupportedConfiguration)?;
+        if !timer.can_advance_clock {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         timer
             .clock
-            .advance_time_ns(delta)
+            .advance_standalone(delta)
             .map_err(|_| DeviceError::UnsupportedConfiguration)
     }
     /// Dispatch at most one due timer event without entering the CPU.
@@ -136,7 +151,7 @@ impl LocalApicHandle {
             .as_ref()
             .ok_or(DeviceError::UnsupportedConfiguration)?;
         let generation = timer.queue.generation();
-        let now = timer.clock.now_ns();
+        let now = timer.clock.snapshot().now_ns();
         if timer
             .queue
             .peek_due(generation, now)
@@ -144,6 +159,9 @@ impl LocalApicHandle {
             .is_none()
         {
             return Ok(false);
+        }
+        if !timer.can_advance_clock && !timer.clock.is_runnable() {
+            return Err(DeviceError::Busy);
         }
         let lvt = timer.lvt;
         let mut queue = timer.queue.clone();
@@ -340,7 +358,8 @@ impl BusDevice for LocalApic {
                 if offset == 0x390 {
                     return Err(DeviceError::ReadOnly);
                 }
-                if timer.due() {
+                let now_ns = timer.clock.snapshot().now_ns();
+                if timer.due_at(now_ns) {
                     return Err(DeviceError::Busy);
                 }
                 match offset {
@@ -358,7 +377,7 @@ impl BusDevice for LocalApic {
                         return Ok(());
                     }
                     0x380 if value <= u64::from(u32::MAX) => {
-                        return pair.timer.as_mut().unwrap().arm(value as u32);
+                        return pair.timer.as_mut().unwrap().arm_at(now_ns, value as u32);
                     }
                     0x3e0 if value & !0xb == 0 && timer.queue.is_empty() => {
                         pair.timer.as_mut().unwrap().divide = value as u32;
@@ -902,6 +921,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .clock
+                .snapshot()
                 .now_ns(),
             4
         );
@@ -1004,7 +1024,7 @@ mod tests {
         assert!(!apic.dispatch_timer().unwrap());
         let pair = apic.0.lock().unwrap();
         let timer = pair.timer.as_ref().unwrap();
-        assert_eq!(timer.clock.now_ns(), 1);
+        assert_eq!(timer.clock.snapshot().now_ns(), 1);
         assert_eq!(timer.hz, 1_000_000_000);
     }
 

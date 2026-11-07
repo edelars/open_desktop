@@ -1,0 +1,26 @@
+{
+  "slice": "S4-28a2",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "One caller-driven virtual clock shared between DiagnosticVcpuSession RDTSC and opt-in one-shot Local APIC timer",
+  "architecture_review": "Independent gpt-6-astra/high approved the shared-clock direction and required guest MMIO coherence, short APIC lock scope, atomic deadline/IRQ behavior, and session lifecycle boundaries.",
+  "code_review": "Repeat independent gpt-6.1-sol/high review passed with no findings after closing three P2 issues.",
+  "checks": {
+    "od_machine_tests": "cargo test -p od-machine --lib --offline: 190 passed",
+    "focused_shared_clock_test": "Included in 33 DiagnosticVcpuSession tests",
+    "local_apic_tests": "Included in 19 Local APIC tests",
+    "virtual_clock_tests": "Included in 6 virtual clock tests",
+    "exclusive_clock_owner": "VirtualClockHandle rejects a second advancer claim for its lifetime",
+    "lifecycle_dispatch": "Due dispatch returns Busy and retains the event while session is Paused or Stopped",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Updated after code and documentation changes"
+  },
+  "limitations": [
+    "No automatic timer dispatch, CPU interrupt delivery, HLT progression/wakeup or production scheduler",
+    "No periodic or TSC-deadline timer mode or Linux timer-profile evidence",
+    "Mutex snapshot cost was not benchmarked; no performance claim",
+    "Parent S4-22 and S4-28, S4-27 and Stage 4 remain open"
+  ]
+}

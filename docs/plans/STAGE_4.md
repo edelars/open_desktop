@@ -1485,6 +1485,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Атомарность:** rearm/cancel и reset меняют поколение единственного события; stale event не может сработать после reprogram/reset. Ошибки поколения, MMIO, reset и конфликта unmasked LVT с level-route не публикуют частичное состояние. Software disable при активном deadline отклоняется; idle timer LVT маскируется, а unmask при disabled отклоняется. Divider меняется только без активного отсчёта.
 - **Проверки и ограничения:** Local APIC tests 19/19, IOAPIC regression tests 11/11, `od-machine --all-targets`, fmt и diff check прошли. См. [отчёт](../reports/STAGE_4_S4-28A1_2026-11-07.md), [manifest](../reports/data/stage4/s4-28a1-apic-one-shot.json), [контракт](../specs/MACHINE_CONTRACT.md#one-shot-local-apic-timer-s4-28a1) и [методику](../testing/MACHINE.md#s4-28a1-one-shot-local-apic-timer). Не подключены vCPU session clock, periodic/TSC-deadline, production scheduler/event pump, CPU delivery, HLT wakeup или Linux timer profile.
 
+#### S4-28a2. Единый clock session и APIC timer
+
+- [x] Ограниченный срез принят после закрытия трёх P2 замечаний и повторного независимого `gpt-6.1-sol/high` ревью без замечаний. S4-22, S4-28, S4-27 и Stage 4 остаются открытыми.
+- **Архитектура:** `DiagnosticVcpuSession` единолично получает неповторяемое capability продвижения caller-driven `VirtualClockHandle`; RDTSC, APIC timer MMIO Current Count, arm и timer dispatch читают один clock. У shared timer нет собственного advance API; standalone режим S4-28a1 сохраняется.
+- **Граница:** caller явно создаёт handle и передаёт clone в `LocalApic::with_shared_timer`, затем handle передаёт в `DiagnosticVcpuSession::new_with_clock_handle`; вторая session не может захватить те же часы, даже после drop первой. Session продвигает clock только в Runnable. При due deadline dispatch в Paused/Stopped/Terminal возвращает Busy и сохраняет событие. APIC lock не удерживается во время CPU execution. Нет автоматической dispatch, CPU delivery, HLT progression/wakeup или scheduler.
+- **Проверки:** `cargo test -p od-machine --lib --offline` — 190 passed; `cargo check -p od-machine --all-targets --offline`, fmt, diff check, JSON и ссылки прошли; Graphify обновлён после финального diff. Сквозной тест выполняет RDTSC до/после session advance, читает Current Count, проверяет expiry/IRR на тех же nanoseconds и отказ dispatch в Paused/Stopped; отдельный clock test проверяет эксклюзивное владение. Отчёт: [S4-28a2](../reports/STAGE_4_S4-28A2_2026-11-07.md), evidence: [manifest](../reports/data/stage4/s4-28a2-shared-clock.json).
+
 ### S4-29. Закрыть необходимые legacy зависимости
 
 - [ ] Локально принято после ревью либо scope исключён по source/config audit; Linux-проверка обязательна в S4-38.

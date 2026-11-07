@@ -480,6 +480,21 @@ disable behavior. This device-only slice has no vCPU clock integration,
 production event pump, CPU entry, HLT wakeup or periodic mode. See the
 [S4-28a1 report](../reports/STAGE_4_S4-28A1_2026-11-07.md).
 
+## S4-28a2 shared vCPU/APIC clock
+
+Run `cargo check -p od-machine --all-targets --offline` and
+`cargo test -p od-machine --lib --offline`. The integration case creates one clock handle,
+shares it between a session and Local APIC timer, advances only through the
+Runnable session, and checks RDTSC, Current Count, deadline dispatch and IRR
+at matching timestamps. It verifies exclusive clock advancer ownership,
+APIC-local advance rejection, and that due dispatch during Paused/Stopped
+leaves the event pending with `Busy`. All 190 package tests passed, including
+33 diagnostic session, 19 Local APIC and 6 virtual clock tests. The all-targets
+build, formatting and diff checks are recorded in
+the [S4-28a2 report](../reports/STAGE_4_S4-28A2_2026-11-07.md). This proves
+clock identity for this device path only; automatic dispatch, CPU delivery,
+HLT progression/wakeup and production scheduling are outside this slice.
+
 ## S4-25b: CPU-owned IA32_APIC_BASE enable
 
 Run `cargo test -p od-isa --lib apic_base_tests --offline` and

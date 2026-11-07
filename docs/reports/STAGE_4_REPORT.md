@@ -661,3 +661,19 @@ polling, HLT wakeup, JIT or board registration. See the
 [slice report](STAGE_4_S4-27B_2026-11-07.md) and
 [evidence](data/stage4/s4-27b-guest-eoi-iretq.json). Parent S4-27 and Stage 4
 remain open.
+
+## S4-28a2 — shared vCPU and APIC timer clock
+
+The opt-in one-shot APIC timer now observes the same `VirtualClockHandle` as
+`DiagnosticVcpuSession` RDTSC and caller-driven session advancement. Shared
+timer configurations reject APIC-local time advancement; standalone S4-28a1
+operation is retained. One integration case proves RDTSC and timer Current
+Count/expiry agree at 2 ns and 4 ns. A unique capability prevents a second
+session from claiming advancement, and due dispatch remains queued while the
+session is Paused or Stopped. `od-machine` all-targets check, all 190 unit
+tests, formatting and diff checks passed. Astra/high architecture review and
+repeat Sol/high code review passed; the reviewer confirmed all three P2
+findings were closed.
+No automatic event pump, CPU delivery, HLT progression or Linux timer behavior
+is claimed. See the [S4-28a2 report](STAGE_4_S4-28A2_2026-11-07.md) and
+[evidence](data/stage4/s4-28a2-shared-clock.json).

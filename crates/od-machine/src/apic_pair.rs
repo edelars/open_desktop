@@ -1,5 +1,5 @@
 //! Atomic state transitions for the single Local APIC and INTIN4 route.
-use crate::{DeviceError, EventQueue, VirtualClock, local_apic::State};
+use crate::{DeviceError, EventQueue, VirtualClock, VirtualClockHandle, local_apic::State};
 
 pub(crate) const MASK: u32 = 1 << 16;
 pub(crate) const LEVEL: u32 = 1 << 15;
@@ -31,7 +31,8 @@ pub(crate) struct PairState {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct Timer {
-    pub clock: VirtualClock,
+    pub clock: VirtualClockHandle,
+    pub can_advance_clock: bool,
     pub hz: u64,
     pub queue: EventQueue,
     pub lvt: u32,
@@ -42,11 +43,24 @@ pub(crate) struct Timer {
 
 impl Timer {
     pub fn new(clock: VirtualClock, hz: u64) -> Result<Self, DeviceError> {
+        Self::new_with_clock(VirtualClockHandle::from(clock), hz, true)
+    }
+
+    pub fn new_shared(clock: VirtualClockHandle, hz: u64) -> Result<Self, DeviceError> {
+        Self::new_with_clock(clock, hz, false)
+    }
+
+    fn new_with_clock(
+        clock: VirtualClockHandle,
+        hz: u64,
+        can_advance_clock: bool,
+    ) -> Result<Self, DeviceError> {
         if hz == 0 {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         Ok(Self {
             clock,
+            can_advance_clock,
             hz,
             queue: EventQueue::new(1),
             lvt: MASK,
@@ -63,16 +77,14 @@ impl Timer {
         if self.queue.is_empty() {
             return 0;
         }
-        let elapsed = u128::from(self.clock.now_ns() - self.start);
+        let elapsed = u128::from(self.clock.snapshot().now_ns() - self.start);
         let ticks = elapsed * u128::from(self.hz) / (1_000_000_000u128 * self.divisor());
         u128::from(self.initial).saturating_sub(ticks) as u32
     }
-    pub fn due(&self) -> bool {
-        self.queue
-            .next_deadline()
-            .is_some_and(|d| d <= self.clock.now_ns())
+    pub fn due_at(&self, now_ns: u64) -> bool {
+        self.queue.next_deadline().is_some_and(|d| d <= now_ns)
     }
-    pub fn arm(&mut self, count: u32) -> Result<(), DeviceError> {
+    pub fn arm_at(&mut self, now_ns: u64, count: u32) -> Result<(), DeviceError> {
         let deadline = if count == 0 {
             None
         } else {
@@ -82,7 +94,7 @@ impl Timer {
                 .ok_or(DeviceError::UnsupportedConfiguration)?;
             let hz = u128::from(self.hz);
             let duration = numerator.div_ceil(hz);
-            let deadline = u128::from(self.clock.now_ns())
+            let deadline = u128::from(now_ns)
                 .checked_add(duration)
                 .ok_or(DeviceError::UnsupportedConfiguration)?;
             Some(u64::try_from(deadline).map_err(|_| DeviceError::UnsupportedConfiguration)?)
@@ -91,7 +103,7 @@ impl Timer {
             .replace_single(self.queue.generation(), deadline)
             .map_err(|_| DeviceError::UnsupportedConfiguration)?;
         self.initial = count;
-        self.start = self.clock.now_ns();
+        self.start = now_ns;
         Ok(())
     }
     pub fn reset(&mut self) -> Result<(), DeviceError> {
@@ -101,7 +113,7 @@ impl Timer {
         self.lvt = MASK;
         self.initial = 0;
         self.divide = 0;
-        self.start = self.clock.now_ns();
+        self.start = self.clock.snapshot().now_ns();
         Ok(())
     }
 }

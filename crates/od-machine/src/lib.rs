@@ -103,7 +103,7 @@ pub use physical_memory::{
     MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, PhysicalWidthError, RamLimits,
 };
 
-pub use virtual_clock::{VirtualClock, VirtualClockError};
+pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};
 
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,

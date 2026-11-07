@@ -42,6 +42,10 @@ TSC source for bare Long64 RDTSC. Runs, polling and host delay do not advance
 time; overflow is rejected atomically. The legacy session constructor remains
 without RDTSC. Linux frequency discovery, host monotonic integration, HLT
 progression, events, and RDTSCP/MSR/CPUID support remain outside this slice.
+Bounded S4-28a2 lets the diagnostic session and one-shot Local APIC timer share
+one `VirtualClockHandle`; RDTSC, timer MMIO and deadline checks observe the same
+caller-driven time, while only the Runnable session advances it. This adds no
+automatic timer dispatch, CPU delivery, HLT progression or scheduler.
 Bounded S4-23a adds a fixed-capacity deterministic one-shot deadline queue.
 It uses absolute nanosecond deadlines, explicit extraction and stable ordering;
 it does not advance the virtual clock or dispatch CPU/device/IRQ work. Full
