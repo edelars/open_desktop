@@ -10,6 +10,7 @@
 // `alloc` is deliberately not linked yet: an `extern crate alloc` without a `#[global_allocator]`
 // does not link. S7-04 adds the allocator together with `extern crate alloc`.
 
+pub mod acpi;
 pub mod image;
 pub mod stop;
 

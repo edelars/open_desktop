@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
+
+### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes
+
+- **Дата обнаружения:** 2026-11-07.
+- **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
+- **Статус:** открыта; ограничение контракта, не runtime-дефект (PCI0 не выводится, пока запись PCIe ECAM имеет `PRESENT = 0`, до S4-30).
+- **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
+- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна ECAM, HPET и ACPI fixed hardware «не назначены, S4-30, S7-14»); тест `dsdt_for_pci_root_and_com1_matches_the_independent_reference`.
+- **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.
+
 <a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>
 
 ### ISSUE-064 — Selected `rsa` crate has no constant-time private operations (RUSTSEC-2023-0071)

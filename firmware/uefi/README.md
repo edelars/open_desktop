@@ -102,6 +102,8 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 | Файл | Назначение | Зависит от железа |
 |---|---|---|
 | `src/lib.rs` | корень библиотеки, константа `HANDOFF_GPA` | нет |
+| `src/acpi/aml/` | собственный AML-кодировщик (S7-12): `opcodes`, `names`, `encoder` (PkgLength, NameString, Integer, String), `resource` (ResourceTemplate), `builder` (Scope/Device/Name/Method/Package/Buffer, повтор имён), `validate`; без `alloc`, тесты в `aml/tests.rs`. Контракт и не сверенные места — [ACPI_SMBIOS_TABLES.md](../../docs/specs/ACPI_SMBIOS_TABLES.md#aml-и-dsdt) | нет |
+| `src/acpi/{manifest,table,dsdt}.rs` | `BoardManifest` (таблица устройств handoff block v1.0), заголовок SDT и контрольная сумма, DSDT из manifest (`\_SB.PCI0`, `\_SB.COM1`; только `PRESENT = 1`) и её валидатор. Остальные таблицы ACPI и SMBIOS — S7-13 | нет |
 | `src/image.rs` | заголовок образа v1, CRC-32, `validate_image` (чистая проверка образа в памяти; машинную проверку делает S7-03 в `od-machine`) | нет |
 | `src/stop.rs` | форматирование строки останова `OD-FW STOP code=0xNN detail=0x...` без `core::fmt` | нет |
 | `src/main.rs` | бинарь: COM1, panic handler, `od_fw_main` | порт ввода-вывода |
@@ -111,6 +113,10 @@ python3 tools/build/build_firmware.py --efi-probe work/stage7/efi_probe.efi
 | `.cargo/config.toml` | `relocation-model=static` для target прошивки | — |
 | `probe/efi_probe/` | PE32+ build proof (отдельный Cargo-проект, раздел «EFI probe») | — |
 | `include/`, `tests/` | пока пусты (`.gitkeep`); `tests/apps` и fixtures создают S7-06/S7-08 | — |
+
+## Тесты AML и DSDT
+
+`cargo test --manifest-path firmware/uefi/Cargo.toml --offline` запускает тесты библиотеки, включая `acpi::aml::tests` (эталонные байты конструктов и отрицательные случаи), `acpi::dsdt::tests` (три побайтных эталона DSDT, сгенерированных независимой Python-программой по ACPI 6.4; скрипт не сохранён), `acpi::manifest::tests` и `acpi::table::tests`. Тесты лежат внутри библиотеки (`#[cfg(test)]`), а не в `tests/`: интеграционный тест заставил бы `cargo test` собирать бинарь, а он на host не собирается (inline-ассемблер `out dx, al`). На aarch64 host `cargo check` без `--lib` или `--target x86_64-unknown-none` по той же причине падает на бинаре (прежнее поведение, не связанное с AML); проверка библиотеки — `cargo check --manifest-path firmware/uefi/Cargo.toml --offline --lib`, freestanding-вариант — `cd firmware/uefi && cargo check --offline --target x86_64-unknown-none`.
 
 ## Правило тестируемости
 
