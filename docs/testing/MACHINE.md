@@ -841,3 +841,15 @@ loading; the public fixed image remains load/OUT/HLT. Generation exhaustion is
 covered by the existing EventQueue unit test, not injected through this owner.
 Independent Sol/high review found no P0–P3 issues. No runner, IRQ or hardware
 reset acceptance is claimed. See [report](../reports/STAGE_4_S4-21C_2026-11-07.md).
+
+## S4-21d runner completion and cancellation
+
+`cargo test -p od-runner --test stage4_probe_cli --offline -- --test-threads=1`
+passed 8 tests; the corresponding `stage4_probe_build_cli` command passed 1.
+They cover exact nonce and byte completion, absent and mismatched expectation,
+STOP before fetch and after load and OUT, work limit, malformed arguments and
+loader refusal. The `PagedVcpuSession::drain_tx` unit test passed, as did
+`cargo check -p od-runner --all-targets --offline`, workspace formatting and
+diff checks. A separate runner unit test checks error category mapping. The
+fixed loader does not expose fault injection through the CLI. Independent
+Sol/high review passed. See [report](../reports/STAGE_4_S4-21D_2026-11-07.md).

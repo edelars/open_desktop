@@ -1215,6 +1215,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** `cargo test -p od-machine --lib --offline` (120); `cargo test -p od-machine --test paged_probe_quantum --test uart_rx_events --offline` (21 + 7); `cargo fmt --all -- --check`; `cargo check -p od-machine --all-targets --offline`; diff check. Store test подставляет инструкцию только внутри теста: штатный image profile содержит load/OUT/HLT. Layout check не проходит из-за ранее зарегистрированного `smoke/` (ISSUE-056). Детали: [отчёт](../reports/STAGE_4_S4-21C_2026-11-07.md), [manifest](../reports/data/stage4/s4-21c-paged-vcpu.json), [методика](../testing/MACHINE.md#s4-21c-bounded-paged-vcpu-owner).
 - **Границы:** нет runner integration, completion/cancellation predicate, IRQ wakeup или архитектурного x86 reset. S4-21 и Stage 4 остаются открытыми.
 
+#### S4-21d. Runner completion и deterministic cancellation
+
+- [x] Ограниченный срез принят после независимого `gpt-6.1-sol/high` ревью без замечаний к коду; замечание к формулировке README исправлено. S4-21 остаётся открытым.
+- **Контракт:** `--stage4-probe` использует `PagedVcpuSession`; HLT подтверждает `guest_completed` только при трёх инструкциях, совпадении ожидаемого nonce с RAX и единственного UART byte с его младшим байтом. Отдельные статусы для HLT, несовпадения, STOP, лимита и ошибок.
+- **Проверки и границы:** 8 runner CLI tests, 1 reproducible-build CLI test, 1 session drain unit test, runner all-targets check, fmt и diff прошли; см. [отчёт](../reports/STAGE_4_S4-21D_2026-11-07.md), [manifest](../reports/data/stage4/s4-21d-runner.json), [методику](../testing/MACHINE.md#s4-21d-runner-completion-and-cancellation). `--cancel-after` — детерминированный источник STOP; подключение VMHost/OS signals относится к S4-41.
+
 ### S4-22. Virtual clock и TSC
 
 - [ ] Принято после ревью.

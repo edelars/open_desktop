@@ -80,6 +80,19 @@ impl PagedVcpuSession {
         self.rx.len()
     }
 
+    /// Complete and return bytes committed to the bounded polling UART TX path.
+    /// Repeated calls do not return already drained bytes.
+    pub fn drain_tx(&mut self) -> Vec<u8> {
+        let uart = self.machine.uart();
+        let mut bytes = Vec::new();
+        while uart.transfer_holding_to_shift() {
+            if let Some(byte) = uart.complete_transmission() {
+                bytes.push(byte);
+            }
+        }
+        bytes
+    }
+
     pub fn pause(&mut self) -> Result<(), PagedVcpuError> {
         if self.host != PagedVcpuHostState::Active {
             return Err(PagedVcpuError::NotActive(self.host));
@@ -275,6 +288,26 @@ mod tests {
                 .unwrap(),
             0x55
         );
+    }
+
+    #[test]
+    fn drain_tx_consumes_committed_output_once_after_stop() {
+        let mut session = PagedVcpuSession::new(&image(), 1).unwrap();
+        let mut polls = 0;
+        let report = session
+            .run(
+                5,
+                || {
+                    polls += 1;
+                    polls > 2
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Stopped);
+        assert_eq!(session.drain_tx(), vec![0x41]);
+        assert!(session.drain_tx().is_empty());
+        assert!(session.run(1, || false, |_| {}).is_err());
     }
 
     #[test]

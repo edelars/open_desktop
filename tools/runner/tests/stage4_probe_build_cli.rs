@@ -35,9 +35,10 @@ fn build_fixture(root: &Path, output_dir: &str, payload: u64) -> PathBuf {
     root.join(output_dir).join("flat_probe.bin")
 }
 
-fn run_probe(image: &Path, budget: Option<u64>) -> Output {
+fn run_probe(image: &Path, budget: Option<u64>, nonce: u64) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_od-runner"));
     command.arg("--stage4-probe").arg(image);
+    command.args(["--expect-nonce", &nonce.to_string()]);
     if let Some(budget) = budget {
         command.args(["--budget", &budget.to_string()]);
     }
@@ -67,13 +68,13 @@ fn built_artifacts_are_reproducible_payload_driven_and_fail_closed() {
         "same payload must produce identical raw images"
     );
 
-    let first = run_probe(&image_a, None);
+    let first = run_probe(&image_a, None, PAYLOAD_A);
     let first_json = json(&first);
     assert!(first.status.success());
     assert_eq!(first_json["exit"], "halted");
     assert_eq!(first_json["serial_bytes"], serde_json::json!([0x88]));
 
-    let second = run_probe(&image_different, None);
+    let second = run_probe(&image_different, None, PAYLOAD_B);
     let second_json = json(&second);
     assert!(second.status.success());
     assert_eq!(second_json["exit"], "halted");
@@ -84,7 +85,7 @@ fn built_artifacts_are_reproducible_payload_driven_and_fail_closed() {
     corrupted[0] ^= 0xff;
     let malformed_path = root.join(&malformed);
     fs::write(&malformed_path, corrupted).expect("malformed artifact must be writable");
-    let rejected = run_probe(&malformed_path, None);
+    let rejected = run_probe(&malformed_path, None, PAYLOAD_A);
     let rejected_json = json(&rejected);
     assert_eq!(rejected.status.code(), Some(4));
     assert_eq!(rejected_json["status"], "loader_error");

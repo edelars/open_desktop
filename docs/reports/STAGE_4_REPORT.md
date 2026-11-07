@@ -506,3 +506,11 @@ unit tests, 21 paged-quantum tests and 7 UART RX tests passed. Independent
 Sol/high review found no P0–P3 issues. Evidence and limits are in the
 [S4-21c report](STAGE_4_S4-21C_2026-11-07.md). S4-21 and Stage 4 remain open;
 runner completion/cancellation is not implemented.
+
+## S4-21d — runner completion and deterministic cancellation (accepted)
+
+The fixed-image runner uses the paged owner and requires an expected nonce,
+three retired instructions and exact UART output before reporting guest
+completion. STOP and work limit are distinct. Independent review passed; the
+README error wording was clarified. See [report](STAGE_4_S4-21D_2026-11-07.md).
+S4-21 and Stage 4 remain open; VMHost/OS signal integration belongs to S4-41.

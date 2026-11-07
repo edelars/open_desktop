@@ -22,16 +22,26 @@ Run a fixed raw image produced by the Stage 4 probe build:
 
 ```sh
 cargo run --offline -p od-runner -- \
-  --stage4-probe work/stage4/flat_probe/flat_probe.bin --budget 16
+  --stage4-probe work/stage4/flat_probe/flat_probe.bin --budget 16 \
+  --expect-nonce 0x1122334455667788
 ```
 
 The image must be exactly 0x9000 bytes and satisfy the `Stage4FlatProbeV1`
 layout accepted by `od-machine::load_stage4_flat_probe`. The runner reads the
 image bytes from the named file, loads that image, and runs one bounded paged
-CPU quantum. `--budget` accepts 0 through 1024 instructions and defaults to
-16. The probe's guest instructions determine the result; the CLI has no
-expected-output input. Once the quantum returns, the runner completes pending
-polling-UART transmission and reports the bytes actually produced by the guest.
+CPU quantum through `PagedVcpuSession`. `--budget` accepts 0 through 1024
+instructions and defaults to 16. `--expect-nonce QWORD` accepts decimal or
+`0x` hexadecimal. Success requires HLT after exactly three retired instructions,
+RAX equal to the expected nonce and UART output exactly its low byte. Without
+an expectation HLT is `guest_halted`; an incorrect expectation yields
+`completion_mismatch`. Both are nonzero.
+
+`--cancel-after N` deterministically permits N instruction-boundary polls before
+requesting STOP. Zero cancels before fetch; two preserves the load and OUT.
+The result is `host_cancelled`, with committed state and UART output. Budget
+exhaustion is `work_limit`. This is a deterministic cancellation source; real
+VMHost/OS signal wiring belongs to S4-41. After the quantum, the owner drains
+committed polling-UART TX once.
 
 Standard output contains one deterministic JSON object. It includes
 `schema_version`, `profile`, `status`, `exit`, `retired`, `rip`, `activity`,
@@ -43,14 +53,17 @@ Exit codes are:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Guest reached HLT (`exit: "halted"`). |
+| `0` | `guest_completed`: HLT and the expected retirement count, nonce and UART byte match. |
 | `3` | Invalid arguments, unreadable image, or image size mismatch. |
 | `4` | Image rejected by the Stage 4 loader. |
-| `5` | Guest did not reach HLT, including budget exhaustion, unsupported instruction, guest fault, or memory backend error. |
+| `5` | HLT without proof, completion mismatch, cancellation, work limit, guest fault, backend error, or other non-PIO execution failure. |
 | `6` | Port-I/O failure. |
 
-Failures still emit the same JSON envelope and include a stable error category
-and diagnostic detail. The runner does not dispatch guest opcodes itself.
+Execution failures emit a stable error category and diagnostic detail in
+`error`. HLT without a completion expectation or with a mismatched expectation
+returns code `5` with `error: null`; use `status` (`guest_halted` or
+`completion_mismatch`) to identify that failed completion predicate. The runner
+does not dispatch guest opcodes itself.
 
 ## Stage 4 store/load probe
 

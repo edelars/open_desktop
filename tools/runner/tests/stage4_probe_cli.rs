@@ -55,14 +55,17 @@ fn result(output: &Output) -> Value {
 
 #[test]
 fn valid_image_runs_to_hlt_and_reports_guest_uart_output() {
-    let (output, path) = invoke(&valid_image(0x1122_3344_5566_77a5), &[]);
+    let (output, path) = invoke(
+        &valid_image(0x1122_3344_5566_77a5),
+        &["--expect-nonce", "0x11223344556677a5"],
+    );
     let json = result(&output);
     let _ = fs::remove_file(path);
 
     assert!(output.status.success());
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["profile"], "Stage4FlatProbeV1");
-    assert_eq!(json["status"], "completed");
+    assert_eq!(json["status"], "guest_completed");
     assert_eq!(json["exit"], "halted");
     assert_eq!(json["retired"], 3);
     assert_eq!(json["rip"], "0x0000000000400005");
@@ -75,10 +78,10 @@ fn valid_image_runs_to_hlt_and_reports_guest_uart_output() {
 
 #[test]
 fn output_byte_changes_with_guest_payload() {
-    let (first, first_path) = invoke(&valid_image(0x11), &[]);
+    let (first, first_path) = invoke(&valid_image(0x11), &["--expect-nonce", "17"]);
     let first_json = result(&first);
     let _ = fs::remove_file(first_path);
-    let (second, second_path) = invoke(&valid_image(0x92), &[]);
+    let (second, second_path) = invoke(&valid_image(0x92), &["--expect-nonce", "0x92"]);
     let second_json = result(&second);
     let _ = fs::remove_file(second_path);
 
@@ -96,7 +99,7 @@ fn budget_exhaustion_returns_nonzero_json_with_partial_state() {
     let _ = fs::remove_file(path);
 
     assert_eq!(output.status.code(), Some(5));
-    assert_eq!(json["status"], "error");
+    assert_eq!(json["status"], "work_limit");
     assert_eq!(json["exit"], "budget_exhausted");
     assert_eq!(json["retired"], 1);
     assert_eq!(json["serial_bytes"], serde_json::json!([]));
@@ -145,4 +148,66 @@ fn missing_file_returns_json_error_without_panicking() {
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(json["status"], "invalid_input");
     assert_eq!(json["error"]["kind"], "file");
+}
+
+#[test]
+fn completion_requires_matching_expectation() {
+    for (args, status) in [
+        (&[][..], "guest_halted"),
+        (&["--expect-nonce", "0x42"][..], "completion_mismatch"),
+    ] {
+        let (output, path) = invoke(&valid_image(0x41), args);
+        let json = result(&output);
+        let _ = fs::remove_file(path);
+        assert_eq!(output.status.code(), Some(5));
+        assert_eq!(json["status"], status);
+        assert_eq!(json["exit"], "halted");
+        assert_eq!(json["serial_bytes"], serde_json::json!([0x41]));
+    }
+}
+
+#[test]
+fn cancellation_preserves_committed_prefix() {
+    for (limit, retired, serial, observed) in [
+        ("0", 0, serde_json::json!([]), Value::Null),
+        (
+            "1",
+            1,
+            serde_json::json!([]),
+            serde_json::json!("0x0000000000000041"),
+        ),
+        (
+            "2",
+            2,
+            serde_json::json!([0x41]),
+            serde_json::json!("0x0000000000000041"),
+        ),
+    ] {
+        let (output, path) = invoke(
+            &valid_image(0x41),
+            &["--cancel-after", limit, "--expect-nonce", "65"],
+        );
+        let json = result(&output);
+        let _ = fs::remove_file(path);
+        assert_eq!(output.status.code(), Some(5));
+        assert_eq!(json["status"], "host_cancelled");
+        assert_eq!(json["exit"], "stopped");
+        assert_eq!(json["retired"], retired);
+        assert_eq!(json["serial_bytes"], serial);
+        assert_eq!(json["observed_data_qword"], observed);
+    }
+}
+
+#[test]
+fn invalid_expectation_and_cancellation_are_invalid_input() {
+    for args in [
+        &["--expect-nonce", "0x10000000000000000"][..],
+        &["--cancel-after", "-1"][..],
+        &["--expect-nonce", "1", "--expect-nonce", "2"][..],
+    ] {
+        let (output, path) = invoke(&valid_image(0), args);
+        let _ = fs::remove_file(path);
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(result(&output)["status"], "invalid_input");
+    }
 }

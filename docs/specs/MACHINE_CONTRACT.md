@@ -1076,6 +1076,19 @@ semantics. Runner completion/cancellation, IRQ wakeup and general scheduling
 are outside this slice. Independent Sol/high review passed with no P0–P3
 findings.
 
+## Fixed-image runner completion and cancellation (S4-21d)
+
+The owner exposes `drain_tx` to complete and consume committed polling-UART TX
+without exposing the UART handle. The runner invokes one bounded owner quantum.
+Only HLT with exactly three retired instructions, RAX matching the supplied
+nonce and TX equal to its single low byte is `guest_completed`. HLT without an
+expectation is `guest_halted`; a failed comparison is `completion_mismatch`.
+`--cancel-after N` allows N instruction polls then requests STOP, producing
+`host_cancelled` with the committed prefix; budget exhaustion is `work_limit`.
+Guest faults, backend, port I/O, loader and input failures remain distinct.
+The cancellation source is deterministic; VMHost and OS signal wiring is S4-41.
+See [S4-21d report](../reports/STAGE_4_S4-21D_2026-11-07.md).
+
 ## Caller-driven virtual clock and RDTSC boundary
 
 S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной

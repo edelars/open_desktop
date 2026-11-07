@@ -1,0 +1,22 @@
+{
+  "slice": "S4-21d",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "fixed-image runner completion and deterministic cancellation",
+  "review": "independent gpt-6.1-sol/high review passed; code clean, README wording clarified",
+  "checks": {
+    "runner_cli": "cargo test -p od-runner --test stage4_probe_cli --offline -- --test-threads=1: 8 passed",
+    "runner_build_cli": "cargo test -p od-runner --test stage4_probe_build_cli --offline -- --test-threads=1: 1 passed",
+    "machine_drain": "cargo test -p od-machine --lib drain_tx_consumes_committed_output_once_after_stop --offline: 1 passed",
+    "cargo_check": "cargo check -p od-runner --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "passed: 27622 nodes, 69379 edges; code graph only",
+    "doc_links_and_json": "passed"
+  },
+  "limitations": [
+    "fixed image cannot inject guest fault, backend or PIO errors through CLI",
+    "production VMHost/OS cancellation belongs to S4-41",
+    "S4-21 and Stage 4 remain open"
+  ]
+}

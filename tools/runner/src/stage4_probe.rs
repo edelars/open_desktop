@@ -1,6 +1,5 @@
 use od_machine::{
-    PagedProbeExit, STAGE4_FLAT_PROBE_DATA_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,
-    load_stage4_flat_probe,
+    PagedProbeExit, PagedVcpuSession, STAGE4_FLAT_PROBE_DATA_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,
 };
 use serde_json::{Value, json};
 use std::fs::File;
@@ -22,7 +21,7 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
-    let (path, budget) = match parse_args(args) {
+    let (path, budget, expected, cancel_after) = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(detail) => {
             return Err((
@@ -39,7 +38,7 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         }
     };
 
-    let mut machine = match load_stage4_flat_probe(&image) {
+    let mut machine = match PagedVcpuSession::new(&image, 0) {
         Ok(machine) => machine,
         Err(error) => {
             return Err((
@@ -49,14 +48,28 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         }
     };
 
-    let report = machine.run(budget, || false, |_| {});
-    let uart = machine.uart();
-    let mut serial_bytes = Vec::new();
-    while uart.transfer_holding_to_shift() {
-        if let Some(byte) = uart.complete_transmission() {
-            serial_bytes.push(byte);
+    let mut polls = 0_u64;
+    let report = match machine.run(
+        budget,
+        || {
+            if cancel_after.is_some_and(|limit| polls >= limit) {
+                true
+            } else {
+                polls = polls.saturating_add(1);
+                false
+            }
+        },
+        |_| {},
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            return Err((
+                failure("integration_error", "session", format!("{error:?}")),
+                EXIT_GUEST,
+            ));
         }
-    }
+    };
+    let serial_bytes = machine.drain_tx();
 
     let state = machine.state();
     let retired = report.instructions_executed;
@@ -78,10 +91,17 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         report.page_fault.as_ref(),
         report.memory_error.as_ref(),
     );
+    let status = classify_exit(
+        &report.exit,
+        expected,
+        retired,
+        observed_data_qword,
+        &serial_bytes,
+    );
     let result = json!({
         "schema_version": 1,
         "profile": "Stage4FlatProbeV1",
-        "status": if matches!(report.exit, PagedProbeExit::Halted) { "completed" } else { "error" },
+        "status": status,
         "exit": exit,
         "retired": retired,
         "rip": format!("0x{:016x}", state.rip),
@@ -94,7 +114,7 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
     });
 
     let code = match report.exit {
-        PagedProbeExit::Halted => 0,
+        PagedProbeExit::Halted if status == "guest_completed" => 0,
         PagedProbeExit::PortIo(_) => EXIT_PIO,
         _ => EXIT_GUEST,
     };
@@ -105,9 +125,42 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
     }
 }
 
-fn parse_args(args: &[String]) -> Result<(String, u64), String> {
+fn classify_exit(
+    exit: &PagedProbeExit,
+    expected: Option<u64>,
+    retired: u64,
+    observed_data_qword: Option<u64>,
+    serial_bytes: &[u8],
+) -> &'static str {
+    match exit {
+        PagedProbeExit::Halted => match expected {
+            None => "guest_halted",
+            Some(nonce)
+                if retired == 3
+                    && observed_data_qword == Some(nonce)
+                    && serial_bytes == [nonce as u8] =>
+            {
+                "guest_completed"
+            }
+            Some(_) => "completion_mismatch",
+        },
+        PagedProbeExit::Stopped => "host_cancelled",
+        PagedProbeExit::BudgetExhausted => "work_limit",
+        PagedProbeExit::Fault(_) => "guest_fault",
+        PagedProbeExit::Backend(_) => "backend_error",
+        PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::Rejected(_) => "rejected",
+        PagedProbeExit::Unsupported { .. } => "unsupported",
+        PagedProbeExit::Shutdown => "shutdown",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
+    }
+}
+
+fn parse_args(args: &[String]) -> Result<(String, u64, Option<u64>, Option<u64>), String> {
     let mut path = None;
     let mut budget = None;
+    let mut expected = None;
+    let mut cancel_after = None;
     let mut index = 0;
     while index < args.len() {
         let option = args[index].as_str();
@@ -127,12 +180,36 @@ fn parse_args(args: &[String]) -> Result<(String, u64), String> {
                 budget = Some(parsed);
             }
             "--budget" => return Err("--budget may be specified only once".into()),
+            "--expect-nonce" if expected.is_none() => {
+                expected = Some(
+                    if let Some(hex) = value.strip_prefix("0x") {
+                        u64::from_str_radix(hex, 16)
+                    } else {
+                        value.parse::<u64>()
+                    }
+                    .map_err(|_| format!("invalid nonce '{value}'"))?,
+                );
+            }
+            "--expect-nonce" => return Err("--expect-nonce may be specified only once".into()),
+            "--cancel-after" if cancel_after.is_none() => {
+                cancel_after = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid cancellation count '{value}'"))?,
+                );
+            }
+            "--cancel-after" => return Err("--cancel-after may be specified only once".into()),
             other => return Err(format!("unexpected option '{other}'")),
         }
         index += 2;
     }
     let path = path.ok_or_else(|| "--stage4-probe IMAGE is required".to_string())?;
-    Ok((path, budget.unwrap_or(DEFAULT_BUDGET)))
+    Ok((
+        path,
+        budget.unwrap_or(DEFAULT_BUDGET),
+        expected,
+        cancel_after,
+    ))
 }
 
 fn read_image(path: &str) -> Result<Vec<u8>, (&'static str, String)> {
@@ -208,4 +285,37 @@ fn failure(status: &str, kind: &str, detail: String) -> Value {
 fn emit(result: Value, code: u8) -> ExitCode {
     println!("{result}");
     ExitCode::from(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_categories_remain_distinct() {
+        let fault = PagedProbeExit::Fault(od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x1000),
+        });
+        let backend = PagedProbeExit::Backend(od_isa::memory::MemoryError::Backend("test".into()));
+        let pio = PagedProbeExit::PortIo(od_machine::BusAccessError::AddressOverflow);
+        for (exit, expected_status) in [
+            (fault, "guest_fault"),
+            (backend, "backend_error"),
+            (pio, "pio_error"),
+            (PagedProbeExit::BudgetExhausted, "work_limit"),
+        ] {
+            assert_eq!(classify_exit(&exit, None, 0, None, &[]), expected_status);
+            assert_eq!(
+                error_details(&exit, None, None)["kind"],
+                match expected_status {
+                    "guest_fault" => "guest_fault",
+                    "backend_error" => "memory_backend",
+                    "pio_error" => "pio",
+                    _ => "budget_exhausted",
+                }
+            );
+        }
+    }
 }
