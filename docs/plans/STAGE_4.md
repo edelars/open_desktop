@@ -1448,6 +1448,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 32 `diagnostic_vcpu` tests, 412 `od-jit` unit tests, 2 ARM64 host integration tests с настоящим `PublishedBlockExecutor`, package all-target check для `od-machine`, `od-jit`, `od-host`, fmt и diff check прошли. Layout check сообщил только существующий unmapped root `smoke/` (ISSUE-056). Graphify и evidence — в [отчёте](../reports/STAGE_4_S4-27F1_2026-11-07.md), [manifest](../reports/data/stage4/s4-27f1-jit-event-handoff.json) и [методике](../testing/MACHINE.md#s4-27f1-bounded-jit-event-handoff).
 - **Граница:** проверен bounded NOP fallback и host-native block handoff на ARM64, но asynchronous interruption внутри native block не реализована. Этот срез не связывает JIT exit с APIC entry/handler/EOI/IRETQ, production scheduler, event queue, paged execution или Linux acceptance; это остаётся частью открытого parent S4-27.
 
+#### S4-27f2. Сквозной JIT event, APIC entry и resume
+
+- [x] Ограниченный S4-27f2 принят после независимого `gpt-6.1-sol/high` review без замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** host integration scenario использует настоящий `PublishedBlockExecutor` и существующие public machine API. После native prefix dispatcher останавливается на `EventPending` перед NOP. Caller затем подаёт один APIC request, проверяет `eligible()` и вызывает `run_apic_quantum`; frame сохраняет точный JIT boundary, а entry подтверждает вектор ровно один раз. Ограниченный guest handler читает сохранённый RIP и ISR bit, пишет Dword zero в LAPIC EOI через MMIO, проверяет очищение ISR и исполняет same-CPL `IRETQ`.
+- **Resume:** после IRETQ caller явно очищает своё event flag и повторяет `run_jit_nop` с тем же полным code range и оставшимся budget. Проверено, что prefix не исполняется снова, один NOP retired интерпретатором, а native suffix завершается отдельно; JIT и handler counters проверяются раздельно. Pause/resume сохраняет CPU boundary и event до обработки.
+- **Проверки:** целевой `diagnostic_jit_event` integration binary — 3 passed (включая два S4-27f1 cases), `cargo check -p od-host --all-targets --offline`, fmt/diff и независимое Sol/high review прошли. Graphify и evidence — в [отчёте](../reports/STAGE_4_S4-27F2_2026-11-07.md), [manifest](../reports/data/stage4/s4-27f2-jit-apic-resume.json) и [методике](../testing/MACHINE.md#s4-27f2-jitapiceoiiretq-resume).
+- **Граница:** только один caller-driven vector на завершённой границе, без async arrival внутри native block. Event flag — отдельное уведомление; APIC acknowledge происходит только после проверки eligible и успешного entry. Нет общего scheduler/event queue, автоматического maskable polling, MOV SS/NMI, paged delivery, error recovery после guest EOI или Linux acceptance; полный S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

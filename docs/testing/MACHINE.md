@@ -672,6 +672,26 @@ This is cooperative event handoff at dispatcher boundaries. It does not
 interrupt an executing native block asynchronously or deliver the event via
 APIC. See the [S4-27f1 report](../reports/STAGE_4_S4-27F1_2026-11-07.md).
 
+## S4-27f2: JIT/APIC/EOI/IRETQ resume
+
+Run `cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1`
+(3 passed on ARM64). The end-to-end case uses a real `PublishedBlockExecutor`:
+native prefix → `EventPending` before NOP → caller posts one eligible APIC
+vector → interrupt entry stores the JIT boundary → handler reads saved RIP and
+ISR bit → guest Dword EOI MMIO write clears ISR → same-CPL IRETQ restores the
+boundary → caller clears its event flag → the same full code range resumes
+through one interpreter NOP and a native suffix without repeating the prefix.
+It asserts the JIT budget/counters, selected and pending vector, saved frame,
+pre/post-EOI ISR observations, RIP/RSP/RFLAGS restoration and final registers.
+Pause/resume before entry preserves CPU state and the pending caller-owned
+event.
+
+Also run `cargo check -p od-host --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check`. This is synchronous
+caller-driven composition at a completed boundary; it does not prove async
+interruption during native execution or general scheduler/event-queue behavior.
+See the [S4-27f2 report](../reports/STAGE_4_S4-27F2_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

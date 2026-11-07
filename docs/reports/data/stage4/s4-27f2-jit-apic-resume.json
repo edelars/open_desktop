@@ -1,0 +1,22 @@
+{
+  "slice": "S4-27f2",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Caller-driven composition of JIT event exit, one APIC entry, guest EOI, IRETQ and JIT resume",
+  "review": "Independent gpt-6.1-sol/high review passed with no P0-P3 findings.",
+  "checks": {
+    "host_native_tests": "cargo test -p od-host --test diagnostic_jit_event --offline -- --test-threads=1: 3 passed on ARM64 (2 S4-27f1 cases plus 1 integration case)",
+    "package_check": "cargo check -p od-host --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Post-code update: 27,914 nodes, 70,755 edges, 1,028 communities; post-documentation update: 27,922 nodes, 70,765 edges, 1,051 communities",
+    "layout_check": "exit 1 only for the existing unmapped root smoke/ directory (ISSUE-056)"
+  },
+  "limitations": [
+    "one synchronous caller-driven APIC vector at a completed boundary",
+    "no asynchronous interruption inside native execution",
+    "no general scheduler, event queue, automatic polling, NMI/MOV-SS or paged delivery",
+    "no recovery after guest EOI and no Linux acceptance",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

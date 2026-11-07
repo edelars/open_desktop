@@ -1637,6 +1637,36 @@ slice; parent S4-27 remains open. See the
 [verification method](../testing/MACHINE.md#s4-27f1-bounded-jit-event-handoff),
 and [evidence manifest](../reports/data/stage4/s4-27f1-jit-event-handoff.json).
 
+## S4-27f2. JIT event, APIC entry and resume
+
+The bounded host integration scenario composes the S4-27f1 JIT diagnostic
+entry with the existing one-vector APIC quantum and guest EOI/IRETQ path. A
+real ARM64 `PublishedBlockExecutor` runs the native prefix; the caller-owned
+event causes `EventPending` at the completed boundary before the NOP fallback.
+The caller posts one APIC request after that exit, confirms
+`LocalApicHandle::eligible()`, and calls `run_apic_quantum`. The resulting
+same-CPL interrupt frame stores the exact JIT boundary and the APIC acknowledges
+the selected vector once.
+
+The guest handler reads the saved RIP and ISR bit, writes Dword zero to LAPIC
+EOI through the normal `MachineBus` MMIO path, confirms the ISR bit cleared,
+then executes the explicit same-CPL `IRETQ`. The caller clears its event flag
+only after handling the event, then resumes `run_jit_nop` with the original
+complete code range and remaining budget. The checks prove that the prefix is
+not repeated, NOP retires once through the interpreter, and the native suffix
+executes as a separate block. JIT dispatch counters and handler instruction
+counters are asserted independently.
+
+This is one caller-driven vector at a completed boundary with a synchronous
+single owner. The event flag is only a notification and is not an APIC
+acknowledgement. The scenario does not asynchronously interrupt a running
+native block; it does not add a scheduler, general event queue, automatic
+polling, NMI/MOV-SS delivery, paged entry, recovery after a guest EOI or Linux
+acceptance. Parent S4-27 remains open. See the
+[S4-27f2 report](../reports/STAGE_4_S4-27F2_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27f2-jitapiceoiiretq-resume),
+and [evidence manifest](../reports/data/stage4/s4-27f2-jit-apic-resume.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

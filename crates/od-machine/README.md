@@ -46,13 +46,14 @@ Bounded S4-23a adds a fixed-capacity deterministic one-shot deadline queue.
 It uses absolute nanosecond deadlines, explicit extraction and stable ordering;
 it does not advance the virtual clock or dispatch CPU/device/IRQ work. Full
 event lifecycle, reset/generation, production HLT wakeup and host waiting remain open.
-Bounded S4-27a/b/c/d/e add one-route caller-driven APIC entry, guest EOI,
+Bounded S4-27a/b/c/d/e/f1/f2 add one-route caller-driven APIC entry, guest EOI,
 same-CPL IRETQ/resume, exact STI and ordinary APIC quanta, explicit HLT wait
 with maskable APIC wake, and pending IRQ delivery at the next post-IRET
 boundary. S4-27f1 adds a separate bounded RAM-bound JIT diagnostic path with
 cooperative event handoff through a real host executor. These remain diagnostic
 one-vCPU paths; they do not provide production scheduling, asynchronous event
-delivery, general interruptibility, or APIC/JIT event composition.
+delivery, general interruptibility, or asynchronous interruption inside native
+execution. S4-27f2 covers only synchronous caller-driven APIC/JIT composition.
 Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не
