@@ -13,13 +13,31 @@
 //! The command table is the single source for dispatch and for `TPM_CAP_COMMANDS`: a command that
 //! is not in [`COMMANDS`] gets `TPM_RC_COMMAND_CODE`, never `TPM_RC_SUCCESS`.
 //! `TPM2_PCR_Allocate` (code 0x12B) is deliberately absent, see `docs/specs/VTPM.md`.
+//!
+//! Authorization (Part 1 v184, clauses 16.6 and 17): the first `auth` handles of a command each
+//! need one session in the authorization area, a password session (`TPM_RS_PW`) or an HMAC
+//! session started by `TPM2_StartAuthSession`. An HMAC authorization is checked against the
+//! cpHash of the command and answered with a response HMAC over the rpHash (`session.rs`).
+//! No other sessions (audit, encrypt-only) are accepted: more sessions than authorized handles is
+//! `TPM_RC_AUTHSIZE`. `TPM2_FlushContext` takes no session at all (`TPM_RC_AUTH_CONTEXT`).
+//! NOT VERIFIED against TPM 2.0 Library v185/v184: the Name of a sequence object in a cpHash is
+//! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
+//! deleted or flushed uses the Empty Buffer as authValue (the text says so for
+//! `TPM2_NV_UndefineSpaceSpecial` only).
 
-use crate::codes::{cc, handle, st};
+use sha2::{Digest, Sha256};
+
+use crate::codes::{cc, handle, session_attr, st};
 use crate::command::{HEADER_SIZE, check_password_session, parse_auth_area, parse_header};
+use crate::crypto::DIGEST;
 use crate::hash::{AuthValue, password_matches};
-use crate::marshal::{Reader, limits};
+use crate::hierarchy::is_authorization_handle;
+use crate::marshal::{Reader, TpmsAuthCommand, limits};
 use crate::pcr::resolve_pcr_handle;
-use crate::response::{Output, Rc, error_response, success_response};
+use crate::response::{Output, Rc, SessionAck, error_response, success_response};
+use crate::session::{
+    authorization_key, check_hmac_session_attributes, response_hmac, verify_command_hmac,
+};
 use crate::state::Tpm;
 
 /// One implemented command.
@@ -36,6 +54,8 @@ pub(crate) struct CommandSpec {
     pub nv: bool,
     /// The sequence handle is flushed on success (`{F}` in Part 3).
     pub flushed: bool,
+    /// The command may flush any number of loaded contexts (`{E}` in Part 3).
+    pub extensive: bool,
 }
 
 const fn spec(
@@ -53,12 +73,28 @@ const fn spec(
         rhandle,
         nv,
         flushed,
+        extensive: false,
     }
 }
 
+/// Marks a command `{E}`.
+const fn ext(mut s: CommandSpec) -> CommandSpec {
+    s.extensive = true;
+    s
+}
+
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
-/// `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 17] = [
+/// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
+/// 2026-11-07).
+pub(crate) static COMMANDS: [CommandSpec; 30] = [
+    ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
+    spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
+    ext(spec(cc::CLEAR, 1, 1, false, true, false)),
+    spec(cc::CLEAR_CONTROL, 1, 1, false, true, false),
+    spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
+    spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
+    spec(cc::NV_WRITE, 2, 1, false, true, false),
+    spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
     spec(cc::PCR_RESET, 1, 1, false, true, false),
     spec(cc::SEQUENCE_COMPLETE, 1, 1, false, false, true),
@@ -66,7 +102,12 @@ pub(crate) static COMMANDS: [CommandSpec; 17] = [
     spec(cc::STARTUP, 0, 0, false, true, false),
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
+    spec(cc::NV_READ, 2, 1, false, false, false),
+    spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
+    spec(cc::FLUSH_CONTEXT, 0, 0, false, false, false),
+    spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
+    spec(cc::START_AUTH_SESSION, 2, 0, true, false, false),
     spec(cc::GET_CAPABILITY, 0, 0, false, false, false),
     spec(cc::GET_RANDOM, 0, 0, false, false, false),
     spec(cc::GET_TEST_RESULT, 0, 0, false, false, false),
@@ -95,20 +136,141 @@ pub(crate) fn execute(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Authorization value of the entity behind handle number `i` of `spec`.
-/// PCR and `TPM_RH_NULL` use the empty authorization (PTP 1.07, clause 4.7: Empty Auth for all PCR).
-fn handle_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> Result<AuthValue, Rc> {
-    let h = handles[i];
-    let is_pcr_position = matches!(
+/// `true` if handle position `i` of command `code` is a PCR (authorized by the empty value).
+fn is_pcr_position(code: u32, i: usize) -> bool {
+    matches!(
         (code, i),
         (cc::PCR_EXTEND | cc::PCR_EVENT | cc::PCR_RESET, 0) | (cc::EVENT_SEQUENCE_COMPLETE, 0)
-    );
-    if is_pcr_position || h == handle::RH_NULL {
+    )
+}
+
+/// Authorization value of the entity behind handle number `i` of the command, for checking a
+/// command authorization. PCR and `TPM_RH_NULL` use the empty authorization (PTP 1.07, clause
+/// 4.7: Empty Auth for all PCR); a hierarchy needs its enable SET (`TPM_RC_HIERARCHY`).
+fn handle_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> Result<AuthValue, Rc> {
+    let h = handles[i];
+    if is_pcr_position(code, i) || h == handle::RH_NULL {
         return Ok(AuthValue::empty());
     }
-    let slot = tpm.seq_slot(h, i)?;
-    // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
-    Ok(tpm.seq_auth(slot))
+    let n = (i + 1) as u8;
+    match handle::handle_type(h) {
+        handle::HT_PERMANENT => {
+            if !tpm.permanent_enabled(h) {
+                return Err(Rc::HIERARCHY.in_handle(n));
+            }
+            tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
+        }
+        handle::HT_NV_INDEX => tpm.nv_auth(h).ok_or(Rc::HANDLE.in_handle(n)),
+        _ => {
+            let slot = tpm.seq_slot(h, i)?;
+            // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
+            Ok(tpm.seq_auth(slot))
+        }
+    }
+}
+
+/// The authorization value for a response HMAC, read after the command ran: the current value
+/// regardless of the enables, the Empty Buffer for an entity that no longer exists.
+fn response_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> AuthValue {
+    let h = handles[i];
+    if is_pcr_position(code, i) || h == handle::RH_NULL {
+        return AuthValue::empty();
+    }
+    match handle::handle_type(h) {
+        handle::HT_PERMANENT => tpm.permanent_auth(h).unwrap_or_else(AuthValue::empty),
+        handle::HT_NV_INDEX => tpm.nv_auth(h).unwrap_or_else(AuthValue::empty),
+        _ => tpm
+            .seq_slot(h, i)
+            .map_or_else(|_| AuthValue::empty(), |slot| tpm.seq_auth(slot)),
+    }
+}
+
+/// Name of the entity behind a handle for a cpHash (Part 1 v184, Table 6): the handle itself for
+/// PCR, sessions and permanent values, `nameAlg || H(public)` for an NV index, the Empty Buffer
+/// for a sequence object.
+fn handle_name(tpm: &Tpm, h: u32) -> Vec<u8> {
+    match handle::handle_type(h) {
+        handle::HT_NV_INDEX => tpm.nv_name(h).unwrap_or_else(|| h.to_be_bytes().to_vec()),
+        handle::HT_TRANSIENT | handle::HT_PERSISTENT => Vec::new(),
+        _ => h.to_be_bytes().to_vec(),
+    }
+}
+
+/// cpHash of a command (Part 1, clause 16.7): `H(commandCode || Name1 || ... || parameters)`.
+fn command_parameter_hash(
+    tpm: &Tpm,
+    spec: &CommandSpec,
+    handles: &[u32; 2],
+    parameters: &[u8],
+) -> [u8; DIGEST] {
+    let mut h = Sha256::new();
+    h.update(spec.code.to_be_bytes());
+    for handle in handles.iter().take(usize::from(spec.handles)) {
+        h.update(handle_name(tpm, *handle));
+    }
+    h.update(parameters);
+    h.finalize().into()
+}
+
+/// rpHash of a response (Part 1, clause 16.8): `H(responseCode || commandCode || parameters)`.
+fn response_parameter_hash(code: u32, parameters: &[u8]) -> [u8; DIGEST] {
+    let mut h = Sha256::new();
+    h.update(Rc::SUCCESS.0.to_be_bytes());
+    h.update(code.to_be_bytes());
+    h.update(parameters);
+    h.finalize().into()
+}
+
+/// How a session of the authorization area is used.
+enum SessionUse {
+    Password,
+    /// HMAC session in `slot`; `used_auth` records whether the authValue of the entity went into
+    /// the key of the command HMAC (and therefore goes into the response HMAC).
+    Hmac {
+        slot: usize,
+        used_auth: bool,
+    },
+}
+
+/// Format checks of the sessions (before any authValue is looked at).
+fn classify_sessions(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<Vec<SessionUse>, Rc> {
+    let mut uses: Vec<SessionUse> = Vec::with_capacity(sessions.len());
+    for (i, s) in sessions.iter().enumerate() {
+        let n = i + 1;
+        let hmac_handle = s.session_handle != handle::RS_PW
+            && handle::handle_type(s.session_handle) == handle::HT_HMAC_SESSION;
+        if !hmac_handle {
+            // Password session, or a handle that names no loaded session (a policy session is
+            // never loaded in slice A) or no session at all.
+            check_password_session(s, n)?;
+            uses.push(SessionUse::Password);
+            continue;
+        }
+        let slot = tpm
+            .sessions
+            .slot_of(s.session_handle)
+            .ok_or_else(|| Rc::reference_session(i))?;
+        // A session handle may occur only once in a command (Part 1, clause 16.6.3).
+        if uses
+            .iter()
+            .any(|u| matches!(u, SessionUse::Hmac { slot: o, .. } if *o == slot))
+        {
+            return Err(Rc::VALUE.in_session(n as u8));
+        }
+        check_hmac_session_attributes(s.attributes, n)?;
+        let session = tpm
+            .sessions
+            .get(slot)
+            .ok_or_else(|| Rc::reference_session(i))?;
+        if s.nonce.len() > session.nonce_tpm.len() {
+            return Err(Rc::NONCE.in_session(n as u8));
+        }
+        uses.push(SessionUse::Hmac {
+            slot,
+            used_auth: true,
+        });
+    }
+    Ok(uses)
 }
 
 fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
@@ -138,8 +300,13 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     }
     check_handles(tpm, spec, &handles)?;
 
-    // Authorization area.
+    // `TPM2_FlushContext` allows no session of any type (Part 3, clause 28.4.1).
     let with_sessions = header.tag == st::SESSIONS;
+    if with_sessions && spec.code == cc::FLUSH_CONTEXT {
+        return Err(Rc::AUTH_CONTEXT);
+    }
+
+    // Authorization area.
     let sessions = if with_sessions {
         parse_auth_area(&mut r)?
     } else {
@@ -155,20 +322,50 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     if sessions.len() > needed {
         return Err(Rc::AUTHSIZE);
     }
-    for (i, s) in sessions.iter().enumerate() {
-        check_password_session(s, i + 1)?;
-    }
+    let mut uses = classify_sessions(tpm, &sessions)?;
+    let params_start = command.len() - r.remaining();
+    let parameters = &command[params_start..];
+
+    // Verify every authorization. cpHash is computed once, with the first HMAC session's hash
+    // (SHA-256 is the only session hash).
+    let mut cp_hash: Option<[u8; DIGEST]> = None;
     for (i, s) in sessions.iter().enumerate() {
         let auth = handle_auth(tpm, spec.code, &handles, i)?;
-        if !password_matches(&s.hmac, auth.as_slice()) {
-            // No dictionary attack protection in phase A: every failure is "without DA
-            // implications" (Part 3, clause 5; Part 1, clause 17.6.8).
-            return Err(Rc::BAD_AUTH.in_session((i + 1) as u8));
+        match &mut uses[i] {
+            SessionUse::Password => {
+                if !password_matches(&s.hmac, auth.as_slice()) {
+                    // No dictionary attack protection yet: every failure is "without DA
+                    // implications" (Part 3, clause 5; Part 1, clause 17.6.8).
+                    return Err(Rc::BAD_AUTH.in_session((i + 1) as u8));
+                }
+            }
+            SessionUse::Hmac { slot, used_auth } => {
+                let cp = *cp_hash
+                    .get_or_insert_with(|| command_parameter_hash(tpm, spec, &handles, parameters));
+                let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
+                let (key, with_auth) = authorization_key(session, handles[i], &auth);
+                if !verify_command_hmac(session, &key, &cp, &s.nonce, s.attributes, &s.hmac) {
+                    return Err(Rc::BAD_AUTH.in_session((i + 1) as u8));
+                }
+                *used_auth = with_auth;
+            }
         }
     }
 
+    // The fallible preparation of the response goes before the command's action.
+    let mut new_nonces: Vec<Vec<u8>> = Vec::with_capacity(sessions.len());
+    for u in &uses {
+        let mut nonce = Vec::new();
+        if let SessionUse::Hmac { slot, .. } = u {
+            let len = tpm.sessions.get(*slot).map_or(0, |s| s.nonce_tpm.len());
+            nonce = vec![0u8; len];
+            tpm.drbg.generate(&mut nonce).ok_or(Rc::FAILURE)?;
+        }
+        new_nonces.push(nonce);
+    }
+
     let inv = Invocation { handles };
-    let mut p = Reader::new(&command[command.len() - r.remaining()..]);
+    let mut p = Reader::new(parameters);
     let out: Output = match spec.code {
         cc::STARTUP => tpm.cmd_startup(&mut p)?,
         cc::SHUTDOWN => tpm.cmd_shutdown(&mut p)?,
@@ -187,14 +384,63 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::SEQUENCE_COMPLETE => tpm.cmd_sequence_complete(&inv, &mut p)?,
         cc::EVENT_SEQUENCE_COMPLETE => tpm.cmd_event_sequence_complete(&inv, &mut p)?,
         cc::READ_CLOCK => tpm.cmd_read_clock(&mut p)?,
+        cc::HIERARCHY_CONTROL => tpm.cmd_hierarchy_control(&inv, &mut p)?,
+        cc::HIERARCHY_CHANGE_AUTH => tpm.cmd_hierarchy_change_auth(&inv, &mut p)?,
+        cc::CLEAR => tpm.cmd_clear(&mut p)?,
+        cc::CLEAR_CONTROL => tpm.cmd_clear_control(&inv, &mut p)?,
+        cc::START_AUTH_SESSION => tpm.cmd_start_auth_session(&inv, &mut p)?,
+        cc::FLUSH_CONTEXT => tpm.cmd_flush_context(&mut p)?,
+        cc::NV_DEFINE_SPACE => tpm.cmd_nv_define_space(&inv, &mut p)?,
+        cc::NV_UNDEFINE_SPACE => tpm.cmd_nv_undefine_space(&inv, &mut p)?,
+        cc::NV_READ_PUBLIC => tpm.cmd_nv_read_public(&inv, &mut p)?,
+        cc::NV_WRITE => tpm.cmd_nv_write(&inv, &mut p)?,
+        cc::NV_READ => tpm.cmd_nv_read(&inv, &mut p)?,
+        cc::NV_WRITE_LOCK => tpm.cmd_nv_write_lock(&inv, &mut p)?,
+        cc::NV_READ_LOCK => tpm.cmd_nv_read_lock(&inv, &mut p)?,
         // Unreachable while the table and this match agree; a missing arm is the safe answer.
         _ => return Err(Rc::COMMAND_CODE),
     };
-    let attrs: Vec<u8> = sessions.iter().map(|s| s.attributes).collect();
-    Ok(success_response(&out, &attrs, with_sessions))
+
+    // Acknowledgements; an HMAC session rolls its nonce and, with `continueSession` CLEAR, ends.
+    let rp_hash = response_parameter_hash(spec.code, &out.params);
+    let mut acks: Vec<SessionAck> = Vec::with_capacity(sessions.len());
+    for (i, s) in sessions.iter().enumerate() {
+        match &uses[i] {
+            SessionUse::Password => acks.push(SessionAck::password(s.attributes)),
+            SessionUse::Hmac { slot, used_auth } => {
+                let now = response_auth(tpm, spec.code, &handles, i);
+                let nonce = core::mem::take(&mut new_nonces[i]);
+                let hmac = match tpm.sessions.get(*slot) {
+                    // An empty command HMAC is answered with an empty one (clause 17.6.15).
+                    Some(session) if !s.hmac.is_empty() => {
+                        let mut key = session.key.as_slice().to_vec();
+                        if *used_auth {
+                            key.extend_from_slice(now.as_slice());
+                        }
+                        let tag =
+                            response_hmac(&key, &rp_hash, &nonce, &s.nonce, s.attributes).to_vec();
+                        zeroize::Zeroize::zeroize(&mut key);
+                        tag
+                    }
+                    _ => Vec::new(),
+                };
+                if s.attributes & session_attr::CONTINUE_SESSION == 0 {
+                    tpm.sessions.release(*slot);
+                } else if let Some(session) = tpm.sessions.get_mut(*slot) {
+                    session.nonce_tpm = nonce.clone();
+                }
+                acks.push(SessionAck {
+                    nonce,
+                    attributes: s.attributes,
+                    hmac,
+                });
+            }
+        }
+    }
+    Ok(success_response(&out, &acks, with_sessions))
 }
 
-/// Handle validity (type, loaded) before authorization (Part 1, clause 9.2).
+/// Handle validity (type, loaded) and access control before authorization (Part 1, clause 9.2).
 fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<(), Rc> {
     match spec.code {
         cc::PCR_EXTEND | cc::PCR_EVENT => {
@@ -210,9 +456,62 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
             resolve_pcr_handle(handles[0], true, 1)?;
             tpm.seq_slot(handles[1], 1)?;
         }
+        cc::HIERARCHY_CONTROL => {
+            // `TPMI_RH_BASE_HIERARCHY` (Part 2, Table 64): owner, platform, endorsement.
+            if !matches!(
+                handles[0],
+                handle::RH_OWNER | handle::RH_PLATFORM | handle::RH_ENDORSEMENT
+            ) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
+        cc::HIERARCHY_CHANGE_AUTH => {
+            // `TPMI_RH_HIERARCHY_AUTH` without `TPM_RH_NULL` (Part 3, Table 188).
+            if !is_authorization_handle(handles[0]) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
+        cc::CLEAR | cc::CLEAR_CONTROL => {
+            // `TPMI_RH_CLEAR` (Part 2, Table 69): lockout or platform.
+            if !matches!(handles[0], handle::RH_LOCKOUT | handle::RH_PLATFORM) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
+        cc::START_AUTH_SESSION => check_start_auth_session_handles(handles)?,
+        cc::NV_DEFINE_SPACE
+        | cc::NV_UNDEFINE_SPACE
+        | cc::NV_READ_PUBLIC
+        | cc::NV_WRITE
+        | cc::NV_WRITE_LOCK
+        | cc::NV_READ
+        | cc::NV_READ_LOCK => tpm.check_nv_handles(spec.code, handles)?,
         _ => {}
     }
     Ok(())
+}
+
+/// `tpmKey` and `bind` of `TPM2_StartAuthSession` in slice A: `tpmKey` is `TPM_RH_NULL` (no
+/// object can be loaded: a transient handle is "not loaded", a persistent one does not exist),
+/// `bind` is `TPM_RH_NULL` or a hierarchy authorization handle.
+fn check_start_auth_session_handles(handles: &[u32; 2]) -> Result<(), Rc> {
+    let key = handles[0];
+    if key != handle::RH_NULL {
+        return Err(match handle::handle_type(key) {
+            handle::HT_TRANSIENT => Rc::reference_handle(0),
+            handle::HT_PERSISTENT => Rc::HANDLE.in_handle(1),
+            _ => Rc::VALUE.in_handle(1),
+        });
+    }
+    let bind = handles[1];
+    if bind == handle::RH_NULL || is_authorization_handle(bind) {
+        return Ok(());
+    }
+    Err(match handle::handle_type(bind) {
+        handle::HT_TRANSIENT => Rc::reference_handle(1),
+        handle::HT_PERSISTENT => Rc::HANDLE.in_handle(2),
+        // NV indices, PCR, ...: not bindable in slice A.
+        _ => Rc::VALUE.in_handle(2),
+    })
 }
 
 #[cfg(test)]
@@ -231,6 +530,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 17);
+        assert_eq!(COMMANDS.len(), 30);
     }
 }

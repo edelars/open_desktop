@@ -8,13 +8,22 @@
 //!
 //! `TPM_CAP_COMMANDS` lists exactly the commands of the dispatch table.
 //!
-//! Properties report only what phase A implements. Properties of features that do not exist yet
-//! (sessions, NV, contexts, dictionary attack, audit, persistent objects, hierarchy attributes)
-//! are not listed instead of being reported as zero; PTP 1.07, clause 4.2 item 2 asks for all
-//! defined properties, so this is a recorded deviation until S7-23.
+//! Properties report only what is implemented. Properties of features that do not exist yet
+//! (contexts, dictionary attack, audit, persistent objects, NV counters) are not listed instead of
+//! being reported as zero; PTP 1.07, clause 4.2 item 2 asks for all defined properties, so this
+//! is a recorded deviation until S7-23 is complete. Slice A of phase B adds the session and NV
+//! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
+//!
+//! `TPM_CAP_HANDLES`: PCR, defined NV indices, loaded HMAC sessions (`TPM_HT_LOADED_SESSION`),
+//! loaded sequence objects (transient), the permanent handles of the hierarchies and the null
+//! hierarchy (`TPM_RH_OWNER`, `TPM_RH_NULL`, `TPM_RH_LOCKOUT`, `TPM_RH_ENDORSEMENT`,
+//! `TPM_RH_PLATFORM`); saved sessions (`TPM_HT_SAVED_SESSION`), persistent and the other handle
+//! types list nothing.
 //! NOT VERIFIED against TPM 2.0 Library v185: the answer for `TPM_CAP_TPM_PROPERTIES` with a
 //! `property` outside the fixed and variable groups (an empty list is returned), the
-//! `TPM_PT_MANUFACTURER` value `ODTP` (not a TCG-registered vendor ID) and the firmware version.
+//! `TPM_PT_MANUFACTURER` value `ODTP` (not a TCG-registered vendor ID) and the firmware version;
+//! the content of the permanent-handle list of `TPM_CAP_HANDLES` (which of the `TPM_RH_*` values a
+//! TPM lists is not stated in the open text).
 
 use crate::codes::{alg, cap, handle, pt, spec};
 use crate::dispatch::COMMANDS;
@@ -22,7 +31,9 @@ use crate::marshal::{
     Reader, TPMA_ALGORITHM_HASH, TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection,
     TpmsTaggedProperty, Writer, limits,
 };
+use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::response::{Output, Rc};
+use crate::session::MAX_SESSIONS;
 use crate::state::Tpm;
 
 /// Maximum size of the capability data in one response (`TPM_PT_MAX_CAP_BUFFER`).
@@ -67,8 +78,11 @@ impl Tpm {
             (pt::FIRMWARE_VERSION_2, 0),
             (pt::INPUT_BUFFER, limits::MAX_2B_BUFFER_SIZE as u32),
             (pt::HR_TRANSIENT_MIN, crate::hash::MAX_SEQUENCES as u32),
+            (pt::HR_LOADED_MIN, MAX_SESSIONS as u32),
+            (pt::ACTIVE_SESSIONS_MAX, MAX_SESSIONS as u32),
             (pt::PCR_COUNT, limits::PCR_COUNT as u32),
             (pt::PCR_SELECT_MIN, limits::PCR_SELECT_SIZE as u32),
+            (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
             (pt::MAX_COMMAND_SIZE, limits::MAX_COMMAND_SIZE as u32),
             (pt::MAX_RESPONSE_SIZE, limits::MAX_RESPONSE_SIZE as u32),
             (pt::MAX_DIGEST, limits::MAX_DIGEST_SIZE as u32),
@@ -81,7 +95,21 @@ impl Tpm {
             (pt::TOTAL_COMMANDS, total),
             (pt::LIBRARY_COMMANDS, total),
             (pt::VENDOR_COMMANDS, 0),
+            (pt::NV_BUFFER_MAX, NV_BUFFER_MAX as u32),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
+            (pt::PERMANENT, self.permanent_attributes()),
+            (pt::STARTUP_CLEAR, self.startup_clear_attributes()),
+            (pt::HR_NV_INDEX, self.persistent.nv.count() as u32),
+            (pt::HR_LOADED, self.sessions.loaded() as u32),
+            (
+                pt::HR_LOADED_AVAIL,
+                (MAX_SESSIONS - self.sessions.loaded()) as u32,
+            ),
+            (pt::HR_ACTIVE, self.sessions.loaded() as u32),
+            (
+                pt::HR_ACTIVE_AVAIL,
+                (MAX_SESSIONS - self.sessions.loaded()) as u32,
+            ),
             (pt::HR_TRANSIENT_AVAIL, self.sequences.free_slots() as u32),
         ]
     }
@@ -117,9 +145,19 @@ impl Tpm {
                 let listed: Vec<u32> = match ht {
                     handle::HT_PCR => (0..limits::PCR_COUNT as u32).collect(),
                     handle::HT_TRANSIENT => self.sequences.loaded_handles(),
-                    // Defined handle types without objects in phase A. Permanent handles belong
-                    // to the hierarchies of phase B and are not listed yet (NOT VERIFIED).
-                    0x01 | 0x02 | 0x03 | 0x11 | 0x12 | 0x40 | handle::HT_PERSISTENT => Vec::new(),
+                    handle::HT_NV_INDEX => self.persistent.nv.handles(),
+                    // `TPM_HT_LOADED_SESSION` (same value as the HMAC session type).
+                    handle::HT_HMAC_SESSION => self.sessions.loaded_handles(),
+                    handle::HT_PERMANENT => vec![
+                        handle::RH_OWNER,
+                        handle::RH_NULL,
+                        handle::RH_LOCKOUT,
+                        handle::RH_ENDORSEMENT,
+                        handle::RH_PLATFORM,
+                    ],
+                    // Defined handle types without entries: saved sessions (0x03, no context
+                    // saving yet), external and permanent NV (0x11, 0x12), persistent objects.
+                    handle::HT_POLICY_SESSION | 0x11 | 0x12 | handle::HT_PERSISTENT => Vec::new(),
                     _ => return Err(Rc::VALUE.in_param(2)),
                 };
                 for h in listed
@@ -196,12 +234,17 @@ impl Tpm {
 /// Attributes of a command for `TPM_CAP_COMMANDS`.
 impl crate::dispatch::CommandSpec {
     pub(crate) fn attributes(&self) -> TpmaCc {
-        TpmaCc::new(
+        let a = TpmaCc::new(
             (self.code & 0xFFFF) as u16,
             self.nv,
             self.flushed,
             self.handles,
             self.rhandle,
-        )
+        );
+        if self.extensive {
+            a.with_extensive()
+        } else {
+            a
+        }
     }
 }

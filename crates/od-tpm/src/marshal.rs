@@ -535,6 +535,16 @@ impl TpmaCc {
         )
     }
 
+    /// Sets `extensive` (bit 23): the command may flush any number of loaded contexts (`{E}` in
+    /// Part 3).
+    pub const fn with_extensive(self) -> Self {
+        TpmaCc(self.0 | (1 << 23))
+    }
+
+    pub fn extensive(self) -> bool {
+        self.0 & (1 << 23) != 0
+    }
+
     pub fn command_index(self) -> u16 {
         (self.0 & 0xFFFF) as u16
     }
@@ -784,6 +794,9 @@ mod tests {
         let b = TpmaCc::new(0x186, false, false, 0, true);
         assert!(b.r_handle() && !b.nv());
         assert_eq!(b.0, 0x1000_0186);
+        let c = TpmaCc::new(0x126, true, false, 1, false).with_extensive();
+        assert!(c.extensive() && c.nv() && !c.flushed());
+        assert_eq!(c.0, 0x0126 | 1 << 22 | 1 << 23 | 1 << 25);
     }
 
     #[test]

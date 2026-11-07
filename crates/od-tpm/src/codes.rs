@@ -12,6 +12,14 @@
 
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
+    pub const HIERARCHY_CONTROL: u32 = 0x0000_0121;
+    pub const NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
+    pub const CLEAR: u32 = 0x0000_0126;
+    pub const CLEAR_CONTROL: u32 = 0x0000_0127;
+    pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+    pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
+    pub const NV_WRITE: u32 = 0x0000_0137;
+    pub const NV_WRITE_LOCK: u32 = 0x0000_0138;
     pub const PCR_EVENT: u32 = 0x0000_013C;
     pub const PCR_RESET: u32 = 0x0000_013D;
     pub const SEQUENCE_COMPLETE: u32 = 0x0000_013E;
@@ -19,7 +27,12 @@ pub mod cc {
     pub const STARTUP: u32 = 0x0000_0144;
     pub const SHUTDOWN: u32 = 0x0000_0145;
     pub const STIR_RANDOM: u32 = 0x0000_0146;
+    pub const NV_READ: u32 = 0x0000_014E;
+    pub const NV_READ_LOCK: u32 = 0x0000_014F;
     pub const SEQUENCE_UPDATE: u32 = 0x0000_015C;
+    pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
+    pub const NV_READ_PUBLIC: u32 = 0x0000_0169;
+    pub const START_AUTH_SESSION: u32 = 0x0000_0176;
     pub const GET_CAPABILITY: u32 = 0x0000_017A;
     pub const GET_RANDOM: u32 = 0x0000_017B;
     pub const GET_TEST_RESULT: u32 = 0x0000_017C;
@@ -69,11 +82,14 @@ pub mod pt {
     pub const FIRMWARE_VERSION_2: u32 = FIXED + 12;
     pub const INPUT_BUFFER: u32 = FIXED + 13;
     pub const HR_TRANSIENT_MIN: u32 = FIXED + 14;
+    pub const HR_LOADED_MIN: u32 = FIXED + 16;
+    pub const ACTIVE_SESSIONS_MAX: u32 = FIXED + 17;
     pub const PCR_COUNT: u32 = FIXED + 18;
     pub const PCR_SELECT_MIN: u32 = FIXED + 19;
     pub const MAX_COMMAND_SIZE: u32 = FIXED + 30;
     pub const MAX_RESPONSE_SIZE: u32 = FIXED + 31;
     pub const MAX_DIGEST: u32 = FIXED + 32;
+    pub const NV_INDEX_MAX: u32 = FIXED + 23;
     pub const PS_FAMILY_INDICATOR: u32 = FIXED + 35;
     pub const PS_LEVEL: u32 = FIXED + 36;
     pub const PS_REVISION: u32 = FIXED + 37;
@@ -82,7 +98,15 @@ pub mod pt {
     pub const TOTAL_COMMANDS: u32 = FIXED + 41;
     pub const LIBRARY_COMMANDS: u32 = FIXED + 42;
     pub const VENDOR_COMMANDS: u32 = FIXED + 43;
+    pub const NV_BUFFER_MAX: u32 = FIXED + 44;
     pub const MAX_CAP_BUFFER: u32 = FIXED + 46;
+    pub const PERMANENT: u32 = VAR;
+    pub const STARTUP_CLEAR: u32 = VAR + 1;
+    pub const HR_NV_INDEX: u32 = VAR + 2;
+    pub const HR_LOADED: u32 = VAR + 3;
+    pub const HR_LOADED_AVAIL: u32 = VAR + 4;
+    pub const HR_ACTIVE: u32 = VAR + 5;
+    pub const HR_ACTIVE_AVAIL: u32 = VAR + 6;
     pub const HR_TRANSIENT_AVAIL: u32 = VAR + 7;
 }
 
@@ -98,16 +122,42 @@ pub mod su {
     pub const STATE: u16 = 0x0001;
 }
 
+/// Table 25 (v184): `TPM_SE` session types.
+pub mod se {
+    pub const HMAC: u8 = 0x00;
+    pub const POLICY: u8 = 0x01;
+    pub const TRIAL: u8 = 0x03;
+}
+
+/// Table 40 (v184): `TPMA_SESSION` bits.
+pub mod session_attr {
+    pub const CONTINUE_SESSION: u8 = 1 << 0;
+    pub const AUDIT_EXCLUSIVE: u8 = 1 << 1;
+    pub const AUDIT_RESET: u8 = 1 << 2;
+    pub const RESERVED: u8 = (1 << 3) | (1 << 4);
+    pub const DECRYPT: u8 = 1 << 5;
+    pub const ENCRYPT: u8 = 1 << 6;
+    pub const AUDIT: u8 = 1 << 7;
+}
+
 /// Table 35/36 (v184): handle types and permanent handles.
 pub mod handle {
     pub const HT_PCR: u8 = 0x00;
+    pub const HT_NV_INDEX: u8 = 0x01;
+    /// `TPM_HT_HMAC_SESSION` (also `TPM_HT_LOADED_SESSION` in `TPM2_GetCapability`).
+    pub const HT_HMAC_SESSION: u8 = 0x02;
+    /// `TPM_HT_POLICY_SESSION` (also `TPM_HT_SAVED_SESSION` in `TPM2_GetCapability`).
+    pub const HT_POLICY_SESSION: u8 = 0x03;
+    pub const HT_PERMANENT: u8 = 0x40;
     pub const HT_TRANSIENT: u8 = 0x80;
     pub const HT_PERSISTENT: u8 = 0x81;
     pub const RH_OWNER: u32 = 0x4000_0001;
     pub const RH_NULL: u32 = 0x4000_0007;
     pub const RS_PW: u32 = 0x4000_0009;
+    pub const RH_LOCKOUT: u32 = 0x4000_000A;
     pub const RH_ENDORSEMENT: u32 = 0x4000_000B;
     pub const RH_PLATFORM: u32 = 0x4000_000C;
+    pub const RH_PLATFORM_NV: u32 = 0x4000_000D;
 
     /// Most significant octet of a handle (`TPM_HT`).
     pub const fn handle_type(h: u32) -> u8 {

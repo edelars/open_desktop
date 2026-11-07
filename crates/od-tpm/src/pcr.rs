@@ -144,6 +144,11 @@ impl Pcrs {
         true
     }
 
+    /// `TPM2_Clear` increments `pcrUpdateCounter` (Part 3, clause 24.6).
+    pub(crate) fn increment_update_counter(&mut self) {
+        self.update_counter = self.update_counter.wrapping_add(1);
+    }
+
     fn bump(&mut self, index: usize) {
         if !pcr_attr(index).no_increment {
             self.update_counter = self.update_counter.wrapping_add(1);

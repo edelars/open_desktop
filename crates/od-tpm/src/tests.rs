@@ -11,6 +11,9 @@ use crate::marshal::{
 };
 use crate::{Rc, Tpm};
 
+#[path = "tests_b.rs"]
+mod tests_b;
+
 const ENTROPY: [u8; 48] = [5; 48];
 
 // Computed independently (Python hashlib).
@@ -535,9 +538,15 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     let mut t = started();
     // Expected list written out independently of the dispatch table (Part 2 Table 14 codes).
     let expected: Vec<u32> = vec![
-        0x13C, 0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146, 0x15C, 0x17A, 0x17B, 0x17C, 0x17D, 0x17E,
-        0x181, 0x182, 0x185, 0x186,
+        // Slice A of phase B: HierarchyControl, NV_UndefineSpace, Clear, ClearControl,
+        // HierarchyChangeAuth, NV_DefineSpace, NV_Write, NV_WriteLock.
+        0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x137, 0x138, // Phase A.
+        0x13C, 0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146,
+        // NV_Read, NV_ReadLock; SequenceUpdate; FlushContext, NV_ReadPublic, StartAuthSession.
+        0x14E, 0x14F, 0x15C, 0x165, 0x169, 0x176, // Phase A.
+        0x17A, 0x17B, 0x17C, 0x17D, 0x17E, 0x181, 0x182, 0x185, 0x186,
     ];
+    assert_eq!(expected.len(), 30);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -561,7 +570,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(17)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(30)[..]].concat()
     );
 }
 
@@ -662,15 +671,28 @@ fn capability_tpm_properties() {
     // Starting in the middle of the group.
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, pt::PCR_COUNT, 1));
     assert_eq!(body, [&u32b(pt::PCR_COUNT)[..], &u32b(24)[..]].concat());
-    // Variable group: transient slots available.
+    // Variable group: attributes, counts of indices and sessions, transient slots available.
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, pt::VAR, 100));
-    assert_eq!(
-        (count, body),
-        (
-            1,
-            [&u32b(pt::HR_TRANSIENT_AVAIL)[..], &u32b(3)[..]].concat()
-        )
-    );
+    let var: Vec<(u32, u32)> = body
+        .chunks(8)
+        .map(|b| {
+            (
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
+                u32::from_be_bytes([b[4], b[5], b[6], b[7]]),
+            )
+        })
+        .collect();
+    assert_eq!(var.len(), count as usize);
+    assert!(var.windows(2).all(|w| w[0].0 < w[1].0));
+    let v = |tag: u32| var.iter().find(|p| p.0 == tag).map(|p| p.1);
+    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(3));
+    assert_eq!(v(pt::HR_NV_INDEX), Some(0));
+    assert_eq!(v(pt::HR_LOADED), Some(0));
+    assert_eq!(v(pt::HR_LOADED_AVAIL), Some(64));
+    // TPMA_STARTUP_CLEAR: phEnable, shEnable, ehEnable, phEnableNV all SET; TPMA_PERMANENT:
+    // only tpmGeneratedEPS.
+    assert_eq!(v(pt::STARTUP_CLEAR), Some(0xF));
+    assert_eq!(v(pt::PERMANENT), Some(1 << 10));
     // Other groups are empty.
     assert_eq!(cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0, 100)).3, 0);
     assert_eq!(

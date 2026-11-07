@@ -4,10 +4,11 @@
 //! (UINT32), `commandCode` (UINT32), the handle area, then — only for `TPM_ST_SESSIONS` —
 //! `authorizationSize` (UINT32) and the authorization area, then the parameters.
 //!
-//! Phase A accepts password sessions only (`TPM_RS_PW`, Part 1 v184, clause 17.4): empty
-//! `nonceCaller`, only `continueSession` may be set, `hmac` carries the password. HMAC and
-//! policy sessions are phase B (S7-23); a handle of such a session is answered with the
-//! warning `TPM_RC_REFERENCE_Sn` (the session is not loaded).
+//! This module checks the form of a password session (`TPM_RS_PW`, Part 1 v184, clause 17.4):
+//! empty `nonceCaller`, only `continueSession` may be set, `hmac` carries the password. HMAC
+//! sessions (slice A of phase B) are classified and verified by `dispatch.rs` and `session.rs`;
+//! a policy-session handle is answered with the warning `TPM_RC_REFERENCE_Sn` (no policy session
+//! is ever loaded).
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185 (the open v184 text does not give the codes):
 //! a password session with a non-empty nonce is answered `TPM_RC_BAD_AUTH` and one with other
@@ -88,7 +89,9 @@ pub fn check_password_session(s: &TpmsAuthCommand, n: usize) -> Result<(), Rc> {
         return Ok(());
     }
     match handle::handle_type(s.session_handle) {
-        // HMAC (0x02) and policy (0x03) sessions: phase B, none is ever loaded in phase A.
+        // HMAC (0x02) sessions are handled by the dispatcher before this function is called; a
+        // handle of that type that reaches it names no loaded session. Policy (0x03) sessions
+        // are not implemented and never loaded.
         0x02 | 0x03 => Err(Rc::reference_session(n - 1)),
         _ => Err(Rc::VALUE.in_session(num)),
     }

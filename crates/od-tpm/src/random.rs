@@ -8,20 +8,18 @@
 //! implementation (see the `drbg_matches_independent_python_vector` test), not against NIST CAVP
 //! vectors. The generator is not FIPS-validated and no such claim is made.
 //!
-//! The HMAC helper below exists only because the `hmac` crate (ADR-0009: `=0.13.0`) is not in
-//! the offline cache and belongs to S7-23; S7-23 replaces it with the crate (DRY).
-//! Obligation of S7-23: replace this helper with `hmac =0.13.0` (see `docs/specs/VTPM.md`).
+//! HMAC-SHA-256 comes from the `hmac` crate (`crypto.rs`, ADR-0009: `=0.13.0`); the DRBG construction
+//! itself (instantiate, update, generate, reseed) is ours.
 //!
 //! State (`K`, `V`) is wiped on drop; `Debug` never prints it.
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+use crate::crypto::hmac_sha256;
 use crate::marshal::{Reader, Writer, limits};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
-const BLOCK: usize = 64;
 const OUT: usize = 32;
 /// Minimum seed material: 32 octets of entropy input plus a 16 octet nonce (SP 800-90A, 10.1.2.1
 /// for security strength 256).
@@ -29,34 +27,6 @@ pub const MIN_ENTROPY_LEN: usize = 48;
 /// `reseed_interval`: 2^48 generate calls (SP 800-90A, table 2).
 const RESEED_INTERVAL: u64 = 1 << 48;
 const PERSONALIZATION: &[u8] = b"open-desktop od-tpm hmac-drbg-sha256 v1";
-
-/// Deliberate limitation: the key is always exactly 32 octets (`K` of HMAC_DRBG with SHA-256), so
-/// hashing of keys longer than the block size is not needed and not implemented.
-fn hmac_sha256(key: &[u8; OUT], parts: &[&[u8]]) -> [u8; OUT] {
-    let mut k = [0u8; BLOCK];
-    k[..OUT].copy_from_slice(key);
-    let mut ipad = [0x36u8; BLOCK];
-    let mut opad = [0x5Cu8; BLOCK];
-    for i in 0..BLOCK {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    for p in parts {
-        inner.update(p);
-    }
-    let inner_digest = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner_digest);
-    let mut out = [0u8; OUT];
-    out.copy_from_slice(&outer.finalize());
-    k.zeroize();
-    ipad.zeroize();
-    opad.zeroize();
-    out
-}
 
 /// HMAC_DRBG with SHA-256.
 pub struct Drbg {
@@ -102,8 +72,8 @@ impl Drbg {
             }
             let mut parts: Vec<&[u8]> = vec![&self.v[..], core::slice::from_ref(&round)];
             parts.extend_from_slice(provided);
-            self.k = hmac_sha256(&self.k, &parts);
-            self.v = hmac_sha256(&self.k, &[&self.v]);
+            self.k = hmac_sha256(&self.k[..], &parts);
+            self.v = hmac_sha256(&self.k[..], &[&self.v[..]]);
         }
     }
 
@@ -126,7 +96,7 @@ impl Drbg {
         }
         let mut filled = 0;
         while filled < out.len() {
-            self.v = hmac_sha256(&self.k, &[&self.v]);
+            self.v = hmac_sha256(&self.k[..], &[&self.v[..]]);
             let n = (out.len() - filled).min(OUT);
             out[filled..filled + n].copy_from_slice(&self.v[..n]);
             filled += n;
@@ -144,22 +114,14 @@ impl Drbg {
     }
 }
 
-/// Known-answer test of the HMAC helper that the DRBG relies on (RFC 4231, test case 1).
+/// Known-answer test of the HMAC the DRBG relies on (RFC 4231, test case 1).
 pub(crate) fn self_test() -> bool {
-    let mut key = [0u8; OUT];
-    key[..20].fill(0x0b);
     let expect: [u8; OUT] = [
         0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53, 0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b, 0xf1,
         0x2b, 0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7, 0x26, 0xe9, 0x37, 0x6c, 0x2e, 0x32,
         0xcf, 0xf7,
     ];
-    hmac_sha256(&key, &[b"Hi There"]) == expect
-}
-
-/// Test helper: HMAC-SHA-256 with a 32-octet key (RFC 4231 cases use shorter keys, so tests pad).
-#[cfg(test)]
-pub(crate) fn hmac_for_tests(key: &[u8; OUT], data: &[u8]) -> [u8; OUT] {
-    hmac_sha256(key, &[data])
+    hmac_sha256(&[0x0b; 20], &[b"Hi There"]) == expect
 }
 
 impl Tpm {
@@ -195,23 +157,16 @@ impl Tpm {
 mod tests {
     use super::*;
 
-    fn pad32(key: &[u8]) -> [u8; 32] {
-        let mut k = [0u8; 32];
-        k[..key.len()].copy_from_slice(key);
-        k
-    }
-
     #[test]
     fn hmac_matches_rfc_4231() {
-        // RFC 4231, test case 2 (key "Jefe" zero-padded to the 32 octets this helper takes:
-        // HMAC pads keys shorter than the block with zeros, so the result is identical).
-        let mac = hmac_for_tests(&pad32(b"Jefe"), b"what do ya want for nothing?");
+        // RFC 4231, test case 2: key "Jefe".
+        let mac = hmac_sha256(b"Jefe", &[b"what do ya want for nothing?"]);
         assert_eq!(
             mac,
             hex32("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
         );
         // RFC 4231, test case 1: key 0x0b x 20, data "Hi There".
-        let mac = hmac_for_tests(&pad32(&[0x0b; 20]), b"Hi There");
+        let mac = hmac_sha256(&[0x0b; 20], &[b"Hi There"]);
         assert_eq!(
             mac,
             hex32("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")

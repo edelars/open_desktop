@@ -1,10 +1,13 @@
 //! TPM state: persistent part (survives power cycles, goes into the snapshot) and volatile part
 //! (reset by `_TPM_Init`), the snapshot codec, and `TPM2_ReadClock`.
 //!
-//! Persistent (ADR-0009, decision 5; phase A holds only the skeleton, S7-23 completes it): the
-//! three hierarchy seeds (generated from owner entropy, not used by phase A commands), the clock
-//! base, `resetCount`, `restartCount` and the orderly-shutdown flag.
-//! Volatile: PCR, sequences, `started`/`failed`, the state saved by `Shutdown(STATE)`, the DRBG.
+//! Persistent (ADR-0009, decision 5; slice A of phase B added the in-memory blocks, the snapshot
+//! codec is completed by slice C): the three hierarchy seeds (generated from owner entropy), the
+//! clock base, `resetCount`, `restartCount` and the orderly-shutdown flag go into the snapshot;
+//! the hierarchy authorization values and the NV store (`hierarchy.rs`, `nv.rs`) survive
+//! `_TPM_Init` but are NOT in the snapshot yet.
+//! Volatile: PCR, sequences, sessions, hierarchy enables and `platformAuth`, `started`/`failed`,
+//! the state saved by `Shutdown(STATE)`, the DRBG.
 //!
 //! Snapshot bytes contain the seeds in clear text; they are handed to the owner as is until
 //! S9-27 protects them. Seeds and DRBG state are wiped on drop and never reach `Debug`.
@@ -20,18 +23,21 @@
 //! | 16 | 113 | payload: platform seed 32, owner seed 32, endorsement seed 32, clock ms u64, resetCount u32, restartCount u32, orderly u8 |
 //! | 129 | 32 | SHA-256 of the payload (corruption check, not authentication) |
 //!
-//! Until S7-23 completes "Persistent state v1" the layout may still grow; the version stays 1
-//! because no snapshot exists outside tests (recorded in `docs/specs/VTPM.md`).
+//! Until slice C of S7-23 completes "Persistent state v1" the layout may still grow; the version
+//! stays 1 because no snapshot exists outside tests (recorded in `docs/specs/VTPM.md`).
 
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::dispatch;
 use crate::hash::Sequences;
+use crate::hierarchy::{HierarchyPersistent, HierarchyVolatile};
 use crate::marshal::{TpmsClockInfo, TpmsTimeInfo, Writer};
+use crate::nv::NvStore;
 use crate::pcr::{Pcrs, SavedPcrs};
 use crate::random::{Drbg, MIN_ENTROPY_LEN};
 use crate::response::{Output, Rc};
+use crate::session::Sessions;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written and accepted.
@@ -85,6 +91,17 @@ pub(crate) struct Persistent {
     pub restart_count: u32,
     /// Set by `Shutdown`, cleared by `Startup`; a snapshot taken without `Shutdown` is disorderly.
     pub orderly: bool,
+    /// Authorization values and flags of the hierarchies (not in the snapshot yet).
+    pub(crate) hier: HierarchyPersistent,
+    /// NV indices (not in the snapshot yet).
+    pub(crate) nv: NvStore,
+}
+
+/// What `Shutdown(STATE)` saves for `Startup(CLEAR)` (Restart) and `Startup(STATE)` (Resume):
+/// the PCR with `TPM_PT_PCR_SAVE` and the volatile hierarchy block.
+pub(crate) struct SavedState {
+    pub pcrs: SavedPcrs,
+    pub hier: HierarchyVolatile,
 }
 
 /// The vTPM command processor. Created with owner entropy; commands go through
@@ -98,13 +115,19 @@ pub struct Tpm {
     pub(crate) failed: bool,
     /// State of `Shutdown(STATE)`; `None` after `Shutdown(CLEAR)`, after a later PCR change or
     /// without any shutdown.
-    pub(crate) saved: Option<SavedPcrs>,
+    pub(crate) saved: Option<SavedState>,
     pub(crate) pcrs: Pcrs,
     pub(crate) sequences: Sequences,
+    /// Loaded HMAC authorization sessions.
+    pub(crate) sessions: Sessions,
+    /// Volatile hierarchy state: `platformAuth`, enables, Null seed.
+    pub(crate) hv: HierarchyVolatile,
     /// Latest `now_ms` the owner passed: milliseconds since `_TPM_Init` (power-on).
     pub(crate) power_ms: u64,
     /// `TPMS_CLOCK_INFO.safe` for the current power cycle.
     pub(crate) clock_safe: bool,
+    /// `power_ms` at the moment `TPM2_Clear` zeroed `Clock`; `Clock` counts from there.
+    pub(crate) clock_epoch_ms: u64,
 }
 
 impl core::fmt::Debug for Tpm {
@@ -137,6 +160,8 @@ impl Tpm {
             reset_count: 0,
             restart_count: 0,
             orderly: true,
+            hier: HierarchyPersistent::default(),
+            nv: NvStore::default(),
         };
         Ok(Tpm::assemble(persistent, drbg))
     }
@@ -150,21 +175,36 @@ impl Tpm {
             saved: None,
             pcrs: Pcrs::new(),
             sequences: Sequences::default(),
+            sessions: Sessions::default(),
+            hv: HierarchyVolatile::default(),
             power_ms: 0,
             clock_safe: false,
+            clock_epoch_ms: 0,
         }
+    }
+
+    /// `Clock` in milliseconds: the base of earlier power cycles plus this cycle since the last
+    /// zeroing by `TPM2_Clear`.
+    pub(crate) fn clock_ms(&self) -> u64 {
+        self.persistent
+            .clock_base_ms
+            .saturating_add(self.power_ms.saturating_sub(self.clock_epoch_ms))
     }
 
     /// `_TPM_Init`: models a power cycle of the same TPM object. Volatile state is lost; the
     /// persistent state and the state saved by `Shutdown(STATE)` survive; `Clock` keeps the time
     /// that passed while powered. The next command must be `TPM2_Startup`.
     pub fn init(&mut self) {
-        self.persistent.clock_base_ms = self.persistent.clock_base_ms.saturating_add(self.power_ms);
+        self.persistent.clock_base_ms = self.clock_ms();
         self.power_ms = 0;
+        self.clock_epoch_ms = 0;
         self.started = false;
         self.failed = false;
         self.pcrs = Pcrs::new();
         self.sequences.clear();
+        self.sessions.clear();
+        // `phEnable` is SET on any `_TPM_Init`; the rest of the platform controls is volatile.
+        self.hv = HierarchyVolatile::default();
     }
 
     /// Runs one command: `command` is the complete command buffer, `locality` the locality of the
@@ -182,8 +222,7 @@ impl Tpm {
         payload.extend_from_slice(&self.persistent.platform_seed[..]);
         payload.extend_from_slice(&self.persistent.owner_seed[..]);
         payload.extend_from_slice(&self.persistent.endorsement_seed[..]);
-        let clock = self.persistent.clock_base_ms.saturating_add(self.power_ms);
-        payload.extend_from_slice(&clock.to_be_bytes());
+        payload.extend_from_slice(&self.clock_ms().to_be_bytes());
         payload.extend_from_slice(&self.persistent.reset_count.to_be_bytes());
         payload.extend_from_slice(&self.persistent.restart_count.to_be_bytes());
         payload.push(u8::from(self.persistent.orderly));
@@ -254,6 +293,8 @@ impl Tpm {
             reset_count: u32_at(104),
             restart_count: u32_at(108),
             orderly,
+            hier: HierarchyPersistent::default(),
+            nv: NvStore::default(),
         };
         Ok(Tpm::assemble(persistent, drbg))
     }
@@ -263,7 +304,7 @@ impl Tpm {
         TpmsTimeInfo {
             time: self.power_ms,
             clock_info: TpmsClockInfo {
-                clock: self.persistent.clock_base_ms.saturating_add(self.power_ms),
+                clock: self.clock_ms(),
                 reset_count: self.persistent.reset_count,
                 restart_count: self.persistent.restart_count,
                 safe: self.clock_safe,

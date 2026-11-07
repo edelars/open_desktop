@@ -1,6 +1,6 @@
 # Этап 7. Отчёт: собственные UEFI, ACPI и платформа для Windows
 
-Статус отчёта: **промежуточный. Этап 7 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и проверками на ветке `feat/s9-stage` (исходная точка — коммит `bacffa0`, план этапа 7). Правило статусов: задача, выполненная исполнителем, — `in_progress`, пока ревью не примет её и не отметит чекбокс в плане (`STAGE_7.md` §0); S7-00, S7-01, S7-02, S7-03, S7-12, S7-20, S7-21 и S7-30 сейчас `in_progress`, остальные задачи S7-NN не начаты. Наличие плана, этого отчёта или записей в карте проекта не закрывает ни одну задачу.
+Статус отчёта: **промежуточный. Этап 7 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и проверками на ветке `feat/s9-stage` (исходная точка — коммит `bacffa0`, план этапа 7). Правило статусов: задача, выполненная исполнителем, — `in_progress`, пока ревью не примет её и не отметит чекбокс в плане (`STAGE_7.md` §0); S7-00, S7-01, S7-02, S7-03, S7-12, S7-20, S7-21, S7-23 (только срез A) и S7-30 сейчас `in_progress`, остальные задачи S7-NN не начаты. Наличие плана, этого отчёта или записей в карте проекта не закрывает ни одну задачу.
 
 Связанные документы: [план этапа 7](../plans/STAGE_7.md), [этап 7 дорожной карты](../ROADMAP.md#этап-7-собственные-uefi-acpi-и-платформа-для-windows), [виртуальная плата](../specs/VIRTUAL_BOARD.md), [состояние VM](../specs/VM_STATE.md), [реестр проблем](../KNOWN_ISSUES.md), [отчёт этапа 9](STAGE_9_REPORT.md), [отчёт этапа 11](STAGE_11_REPORT.md).
 
@@ -11,8 +11,8 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 0 | — |
-| `in_progress` | 8 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
-| `not_started` | 30 | остальные задачи, см. таблицу ниже |
+| `in_progress` | 9 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (выполнен только срез A, ожидает ревью, коммита нет; срезы B и C не начаты); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
+| `not_started` | 29 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_7.md` §0 отмечаются только после ревью.
 
@@ -43,7 +43,7 @@
 | S7-20 | in_progress | — | — | ADR: размещение vTPM, криптозависимости host и `no_std` прошивки, профиль команд, CRB, состояние (выполнено архитектором, ревью пройдено, замечания исправлены, [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md); ожидает ревью, коммита нет) |
 | S7-21 | in_progress | — | — | Процессор команд TPM 2.0, фаза A: startup, capability, PCR, hash, random, password session (выполнено исполнителем, ожидает ревью, коммита нет; 17 команд, 88 тестов `cargo test -p od-tpm --offline`; PCR_Allocate отказ; SHA-384 банк не реализован; список не сверенных мест — [VTPM.md](../specs/VTPM.md#источники-и-сверка)) |
 | S7-22 | not_started | — | — | CRB-устройство, таблица TPM2, `EFI_TCG2_PROTOCOL`, measured boot и event log (PCR0–5) |
-| S7-23 | not_started | — | — | TPM фаза B: иерархии, ключи RSA/ECC, сессии, NV, persistent state v1 |
+| S7-23 | in_progress (срез A выполнен, ожидает ревью; срезы B/C не начаты) | — | — | TPM фаза B: иерархии, ключи RSA/ECC, сессии, NV, persistent state v1. **Выполнен срез A** (иерархии Platform/Owner/Endorsement/Null, HMAC-сессии, база NV; `hmac =0.13.0` подключён; 133 теста `cargo test -p od-tpm --offline`), ожидает ревью, коммита нет; **срезы B (ключи RSA/ECC, policy, шифрование параметров) и C (persistent state v1, DA, EK, контексты, Quote/Certify) не начаты** — [VTPM.md](../specs/VTPM.md#фаза-b-срез-a-иерархии-hmac-сессии-nv-база-s7-23) |
 | S7-24 | not_started | — | — | Secure Boot: authenticated variables, PK/KEK/db/dbx, Authenticode в `LoadImage`, PCR7 |
 | S7-25 | not_started | — | — | Проверка Secure Boot и отказов TPM/Secure Boot на собственных приложениях |
 | S7-26 | not_started | — | — | Сброс и перезагрузка: `ResetSystem` → сброс машины, NVRAM/TPM переживают сброс |
@@ -210,9 +210,25 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 Исправления по ревью: копия `authValue` sequence-объекта в обычный `Vec` при проверке пароля убрана: `handle_auth` возвращает `AuthValue` (буфер фиксированного размера, стирается при `Drop`); поля seed'ов `Persistent` — `pub(crate)`; ограничение HMAC на 32-октетный ключ DRBG прокомментировано.
 
-### S7-23. TPM 2.0, фаза B (не начата)
+### S7-23. TPM 2.0, фаза B (срез A выполнен, срезы B и C не начаты)
 
-Статус `not_started`. **Обязательство S7-23 (перенос из S7-21):** заменить самописный HMAC-SHA-256 в `crates/od-tpm/src/random.rs` (HMAC_DRBG на `sha2`) крейтом `hmac =0.13.0` (ADR-0009) и перенести проверку векторами RFC 4231 на крейт.
+Статус `in_progress`: срез A выполнен исполнителем (Claude Sonnet), ожидает ревью; коммита и ревью нет. Задача разбита оркестратором на три среза: **A** — иерархии, HMAC-сессии, NV-база, замена самописного HMAC крейтом `hmac` (выполнен); **B** — ключи RSA/ECC и команды с объектами, policy-сессии, шифрование параметров (не начат); **C** — persistent state v1, DA, EK, контексты, `Quote/Certify/GetTime`, NV counters/Extend (не начат). Чекбокс задачи в плане не отмечен.
+
+**S7-23 НЕ принимается целиком.** Срез A выполнен и ожидает ревью; срезы B и C не начаты. DA-защита (lockout) — срез C: до неё ошибка авторизации всегда `TPM_RC_BAD_AUTH` без счётчика попыток и без блокировки.
+
+Изменены (срез A): `crates/od-tpm/` (`Cargo.toml`, `README.md`, новые модули `src/{crypto,hierarchy,session,nv}.rs` и `src/tests_b.rs`; изменены `lib,codes,marshal,command,response,dispatch,startup,capability,random,pcr,hash,state,tests`), `Cargo.lock`, [VTPM.md](../specs/VTPM.md) (раздел «Фаза B, срез A», NOT VERIFIED 12–20, «Отклонения»), [DEPENDENCIES.md](../policies/DEPENDENCIES.md), [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md) (строка `crates/od-tpm/src/`), [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) (одна фраза в «Последствиях»: feature `alloc` у `zeroize`), строка статуса S7-23 в плане и в этом отчёте.
+
+Реализовано (13 команд, всего в таблице 30): `TPM2_HierarchyControl`, `HierarchyChangeAuth`, `Clear`, `ClearControl`; `StartAuthSession` (только `TPM_SE_HMAC`, unbound или bound к иерархии, без salt, `symmetric` NULL), `FlushContext` (сессии и sequence-объекты); `NV_DefineSpace`, `NV_UndefineSpace`, `NV_ReadPublic`, `NV_Write`, `NV_Read` и сверх списка плана `NV_WriteLock`, `NV_ReadLock`. Иерархии Platform/Owner/Endorsement/Null (seeds из DRBG фазы A, Null seed новый на каждый Reset; Lockout — только как authValue), `authValue` с `HierarchyChangeAuth` (старый перестаёт работать, хвостовые нули отбрасываются), enables `phEnable/phEnableNV/shEnable/ehEnable` по Part 3, 9.3.1 (Reset/Restart/Resume), `Clear` (новый storage seed, сброс auth и enables, удаление NV владельца, `Clock` с нуля). HMAC-сессии по Part 1, 17.6 (cpHash/rpHash, KDFa, bound-сессия, пустой HMAC, `continueSession`, смена `nonceTPM`); HMAC работает и для команд фазы A. NV: атрибуты `PPWRITE/OWNERWRITE/AUTHWRITE/PPREAD/OWNERREAD/AUTHREAD/WRITEALL/WRITEDEFINE/WRITE_STCLEAR/READ_STCLEAR/NO_DA/PLATFORMCREATE` и вычисляемые `WRITTEN/READLOCKED/WRITELOCKED`, `TPM_RC_NV_RANGE/NV_LOCKED/NV_DEFINED/NV_SPACE/NV_UNINITIALIZED/NV_AUTHORIZATION`, доступность индексов по `phEnableNV`/`shEnable`. `GetCapability`: handles (постоянные, NV, сессии), свойства сессий/NV/`PERMANENT`/`STARTUP_CLEAR`, перечень команд = таблица (тест сверяет с отдельно выписанным списком из 30 кодов).
+
+`hmac =0.13.0` подключён (`default-features = false`, `zeroize`): версии не было в офлайн-кеше, `cargo fetch` получил её и два новых транзитивных пакета (`ctutils 0.4.8`, `cmov 0.5.4`, оба `Apache-2.0 OR MIT`); самописный HMAC в `random.rs` удалён (обязательство S7-21 выполнено), векторы RFC 4231 (случаи 1, 2, 6) и DRBG проходят с прежними значениями. `zeroize` получил feature `alloc`.
+
+Не реализовано в срезе A (срезы B/C): все объектные команды и RSA/ECC; policy-сессии и `Policy*`; шифрование параметров и audit; salted-сессии; `ContextSave/Load`; `SetPrimaryPolicy`, `ChangePPS/EPS`; DA (`DictionaryAttack*`; ошибка авторизации всегда `TPM_RC_BAD_AUTH`, `inLockout` не бывает); NV counters/bits/extend/pin (определение такого индекса — `TPM_RC_ATTRIBUTES` по Part 3, 31.3.1) и атрибуты `POLICYREAD/POLICYWRITE/POLICY_DELETE/GLOBALLOCK/ORDERLY/CLEAR_STCLEAR`; `TPM2_HMAC` (нужен объект-ключ); proof-значения и тикеты (поэтому `validation` в `Hash` по-прежнему NULL-ticket); persistent state v1 — auth иерархий и NV-индексы **не входят в snapshot** (`restore` даёт пустые auth и пустой NV; тест фиксирует это).
+
+Отклонения: `NV_WriteLock/ReadLock` сверх списка плана; лимиты NV (128 индексов, 16384 октета, 8500 на индекс, 512 на буфер) — выбор реализации при выполненных минимумах PTP 1.07; 64 сессии (ёмкость = `ACTIVE_SESSIONS_MAX`); `TPM_PT_*` перечисляют только реализованное. Устаревшая фраза в строке статуса S7-21 плана заменена на «заменено в срезе A S7-23».
+
+Проверено (2026-11-07): `cargo test -p od-tpm --offline` — 133 теста проходят (было 88); для каждой новой команды — успех, 2–3 ошибки, отказ авторизации (пароль и HMAC), не загруженная сессия; независимый вектор сессионного обмена из Python (`hmac`/`hashlib`) воспроизводит nonce DRBG, ключ KDFa, HMAC команды и ответа для unbound и bound сессии. `cargo clippy -p od-tpm --offline --all-targets`, `cargo fmt -p od-tpm -- --check`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py` (число ошибок не выросло), `git diff --check` — см. итоговый отчёт исполнителя.
+
+Не проверено: **текст Library v185 недоступен** (HTTP 403), сверка с v184 (Part 1: 9.4.10.2, 11.2–11.5, 12.4.5, 14, 16.6–16.8, 17.6; Part 2: Tables 20, 25, 30, 36, 40, 42, 43, 58–70, 159, 227–235; Part 3: 9.3.1, 11.1, 24.2, 24.6–24.8, 28.4, 30.2, 31.1–31.14; PTP 1.07: Table 2, Table 12, 4.6.2). Все коды ошибок и детали, которых открытый текст не называет, перечислены в [VTPM.md](../specs/VTPM.md#не-сверено-с-текстом-not-verified), пп. 12–20, и помечены `NOT VERIFIED` в исходниках (`hierarchy.rs`, `session.rs`, `nv.rs`, `dispatch.rs`, `capability.rs`). Сборка под `x86_64-unknown-none` не проверялась (crate host-only). Независимое ревью не выполнено. Требования ADR-0009 к секретам: seeds, `authValue`, ключи сессий, данные NV и выход KDFa хранятся в стираемых при `Drop` типах (`zeroize`), HMAC сравнивается за постоянное время (`Mac::verify_slice`), пароль и `authValue` — без ранних выходов; `Debug` ни одного нового типа не печатает секрет (тест). Условие constant-time для RSA (ISSUE-064) к срезу A не относится: приватных RSA-операций нет.
 
 ### S7-30. Аудит требований Windows boot path
 
@@ -233,6 +249,8 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 Не проверено: тексты UEFI 2.11 и ACPI 6.6 (uefi.org — HTTP 403), тексты TCG (открыты только страницы ресурсов), страница Microsoft «Secure MOR implementation» (HTTP 404), документ WHCP; поиск GUID протоколов в бинарях не выполнялся; `tests/fixtures/firmware/windows_media_manifest.json` не создавался (каталог создаёт S7-08); списки задач S7-13/14/23/24 в плане ссылками на пункты аудита не обновлены.
 
 Решение для владельца и ревью плана (план не правился, §6, строка S7-32; правится только отчёт):
+
+- S7-23, срез A (вопрос сверх плана): одобрить ли `NV_WriteLock`/`NV_ReadLock` сверх профиля плана S7-23 (без них `WRITEDEFINE`/`WRITE_STCLEAR`/`READ_STCLEAR` не имеют эффекта). Реализованы исполнителем без решения владельца; решение за владельцем. Контракт — [VTPM.md](../specs/VTPM.md#фаза-b-срез-a-иерархии-hmac-сессии-nv-база-s7-23).
 
 - Кандидат в blocked-список S7-32 (и этапов 2/6): профиль CPU не объявляет SSE4.1, CMPXCHG16B, LAHF/SAHF, PrefetchW, которые требует Windows (M2); подтверждено чтением `CPU_CONTRACT.md` (строка 624). Решение владельца — расширить CPU-профиль (этап 2/6) или признать S7-32 blocked.
 - Для ревью плана: §2 плана (`STAGE_7.md:81`) утверждает «Windows требует large pages — зависимость S7-32»; по аудиту (R-03) источник не найден — blocked до S4-10 держится на гипотезе; предлагается уточнить при ревью плана.

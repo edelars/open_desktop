@@ -51,7 +51,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | CPU state, x86 decoder, interpreter | `crates/od-isa/src/` |
 | IR, ARM64 emitter, dispatcher, JIT-кеш | `crates/od-jit/src/` |
 | Гостевая RAM/MMU/TLB, vCPU и устройства | `crates/od-machine/src/` |
-| Процессор команд TPM 2.0 и его состояние: чистая логика без шины и устройств; CRB-устройство остаётся в `od-machine` (решение D8, [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md)) | `crates/od-tpm/src/` (фаза A — S7-21: команды Startup/Capability/Random/PCR/Hash/Clock; фаза B — S7-23) |
+| Процессор команд TPM 2.0 и его состояние: чистая логика без шины и устройств; CRB-устройство остаётся в `od-machine` (решение D8, [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md)) | `crates/od-tpm/src/` (фаза A — S7-21: команды Startup/Capability/Random/PCR/Hash/Clock; фаза B, срез A — S7-23: модули `hierarchy.rs` (иерархии, seeds, auth, enables, Clear), `session.rs` (HMAC-сессии, StartAuthSession, FlushContext), `nv.rs` (база NV-индексов), `crypto.rs` (HMAC/KDFa на крейте `hmac`); ключи, policy и persistent state v1 — срезы B/C) |
 | Формат диска, метаданные и контейнер снимка | `crates/od-storage/src/` |
 | macOS host-примитивы, JIT memory, glue C ABI | `crates/od-host/src/` |
 | Общие генераторы/сравнение/сокращение тестов | `crates/od-testkit/src/` |

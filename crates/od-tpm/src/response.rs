@@ -18,25 +18,41 @@ impl Rc {
     // Format-zero (RC_VER1 + n).
     pub const INITIALIZE: Rc = Rc(RC_VER1);
     pub const FAILURE: Rc = Rc(RC_VER1 + 0x001);
+    pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
+    pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);
     pub const AUTH_MISSING: Rc = Rc(RC_VER1 + 0x025);
     pub const COMMAND_SIZE: Rc = Rc(RC_VER1 + 0x042);
     pub const COMMAND_CODE: Rc = Rc(RC_VER1 + 0x043);
     pub const AUTHSIZE: Rc = Rc(RC_VER1 + 0x044);
+    pub const AUTH_CONTEXT: Rc = Rc(RC_VER1 + 0x045);
+    pub const NV_RANGE: Rc = Rc(RC_VER1 + 0x046);
+    pub const NV_SIZE: Rc = Rc(RC_VER1 + 0x047);
+    pub const NV_LOCKED: Rc = Rc(RC_VER1 + 0x048);
+    pub const NV_AUTHORIZATION: Rc = Rc(RC_VER1 + 0x049);
+    pub const NV_UNINITIALIZED: Rc = Rc(RC_VER1 + 0x04A);
+    pub const NV_SPACE: Rc = Rc(RC_VER1 + 0x04B);
+    pub const NV_DEFINED: Rc = Rc(RC_VER1 + 0x04C);
     pub const NEEDS_TEST: Rc = Rc(RC_VER1 + 0x053);
 
     // Format-one (RC_FMT1 + n); index modifiers are added with the `in_*` methods.
     pub const ATTRIBUTES: Rc = Rc(RC_FMT1 + 0x002);
     pub const HASH: Rc = Rc(RC_FMT1 + 0x003);
     pub const VALUE: Rc = Rc(RC_FMT1 + 0x004);
+    pub const HIERARCHY: Rc = Rc(RC_FMT1 + 0x005);
     pub const MODE: Rc = Rc(RC_FMT1 + 0x009);
     pub const HANDLE: Rc = Rc(RC_FMT1 + 0x00B);
+    pub const AUTH_FAIL: Rc = Rc(RC_FMT1 + 0x00E);
+    pub const NONCE: Rc = Rc(RC_FMT1 + 0x00F);
     pub const SIZE: Rc = Rc(RC_FMT1 + 0x015);
+    pub const SYMMETRIC: Rc = Rc(RC_FMT1 + 0x016);
     pub const TAG: Rc = Rc(RC_FMT1 + 0x017);
     pub const INSUFFICIENT: Rc = Rc(RC_FMT1 + 0x01A);
+    pub const RESERVED_BITS: Rc = Rc(RC_FMT1 + 0x021);
     pub const BAD_AUTH: Rc = Rc(RC_FMT1 + 0x022);
 
     // Warnings (RC_WARN + n).
     pub const OBJECT_MEMORY: Rc = Rc(RC_WARN + 0x002);
+    pub const SESSION_HANDLES: Rc = Rc(RC_WARN + 0x005);
     pub const LOCALITY: Rc = Rc(RC_WARN + 0x007);
     pub const REFERENCE_H0: u32 = RC_WARN + 0x010;
     pub const REFERENCE_S0: u32 = RC_WARN + 0x018;
@@ -99,10 +115,32 @@ pub fn error_response(rc: Rc) -> Vec<u8> {
     v
 }
 
-/// Success response. With sessions it adds `parameterSize` and one acknowledgement per
-/// command session (password acknowledgement: empty nonce, `continueSession` SET, empty HMAC;
-/// Part 1, clause 17.4, Table 18). `session_attrs` are the attribute octets of the command sessions.
-pub(crate) fn success_response(out: &Output, session_attrs: &[u8], with_sessions: bool) -> Vec<u8> {
+/// One acknowledgement in a response with sessions: `TPMS_AUTH_RESPONSE` (Part 2, Table 154).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionAck {
+    /// `nonceTPM`: empty for a password authorization.
+    pub nonce: Vec<u8>,
+    pub attributes: u8,
+    /// Response HMAC: empty for a password authorization (and for an HMAC session whose command
+    /// carried an empty HMAC, Part 1 v184, clause 17.6.15).
+    pub hmac: Vec<u8>,
+}
+
+impl SessionAck {
+    /// Password acknowledgement: empty nonce, `continueSession` SET, empty HMAC (Part 1,
+    /// clause 17.4, Table 18).
+    pub(crate) fn password(command_attributes: u8) -> SessionAck {
+        SessionAck {
+            nonce: Vec::new(),
+            attributes: command_attributes | 0x01,
+            hmac: Vec::new(),
+        }
+    }
+}
+
+/// Success response. With sessions it adds `parameterSize` and one acknowledgement per command
+/// session.
+pub(crate) fn success_response(out: &Output, acks: &[SessionAck], with_sessions: bool) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&out.handles);
     if with_sessions {
@@ -110,10 +148,12 @@ pub(crate) fn success_response(out: &Output, session_attrs: &[u8], with_sessions
     }
     body.extend_from_slice(&out.params);
     if with_sessions {
-        for attrs in session_attrs {
-            body.extend_from_slice(&0u16.to_be_bytes());
-            body.push(attrs | 0x01);
-            body.extend_from_slice(&0u16.to_be_bytes());
+        for ack in acks {
+            body.extend_from_slice(&(ack.nonce.len() as u16).to_be_bytes());
+            body.extend_from_slice(&ack.nonce);
+            body.push(ack.attributes);
+            body.extend_from_slice(&(ack.hmac.len() as u16).to_be_bytes());
+            body.extend_from_slice(&ack.hmac);
         }
     }
     let tag = if with_sessions {
@@ -145,6 +185,23 @@ mod tests {
         assert_eq!(Rc::BAD_AUTH.0, 0x0A2);
         assert_eq!(Rc::LOCALITY.0, 0x907);
         assert_eq!(Rc::NEEDS_TEST.0, 0x153);
+        // Codes of phase B slice A (Table 20 of the same text).
+        assert_eq!(Rc::DISABLED.0, 0x120);
+        assert_eq!(Rc::AUTH_TYPE.0, 0x124);
+        assert_eq!(Rc::AUTH_CONTEXT.0, 0x145);
+        assert_eq!(Rc::NV_RANGE.0, 0x146);
+        assert_eq!(Rc::NV_SIZE.0, 0x147);
+        assert_eq!(Rc::NV_LOCKED.0, 0x148);
+        assert_eq!(Rc::NV_AUTHORIZATION.0, 0x149);
+        assert_eq!(Rc::NV_UNINITIALIZED.0, 0x14A);
+        assert_eq!(Rc::NV_SPACE.0, 0x14B);
+        assert_eq!(Rc::NV_DEFINED.0, 0x14C);
+        assert_eq!(Rc::HIERARCHY.0, 0x085);
+        assert_eq!(Rc::AUTH_FAIL.0, 0x08E);
+        assert_eq!(Rc::NONCE.0, 0x08F);
+        assert_eq!(Rc::SYMMETRIC.0, 0x096);
+        assert_eq!(Rc::SESSION_HANDLES.0, 0x905);
+        assert_eq!(Rc::RESERVED_BITS.0, 0x0A1);
     }
 
     #[test]

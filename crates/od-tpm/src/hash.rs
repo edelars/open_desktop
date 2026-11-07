@@ -65,6 +65,16 @@ impl AuthValue {
         Some(a)
     }
 
+    /// Like [`AuthValue::from_slice`] but without trailing zero octets: "trailing zeros are always
+    /// removed from an authValue before it is used in an authorization computation" (Part 1 v184,
+    /// clause 17.6.5). The size limit applies to the value as given.
+    pub(crate) fn from_slice_trimmed(v: &[u8]) -> Option<AuthValue> {
+        if v.len() > limits::MAX_DIGEST_SIZE {
+            return None;
+        }
+        AuthValue::from_slice(trim(v))
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
@@ -79,7 +89,7 @@ impl Drop for AuthValue {
 
 /// Octets of a password without trailing zero octets (Part 1, clause 17.4: the TPM truncates
 /// trailing zeros of both values before comparing).
-fn trim(v: &[u8]) -> &[u8] {
+pub(crate) fn trim(v: &[u8]) -> &[u8] {
     let end = v.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
     &v[..end]
 }
@@ -130,6 +140,13 @@ impl Sequences {
 
     pub(crate) fn free_slots(&self) -> usize {
         self.slots.iter().filter(|s| s.is_none()).count()
+    }
+
+    /// Flushes the sequence in `slot` (`TPM2_FlushContext`).
+    pub(crate) fn release(&mut self, slot: usize) {
+        if let Some(s) = self.slots.get_mut(slot) {
+            *s = None;
+        }
     }
 
     fn insert(&mut self, s: Sequence) -> Option<usize> {

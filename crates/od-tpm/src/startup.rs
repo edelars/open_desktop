@@ -11,15 +11,22 @@
 //! mode (`TPM_RC_FAILURE` for everything except `GetTestResult` and `GetCapability`).
 //! `TPM_RC_TESTING` is never returned because the tests complete inside the command (allowed by
 //! Part 3, clause 10.2.1, "perform the tests and return the test result").
+//!
+//! Hierarchy and NV effects (Part 3, clause 9.3.1; text of v184): on any `Startup` `phEnable` is
+//! SET and sessions and sequences are flushed. Reset: `platformAuth` Empty, a new Null seed,
+//! `phEnableNV`/`shEnable`/`ehEnable` SET, NV locks released. Restart: `platformAuth` Empty, the
+//! three enables SET, NV locks released, the Null seed kept. Resume: the saved platform controls
+//! and enables are restored (`phEnable` SET).
 //! NOT VERIFIED against TPM 2.0 Library v185: the manufacturer-specific `outData` of
 //! `GetTestResult` is empty here.
 
 use crate::codes::su;
+use crate::hierarchy::HierarchyVolatile;
 use crate::marshal::{Reader, Writer};
 use crate::pcr::{self, Pcrs};
 use crate::random;
 use crate::response::{Output, Rc};
-use crate::state::Tpm;
+use crate::state::{SavedState, Tpm};
 
 /// SHA-256 known-answer test: SHA-256("abc") (FIPS 180-4 example).
 fn sha256_kat() -> bool {
@@ -69,23 +76,38 @@ impl Tpm {
             _ => return Err(Rc::VALUE.in_param(1)),
         };
         self.self_test_now()?;
+        // The only fallible step after the tests goes before any state change.
+        let null_seed = if startup_type == su::CLEAR && !restart {
+            Some(self.drbg.generate_array().ok_or(Rc::FAILURE)?)
+        } else {
+            None
+        };
         let saved = self.saved.take();
         self.sequences.clear();
+        self.sessions.clear();
         match (startup_type, saved) {
             (su::STATE, Some(s)) => {
                 // TPM Resume.
-                self.pcrs.restore(&s);
+                self.pcrs.restore(&s.pcrs);
+                self.hv = HierarchyVolatile::after_resume(s.hier);
                 self.persistent.restart_count = self.persistent.restart_count.wrapping_add(1);
             }
-            _ => {
+            (_, saved) => {
                 self.pcrs = Pcrs::new();
-                if restart {
-                    // TPM Restart.
-                    self.persistent.restart_count = self.persistent.restart_count.wrapping_add(1);
-                } else {
-                    // TPM Reset.
-                    self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
-                    self.persistent.restart_count = 0;
+                self.persistent.nv.startup_clear();
+                match (saved, null_seed) {
+                    (Some(s), _) => {
+                        // TPM Restart.
+                        self.hv = HierarchyVolatile::after_restart(s.hier);
+                        self.persistent.restart_count =
+                            self.persistent.restart_count.wrapping_add(1);
+                    }
+                    (None, seed) => {
+                        // TPM Reset.
+                        self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
+                        self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
+                        self.persistent.restart_count = 0;
+                    }
                 }
             }
         }
@@ -107,7 +129,12 @@ impl Tpm {
         p.finish()?;
         match shutdown_type {
             su::CLEAR => self.saved = None,
-            su::STATE => self.saved = Some(self.pcrs.save()),
+            su::STATE => {
+                self.saved = Some(SavedState {
+                    pcrs: self.pcrs.save(),
+                    hier: self.hv.clone(),
+                })
+            }
             _ => return Err(Rc::VALUE.in_param(1)),
         }
         self.persistent.orderly = true;
