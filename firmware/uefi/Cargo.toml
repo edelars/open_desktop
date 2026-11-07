@@ -1,0 +1,31 @@
+# Own Cargo project, not a member of the root workspace (root Cargo.toml lists it in `exclude`).
+# Guest-target firmware: the binary builds only for `x86_64-unknown-none` (see README.md).
+[package]
+name = "od-firmware"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Open Desktop own UEFI firmware (S7-01: build skeleton, not a firmware implementation)"
+
+[lib]
+name = "od_firmware"
+path = "src/lib.rs"
+
+[[bin]]
+name = "od-firmware"
+path = "src/main.rs"
+# The binary is freestanding (`no_main`); host `cargo test` covers the library only.
+test = false
+bench = false
+doc = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"

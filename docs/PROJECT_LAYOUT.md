@@ -110,6 +110,7 @@ raw `execution_kind=unknown`, отдельная physical acceptance остаё�
 
 ### Неочевидные границы
 
+- Прошивка: `firmware/uefi/` — отдельный Cargo-проект вне корневого workspace (корневой `Cargo.toml` перечисляет его в `exclude`, в `members` его нет). Он собирается для guest-target `x86_64-unknown-none` скриптом `tools/build/build_firmware.py`, а его host-side тесты запускаются `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`; `cargo check --workspace` прошивку не проверяет. Команды, версии и карта модулей — в `firmware/uefi/README.md`.
 - Гостевое устройство: модель и guest-visible registers — в `od-machine`; системный backend — в host-слое; guest driver — в `guest/`; wire contract — в `protocols/guest/`.
 - Снимок: остановка CPU/I/O и сбор согласованного состояния — в `od-machine`; запись контейнера/дисковых данных — в `od-storage`.
 - JIT: блоки и dispatcher — в `od-jit`; отображение исполняемой памяти через macOS — в `od-host`, предоставляемое через узкий интерфейс.

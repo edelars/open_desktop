@@ -1,0 +1,6 @@
+# Applies only when cargo is run with the current directory inside firmware/uefi/
+# (tools/build/build_firmware.py does that). The root workspace config is not touched.
+[target.x86_64-unknown-none]
+# The image is linked at a fixed address and has no relocations (FIRMWARE_BOOT.md, section 9:
+# the main image is flat, only the RT image is relocatable). The default target model is PIE.
+rustflags = ["-C", "relocation-model=static"]

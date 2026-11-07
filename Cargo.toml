@@ -13,6 +13,8 @@ members = [
     "tools/image-tool",
     "tools/power-loss",
 ]
+# Guest-target firmware: own Cargo project with its own target (firmware/uefi/README.md).
+exclude = ["firmware/uefi"]
 
 [workspace.package]
 version = "0.1.0"
