@@ -53,9 +53,10 @@ pub use paged_descriptor::{
 pub use paged_exception_delivery::{
     PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryOutcome,
     PagedExceptionDeliveryReport, PagedExceptionHandlerEntryReport,
-    PagedExceptionStackDiscardReport, PagedIretqStepReport, deliver_and_step_paged_pf_handler,
-    deliver_paged_page_fault, step_paged_cr0_wp_mov, step_paged_cr0_wp_page_table_repair_mov,
-    step_paged_exception_stack_discard, step_paged_iretq,
+    PagedExceptionStackDiscardReport, PagedIretqStepReport, PagedUserReturnReport,
+    deliver_and_step_paged_pf_handler, deliver_paged_page_fault, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_exception_stack_discard, step_paged_iretq,
+    step_paged_iretq_and_user_load,
 };
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,

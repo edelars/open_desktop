@@ -256,6 +256,104 @@ pub fn step_paged_iretq(
     })
 }
 
+/// The committed return and subsequent user instruction have separate outcomes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedUserReturnReport {
+    pub iretq: PagedIretqStepReport,
+    pub mov: Option<PagedCr0WpMovStepReport>,
+}
+
+pub fn step_paged_iretq_and_user_load(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedUserReturnReport, PagedExceptionDeliveryError> {
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    let cr3 = state.cr3.ok_or(PagedExceptionDeliveryError::Configuration(
+        ProbeConfigError::MissingCpuRegister { register: "CR3" },
+    ))?;
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, 0xd00)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: PrivilegeLevel::Ring0,
+        origin: AccessOrigin::Explicit,
+    };
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let mut defined = rflags_defined;
+    let cpu = od_isa::iretq::step_paged_iretq_to_cpl3(
+        od_isa::iretq::PagedCpl0ToCpl3V1,
+        od_isa::cpuid::CpuidProfile::DiagnosticV1,
+        state,
+        &mut memory,
+        context,
+        &mut defined,
+        0xd00,
+    );
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    let iretq = PagedIretqStepReport {
+        cpu,
+        rflags_defined: defined,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    };
+    if iretq.cpu != IretqResult::Retired {
+        return Ok(PagedUserReturnReport { iretq, mov: None });
+    }
+    let valid_cs = state.cs_selector.is_some_and(|s| s & !7 != 0 && s & 7 == 3)
+        && state.cs_cache.is_some_and(|c| {
+            c.access == 0xfb && c.flags == 0xa && c.base == 0 && c.limit == u32::MAX
+        });
+    if !valid_cs {
+        return Ok(PagedUserReturnReport { iretq, mov: None });
+    }
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let context = AccessContext {
+        privilege: PrivilegeLevel::Ring3,
+        ..context
+    };
+    let cpu = od_isa::execute::step_paged_cpl3_load(state, &mut memory, context, 0xd00, defined);
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    let mov = PagedCr0WpMovStepReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    };
+    Ok(PagedUserReturnReport {
+        iretq,
+        mov: Some(mov),
+    })
+}
+
 pub fn deliver_paged_page_fault(
     state: &mut LongModeState,
     bus: &mut MachineBus,

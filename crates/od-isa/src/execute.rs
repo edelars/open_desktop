@@ -16438,6 +16438,7 @@ struct FetchCapture<'a, M> {
     bytes: Vec<(u64, u8)>,
     fetch_page: Option<u64>,
     page_boundary_reached: bool,
+    replay_captured: bool,
 }
 
 impl<'a, M> FetchCapture<'a, M> {
@@ -16447,6 +16448,7 @@ impl<'a, M> FetchCapture<'a, M> {
             bytes: Vec::new(),
             fetch_page: None,
             page_boundary_reached: false,
+            replay_captured: false,
         }
     }
 
@@ -16456,6 +16458,7 @@ impl<'a, M> FetchCapture<'a, M> {
             bytes: Vec::new(),
             fetch_page: Some(rip >> 12),
             page_boundary_reached: false,
+            replay_captured: false,
         }
     }
 
@@ -16466,6 +16469,14 @@ impl<'a, M> FetchCapture<'a, M> {
 
 impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        if self.replay_captured {
+            return self
+                .bytes
+                .iter()
+                .find(|(at, _)| *at == address)
+                .map(|(_, byte)| *byte)
+                .ok_or_else(|| MemoryError::Backend("fetch outside captured instruction".into()));
+        }
         if self.fetch_page.is_some_and(|page| address >> 12 != page) {
             self.page_boundary_reached = true;
             return Err(MemoryError::Backend(
@@ -16741,6 +16752,7 @@ pub fn step_paged_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16917,6 +16929,7 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
         false,
+        false,
         true,
         false,
         false,
@@ -16945,6 +16958,7 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
+        false,
         false,
         false,
         true,
@@ -17215,6 +17229,41 @@ pub fn step_paged_cr0_wp_mov(
     step_paged_probe_inner(
         false,
         false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute only the bounded CPL3 `48 8B 03` using CPU-owned paging controls.
+pub fn step_paged_cpl3_load(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+    }
+    step_paged_probe_inner(
+        true,
+        false,
+        false,
         true,
         false,
         false,
@@ -17251,6 +17300,7 @@ pub fn step_mov_cr0_wp(
     step_paged_probe_inner(
         false,
         false,
+        false,
         true,
         true,
         true,
@@ -17275,6 +17325,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
+        false,
         true,
         false,
         false,
@@ -17290,6 +17341,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
 }
 
 fn step_paged_probe_inner<P: crate::PortIo>(
+    user_load_only: bool,
     allow_stack_forms: bool,
     allow_cr3: bool,
     allow_cr0_wp: bool,
@@ -17319,6 +17371,11 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     }
     if context.mode != InstructionMode::Long64 {
         return reject(PagedProbeRejection::WrongMode);
+    }
+    if user_load_only
+        && (context.privilege != PrivilegeLevel::Ring3 || state.cr0 != Some(Cr0Profile::BASE))
+    {
+        return reject(PagedProbeRejection::WrongPrivilege);
     }
     if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
@@ -17371,7 +17428,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
-    if (allow_cr3 || allow_cr0_wp) && state.rip & 0xfff >= 0xff2 {
+    if ((allow_cr3 || (allow_cr0_wp && !user_load_only)) && state.rip & 0xfff >= 0xff2)
+        || (user_load_only && state.rip & 0xfff > 0xffd)
+    {
         return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
     }
 
@@ -17379,7 +17438,26 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         origin: AccessOrigin::Explicit,
         ..context
     };
-    let instruction = match long_decode::decode(memory, state.rip, context) {
+    // Admit the exact three-byte form before invoking the general decoder.  Replay
+    // the captured bytes so guest fetches and their side effects occur only once.
+    let decoded = if user_load_only {
+        let mut captured = FetchCapture::new(memory);
+        for (offset, expected) in [0x48, 0x8b, 0x03].into_iter().enumerate() {
+            match captured.fetch(state.rip.wrapping_add(offset as u64), context) {
+                Ok(byte) if byte == expected => {}
+                Ok(byte) => return result(PagedProbeExit::Unsupported { opcode: byte }, 0),
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            }
+        }
+        captured.replay_captured = true;
+        long_decode::decode(&mut captured, state.rip, context)
+    } else {
+        long_decode::decode(memory, state.rip, context)
+    };
+    let instruction = match decoded {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
             return result(
@@ -17467,7 +17545,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     {
         return unsupported();
     }
+    if user_load_only
+        && !(instruction.opcode.byte == 0x8b && is_paged_mov_instruction(&instruction))
+    {
+        return unsupported();
+    }
     if allow_cr0_wp
+        && !user_load_only
         && context.privilege != PrivilegeLevel::Ring0
         && is_paged_mov_instruction(&instruction)
     {
@@ -149796,6 +149880,108 @@ mod paged_cr0_wp_probe_tests {
             sti_shadow: Some(crate::StiShadow::Clear),
             rflags: 0x8d7,
             ..LongModeState::default()
+        }
+    }
+
+    #[test]
+    fn cpl3_load_admits_only_cpu_owned_cr3_and_exact_load() {
+        for (code, cr3, accepted) in [
+            (&[0x48, 0x8b, 0x03][..], Some(0x1000), true),
+            (&[0x48, 0x89, 0x0b][..], Some(0x1000), false),
+            (&[0x48, 0x8b, 0x07][..], Some(0x1000), false), // base RDI
+            (&[0x48, 0x8b, 0x0b][..], Some(0x1000), false), // destination RCX
+            (&[0x48, 0x8b, 0x43, 0x00][..], Some(0x1000), false), // displacement
+            (&[0x8b, 0x03][..], Some(0x1000), false),       // dword
+            (&[0x66, 0x48, 0x8b, 0x03][..], Some(0x1000), false), // prefix
+            (&[0x48, 0x8b, 0x04, 0x23][..], Some(0x1000), false), // SIB
+            (&[0x48, 0x8b, 0x03][..], None, false),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.cr3 = cr3;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring3,
+                    origin: AccessOrigin::Explicit,
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(matches!(result.exit, PagedProbeExit::Retired), accepted);
+            assert_eq!(state.cr3, cr3);
+            if !accepted {
+                assert!(memory.accesses.is_empty());
+                assert_eq!(state, before);
+                if cr3.is_some() {
+                    assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpl3_load_predecode_stops_at_first_mismatch_and_propagates_fetch_faults() {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let rip = 0x2ffd;
+        for (code, expected_fetches, retired) in [
+            (&[0x48, 0x8b, 0x43][..], 3, false),
+            (&[0xf0, 0x0f, 0x22, 0xc0][..], 1, false),
+            (&[0x48, 0x8b, 0x03][..], 3, true),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rip = rip;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let mut memory = Memory::at(code, rip);
+            memory.fetch_error =
+                Some((rip + 3, MemoryError::Backend("fourth byte fetched".into())));
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            if retired {
+                assert_eq!(result.exit, PagedProbeExit::Retired);
+                assert_eq!(state.rip, rip + 3);
+            } else {
+                assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+                assert_eq!(state.rip, rip);
+            }
+            assert_eq!(
+                memory.fetches,
+                (rip..rip + expected_fetches).collect::<Vec<_>>()
+            );
+        }
+        for offset in 0..3 {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rip = rip;
+            let fault = ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x15),
+                linear_address: Some(rip + offset),
+            };
+            let mut memory = Memory::at(&[0x48, 0x8b, 0x03], rip);
+            memory.fetch_error = Some((rip + offset, MemoryError::Architectural(fault.clone())));
+            let result = step_paged_cpl3_load(
+                &mut state,
+                &mut memory,
+                context,
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+            assert_eq!(memory.fetches, (rip..=rip + offset).collect::<Vec<_>>());
+            assert_eq!(state.rip, rip);
         }
     }
 

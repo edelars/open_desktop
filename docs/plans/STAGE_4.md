@@ -1028,15 +1028,28 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-20b. Machine CPL context and one CPL3 paged MOV
 
-- [ ] Отдельный межкомпонентный срез после принятия S4-20a.
-- **Сценарий:** machine строит `AccessContext` для fetch/data из committed
-  CS RPL/cache после IRETQ; CPU-owned CR3 остаётся активным. Исполнить один
-  точный `MOV RAX,[RBX]` на CPL3 с uncached четырёхуровневым paging.
-- **Проверка:** user page доступна; supervisor-only fetch/data дают точный
-  user #PF. Host не может передать устаревший Ring0 context после возврата.
-- **Граница:** одна точная load-форма и ограниченная конфигурация таблиц
-  страниц; user stores, доставка исключений из CPL3 и syscall roundtrip
-  остаются открытыми.
+- [x] Отдельный межкомпонентный срез принят после независимого
+  `gpt-6.1-sol/high` review; подтверждённых замечаний P0–P3 не осталось.
+- **Сценарий:** один machine wrapper выполняет paged IRETQ CPL0→CPL3, строит
+  `AccessContext` только из committed CS RPL/cache и исполняет следующую exact
+  `48 8B 03` (`MOV RAX,[RBX]`) на CPL3. Wrapper не принимает внешний privilege
+  context или альтернативный CR3; CPU-owned CR3 остаётся активным.
+- **Ограничение fetch:** все три байта инструкции должны находиться в одной
+  guest page; допускается RIP offset `0xffd`. Cross-page instruction fetch и
+  fault второй fetch-страницы остаются за границей этого среза.
+- **Проверка:** user fetch и data read успешны; supervisor-only fetch даёт
+  PFEC `0x15`, data read — PFEC `0x05` при NXE=1, с точными CR2 и saved RIP.
+  Проверить user U/S protection на всех уровнях, сохранение завершённых A
+  updates, отсутствие D updates/data writes у load и разделение guest faults
+  от backend errors. Fault второй инструкции не откатывает уже committed
+  переход CPL3; wrapper возвращает отдельные результаты IRETQ и MOV.
+- **Граница:** одна точная load-форма и фиксированный four-level profile;
+  user stores, cross-page instruction fetch, доставка исключений из CPL3 и
+  syscall roundtrip остаются открытыми.
+- **Результат:** [S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md),
+  [manifest](../reports/data/stage4/s4-20b-machine-iretq-cpl3-load-2026-11-06.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b) и
+  [verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
 
 ### S4-21. Жизненный цикл одного vCPU
 

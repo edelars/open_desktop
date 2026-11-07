@@ -1909,3 +1909,367 @@ fn guest_lidt_and_lgdt_feed_the_following_page_fault_delivery() {
         FAULT_RIP + 9
     );
 }
+
+#[test]
+fn user_return_and_load_enforces_paging_privileges() {
+    use od_isa::execute::PagedProbeExit;
+    use od_isa::iretq::IretqResult;
+    use od_machine::{AdBit, step_paged_iretq_and_user_load};
+
+    // Each entry is made supervisor-only in turn. Shared upper levels also
+    // deny the instruction fetch before a data access can be attempted.
+    for (entry, data_fault) in [
+        (None, false),
+        (Some(0x1000), false),
+        (Some(0x2000), false),
+        (Some(0x3010), false),
+        (Some(0x4010), false),
+        (Some(0x1008), true),
+        (Some(0xf000), true),
+        (Some(0x10000), true),
+        (Some(0x11000), true),
+    ] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+        put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+        put_bytes(&mut bus, 0x9000, &LOAD);
+        put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+        put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+        put_qword(&mut bus, 0x1008, 0xf007);
+        put_qword(&mut bus, 0xf000, 0x10007);
+        put_qword(&mut bus, 0x10000, 0x11007);
+        put_qword(&mut bus, 0x11000, DATA_PHYSICAL | 7);
+        let frame = 0xd027;
+        for (offset, value) in [
+            (0, HANDLER_RIP),
+            (8, 0x1b),
+            (16, 0x202),
+            (24, 0x0070_2000),
+            (32, 0x23),
+        ] {
+            put_qword(&mut bus, frame + offset, value);
+        }
+        if let Some(address) = entry {
+            let value = bus
+                .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap();
+            put_qword(&mut bus, address, value & !4);
+        }
+        let mut state = initial_state(0x202);
+        state.cs_cache.as_mut().unwrap().flags = 0xa;
+        state.gpr[Register::Rbx as usize] = 0x80_0000_0000;
+        let mut writes = Vec::new();
+        let report =
+            step_paged_iretq_and_user_load(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |range| {
+                writes.push(range)
+            })
+            .unwrap();
+        assert_eq!(report.iretq.cpu, IretqResult::Retired, "entry={entry:?}");
+        let mov = report.mov.unwrap();
+        assert_eq!(state.cs_selector, Some(0x1b));
+        assert_eq!(state.cr3, Some(CR3));
+        assert_eq!(
+            writes,
+            [
+                report.iretq.committed_writes.clone(),
+                mov.committed_writes.clone()
+            ]
+            .concat()
+        );
+        assert!(mov.ad_updates.iter().all(|a| a.bit == AdBit::Accessed));
+        assert!(
+            mov.committed_writes
+                .iter()
+                .all(|r| r.start().get() != DATA_PHYSICAL)
+        );
+        if entry.is_none() {
+            assert_eq!(mov.cpu.exit, PagedProbeExit::Retired);
+            assert_eq!(state.gpr[Register::Rax as usize], SENTINEL);
+            assert_eq!(state.rip, HANDLER_RIP + 3);
+            assert_eq!(
+                mov.ad_updates
+                    .iter()
+                    .map(|a| (a.address.get(), a.bit))
+                    .collect::<Vec<_>>(),
+                [
+                    (0x1008, AdBit::Accessed),
+                    (0xf000, AdBit::Accessed),
+                    (0x10000, AdBit::Accessed),
+                    (0x11000, AdBit::Accessed),
+                ]
+            );
+            assert_eq!(
+                mov.committed_writes
+                    .iter()
+                    .map(|r| (r.start().get(), r.len()))
+                    .collect::<Vec<_>>(),
+                [(0x1008, 8), (0xf000, 8), (0x10000, 8), (0x11000, 8)]
+            );
+            for (address, expected) in [
+                (0x1008, 0xf027),
+                (0xf000, 0x10027),
+                (0x10000, 0x11027),
+                (0x11000, DATA_PHYSICAL | 0x27),
+            ] {
+                assert_eq!(
+                    bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                        .unwrap(),
+                    expected
+                );
+            }
+            assert!(
+                mov.committed_writes
+                    .iter()
+                    .all(|r| r.start().get() != DATA_PHYSICAL)
+            );
+        } else {
+            let fault = mov.page_fault.unwrap();
+            let address = if data_fault {
+                0x80_0000_0000
+            } else {
+                HANDLER_RIP
+            };
+            assert_eq!(
+                fault.fault().error_code,
+                Some(if data_fault { 5 } else { 0x15 })
+            );
+            assert_eq!(fault.cr2_value(), address);
+            assert_eq!(fault.saved_rip(), HANDLER_RIP);
+            assert_eq!(state.cr2, Some(address));
+            assert_eq!(state.rip, HANDLER_RIP);
+            assert!(matches!(mov.cpu.exit, PagedProbeExit::Fault(_)));
+            if data_fault && entry == Some(0x11000) {
+                assert_eq!(
+                    mov.ad_updates
+                        .iter()
+                        .map(|a| (a.address.get(), a.bit))
+                        .collect::<Vec<_>>(),
+                    [
+                        (0x1008, AdBit::Accessed),
+                        (0xf000, AdBit::Accessed),
+                        (0x10000, AdBit::Accessed),
+                        (0x11000, AdBit::Accessed),
+                    ]
+                );
+                assert_eq!(
+                    mov.committed_writes
+                        .iter()
+                        .map(|r| (r.start().get(), r.len()))
+                        .collect::<Vec<_>>(),
+                    [(0x1008, 8), (0xf000, 8), (0x10000, 8), (0x11000, 8)]
+                );
+                for (pte, value) in [
+                    (0x1008, 0xf027),
+                    (0xf000, 0x10027),
+                    (0x10000, 0x11027),
+                    (0x11000, DATA_PHYSICAL | 0x23),
+                ] {
+                    assert_eq!(
+                        bus.read_physical(GuestPhysicalAddress::new(pte), AccessWidth::Qword)
+                            .unwrap(),
+                        value
+                    );
+                }
+                assert!(
+                    mov.committed_writes
+                        .iter()
+                        .all(|r| r.start().get() != DATA_PHYSICAL)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn user_fetch_at_page_offset_ffd_reads_three_bytes_and_faults_with_user_pfec() {
+    use od_isa::execute::PagedProbeExit;
+    use od_machine::step_paged_iretq_and_user_load;
+    const USER_RIP: u64 = 0x0040_2ffd;
+    for (code, supervisor, unsupported) in [
+        (&LOAD[..], false, false),
+        (&LOAD[..], true, false),
+        (&[0x48, 0x8b, 0x43][..], false, true),
+        (&[0xf0, 0x0f, 0x22][..], false, true),
+    ] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+        put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+        put_bytes(&mut bus, 0x9ffd, code);
+        put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+        put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+        put_qword(&mut bus, 0x1008, 0xf007);
+        put_qword(&mut bus, 0xf000, 0x10007);
+        put_qword(&mut bus, 0x10000, 0x11007);
+        put_qword(&mut bus, 0x11000, DATA_PHYSICAL | 7);
+        for (offset, value) in [
+            (0, USER_RIP),
+            (8, 0x1b),
+            (16, 0x202),
+            (24, 0x0070_2000),
+            (32, 0x23),
+        ] {
+            put_qword(&mut bus, 0xd027 + offset, value);
+        }
+        if supervisor {
+            put_qword(&mut bus, 0x4010, 0x9000 | 0x27 & !4);
+        }
+        let mut state = initial_state(0x202);
+        state.cs_cache.as_mut().unwrap().flags = 0xa;
+        state.gpr[Register::Rbx as usize] = 0x80_0000_0000;
+        let report =
+            step_paged_iretq_and_user_load(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |_| {})
+                .unwrap();
+        assert_eq!(report.iretq.cpu, od_isa::iretq::IretqResult::Retired);
+        let mov = report.mov.unwrap();
+        if unsupported {
+            assert!(matches!(mov.cpu.exit, PagedProbeExit::Unsupported { .. }));
+            assert!(mov.page_fault.is_none());
+            assert!(mov.access_error.is_none());
+            assert_eq!(state.rip, USER_RIP);
+        } else if supervisor {
+            let fault = mov.page_fault.unwrap();
+            assert_eq!(fault.fault().error_code, Some(0x15));
+            assert_eq!(fault.cr2_value(), USER_RIP);
+            assert_eq!(fault.saved_rip(), USER_RIP);
+            assert_eq!(state.cr2, Some(USER_RIP));
+            assert_eq!(state.rip, USER_RIP);
+            assert_eq!(state.cs_selector, Some(0x1b));
+        } else {
+            assert_eq!(mov.cpu.exit, PagedProbeExit::Retired);
+            assert_eq!(state.gpr[Register::Rax as usize], SENTINEL);
+            assert_eq!(state.rip, USER_RIP + 3);
+            assert_eq!(state.cr3, Some(CR3));
+        }
+    }
+}
+
+#[test]
+fn iretq_ss_descriptor_fault_keeps_cpu_state_uncommitted() {
+    use od_isa::iretq::IretqResult;
+    use od_machine::step_paged_iretq_and_user_load;
+    let mut bus = make_bus(true, true, true, true);
+    put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+    // CS is the last descriptor in the mapped GDT page; SS is the first byte
+    // range on the following, absent page.
+    put_bytes(&mut bus, 0xbff8, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+    let mut state = initial_state(0x202);
+    state.cs_cache.as_mut().unwrap().flags = 0xa;
+    state.gdtr.as_mut().unwrap().base = 0x601fe0;
+    state.gdtr.as_mut().unwrap().limit = 0x1000;
+    state.gpr[Register::Rsp as usize] = 0x702000;
+    for (offset, value) in [
+        (0, HANDLER_RIP),
+        (8, 0x1b),
+        (16, 0x202),
+        (24, 0x702100),
+        (32, 0x23),
+    ] {
+        put_qword(&mut bus, 0xd000 + offset, value);
+    }
+    let mut expected = state.clone();
+    expected.cr2 = Some(0x602000);
+    let report =
+        step_paged_iretq_and_user_load(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |_| {})
+            .unwrap();
+    assert!(
+        matches!(report.iretq.cpu, IretqResult::Fault(_)),
+        "{:?}",
+        report.iretq
+    );
+    assert_eq!(
+        report.iretq.page_fault.as_ref().unwrap().cr2_value(),
+        0x602000
+    );
+    assert_eq!(
+        report.iretq.page_fault.as_ref().unwrap().saved_rip(),
+        FAULT_RIP
+    );
+    assert_eq!(state, expected);
+    assert!(report.mov.is_none());
+}
+
+#[test]
+fn user_return_preserves_cpl3_on_backend_read_abort() {
+    use od_isa::execute::PagedProbeExit;
+    use od_isa::iretq::IretqResult;
+    use od_machine::{TrackedAccessError, step_paged_iretq_and_user_load};
+
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+    put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+    put_bytes(&mut bus, 0x9000, &LOAD);
+    put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+    put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+    put_qword(&mut bus, 0x1008, 0xf007);
+    put_qword(&mut bus, 0xf000, 0x10007);
+    put_qword(&mut bus, 0x10000, 0x11007);
+    put_qword(&mut bus, 0x11000, 0x30007); // present mapping to physical hole
+    for (offset, value) in [
+        (0, HANDLER_RIP),
+        (8, 0x1b),
+        (16, 0x202),
+        (24, 0x0070_2000),
+        (32, 0x23),
+    ] {
+        put_qword(&mut bus, 0xd027 + offset, value);
+    }
+    let mut state = initial_state(0x202);
+    state.cs_cache.as_mut().unwrap().flags = 0xa;
+    state.gpr[Register::Rbx as usize] = 0x80_0000_0000;
+    state.cr2 = Some(0x1234);
+    let mut callbacks = Vec::new();
+    let report =
+        step_paged_iretq_and_user_load(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |range| {
+            callbacks.push(range)
+        })
+        .unwrap();
+    assert_eq!(report.iretq.cpu, IretqResult::Retired);
+    let mov = report.mov.unwrap();
+    assert!(matches!(mov.cpu.exit, PagedProbeExit::Backend(_)));
+    assert!(matches!(
+        mov.access_error,
+        Some(TrackedAccessError::OperandPhysical { .. })
+    ));
+    assert!(mov.page_fault.is_none());
+    assert_eq!(state.cr2, Some(0x1234));
+    assert_eq!(state.cs_selector, Some(0x1b));
+    assert_eq!(state.rip, HANDLER_RIP);
+    assert_eq!(state.cr3, Some(CR3));
+    assert_eq!(
+        mov.ad_updates
+            .iter()
+            .map(|a| (a.address.get(), a.bit))
+            .collect::<Vec<_>>(),
+        [
+            (0x1008, od_machine::AdBit::Accessed),
+            (0xf000, od_machine::AdBit::Accessed),
+            (0x10000, od_machine::AdBit::Accessed),
+            (0x11000, od_machine::AdBit::Accessed),
+        ]
+    );
+    assert_eq!(
+        mov.committed_writes
+            .iter()
+            .map(|r| (r.start().get(), r.len()))
+            .collect::<Vec<_>>(),
+        [(0x1008, 8), (0xf000, 8), (0x10000, 8), (0x11000, 8)]
+    );
+    for (pte, value) in [
+        (0x1008, 0xf027),
+        (0xf000, 0x10027),
+        (0x10000, 0x11027),
+        (0x11000, 0x30027),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(pte), AccessWidth::Qword)
+                .unwrap(),
+            value
+        );
+    }
+    assert!(
+        mov.committed_writes
+            .iter()
+            .all(|r| r.start().get() != 0x30000)
+    );
+    assert_eq!(
+        callbacks,
+        [report.iretq.committed_writes, mov.committed_writes].concat()
+    );
+}

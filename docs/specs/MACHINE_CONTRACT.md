@@ -1371,6 +1371,34 @@ are deferred to S4-20b. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-1
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [verification record](../testing/MACHINE.md#s4-20a-synthetic-paged-iretq-outer-return).
 
+## Machine IRETQ followed by one CPL3 load (S4-20b)
+
+`step_paged_iretq_and_user_load` performs the bounded S4-20a paged return and,
+only after successful retirement and validation of the committed flat user CS,
+executes one exact `48 8B 03` (`MOV RAX,[RBX]`). It derives the explicit CPL3
+access context from committed CS selector RPL and cache, and reads CR3 from the
+CPU state. The wrapper accepts neither an external access context nor a CR3
+argument. IRETQ and load results are reported separately; a guest fault or
+backend abort during the load leaves the already committed CPL3 transition in
+place. A non-retired IRETQ produces no load result.
+
+The load profile admits exactly the three bytes `48 8B 03`, with all bytes in
+one guest page (RIP offset at most `0xffd`). Cross-page instruction fetch is
+unsupported in this slice. Four-level tracked paging checks U/S at every level:
+the tested user mapping loads the qword; supervisor-only instruction fetch and
+data read fault with PFEC `0x15` and `0x05`, respectively, while retaining the
+faulting RIP and setting CR2 to the faulting linear address. Successful and
+faulting walks report their Accessed updates; a read-only load does not set
+Dirty or write the operand. Backend physical-read failures remain distinct
+from guest page faults and do not retire the instruction or commit its load
+destination. Effects already committed by IRETQ and eligible page-walk A-bit
+updates remain visible. After successful fetch and instruction admission, this
+MOV profile clears RF before operand access; a subsequent data-access abort
+leaves RF cleared. A fetch fault occurs before this RF update. See the
+[S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20b-machine-iretq-and-cpl3-load).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

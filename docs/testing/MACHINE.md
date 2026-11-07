@@ -673,3 +673,35 @@ This slice does not execute the next user instruction or prove machine
 `AccessContext` derives CPL from CS; that integration is S4-20b. It does not
 establish Linux boot or implement #GP/#SS classification for rejected return
 state. See the [S4-20a report](../reports/STAGE_4_S4-20A_2026-11-06.md).
+
+<a id="s4-20b-machine-iretq-and-cpl3-load"></a>
+
+## S4-20b: machine IRETQ followed by one CPL3 load
+
+The machine wrapper returns from CPL0 to CPL3 and executes exactly
+`48 8B 03` (`MOV RAX,[RBX]`) using CR3 from CPU state and CPL derived from the
+committed CS selector/cache. It does not accept caller-supplied privilege or
+CR3 values. The bounded instruction fetch must fit in one guest page; offset
+`0xffd` is covered, while cross-page instruction fetch is outside this slice.
+
+System tests cover successful user fetch/data read, supervisor-only fetch and
+data mappings at every page-table level, PFEC `0x15`/`0x05`, exact CR2 and saved
+RIP, Accessed updates, no Dirty or operand write, a physical-hole backend abort,
+and a late SS-descriptor page fault before IRETQ state commit. A second
+instruction fault preserves the already completed CPL3 transition; an IRETQ
+fault does not run the load. ISA profile tests reject nearby encodings without
+operand reads or retirement; instruction fetch may already have occurred
+during bounded decoding. The MOV clears RF before operand access, so that
+defined flags effect remains if the later data access aborts.
+
+Run the focused admission test and the complete machine system target:
+
+```sh
+cargo test -p od-isa --lib cpl3_load_ --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The profile does not support cross-page instruction fetch, user stores,
+exceptions delivered from CPL3, syscalls, or Linux boot. See the
+[S4-20b report](../reports/STAGE_4_S4-20B_2026-11-06.md) and
+[machine contract](../specs/MACHINE_CONTRACT.md#machine-iretq-followed-by-one-cpl3-load-s4-20b).
