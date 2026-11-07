@@ -1353,6 +1353,39 @@ the timer, or executes the handler automatically. Periodic/TSC-deadline modes,
 NMI/debug wake, production scheduling and Linux acceptance are not established.
 See the [S4-28a3 report](../reports/STAGE_4_S4-28A3_2026-11-07.md).
 
+### Periodic APIC timer (S4-28a4)
+
+The same opt-in timer profile accepts LVT Timer bit 17 as the mode selector:
+zero is one-shot and one is periodic. Bit 18 and other unsupported bits remain
+rejected. Writing LVT selects the mode but does not arm the timer; a nonzero
+Initial Count starts or replaces the countdown, and zero cancels it. Mode and
+divider changes are accepted only while no deadline is queued. Vector and mask
+changes may be made before expiry without restarting the active phase. The
+divider encodings and the read-only Current Count register keep their existing
+meaning.
+
+Periodic Current Count wraps through the programmed Initial Count as virtual
+time advances. Dispatch processes no more than one due occurrence per call.
+If caller-driven time passes several periods, occurrences coalesce into at
+most one fixed-edge IRR request; the next deadline is the first periodic
+boundary strictly after the current time, computed from the original arm time.
+This preserves phase without catch-up bursts or dispatch-delay drift. A masked
+expiry still advances/rearms the periodic timer but does not set IRR; unmasking
+does not replay masked occurrences. The timer continues while its vector is in
+ISR; EOI only clears ISR and does not control timer phase. Existing APIC
+acknowledge and EOI behavior applies to each subsequently dispatched edge.
+
+The capacity-one event queue, generation checks, APIC-pair→clock lock order and
+shared-clock dispatch gate remain in force. Overflow while computing a next
+deadline or queue-generation failure leaves timer and IRR state unchanged.
+Writable timer registers still return `Busy` when a due event has not yet been
+dispatched, including a zero-count write; dispatch remains an explicit caller
+operation. Reset invalidates the queued event and clears periodic state while
+preserving the associated clock. This is a bounded caller-driven profile, not
+automatic scheduling or Linux timer-profile evidence. Register semantics are
+based on Intel [SDM release 090, Volume 3A §13.5.4](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf).
+See the [S4-28a4 report](../reports/STAGE_4_S4-28A4_2026-11-07.md).
+
 ## CPU-owned IA32_APIC_BASE enable (S4-25b)
 
 The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and

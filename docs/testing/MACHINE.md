@@ -499,6 +499,22 @@ HLT progression/wakeup and production scheduling are outside this slice.
 
 Run `cargo test -p od-machine --lib diagnostic_vcpu::tests::shared_timer_advances_and_wakes_halt_wait --offline -- --exact`, then `cargo check -p od-machine --all-targets --offline` and `cargo test -p od-machine --lib --offline`. The integration case verifies `DiagnosticHaltWait` advances the shared clock only in Waiting, overflow preserves time, timer expiry posts IRR, APIC entry wakes HLT, a second due event remains pending while the wake is Entered, and `into_running` reopens dispatch. The guest handler executes IRETQ, after which RDTSC reads the time advanced during HLT. APIC/clock lock order is checked by review; all 191 package tests passed. No automatic polling, host-time source, periodic timer or production scheduler is exercised. See the [S4-28a3 report](../reports/STAGE_4_S4-28A3_2026-11-07.md).
 
+<a id="s4-28a4-caller-driven-periodic-apic-timer"></a>
+
+## S4-28a4 caller-driven periodic APIC timer
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline`, then
+`cargo check -p od-machine --all-targets --offline` and
+`cargo test -p od-machine --lib --offline`. Verify the initial expiration
+boundary, periodic count wrap, fractional interval phase and next deadline
+after an overdue dispatch. A large virtual-time advance must yield at most one
+IRR edge per dispatch and rearm to the first future boundary. Masked expiry
+must rearm without IRR; unmasking must not replay it. Verify repeated periods
+while the vector is in ISR and after EOI, zero-count cancel, reprogram, reset,
+overflow/generation atomicity, and that a closed shared-clock HLT dispatch gate
+retains the due event. `dispatch_timer` remains explicit; tests do not establish
+automatic scheduling or Linux timer compatibility. See the [S4-28a4 report](../reports/STAGE_4_S4-28A4_2026-11-07.md).
+
 ## S4-25b: CPU-owned IA32_APIC_BASE enable
 
 Run `cargo test -p od-isa --lib apic_base_tests --offline` and

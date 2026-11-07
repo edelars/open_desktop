@@ -2,7 +2,7 @@
 //!
 //! The version register is unavailable: its Max LVT field cannot represent
 //! zero implemented LVT entries. No CPU interrupt delivery is performed.
-use crate::apic_pair::{LEVEL, MASK, PairState, Timer};
+use crate::apic_pair::{LEVEL, MASK, PERIODIC, PairState, Timer};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
 
@@ -68,9 +68,9 @@ impl LocalApic {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(PairState::default())))
     }
-    /// Create an opt-in one-shot timer with its own caller-driven clock.
-    /// This does not connect a vCPU clock, HLT wakeup, periodic or deadline
-    /// mode, NMI, MOV-SS, a Linux profile, or a general scheduler.
+    /// Create an opt-in one-shot/periodic timer with its own caller-driven
+    /// clock. This does not connect a vCPU clock, NMI, MOV-SS, a Linux profile,
+    /// or a general scheduler.
     pub fn with_timer(clock: crate::VirtualClock, timer_hz: u64) -> Result<Self, DeviceError> {
         let pair = PairState {
             timer: Some(Timer::new(clock, timer_hz)?),
@@ -78,7 +78,7 @@ impl LocalApic {
         };
         Ok(Self(Arc::new(Mutex::new(pair))))
     }
-    /// Create an opt-in one-shot timer observing a vCPU-owned clock.
+    /// Create an opt-in one-shot/periodic timer observing a vCPU-owned clock.
     /// The APIC cannot advance this clock; its vCPU session remains the owner.
     pub fn with_shared_timer(
         clock: crate::VirtualClockHandle,
@@ -167,9 +167,16 @@ impl LocalApicHandle {
             if gated && !dispatch_allowed {
                 return Err(DeviceError::Busy);
             }
-            queue
-                .remove_due(generation, now)
-                .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+            if lvt & PERIODIC != 0 {
+                let deadline = pair.timer.as_ref().unwrap().next_periodic_deadline(now)?;
+                queue
+                    .replace_single(generation, Some(deadline))
+                    .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+            } else {
+                queue
+                    .remove_due(generation, now)
+                    .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+            }
             if lvt & MASK == 0 {
                 pair.edge(lvt as u8)?;
             }
@@ -365,8 +372,10 @@ impl BusDevice for LocalApic {
                 }
                 match offset {
                     0x320 => {
-                        if value & !u64::from(MASK | 0xff) != 0
+                        if value & !u64::from(MASK | PERIODIC | 0xff) != 0
                             || value & 0xff < 16
+                            || ((value as u32 ^ timer.lvt) & PERIODIC != 0
+                                && !timer.queue.is_empty())
                             || (value & u64::from(MASK) == 0 && pair.local.svr & 0x100 == 0)
                             || (value & u64::from(MASK) == 0
                                 && pair.route.low & LEVEL != 0
@@ -895,6 +904,106 @@ mod tests {
         assert!(apic.dispatch_timer().unwrap());
         assert_eq!(apic.pending(), Some(0x40));
         assert!(!apic.dispatch_timer().unwrap());
+    }
+
+    #[test]
+    fn periodic_timer_tracks_fractional_phase_and_coalesces_delay() {
+        let (mut bus, apic) = timer_setup(3_000_000_000);
+        write(&mut bus, 0x320, u64::from(PERIODIC | 0x40)).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 4).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(4));
+        apic.advance_timer_ns(1).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(1));
+        assert!(!apic.dispatch_timer().unwrap());
+        apic.advance_timer_ns(1).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(2));
+        assert_eq!(write(&mut bus, 0x380, 0), Err(error(DeviceError::Busy)));
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.acknowledge(), Some(0x40));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        apic.advance_timer_ns(1).unwrap(); // next boundary is 3ns, not 4ns
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.acknowledge(), Some(0x40));
+        write(&mut bus, 0xb0, 0).unwrap();
+        apic.advance_timer_ns(100).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert!(!apic.dispatch_timer().unwrap());
+        assert_eq!(apic.acknowledge(), Some(0x40));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.pending(), None);
+        apic.advance_timer_ns(1).unwrap();
+        assert!(apic.dispatch_timer().unwrap()); // 104ns is on the original phase
+    }
+
+    #[test]
+    fn periodic_timer_mask_reprogram_cancel_and_reset() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(PERIODIC | MASK | 0x40)).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 3).unwrap();
+        let before = apic.0.lock().unwrap().clone();
+        assert!(write(&mut bus, 0x320, u64::from(MASK | 0x40)).is_err());
+        assert!(
+            write(
+                &mut bus,
+                0x320,
+                u64::from(PERIODIC | MASK | 0x40 | (1 << 18))
+            )
+            .is_err()
+        );
+        assert!(write(&mut bus, 0x3e0, 0).is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        apic.advance_timer_ns(3).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(3));
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0x320, u64::from(PERIODIC | 0x41)).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        write(&mut bus, 0x380, 5).unwrap();
+        apic.advance_timer_ns(3).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+        apic.advance_timer_ns(3).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.reset_checked().unwrap();
+        assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK)));
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+        assert!(!apic.dispatch_timer().unwrap());
+    }
+
+    #[test]
+    fn periodic_timer_rearm_failures_leave_due_event_and_irr_unchanged() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(PERIODIC | 0x40)).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 1).unwrap();
+        apic.advance_timer_ns(u64::MAX).unwrap();
+        let before = apic.0.lock().unwrap().clone();
+        assert!(apic.dispatch_timer().is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        assert_eq!(apic.pending(), None);
+
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(PERIODIC | 0x40)).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 1).unwrap();
+        apic.advance_timer_ns(1).unwrap();
+        apic.0
+            .lock()
+            .unwrap()
+            .timer
+            .as_mut()
+            .unwrap()
+            .queue
+            .exhaust_generation_for_test();
+        let before = apic.0.lock().unwrap().clone();
+        assert!(apic.dispatch_timer().is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        assert_eq!(apic.pending(), None);
     }
 
     #[test]

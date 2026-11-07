@@ -1,0 +1,23 @@
+{
+  "slice": "S4-28a4",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Caller-driven periodic Local APIC timer mode with phase-preserving overdue coalescing",
+  "architecture_review": "A separate subagent checked the capacity-one caller-driven design and phase-preserving overdue handling against project architecture and Intel SDM. It reported that the requested gpt-6-astra/high model switch was unavailable; this is not attributed as an Astra/high review.",
+  "code_review": "Independent gpt-6.1-sol/high review passed after fixes to architecture-review attribution, coverage wording and constructor rustdoc; no remaining P0-P3 findings.",
+  "checks": {
+    "od_machine_tests": "cargo test -p od-machine --lib --offline: 194 passed, 0 failed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "review_findings": "Sol/high review findings were corrected; repeat review passed with no remaining P0-P3 findings.",
+    "graphify_update": "Updated after final code changes: 28047 nodes, 71091 edges, 1037 communities"
+  },
+  "limitations": [
+    "Virtual-time advancement and timer dispatch are caller-driven",
+    "No TSC-deadline mode, automatic event pump, host scheduling or Linux timer-profile acceptance",
+    "No separate periodic-mode HLT dispatch-gate test; existing shared one-shot HLT gate test remains covered",
+    "No test dispatches a new periodic expiry while the vector is still in ISR",
+    "Parent S4-28, S4-27 and Stage 4 remain open"
+  ]
+}

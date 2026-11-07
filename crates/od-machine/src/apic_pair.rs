@@ -2,6 +2,7 @@
 use crate::{DeviceError, EventQueue, VirtualClock, VirtualClockHandle, local_apic::State};
 
 pub(crate) const MASK: u32 = 1 << 16;
+pub(crate) const PERIODIC: u32 = 1 << 17;
 pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
 
@@ -79,10 +80,30 @@ impl Timer {
         }
         let elapsed = u128::from(self.clock.snapshot().now_ns() - self.start);
         let ticks = elapsed * u128::from(self.hz) / (1_000_000_000u128 * self.divisor());
-        u128::from(self.initial).saturating_sub(ticks) as u32
+        if self.lvt & PERIODIC != 0 {
+            (u128::from(self.initial) - ticks % u128::from(self.initial)) as u32
+        } else {
+            u128::from(self.initial).saturating_sub(ticks) as u32
+        }
     }
     pub fn due_at(&self, now_ns: u64) -> bool {
         self.queue.next_deadline().is_some_and(|d| d <= now_ns)
+    }
+    pub fn next_periodic_deadline(&self, now_ns: u64) -> Result<u64, DeviceError> {
+        let period = u128::from(self.initial)
+            .checked_mul(self.divisor())
+            .and_then(|v| v.checked_mul(1_000_000_000))
+            .filter(|v| *v != 0)
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
+        let elapsed = u128::from(now_ns - self.start)
+            .checked_mul(u128::from(self.hz))
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
+        let remaining = period - elapsed % period;
+        let duration = remaining.div_ceil(u128::from(self.hz));
+        let deadline = u128::from(now_ns)
+            .checked_add(duration)
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
+        u64::try_from(deadline).map_err(|_| DeviceError::UnsupportedConfiguration)
     }
     pub fn arm_at(&mut self, now_ns: u64, count: u32) -> Result<(), DeviceError> {
         let deadline = if count == 0 {
