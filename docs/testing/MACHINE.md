@@ -489,6 +489,22 @@ establish APIC bus messaging, CPU interrupt acceptance or handler execution,
 IF/IDT semantics, HLT wakeup, external destinations, IOAPIC, default board
 wiring or Linux boot.
 
+## S4-25d: bounded CR8 ↔ xAPIC TPR
+
+Run `cargo test -p od-isa --lib cr8::tests --offline` and
+`cargo test -p od-machine --lib cr8 --offline -- --test-threads=1`. The focused
+coverage checks exact MOV encodings, CPL and reserved-bit faults, LOCK/fetch/
+STOP/budget boundaries, canonical48 fetch boundaries, APIC admission, TPR
+readback and low-nibble clearing, and self-IPI vector `0x51` blocked at TPR
+class 5 then made eligible at class 4 before acknowledge/EOI. It also confirms
+pending/ISR persistence and failure non-retirement. Run
+`cargo check -p od-isa -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check`; record the actual result
+in the slice report. Independent Sol/high review must close findings before
+acceptance. The profile does not test general CR8 decoding, CPU handler
+delivery, `PagedVcpuSession`, JIT, default board wiring or guest boot. See the
+[slice report](../reports/STAGE_4_S4-25D_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

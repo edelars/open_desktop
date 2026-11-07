@@ -1309,6 +1309,31 @@ based on Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getCo
 §§13.6.1–13.6.2.3, Table 13-3 and §§13.8.3–13.8.5. See the [S4-25c report](../reports/STAGE_4_S4-25C_2026-11-07.md)
 and [verification method](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
 
+## Bounded CR8 ↔ xAPIC TPR (S4-25d)
+
+The opt-in `Cr8Long64V1` ISA profile admits only `44 0F 20 C0`
+(`MOV RAX, CR8`) and `44 0F 22 C0` (`MOV CR8, RAX`) in Long64 at CPL0.
+The standalone machine adapter additionally requires a running CPU, clear
+interrupt shadow, and enabled global and software Local APIC. Reads return
+zero-extended `TPR[7:4]`; writes accept only values whose bits `63:4` are zero,
+then set `TPR[7:4]` from `CR8[3:0]` and clear `TPR[3:0]`. TPR remains the sole
+state source in `LocalApic`.
+
+Privilege and reserved-bit violations produce `#GP(0)`; the exact prefixed
+LOCK forms produce `#UD`. The profile checks each instruction-fetch address
+for canonical48 before accessing guest memory. Unsupported encodings and
+machine states stay closed. A successful write returns a typed effect, which
+the machine helper applies before returning. Callers must serialize all APIC
+operations across the full helper call, including fetch and effect application.
+The instruction/helper makes no architectural serialization guarantee.
+
+This profile does not implement general MOV CR8, interrupt/handler delivery,
+IDT/IF, HLT wakeup, JIT/session integration, or default board wiring. Behavior
+follows Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+§§13.8.6–13.8.6.1, and [Volume 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+MOV to/from control registers. See the [S4-25d report](../reports/STAGE_4_S4-25D_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

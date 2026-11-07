@@ -579,3 +579,17 @@ not claim CPU handler acceptance, APIC bus transmission,
 external destinations, IOAPIC or HLT wakeup. See [report](STAGE_4_S4-25C_2026-11-07.md)
 and [evidence](data/stage4/s4-25c-xapic-self-ipi.json). Parent S4-25 and Stage 4
 remain open.
+
+## S4-25d — bounded CR8 ↔ xAPIC TPR
+
+An opt-in Long64/CPL0 exact-encoding profile connects `MOV RAX, CR8` and
+`MOV CR8, RAX` to the standalone Local APIC TPR. It maps CR8's low nibble to
+TPR priority class, applies writes before the machine helper returns, and
+demonstrates a pending self-IPI becoming eligible when TPR drops below its
+priority. Instruction fetch enforces canonical48. Record final focused tests,
+checks, Graphify counts, and Sol/high review outcome in the
+[slice report](STAGE_4_S4-25D_2026-11-07.md) and
+[evidence](data/stage4/s4-25d-cr8-tpr.json). The caller must serialize APIC
+operations across the complete helper call. General CR8 decoding, CPU handler
+delivery, session/JIT integration and default board wiring are not included;
+parent S4-25 and Stage 4 remain open.

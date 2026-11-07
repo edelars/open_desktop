@@ -156,6 +156,44 @@ pub fn step_apic_base_msr(
     Ok(outcome)
 }
 
+/// Execute the opt-in Long64 CR8 profile against this APIC's TPR. The guest
+/// fetch runs outside the device lock; a retired write effect is applied
+/// synchronously before this function returns. The caller must serialize all
+/// operations on this APIC, including operations initiated during guest fetch,
+/// with the entire call; the handle's mutex does not provide that ordering.
+pub fn step_local_apic_cr8(
+    state: &mut od_isa::LongModeState,
+    apic: &LocalApicHandle,
+    memory: &mut impl od_isa::GuestMemory,
+    context: od_isa::AccessContext,
+    budget: u64,
+    stop: bool,
+) -> od_isa::cr8::Cr8Exit {
+    if stop {
+        return od_isa::cr8::Cr8Exit::Stop;
+    }
+    if budget == 0 {
+        return od_isa::cr8::Cr8Exit::Budget;
+    }
+    let tpr = apic.with_state(|s| (s.global_enabled && s.svr & 0x100 != 0).then_some(s.tpr));
+    let Some(tpr) = tpr else {
+        return od_isa::cr8::Cr8Exit::Unsupported;
+    };
+    let outcome = od_isa::cr8::step_cr8(
+        od_isa::cr8::Cr8Long64V1,
+        state,
+        memory,
+        context,
+        tpr,
+        budget,
+        stop,
+    );
+    if let od_isa::cr8::Cr8Exit::Write(effect) = &outcome {
+        apic.with_state(|s| s.tpr = effect.new_tpr);
+    }
+    outcome
+}
+
 fn validate(a: DeviceAccess) -> Result<u64, DeviceError> {
     if a.space != IoSpace::Mmio {
         return Err(DeviceError::UnsupportedSpace);
@@ -259,7 +297,7 @@ mod tests {
         MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
     };
 
-    struct MsrCode;
+    struct MsrCode(Vec<u8>);
     impl od_isa::GuestMemory for MsrCode {
         fn atomic_exchange_integer(
             &mut self,
@@ -297,7 +335,7 @@ mod tests {
             address: u64,
             _: od_isa::AccessContext,
         ) -> Result<u8, od_isa::MemoryError> {
-            [0x0f, 0x30]
+            self.0
                 .get(address as usize)
                 .copied()
                 .ok_or_else(|| od_isa::MemoryError::Backend("fetch".into()))
@@ -342,7 +380,14 @@ mod tests {
             cpu.state.rip = 0;
             cpu.state.gpr[od_isa::Register::Rax as usize] = target;
             assert!(matches!(
-                step_apic_base_msr(&mut cpu, &apic, &mut MsrCode, context, 1, false),
+                step_apic_base_msr(
+                    &mut cpu,
+                    &apic,
+                    &mut MsrCode(vec![0x0f, 0x30]),
+                    context,
+                    1,
+                    false
+                ),
                 Ok(ApicBaseExit::Write(_))
             ));
             if target == ApicBaseCpu::DISABLED {
@@ -358,6 +403,182 @@ mod tests {
                 assert_eq!(read(&mut bus, 0x120), Ok(0));
             }
         }
+    }
+
+    #[test]
+    fn cr8_tpr_controls_self_ipi_eligibility_and_preserves_pending_service() {
+        use od_isa::{CpuActivity, StiShadow, cr8::Cr8Exit};
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x80, 0x4f).unwrap();
+        write(&mut bus, 0x300, 0x4_4000 | 0x51).unwrap();
+        write(&mut bus, 0x300, 0x4_4000 | 0x41).unwrap();
+
+        let mut state = od_isa::LongModeState::default();
+        state.activity = Some(CpuActivity::Running);
+        state.sti_shadow = Some(StiShadow::Clear);
+        state.gpr[od_isa::Register::Rax as usize] = 5;
+        let context = od_isa::AccessContext {
+            privilege: od_isa::PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        assert_eq!(
+            step_local_apic_cr8(
+                &mut state,
+                &apic,
+                &mut MsrCode(vec![0x44, 0x0f, 0x22, 0xc0]),
+                context,
+                1,
+                false,
+            ),
+            Cr8Exit::Write(od_isa::cr8::Cr8TprEffect {
+                old_tpr: 0x4f,
+                new_tpr: 0x50,
+            })
+        );
+        assert_eq!(read(&mut bus, 0x80), Ok(0x50));
+        assert_eq!(read(&mut bus, 0xa0), Ok(0x50));
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(apic.eligible(), None);
+
+        state.rip = 0;
+        assert_eq!(
+            step_local_apic_cr8(
+                &mut state,
+                &apic,
+                &mut MsrCode(vec![0x44, 0x0f, 0x20, 0xc0]),
+                context,
+                1,
+                false,
+            ),
+            Cr8Exit::Read
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 5);
+
+        state.rip = 0;
+        state.gpr[od_isa::Register::Rax as usize] = 4;
+        assert!(matches!(
+            step_local_apic_cr8(
+                &mut state,
+                &apic,
+                &mut MsrCode(vec![0x44, 0x0f, 0x22, 0xc0]),
+                context,
+                1,
+                false,
+            ),
+            Cr8Exit::Write(_)
+        ));
+        assert_eq!(read(&mut bus, 0x80), Ok(0x40));
+        assert_eq!(apic.eligible(), Some(0x51));
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        assert_eq!(read(&mut bus, 0x120), Ok(1 << 17));
+        assert_eq!(read(&mut bus, 0xa0), Ok(0x50));
+        assert_eq!(apic.pending(), Some(0x41));
+
+        state.rip = 0;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        assert!(matches!(
+            step_local_apic_cr8(
+                &mut state,
+                &apic,
+                &mut MsrCode(vec![0x44, 0x0f, 0x22, 0xc0]),
+                context,
+                1,
+                false,
+            ),
+            Cr8Exit::Write(_)
+        ));
+        assert_eq!(read(&mut bus, 0x80), Ok(0));
+        assert_eq!(read(&mut bus, 0x120), Ok(1 << 17));
+        assert_eq!(apic.eligible(), None); // ISR class 5 still controls PPR.
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x120), Ok(0));
+        assert_eq!(apic.eligible(), Some(0x41));
+    }
+
+    #[test]
+    fn cr8_admission_stop_budget_and_disabled_apic_do_not_fetch() {
+        use od_isa::{CpuActivity, StiShadow, cr8::Cr8Exit};
+        let (_bus, apic) = setup();
+        let mut state = od_isa::LongModeState::default();
+        state.activity = Some(CpuActivity::Running);
+        state.sti_shadow = Some(StiShadow::Clear);
+        let context = od_isa::AccessContext {
+            privilege: od_isa::PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        let mut code = MsrCode(vec![]);
+        assert_eq!(
+            step_local_apic_cr8(&mut state, &apic, &mut code, context, 0, false),
+            Cr8Exit::Budget
+        );
+        assert_eq!(
+            step_local_apic_cr8(&mut state, &apic, &mut code, context, 1, true),
+            Cr8Exit::Stop
+        );
+        apic.with_state(|s| s.svr = 0xff);
+        assert_eq!(
+            step_local_apic_cr8(&mut state, &apic, &mut code, context, 1, false),
+            Cr8Exit::Unsupported
+        );
+        apic.set_global_enabled(false);
+        assert_eq!(
+            step_local_apic_cr8(&mut state, &apic, &mut code, context, 1, false),
+            Cr8Exit::Unsupported
+        );
+        assert_eq!(state.rip, 0);
+    }
+
+    #[test]
+    fn cr8_rejected_operations_preserve_cpu_and_apic_state() {
+        use od_isa::{CpuActivity, PrivilegeLevel, StiShadow, cr8::Cr8Exit};
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x80, 0x3f).unwrap();
+        write(&mut bus, 0x300, 0x4_4000 | 0x51).unwrap();
+        let mut cpu = od_isa::LongModeState::default();
+        cpu.activity = Some(CpuActivity::Running);
+        cpu.sti_shadow = Some(StiShadow::Clear);
+        cpu.gpr[od_isa::Register::Rax as usize] = 0x10;
+        let context = od_isa::AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        let before_cpu = cpu.clone();
+        let before_apic = apic.with_state(|s| s.clone());
+        for (bytes, privilege, expected_vector) in [
+            (vec![0x44, 0x0f, 0x22, 0xc0], PrivilegeLevel::Ring0, 13),
+            (vec![0x44, 0x0f, 0x20, 0xc0], PrivilegeLevel::Ring3, 13),
+            (vec![0xf0, 0x44, 0x0f, 0x22, 0xc0], PrivilegeLevel::Ring0, 6),
+        ] {
+            let actual = step_local_apic_cr8(
+                &mut cpu,
+                &apic,
+                &mut MsrCode(bytes),
+                od_isa::AccessContext {
+                    privilege,
+                    ..context
+                },
+                1,
+                false,
+            );
+            assert!(matches!(actual, Cr8Exit::Fault(f) if f.vector == expected_vector));
+            assert_eq!(cpu, before_cpu);
+            assert_eq!(apic.with_state(|s| s.clone()), before_apic);
+        }
+        assert!(matches!(
+            step_local_apic_cr8(
+                &mut cpu,
+                &apic,
+                &mut MsrCode(vec![0x44, 0x0f]),
+                context,
+                1,
+                false
+            ),
+            Cr8Exit::Memory(_)
+        ));
+        assert_eq!(cpu, before_cpu);
+        assert_eq!(apic.with_state(|s| s.clone()), before_apic);
     }
 
     fn setup() -> (MachineBus, LocalApicHandle) {

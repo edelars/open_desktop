@@ -55,6 +55,11 @@ can move it through device state. This remains a standalone device path: no
 CPU handler execution, default board registration, IOAPIC route or Linux APIC
 discovery is established.
 
+S4-25d adds an opt-in exact-encoding Long64/CPL0 CR8 profile connected to the
+standalone Local APIC TPR. It demonstrates self-IPI priority gating inside the
+device model, without enabling CPU interrupt acceptance or adding the profile
+to the default board, paged session, or JIT.
+
 ## Владение состоянием и адресами
 
 - `od-machine` назначает каждую область guest physical RAM, ROM/firmware и MMIO ровно одному владельцу; перекрывающиеся назначения отвергаются.

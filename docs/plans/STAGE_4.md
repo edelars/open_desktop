@@ -1352,6 +1352,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** no-shorthand/external destinations, lowest-priority, NMI/SMI/INIT/SIPI, level delivery, ESR, CPU handler/IDT/IF, HLT wakeup, IOAPIC и Linux path не реализованы. Unsupported/reserved writes возвращают локальный `DeviceError` без изменения состояния; это не гостевой `#GP`.
 - **Проверки:** 6 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли; независимое Sol/high ревью без замечаний. См. [отчёт](../reports/STAGE_4_S4-25C_2026-11-07.md), [manifest](../reports/data/stage4/s4-25c-xapic-self-ipi.json) и [методику](../testing/MACHINE.md#s4-25c-xapic-fixed-self-ipi).
 
+#### S4-25d. Ограниченный CR8 ↔ xAPIC TPR
+
+- [x] Ограниченный срез принят после независимого Sol/high ревью.
+- **Контракт:** отдельный Long64 профиль исполняет только `44 0F 20 C0` и `44 0F 22 C0`, при работающем CPU, clear shadow и включённом global/software APIC. Чтение возвращает `TPR[7:4]`; запись класса `0..15` устанавливает `TPR = class << 4`. CPL вне 0 и зарезервированные биты записи вызывают `#GP(0)`, точные LOCK-формы — `#UD`. Остальные состояния и формы закрыты. Типизированный эффект применяется адаптером до возврата; вызывающая сторона обязана сериализовать все операции APIC на всё время вызова, включая fetch. Архитектурная сериализация инструкцией не заявлена. Основа: Intel SDM 093, Vol. 3A §§13.8.6–13.8.6.1 и Vol. 2B MOV to/from control registers.
+- **Проверки:** 5 focused `od-isa` tests, 3 focused `od-machine` tests, package all-targets check, fmt/diff и Graphify прошли. Sol/high подтвердил закрытие P2 canonical48 и P3 ISR-bank замечаний. См. [отчёт](../reports/STAGE_4_S4-25D_2026-11-07.md), [manifest](../reports/data/stage4/s4-25d-cr8-tpr.json) и [методику](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
+- **Граница:** общее исполнение MOV CR8, CPU interrupt delivery, IDT/IF, HLT wakeup, JIT и Linux acceptance остаются вне среза. S4-25 и этап 4 открыты.
+
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
 - [ ] Принято после ревью.

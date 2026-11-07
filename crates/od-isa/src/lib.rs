@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub mod binary_float;
 pub mod cli;
 pub mod cpuid;
+pub mod cr8;
 pub mod execute;
 mod finite_arithmetic;
 pub mod hlt;
