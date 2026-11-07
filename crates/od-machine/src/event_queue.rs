@@ -29,6 +29,14 @@ pub enum EventQueueError {
     GenerationExhausted,
 }
 
+/// Errors specific to the private single-slot operation.
+#[allow(dead_code)] // The timer owner will use this operation in a later slice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SingleSlotError {
+    Queue(EventQueueError),
+    WrongCapacity,
+}
+
 /// A bounded collection of absolute deadlines in the virtual clock's ns domain.
 ///
 /// Events are ordered by deadline and then by insertion order. Rescheduling an
@@ -211,6 +219,39 @@ impl EventQueue {
         Ok(self.generation)
     }
 
+    /// Replace a dedicated one-entry slot and invalidate all prior events.
+    /// The slot uses key zero; its generation identifies each incarnation.
+    #[allow(dead_code)] // Awaiting the single-slot timer owner.
+    pub(crate) fn replace_single(
+        &mut self,
+        generation: EventGeneration,
+        deadline_ns: Option<u64>,
+    ) -> Result<EventGeneration, SingleSlotError> {
+        self.validate_generation(generation)
+            .map_err(SingleSlotError::Queue)?;
+        if self.capacity != 1 {
+            return Err(SingleSlotError::WrongCapacity);
+        }
+        let next = self
+            .generation
+            .0
+            .checked_add(1)
+            .ok_or(SingleSlotError::Queue(EventQueueError::GenerationExhausted))?;
+
+        self.entries.clear();
+        self.next_sequence = 0;
+        self.generation = EventGeneration(next);
+        if let Some(deadline_ns) = deadline_ns {
+            self.entries.push(Entry {
+                key: 0,
+                deadline_ns,
+                sequence: 0,
+            });
+            self.next_sequence = 1;
+        }
+        Ok(self.generation)
+    }
+
     fn earliest_index(&self) -> Option<usize> {
         self.entries
             .iter()
@@ -238,6 +279,92 @@ impl EventQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_slot_replaces_full_and_invalidates_extracted_events() {
+        let mut queue = EventQueue::new(1);
+        let initial = queue.generation();
+        queue.schedule(initial, 42, 10).unwrap();
+        let next = queue.replace_single(initial, Some(20)).unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.next_deadline(), Some(20));
+        assert_eq!(
+            queue.validate_generation(initial),
+            Err(EventQueueError::StaleGeneration)
+        );
+        let event = queue.pop_due(next, 20).unwrap().unwrap();
+        assert_eq!(
+            (event.key, event.deadline_ns, event.generation),
+            (0, 20, next)
+        );
+        let rearmed = queue.replace_single(next, Some(30)).unwrap();
+        assert_eq!(
+            queue.validate_generation(event.generation),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(queue.pop_due(rearmed, 30).unwrap().unwrap().deadline_ns, 30);
+    }
+
+    #[test]
+    fn single_slot_cancel_invalidates_pending_and_extracted_events() {
+        let mut queue = EventQueue::new(1);
+        let start = queue.generation();
+        let armed = queue.replace_single(start, Some(10)).unwrap();
+        let canceled = queue.replace_single(armed, None).unwrap();
+        assert!(queue.is_empty());
+        assert_eq!(
+            queue.validate_generation(armed),
+            Err(EventQueueError::StaleGeneration)
+        );
+        let armed_again = queue.replace_single(canceled, Some(11)).unwrap();
+        let extracted = queue.pop_due(armed_again, 11).unwrap().unwrap();
+        let canceled_again = queue.replace_single(armed_again, None).unwrap();
+        assert_eq!(
+            queue.validate_generation(extracted.generation),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(queue.pop_due(canceled_again, u64::MAX), Ok(None));
+    }
+
+    #[test]
+    fn single_slot_errors_leave_queue_and_sequence_unchanged() {
+        for capacity in [0, 2] {
+            let mut queue = EventQueue::new(capacity);
+            let generation = queue.generation();
+            if capacity == 2 {
+                queue.schedule(generation, 9, 12).unwrap();
+            }
+            let before = (queue.entries.clone(), queue.next_sequence, queue.generation);
+            assert_eq!(
+                queue.replace_single(EventGeneration(99), Some(1)),
+                Err(SingleSlotError::Queue(EventQueueError::StaleGeneration))
+            );
+            assert_eq!(
+                queue.replace_single(generation, Some(1)),
+                Err(SingleSlotError::WrongCapacity)
+            );
+            assert_eq!(
+                (queue.entries.clone(), queue.next_sequence, queue.generation),
+                before
+            );
+        }
+        let mut queue = EventQueue::new(1);
+        queue.generation = EventGeneration(u64::MAX);
+        let generation = queue.generation();
+        queue.schedule(generation, 7, 15).unwrap();
+        let before = (queue.entries.clone(), queue.next_sequence, queue.generation);
+        for deadline in [None, Some(1)] {
+            assert_eq!(
+                queue.replace_single(generation, deadline),
+                Err(SingleSlotError::Queue(EventQueueError::GenerationExhausted))
+            );
+            assert_eq!(
+                (queue.entries.clone(), queue.next_sequence, queue.generation),
+                before
+            );
+        }
+        assert_eq!(queue.pop_due(generation, 15).unwrap().unwrap().key, 7);
+    }
 
     fn schedule(queue: &mut EventQueue, key: u64, deadline_ns: u64) -> Result<(), EventQueueError> {
         let generation = queue.generation();

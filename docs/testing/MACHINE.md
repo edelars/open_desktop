@@ -148,6 +148,9 @@ git diff --check
     semantics; duplicate/full/not-found and pause/STOP/HLT/terminal failures
     leave queue contents, CPU and clock unchanged. Next-deadline queries
     are read-only in all states. No event wakes HLT.
+44. S4-23e checks private capacity-one replacement, cancellation and
+    generation invalidation of previously extracted events. Wrong capacity,
+    stale generation and generation exhaustion leave the queue unchanged.
 
 ## S4-23d generation-aware paged RX control
 
@@ -163,6 +166,17 @@ stopped, terminal and halted owners reject current-generation mutations, and no
 event wakes HLT. `cargo check -p od-machine --all-targets --offline`, workspace fmt
 and diff check passed. Independent Sol/high review found no code findings. See
 [S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
+
+## S4-23e single-slot deadline replacement
+
+`cargo test -p od-machine --lib event_queue::tests --offline` passed 16 tests.
+They cover replacing a full single slot, replacing after extraction, cancelling
+pending/extracted events, stale generation, wrong capacity and generation
+exhaustion atomicity. `cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Independent
+Sol/high review found no code findings. This private queue operation does not
+yet schedule or dispatch a Local APIC timer. See the
+[S4-23e report](../reports/STAGE_4_S4-23E_2026-11-07.md).
 
 ## Интерпретация
 

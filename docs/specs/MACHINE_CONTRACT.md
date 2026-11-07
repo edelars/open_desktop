@@ -1227,6 +1227,19 @@ Dispatch remains bounded and caller-driven. HLT wakeup, IRQ/APIC, periodic
 timers, host wait and complete S4-21/S4-22/S4-23 acceptance are not claimed.
 See [S4-23d report](../reports/STAGE_4_S4-23D_2026-11-07.md).
 
+## Private one-slot deadline replacement (S4-23e)
+
+`EventQueue::replace_single` is crate-private and accepts only a queue with
+capacity one. It validates the caller's `EventGeneration`, checks that the
+generation can advance, then replaces the pending deadline or cancels it and
+returns the new generation. Each successful operation invalidates a previously
+extracted event, including one from the same logical slot before rearm. A stale
+generation, wrong capacity or generation exhaustion leaves the queue unchanged.
+The operation uses the slot's fixed internal key and does not change the public
+queue API. It is a prerequisite for the Local APIC timer owner; it does not
+implement timer registers, clock ownership or event dispatch. See the
+[S4-23e report](../reports/STAGE_4_S4-23E_2026-11-07.md).
+
 ## Fixed-edge Local APIC register core (S4-25a)
 
 `LocalApic` is a one-CPU, fixed-profile xAPIC `BusDevice` at MMIO base

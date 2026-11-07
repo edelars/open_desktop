@@ -1,0 +1,19 @@
+{
+  "slice": "S4-23e",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Crate-private atomic replacement/cancel for a capacity-one EventQueue slot, advancing generation to invalidate stale extracted events",
+  "review": "Independent gpt-6.1-sol/high review passed with no findings.",
+  "checks": {
+    "focused_tests": "cargo test -p od-machine --lib event_queue::tests --offline: 16 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Updated after code and documentation changes"
+  },
+  "limitations": [
+    "No Local APIC timer registers, clock ownership, timer dispatch or IRQ delivery",
+    "No HLT wakeup or Linux timer profile",
+    "Parent S4-23, S4-27, S4-28 and Stage 4 remain open"
+  ]
+}

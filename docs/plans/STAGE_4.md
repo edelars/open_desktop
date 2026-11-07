@@ -1283,6 +1283,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Контракт:** session публикует текущее непрозрачное RX generation, ближайший абсолютный deadline, а schedule/cancel/reschedule требуют expected generation. Устаревшее поколение отклоняется прежде lifecycle admission и queue errors. Мутации разрешены только при Active и не-Halted; deadline inspection read-only доступна во всех состояниях.
 - **Проверка и границы:** 11 `paged_vcpu_session` unit tests прошли; `od-machine` all-targets check, fmt и diff check прошли. Смотрите [отчёт](../reports/STAGE_4_S4-23D_2026-11-07.md), [manifest](../reports/data/stage4/s4-23d-paged-rx-control.json), [методику](../testing/MACHINE.md#s4-23d-generation-aware-paged-rx-control). Срез не будит HLT, не реализует IRQ или host wait.
 
+#### S4-23e. Атомарная замена однослотового deadline
+
+- [x] Ограниченный prerequisite-срез принят после независимого `gpt-6.1-sol/high` ревью без замечаний; S4-23 и S4-28 остаются открытыми.
+- **Контракт:** crate-private `EventQueue::replace_single` работает только с очередью capacity 1. Под expected generation она атомарно заменяет единственный deadline либо отменяет его и выдаёт следующее поколение; generation отличает уже извлечённое событие от нового arm того же слота.
+- **Отказы:** stale generation проверяется до capacity; неподходящая ёмкость и исчерпание generation оставляют очередь, sequence и deadline без изменений. Публичный API очереди не изменён.
+- **Проверки и границы:** 16 focused `event_queue` unit tests, `cargo check -p od-machine --all-targets --offline`, fmt и diff check прошли. Подробности в [отчёте](../reports/STAGE_4_S4-23E_2026-11-07.md) и [manifest](../reports/data/stage4/s4-23e-single-slot-replacement.json). Это основа для APIC timer, не его реализация; нет APIC registers, clock ownership, IRQ dispatch, HLT wakeup или Linux acceptance.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.
