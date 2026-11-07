@@ -497,3 +497,12 @@ alias case. See the [S4-33a slice report](STAGE_4_S4-33A_2026-11-05.md) and
 [evidence](data/stage4/s4-33a-ram-alias.json). This is uncached interpreter
 evidence only; independent `gpt-6.1-sol/high` review approved the bounded case
 with no P0–P2 findings. S4-33 and Stage 4 remain open.
+
+## S4-21c — bounded paged owner (accepted)
+
+The fixed-image paged owner implements caller-driven STOP, pause/resume and
+replacement reset with checked RX generation invalidation. The 120 od-machine
+unit tests, 21 paged-quantum tests and 7 UART RX tests passed. Independent
+Sol/high review found no P0–P3 issues. Evidence and limits are in the
+[S4-21c report](STAGE_4_S4-21C_2026-11-07.md). S4-21 and Stage 4 remain open;
+runner completion/cancellation is not implemented.

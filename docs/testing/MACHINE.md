@@ -827,3 +827,17 @@ remaining findings. See the
 [S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
 [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-cr0-after-iretq-s4-20e),
 and [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты).
+
+## S4-21c bounded paged vCPU owner
+
+`cargo test -p od-machine --lib --offline` passed 120 unit tests, including the
+four `paged_vcpu_session` tests. `cargo test -p od-machine --test
+paged_probe_quantum --test uart_rx_events --offline` passed 21 paged-quantum
+and 7 UART RX tests. They cover STOP before fetch and between instructions,
+pause/resume, HLT, fixed-image reset from paused/stopped/halted/faulted, stale
+generation, pending due/future RX, replacement UART and invalid-image
+atomicity. The store/OUT case patches code through private test access after
+loading; the public fixed image remains load/OUT/HLT. Generation exhaustion is
+covered by the existing EventQueue unit test, not injected through this owner.
+Independent Sol/high review found no P0–P3 issues. No runner, IRQ or hardware
+reset acceptance is claimed. See [report](../reports/STAGE_4_S4-21C_2026-11-07.md).

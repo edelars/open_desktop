@@ -1053,6 +1053,29 @@ delivery remain outside this bounded slice. See the
 [JSON evidence](../reports/data/stage4/s4-21b-paged-probe.json) and
 [verification method](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum).
 
+## Bounded fixed-image paged vCPU owner (S4-21c)
+
+`PagedVcpuSession` constructs its CPU, bus, RAM and UART together using the
+validated `Stage4FlatProbeV1` image loader. Its host state is independent of
+guest activity. `pause` and `resume` preserve CPU, RAM, flags and device state;
+HLT stays halted. Idempotent STOP is accepted after HLT or a terminal exit and
+blocks further quantum and RX dispatch until reset. The owner runs no polling
+loop. Quantum reports update the stored RFLAGS defined-mask. Guest faults and
+other terminal quantum exits require reset; HLT is not guest completion.
+
+`reset(image)` builds and checks a replacement, including no-fetch paging and
+fixed CPU-profile admission, before touching the current session. It then
+resets the existing RX pump with checked generation increment, clears payloads
+and retargets it to the new UART; after that only infallible replacement steps
+remain. Invalid image or queue reset failure leaves the session unchanged.
+The owner exposes scheduling and bounded dispatch without exposing generation
+tokens. Absolute deadlines use caller-owned time, which reset does not change.
+A fresh UART belongs to the replacement bus; stale RX and TX device state is
+not inherited. The operation is a fixed-image re-entry, not x86 reset-vector
+semantics. Runner completion/cancellation, IRQ wakeup and general scheduling
+are outside this slice. Independent Sol/high review passed with no P0–P3
+findings.
+
 ## Caller-driven virtual clock and RDTSC boundary
 
 S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной

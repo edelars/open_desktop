@@ -113,9 +113,23 @@ impl LoadedStage4FlatProbe {
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
+        self.run_with_defined(
+            instruction_budget,
+            self.rflags_defined,
+            stop,
+            committed_write,
+        )
+    }
+
+    pub(crate) fn run_with_defined(
+        &mut self,
+        instruction_budget: u64,
+        rflags_defined: u64,
+        stop: impl FnMut() -> bool,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> PagedProbeQuantumReport {
         let cr3 = self.cr3();
         let efer = self.efer();
-        let rflags_defined = self.rflags_defined;
         run_paged_probe(
             &mut self.state,
             &mut self.bus,

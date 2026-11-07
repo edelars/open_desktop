@@ -1206,6 +1206,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Evidence:** [отчёт S4-21b](../reports/STAGE_4_S4-21B_2026-11-05.md), [JSON](../reports/data/stage4/s4-21b-paged-probe.json), [методика](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum). `od-isa`: 2,014 unit + 25 integration; `od-machine`: 116; workspace check, fmt, layout и diff успешны. `graphify update .` обновил code graph; docs-aware semantic extraction не завершена.
 - **Не заявлено:** Linux или собственное kernel boot, IRQ/APIC, exception delivery/CR2, полный S4-21, S4-24 или S4-32. Этап 4 остаётся открытым.
 
+#### S4-21c. Bounded paged owner и reset UART RX
+
+- [x] Ограниченный срез принят после независимого Sol/high review без
+  замечаний P0–P3; родительский S4-21 остаётся открытым.
+- **Контракт:** `PagedVcpuSession` принимает только fixed Stage4FlatProbe image; loader создаёт согласованные CPU, RAM, bus и UART. STOP фиксируется владельцем, pause/resume сохраняет guest activity; halted и остановленная сессии не исполняют quantum и не доставляют RX.
+- **Reset:** replacement image и no-fetch CPU/paging checks выполняются до checked reset существующего RX pump; после успеха очередь очищена, generation увеличено, handle перенаправлен и машина заменена. Caller-owned time не изменяется. Generation token не входит в публичный API owner.
+- **Проверки:** `cargo test -p od-machine --lib --offline` (120); `cargo test -p od-machine --test paged_probe_quantum --test uart_rx_events --offline` (21 + 7); `cargo fmt --all -- --check`; `cargo check -p od-machine --all-targets --offline`; diff check. Store test подставляет инструкцию только внутри теста: штатный image profile содержит load/OUT/HLT. Layout check не проходит из-за ранее зарегистрированного `smoke/` (ISSUE-056). Детали: [отчёт](../reports/STAGE_4_S4-21C_2026-11-07.md), [manifest](../reports/data/stage4/s4-21c-paged-vcpu.json), [методика](../testing/MACHINE.md#s4-21c-bounded-paged-vcpu-owner).
+- **Границы:** нет runner integration, completion/cancellation predicate, IRQ wakeup или архитектурного x86 reset. S4-21 и Stage 4 остаются открытыми.
+
 ### S4-22. Virtual clock и TSC
 
 - [ ] Принято после ревью.
