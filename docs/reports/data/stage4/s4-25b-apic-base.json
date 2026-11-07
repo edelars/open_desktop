@@ -1,0 +1,23 @@
+{
+  "slice": "S4-25b",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "opt-in Long64/CPL0 IA32_APIC_BASE fixed-base enable/disable with synchronous Local APIC effect application",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A, §§13.4.3–13.4.5 and 13.4.7.1–2",
+  "review": "independent gpt-6.1-sol/high review passed; two P2 boundary findings fixed and confirmed closed",
+  "checks": {
+    "isa_tests": "cargo test -p od-isa --lib apic_base_tests --offline: 3 passed",
+    "machine_tests": "cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1: 4 passed",
+    "package_check": "cargo check -p od-isa -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "graphify update . --force: 27,578 nodes, 69,946 edges, 1,012 communities; subsequent update after final documentation commit reported no code-graph topology changes"
+  },
+  "limitations": [
+    "profile is opt-in and is not integrated into PagedVcpuSession or default board wiring",
+    "direct ApicBaseCpu::step callers must apply a returned effect before the next guest or device operation; step_apic_base_msr supplies synchronous application for the fixed Local APIC",
+    "base relocation, BSP changes, x2APIC, Version/LVT, IOAPIC, timer and CPU interrupt delivery are outside the profile",
+    "IF/IDT/handler behavior, HLT wakeup and Linux APIC discovery are not implemented",
+    "python3 tools/check_layout.py continues to report pre-existing unmapped root smoke/ (ISSUE-056)"
+  ]
+}

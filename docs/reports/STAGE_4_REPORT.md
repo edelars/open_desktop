@@ -547,3 +547,19 @@ three test-coverage findings. This does not close S4-25: the version register,
 LVT, APIC-base MSR, default board wiring, IOAPIC, timer and CPU interrupt
 delivery remain open. See the [slice report](STAGE_4_S4-25A_2026-11-07.md)
 and [evidence manifest](data/stage4/s4-25a-local-apic-core.json).
+
+## S4-25b — CPU-owned IA32_APIC_BASE enable
+
+The bounded opt-in `ApicBaseCpu` executes bare `RDMSR`/`WRMSR` for index
+`0x1B` in Long64/CPL0, with reset value `0xFEE00900` and fixed-base global
+disable value `0xFEE00100`. Successful writes return a typed CPU effect; the
+machine helper applies it to the standalone xAPIC before returning. Same-value
+writes preserve APIC state; global disable resets it and blocks MMIO, and
+re-enable requires SVR software enable. Three focused ISA tests, four Local
+APIC tests, both package all-targets checks, formatting and diff validation
+passed. Independent Sol/high review fixed and confirmed closure of two P2
+boundary findings. This does not add the profile to `PagedVcpuSession` or
+default board wiring, and does not implement relocation, x2APIC, CPU interrupt
+delivery or HLT wakeup. See [report](STAGE_4_S4-25B_2026-11-07.md) and
+[evidence](data/stage4/s4-25b-apic-base.json). Parent S4-25 and Stage 4 remain
+open.

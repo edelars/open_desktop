@@ -1257,6 +1257,32 @@ Behavior follows Intel's [64 and IA-32 SDM release 093, Volume 3A](https://cdrdv
 enable state, priority, interrupt request/service state and EOI). This bounded
 profile is not full Local APIC compatibility. See the [S4-25a report](../reports/STAGE_4_S4-25A_2026-11-07.md) and [verification method](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
 
+## CPU-owned IA32_APIC_BASE enable (S4-25b)
+
+The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and
+`WRMSR` to index `0x1B` in Long64/CPL0. Its reset value is `0xFEE00900`: fixed
+xAPIC base `0xFEE00000`, BSP bit set and global enable set. The supported
+disabled value is `0xFEE00100`. `RDMSR` returns the value in EDX:EAX. A
+successful `WRMSR` retires once and returns an `ApicBaseEffect`;
+`step_apic_base_msr` synchronously applies it to the matching
+`LocalApicHandle` before returning. The helper rejects mismatched CPU and
+device enable state before executing. Same-value writes preserve device state.
+A global enabled-to-disabled transition resets local APIC state and blocks
+MMIO and acknowledge; re-enabling it leaves SVR software-disabled until the
+guest explicitly enables SVR.
+
+Reserved low bits and physical-address bits above this profile's 36-bit range
+fault with `#GP(0)`. Unsupported fixed-profile values, including relocation,
+BSP changes and x2APIC enable, fail closed without retirement. Active STI
+shadow is rejected before fetch because this slice does not integrate
+interrupt delivery. This caller-selected profile does not broaden existing
+MSR profiles or automatically attach to `PagedVcpuSession`. Direct users of
+`ApicBaseCpu::step` must apply a returned effect before the next guest or
+device operation; the machine helper provides this ordering for the fixed
+xAPIC device. CPU interrupt delivery, IDT/IF/handler semantics and HLT wakeup
+remain outside the contract. See the [S4-25b report](../reports/STAGE_4_S4-25B_2026-11-07.md)
+and [verification method](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing

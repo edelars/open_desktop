@@ -38,10 +38,16 @@ APIC/IOAPIC остаются открытыми. Поэтому целевой L
 16550A совместимость не подтверждены.
 
 Для S4-25a добавлен отдельный one-CPU fixed-edge Local APIC device по xAPIC
-MMIO base `0xFEE00000` с APIC ID 0. Это пока самостоятельный `MachineBus`
-device slice: default board manifest/wiring, APIC-base MSR, version/LVT,
-IOAPIC routes, timer и CPU interrupt delivery не реализованы. Он не меняет
-описание Linux discovery или объявленный APIC-профиль гостю.
+MMIO base `0xFEE00000` с APIC ID 0. Это самостоятельный `MachineBus` device
+slice, без default board manifest/wiring, version/LVT, IOAPIC routes, timer и
+CPU interrupt delivery. Он не меняет описание Linux discovery или объявленный
+APIC-профиль гостю.
+
+S4-25b adds an explicitly selected CPU profile for bare `RDMSR`/`WRMSR`
+`IA32_APIC_BASE` at the fixed base. The machine helper applies enable/disable
+effects synchronously to the standalone S4-25a Local APIC. The profile is not
+part of the general paged vCPU session or default board wiring; relocation,
+x2APIC, interrupt delivery and Linux APIC discovery remain unimplemented.
 
 ## Владение состоянием и адресами
 

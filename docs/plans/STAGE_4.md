@@ -1338,6 +1338,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** Version register намеренно недоступен; LVT, APIC-base MSR/relocation, x2APIC, IOAPIC/level routing, timer, CPU interrupt delivery, handler execution, IF/shadow/IDT и HLT wakeup отсутствуют. TMR показывает edge; ошибочные/неподдержанные доступы возвращают `DeviceError` и не меняют состояние. Тест подключает device через существующий `MachineBus`; это не доказывает default board wiring или guest Linux path.
 - **Проверки:** 2 focused `local_apic` tests, `od-machine --all-targets` check, fmt и diff прошли. См. [отчёт](../reports/STAGE_4_S4-25A_2026-11-07.md), [manifest](../reports/data/stage4/s4-25a-local-apic-core.json) и [методику](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
 
+#### S4-25b. CPU-owned IA32_APIC_BASE enable
+
+- [x] Ограниченный S4-25b принят после независимого `gpt-6.1-sol/high` ревью; S4-25 и Stage 4 остаются открытыми.
+- **Контракт:** opt-in `ApicBaseCpu` исполняет только bare `RDMSR`/`WRMSR` к `IA32_APIC_BASE` (`0x1B`) в Long64/CPL0. Reset value `0xFEE00900` (fixed base `0xFEE00000`, BSP и global enable); global disable — `0xFEE00100`. Запись возвращает typed effect; `step_apic_base_msr` применяет его к xAPIC до возврата. Повторная запись того же значения не сбрасывает APIC. Global disable сбрасывает APIC state и блокирует MMIO/acknowledge; после re-enable требуется SVR software enable. Источник: Intel SDM release 093, Vol. 3A, §§13.4.3–13.4.5, 13.4.7.1–2.
+- **Граница:** base relocation, BSP changes, x2APIC, общий MSR dispatcher, `PagedVcpuSession` integration, CPU interrupt delivery, IF/shadow/IDT/handler и HLT wakeup не заявлены. Прямые вызовы `ApicBaseCpu::step` обязаны применить effect до следующей guest/device operation; `step_apic_base_msr` делает это синхронно для фиксированного Local APIC.
+- **Проверки:** 3 focused `od-isa` теста, 4 focused `local_apic` теста, all-targets check двух пакетов, fmt и diff прошли. Независимый Sol/high reviewer закрыл два P2 замечания. См. [отчёт](../reports/STAGE_4_S4-25B_2026-11-07.md), [manifest](../reports/data/stage4/s4-25b-apic-base.json) и [методику](../testing/MACHINE.md#s4-25b-cpu-owned-ia32_apic_base-enable).
+
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
 - [ ] Принято после ревью.

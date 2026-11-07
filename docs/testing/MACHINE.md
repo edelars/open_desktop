@@ -447,6 +447,27 @@ delivery, handler execution, IDT/IF/shadow behavior, HLT wakeup and Linux boot
 are not covered. The selected register behavior is based on Intel SDM release
 093, Volume 3A, Chapter 13. See the [slice report](../reports/STAGE_4_S4-25A_2026-11-07.md).
 
+## S4-25b: CPU-owned IA32_APIC_BASE enable
+
+Run `cargo test -p od-isa --lib apic_base_tests --offline` and
+`cargo test -p od-machine --lib local_apic::tests --offline -- --test-threads=1`.
+The CPU profile tests bare `RDMSR`/`WRMSR` readback, exact fixed values,
+retirement, reserved-bit `#GP(0)`, unsupported relocation/BSP/x2APIC values,
+Ring3 privilege fault, STOP/budget/fetch exits, active STI-shadow rejection
+before fetch and unrelated decoder forms remaining outside the profile. The
+machine tests verify the typed write effect is applied before the helper
+returns, disable reset/MMIO blocking, same-value preservation, re-enable and
+SVR behavior. `cargo check -p od-isa -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Independent
+Sol/high review found two P2 boundary issues; both were fixed and confirmed
+closed. See the [slice report](../reports/STAGE_4_S4-25B_2026-11-07.md).
+
+This does not integrate the profile into `PagedVcpuSession` or default board
+wiring. Direct CPU-step callers must apply a returned effect before another
+guest/device operation; only `step_apic_base_msr` supplies synchronous device
+application. xAPIC base relocation, x2APIC, CPU interrupt delivery, IDT/IF,
+handler execution, HLT wakeup and Linux discovery are not covered.
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

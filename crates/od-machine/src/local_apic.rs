@@ -17,6 +17,7 @@ pub struct LocalApicHandle(Arc<Mutex<State>>);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct State {
+    global_enabled: bool,
     tpr: u8,
     svr: u16,
     irr: [u32; 8],
@@ -26,6 +27,7 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            global_enabled: true,
             tpr: 0,
             svr: 0xff,
             irr: [0; 8],
@@ -50,7 +52,8 @@ impl State {
     }
     fn eligible(&self) -> Option<u8> {
         let vector = Self::highest(&self.irr)?;
-        (self.svr & 0x100 != 0 && (vector & 0xf0) > (self.ppr() & 0xf0)).then_some(vector)
+        (self.global_enabled && self.svr & 0x100 != 0 && (vector & 0xf0) > (self.ppr() & 0xf0))
+            .then_some(vector)
     }
 }
 
@@ -79,13 +82,30 @@ impl LocalApicHandle {
     pub fn reset(&self) {
         self.with_state(|s| *s = State::default());
     }
+    /// Apply a global enable transition. Disabling resets the local APIC;
+    /// same-value writes preserve it. No interrupt delivery is modeled here.
+    pub fn set_global_enabled(&self, enabled: bool) {
+        self.with_state(|s| {
+            if s.global_enabled != enabled {
+                if !enabled {
+                    *s = State::default();
+                }
+                s.global_enabled = enabled;
+            }
+        });
+    }
     /// Record a fixed edge. Repeated requests coalesce in the IRR bit.
     pub fn request_fixed_edge(&self, vector: u8) -> Result<(), DeviceError> {
         if vector < 16 {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        self.with_state(|s| s.irr[usize::from(vector / 32)] |= 1 << (vector % 32));
-        Ok(())
+        self.with_state(|s| {
+            if !s.global_enabled {
+                return Err(DeviceError::UnsupportedConfiguration);
+            }
+            s.irr[usize::from(vector / 32)] |= 1 << (vector % 32);
+            Ok(())
+        })
     }
     /// Observe the highest pending vector without consuming it.
     pub fn pending(&self) -> Option<u8> {
@@ -106,6 +126,27 @@ impl LocalApicHandle {
             Some(v)
         })
     }
+}
+
+/// Execute the bounded CPU MSR operation and apply any retired write before
+/// returning control to the machine. The caller owns the CPU and memory.
+pub fn step_apic_base_msr(
+    cpu: &mut od_isa::msr::ApicBaseCpu,
+    apic: &LocalApicHandle,
+    memory: &mut impl od_isa::GuestMemory,
+    context: od_isa::AccessContext,
+    budget: u64,
+    stop: bool,
+) -> Result<od_isa::msr::ApicBaseExit, DeviceError> {
+    let enabled = apic.with_state(|s| s.global_enabled);
+    if enabled != (cpu.apic_base() == od_isa::msr::ApicBaseCpu::ENABLED) {
+        return Err(DeviceError::UnsupportedConfiguration);
+    }
+    let outcome = cpu.step(memory, context, budget, stop);
+    if let od_isa::msr::ApicBaseExit::Write(effect) = outcome {
+        apic.set_global_enabled(effect.new == od_isa::msr::ApicBaseCpu::ENABLED);
+    }
+    Ok(outcome)
 }
 
 fn validate(a: DeviceAccess) -> Result<u64, DeviceError> {
@@ -131,6 +172,9 @@ impl BusDevice for LocalApic {
     fn read(&mut self, a: DeviceAccess) -> Result<u64, DeviceError> {
         let offset = validate(a)?;
         self.with_state(|s| {
+            if !s.global_enabled {
+                return Err(DeviceError::UnsupportedConfiguration);
+            }
             let value = match offset {
                 0x20 => 0, // fixed APIC ID
                 0x80 => u32::from(s.tpr),
@@ -147,30 +191,35 @@ impl BusDevice for LocalApic {
     }
     fn write(&mut self, a: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         let offset = validate(a)?;
-        self.with_state(|s| match offset {
-            0x80 if value <= 0xff => {
-                s.tpr = value as u8;
-                Ok(())
+        self.with_state(|s| {
+            if !s.global_enabled {
+                return Err(DeviceError::UnsupportedConfiguration);
             }
-            0xf0 if value & !0x1ff == 0 => {
-                s.svr = value as u16;
-                Ok(())
-            }
-            0xb0 if value == 0 => {
-                if let Some(v) = State::highest(&s.isr) {
-                    s.isr[usize::from(v / 32)] &= !(1 << (v % 32));
+            match offset {
+                0x80 if value <= 0xff => {
+                    s.tpr = value as u8;
+                    Ok(())
                 }
-                Ok(())
+                0xf0 if value & !0x1ff == 0 => {
+                    s.svr = value as u16;
+                    Ok(())
+                }
+                0xb0 if value == 0 => {
+                    if let Some(v) = State::highest(&s.isr) {
+                        s.isr[usize::from(v / 32)] &= !(1 << (v % 32));
+                    }
+                    Ok(())
+                }
+                0x80 | 0xb0 | 0xf0 => Err(DeviceError::UnsupportedConfiguration),
+                0x20 | 0xa0 => Err(DeviceError::ReadOnly),
+                _ if bank(offset, 0x100).is_some()
+                    || bank(offset, 0x180).is_some()
+                    || bank(offset, 0x200).is_some() =>
+                {
+                    Err(DeviceError::ReadOnly)
+                }
+                _ => Err(DeviceError::UnknownOffset),
             }
-            0x80 | 0xb0 | 0xf0 => Err(DeviceError::UnsupportedConfiguration),
-            0x20 | 0xa0 => Err(DeviceError::ReadOnly),
-            _ if bank(offset, 0x100).is_some()
-                || bank(offset, 0x180).is_some()
-                || bank(offset, 0x200).is_some() =>
-            {
-                Err(DeviceError::ReadOnly)
-            }
-            _ => Err(DeviceError::UnknownOffset),
         })
     }
 }
@@ -182,6 +231,107 @@ mod tests {
         BusAccessError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
         MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
     };
+
+    struct MsrCode;
+    impl od_isa::GuestMemory for MsrCode {
+        fn atomic_exchange_integer(
+            &mut self,
+            _: u64,
+            _: od_isa::AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, od_isa::MemoryError> {
+            unreachable!()
+        }
+        fn atomic_fetch_add_integer(
+            &mut self,
+            _: u64,
+            _: od_isa::AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, od_isa::MemoryError> {
+            unreachable!()
+        }
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            _: u64,
+            _: od_isa::AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, od_isa::MemoryError> {
+            unreachable!()
+        }
+        fn mfence(&mut self, _: od_isa::AccessContext) -> Result<(), od_isa::MemoryError> {
+            unreachable!()
+        }
+        fn fetch(
+            &mut self,
+            address: u64,
+            _: od_isa::AccessContext,
+        ) -> Result<u8, od_isa::MemoryError> {
+            [0x0f, 0x30]
+                .get(address as usize)
+                .copied()
+                .ok_or_else(|| od_isa::MemoryError::Backend("fetch".into()))
+        }
+        fn read(
+            &mut self,
+            _: u64,
+            _: od_isa::AccessContext,
+            _: &mut [u8],
+        ) -> Result<(), od_isa::MemoryError> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: u64,
+            _: od_isa::AccessContext,
+            _: &[u8],
+        ) -> Result<(), od_isa::MemoryError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn retired_msr_effect_applies_before_next_device_access() {
+        use od_isa::msr::{ApicBaseCpu, ApicBaseExit};
+        let (mut bus, apic) = setup();
+        let mut cpu = ApicBaseCpu::new(od_isa::LongModeState::default());
+        cpu.state.gpr[od_isa::Register::Rcx as usize] = 0x1b;
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x40).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x40));
+        apic.request_fixed_edge(0x60).unwrap();
+        let context = od_isa::AccessContext {
+            privilege: od_isa::PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        for target in [
+            ApicBaseCpu::ENABLED,
+            ApicBaseCpu::DISABLED,
+            ApicBaseCpu::ENABLED,
+        ] {
+            cpu.state.rip = 0;
+            cpu.state.gpr[od_isa::Register::Rax as usize] = target;
+            assert!(matches!(
+                step_apic_base_msr(&mut cpu, &apic, &mut MsrCode, context, 1, false),
+                Ok(ApicBaseExit::Write(_))
+            ));
+            if target == ApicBaseCpu::DISABLED {
+                assert_eq!(
+                    read(&mut bus, 0xf0),
+                    Err(error(DeviceError::UnsupportedConfiguration))
+                );
+                assert_eq!(apic.pending(), None);
+            } else if apic.pending().is_some() {
+                assert_eq!(apic.eligible(), Some(0x60));
+            } else {
+                assert_eq!(read(&mut bus, 0xf0), Ok(0xff));
+                assert_eq!(read(&mut bus, 0x120), Ok(0));
+            }
+        }
+    }
 
     fn setup() -> (MachineBus, LocalApicHandle) {
         let device = LocalApic::new();
@@ -278,6 +428,41 @@ mod tests {
         assert_eq!(read(&mut bus, 0x120), Ok(0));
         assert_eq!(read(&mut bus, 0x80), Ok(0));
         assert_eq!(read(&mut bus, 0xf0), Ok(0xff));
+    }
+
+    #[test]
+    fn global_disable_resets_and_requires_software_reenable() {
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x40).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x40));
+        apic.request_fixed_edge(0x60).unwrap();
+        apic.set_global_enabled(true);
+        assert_eq!(apic.eligible(), Some(0x60));
+        assert_eq!(read(&mut bus, 0x120), Ok(1));
+        apic.set_global_enabled(false);
+        assert_eq!(apic.pending(), None);
+        assert_eq!(apic.acknowledge(), None);
+        assert_eq!(
+            read(&mut bus, 0xf0),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            write(&mut bus, 0xf0, 0x1ff),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(
+            apic.request_fixed_edge(0x60),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        apic.set_global_enabled(false);
+        apic.set_global_enabled(true);
+        assert_eq!(read(&mut bus, 0x120), Ok(0));
+        assert_eq!(read(&mut bus, 0xf0), Ok(0xff));
+        apic.request_fixed_edge(0x60).unwrap();
+        assert_eq!(apic.eligible(), None);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        assert_eq!(apic.eligible(), Some(0x60));
     }
 
     #[test]
