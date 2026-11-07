@@ -1237,6 +1237,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** clock rounding/large/overflow/split equivalence; реальный RDTSC через MachineBus; маска flags, EDX:EAX/RIP, split budgets, pause/STOP/zero budget, TSD/CPL/fetch failure и invalid defined mask.
 - **Готово:** bounded deterministic clock/RDTSC boundary реализованы; общий S4-22 остаётся открытым для согласования частоты Linux, host monotonic time и будущей progression для HLT/events.
 
+#### S4-22b. Часы PagedVcpuSession и UART RX
+
+- [x] Ограниченный S4-22b принят после независимого `gpt-6.1-sol/high` ревью без замечаний; родительские S4-21 и S4-22 остаются открытыми.
+- **Контракт:** `PagedVcpuSession::new` принимает явную ненулевую `tsc_hz` и владеет одним `VirtualClock`. `dispatch_rx` использует только `clock.now_ns()`, а абсолютные RX deadlines задаются в этом же домене. Выполнение, polling и число квантов часы не продвигают.
+- **Lifecycle:** явное время разрешено при host Active, включая guest HLT; продвижение не будит гостя и не разрешает RX dispatch в HLT. Paused/Stopped/Terminal отвергают продвижение. Reset сохраняет clock, частоту и текущее время, очищая RX очередь как прежде; arithmetic overflow не меняет часы.
+- **Проверки и границы:** `od-machine` unit tests (123), Stage 4 runner CLI (8), artifact build CLI (1), runner all-targets check, fmt и diff прошли; детали в [отчёте](../reports/STAGE_4_S4-22B_2026-11-07.md), [manifest](../reports/data/stage4/s4-22b-paged-clock.json) и [методике](../testing/MACHINE.md#s4-22b-paged-session-clock-and-uart-rx). Частота runner — диагностическая; guest CPUID/MSR, host monotonic coupling, HLT wakeup, IRQ и полный parent acceptance не заявлены.
+
 ### S4-23. Очередь событий и deadlines
 
 - [ ] Принято после ревью.

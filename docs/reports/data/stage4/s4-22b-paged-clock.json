@@ -1,0 +1,22 @@
+{
+  "slice": "S4-22b",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "PagedVcpuSession caller-driven clock and UART RX deadlines",
+  "review": "independent gpt-6.1-sol/high review passed with no P0-P3 code findings",
+  "checks": {
+    "machine_unit": "cargo test -p od-machine --lib --offline: 123 passed",
+    "runner_cli": "cargo test -p od-runner --test stage4_probe_cli --offline -- --test-threads=1: 8 passed",
+    "runner_build_cli": "cargo test -p od-runner --test stage4_probe_build_cli --offline -- --test-threads=1: 1 passed",
+    "runner_check": "cargo check -p od-runner --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "passed after commit: 27635 nodes, 69423 edges; code graph only"
+  },
+  "limitations": [
+    "runner frequency is diagnostic and is not Linux-visible CPUID/MSR policy",
+    "explicit time advancement does not wake HLT or dispatch RX while guest is halted",
+    "host monotonic coupling and OS suspend/resume are not implemented",
+    "S4-21 and S4-22 remain open"
+  ]
+}

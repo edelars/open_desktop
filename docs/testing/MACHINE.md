@@ -136,6 +136,12 @@ git diff --check
     event/payload; `ReceiverBusy` preserves the earliest event, payload,
     deadline and order for retry. Reset invalidates stale pending work without
     changing `VirtualClock`, CPU state or HLT state.
+42. S4-22b checks that `PagedVcpuSession` owns one explicitly configured
+    `VirtualClock`, RX readiness uses only its `now_ns`, and neither run nor
+    polling advances time. Split and whole advances match; pause, STOP and
+    terminal states reject advancement, while active guest HLT permits clock
+    progression without wakeup or RX dispatch. Reset preserves time; invalid
+    frequency and checked arithmetic overflow do not mutate state.
 
 ## Интерпретация
 
@@ -144,7 +150,8 @@ flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission and bounded S4-11b qword read, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
-caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue, S4-23b
+caller-driven clock/RDTSC boundary, S4-22b paged-session time ownership,
+S4-23a bounded deadline queue, S4-23b
 reset-generation boundary and S4-23c bounded UART RX event delivery.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
@@ -853,3 +860,16 @@ loader refusal. The `PagedVcpuSession::drain_tx` unit test passed, as did
 diff checks. A separate runner unit test checks error category mapping. The
 fixed loader does not expose fault injection through the CLI. Independent
 Sol/high review passed. See [report](../reports/STAGE_4_S4-21D_2026-11-07.md).
+
+## S4-22b Paged session clock and UART RX
+
+`cargo test -p od-machine --lib --offline` passed 123 unit tests. The new
+`clock_drives_rx_and_split_advances_match` test verifies that RX dispatch reads
+the session clock, advancement is explicit, and split advancement matches a
+single advancement. `clock_guards_halt_reset_and_overflow` checks zero frequency,
+pause/STOP/terminal guards, active guest HLT progression without RX dispatch,
+reset time preservation, and atomic time/TSC overflow. The run and polling path
+does not move time. Stage 4 runner CLI tests passed 8 cases and the artifact
+build CLI passed 1; runner all-targets check, formatting, and diff checks also
+passed. The independent Sol/high review found no code findings. The runner's
+frequency is diagnostic and is not advertised to the guest. See [report](../reports/STAGE_4_S4-22B_2026-11-07.md).

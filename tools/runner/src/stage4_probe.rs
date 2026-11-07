@@ -1,3 +1,6 @@
+// Diagnostic clock frequency; this does not advertise guest CPUID/MSR timing.
+const DIAGNOSTIC_TSC_HZ: u64 = 1_000_000_000;
+
 use od_machine::{
     PagedProbeExit, PagedVcpuSession, STAGE4_FLAT_PROBE_DATA_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,
 };
@@ -38,7 +41,7 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         }
     };
 
-    let mut machine = match PagedVcpuSession::new(&image, 0) {
+    let mut machine = match PagedVcpuSession::new(&image, 0, DIAGNOSTIC_TSC_HZ) {
         Ok(machine) => machine,
         Err(error) => {
             return Err((

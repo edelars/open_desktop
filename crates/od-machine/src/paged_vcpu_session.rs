@@ -3,7 +3,8 @@
 use crate::{
     EventQueueError, GuestPhysicalRange, LoadedStage4FlatProbe, Long64ProbeConfig, PagedProbeExit,
     PagedProbeQuantumReport, ProbeConfigError, Stage4FlatProbeLoadError, UartRxDispatchExit,
-    UartRxDispatchReport, UartRxEventPump, UartRxPumpError, load_stage4_flat_probe,
+    UartRxDispatchReport, UartRxEventPump, UartRxPumpError, VirtualClock, VirtualClockError,
+    load_stage4_flat_probe,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, StiShadow};
 
@@ -25,6 +26,7 @@ pub enum PagedVcpuError {
     Halted,
     Queue(EventQueueError),
     Dispatch(UartRxPumpError),
+    Clock(VirtualClockError),
 }
 
 /// Fixed-image, synchronous owner. Time and dispatch decisions belong to the caller.
@@ -33,10 +35,12 @@ pub struct PagedVcpuSession {
     rflags_defined: u64,
     host: PagedVcpuHostState,
     rx: UartRxEventPump,
+    clock: VirtualClock,
 }
 
 impl PagedVcpuSession {
-    pub fn new(image: &[u8], rx_capacity: usize) -> Result<Self, PagedVcpuError> {
+    pub fn new(image: &[u8], rx_capacity: usize, tsc_hz: u64) -> Result<Self, PagedVcpuError> {
+        let clock = VirtualClock::new(tsc_hz).map_err(PagedVcpuError::Clock)?;
         let machine = Self::prepare(image)?;
         let rflags_defined = machine.rflags_defined();
         let rx = UartRxEventPump::new(rx_capacity, machine.uart());
@@ -45,6 +49,7 @@ impl PagedVcpuSession {
             rflags_defined,
             host: PagedVcpuHostState::Active,
             rx,
+            clock,
         })
     }
 
@@ -76,6 +81,22 @@ impl PagedVcpuSession {
     pub fn rflags_defined(&self) -> u64 {
         self.rflags_defined
     }
+    /// The clock advances only on explicit request and is retained across reset.
+    pub fn clock(&self) -> &VirtualClock {
+        &self.clock
+    }
+
+    /// Advance while the host is active, including when the guest is halted.
+    /// This does not wake the guest or dispatch events.
+    pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), PagedVcpuError> {
+        if self.host != PagedVcpuHostState::Active {
+            return Err(PagedVcpuError::NotActive(self.host));
+        }
+        self.clock
+            .advance_time_ns(delta_ns)
+            .map_err(PagedVcpuError::Clock)
+    }
+
     pub fn pending_rx(&self) -> usize {
         self.rx.len()
     }
@@ -136,6 +157,7 @@ impl PagedVcpuSession {
         Ok(())
     }
 
+    /// Schedule against the session clock's absolute nanosecond domain.
     pub fn schedule_rx(
         &mut self,
         key: u64,
@@ -150,14 +172,13 @@ impl PagedVcpuSession {
 
     pub fn dispatch_rx(
         &mut self,
-        now_ns: u64,
         budget: usize,
         stop: impl FnMut() -> bool,
     ) -> Result<UartRxDispatchReport, PagedVcpuError> {
         self.ensure_dispatchable()?;
         let report = self
             .rx
-            .dispatch_due(self.rx.generation(), now_ns, budget, stop)
+            .dispatch_due(self.rx.generation(), self.clock.now_ns(), budget, stop)
             .map_err(PagedVcpuError::Dispatch)?;
         if report.exit == UartRxDispatchExit::Stopped {
             self.stop();
@@ -219,8 +240,86 @@ mod tests {
     }
 
     #[test]
+    fn clock_drives_rx_and_split_advances_match() {
+        let mut split = PagedVcpuSession::new(&image(), 2, 3).unwrap();
+        let mut whole = PagedVcpuSession::new(&image(), 2, 3).unwrap();
+        split.schedule_rx(1, 10, 0x42).unwrap();
+        split.advance_time_ns(4).unwrap();
+        assert_eq!(split.dispatch_rx(2, || false).unwrap().delivered, 0);
+        // Running and polling do not advance time.
+        assert_eq!(run(&mut split, 1).exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(split.clock().now_ns(), 4);
+        split.advance_time_ns(6).unwrap();
+        whole.advance_time_ns(10).unwrap();
+        assert_eq!(split.clock(), whole.clock());
+        assert_eq!(split.dispatch_rx(2, || false).unwrap().delivered, 1);
+        assert_eq!(split.pending_rx(), 0);
+    }
+
+    #[test]
+    fn clock_guards_halt_reset_and_overflow() {
+        assert!(matches!(
+            PagedVcpuSession::new(&image(), 1, 0),
+            Err(PagedVcpuError::Clock(VirtualClockError::ZeroTscFrequency))
+        ));
+        let mut s = PagedVcpuSession::new(&image(), 1, 1_000_000_000).unwrap();
+        s.advance_time_ns(7).unwrap();
+        s.pause().unwrap();
+        assert_eq!(
+            s.advance_time_ns(1),
+            Err(PagedVcpuError::NotActive(PagedVcpuHostState::Paused))
+        );
+        s.resume().unwrap();
+        assert_eq!(run(&mut s, 3).exit, PagedProbeExit::Halted);
+        s.advance_time_ns(3).unwrap();
+        assert_eq!(s.clock().now_ns(), 10);
+        assert_eq!(s.state().activity, Some(CpuActivity::Halted));
+        assert!(matches!(
+            s.dispatch_rx(1, || false),
+            Err(PagedVcpuError::Halted)
+        ));
+        s.stop();
+        assert_eq!(
+            s.advance_time_ns(1),
+            Err(PagedVcpuError::NotActive(PagedVcpuHostState::Stopped))
+        );
+        s.reset(&image()).unwrap();
+        assert_eq!(s.clock().now_ns(), 10);
+        s.machine
+            .bus_mut()
+            .write_physical(
+                GuestPhysicalAddress::new(0x4000),
+                AccessWidth::Qword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(run(&mut s, 1).exit, PagedProbeExit::Fault(_)));
+        assert_eq!(
+            s.advance_time_ns(1),
+            Err(PagedVcpuError::NotActive(PagedVcpuHostState::Terminal))
+        );
+        assert_eq!(s.clock().now_ns(), 10);
+        let mut overflow = PagedVcpuSession::new(&image(), 1, u64::MAX).unwrap();
+        let before = *overflow.clock();
+        assert_eq!(
+            overflow.advance_time_ns(1_000_000_001),
+            Err(PagedVcpuError::Clock(VirtualClockError::TscOverflow))
+        );
+        assert_eq!(*overflow.clock(), before);
+        let mut time = PagedVcpuSession::new(&image(), 1, 1).unwrap();
+        time.advance_time_ns(u64::MAX).unwrap();
+        let before = *time.clock();
+        assert_eq!(
+            time.advance_time_ns(1),
+            Err(PagedVcpuError::Clock(VirtualClockError::TimeOverflow))
+        );
+        assert_eq!(*time.clock(), before);
+    }
+
+    #[test]
     fn pause_resume_store_and_out_do_not_repeat_and_halted_stop_is_final() {
-        let mut s = PagedVcpuSession::new(&image(), 3).unwrap();
+        let mut s = PagedVcpuSession::new(&image(), 3, 1_000_000_000).unwrap();
         // Exercise the quantum's existing store form; the public loader profile
         // itself admits only its fixed load/OUT/HLT image.
         s.machine
@@ -247,7 +346,7 @@ mod tests {
             Err(PagedVcpuError::NotActive(_))
         ));
         assert!(matches!(
-            s.dispatch_rx(0, 1, || false),
+            s.dispatch_rx(1, || false),
             Err(PagedVcpuError::NotActive(_))
         ));
         assert_eq!(s.state().rip, rip);
@@ -265,7 +364,7 @@ mod tests {
         assert_eq!(run(&mut s, 1).exit, PagedProbeExit::Halted);
         assert_eq!(uart.complete_transmission(), None);
         assert!(matches!(
-            s.dispatch_rx(0, 1, || false),
+            s.dispatch_rx(1, || false),
             Err(PagedVcpuError::Halted)
         ));
         s.pause().unwrap();
@@ -278,7 +377,7 @@ mod tests {
             Err(PagedVcpuError::NotActive(PagedVcpuHostState::Stopped))
         ));
         assert!(matches!(
-            s.dispatch_rx(0, 1, || false),
+            s.dispatch_rx(1, || false),
             Err(PagedVcpuError::NotActive(_))
         ));
         assert_eq!(
@@ -292,7 +391,7 @@ mod tests {
 
     #[test]
     fn drain_tx_consumes_committed_output_once_after_stop() {
-        let mut session = PagedVcpuSession::new(&image(), 1).unwrap();
+        let mut session = PagedVcpuSession::new(&image(), 1, 1_000_000_000).unwrap();
         let mut polls = 0;
         let report = session
             .run(
@@ -313,7 +412,7 @@ mod tests {
     #[test]
     fn stop_before_fetch_and_after_one_instruction_is_sticky() {
         for stop_after in [0, 1] {
-            let mut s = PagedVcpuSession::new(&image(), 1).unwrap();
+            let mut s = PagedVcpuSession::new(&image(), 1, 1_000_000_000).unwrap();
             let mut polls = 0;
             let report = s
                 .run(
@@ -334,7 +433,8 @@ mod tests {
 
     #[test]
     fn reset_discards_pending_payloads_retargets_uart_and_preserves_failed_reset() {
-        let mut s = PagedVcpuSession::new(&image(), 4).unwrap();
+        let mut s = PagedVcpuSession::new(&image(), 4, 1_000_000_000).unwrap();
+        s.advance_time_ns(100).unwrap();
         let old_generation = s.rx.generation();
         s.schedule_rx(1, 5, 0x11).unwrap();
         s.schedule_rx(2, 100, 0x22).unwrap();
@@ -346,13 +446,14 @@ mod tests {
         assert_eq!(s.host_state(), PagedVcpuHostState::Active);
         s.reset(&image()).unwrap();
         assert_eq!(s.pending_rx(), 0);
+        assert_eq!(s.clock().now_ns(), 100);
         assert!(matches!(
             s.rx.dispatch_due(old_generation, 100, 1, || false),
             Err(UartRxPumpError::Queue(EventQueueError::StaleGeneration))
         ));
-        assert_eq!(s.dispatch_rx(100, 2, || false).unwrap().delivered, 0);
+        assert_eq!(s.dispatch_rx(2, || false).unwrap().delivered, 0);
         s.schedule_rx(3, 100, 0x44).unwrap();
-        assert_eq!(s.dispatch_rx(100, 2, || false).unwrap().delivered, 1);
+        assert_eq!(s.dispatch_rx(2, || false).unwrap().delivered, 1);
         let byte = s
             .machine
             .bus_mut()
@@ -371,7 +472,7 @@ mod tests {
     #[test]
     fn reset_from_paused_stopped_halted_and_faulted() {
         for mode in 0..4 {
-            let mut s = PagedVcpuSession::new(&image(), 1).unwrap();
+            let mut s = PagedVcpuSession::new(&image(), 1, 1_000_000_000).unwrap();
             match mode {
                 0 => s.pause().unwrap(),
                 1 => s.stop(),

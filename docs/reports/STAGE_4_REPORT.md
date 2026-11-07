@@ -361,6 +361,12 @@ permission fault и сохранение CPU state/нулевого retirement �
   сохранение `rflags_defined`, TSD/CPL/fetch checks и отсутствие auto-advance.
   RDTSCP, MSR/CPUID, HLT progression, IRQ/deadlines и host-clock coupling не
   реализованы.
+- S4-22b добавляет один явный `VirtualClock` владельцу `PagedVcpuSession`;
+  RX deadlines и dispatch теперь используют единый наносекундный домен.
+  Advancement явный и допустим во время guest HLT без wakeup, но отклоняется
+  при host pause/stop/terminal. Reset сохраняет время и частоту; overflow
+  атомарен. Частота runner диагностическая и не публикуется через CPUID/MSR.
+  См. [S4-22b report](STAGE_4_S4-22B_2026-11-07.md).
 - S4-23a добавляет bounded fixed-capacity очередь одноразовых absolute
   deadlines с deterministic `(deadline, sequence)` ordering, explicit cancel/
   reschedule и one-at-a-time `pop_due`. Очередь не двигает clock и не dispatch-ит

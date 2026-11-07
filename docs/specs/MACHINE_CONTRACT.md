@@ -1104,6 +1104,22 @@ Long64 `RDTSC`, сохраняя существующие TSD/CPL checks, `EDX:E
 MSR/CPUID frequency advertisement, host monotonic coupling, HLT progression,
 IRQ/deadlines и reset не входят в срез; полный S4-22 остаётся открытым.
 
+## Paged vCPU clock and UART RX deadlines (S4-22b)
+
+`PagedVcpuSession` принимает явный ненулевой `tsc_hz` и владеет одним
+`VirtualClock`. `schedule_rx` принимает абсолютные deadlines в наносекундном
+домене этого clock; `dispatch_rx` считывает текущее время из владельца и не
+принимает внешний `now_ns`. Run, polling и host call count не продвигают время.
+
+`advance_time_ns` допустим только при host state `Active`; guest HLT сам по
+себе ему не препятствует. Это сохраняет HLT и не dispatch-ит RX: гостевое
+пробуждение не реализовано. Pause, Stop и Terminal отвергают advancement.
+Reset очищает RX очередь и увеличивает её generation, но сохраняет clock и абсолютное время;
+ошибка reset и переполнение времени/TSC не меняют состояние clock. Частота,
+выбранная Stage 4 diagnostic runner, не является Linux-visible CPUID/MSR
+объявлением. Host monotonic coupling, HLT wakeup, IRQ delivery, RDTSCP и полный
+S4-21/S4-22 остаются вне этого среза. См. [S4-22b report](../reports/STAGE_4_S4-22B_2026-11-07.md).
+
 ## Bounded one-shot deadline queue boundary
 
 S4-23a добавляет `EventQueue` с фиксированной логической ёмкостью и
