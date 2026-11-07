@@ -1,0 +1,1439 @@
+{
+  "task": "S11-61",
+  "metric": "desktop-soak",
+  "title": "Длительный прогон приложения: RSS, задержки команд, зависания, нераспознанные сообщения",
+  "unit": "KiB (rss), ms (latency), s (duration)",
+  "label": "test-only, без гостя",
+  "command": "python3 tools/build/build_app_bundle.py && (cd apps && swift build) && python3 tools/bench/desktop_soak.py --duration-minutes 60 --configuration release",
+  "fingerprint": {
+    "mac_model": "Mac15,11",
+    "macos_build": "25G241",
+    "build_mode": {
+      "bundle (od-vmhost, OpenDesktop)": "release (declared with --configuration; build_app_bundle.py default is release)",
+      "odctl": "debug (/private/tmp/open_desktop-s9/apps/.build/debug/odctl)"
+    },
+    "git_revision": "3e3e78f",
+    "git_tracked_changes": 2,
+    "git_tree_clean_tracked": false,
+    "git_untracked_entries": 4,
+    "swift_version": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)",
+    "cargo_version": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "vmhost_profile": "display-test-pattern (control v2 profile 1, memory 256 MiB, 1 vCPU, 1 screen), test-only, без гостя",
+    "vmhost": "/private/tmp/open_desktop-s9/target/app-bundle/OpenDesktop.app/Contents/Helpers/od-vmhost",
+    "proposed_not_from_plan": {
+      "macos_version": "26.7.1",
+      "chip": "Apple M3 Max",
+      "host_page_size": "16384",
+      "note": "fields of this object are the executor's proposal (DESKTOP_APP.md section 3, rule 2), not required by the plan"
+    }
+  },
+  "conditions": {
+    "power": "Now drawing from 'AC Power'",
+    "load_average_1_5_15_min_before": [
+      3.76,
+      3.79,
+      3.31
+    ],
+    "free_space_gib_before": 57.2,
+    "python": "3.15.2",
+    "other_load": "not controlled: an ordinary interactive session, other processes of the user were running",
+    "load_average_1_5_15_min_after": [
+      1.65,
+      3.08,
+      3.31
+    ],
+    "power_after": "Now drawing from 'AC Power'",
+    "free_space_gib_after": 52.1
+  },
+  "duration_s": 3602.6,
+  "planned_duration_s": 3600.0,
+  "time_scale": 1.0,
+  "intervals_s": {
+    "pause_resume": 300.0,
+    "stop_start": 900.0,
+    "simulated_event_every": 300.0,
+    "rss_and_query": 60.0,
+    "latency_window": 600.0
+  },
+  "setup": {
+    "machines": [
+      "soak-a",
+      "soak-b",
+      "soak-app (machine of the application, never started)"
+    ],
+    "profile": "display-test-pattern",
+    "memory_mib": 256,
+    "odctl_create": "odctl create --name N --profile display-test-pattern --memory-mib 256 --library <tmp>; HOME and CFFIXED_USER_HOME are temporary",
+    "session": "one od-vmhost --control-v2 per machine, held by this script (socketpair on fd 3); a stopped machine gets a new process"
+  },
+  "rss_kib": {
+    "unit": "KiB (`ps -o rss= -p <pid>`)",
+    "application": {
+      "begin": {
+        "pid_note": "one long-lived process",
+        "t_s": 30.0,
+        "kib": 98320
+      },
+      "end": {
+        "t_s": 3600.0,
+        "kib": 75216
+      },
+      "growth_percent": -23.5,
+      "note": "the application got one simulated event (memory) at its launch; the machine of the application is stopped"
+    },
+    "vmhost_a": {
+      "begin": {
+        "pid": 33214,
+        "t_s": 30.0,
+        "kib": 43392
+      },
+      "end": {
+        "pid": 920,
+        "t_s": 3600.0,
+        "kib": 43584,
+        "note": "the process at the end is not the one at the beginning when the machine was restarted: begin/end are of different processes then"
+      },
+      "generations": [
+        {
+          "generation": 1,
+          "pid": 33214,
+          "running_at_s": 0.0,
+          "ended_at_s": 150.0,
+          "samples": 4,
+          "first_kib": 43392,
+          "last_kib": 43488,
+          "span_s": 120.0,
+          "growth_percent": 0.22,
+          "judged": false
+        },
+        {
+          "generation": 2,
+          "pid": 36116,
+          "running_at_s": 151.1,
+          "ended_at_s": 540.1,
+          "samples": 7,
+          "first_kib": 43456,
+          "last_kib": 43584,
+          "span_s": 300.1,
+          "growth_percent": 0.29,
+          "judged": true
+        },
+        {
+          "generation": 3,
+          "pid": 44469,
+          "running_at_s": 541.1,
+          "ended_at_s": 1802.1,
+          "samples": 22,
+          "first_kib": 43504,
+          "last_kib": 5712,
+          "span_s": 1202.1,
+          "growth_percent": -86.87,
+          "judged": true
+        },
+        {
+          "generation": 4,
+          "pid": 68016,
+          "running_at_s": 1803.1,
+          "ended_at_s": 3140.1,
+          "samples": 23,
+          "first_kib": 43520,
+          "last_kib": 5856,
+          "span_s": 1280.1,
+          "growth_percent": -86.54,
+          "judged": true
+        },
+        {
+          "generation": 5,
+          "pid": 94105,
+          "running_at_s": 3141.1,
+          "ended_at_s": 3530.0,
+          "samples": 7,
+          "first_kib": 43520,
+          "last_kib": 43632,
+          "span_s": 350.0,
+          "growth_percent": 0.26,
+          "judged": true
+        },
+        {
+          "generation": 6,
+          "pid": 920,
+          "running_at_s": 3531.1,
+          "ended_at_s": 3600.1,
+          "samples": 1,
+          "judged": false
+        }
+      ]
+    },
+    "vmhost_b": {
+      "begin": {
+        "pid": 33215,
+        "t_s": 30.0,
+        "kib": 43392
+      },
+      "end": {
+        "pid": 98029,
+        "t_s": 3600.0,
+        "kib": 43568,
+        "note": "the process at the end is not the one at the beginning when the machine was restarted: begin/end are of different processes then"
+      },
+      "generations": [
+        {
+          "generation": 1,
+          "pid": 33215,
+          "running_at_s": 0.0,
+          "ended_at_s": 360.0,
+          "samples": 8,
+          "first_kib": 43392,
+          "last_kib": 43584,
+          "span_s": 330.0,
+          "growth_percent": 0.44,
+          "judged": true
+        },
+        {
+          "generation": 2,
+          "pid": 40511,
+          "running_at_s": 361.1,
+          "ended_at_s": 902.0,
+          "samples": 10,
+          "first_kib": 43456,
+          "last_kib": 43568,
+          "span_s": 482.0,
+          "growth_percent": 0.26,
+          "judged": true
+        },
+        {
+          "generation": 3,
+          "pid": 50664,
+          "running_at_s": 903.1,
+          "ended_at_s": 2702.1,
+          "samples": 31,
+          "first_kib": 43456,
+          "last_kib": 5856,
+          "span_s": 1742.1,
+          "growth_percent": -86.52,
+          "judged": true
+        },
+        {
+          "generation": 4,
+          "pid": 85712,
+          "running_at_s": 2703.1,
+          "ended_at_s": 3350.0,
+          "samples": 11,
+          "first_kib": 43504,
+          "last_kib": 6096,
+          "span_s": 590.0,
+          "growth_percent": -85.99,
+          "judged": true
+        },
+        {
+          "generation": 5,
+          "pid": 98029,
+          "running_at_s": 3351.1,
+          "ended_at_s": 3600.1,
+          "samples": 4,
+          "first_kib": 43504,
+          "last_kib": 43568,
+          "span_s": 180.0,
+          "growth_percent": 0.15,
+          "judged": false
+        }
+      ]
+    },
+    "settle_s_before_first_sample": 30.0,
+    "timeline_columns": [
+      "t_s",
+      "application",
+      "vmhost_a",
+      "vmhost_b"
+    ],
+    "timeline": [
+      [
+        30.0,
+        98320,
+        43392,
+        43392
+      ],
+      [
+        60.0,
+        98304,
+        43488,
+        43488
+      ],
+      [
+        120.0,
+        98304,
+        43488,
+        43488
+      ],
+      [
+        180.0,
+        98336,
+        43456,
+        43488
+      ],
+      [
+        240.0,
+        98336,
+        43456,
+        43488
+      ],
+      [
+        300.0,
+        98336,
+        43456,
+        43488
+      ],
+      [
+        360.0,
+        98336,
+        43584,
+        43584
+      ],
+      [
+        420.0,
+        98336,
+        43584,
+        43456
+      ],
+      [
+        480.0,
+        98336,
+        43584,
+        43456
+      ],
+      [
+        540.0,
+        98336,
+        43584,
+        43456
+      ],
+      [
+        600.0,
+        98336,
+        43504,
+        43456
+      ],
+      [
+        660.0,
+        98336,
+        43504,
+        43568
+      ],
+      [
+        720.0,
+        98304,
+        43504,
+        43568
+      ],
+      [
+        780.0,
+        98304,
+        43504,
+        43568
+      ],
+      [
+        840.0,
+        98576,
+        43504,
+        43568
+      ],
+      [
+        900.0,
+        98576,
+        43568,
+        43568
+      ],
+      [
+        960.0,
+        98576,
+        43584,
+        43456
+      ],
+      [
+        1020.0,
+        98576,
+        43584,
+        43552
+      ],
+      [
+        1080.0,
+        98560,
+        43584,
+        43552
+      ],
+      [
+        1140.0,
+        75088,
+        43504,
+        43472
+      ],
+      [
+        1200.0,
+        75088,
+        43504,
+        43472
+      ],
+      [
+        1260.0,
+        74800,
+        5712,
+        5712
+      ],
+      [
+        1320.0,
+        75168,
+        5712,
+        5712
+      ],
+      [
+        1380.0,
+        75120,
+        5712,
+        5744
+      ],
+      [
+        1440.0,
+        75136,
+        5712,
+        5744
+      ],
+      [
+        1500.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1560.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1620.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1680.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1740.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1800.0,
+        75440,
+        5712,
+        5744
+      ],
+      [
+        1860.0,
+        75408,
+        43520,
+        5744
+      ],
+      [
+        1920.0,
+        75328,
+        43584,
+        5744
+      ],
+      [
+        1980.0,
+        75328,
+        43584,
+        5744
+      ],
+      [
+        2040.0,
+        75232,
+        5840,
+        5744
+      ],
+      [
+        2100.0,
+        75232,
+        5840,
+        5744
+      ],
+      [
+        2160.0,
+        75232,
+        5936,
+        5744
+      ],
+      [
+        2220.0,
+        75232,
+        5936,
+        5744
+      ],
+      [
+        2280.0,
+        75232,
+        5952,
+        5744
+      ],
+      [
+        2340.0,
+        75232,
+        5952,
+        5744
+      ],
+      [
+        2400.1,
+        75232,
+        5952,
+        5744
+      ],
+      [
+        2460.0,
+        75232,
+        5952,
+        5840
+      ],
+      [
+        2520.0,
+        75232,
+        5952,
+        5840
+      ],
+      [
+        2580.0,
+        75232,
+        5952,
+        5840
+      ],
+      [
+        2640.0,
+        75232,
+        5952,
+        5856
+      ],
+      [
+        2700.0,
+        75232,
+        5952,
+        5856
+      ],
+      [
+        2760.0,
+        75232,
+        5952,
+        43504
+      ],
+      [
+        2820.0,
+        75216,
+        5856,
+        5872
+      ],
+      [
+        2880.0,
+        75216,
+        5856,
+        5872
+      ],
+      [
+        2940.0,
+        75216,
+        5856,
+        5872
+      ],
+      [
+        3000.0,
+        75216,
+        5856,
+        5872
+      ],
+      [
+        3060.0,
+        75216,
+        5856,
+        5984
+      ],
+      [
+        3120.0,
+        75216,
+        5856,
+        6000
+      ],
+      [
+        3180.0,
+        75216,
+        43520,
+        6000
+      ],
+      [
+        3240.0,
+        75216,
+        43520,
+        6096
+      ],
+      [
+        3300.0,
+        75216,
+        43616,
+        6096
+      ],
+      [
+        3360.0,
+        75216,
+        43632,
+        43488
+      ],
+      [
+        3420.0,
+        75216,
+        43632,
+        43504
+      ],
+      [
+        3480.0,
+        75216,
+        43632,
+        43568
+      ],
+      [
+        3540.1,
+        75216,
+        43552,
+        43568
+      ],
+      [
+        3600.0,
+        75216,
+        43584,
+        43568
+      ]
+    ]
+  },
+  "latency_ms": {
+    "unit": "ms",
+    "window_s": 600.0,
+    "method": "from before the request is written to the arrival of the STATE_CHANGED frame in this script (the role of the application)",
+    "pause": {
+      "command": "PAUSE -> paused",
+      "first_window": {
+        "n": 11,
+        "min": 0.064,
+        "median": 0.136,
+        "max": 0.227
+      },
+      "last_window": {
+        "n": 12,
+        "min": 0.036,
+        "median": 0.085,
+        "max": 0.167
+      },
+      "median_last_over_first": 0.629
+    },
+    "resume": {
+      "command": "RESUME -> running",
+      "first_window": {
+        "n": 11,
+        "min": 0.09,
+        "median": 0.137,
+        "max": 0.294
+      },
+      "last_window": {
+        "n": 12,
+        "min": 0.095,
+        "median": 0.134,
+        "max": 0.219
+      },
+      "median_last_over_first": 0.978
+    },
+    "stop": {
+      "command": "STOP -> stopped",
+      "first_window": {
+        "n": 3,
+        "min": 0.053,
+        "median": 0.074,
+        "max": 0.5
+      },
+      "last_window": {
+        "n": 3,
+        "min": 0.097,
+        "median": 0.113,
+        "max": 0.134
+      },
+      "median_last_over_first": 1.527
+    },
+    "start": {
+      "command": "START -> running (extra)",
+      "first_window": {
+        "n": 5,
+        "min": 1.855,
+        "median": 2.573,
+        "max": 3.465
+      },
+      "last_window": {
+        "n": 3,
+        "min": 1.995,
+        "median": 2.293,
+        "max": 2.396
+      },
+      "median_last_over_first": 0.891
+    },
+    "no_threshold": "для задержек нет порога ни в плане, ни из замера: отношение медиан записано как наблюдение, критерием приёмки не является; число образцов в окне мало (см. n)",
+    "samples": [
+      {
+        "t_s": 1.5,
+        "op": "start",
+        "machine": "A",
+        "ms": 2.573,
+        "source": "setup"
+      },
+      {
+        "t_s": 1.5,
+        "op": "start",
+        "machine": "B",
+        "ms": 1.855,
+        "source": "setup"
+      },
+      {
+        "t_s": 90.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.175,
+        "source": "probe"
+      },
+      {
+        "t_s": 91.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.257,
+        "source": "probe"
+      },
+      {
+        "t_s": 110.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.199,
+        "source": "probe"
+      },
+      {
+        "t_s": 111.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.118,
+        "source": "probe"
+      },
+      {
+        "t_s": 150.0,
+        "op": "stop",
+        "machine": "A",
+        "ms": 0.5,
+        "source": "probe"
+      },
+      {
+        "t_s": 151.1,
+        "op": "start",
+        "machine": "A",
+        "ms": 3.109,
+        "source": "probe"
+      },
+      {
+        "t_s": 210.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.16,
+        "source": "probe"
+      },
+      {
+        "t_s": 211.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.294,
+        "source": "probe"
+      },
+      {
+        "t_s": 230.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.136,
+        "source": "probe"
+      },
+      {
+        "t_s": 231.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.137,
+        "source": "probe"
+      },
+      {
+        "t_s": 300.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.064,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 302.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.164,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 330.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.151,
+        "source": "probe"
+      },
+      {
+        "t_s": 331.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.193,
+        "source": "probe"
+      },
+      {
+        "t_s": 350.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.227,
+        "source": "probe"
+      },
+      {
+        "t_s": 351.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.274,
+        "source": "probe"
+      },
+      {
+        "t_s": 360.0,
+        "op": "stop",
+        "machine": "B",
+        "ms": 0.053,
+        "source": "probe"
+      },
+      {
+        "t_s": 361.1,
+        "op": "start",
+        "machine": "B",
+        "ms": 3.465,
+        "source": "probe"
+      },
+      {
+        "t_s": 450.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.114,
+        "source": "probe"
+      },
+      {
+        "t_s": 451.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.09,
+        "source": "probe"
+      },
+      {
+        "t_s": 470.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.11,
+        "source": "probe"
+      },
+      {
+        "t_s": 471.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.101,
+        "source": "probe"
+      },
+      {
+        "t_s": 540.1,
+        "op": "stop",
+        "machine": "A",
+        "ms": 0.074,
+        "source": "probe"
+      },
+      {
+        "t_s": 541.1,
+        "op": "start",
+        "machine": "A",
+        "ms": 1.881,
+        "source": "probe"
+      },
+      {
+        "t_s": 570.1,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.124,
+        "source": "probe"
+      },
+      {
+        "t_s": 571.1,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.107,
+        "source": "probe"
+      },
+      {
+        "t_s": 590.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.091,
+        "source": "probe"
+      },
+      {
+        "t_s": 591.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.098,
+        "source": "probe"
+      },
+      {
+        "t_s": 600.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.071,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 602.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.11,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 900.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.047,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 902.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.225,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 902.0,
+        "op": "stop",
+        "machine": "B",
+        "ms": 0.106,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 903.1,
+        "op": "start",
+        "machine": "B",
+        "ms": 3.219,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1200.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.056,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1202.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.096,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1500.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.065,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1502.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.17,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1800.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.061,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1802.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.102,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1802.1,
+        "op": "stop",
+        "machine": "A",
+        "ms": 0.131,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 1803.1,
+        "op": "start",
+        "machine": "A",
+        "ms": 2.338,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2100.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.081,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2102.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.103,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2400.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.069,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2402.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.17,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2700.1,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.055,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2702.1,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.072,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2702.1,
+        "op": "stop",
+        "machine": "B",
+        "ms": 0.087,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 2703.1,
+        "op": "start",
+        "machine": "B",
+        "ms": 2.761,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 3000.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.053,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 3002.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.135,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 3080.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.167,
+        "source": "probe"
+      },
+      {
+        "t_s": 3081.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.178,
+        "source": "probe"
+      },
+      {
+        "t_s": 3100.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.09,
+        "source": "probe"
+      },
+      {
+        "t_s": 3101.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.219,
+        "source": "probe"
+      },
+      {
+        "t_s": 3140.1,
+        "op": "stop",
+        "machine": "A",
+        "ms": 0.097,
+        "source": "probe"
+      },
+      {
+        "t_s": 3141.1,
+        "op": "start",
+        "machine": "A",
+        "ms": 2.293,
+        "source": "probe"
+      },
+      {
+        "t_s": 3200.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.101,
+        "source": "probe"
+      },
+      {
+        "t_s": 3201.1,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.166,
+        "source": "probe"
+      },
+      {
+        "t_s": 3220.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.077,
+        "source": "probe"
+      },
+      {
+        "t_s": 3221.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.114,
+        "source": "probe"
+      },
+      {
+        "t_s": 3300.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.036,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 3302.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.129,
+        "source": "scheduled"
+      },
+      {
+        "t_s": 3320.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.112,
+        "source": "probe"
+      },
+      {
+        "t_s": 3321.1,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.108,
+        "source": "probe"
+      },
+      {
+        "t_s": 3340.1,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.08,
+        "source": "probe"
+      },
+      {
+        "t_s": 3341.1,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.121,
+        "source": "probe"
+      },
+      {
+        "t_s": 3350.0,
+        "op": "stop",
+        "machine": "B",
+        "ms": 0.113,
+        "source": "probe"
+      },
+      {
+        "t_s": 3351.1,
+        "op": "start",
+        "machine": "B",
+        "ms": 1.995,
+        "source": "probe"
+      },
+      {
+        "t_s": 3440.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.109,
+        "source": "probe"
+      },
+      {
+        "t_s": 3441.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.178,
+        "source": "probe"
+      },
+      {
+        "t_s": 3460.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.081,
+        "source": "probe"
+      },
+      {
+        "t_s": 3461.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.201,
+        "source": "probe"
+      },
+      {
+        "t_s": 3530.0,
+        "op": "stop",
+        "machine": "A",
+        "ms": 0.134,
+        "source": "probe"
+      },
+      {
+        "t_s": 3531.1,
+        "op": "start",
+        "machine": "A",
+        "ms": 2.396,
+        "source": "probe"
+      },
+      {
+        "t_s": 3560.0,
+        "op": "pause",
+        "machine": "A",
+        "ms": 0.16,
+        "source": "probe"
+      },
+      {
+        "t_s": 3561.0,
+        "op": "resume",
+        "machine": "A",
+        "ms": 0.133,
+        "source": "probe"
+      },
+      {
+        "t_s": 3580.0,
+        "op": "pause",
+        "machine": "B",
+        "ms": 0.047,
+        "source": "probe"
+      },
+      {
+        "t_s": 3581.0,
+        "op": "resume",
+        "machine": "B",
+        "ms": 0.095,
+        "source": "probe"
+      }
+    ]
+  },
+  "counts": {
+    "commands_sent": 204,
+    "commands_answered": 204,
+    "hangs": 0,
+    "query_checks": 120,
+    "state_mismatches": 0,
+    "invalid_transitions": 0,
+    "unsolicited_state_changes": 0,
+    "unrecognized_messages": 0,
+    "stats_frames": 7174,
+    "vmhost_stderr_lines": 0,
+    "app_stderr_lines": 0,
+    "vmhost_exit_status_not_zero": 0,
+    "vmhost_forced_kill": 0,
+    "shutdown_failures": 0,
+    "app_exit_unexpected": 0,
+    "pause_resume_cycles": {
+      "scheduled": 11,
+      "probe": 20
+    },
+    "stop_start_cycles": {
+      "scheduled": 3,
+      "probe": 6
+    },
+    "simulated_host_events": {
+      "sleep": 3,
+      "wake": 3,
+      "screens": 2,
+      "low-space": 2,
+      "memory": 3
+    },
+    "simulated_host_event_launches": 13,
+    "simulated_host_events_note": "симуляция обработчиков через --simulate-host-event, не сон Mac, не настоящие экраны/место/память",
+    "latency_samples": 82
+  },
+  "simulated_host_events": [
+    {
+      "t_s": 0.0,
+      "kind": "memory",
+      "target": "long-lived application (launch)",
+      "simulation": "симуляция, не настоящее давление памяти"
+    },
+    {
+      "t_s": 150.0,
+      "kind": "sleep",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 450.0,
+      "kind": "wake",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 750.1,
+      "kind": "screens",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 1050.0,
+      "kind": "low-space",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 1350.1,
+      "kind": "memory",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 1650.0,
+      "kind": "sleep",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 1950.0,
+      "kind": "wake",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 2250.1,
+      "kind": "screens",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 2550.0,
+      "kind": "low-space",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 2850.0,
+      "kind": "memory",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 3150.1,
+      "kind": "sleep",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    },
+    {
+      "t_s": 3450.0,
+      "kind": "wake",
+      "target": "short-lived application",
+      "simulation": "симуляция обработчика, не настоящий сон/экраны/место/память"
+    }
+  ],
+  "verdict": {
+    "passed": true,
+    "rss_growth_threshold_percent": 10.0,
+    "threshold_status": "ГИПОТЕЗА: записана до прогона, не из плана и не из замера; рост сверх порога — «не пройдено»",
+    "criteria": [
+      {
+        "name": "рост RSS приложения не больше 10 % (порог — гипотеза)",
+        "result": "выполнено",
+        "detail": "98320 -> 75216 KiB, -23.5 %"
+      },
+      {
+        "name": "рост RSS VMHost за жизнь процесса не больше 10 % (порог — гипотеза)",
+        "result": "выполнено",
+        "detail": "оценено поколений: 8 (каждое не короче 300 с между первым и последним замером); наибольший рост 0.44 % (машина B, процесс 33215, 43392 -> 43584 KiB)"
+      },
+      {
+        "name": "ни одного зависшего состояния",
+        "result": "выполнено",
+        "detail": "команд 204, ответов 204, зависаний 0, расхождений QUERY с событиями 0 из 120 проверок; таймаут ответа 10 с"
+      },
+      {
+        "name": "все состояния из таблицы переходов",
+        "result": "выполнено",
+        "detail": "переходов вне таблицы 0, событий без команды 0"
+      },
+      {
+        "name": "ни одного нераспознанного сообщения",
+        "result": "выполнено",
+        "detail": "нераспознанных кадров 0, строк stderr VMHost 0, строк stderr приложения 0"
+      },
+      {
+        "name": "процессы завершились штатно, сирот нет",
+        "result": "выполнено",
+        "detail": "VMHost с кодом не 0: 0, принудительных завершений VMHost (SIGKILL): 0, ошибок при остановке: 0, неожиданных завершений приложения 0, оставшиеся od-vmhost после очистки: нет"
+      },
+      {
+        "name": "реальные каталоги пользователя не появились",
+        "result": "выполнено",
+        "detail": "~/Library/Application Support/OpenDesktop и ~/Documents/Open Desktop"
+      },
+      {
+        "name": "прогон дошёл до конца без ошибок",
+        "result": "выполнено",
+        "detail": "ошибок нет"
+      }
+    ],
+    "not_checked": [
+      "настоящий сон Mac и пробуждение",
+      "реальная смена дисплеев",
+      "настоящее давление памяти и нехватка места",
+      "окно машины и окно приложения глазами",
+      "обработчики sleep/wake/low-space на работающей машине приложения (приложение без окна не запускает машину; её нет)",
+      "гость (ОС, агент, сеть)"
+    ]
+  },
+  "notes": [
+    "Профиль test-only без гостя и без диска: RSS и задержки не переносятся на продуктовую VM.",
+    "Условия не контролировались: обычная интерактивная сессия, другие процессы пользователя работали; load average до и после записан.",
+    "Образцов задержек в окнах мало: в окна добавлены проверочные раунды (source = probe), они не относятся к расписанию «каждые 5/15 минут» и посчитаны отдельно."
+  ]
+}
