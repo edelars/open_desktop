@@ -13,6 +13,11 @@
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
     /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
+    pub const DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;
+    pub const DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013A;
+    pub const ECDH_Z_GEN: u32 = 0x0000_0154;
+    pub const RSA_DECRYPT: u32 = 0x0000_0159;
+    pub const RSA_ENCRYPT: u32 = 0x0000_0174;
     pub const EVICT_CONTROL: u32 = 0x0000_0120;
     pub const HIERARCHY_CONTROL: u32 = 0x0000_0121;
     pub const NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
@@ -125,6 +130,12 @@ pub mod pt {
     pub const HR_PERSISTENT: u32 = VAR + 8;
     pub const HR_PERSISTENT_AVAIL: u32 = VAR + 9;
     pub const HR_PERSISTENT_MIN: u32 = FIXED + 15;
+    /// Dictionary attack properties (Part 2 v184, Table 30): `failedTries`, `maxTries`,
+    /// `recoveryTime` (seconds), `lockoutRecovery` (seconds).
+    pub const LOCKOUT_COUNTER: u32 = VAR + 14;
+    pub const MAX_AUTH_FAIL: u32 = VAR + 15;
+    pub const LOCKOUT_INTERVAL: u32 = VAR + 16;
+    pub const LOCKOUT_RECOVERY: u32 = VAR + 17;
 }
 
 /// Table 8 (v184): `TPM_ALG_ID` values used in phase A.
@@ -134,7 +145,11 @@ pub mod alg {
     pub const SHA256: u16 = 0x000B;
     pub const NULL: u16 = 0x0010;
     pub const RSASSA: u16 = 0x0014;
+    /// RSA encryption padding schemes (`TPM2_RSA_Encrypt/Decrypt`) and the ECDH key exchange.
+    pub const RSAES: u16 = 0x0015;
+    pub const OAEP: u16 = 0x0017;
     pub const ECDSA: u16 = 0x0018;
+    pub const ECDH: u16 = 0x0019;
     pub const ECC: u16 = 0x0023;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;

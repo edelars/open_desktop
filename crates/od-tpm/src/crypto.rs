@@ -18,7 +18,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use rsa::rand_core::{TryCryptoRng, TryRng};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
-use rsa::{BoxedUint, Pkcs1v15Sign};
+use rsa::{BoxedUint, Oaep, Pkcs1v15Encrypt, Pkcs1v15Sign};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -200,16 +200,100 @@ pub(crate) fn rsa_sign(key: &RsaPrivate, digest: &[u8], rng: &mut Drbg) -> Optio
         .ok()
 }
 
+/// The RSA public key `(n, 65537)`; `None` for a modulus the library rejects.
+fn rsa_public_key(n: &[u8]) -> Option<rsa::PublicKey> {
+    let n = BoxedUint::from_be_slice(n, (n.len() * 8) as u32).ok()?;
+    rsa::PublicKey::new(n, BoxedUint::from(65537u64)).ok()
+}
+
 /// Verifies an RSASSA-PKCS1-v1_5 SHA-256 signature with the public key `(n, 65537)`.
 pub(crate) fn rsa_verify(n: &[u8], digest: &[u8], sig: &[u8]) -> bool {
-    let Ok(n) = BoxedUint::from_be_slice(n, (n.len() * 8) as u32) else {
-        return false;
-    };
-    let Ok(key) = rsa::PublicKey::new(n, BoxedUint::from(65537u64)) else {
+    let Some(key) = rsa_public_key(n) else {
         return false;
     };
     key.verify(Pkcs1v15Sign::new::<Sha256>(), digest, sig)
         .is_ok()
+}
+
+/// The padding of `TPM2_RSA_Encrypt` and `TPM2_RSA_Decrypt` (Part 3, Table 42): none (the
+/// message is an integer, raw RSA), RSAES-PKCS1-v1_5 and RSAES-OAEP (SHA-256 for the label and for
+/// MGF1, the only mask generation the text allows).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RsaPadding {
+    None,
+    Rsaes,
+    Oaep,
+}
+
+/// `TPM2_RSA_Encrypt` primitive with the public key `(n, 65537)`: `None` when the message does not
+/// fit the padding or the integer is not below `n` (the caller answers `TPM_RC_VALUE`). `label` is
+/// the OAEP label including its terminating zero octet (empty: no label). The RNG is the TPM DRBG.
+pub(crate) fn rsa_encrypt_public(
+    n: &[u8],
+    padding: RsaPadding,
+    label: &[u8],
+    message: &[u8],
+    rng: &mut Drbg,
+) -> Option<Vec<u8>> {
+    let key = rsa_public_key(n)?;
+    match padding {
+        RsaPadding::None => {
+            let m = BoxedUint::from_be_slice(message, (n.len() * 8) as u32).ok()?;
+            if m.cmp(key.n().as_ref()).is_ge() {
+                return None;
+            }
+            let c = rsa::hazmat::rsa_encrypt(&key, &m).ok()?;
+            Some(c.to_be_bytes().to_vec())
+        }
+        RsaPadding::Rsaes => key
+            .encrypt(&mut DrbgRng(rng), Pkcs1v15Encrypt, message)
+            .ok(),
+        RsaPadding::Oaep => {
+            let scheme = if label.is_empty() {
+                Oaep::<Sha256>::new()
+            } else {
+                Oaep::<Sha256>::new_with_label(label)
+            };
+            key.encrypt(&mut DrbgRng(rng), scheme, message).ok()
+        }
+    }
+}
+
+/// `TPM2_RSA_Decrypt` primitive (private operation; see the ISSUE-064 note at the top of this
+/// module). `None` when the padding does not check or the integer is not below `n` (the caller
+/// answers `TPM_RC_VALUE`). RSAES uses the implicit rejection of the `rsa` crate: an invalid
+/// padding yields a deterministic synthetic message, not an error (recorded deviation, see
+/// `docs/specs/VTPM.md`). The result is wiped on drop.
+pub(crate) fn rsa_decrypt_private(
+    key: &RsaPrivate,
+    padding: RsaPadding,
+    label: &[u8],
+    ciphertext: &[u8],
+    rng: &mut Drbg,
+) -> Option<Zeroizing<Vec<u8>>> {
+    let out = match padding {
+        RsaPadding::None => {
+            let c = BoxedUint::from_be_slice(ciphertext, RSA_BYTES as u32 * 8).ok()?;
+            let m = rsa::hazmat::rsa_decrypt_and_check(key, Some(&mut DrbgRng(rng)), &c).ok()?;
+            Zeroizing::new(Zeroizing::new(m).to_be_bytes().to_vec())
+        }
+        RsaPadding::Rsaes => Zeroizing::new(
+            key.decrypt_blinded(&mut DrbgRng(rng), Pkcs1v15Encrypt, ciphertext)
+                .ok()?,
+        ),
+        RsaPadding::Oaep => {
+            let scheme = if label.is_empty() {
+                Oaep::<Sha256>::new()
+            } else {
+                Oaep::<Sha256>::new_with_label(label)
+            };
+            Zeroizing::new(
+                key.decrypt_blinded(&mut DrbgRng(rng), scheme, ciphertext)
+                    .ok()?,
+            )
+        }
+    };
+    Some(out)
 }
 
 /// A P-256 private key from `rng`: 32 octets per attempt until the value is in `[1, n - 1]`.
@@ -258,6 +342,36 @@ fn ecc_verifying_key(x: &[u8], y: &[u8]) -> Option<p256::ecdsa::VerifyingKey> {
     sec1.extend_from_slice(x);
     sec1.extend_from_slice(y);
     p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).ok()
+}
+
+/// The affine coordinates `(x, y)` of a secret point, wiped on drop.
+pub(crate) type SecretPoint = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
+
+/// ECDH over P-256 (`TPM2_ECDH_ZGen`, Part 3, clause 14.5): `Z = [h * d] Q` with the cofactor
+/// `h = 1`, as the 32-octet affine coordinates `(x, y)`; the input coordinates may be shorter than
+/// 32 octets (padded on the left); `None` if `Q = (x, y)` is not a point of
+/// the curve or the product is the point at infinity (not possible for a point of the prime-order
+/// group and a scalar in `[1, n - 1]`). Both coordinates are wiped on drop.
+pub(crate) fn ecc_ecdh(key: &EccPrivate, x: &[u8], y: &[u8]) -> Option<SecretPoint> {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    // A TPM2B coordinate may come without its leading zero octets: pad on the left to 32 octets.
+    let (x, y) = (pad32(x)?, pad32(y)?);
+    let mut sec1 = [0u8; 65];
+    sec1[0] = 4;
+    sec1[1..33].copy_from_slice(&x);
+    sec1[33..].copy_from_slice(&y);
+    let q = p256::PublicKey::from_sec1_bytes(&sec1).ok()?;
+    let scalar = Zeroizing::new(key.to_bytes());
+    let d = p256::SecretKey::from_bytes(&scalar).ok()?;
+    let z = (q.to_projective() * *d.to_nonzero_scalar()).to_affine();
+    // The encoded point Z is secret: it is wiped after its coordinates are copied out.
+    let point = Zeroizing::new(z.to_sec1_point(false).as_bytes().to_vec());
+    (point.len() == 65 && point[0] == 4).then(|| {
+        (
+            Zeroizing::new(point[1..33].to_vec()),
+            Zeroizing::new(point[33..].to_vec()),
+        )
+    })
 }
 
 /// ECDSA over P-256 of a SHA-256 `digest`: `(r, s)`, 32 octets each (RFC 6979 nonce).

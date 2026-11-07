@@ -13,6 +13,8 @@ use crate::{Rc, Tpm};
 
 #[path = "tests_b.rs"]
 mod tests_b;
+#[path = "tests_c1.rs"]
+mod tests_c1;
 #[path = "tests_obj.rs"]
 mod tests_obj;
 
@@ -69,6 +71,11 @@ fn frame(tag: u16, code: u32, handles: &[u32], auth: &[u8], params: &[u8]) -> Ve
     v.extend_from_slice(&code.to_be_bytes());
     v.extend_from_slice(&body);
     v
+}
+
+/// Moves the TPM clock (`Time`) forward by `secs` seconds; the next command sees it.
+fn pass_time(t: &mut Tpm, secs: u64) {
+    t.power_ms += secs * 1000;
 }
 
 fn tpm_new() -> Tpm {
@@ -540,16 +547,19 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     let mut t = started();
     // Expected list written out independently of the dispatch table (Part 2 Table 14 codes).
     let expected: Vec<u32> = vec![
-        // Slice B of phase B: EvictControl (0x120), CreatePrimary (0x131), Create (0x153), Load
-        // (0x157), Sign (0x15D), Unseal (0x15E), LoadExternal (0x167), ReadPublic (0x173),
-        // VerifySignature (0x177). Slice A: HierarchyControl, NV_UndefineSpace, Clear,
-        // ClearControl, HierarchyChangeAuth, NV_DefineSpace, NV_Write, NV_WriteLock. The rest is
-        // phase A, slice A (NV_Read, NV_ReadLock, FlushContext, NV_ReadPublic, StartAuthSession).
-        0x120, 0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x131, 0x137, 0x138, 0x13C, 0x13D, 0x13E,
-        0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x157, 0x15C, 0x15D, 0x15E, 0x165, 0x167,
-        0x169, 0x173, 0x176, 0x177, 0x17A, 0x17B, 0x17C, 0x17D, 0x17E, 0x181, 0x182, 0x185, 0x186,
+        // Slice C1 of phase B: DictionaryAttackLockReset (0x139), DictionaryAttackParameters
+        // (0x13A), ECDH_ZGen (0x154), RSA_Decrypt (0x159), RSA_Encrypt (0x174). Slice B: EvictControl
+        // (0x120), CreatePrimary (0x131), Create (0x153), Load (0x157), Sign (0x15D), Unseal
+        // (0x15E), LoadExternal (0x167), ReadPublic (0x173), VerifySignature (0x177). Slice A:
+        // HierarchyControl, NV_UndefineSpace, Clear, ClearControl, HierarchyChangeAuth,
+        // NV_DefineSpace, NV_Write, NV_WriteLock. The rest is phase A, slice A (NV_Read,
+        // NV_ReadLock, FlushContext, NV_ReadPublic, StartAuthSession).
+        0x120, 0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x131, 0x137, 0x138, 0x139, 0x13A, 0x13C,
+        0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x154, 0x157, 0x159, 0x15C,
+        0x15D, 0x15E, 0x165, 0x167, 0x169, 0x173, 0x174, 0x176, 0x177, 0x17A, 0x17B, 0x17C, 0x17D,
+        0x17E, 0x181, 0x182, 0x185, 0x186,
     ];
-    assert_eq!(expected.len(), 39);
+    assert_eq!(expected.len(), 44);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -573,7 +583,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(39)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(44)[..]].concat()
     );
 }
 
@@ -596,10 +606,11 @@ fn capability_commands_paging_and_more_data() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 8);
-    // RSA, AES, KEYEDHASH, SHA256, RSASSA, ECDSA, ECC, CFB with their TPMA_ALGORITHM bits (Part 2,
-    // Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA and ECDSA "A X", ECC "A O";
-    // AES "S O" and CFB "E" are NOT VERIFIED).
+    assert!(!more && c == cap::ALGS && count == 11);
+    // RSA, AES, KEYEDHASH, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
+    // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
+    // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
+    // NOT VERIFIED).
     assert_eq!(
         body,
         [
@@ -608,14 +619,17 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x08, 0, 0, 0, 12],
             &[0x00, 0x0B, 0, 0, 0, 4],
             &[0x00, 0x14, 0, 0, 1, 1],
+            &[0x00, 0x15, 0, 0, 2, 1],
+            &[0x00, 0x17, 0, 0, 2, 5],
             &[0x00, 0x18, 0, 0, 1, 1],
+            &[0x00, 0x19, 0, 0, 4, 1],
             &[0x00, 0x23, 0, 0, 0, 9],
             &[0x00, 0x43, 0, 0, 2, 0],
         ]
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 4);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 7);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 1);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 0);
 

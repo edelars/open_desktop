@@ -24,6 +24,7 @@
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
 //! `TPM2_NV_UndefineSpaceSpecial` only).
+//! Slice C1: dictionary-attack protection wraps the authorization check (`da.rs`).
 //! Slice B of phase B: the Name of a transient or persistent object in a cpHash is its Name
 //! (`nameAlg || H(TPMT_PUBLIC)`), and an object is authorized with its authValue only while it has
 //! a private part and `userWithAuth` is SET (`TPM_RC_AUTH_UNAVAILABLE` otherwise; NOT VERIFIED
@@ -34,6 +35,7 @@ use sha2::{Digest, Sha256};
 use crate::codes::{cc, handle, session_attr, st};
 use crate::command::{HEADER_SIZE, check_password_session, parse_auth_area, parse_header};
 use crate::crypto::DIGEST;
+use crate::da::DaClass;
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
@@ -91,7 +93,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 39] = [
+pub(crate) static COMMANDS: [CommandSpec; 44] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -102,6 +104,8 @@ pub(crate) static COMMANDS: [CommandSpec; 39] = [
     spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
     spec(cc::NV_WRITE, 2, 1, false, true, false),
     spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
+    spec(cc::DICTIONARY_ATTACK_LOCK_RESET, 1, 1, false, true, false),
+    spec(cc::DICTIONARY_ATTACK_PARAMETERS, 1, 1, false, true, false),
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
     spec(cc::PCR_RESET, 1, 1, false, true, false),
     spec(cc::SEQUENCE_COMPLETE, 1, 1, false, false, true),
@@ -112,7 +116,9 @@ pub(crate) static COMMANDS: [CommandSpec; 39] = [
     spec(cc::NV_READ, 2, 1, false, false, false),
     spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
     spec(cc::CREATE, 1, 1, false, false, false),
+    spec(cc::ECDH_Z_GEN, 1, 1, false, false, false),
     spec(cc::LOAD, 1, 1, true, false, false),
+    spec(cc::RSA_DECRYPT, 1, 1, false, false, false),
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
     spec(cc::SIGN, 1, 1, false, false, false),
     spec(cc::UNSEAL, 1, 1, false, false, false),
@@ -120,6 +126,7 @@ pub(crate) static COMMANDS: [CommandSpec; 39] = [
     spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::READ_PUBLIC, 1, 0, false, false, false),
+    spec(cc::RSA_ENCRYPT, 1, 0, false, false, false),
     spec(cc::START_AUTH_SESSION, 2, 0, true, false, false),
     spec(cc::VERIFY_SIGNATURE, 1, 0, false, false, false),
     spec(cc::GET_CAPABILITY, 0, 0, false, false, false),
@@ -185,6 +192,16 @@ fn handle_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> Result<Aut
             Ok(tpm.seq_auth(slot))
         }
     }
+}
+
+/// DA class of the authorization of handle number `i` of the command (`da.rs`): a PCR and
+/// `TPM_RH_NULL` are exempt.
+fn da_class(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> DaClass {
+    let h = handles[i];
+    if is_pcr_position(code, i) || h == handle::RH_NULL {
+        return DaClass::Exempt;
+    }
+    tpm.da_class_of(h)
 }
 
 /// The authorization value for a response HMAC, read after the command ran: the current value
@@ -353,12 +370,15 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     let mut cp_hash: Option<[u8; DIGEST]> = None;
     for (i, s) in sessions.iter().enumerate() {
         let auth = handle_auth(tpm, spec.code, &handles, i)?;
+        // Dictionary attack protection (`da.rs`): the lockout check comes before the authValue
+        // check (Part 3, clause 5.6); a wrong authValue of a DA-protected entity is
+        // `TPM_RC_AUTH_FAIL` and counts, of any other `TPM_RC_BAD_AUTH` (Part 1, clause 17.6.8).
+        let class = da_class(tpm, spec.code, &handles, i);
+        tpm.da_check(class)?;
         match &mut uses[i] {
             SessionUse::Password => {
                 if !password_matches(&s.hmac, auth.as_slice()) {
-                    // No dictionary attack protection yet: every failure is "without DA
-                    // implications" (Part 3, clause 5; Part 1, clause 17.6.8).
-                    return Err(Rc::BAD_AUTH.in_session((i + 1) as u8));
+                    return Err(tpm.da_auth_failed(class, (i + 1) as u8));
                 }
             }
             SessionUse::Hmac { slot, used_auth } => {
@@ -367,7 +387,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                 let (key, with_auth) = authorization_key(session, handles[i], &auth);
                 if !verify_command_hmac(session, &key, &cp, &s.nonce, s.attributes, &s.hmac) {
-                    return Err(Rc::BAD_AUTH.in_session((i + 1) as u8));
+                    return Err(tpm.da_auth_failed(class, (i + 1) as u8));
                 }
                 *used_auth = with_auth;
             }
@@ -428,6 +448,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
         cc::SIGN => tpm.cmd_sign(&inv, &mut p)?,
         cc::VERIFY_SIGNATURE => tpm.cmd_verify_signature(&inv, &mut p)?,
+        cc::RSA_ENCRYPT => tpm.cmd_rsa_encrypt(&inv, &mut p)?,
+        cc::RSA_DECRYPT => tpm.cmd_rsa_decrypt(&inv, &mut p)?,
+        cc::ECDH_Z_GEN => tpm.cmd_ecdh_zgen(&inv, &mut p)?,
+        cc::DICTIONARY_ATTACK_LOCK_RESET => tpm.cmd_dictionary_attack_lock_reset(&mut p)?,
+        cc::DICTIONARY_ATTACK_PARAMETERS => tpm.cmd_dictionary_attack_parameters(&mut p)?,
         // Unreachable while the table and this match agree; a missing arm is the safe answer.
         _ => return Err(Rc::COMMAND_CODE),
     };
@@ -515,8 +540,20 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
-        cc::CREATE | cc::LOAD | cc::READ_PUBLIC | cc::UNSEAL | cc::SIGN | cc::VERIFY_SIGNATURE => {
-            tpm.check_object_handle(handles[0], 0, false)?
+        cc::CREATE
+        | cc::LOAD
+        | cc::READ_PUBLIC
+        | cc::UNSEAL
+        | cc::SIGN
+        | cc::VERIFY_SIGNATURE
+        | cc::RSA_ENCRYPT
+        | cc::RSA_DECRYPT
+        | cc::ECDH_Z_GEN => tpm.check_object_handle(handles[0], 0, false)?,
+        cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {
+            // `TPMI_RH_LOCKOUT` (Part 3, Tables 193 and 195): `TPM_RH_LOCKOUT` only.
+            if handles[0] != handle::RH_LOCKOUT {
+                return Err(Rc::VALUE.in_handle(1));
+            }
         }
         cc::EVICT_CONTROL => {
             // `TPMI_RH_PROVISION` (Part 3, Table 213): owner or platform.
@@ -582,6 +619,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 39);
+        assert_eq!(COMMANDS.len(), 44);
     }
 }

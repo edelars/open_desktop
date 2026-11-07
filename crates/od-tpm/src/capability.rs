@@ -15,7 +15,10 @@
 //! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
-//! ECC; `TPM_CAP_ECC_CURVES` lists NIST P-256.
+//! ECC, with slice C1 also RSAES, OAEP and ECDH (the `TPMA_ALGORITHM` bits follow the type column
+//! of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
+//! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
+//! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
 //!
 //! `TPM_CAP_HANDLES`: PCR, defined NV indices, loaded HMAC sessions (`TPM_HT_LOADED_SESSION`),
 //! loaded sequence and key objects (transient), persistent objects, the permanent handles of the hierarchies and the null
@@ -36,8 +39,9 @@ use crate::codes::{alg, cap, curve, handle, pt, spec};
 use crate::dispatch::COMMANDS;
 use crate::marshal::{
     Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING, TPMA_ALGORITHM_HASH,
-    TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING, TPMA_ALGORITHM_SYMMETRIC, TpmaCc,
-    TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection, TpmsTaggedProperty, Writer, limits,
+    TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING, TPMA_ALGORITHM_SYMMETRIC,
+    TpmaCc, TpmlPcrSelection, TpmsAlgProperty, TpmsPcrSelection, TpmsTaggedProperty, Writer,
+    limits,
 };
 use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
@@ -129,6 +133,11 @@ impl Tpm {
                 pt::HR_PERSISTENT_AVAIL,
                 (MAX_PERSISTENT - self.persistent.objects.len()) as u32,
             ),
+            // Dictionary attack (slice C1, `da.rs`).
+            (pt::LOCKOUT_COUNTER, self.persistent.da.failed_tries),
+            (pt::MAX_AUTH_FAIL, self.persistent.da.max_tries),
+            (pt::LOCKOUT_INTERVAL, self.persistent.da.recovery_time),
+            (pt::LOCKOUT_RECOVERY, self.persistent.da.lockout_recovery),
         ]
     }
 
@@ -153,7 +162,7 @@ impl Tpm {
                 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
                 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
                 // are our reading of the "S O" and "E" types.
-                let algs: [(u16, u32); 8] = [
+                let algs: [(u16, u32); 11] = [
                     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
@@ -163,9 +172,18 @@ impl Tpm {
                         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
                     ),
                     (
+                        alg::RSAES,
+                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
+                    ),
+                    (
+                        alg::OAEP,
+                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING | TPMA_ALGORITHM_HASH,
+                    ),
+                    (
                         alg::ECDSA,
                         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
                     ),
+                    (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
                     (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
                 ];

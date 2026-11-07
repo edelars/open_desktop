@@ -116,8 +116,10 @@ impl Tpm {
         // `safe`: no Clock value above the current one was reported earlier, which holds only
         // after an orderly shutdown (or for a fresh TPM). The flag is cleared until the next
         // `Shutdown`.
-        self.clock_safe = self.persistent.orderly;
+        let was_orderly = self.persistent.orderly;
+        self.clock_safe = was_orderly;
         self.persistent.orderly = false;
+        self.da_startup(was_orderly);
         self.started = true;
         Ok(Output::default())
     }

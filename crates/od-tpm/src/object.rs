@@ -30,11 +30,13 @@
 //! and `outerHMAC = HMAC(HMACkey, symIv || encSensitive || Name)`, with the integrity checked
 //! before decryption. `encSensitive` is the marshaled `TPM2B_SENSITIVE` encrypted with AES-128 in
 //! CFB mode (full-block feedback; crates `aes` and `cfb-mode`), key `symKey` (16 octets), IV the
-//! 16-octet `symIv` drawn from the TPM DRBG at `TPM2_Create`. NOT VERIFIED: the exact text of
-//! Part 1 v184 on the encryption of the private area (the open copy was not available); the scheme
-//! chosen is AES-128-CFB with the KDFa key above and a random `symIv`, as in ADR-0009. An RSA
-//! key's sensitive field holds both primes `p || q` (256 octets), not one prime. The authValue
-//! is padded with zero octets to one digest (clause 25.7.3).
+//! 16-octet `symIv` drawn from the TPM DRBG at `TPM2_Create`. Checked in slice C1 against the text of
+//! Part 1 v184, clauses 20.2-20.5 (the labels, the KDFa inputs, the CFB mode of the parent's
+//! symmetric cipher with a random `symIv`, the outer HMAC over the marshaled `TPM2B_IV`, the
+//! encrypted `size` field of `TPM2B_SENSITIVE`, the integrity value before the IV): the
+//! construction matches; blobs of other TPMs were not tried. An RSA key's sensitive field holds both
+//! primes `p || q` (256 octets), not one prime (a deviation). The authValue is padded with zero
+//! octets to one digest (clause 25.7.3).
 //!
 //! Secrets (keys, seed values, authValues, sealed data) are wiped on drop and never printed.
 //!
@@ -237,8 +239,8 @@ impl Objects {
     }
 }
 
-/// Persistent objects (`TPM2_EvictControl`). In memory only: they survive `_TPM_Init` and
-/// `Startup` but are NOT in the snapshot yet (persistent state v1, slice C).
+/// Persistent objects (`TPM2_EvictControl`). They survive `_TPM_Init` and `Startup` and are in the
+/// snapshot with their private parts (`snapshot.rs`).
 #[derive(Default)]
 pub(crate) struct PersistentObjects {
     items: Vec<(u32, Object)>,
@@ -257,6 +259,26 @@ impl PersistentObjects {
 
     pub(crate) fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// The objects in handle order, for the snapshot.
+    pub(crate) fn sorted(&self) -> Vec<(u32, &Object)> {
+        let mut v: Vec<(u32, &Object)> = self.items.iter().map(|(h, o)| (*h, o)).collect();
+        v.sort_unstable_by_key(|(h, _)| *h);
+        v
+    }
+
+    /// Rebuilds the store from restored items; `None` for a duplicate handle or too many items.
+    pub(crate) fn from_items(items: Vec<(u32, Object)>) -> Option<PersistentObjects> {
+        if items.len() > MAX_PERSISTENT {
+            return None;
+        }
+        for (i, (h, _)) in items.iter().enumerate() {
+            if items[..i].iter().any(|(k, _)| k == h) {
+                return None;
+            }
+        }
+        Some(PersistentObjects { items })
     }
 
     pub(crate) fn is_full(&self) -> bool {
@@ -353,8 +375,12 @@ pub(crate) fn check_public(
             check_symmetric(public, *symmetric)?;
             let ok = match (sign, decrypt, restricted) {
                 // sign + decrypt: scheme NULL; unrestricted signing: RSASSA or NULL; restricted
-                // signing: RSASSA; decrypt only: NULL (no RSA encryption scheme is implemented).
-                (true, true, _) | (false, true, _) => scheme.alg == alg::NULL,
+                // signing: RSASSA; restricted decrypt: NULL; unrestricted decrypt: RSAES, OAEP or
+                // NULL (Part 2, Table 215; slice C1).
+                (true, true, _) | (false, true, true) => scheme.alg == alg::NULL,
+                (false, true, false) => {
+                    matches!(scheme.alg, alg::NULL | alg::RSAES | alg::OAEP)
+                }
                 (true, false, false) => scheme.alg == alg::RSASSA || scheme.alg == alg::NULL,
                 (true, false, true) => scheme.alg == alg::RSASSA,
                 (false, false, _) => false,
@@ -368,10 +394,12 @@ pub(crate) fn check_public(
         } => {
             check_asymmetric_attributes(public, sign, decrypt, restricted)?;
             check_symmetric(public, *symmetric)?;
-            // A signing key needs a signing scheme (Part 2, Table 216); all others NULL (ECDH is
-            // not implemented).
+            // A signing key needs a signing scheme (Part 2, Table 216); an unrestricted decryption
+            // key (`TPM2_ECDH_ZGen`) ECDH or NULL; all others NULL.
             let ok = if sign && !decrypt {
                 scheme.alg == alg::ECDSA
+            } else if decrypt && !sign && !restricted {
+                matches!(scheme.alg, alg::NULL | alg::ECDH)
             } else {
                 scheme.alg == alg::NULL
             };
@@ -520,7 +548,7 @@ fn padded_auth(a: &AuthValue) -> [u8; limits::MAX_DIGEST_SIZE] {
 
 /// `TPM2B_SENSITIVE` of the object (Table 225): `size || sensitiveType || authValue || seedValue
 /// || sensitive`.
-fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>, Rc> {
+pub(crate) fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>, Rc> {
     let secret: Zeroizing<Vec<u8>> = match &s.secret {
         Secret::Rsa(k) => rsa_primes(k).ok_or(Rc::FAILURE)?,
         Secret::Ecc(k) => ecc_scalar(k),
@@ -547,7 +575,7 @@ fn sensitive_to_bytes(s: &Sensitive, type_alg: u16) -> Result<Zeroizing<Vec<u8>>
 /// `TPM_RC_SENSITIVE` if it does not unmarshal, `TPM_RC_TYPE` for another `sensitiveType`,
 /// `TPM_RC_KEY_SIZE` for a private value of the wrong size, `TPM_RC_BINDING` if the private value
 /// does not belong to the public area.
-fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
+pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<Sensitive, Rc> {
     type Raw = (
         u16,
         Zeroizing<Vec<u8>>,

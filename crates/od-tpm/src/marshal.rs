@@ -508,6 +508,8 @@ pub const TPMA_ALGORITHM_OBJECT: u32 = 1 << 3;
 pub const TPMA_ALGORITHM_SIGNING: u32 = 1 << 8;
 /// `TPMA_ALGORITHM` bit 9: an encrypting algorithm (mode).
 pub const TPMA_ALGORITHM_ENCRYPTING: u32 = 1 << 9;
+/// `TPMA_ALGORITHM` bit 10: a method (key exchange).
+pub const TPMA_ALGORITHM_METHOD: u32 = 1 << 10;
 
 /// `TPMS_TAGGED_PROPERTY` (Table 114).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -643,8 +645,9 @@ impl SymDef {
 }
 
 /// A signing or asymmetric scheme with its hash (`TPMT_SIG_SCHEME`, `TPMT_RSA_SCHEME`,
-/// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA` or
-/// `TPM_ALG_ECDSA`.
+/// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA`,
+/// `TPM_ALG_ECDSA`, `TPM_ALG_OAEP` or `TPM_ALG_ECDH` (these with a hash) or `TPM_ALG_RSAES`
+/// (`TPMS_EMPTY` details: no hash on the wire, hash `TPM_ALG_NULL`; slice C1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Scheme {
     pub alg: u16,
@@ -659,7 +662,7 @@ impl Scheme {
 
     pub fn marshal(&self, w: &mut Writer) {
         w.u16(self.alg);
-        if self.alg != alg::NULL {
+        if self.alg != alg::NULL && self.alg != alg::RSAES {
             w.u16(self.hash);
         }
     }
@@ -675,6 +678,12 @@ impl Scheme {
         }
         if !allowed.contains(&a) {
             return Err(r.err(bad));
+        }
+        if a == alg::RSAES {
+            return Ok(Scheme {
+                alg: a,
+                hash: alg::NULL,
+            });
         }
         let hash = r.u16()?;
         if hash != alg::SHA256 {
@@ -805,7 +814,8 @@ impl TpmtPublic {
         let (params, unique) = match type_alg {
             alg::RSA => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal(r, &[alg::RSASSA], Rc::VALUE)?;
+                let scheme =
+                    Scheme::unmarshal(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
                 let key_bits = r.u16()?;
                 if key_bits != 2048 {
                     return Err(r.err(Rc::VALUE));
@@ -824,7 +834,7 @@ impl TpmtPublic {
             }
             alg::ECC => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal(r, &[alg::ECDSA], Rc::SCHEME)?;
+                let scheme = Scheme::unmarshal(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
                 let curve_id = r.u16()?;
                 if curve_id != curve::NIST_P256 {
                     return Err(r.err(Rc::CURVE));

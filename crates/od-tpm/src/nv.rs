@@ -148,6 +148,28 @@ impl NvStore {
         self.indices.len()
     }
 
+    /// The indices in ascending handle order, for the snapshot.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &NvIndex> {
+        self.indices.iter()
+    }
+
+    /// Rebuilds the store from restored indices (any order); `None` for a duplicate handle, a
+    /// handle outside the NV index range, more than [`MAX_NV_INDICES`] indices or more than
+    /// [`NV_POOL_SIZE`] octets of data.
+    pub(crate) fn from_indices(mut indices: Vec<NvIndex>) -> Option<NvStore> {
+        if indices.len() > MAX_NV_INDICES
+            || indices.iter().map(|i| i.data.len()).sum::<usize>() > NV_POOL_SIZE
+            || indices.iter().any(|i| !is_nv_handle(i.handle))
+        {
+            return None;
+        }
+        indices.sort_unstable_by_key(|i| i.handle);
+        if indices.windows(2).any(|w| w[0].handle == w[1].handle) {
+            return None;
+        }
+        Some(NvStore { indices })
+    }
+
     /// Data octets in use.
     pub(crate) fn used(&self) -> usize {
         self.indices.iter().map(|i| i.data.len()).sum()

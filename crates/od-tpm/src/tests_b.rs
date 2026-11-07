@@ -17,19 +17,25 @@ use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX, NV_POOL_SIZE, attr};
 const OWNER: u32 = handle::RH_OWNER;
 const PLATFORM: u32 = handle::RH_PLATFORM;
 const ENDORSEMENT: u32 = handle::RH_ENDORSEMENT;
-const LOCKOUT: u32 = handle::RH_LOCKOUT;
+pub(super) const LOCKOUT: u32 = handle::RH_LOCKOUT;
 const NULL: u32 = handle::RH_NULL;
-const NV0: u32 = 0x0100_0000;
+pub(super) const NV0: u32 = 0x0100_0000;
 
-fn pw_cmd(t: &mut Tpm, code: u32, handles: &[u32], pw: &[u8], params: &[u8]) -> Vec<u8> {
+pub(super) fn pw_cmd(t: &mut Tpm, code: u32, handles: &[u32], pw: &[u8], params: &[u8]) -> Vec<u8> {
     run(t, with_pw(code, handles, &[pw], params))
 }
 
-fn set_auth(t: &mut Tpm, who: u32, old: &[u8], new: &[u8]) -> Vec<u8> {
+pub(super) fn set_auth(t: &mut Tpm, who: u32, old: &[u8], new: &[u8]) -> Vec<u8> {
     pw_cmd(t, cc::HIERARCHY_CHANGE_AUTH, &[who], old, &tpm2b(new))
 }
 
-fn hierarchy_control(t: &mut Tpm, auth: u32, pw: &[u8], enable: u32, state: u8) -> Vec<u8> {
+pub(super) fn hierarchy_control(
+    t: &mut Tpm,
+    auth: u32,
+    pw: &[u8],
+    enable: u32,
+    state: u8,
+) -> Vec<u8> {
     pw_cmd(
         t,
         cc::HIERARCHY_CONTROL,
@@ -45,17 +51,17 @@ fn startup_clear_attributes(t: &mut Tpm) -> u32 {
     u32::from_be_bytes([body[4], body[5], body[6], body[7]])
 }
 
-fn permanent_attributes(t: &mut Tpm) -> u32 {
+pub(super) fn permanent_attributes(t: &mut Tpm) -> u32 {
     let (_, _, body, _) = cap_list(&get_cap(t, cap::TPM_PROPERTIES, pt::PERMANENT, 1));
     assert_eq!(&body[..4], &u32b(pt::PERMANENT)[..]);
     u32::from_be_bytes([body[4], body[5], body[6], body[7]])
 }
 
-fn startup(t: &mut Tpm, kind: u16) {
+pub(super) fn startup(t: &mut Tpm, kind: u16) {
     ok(&run(t, plain(cc::STARTUP, &[], &u16b(kind))));
 }
 
-fn shutdown(t: &mut Tpm, kind: u16) {
+pub(super) fn shutdown(t: &mut Tpm, kind: u16) {
     ok(&run(t, plain(cc::SHUTDOWN, &[], &u16b(kind))));
 }
 
@@ -264,7 +270,13 @@ pub(super) fn hc(code: u32, handles: &[u32], params: Vec<u8>, entity: (u32, &[u8
 
 // ---------------------------------------------------------------- NV helpers
 
-fn nv_public(index: u32, name_alg: u16, attributes: u32, policy: &[u8], size: u16) -> Vec<u8> {
+pub(super) fn nv_public(
+    index: u32,
+    name_alg: u16,
+    attributes: u32,
+    policy: &[u8],
+    size: u16,
+) -> Vec<u8> {
     cat(&[
         &u32b(index),
         &u16b(name_alg),
@@ -274,7 +286,7 @@ fn nv_public(index: u32, name_alg: u16, attributes: u32, policy: &[u8], size: u1
     ])
 }
 
-fn define_raw(t: &mut Tpm, who: u32, pw: &[u8], auth: &[u8], public: &[u8]) -> Vec<u8> {
+pub(super) fn define_raw(t: &mut Tpm, who: u32, pw: &[u8], auth: &[u8], public: &[u8]) -> Vec<u8> {
     pw_cmd(
         t,
         cc::NV_DEFINE_SPACE,
@@ -284,7 +296,7 @@ fn define_raw(t: &mut Tpm, who: u32, pw: &[u8], auth: &[u8], public: &[u8]) -> V
     )
 }
 
-fn define(t: &mut Tpm, who: u32, index: u32, attributes: u32, size: u16) -> Vec<u8> {
+pub(super) fn define(t: &mut Tpm, who: u32, index: u32, attributes: u32, size: u16) -> Vec<u8> {
     define_raw(
         t,
         who,
@@ -298,7 +310,14 @@ fn define(t: &mut Tpm, who: u32, index: u32, attributes: u32, size: u16) -> Vec<
 const OWNER_RW: u32 = attr::OWNERWRITE | attr::OWNERREAD;
 const PLATFORM_CREATED_RW: u32 = attr::PPWRITE | attr::PPREAD | attr::PLATFORMCREATE;
 
-fn nv_write(t: &mut Tpm, auth: u32, index: u32, pw: &[u8], data: &[u8], offset: u16) -> Vec<u8> {
+pub(super) fn nv_write(
+    t: &mut Tpm,
+    auth: u32,
+    index: u32,
+    pw: &[u8],
+    data: &[u8],
+    offset: u16,
+) -> Vec<u8> {
     pw_cmd(
         t,
         cc::NV_WRITE,
@@ -308,7 +327,14 @@ fn nv_write(t: &mut Tpm, auth: u32, index: u32, pw: &[u8], data: &[u8], offset: 
     )
 }
 
-fn nv_read(t: &mut Tpm, auth: u32, index: u32, pw: &[u8], size: u16, offset: u16) -> Vec<u8> {
+pub(super) fn nv_read(
+    t: &mut Tpm,
+    auth: u32,
+    index: u32,
+    pw: &[u8],
+    size: u16,
+    offset: u16,
+) -> Vec<u8> {
     pw_cmd(
         t,
         cc::NV_READ,
@@ -318,7 +344,7 @@ fn nv_read(t: &mut Tpm, auth: u32, index: u32, pw: &[u8], size: u16, offset: u16
     )
 }
 
-fn nv_read_data(resp: &[u8]) -> Vec<u8> {
+pub(super) fn nv_read_data(resp: &[u8]) -> Vec<u8> {
     let p = params(resp, 0);
     let mut r = Reader::new(p);
     let d = r.tpm2b(NV_BUFFER_MAX).unwrap().to_vec();
@@ -327,7 +353,7 @@ fn nv_read_data(resp: &[u8]) -> Vec<u8> {
 }
 
 /// `(public area, Name)` of an index from `TPM2_NV_ReadPublic`.
-fn nv_read_public(t: &mut Tpm, index: u32) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn nv_read_public(t: &mut Tpm, index: u32) -> (Vec<u8>, Vec<u8>) {
     let r = run(t, plain(cc::NV_READ_PUBLIC, &[index], &[]));
     let mut rd = Reader::new(params(&r, 0));
     let public = rd.tpm2b(1024).unwrap().to_vec();
@@ -336,12 +362,12 @@ fn nv_read_public(t: &mut Tpm, index: u32) -> (Vec<u8>, Vec<u8>) {
     (public, name)
 }
 
-fn nv_attributes(t: &mut Tpm, index: u32) -> u32 {
+pub(super) fn nv_attributes(t: &mut Tpm, index: u32) -> u32 {
     let (public, _) = nv_read_public(t, index);
     u32::from_be_bytes([public[6], public[7], public[8], public[9]])
 }
 
-fn handles_of(t: &mut Tpm, property: u32) -> Vec<u32> {
+pub(super) fn handles_of(t: &mut Tpm, property: u32) -> Vec<u32> {
     let (more, _, body, _) = cap_list(&get_cap(t, cap::HANDLES, property, 256));
     assert!(!more);
     body.chunks(4)
@@ -356,20 +382,27 @@ fn changing_a_hierarchy_auth_makes_the_old_value_useless() {
     for who in [OWNER, ENDORSEMENT, PLATFORM, LOCKOUT] {
         let mut t = started();
         ok(&set_auth(&mut t, who, b"", b"first"));
+        // A wrong value of lockoutAuth is DA protected: TPM_RC_AUTH_FAIL, and lockoutAuth is
+        // disabled until lockoutRecovery has passed (`da.rs`); the others are TPM_RC_BAD_AUTH.
+        let wrong = if who == LOCKOUT {
+            Rc::AUTH_FAIL
+        } else {
+            Rc::BAD_AUTH
+        };
         // The empty password no longer authorizes; the new one does.
-        err(
-            &set_auth(&mut t, who, b"", b"second"),
-            Rc::BAD_AUTH.in_session(1),
-        );
+        err(&set_auth(&mut t, who, b"", b"second"), wrong.in_session(1));
+        pass_time(&mut t, 86_400);
         err(
             &set_auth(&mut t, who, b"firsT", b"second"),
-            Rc::BAD_AUTH.in_session(1),
+            wrong.in_session(1),
         );
+        pass_time(&mut t, 86_400);
         ok(&set_auth(&mut t, who, b"first", b"second"));
         err(
             &set_auth(&mut t, who, b"first", b"third"),
-            Rc::BAD_AUTH.in_session(1),
+            wrong.in_session(1),
         );
+        pass_time(&mut t, 86_400);
         // Changing back to the empty value.
         ok(&set_auth(&mut t, who, b"second", b""));
         ok(&set_auth(&mut t, who, b"", b""));
@@ -790,8 +823,14 @@ fn clear_errors_and_clear_control() {
     ok(&set_auth(&mut t, LOCKOUT, b"", b"lk"));
     err(
         &pw_cmd(&mut t, cc::CLEAR, &[LOCKOUT], b"", &[]),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
+    // lockoutAuth is disabled after the failure (`da.rs`) until lockoutRecovery has passed.
+    err(
+        &pw_cmd(&mut t, cc::CLEAR, &[LOCKOUT], b"lk", &[]),
+        Rc::LOCKOUT,
+    );
+    pass_time(&mut t, 86_400);
     ok(&pw_cmd(&mut t, cc::CLEAR, &[LOCKOUT], b"lk", &[]));
     // Clear emptied lockoutAuth.
     ok(&pw_cmd(&mut t, cc::CLEAR, &[LOCKOUT], b"", &[]));
@@ -1882,7 +1921,7 @@ fn nv_index_authvalue_authorizes_when_the_attributes_allow() {
     ));
     err(
         &nv_write(&mut t, idx, idx, b"", &[1], 0),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
     ok(&nv_write(&mut t, idx, idx, b"idxpw", &[7, 8, 9, 10], 0));
     assert_eq!(
@@ -2253,8 +2292,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 39 commands less EvictControl (0x120).
-    assert_eq!(count, 38);
+    // From 0x121 on: 44 commands less EvictControl (0x120).
+    assert_eq!(count, 43);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
@@ -2331,27 +2370,6 @@ fn every_authorized_command_refuses_a_session_that_is_not_loaded() {
     }
     // Nothing happened: the index is intact.
     assert_eq!(handles_of(&mut t, NV0), vec![idx]);
-}
-
-#[test]
-fn snapshot_does_not_carry_hierarchy_auth_or_nv_yet() {
-    // Slice A keeps the authorization values and the NV store in memory only; the snapshot of
-    // phase A (seeds, clock, counters) is unchanged. Slice C of S7-23 adds them to the format.
-    let mut t = started();
-    ok(&set_auth(&mut t, OWNER, b"", b"own"));
-    ok(&define_raw(
-        &mut t,
-        OWNER,
-        b"own",
-        b"",
-        &nv_public(NV0 + 1, alg::SHA256, OWNER_RW, &[], 4),
-    ));
-    let snap = t.persistent_snapshot();
-    assert_eq!(snap.len(), 161);
-    let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();
-    startup(&mut r, 0);
-    ok(&set_auth(&mut r, OWNER, b"", b"fresh"));
-    assert!(handles_of(&mut r, NV0).is_empty());
 }
 
 #[test]

@@ -4,9 +4,9 @@
 //! `TPM2_ClearControl`.
 //!
 //! State split (Part 1 clauses 11.3-11.5, Part 3 clause 9.3.1 "Startup", Part 2 Tables 42, 43):
-//! - persistent: `ownerAuth`, `endorsementAuth`, `lockoutAuth`, `disableClear`, the three
-//!   "AuthSet" flags of `TPMA_PERMANENT`; the seeds (platform, owner/storage, endorsement) live
-//!   in the phase A persistent block;
+//! - persistent (in the snapshot since slice C1): `ownerAuth`, `endorsementAuth`, `lockoutAuth`,
+//!   `disableClear`, the three "AuthSet" flags of `TPMA_PERMANENT`; the seeds (platform,
+//!   owner/storage, endorsement) live in the phase A persistent block;
 //! - volatile: `platformAuth` (EmptyAuth on every `Startup(CLEAR)`), the enables `phEnable`
 //!   (SET on any `Startup`), `shEnable`, `ehEnable`, `phEnableNV` (SET on `Startup(CLEAR)`,
 //!   preserved by `Startup(STATE)`), and the Null seed (new on every TPM Reset). `Shutdown(STATE)`
@@ -19,8 +19,10 @@
 //! the storage seed and with it `shProof` and `ehProof`, but not the endorsement seed (EPS): the
 //! endorsement primary key does not change (`TPM2_ChangeEPS` is not implemented).
 //!
-//! Lockout authorization exists as an authorization value only: there is no dictionary-attack
-//! logic yet (slice C), so a wrong `lockoutAuth` is `TPM_RC_BAD_AUTH`, never a lockout.
+//! Lockout authorization is an authorization value with dictionary-attack protection (slice C1,
+//! `da.rs`): a wrong `lockoutAuth` is `TPM_RC_AUTH_FAIL` and disables `lockoutAuth` for a while.
+//! The authorization values of the owner, the endorsement and the lockout hierarchies and the
+//! flags are in the persistent-state snapshot (`snapshot.rs`); `platformAuth` is volatile.
 //!
 //! NOT VERIFIED against TPM 2.0 Library v185/v184 (the open text names the rule but not the
 //! response code): `TPM_RC_AUTH_TYPE` when an authorization handle may not change the requested
@@ -163,14 +165,15 @@ impl Tpm {
             | (u32::from(self.hv.ph_enable_nv) << 3)
     }
 
-    /// `TPMA_PERMANENT` (Part 2, Table 42): `inLockout` is never SET (no DA yet), `tpmGeneratedEPS`
-    /// always (the endorsement seed comes from the TPM's DRBG).
+    /// `TPMA_PERMANENT` (Part 2, Table 42): `inLockout` (bit 9) while DA is in lockout,
+    /// `tpmGeneratedEPS` always (the endorsement seed comes from the TPM's DRBG).
     pub(crate) fn permanent_attributes(&self) -> u32 {
         let hp = &self.persistent.hier;
         u32::from(hp.owner_auth_set)
             | (u32::from(hp.endorsement_auth_set) << 1)
             | (u32::from(hp.lockout_auth_set) << 2)
             | (u32::from(hp.disable_clear) << 8)
+            | (u32::from(self.da_in_lockout()) << 9)
             | (1 << 10)
     }
 
@@ -292,6 +295,7 @@ impl Tpm {
         hp.endorsement_auth_set = false;
         hp.lockout_auth_set = false;
         self.persistent.nv.remove_owner_created();
+        self.da_clear();
         // Flush the resident objects (transient and persistent) of the Storage and Endorsement
         // hierarchies; the proofs follow the new storage seed (`object_cmd.rs`, `proof`).
         for hierarchy in [h::RH_OWNER, h::RH_ENDORSEMENT] {

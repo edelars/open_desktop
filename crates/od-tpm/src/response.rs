@@ -70,6 +70,8 @@ impl Rc {
     pub const SESSION_HANDLES: Rc = Rc(RC_WARN + 0x005);
     pub const OBJECT_HANDLES: Rc = Rc(RC_WARN + 0x006);
     pub const LOCALITY: Rc = Rc(RC_WARN + 0x007);
+    /// `TPM_RC_LOCKOUT` (Part 2, Table 20): DA lockout, or `lockoutAuth` disabled after a failure.
+    pub const LOCKOUT: Rc = Rc(RC_WARN + 0x021);
     pub const REFERENCE_H0: u32 = RC_WARN + 0x010;
     pub const REFERENCE_S0: u32 = RC_WARN + 0x018;
 
@@ -200,6 +202,7 @@ mod tests {
         assert_eq!(Rc::HASH.0, 0x083);
         assert_eq!(Rc::BAD_AUTH.0, 0x0A2);
         assert_eq!(Rc::LOCALITY.0, 0x907);
+        assert_eq!(Rc::LOCKOUT.0, 0x921);
         assert_eq!(Rc::NEEDS_TEST.0, 0x153);
         // Codes of phase B slice A (Table 20 of the same text).
         assert_eq!(Rc::DISABLED.0, 0x120);

@@ -1,4 +1,5 @@
-//! Open Desktop vTPM 2.0 command processor, phase A (S7-21) and slices A and B of phase B (S7-23).
+//! Open Desktop vTPM 2.0 command processor, phase A (S7-21) and slices A, B and C1 of phase B
+//! (S7-23).
 //!
 //! Pure logic without bus, MMIO, threads, files, OS clock or OS entropy (ADR-0009, decision 1):
 //! bytes of a command and a locality in, bytes of a response out. Time and entropy are arguments
@@ -9,7 +10,9 @@
 //! Endorsement, Null, Lockout authorization), HMAC sessions, flushing, and the base of NV
 //! indices. Slice B: RSA-2048 and ECC P-256 objects (primary, child, external, sealed data):
 //! `CreatePrimary`, `Create`, `Load`, `LoadExternal`, `ReadPublic`, `Unseal`, `EvictControl`,
-//! `Sign`, `VerifySignature`. Everything else answers `TPM_RC_COMMAND_CODE`.
+//! `Sign`, `VerifySignature`. Slice C1: `RSA_Encrypt`, `RSA_Decrypt`, `ECDH_ZGen`, dictionary-attack
+//! protection (`DictionaryAttackLockReset`, `DictionaryAttackParameters`) and the full persistent
+//! state (snapshot `ODTPMSTA` v2). Everything else answers `TPM_RC_COMMAND_CODE`.
 //! The contract, the command table with the limits and the list of values not verified against
 //! the TPM 2.0 Library v185 text are in `docs/specs/VTPM.md`. TCG conformance or certification
 //! is not claimed.
@@ -17,10 +20,12 @@
 //! Secrets (hierarchy seeds, DRBG state, passwords) are wiped on drop and never printed by
 //! `Debug`; no function of this crate logs.
 
+mod asym;
 pub mod capability;
 pub mod codes;
 pub mod command;
 pub mod crypto;
+mod da;
 pub mod dispatch;
 pub mod hash;
 pub mod hierarchy;
@@ -32,6 +37,7 @@ pub mod pcr;
 pub mod random;
 pub mod response;
 pub mod session;
+mod snapshot;
 pub mod startup;
 pub mod state;
 

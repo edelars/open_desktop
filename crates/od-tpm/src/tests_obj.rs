@@ -22,11 +22,11 @@ use crate::codes::{curve, object_attr as oa};
 use crate::marshal::{PublicParams, Scheme, SymDef, TpmtPublic, Unique};
 use crate::object::{MAX_OBJECTS, MAX_PERSISTENT};
 
-const OWNER: u32 = handle::RH_OWNER;
-const PLATFORM: u32 = handle::RH_PLATFORM;
-const ENDORSEMENT: u32 = handle::RH_ENDORSEMENT;
-const NULL: u32 = handle::RH_NULL;
-const FIRST_OBJECT: u32 = 0x8000_0003;
+pub(super) const OWNER: u32 = handle::RH_OWNER;
+pub(super) const PLATFORM: u32 = handle::RH_PLATFORM;
+pub(super) const ENDORSEMENT: u32 = handle::RH_ENDORSEMENT;
+pub(super) const NULL: u32 = handle::RH_NULL;
+pub(super) const FIRST_OBJECT: u32 = 0x8000_0003;
 
 // ----------------------------------------------------------------------- vectors (OpenSSL)
 
@@ -40,11 +40,11 @@ const EC_S: &str = "5041abdc28c66c4d8a10b2efefa9e053e536bbdb8ee227b9aa79a4b894a8
 
 // ------------------------------------------------------------------------------ templates
 
-fn base() -> u32 {
+pub(super) fn base() -> u32 {
     oa::FIXED_TPM | oa::FIXED_PARENT | oa::SENSITIVE_DATA_ORIGIN | oa::USER_WITH_AUTH
 }
 
-fn ecc(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
+pub(super) fn ecc(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
     TpmtPublic {
         name_alg: alg::SHA256,
         attributes,
@@ -61,7 +61,7 @@ fn ecc(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
     }
 }
 
-fn rsa(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
+pub(super) fn rsa(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
     TpmtPublic {
         name_alg: alg::SHA256,
         attributes,
@@ -76,24 +76,24 @@ fn rsa(attributes: u32, symmetric: SymDef, scheme: Scheme) -> TpmtPublic {
     }
 }
 
-const ECDSA: Scheme = Scheme {
+pub(super) const ECDSA: Scheme = Scheme {
     alg: alg::ECDSA,
     hash: alg::SHA256,
 };
-const RSASSA: Scheme = Scheme {
+pub(super) const RSASSA: Scheme = Scheme {
     alg: alg::RSASSA,
     hash: alg::SHA256,
 };
 
-fn ecc_sign() -> TpmtPublic {
+pub(super) fn ecc_sign() -> TpmtPublic {
     ecc(base() | oa::SIGN, SymDef::Null, ECDSA)
 }
 
-fn rsa_sign() -> TpmtPublic {
+pub(super) fn rsa_sign() -> TpmtPublic {
     rsa(base() | oa::SIGN, SymDef::Null, RSASSA)
 }
 
-fn ecc_storage() -> TpmtPublic {
+pub(super) fn ecc_storage() -> TpmtPublic {
     ecc(
         base() | oa::RESTRICTED | oa::DECRYPT,
         SymDef::Aes128Cfb,
@@ -101,7 +101,7 @@ fn ecc_storage() -> TpmtPublic {
     )
 }
 
-fn rsa_storage() -> TpmtPublic {
+pub(super) fn rsa_storage() -> TpmtPublic {
     rsa(
         base() | oa::RESTRICTED | oa::DECRYPT,
         SymDef::Aes128Cfb,
@@ -109,7 +109,7 @@ fn rsa_storage() -> TpmtPublic {
     )
 }
 
-fn sealed() -> TpmtPublic {
+pub(super) fn sealed() -> TpmtPublic {
     TpmtPublic {
         name_alg: alg::SHA256,
         attributes: oa::FIXED_TPM | oa::FIXED_PARENT | oa::USER_WITH_AUTH,
@@ -121,10 +121,10 @@ fn sealed() -> TpmtPublic {
 
 // ------------------------------------------------------------------------------- commands
 
-const NO_PCR: [u8; 4] = [0, 0, 0, 0];
+pub(super) const NO_PCR: [u8; 4] = [0, 0, 0, 0];
 const NULL_VALIDATION: [u8; 8] = [0x80, 0x24, 0x40, 0, 0, 7, 0, 0];
 
-fn creation_params(
+pub(super) fn creation_params(
     auth: &[u8],
     data: &[u8],
     public: &TpmtPublic,
@@ -140,16 +140,16 @@ fn creation_params(
     ])
 }
 
-fn create_primary_raw(t: &mut Tpm, hier: u32, pw: &[u8], params: &[u8]) -> Vec<u8> {
+pub(super) fn create_primary_raw(t: &mut Tpm, hier: u32, pw: &[u8], params: &[u8]) -> Vec<u8> {
     run(t, with_pw(cc::CREATE_PRIMARY, &[hier], &[pw], params))
 }
 
-fn create_primary(t: &mut Tpm, hier: u32, auth: &[u8], public: &TpmtPublic) -> Vec<u8> {
+pub(super) fn create_primary(t: &mut Tpm, hier: u32, auth: &[u8], public: &TpmtPublic) -> Vec<u8> {
     let params = creation_params(auth, b"", public, b"", &NO_PCR);
     create_primary_raw(t, hier, b"", &params)
 }
 
-fn create_child(
+pub(super) fn create_child(
     t: &mut Tpm,
     parent: u32,
     pw: &[u8],
@@ -161,23 +161,23 @@ fn create_child(
     run(t, with_pw(cc::CREATE, &[parent], &[pw], &params))
 }
 
-fn load(t: &mut Tpm, parent: u32, pw: &[u8], private: &[u8], public: &[u8]) -> Vec<u8> {
+pub(super) fn load(t: &mut Tpm, parent: u32, pw: &[u8], private: &[u8], public: &[u8]) -> Vec<u8> {
     let params = cat(&[&tpm2b(private), &tpm2b(public)]);
     run(t, with_pw(cc::LOAD, &[parent], &[pw], &params))
 }
 
-fn sign_params(digest: &[u8], scheme: &[u8]) -> Vec<u8> {
+pub(super) fn sign_params(digest: &[u8], scheme: &[u8]) -> Vec<u8> {
     cat(&[&tpm2b(digest), scheme, &NULL_VALIDATION])
 }
 
-fn sign(t: &mut Tpm, key: u32, pw: &[u8], digest: &[u8], scheme: &[u8]) -> Vec<u8> {
+pub(super) fn sign(t: &mut Tpm, key: u32, pw: &[u8], digest: &[u8], scheme: &[u8]) -> Vec<u8> {
     run(
         t,
         with_pw(cc::SIGN, &[key], &[pw], &sign_params(digest, scheme)),
     )
 }
 
-fn verify(t: &mut Tpm, key: u32, digest: &[u8], signature: &[u8]) -> Vec<u8> {
+pub(super) fn verify(t: &mut Tpm, key: u32, digest: &[u8], signature: &[u8]) -> Vec<u8> {
     run(
         t,
         plain(
@@ -188,11 +188,11 @@ fn verify(t: &mut Tpm, key: u32, digest: &[u8], signature: &[u8]) -> Vec<u8> {
     )
 }
 
-fn read_public(t: &mut Tpm, h: u32) -> Vec<u8> {
+pub(super) fn read_public(t: &mut Tpm, h: u32) -> Vec<u8> {
     run(t, plain(cc::READ_PUBLIC, &[h], &[]))
 }
 
-fn load_external(t: &mut Tpm, public: &TpmtPublic, hierarchy: u32) -> Vec<u8> {
+pub(super) fn load_external(t: &mut Tpm, public: &TpmtPublic, hierarchy: u32) -> Vec<u8> {
     run(
         t,
         plain(
@@ -203,27 +203,27 @@ fn load_external(t: &mut Tpm, public: &TpmtPublic, hierarchy: u32) -> Vec<u8> {
     )
 }
 
-fn evict(t: &mut Tpm, auth: u32, pw: &[u8], object: u32, persistent: u32) -> Vec<u8> {
+pub(super) fn evict(t: &mut Tpm, auth: u32, pw: &[u8], object: u32, persistent: u32) -> Vec<u8> {
     run(
         t,
         with_pw(cc::EVICT_CONTROL, &[auth, object], &[pw], &u32b(persistent)),
     )
 }
 
-fn flush(t: &mut Tpm, h: u32) -> Vec<u8> {
+pub(super) fn flush(t: &mut Tpm, h: u32) -> Vec<u8> {
     run(t, plain(cc::FLUSH_CONTEXT, &[], &u32b(h)))
 }
 
 // ------------------------------------------------------------------------------- parsing
 
 #[derive(Debug)]
-struct Primary {
-    handle: u32,
-    public: Vec<u8>,
-    creation: Vec<u8>,
-    hash: Vec<u8>,
-    ticket: (u16, u32, Vec<u8>),
-    name: Vec<u8>,
+pub(super) struct Primary {
+    pub(super) handle: u32,
+    pub(super) public: Vec<u8>,
+    pub(super) creation: Vec<u8>,
+    pub(super) hash: Vec<u8>,
+    pub(super) ticket: (u16, u32, Vec<u8>),
+    pub(super) name: Vec<u8>,
 }
 
 fn read_ticket(r: &mut Reader<'_>) -> (u16, u32, Vec<u8>) {
@@ -232,7 +232,7 @@ fn read_ticket(r: &mut Reader<'_>) -> (u16, u32, Vec<u8>) {
     (tag, h, r.tpm2b(64).unwrap().to_vec())
 }
 
-fn parse_primary(resp: &[u8]) -> Primary {
+pub(super) fn parse_primary(resp: &[u8]) -> Primary {
     let handle = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
     let p = params(resp, 1);
     let mut r = Reader::new(p);
@@ -252,15 +252,15 @@ fn parse_primary(resp: &[u8]) -> Primary {
     }
 }
 
-struct Child {
-    private: Vec<u8>,
-    public: Vec<u8>,
-    creation: Vec<u8>,
-    hash: Vec<u8>,
-    ticket: (u16, u32, Vec<u8>),
+pub(super) struct Child {
+    pub(super) private: Vec<u8>,
+    pub(super) public: Vec<u8>,
+    pub(super) creation: Vec<u8>,
+    pub(super) hash: Vec<u8>,
+    pub(super) ticket: (u16, u32, Vec<u8>),
 }
 
-fn parse_child(resp: &[u8]) -> Child {
+pub(super) fn parse_child(resp: &[u8]) -> Child {
     let p = params(resp, 0);
     let mut r = Reader::new(p);
     let private = r.tpm2b(1024).unwrap().to_vec();
@@ -279,7 +279,7 @@ fn parse_child(resp: &[u8]) -> Child {
 }
 
 /// `(handle, name)` of a successful `Load`/`LoadExternal`.
-fn parse_loaded(resp: &[u8]) -> (u32, Vec<u8>) {
+pub(super) fn parse_loaded(resp: &[u8]) -> (u32, Vec<u8>) {
     let h = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
     let mut r = Reader::new(params(resp, 1));
     let name = r.tpm2b(64).unwrap().to_vec();
@@ -287,11 +287,11 @@ fn parse_loaded(resp: &[u8]) -> (u32, Vec<u8>) {
     (h, name)
 }
 
-fn name_hash(public: &[u8]) -> Vec<u8> {
+pub(super) fn name_hash(public: &[u8]) -> Vec<u8> {
     [&alg::SHA256.to_be_bytes()[..], &Sha256::digest(public)].concat()
 }
 
-fn unmarshal_public(bytes: &[u8]) -> TpmtPublic {
+pub(super) fn unmarshal_public(bytes: &[u8]) -> TpmtPublic {
     let mut r = Reader::new(bytes);
     let t = TpmtPublic::unmarshal(&mut r).unwrap();
     r.finish().unwrap();
@@ -299,7 +299,7 @@ fn unmarshal_public(bytes: &[u8]) -> TpmtPublic {
 }
 
 /// The private value of a loaded object, for "never leaves the TPM" checks.
-fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
+pub(super) fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
     use crate::object::Secret;
     match &t.object(h).unwrap().sensitive.as_ref().unwrap().secret {
         Secret::Rsa(k) => crate::crypto::rsa_primes(k).unwrap().to_vec(),
@@ -308,22 +308,22 @@ fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
     }
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+pub(super) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// A started TPM with an ECC storage primary under the owner hierarchy.
-fn with_ecc_parent() -> (Tpm, u32) {
+pub(super) fn with_ecc_parent() -> (Tpm, u32) {
     let mut t = started();
     let p = parse_primary(&create_primary(&mut t, OWNER, b"parent-pw", &ecc_storage()));
     (t, p.handle)
 }
 
-fn ecc_sig_scheme() -> Vec<u8> {
+pub(super) fn ecc_sig_scheme() -> Vec<u8> {
     cat(&[&u16b(alg::ECDSA), &u16b(alg::SHA256)])
 }
 
-fn rsa_sig_scheme() -> Vec<u8> {
+pub(super) fn rsa_sig_scheme() -> Vec<u8> {
     cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA256)])
 }
 
@@ -331,7 +331,7 @@ fn null_scheme() -> Vec<u8> {
     u16b(alg::NULL)
 }
 
-const DIGEST: [u8; 32] = [0x5A; 32];
+pub(super) const DIGEST: [u8; 32] = [0x5A; 32];
 
 // ===================================================================== structures
 
@@ -900,7 +900,7 @@ fn create_load_sign_verify_ecc() {
     // Wrong authorization, no authorization.
     err(
         &sign(&mut t, key, b"parent-pw", &DIGEST, &ecc_sig_scheme()),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
     err(
         &run(
@@ -976,7 +976,7 @@ fn sign_with_an_hmac_session() {
     c.names = vec![name.clone()];
     let resp = run_hmac(&mut t, &mut hs, &c);
     ok(&resp);
-    // A wrong authValue inside the HMAC: TPM_RC_BAD_AUTH for session 1.
+    // A wrong authValue inside the HMAC: TPM_RC_AUTH_FAIL (the object is DA protected) for session 1.
     let mut c = hc(
         cc::SIGN,
         &[key],
@@ -984,7 +984,7 @@ fn sign_with_an_hmac_session() {
         (key, b"not-it"),
     );
     c.names = vec![name];
-    err(&run_hmac(&mut t, &mut hs, &c), Rc::BAD_AUTH.in_session(1));
+    err(&run_hmac(&mut t, &mut hs, &c), Rc::AUTH_FAIL.in_session(1));
 }
 
 #[test]
@@ -993,7 +993,7 @@ fn create_errors() {
     // Wrong parent password, no session.
     err(
         &create_child(&mut t, parent, b"nope", b"", b"", &ecc_sign()),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
     let params = creation_params(b"", b"", &ecc_sign(), b"", &NO_PCR);
     err(
@@ -1077,7 +1077,7 @@ fn load_errors() {
     // Wrong password; empty inPrivate; trailing octets.
     err(
         &load(&mut t, parent, b"nope", &child.private, &child.public),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
     err(
         &load(&mut t, parent, b"parent-pw", &[], &child.public),
@@ -1609,7 +1609,7 @@ fn seal_and_unseal() {
     // Wrong password, no session, trailing octets.
     err(
         &run(&mut t, with_pw(cc::UNSEAL, &[item], &[b"x"], &[])),
-        Rc::BAD_AUTH.in_session(1),
+        Rc::AUTH_FAIL.in_session(1),
     );
     err(
         &run(&mut t, plain(cc::UNSEAL, &[item], &[])),
@@ -2020,6 +2020,8 @@ fn mutated_object_commands_never_panic() {
             }
             // Keep the cheap path: a mutation into an RSA template would generate a key.
             let _ = run(&mut t, c);
+            // The mutations break passwords: keep DA from locking the key out (`da.rs`).
+            t.persistent.da.failed_tries = 0;
         }
         // The TPM is still consistent: the parent signs.
         ok(&sign(&mut t, key, b"c", &DIGEST, &ecc_sig_scheme()));
