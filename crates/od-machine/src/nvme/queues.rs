@@ -7,7 +7,10 @@
 //! NVMe Base 2.4: opcodes, I/O Flush/Write/Read 0/1/2, generic statuses
 //! 0x01/02/04/0B/0C/13 and command specific 0x100/101/102/105/108/109/10C.
 //! `NOT VERIFIED`: PRP rules, AER info 0/1, error behaviour, which commands
-//! are mandatory.
+//! are mandatory. Slice B adds the I/O statuses `LBA Out of Range` (0x80),
+//! `Namespace Not Ready` (0x82) and `Internal Error` (0x06): the values are
+//! cross-checked with `nvme.h`; the DNR bit and the conditions they are used
+//! for are `NOT VERIFIED against NVMe Base 2.4`.
 
 use crate::{GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MemoryRegionKind};
 
@@ -46,6 +49,14 @@ impl Status {
     pub(crate) const DATA_TRANSFER_ERROR: Self = Self::generic(0x04, false);
     pub(crate) const COMMAND_SEQUENCE_ERROR: Self = Self::generic(0x0C, true);
     pub(crate) const INVALID_NAMESPACE: Self = Self::generic(0x0B, true);
+    // Value cross-checked with Linux nvme.h (LBA Out of Range 0x80); DNR and
+    // the condition it is used for: NOT VERIFIED against NVMe Base 2.4.
+    pub(crate) const LBA_OUT_OF_RANGE: Self = Self::generic(0x80, true);
+    // Values cross-checked with Linux nvme.h (Namespace Not Ready 0x82,
+    // Internal Error 0x06 for a backend failure); DNR (0 here, because the
+    // condition may pass) and the conditions: NOT VERIFIED against NVMe Base 2.4.
+    pub(crate) const INTERNAL_ERROR: Self = Self::generic(0x06, false);
+    pub(crate) const NAMESPACE_NOT_READY: Self = Self::generic(0x82, false);
     pub(crate) const PRP_OFFSET_INVALID: Self = Self::generic(0x13, true);
     pub(crate) const COMPLETION_QUEUE_INVALID: Self = Self::command_specific(0x00);
     pub(crate) const INVALID_QUEUE_IDENTIFIER: Self = Self::command_specific(0x01);
@@ -365,6 +376,24 @@ pub(crate) fn write_to_host(
     Ok(())
 }
 
+/// Copies the guest buffer described by the PRPs (host to controller) into a new vector.
+pub(crate) fn read_from_host(
+    dma: &mut dyn GuestDma,
+    prp1: u64,
+    prp2: u64,
+    len: usize,
+) -> Result<Vec<u8>, Status> {
+    let segments = prp_segments(dma, prp1, prp2, len)?;
+    let mut data = vec![0u8; len];
+    let mut offset = 0usize;
+    for (address, length) in segments {
+        dma.read(address, &mut data[offset..offset + length])
+            .map_err(|_| Status::DATA_TRANSFER_ERROR)?;
+        offset += length;
+    }
+    Ok(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +555,18 @@ mod tests {
         assert_eq!(dma.bytes[&(0x9000 + 0x1FF)], data[0x2FF]);
         assert_eq!(
             write_to_host(&mut dma, 0x2F00, 0x20_0000, &data),
+            Err(Status::DATA_TRANSFER_ERROR)
+        );
+    }
+
+    #[test]
+    fn read_from_host_gathers_pages_and_reports_unmapped_sources() {
+        let mut dma = MockDma::new(0x1_0000);
+        let data: Vec<u8> = (0..0x300).map(|index| index as u8).collect();
+        write_to_host(&mut dma, 0x2F00, 0x9000, &data).unwrap();
+        assert_eq!(read_from_host(&mut dma, 0x2F00, 0x9000, 0x300), Ok(data));
+        assert_eq!(
+            read_from_host(&mut dma, 0x2F00, 0x20_0000, 0x300),
             Err(Status::DATA_TRANSFER_ERROR)
         );
     }

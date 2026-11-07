@@ -17,7 +17,8 @@
 //! (`docs/specs/NVME_DEVICE.md` sections 1 and 11).
 
 use super::admin::{self, AerState, ErrorLog, Features};
-use super::io;
+use super::backend::NvmeBackend;
+use super::io::{self, IoStats};
 use super::queues::{
     BusDma, Command, Completion, CompletionQueue, GuestDma, MAX_QUEUE_ENTRIES, Outcome, SQE_BYTES,
     SubmissionQueue, encode_cqe,
@@ -144,6 +145,21 @@ impl NvmeConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NvmeAttachError {
+    /// The controller is enabled (`CC.EN = 1`); the disk can change only while it is off.
+    ControllerEnabled,
+    /// The backend has no sectors.
+    EmptyBackend,
+}
+
+impl fmt::Display for NvmeAttachError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cannot attach NVMe backend: {self:?}")
+    }
+}
+impl std::error::Error for NvmeAttachError {}
+
 /// Work done by one [`NvmeHandle::service`] call.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NvmeServiceReport {
@@ -167,7 +183,33 @@ pub(crate) struct NvmeState {
     pub(super) features: Features,
     pub(super) errors: ErrorLog,
     pub(super) aer: AerState,
+    /// Disk of the single namespace; `None` until `attach_backend` (I/O
+    /// commands then complete with `Namespace Not Ready`).
+    pub(super) backend: Option<BackendSlot>,
+    pub(super) io: IoStats,
     pending: bool,
+}
+
+/// The attached backend; `Debug` prints only its size (the trait has no `Debug`).
+pub(crate) struct BackendSlot(Box<dyn NvmeBackend + Send>);
+
+impl fmt::Debug for BackendSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NvmeBackend({} sectors)", self.0.sector_count())
+    }
+}
+
+impl std::ops::Deref for BackendSlot {
+    type Target = dyn NvmeBackend + Send;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl std::ops::DerefMut for BackendSlot {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
 }
 
 impl NvmeState {
@@ -185,6 +227,8 @@ impl NvmeState {
             features: Features::default(),
             errors: ErrorLog::default(),
             aer: AerState::default(),
+            backend: None,
+            io: IoStats::default(),
             pending: false,
         }
     }
@@ -474,7 +518,7 @@ impl NvmeState {
         let outcome = if slot == 0 {
             admin::execute(self, &command, dma)
         } else {
-            io::execute(&command)
+            io::execute(self, &command, dma)
         };
         if let Outcome::Done(completion) = outcome {
             if !completion.status.is_success() {
@@ -556,6 +600,29 @@ impl NvmeDevice {
 }
 
 impl NvmeHandle {
+    /// Attaches the disk of the single namespace. `NSZE` (and `NCAP`, `NUSE`,
+    /// `NVMCAP`, `TNVMCAP`) become the backend's sector count, replacing
+    /// `NvmeConfig::namespace_sectors`. Allowed only while the controller is
+    /// disabled, so that a driver never sees the size change under it; a
+    /// previously attached backend is replaced. Without a backend I/O commands
+    /// complete with `Namespace Not Ready` (`docs/specs/NVME_DEVICE.md`).
+    pub fn attach_backend(
+        &self,
+        backend: Box<dyn NvmeBackend + Send>,
+    ) -> Result<(), NvmeAttachError> {
+        let mut state = lock(&self.state);
+        if state.cc & CC_EN != 0 {
+            return Err(NvmeAttachError::ControllerEnabled);
+        }
+        let sectors = backend.sector_count();
+        if sectors == 0 {
+            return Err(NvmeAttachError::EmptyBackend);
+        }
+        state.config.namespace_sectors = sectors;
+        state.backend = Some(BackendSlot(backend));
+        Ok(())
+    }
+
     /// A doorbell write since the last [`service`](Self::service) call: the
     /// machine owner should end the guest quantum and service the controller.
     pub fn doorbell_pending(&self) -> bool {

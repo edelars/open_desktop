@@ -11,7 +11,7 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 0 | — |
-| `in_progress` | 10 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-16 (срез A выполнен исполнителем, ожидает ревью, коммита нет; срез B не начат); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
+| `in_progress` | 10 | S7-00 (выполнено, коммит `c1ae3dd`, ожидает принятия ревью); S7-01 (выполнено, коммит `426c98a`, ревью пройдено); S7-02 (выполнено, коммит `68cca38`, ревью пройдено); S7-03 (выполнено исполнителем, ожидает ревью, коммита нет); S7-12 (выполнено исполнителем, ожидает ревью, коммита нет); S7-16 (срезы A и B выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы); S7-20 (выполнено архитектором, ревью пройдено, коммита нет); S7-21 (выполнено исполнителем, ожидает ревью, коммита нет); S7-23 (срез A — коммит `435d7f6`, ожидает ревью; срезы B, C1 и C2 выполнены исполнителем, ожидают ревью, коммита нет; S7-23 не принимается целиком); S7-30 (выполнено исполнителем, ревью пройдено, замечания исправлены, коммита нет) |
 | `not_started` | 28 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_7.md` §0 отмечаются только после ревью.
@@ -36,7 +36,7 @@
 | S7-13 | not_started | — | — | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
 | S7-14 | not_started | — | — | ACPI fixed hardware в `od-machine`: PM1, PM timer, reset register, RTC/CMOS, HPET |
 | S7-15 | not_started | — | — | GOP поверх собственного дисплейного устройства |
-| S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срез A — admin — выполнен исполнителем, ожидает ревью, коммита нет; срез B — I/O `Read`/`Write`/`Flush` — не начат; значения спецификации не сверены) |
+| S7-16 | in_progress | — | — | Минимальный NVMe-контроллер в `od-machine` (срез A — admin — и срез B — I/O `Read`/`Write`/`Flush` на in-memory backend — выполнены исполнителем, ожидают ревью, коммита нет; PCI-привязка — S4-30, прерывания не реализованы; значения спецификации не сверены) |
 | S7-17 | not_started | — | — | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
 | S7-18 | not_started | — | — | Собственная FAT и Simple File System |
 | S7-19 | not_started | — | — | Boot manager: `BootOrder`/`Boot####`, `\EFI\BOOT\BOOTX64.EFI`, загрузка приложения с ESP |
@@ -319,7 +319,7 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 
 ### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез A)
 
-Статус: `in_progress`. **Срез A выполнен исполнителем, ожидает ревью, коммита нет. Срез B (I/O `Read`/`Write`/`Flush`, backend диска, прерывания) не начат.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
+Статус: `in_progress`. **Срез A выполнен исполнителем, ожидает ревью, коммита нет. Срез B (I/O `Read`/`Write`/`Flush`, backend диска) выполнен исполнителем, см. раздел «Срез B» ниже; прерывания не реализованы.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md).
 
 Создано: `docs/specs/NVME_DEVICE.md`; `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend,tests}.rs`. Изменено: `firmware_board.rs` (`FirmwareBoardConfig::nvme`, запись device code 8, `LoadedFirmwareBoard::nvme()`, `run_boot` обслуживает контроллер), `lib.rs` (экспорты), `FIRMWARE_BOOT.md` (§2, §6.3), `MACHINE_CONTRACT.md` (раздел «NVMe controller»), `VIRTUAL_BOARD.md` (строка «Boot storage»), `STAGE_7.md` (статус S7-16).
 
@@ -342,6 +342,28 @@ NOT VERIFIED (дополнение по ревью): при `TPM_ST_SESSIONS` и
 - Не делалось по заданию: Namespace Management, firmware download/commit, несколько NS, SGL, `Device Self-test`, RTC/PM (S7-14), PCI-привязка (S4-30).
 
 Проверки (2026-11-07, worktree `/private/tmp/open_desktop-s9`): `cargo test -p od-machine --offline` — 289 passed; `cargo fmt -p od-machine -- --check` — чисто; `cargo clippy -p od-machine --offline --all-targets` — 0 предупреждений в `nvme/`, остальные предупреждения прежнего кода (`od-isa`, `io_apic.rs`, `firmware_board.rs:278` и др.) не трогались; `cargo check --workspace --all-targets --offline` — успешно; `python3 tools/check_layout.py` — 45 `ERROR` (как до изменений); `git diff --check` — чисто; в `nvme/` вне тестов нет `unwrap`/`expect`/`panic!`/`println!`. Независимое ревью не выполнялось (ожидается).
+
+### S7-16. Минимальный NVMe-контроллер в `od-machine` (срез B: I/O)
+
+Статус: `in_progress`. **Срез B выполнен исполнителем, ожидает ревью, коммита нет.** Контракт — [NVME_DEVICE.md](../specs/NVME_DEVICE.md), раздел 13. PCI-привязка — S4-30 (blocked), прерывания не реализованы (нет IRQ-маршрута).
+
+Изменено: `nvme/{io,backend,controller,queues,admin,mod,tests}.rs`, `lib.rs` (экспорт `InMemoryBackend`, `NvmeAttachError`), `NVME_DEVICE.md`, `MACHINE_CONTRACT.md`, `VIRTUAL_BOARD.md`, `STAGE_7.md` (статус S7-16).
+
+Что работает (`cargo test -p od-machine --offline`: 307 тестов в библиотеке, было 289; новые — 15 в `nvme/tests.rs`, 2 в `backend.rs`, 1 в `queues.rs`):
+
+- `Read`, `Write`, `Flush` из очередей I/O: SLBA (`CDW10/11`), NLB 0-based (`CDW12[15:0]`), PRP1/PRP2/PRP list, максимум 1 MiB (`MDTS = 8`); `Write` сначала читает весь буфер гостя, потом пишет в backend (ошибка PRP не меняет диск).
+- Проверки и статусы (без паник): NSID ≠ 1 — `Invalid Namespace or Format`; `SLBA + NLB` вне `NSZE` (с защитой от переполнения) — `LBA Out of Range`; NLB больше `MDTS`, `FUA`/`LR`/`PRINFO`/`DTYPE` (`CDW12[31:16]`), `DSM` (`CDW13`), `PSDT`/`FUSE` — `Invalid Field`; PRP вне RAM — `Data Transfer Error`; неровный `PRP2` — `PRP Offset Invalid`; отказ backend — `Internal Error`; неизвестный I/O-opcode — `Invalid Command Opcode`.
+- `trait NvmeBackend` (`sector_count`, `read_sectors`, `write_sectors`, `flush`) и `InMemoryBackend` (нулевой вектор фиксированного размера); подключение — `NvmeHandle::attach_backend` только при `CC.EN = 0`, `NSZE` = размер backend, Identify согласован. Файлового ввода-вывода в `od-machine` нет; файл/CoW подключает владелец машины над `od-storage`.
+- SMART/Health: `Host Read/Write Commands` и `Data Units Read/Written` — живые счётчики.
+- Тесты: Write → Read на границе страницы (PRP1 + PRP2) и через PRP list, максимальная передача, Flush (доходит до backend), LBA/NSID/NLB, неподдержанные поля, плохие PRP (диск не меняется), отказ backend, без backend, полная CQ (запись не исполняется до сдвига `head`), I/O без созданной SQ. Тест «гость пишет doorbell» не делался (разрыв среза A); покрыто через `service` напрямую.
+
+Решения: LBA 512 байт, 4 KiB LBA **не поддержан** (один формат `LBAF0`); без backend устройство существует и отвечает `Namespace Not Ready` (не «не подключать устройство»); `Flush` с `NSID = 0xFFFF_FFFF` отвергается; `Flush` всегда вызывает `flush` backend, хотя `VWC = 0`.
+
+Значения `LBA Out of Range` (`0x80`), `Namespace Not Ready` (`0x82`), `Internal Error` (`0x06`), `Invalid Field` (0x2), `Data Transfer Error` (0x4), `Invalid Namespace` (0xB), DNR (0x4000) и opcode `0x00/01/02` сверены с Linux `nvme.h`; NOT VERIFIED against NVMe Base 2.4: DNR для статусов среза B и условия их применения; раскладка `CDW12`/`CDW13` Read/Write; порядок проверок; поведение `Flush`; единицы SMART data units. Список — NVME_DEVICE.md §13.5.
+
+Не сделано: LBA 4 KiB; `Dataset Management`/`Write Zeroes`/`Compare`/`Write Uncorrectable`/`Verify`/`Copy`; `FUA`, защита данных; Namespace Management, несколько NS; SGL; файловый backend; прерывания; PCI-привязка (S4-30); Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) (разрыв среза A); RTC/PM (S7-14). Команда в очереди без созданной SQ невозможна: doorbell несозданной очереди — событие «Write to Invalid Doorbell Register» среза A, команда не извлекается, completion нет (`Invalid Queue Identifier` — статус admin-команд Create/Delete).
+
+Проверки (2026-11-07, worktree `/private/tmp/open_desktop-s9`): `cargo test -p od-machine --offline` — 307 passed (библиотека); `cargo clippy -p od-machine --offline --all-targets` — 0 предупреждений в `nvme/`; `cargo fmt -p od-machine -- --check` — чисто; `cargo check --workspace --all-targets --offline` — успешно; `python3 tools/check_layout.py` — 45 `ERROR` (как до изменений); `git diff --check` — чисто; в `nvme/` вне тестов нет `unwrap`/`expect`/`panic!`/`println!`. Независимое ревью не выполнялось (ожидается).
 
 ## 4. Открытые ограничения
 

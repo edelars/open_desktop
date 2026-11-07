@@ -50,7 +50,7 @@ const LID_SMART_HEALTH: u8 = 0x02;
 const LID_FIRMWARE_SLOT: u8 = 0x03;
 
 /// The only namespace: its id and the number of namespaces (`NN`).
-const NAMESPACE_ID: u32 = 1;
+pub(super) const NAMESPACE_ID: u32 = 1;
 /// Concurrent `Asynchronous Event Request` commands (`AERL` = 3, 0's based).
 const AER_LIMIT: usize = 4;
 /// Error Information log entries kept (`ELPE` = 63, 0's based).
@@ -532,7 +532,14 @@ fn smart_health_page(state: &NvmeState) -> Vec<u8> {
     put(&mut page, 1, &COMPOSITE_TEMPERATURE_K.to_le_bytes());
     page[3] = 100; // Available Spare
     page[4] = 10; // Available Spare Threshold
-    // Data units, host commands, busy time: no I/O command is executed yet (slice A).
+    // NOT VERIFIED against NVMe Base 2.4: data units are thousands of 512-byte
+    // sectors, rounded up; busy time stays 0 (no time source).
+    let io = &state.io;
+    let units = |sectors: u64| u128::from(sectors.div_ceil(1000));
+    put(&mut page, 32, &units(io.sectors_read).to_le_bytes()); // Data Units Read
+    put(&mut page, 48, &units(io.sectors_written).to_le_bytes()); // Data Units Written
+    put(&mut page, 64, &u128::from(io.read_commands).to_le_bytes()); // Host Read Commands
+    put(&mut page, 80, &u128::from(io.write_commands).to_le_bytes()); // Host Write Commands
     put(&mut page, 112, &1u128.to_le_bytes()); // Power Cycles
     // Power On Hours stays 0: the device has no time source (documented gap).
     put(

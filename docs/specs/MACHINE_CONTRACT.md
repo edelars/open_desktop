@@ -2225,7 +2225,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   возникает, пока листья ROM помечены NX.
 - Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
   ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
-  NVMe в части ввода-вывода (S7-16: срез A выполнен, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  NVMe: PCI-привязка и прерывания (S7-16: срезы A и B выполнены, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
   UUID/серийного номера из командной строки runner (используются значения по
   умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
 - Расширение handoff block (новые поля и устройства) повышает `version_minor`
@@ -2238,10 +2238,10 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 `python3 -m unittest tools/build/test_build_firmware.py`; методика —
 [FIRMWARE.md](../testing/FIRMWARE.md).
 
-## NVMe controller (S7-16, срез A)
+## NVMe controller (S7-16, срезы A и B)
 
-**Статус: срез A (управление) реализован исполнителем, ожидает ревью; ввод-вывод
-(`Read`, `Write`, `Flush`) не реализован — срез B не начат.** Контракт устройства,
+**Статус: срезы A (управление) и B (ввод-вывод `Read`, `Write`, `Flush`) реализованы
+исполнителем, ожидают ревью.** Контракт устройства,
 регистры, команды, границы, разрывы и значения без сверки со спецификацией —
 [NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
 
@@ -2266,8 +2266,16 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   `run_boot` останавливает квант после doorbell-записи и вызывает `service` между квантами и один
   раз перед запуском. Без конфигурации окна нет (`Unmapped`), handoff остаётся v1.0, эталон
   `REFERENCE_HANDOFF_HEX` не изменился.
-- **Не реализовано:** I/O-команды (срез B), backend диска (`NvmeBackend` — только интерфейс),
-  прерывания (нет IRQ-маршрута), PCI-привязка (S4-30), SGL, Namespace Management, firmware
+- **Ввод-вывод (срез B).** `Read`, `Write`, `Flush` исполняются в том же `service` через
+  `trait NvmeBackend` (512-байтные секторы); `od-machine` реализует только `InMemoryBackend`
+  (тесты, мини-образы), файловый/CoW backend подключает владелец машины над `od-storage` через
+  `NvmeHandle::attach_backend` (только при `CC.EN = 0`; `NSZE` = размер backend). Без backend
+  I/O-команда — `Namespace Not Ready`. Ошибки (NSID ≠ 1, LBA вне `NSZE`, `NLB` больше `MDTS`,
+  `FUA`/`LR`/`DSM`/SGL, PRP, отказ backend) — статусы NVMe, не паника; файлового ввода-вывода
+  в `od-machine` нет. Значения статусов `LBA Out of Range`/`Namespace Not Ready`/`Internal Error`
+  не сверены с NVMe Base 2.4.
+- **Не реализовано:** LBA 4 KiB, файловый backend, `Dataset Management`/`Write Zeroes`/`Compare`,
+  `FUA`, прерывания (нет IRQ-маршрута), PCI-привязка (S4-30), SGL, Namespace Management, firmware
   download/commit, несколько NS, `Device Self-test`. Время исполнения команд не моделируется.
 
 Проверки: `cargo test -p od-machine --offline` (модули `nvme`, `firmware_board`).

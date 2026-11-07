@@ -1,5 +1,5 @@
 //! Minimal NVMe controller as an MMIO device (S7-16, slice A: admin command
-//! set; the I/O command set is slice B). Contract: `docs/specs/NVME_DEVICE.md`.
+//! set; slice B: I/O command set over a disk backend). Contract: `docs/specs/NVME_DEVICE.md`.
 
 mod admin;
 mod backend;
@@ -9,8 +9,10 @@ mod queues;
 #[cfg(test)]
 mod tests;
 
-pub use backend::{BackendError, NvmeBackend};
-pub use controller::{NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, NvmeServiceReport};
+pub use backend::{BackendError, InMemoryBackend, NvmeBackend};
+pub use controller::{
+    NvmeAttachError, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, NvmeServiceReport,
+};
 
 /// Fixed MMIO window of the controller until the PCI binding (S4-30):
 /// registers `0x0000..0x1000`, doorbells from `0x1000` (stride 4 bytes).

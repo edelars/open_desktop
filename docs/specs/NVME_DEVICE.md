@@ -1,6 +1,6 @@
 # Минимальный NVMe-контроллер (S7-16)
 
-**Статус: срез A реализован исполнителем, ожидает ревью.** Срез A — управляющая часть: регистры, admin-очереди и Admin-команды. **Набор команд ввода-вывода (`Read`, `Write`, `Flush`) не реализован** (срез B, не начат): любая I/O-команда завершается `Invalid Command Opcode`. Контроллер в таком виде не читает и не пишет диск; прошивка (S7-17) и ОС пока не могут им пользоваться. PCI-привязки нет (blocked до S4-30): устройство — фиксированное MMIO-окно, как у дисплея.
+**Статус: срезы A и B реализованы исполнителем, ожидают ревью.** Срез A — управляющая часть: регистры, admin-очереди и Admin-команды. Срез B — набор команд ввода-вывода `Read`, `Write`, `Flush` поверх backend диска (раздел 13; backend в памяти `InMemoryBackend`, файловый — вне `od-machine`). PCI-привязки нет (blocked до S4-30): устройство — фиксированное MMIO-окно, как у дисплея; прерываний нет (`gsi = 0xFFFF_FFFF`). Значения спецификации NVMe Base 2.4 не сверены (раздел 1).
 
 Код: `crates/od-machine/src/nvme/{mod,controller,queues,admin,io,backend}.rs`, интеграция в плату — `crates/od-machine/src/firmware_board.rs`. Тесты — `nvme/tests.rs`, `nvme/queues.rs` (PRP), `firmware_board.rs` (handoff и `run_boot`).
 
@@ -154,9 +154,9 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 | 512 | `SQES` | `0x66` | только SQE 64 байта |
 | 513 | `CQES` | `0x44` | только CQE 16 байт |
 | 516 | `NN` | 1 | |
-| 520 | `ONCS` | 0 | только Read/Write/Flush (в срезе A — ни одной) |
+| 520 | `ONCS` | 0 | необязательных NVM-команд нет: `Read`/`Write`/`Flush` в `ONCS` не объявляются (NOT VERIFIED: какие команды обязательны); Compare, Write Uncorrectable, Dataset Management, Write Zeroes, Verify, Copy — не реализованы |
 | 522 | `FUSES` | 0 | fused-операций нет |
-| 525 | `VWC` | 0 | энергозависимого кэша записи нет (`Flush` всё равно обязателен, срез B) |
+| 525 | `VWC` | 0 | энергозависимого кэша записи в контроллере нет; `Flush` всё равно вызывает `flush` backend (раздел 13) |
 | 536 | `SGLS` | 0 | SGL не поддержан |
 | 768 | `SUBNQN` | `nqn.2014-08.org.nvmexpress:uuid:<UUID>` | UUID из `NvmeConfig::subsystem_uuid`, дополнено нулями |
 | 2048 | `PSD0` | `MP = 2500` (25,00 Вт), задержки 0 | описание единственного состояния питания |
@@ -192,7 +192,7 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 | LID | Страница | Содержимое |
 |---|---|---|
 | `0x01` | Error Information | до 64 записей по 64 байта, новейшая первой. Заводится на каждую команду с ненулевым статусом (кроме событий-doorbell, у них свои записи): `Error Count` (с 1, растёт), `SQID`, `CID`, `Status Field` (`P` из CQE, `SC`, `SCT`, `DNR`), `Parameter Error Location = 0xFFFF` (не отслеживается), `NSID` команды (`0xFFFF_FFFF`, если 0). Неиспользованные записи — нули (`Error Count = 0`) |
-| `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; счётчики данных и команд = 0 (I/O не выполнялся — это фактическое значение среза A); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
+| `0x02` | SMART / Health Information (512) | `Critical Warning = 0`; `Composite Temperature = 300` K; `Available Spare = 100`, `Threshold = 10`; `Percentage Used = 0`; `Data Units Read/Written` (смещения 32/48) — тысячи секторов по 512 байт, с округлением вверх, `Host Read/Write Commands` (64/80) — число успешных `Read`/`Write` с включения питания (срез B; NOT VERIFIED: единицы и округление); `Controller Busy Time` = 0 (нет времени); `Power Cycles = 1`; `Number of Error Information Log Entries` — живой счётчик ошибок; остальное 0. **`Power On Hours`, `Controller Busy Time` = 0, так как у устройства нет источника времени** — разрыв |
 | `0x03` | Firmware Slot Information (512) | `AFI = 0x01` (активен слот 1, следующий — нет); `FRS1` = `FR`; слоты 2–7 пусты (нули) |
 
 Чтение с `RAE = 0` снимает маску асинхронного события соответствующего типа (`0x01` — тип 0 «error status», `0x02` — тип 1).
@@ -205,8 +205,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 
 | Что | Причина и статус |
 |---|---|
-| **I/O `Read`, `Write`, `Flush`** | **Разрыв с обязательными командами NVM command set.** Срез B (не начат). Сейчас I/O-команда завершается `Invalid Command Opcode`. `OACS`/`ONCS` корректно не объявляют ничего лишнего |
-| Диск-backend | trait `NvmeBackend` описан в `backend.rs` как интерфейс среза B; реализации нет, контроллер его не вызывает. Файловый ввод-вывод и подключение `od-storage` — не в `od-machine` |
+| I/O `Read`, `Write`, `Flush` | реализованы в срезе B (раздел 13). Остальные NVM-команды (`Write Zeroes`, `Dataset Management`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy`) — `Invalid Command Opcode`; обязательность и состав набора для заявляемой редакции не сверены (раздел 11) |
+| Файловый backend / CoW-образ | `od-machine` содержит только trait `NvmeBackend` и `InMemoryBackend` (раздел 13); подключение `od-storage` — за владельцем машины |
 | Namespace Management/Attachment, несколько NS | вне scope S7-16; один NS `NSID = 1`, `OACS` бит 3 = 0 |
 | Firmware Image Download/Commit | вне scope; `FRMW` объявляет слот 1 только для чтения |
 | Device Self-test, Format NVM, Sanitize, Security Send/Receive, Keep Alive, Directives, Virtualization, Doorbell Buffer Config | вне scope; `Invalid Command Opcode` |
@@ -235,6 +235,8 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 - реакция на doorbell несозданной очереди и на значение вне диапазона (здесь — запись принимается, событие и запись в журнал, а не ошибка шины);
 - правила PRP: допустимое смещение `PRP1` и `PRP2`-листа, цепочка листов.
 
+**Открытые вопросы среза B (для ревью и S7-17):** см. раздел 13.5.
+
 **Открытые вопросы среза A (для ревью и S7-17):**
 
 1. Проверка `IOSQES`/`IOCQES` при `CC.EN = 1` против проверки при Create I/O SQ/CQ (выше, вероятное отклонение).
@@ -245,4 +247,77 @@ Doorbell очереди `y`: SQ tail — `0x1000 + 8·y`, CQ head — `0x1000 + 
 
 ## 12. Проверка
 
-`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, три log page, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды; путь «гость пишет doorbell → остановка кванта → `service`» end-to-end не покрыт, раздел 3). Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
+`cargo test -p od-machine --offline` — модуль `nvme` (регистры, ошибки доступа, `CC.EN/RDY/CFS`, Identify побайтно, active NS list, создание/удаление очередей с фазовым битом и заполненной CQ, ошибка создания SQ без CQ, Features, три log page, AER, Abort, неверный doorbell, неподдержанная команда, PRP на границе страницы и со списком) и `firmware_board` (handoff v1.1 с NVMe, окно не отображено без устройства, `run_boot` выполняет заранее поданные команды; путь «гость пишет doorbell → остановка кванта → `service`» end-to-end не покрыт, раздел 3). Срез B: тесты `nvme/tests.rs` (раздел «I/O») и `nvme/backend.rs`, `nvme/queues.rs` (`read_from_host`): Write → Read через PRP1+PRP2 и PRP list, максимум 1 MiB, Flush, LBA/NSID/NLB/поля/PRP-ошибки, ошибка backend, нет backend, полная CQ, отсутствующая SQ, счётчики SMART. Тесты, зависящие от значений раздела 1, проверяют только то, что объявлено здесь; они не доказывают соответствие спецификации (сверка — с Linux `nvme.h`, раздел 1).
+
+## 13. Срез B: I/O
+
+Код: `nvme/io.rs` (команды), `nvme/backend.rs` (trait и `InMemoryBackend`), `nvme/controller.rs` (`attach_backend`, исполнение команд очереди I/O). I/O-команды берутся из SQ 1…4 тем же циклом `service`, что и admin (раздел 6): порядок, фазовый бит, полная CQ, `SQHD` — без изменений.
+
+### 13.1. Команды
+
+Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `include/linux/nvme.h` (master, 2026-11-07), не с NVMe Base 2.4 / NVM Command Set 1.3. Значения статусов раздела 13.2 (включая `LBA Out of Range` `0x80`, `Namespace Not Ready` `0x82`, `Internal Error` `0x06`) и бит DNR (`0x4000`) тоже сверены с `nvme.h`. **Всё остальное в этом разделе — `NOT VERIFIED against NVMe Base 2.4`:** раскладка полей `Read`/`Write`, DNR для статусов и условия их применения, порядок проверок, поведение `Flush`.
+
+| Поле | Read / Write |
+|---|---|
+| `NSID` | только 1 |
+| `PRP1`, `PRP2` | данные; правила PRP — раздел 6 |
+| `CDW10`, `CDW11` | `SLBA` (младшие, старшие 32 бита) |
+| `CDW12[15:0]` | `NLB`, 0-based: 1…2048 секторов (512 байт … 1 MiB, `MDTS = 8`) |
+| `CDW12[31:16]` | `FUA` (бит 30), `LR` (31), `PRINFO` (26–29), `DTYPE` (20–23) и прочее — не поддержаны: любое ненулевое значение — `Invalid Field` |
+| `CDW13` | подсказки Dataset Management (`DSM`) — не поддержаны: ненулевое — `Invalid Field` |
+| `CDW14`, `CDW15`, `MPTR` | игнорируются: защиты данных (`PRINFO = 0`) и метаданных (`MS = 0`) нет |
+
+`Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
+
+**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) `CDW12[31:16]`/`CDW13 ≠ 0` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
+
+**Передача.** `Read`: чтение из backend, затем запись в память гостя по PRP. `Write`: сначала весь буфер читается из памяти гостя по PRP, потом пишется в backend; при ошибке PRP диск не меняется. Память гостя — только RAM (раздел 3).
+
+### 13.2. Статусы
+
+| Статус | SCT/SC | DNR | Когда | Источник значения |
+|---|---|---|---|---|
+| Success | 0/`0x00` | | | |
+| Invalid Command Opcode | 0/`0x01` | 1 | неизвестный I/O-opcode | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| Invalid Field in Command | 0/`0x02` | 1 | поля выше, `PSDT`, `FUSE`, `NLB` больше `MDTS`, `PRP1` не кратен 4 | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| Data Transfer Error | 0/`0x04` | 0 | PRP, список PRP или данные вне RAM | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| Invalid Namespace or Format | 0/`0x0B` | 1 | `NSID ≠ 1` | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| PRP Offset Invalid | 0/`0x13` | 1 | `PRP2` или элемент списка не выровнен по 4 KiB | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| LBA Out of Range | 0/`0x80` | 1 | выход за `NSZE` | значение `nvme.h`; DNR и условие NOT VERIFIED |
+| Internal Error | 0/`0x06` | 0 | `BackendError` любого вида при обращении к диску | значение `nvme.h`; DNR и условие NOT VERIFIED (медиа-ошибки SCT 2 `Write Fault`/`Unrecovered Read Error` не используются) |
+| Namespace Not Ready | 0/`0x82` | 0 | backend не подключён | значение `nvme.h`; DNR и условие NOT VERIFIED |
+
+Каждая неуспешная команда попадает в Error Information log (раздел 9.2). Паник нет: любая ошибка PRP, диапазона, поля или backend — статус.
+
+### 13.3. Backend и namespace
+
+- `trait NvmeBackend`: `sector_count`, `read_sectors(lba, &mut [u8])`, `write_sectors(lba, &[u8])`, `flush`; буфер — целое число секторов по 512 байт; ошибки — `BackendError` (`OutOfRange`, `Io`, `InvalidSize`), не паника. Контроллер проверяет диапазон сам, но реализация обязана отвергать выход за пределы.
+- `InMemoryBackend` (`new(sectors)`, `from_bytes`, `as_bytes`, `flush_count`) — нулевой вектор фиксированного размера для тестов и мини-образов. **Точка интеграции файла/CoW:** владелец машины реализует `NvmeBackend` над контрактами `od-storage` (`STORAGE_FORMAT.md`) и передаёт его в `NvmeHandle::attach_backend(Box<dyn NvmeBackend + Send>)`. Файлового ввода-вывода в `od-machine` нет. **Требование долговечности:** контроллер объявляет `VWC = 0`, драйверы Flush не посылают, поэтому backend обязан сделать запись долговечной к возврату `write_sectors` (write-through), либо интеграция должна объявить `VWC = 1` и реализовать Flush; выбор — открытый вопрос для интеграции с `od-storage`. Поведение кода не менялось.
+- `attach_backend`: допустим только пока `CC.EN = 0` (`NvmeAttachError::ControllerEnabled`), backend с нулём секторов — `EmptyBackend`. `NSZE = NCAP = NUSE`, `NVMCAP`, `TNVMCAP` становятся `sector_count()` backend и заменяют `NvmeConfig::namespace_sectors`; Identify Namespace/Controller и проверка диапазона используют одно и то же значение. Заменить backend можно только при выключенном контроллере.
+- **Решение: устройство существует и без backend.** До `attach_backend` контроллер работает (регистры, admin, Identify с размером из `NvmeConfig`), а любая `Read`/`Write`/`Flush` завершается `Namespace Not Ready` (после проверки NSID). Альтернатива — не создавать устройство без backend — отвергнута: `FirmwareBoardConfig::nvme` и handoff остаются как в срезе A, а владелец машины подключает диск позже.
+- **Решение: один формат LBA, 512 байт** (`LBAF0`, `LBADS = 9`). 4 KiB LBA не поддержан и не объявляется (`NLBAF = 0`): 512 байт — единица `od-storage`, GPT S7-17 и размер, который ждут прошивка и `stornvme`.
+
+### 13.4. Что не сделано (срез B)
+
+| Что | Статус |
+|---|---|
+| LBA 4 KiB, несколько форматов LBA, Format NVM | не поддержаны (решение выше) |
+| `Dataset Management` (команда и подсказки `CDW13`), `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode` / `Invalid Field`; `ONCS = 0` |
+| `FUA`, `LR`, `PRINFO` (защита данных), метаданные | `Invalid Field`; не объявлены |
+| Namespace Management, несколько NS, широковещательный `NSID = 0xFFFF_FFFF` | вне scope; Flush на `0xFFFF_FFFF` отвергается |
+| SGL | `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
+| Файловый/CoW backend | вне `od-machine` (`od-storage`) |
+| Прерывания | нет IRQ-маршрута, прошивка опрашивает CQ; `IEN` хранится без эффекта |
+| PCI-привязка | S4-30 |
+| Атомарность записи (`AWUN`/`AWUPF`), `Write Atomicity` | команда в `service` исполняется целиком; гарантии для гостя нет в обозначенных границах, поля не объявлены |
+| Время исполнения, ограничение скорости | нет |
+| I/O без созданной SQ | `Invalid Queue Identifier` невозможна: doorbell несозданной SQ даёт событие среза A (invalid doorbell register); `Invalid Queue Identifier` проверяется на Delete SQ несозданной очереди |
+
+### 13.5. Открытые вопросы среза B (NOT VERIFIED)
+
+1. Значения `LBA Out of Range` (`0x80`), `Namespace Not Ready` (`0x82`), `Internal Error` (`0x06`) сверены с `nvme.h`; `DNR` для них и условия применения — NOT VERIFIED против NVMe Base 2.4; для отказа backend спецификация, вероятно, предписывает медиа-статусы SCT 2.
+2. Раскладка `CDW12`/`CDW13` Read/Write (позиции `FUA`, `LR`, `PRINFO`, `DTYPE`) и реакция на их ненулевые значения; нужен ли `Invalid Field` для `CDW14/15` при `PRINFO = 0`.
+3. `Flush` с `NSID = 0xFFFF_FFFF` и с `NSID = 0`; поведение `Flush` без volatile write cache (`VWC = 0`).
+4. Порядок проверок (`Namespace Not Ready` после `NSID`, до полей), `MDTS`: статус при превышении (`Invalid Field`).
+5. Единицы и округление `Data Units Read/Written` в SMART.
+6. Обязательность `Write Zeroes`/`Dataset Management` для заявляемого профиля и требования `stornvme`/Linux к ним (первые кандидаты в дефекты после сверки).

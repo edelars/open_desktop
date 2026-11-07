@@ -45,6 +45,7 @@ fn config() -> NvmeConfig {
 #[derive(Clone, Copy, Default)]
 struct Sqe {
     opcode: u8,
+    fuse: u8,
     psdt: u8,
     nsid: u32,
     prp1: u64,
@@ -80,9 +81,35 @@ impl Sqe {
         self.cdw12 = offset;
         self
     }
+    /// Read/Write/Flush fields: `SLBA` and `NLB` (0's based).
+    fn rw(mut self, slba: u64, nlb: u16) -> Self {
+        self.cdw10 = slba as u32;
+        self.cdw11 = (slba >> 32) as u32;
+        self.cdw12 = (self.cdw12 & !0xFFFF) | u32::from(nlb);
+        self
+    }
+    fn cdw12_bits(mut self, bits: u32) -> Self {
+        self.cdw12 |= bits;
+        self
+    }
+    fn cdw13(mut self, value: u32) -> Self {
+        self.cdw13 = value;
+        self
+    }
+    fn fuse(mut self, fuse: u8) -> Self {
+        self.fuse = fuse;
+        self
+    }
+    fn psdt(mut self, psdt: u8) -> Self {
+        self.psdt = psdt;
+        self
+    }
     fn raw(&self, cid: u16) -> [u8; SQE_BYTES] {
         let mut raw = [0u8; SQE_BYTES];
-        let dw0 = u32::from(self.opcode) | (u32::from(self.psdt) << 14) | (u32::from(cid) << 16);
+        let dw0 = u32::from(self.opcode)
+            | (u32::from(self.fuse) << 8)
+            | (u32::from(self.psdt) << 14)
+            | (u32::from(cid) << 16);
         raw[0..4].copy_from_slice(&dw0.to_le_bytes());
         raw[4..8].copy_from_slice(&self.nsid.to_le_bytes());
         raw[24..32].copy_from_slice(&self.prp1.to_le_bytes());
@@ -134,6 +161,9 @@ struct Rig {
     cq_head: u16,
     cq_phase: bool,
     next_cid: u16,
+    io_sq_tail: u16,
+    io_cq_head: u16,
+    io_cq_phase: bool,
 }
 
 fn rig_with(config: NvmeConfig) -> Rig {
@@ -169,6 +199,9 @@ fn rig_with(config: NvmeConfig) -> Rig {
         cq_head: 0,
         cq_phase: true,
         next_cid: 0x100,
+        io_sq_tail: 0,
+        io_cq_head: 0,
+        io_cq_phase: true,
     }
 }
 
@@ -712,8 +745,8 @@ fn identify_transfer_crosses_a_page_boundary_with_prp2() {
 fn io_queues_are_created_and_completions_carry_the_phase_bit() {
     let mut rig = Rig::enabled();
     rig.create_io_queues();
-    // Slice A has no I/O command set: every I/O command is an invalid opcode,
-    // but it still completes, in order, with a flipping phase tag.
+    // No backend is attached: every Read is Namespace Not Ready, but it still
+    // completes, in order, with a flipping phase tag.
     let mut head = 0u16;
     let mut phase = true;
     let mut tail = 0u16;
@@ -730,7 +763,8 @@ fn io_queues_are_created_and_completions_carry_the_phase_bit() {
         assert_eq!(cqe.sqid, 1);
         assert_eq!(cqe.sqhd, tail);
         assert_eq!(cqe.phase, phase, "round {round}");
-        assert_eq!(cqe.status(), (0, 0x01), "Invalid Command Opcode");
+        assert_eq!(cqe.status(), (0, 0x82), "Namespace Not Ready");
+        assert!(!cqe.dnr, "may be retried once a backend is attached");
         head = (head + 1) % 4;
         if head == 0 {
             phase = !phase;
@@ -1228,4 +1262,525 @@ fn config_is_validated() {
     uuid.namespace_uuid = [0; 16];
     assert_eq!(bad(uuid), Some(NvmeConfigError::ZeroUuid("namespace_uuid")));
     assert!(bad(config()).is_none());
+}
+
+// ------------------------------------------------------- I/O (slice B)
+
+use std::sync::{Arc, Mutex};
+
+const OPC_FLUSH: u8 = 0x00;
+const OPC_WRITE: u8 = 0x01;
+const OPC_READ: u8 = 0x02;
+/// Sectors of the test disk (2 MiB).
+const DISK_SECTORS: u64 = 4096;
+const IO_ENTRIES: u16 = 4;
+/// Guest buffers for I/O (all page aligned, inside RAM).
+const BUF_A: u64 = 0x10_0000;
+const BUF_B: u64 = 0x20_0000;
+const BUF_C: u64 = 0x30_0000;
+const LIST: u64 = 0x40_0000;
+
+/// A backend whose content the test can inspect after it moved into the controller.
+#[derive(Clone)]
+struct SharedBackend(Arc<Mutex<InMemoryBackend>>);
+
+impl SharedBackend {
+    fn new(sectors: u64) -> Self {
+        Self(Arc::new(Mutex::new(InMemoryBackend::new(sectors).unwrap())))
+    }
+    fn bytes(&self, lba: u64, sectors: usize) -> Vec<u8> {
+        let disk = self.0.lock().unwrap();
+        let start = lba as usize * 512;
+        disk.as_bytes()[start..start + sectors * 512].to_vec()
+    }
+    fn flushes(&self) -> u64 {
+        self.0.lock().unwrap().flush_count()
+    }
+}
+
+impl NvmeBackend for SharedBackend {
+    fn sector_count(&self) -> u64 {
+        self.0.lock().unwrap().sector_count()
+    }
+    fn read_sectors(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), BackendError> {
+        self.0.lock().unwrap().read_sectors(lba, buffer)
+    }
+    fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), BackendError> {
+        self.0.lock().unwrap().write_sectors(lba, data)
+    }
+    fn flush(&mut self) -> Result<(), BackendError> {
+        self.0.lock().unwrap().flush()
+    }
+}
+
+/// A backend whose every access fails with an I/O error.
+struct FailingBackend;
+
+impl NvmeBackend for FailingBackend {
+    fn sector_count(&self) -> u64 {
+        DISK_SECTORS
+    }
+    fn read_sectors(&mut self, _: u64, _: &mut [u8]) -> Result<(), BackendError> {
+        Err(BackendError::Io)
+    }
+    fn write_sectors(&mut self, _: u64, _: &[u8]) -> Result<(), BackendError> {
+        Err(BackendError::Io)
+    }
+    fn flush(&mut self) -> Result<(), BackendError> {
+        Err(BackendError::Io)
+    }
+}
+
+/// A backend that claims to have no sectors.
+struct EmptyBackend;
+
+impl NvmeBackend for EmptyBackend {
+    fn sector_count(&self) -> u64 {
+        0
+    }
+    fn read_sectors(&mut self, _: u64, _: &mut [u8]) -> Result<(), BackendError> {
+        Err(BackendError::OutOfRange)
+    }
+    fn write_sectors(&mut self, _: u64, _: &[u8]) -> Result<(), BackendError> {
+        Err(BackendError::OutOfRange)
+    }
+    fn flush(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+fn pattern(len: usize, seed: u8) -> Vec<u8> {
+    (0..len)
+        .map(|index| (index as u8).wrapping_mul(7).wrapping_add(seed))
+        .collect()
+}
+
+impl Rig {
+    /// Controller with an attached disk, enabled, with I/O queue pair 1.
+    fn with_disk() -> (Self, SharedBackend) {
+        let mut rig = rig();
+        let disk = SharedBackend::new(DISK_SECTORS);
+        rig.nvme.attach_backend(Box::new(disk.clone())).unwrap();
+        rig.enable();
+        rig.create_io_queues();
+        (rig, disk)
+    }
+
+    fn io_cq_entry(&mut self, index: u16) -> Cqe {
+        let raw = self.mem_read(IO_CQ + u64::from(index) * CQE_BYTES as u64, CQE_BYTES);
+        Cqe::parse(&raw.try_into().unwrap())
+    }
+
+    /// Enables the controller again after a reset (`CC.EN = 0`) and recreates
+    /// I/O queue pair 1; the guest-side ring state starts over.
+    fn restart(&mut self) {
+        self.sq_tail = 0;
+        self.cq_head = 0;
+        self.cq_phase = true;
+        self.io_sq_tail = 0;
+        self.io_cq_head = 0;
+        self.io_cq_phase = true;
+        self.mem_write(ACQ, &[0; ADMIN_ENTRIES as usize * CQE_BYTES]);
+        self.mem_write(IO_CQ, &[0; IO_ENTRIES as usize * CQE_BYTES]);
+        self.enable();
+        self.create_io_queues();
+    }
+
+    /// Queues one command on I/O SQ 1 without servicing; returns its CID.
+    fn io_queue(&mut self, sqe: Sqe) -> u16 {
+        let cid = self.next_cid;
+        self.next_cid += 1;
+        let address = IO_SQ + u64::from(self.io_sq_tail) * SQE_BYTES as u64;
+        self.mem_write(address, &sqe.raw(cid));
+        self.io_sq_tail = (self.io_sq_tail + 1) % IO_ENTRIES;
+        self.set_dword(IO1_SQ_DOORBELL, u32::from(self.io_sq_tail));
+        cid
+    }
+
+    /// Takes the next completion of I/O CQ 1 and rings its head doorbell.
+    fn io_poll(&mut self) -> Option<Cqe> {
+        let cqe = self.io_cq_entry(self.io_cq_head);
+        if cqe.phase != self.io_cq_phase {
+            return None;
+        }
+        self.io_cq_head = (self.io_cq_head + 1) % IO_ENTRIES;
+        if self.io_cq_head == 0 {
+            self.io_cq_phase = !self.io_cq_phase;
+        }
+        self.set_dword(IO1_CQ_DOORBELL, u32::from(self.io_cq_head));
+        Some(cqe)
+    }
+
+    /// Submits one I/O command and returns its completion.
+    fn io(&mut self, sqe: Sqe) -> Cqe {
+        let cid = self.io_queue(sqe);
+        self.service();
+        let cqe = self.io_poll().expect("I/O command completed");
+        assert_eq!((cqe.cid, cqe.sqid), (cid, 1));
+        cqe
+    }
+}
+
+#[test]
+fn write_then_read_round_trips_across_a_page_boundary_with_prp1_and_prp2() {
+    let (mut rig, disk) = Rig::with_disk();
+    // Two sectors with PRP1 = BUF_A + 0xE00 (0x200 bytes before the end of
+    // the page): 0x200 bytes in the first page (PRP1), 0x200 in the next
+    // one (PRP2, BUF_B).
+    let payload = pattern(1024, 3);
+    rig.mem_write(BUF_A + 0xE00, &payload[..0x200]);
+    rig.mem_write(BUF_B, &payload[0x200..]);
+    let write = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A + 0xE00, BUF_B)
+        .rw(10, 1));
+    assert_eq!(write.status(), (0, 0));
+    assert_eq!(disk.bytes(10, 2), payload);
+    // Read it back into a differently split buffer.
+    let read = rig.io(Sqe::new(OPC_READ)
+        .nsid(1)
+        .prp(BUF_C + 0xF00, BUF_A)
+        .rw(10, 1));
+    assert_eq!(read.status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_C + 0xF00, 0x100), payload[..0x100]);
+    assert_eq!(rig.mem_read(BUF_A, 0x300), payload[0x100..]);
+    // A transfer inside one page needs no PRP2.
+    let one = rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_B, 0).rw(11, 0));
+    assert_eq!(one.status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_B, 512), payload[512..]);
+    // Other sectors stay zero.
+    assert!(disk.bytes(9, 1).iter().all(|&b| b == 0));
+    assert!(disk.bytes(12, 1).iter().all(|&b| b == 0));
+}
+
+#[test]
+fn write_then_read_round_trips_through_a_prp_list() {
+    let (mut rig, disk) = Rig::with_disk();
+    // 24 sectors (12 KiB) starting 0x800 into the first page: 0x800 + 2 pages
+    // + 0x800, so PRP2 is a list of three pages.
+    let payload = pattern(24 * 512, 9);
+    let pages = [BUF_B, BUF_B + 0x5000, BUF_B + 0x2000];
+    rig.mem_write(BUF_A + 0x800, &payload[..0x800]);
+    rig.mem_write(pages[0], &payload[0x800..0x1800]);
+    rig.mem_write(pages[1], &payload[0x1800..0x2800]);
+    rig.mem_write(pages[2], &payload[0x2800..]);
+    for (index, page) in pages.iter().enumerate() {
+        rig.mem_write(LIST + index as u64 * 8, &page.to_le_bytes());
+    }
+    let write = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A + 0x800, LIST)
+        .rw(100, 23));
+    assert_eq!(write.status(), (0, 0));
+    assert_eq!(disk.bytes(100, 24), payload);
+    // Read into a fresh set of pages; PRP1 page-aligned this time.
+    let targets = [BUF_C + 0x1000, BUF_C + 0x9000];
+    for (index, page) in targets.iter().enumerate() {
+        rig.mem_write(LIST + 0x1000 + index as u64 * 8, &page.to_le_bytes());
+    }
+    let read = rig.io(Sqe::new(OPC_READ)
+        .nsid(1)
+        .prp(BUF_C, LIST + 0x1000)
+        .rw(100, 23));
+    assert_eq!(read.status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_C, 0x1000), payload[..0x1000]);
+    assert_eq!(rig.mem_read(targets[0], 0x1000), payload[0x1000..0x2000]);
+    assert_eq!(rig.mem_read(targets[1], 0x1000), payload[0x2000..0x3000]);
+}
+
+#[test]
+fn the_largest_transfer_is_one_mebibyte_and_a_larger_nlb_is_invalid_field() {
+    let (mut rig, disk) = Rig::with_disk();
+    // MDTS = 8: 2048 sectors. PRP1 page-aligned plus a list of 255 pages.
+    let payload = pattern(1 << 20, 5);
+    rig.mem_write(BUF_A, &payload[..0x1000]);
+    for page in 1..256u64 {
+        let address = BUF_B + page * 0x1000;
+        rig.mem_write(address, &payload[page as usize * 0x1000..][..0x1000]);
+        rig.mem_write(LIST + (page - 1) * 8, &address.to_le_bytes());
+    }
+    let write = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, LIST).rw(0, 2047));
+    assert_eq!(write.status(), (0, 0));
+    assert_eq!(disk.bytes(0, 2048), payload);
+    for nlb in [2048u16, 4095, 0xFFFF] {
+        for opcode in [OPC_READ, OPC_WRITE] {
+            let cqe = rig.io(Sqe::new(opcode).nsid(1).prp(BUF_A, LIST).rw(0, nlb));
+            assert_eq!(cqe.status(), (0, 0x02), "opcode {opcode} NLB {nlb}");
+            assert!(cqe.dnr);
+        }
+    }
+    assert_eq!(disk.bytes(0, 2048), payload, "failed writes change nothing");
+}
+
+#[test]
+fn flush_succeeds_and_reaches_the_backend() {
+    let (mut rig, disk) = Rig::with_disk();
+    assert_eq!(disk.flushes(), 0);
+    let cqe = rig.io(Sqe::new(OPC_FLUSH).nsid(1));
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(cqe.dw0, 0);
+    assert_eq!(disk.flushes(), 1);
+    // PRPs and the other dwords are ignored by Flush; SGL and fused bits are not.
+    assert_eq!(
+        rig.io(Sqe::new(OPC_FLUSH).nsid(1).psdt(1)).status(),
+        (0, 0x02)
+    );
+    assert_eq!(
+        rig.io(Sqe::new(OPC_FLUSH).nsid(1).fuse(1)).status(),
+        (0, 0x02)
+    );
+    assert_eq!(disk.flushes(), 1);
+}
+
+#[test]
+fn lba_outside_the_namespace_is_lba_out_of_range() {
+    let (mut rig, disk) = Rig::with_disk();
+    let last = DISK_SECTORS - 1;
+    // The last sector is valid, one sector past the end is not.
+    let ok = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(last, 0));
+    assert_eq!(ok.status(), (0, 0));
+    for (slba, nlb) in [
+        (last, 1u16),
+        (DISK_SECTORS, 0),
+        (DISK_SECTORS - 2, 2),
+        (1 << 32, 0),
+        (u64::MAX, 0),
+        (u64::MAX, 1),
+        (u64::MAX - 1, 3),
+    ] {
+        for opcode in [OPC_READ, OPC_WRITE] {
+            let cqe = rig.io(Sqe::new(opcode).nsid(1).prp(BUF_A, BUF_B).rw(slba, nlb));
+            assert_eq!(cqe.status(), (0, 0x80), "opcode {opcode} {slba:#x}+{nlb}");
+            assert!(cqe.dnr);
+        }
+    }
+    assert!(disk.bytes(last - 1, 1).iter().all(|&b| b == 0));
+}
+
+#[test]
+fn namespace_id_other_than_one_is_invalid_namespace_or_format() {
+    let (mut rig, _) = Rig::with_disk();
+    for nsid in [0u32, 2, 0xFFFF_FFFE, 0xFFFF_FFFF] {
+        for opcode in [OPC_READ, OPC_WRITE, OPC_FLUSH] {
+            let cqe = rig.io(Sqe::new(opcode).nsid(nsid).prp(BUF_A, 0).rw(0, 0));
+            assert_eq!(cqe.status(), (0, 0x0B), "opcode {opcode} nsid {nsid:#x}");
+            assert!(cqe.dnr);
+        }
+    }
+}
+
+#[test]
+fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
+    let (mut rig, disk) = Rig::with_disk();
+    rig.mem_write(BUF_A, &[0xEE; 512]);
+    let base = || Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0);
+    let rejected = [
+        ("FUA", base().cdw12_bits(1 << 30)),
+        ("LR", base().cdw12_bits(1 << 31)),
+        ("PRCHK", base().cdw12_bits(1 << 26)),
+        ("PRACT", base().cdw12_bits(1 << 29)),
+        ("DTYPE", base().cdw12_bits(1 << 20)),
+        ("CDW12 bit 16", base().cdw12_bits(1 << 16)),
+        ("DSM", base().cdw13(1)),
+        ("DSM incompressible", base().cdw13(1 << 7)),
+        ("SGL", base().psdt(1)),
+        ("fused", base().fuse(2)),
+    ];
+    for (name, sqe) in rejected {
+        for opcode in [OPC_WRITE, OPC_READ] {
+            let sqe = Sqe { opcode, ..sqe };
+            let cqe = rig.io(sqe);
+            assert_eq!(cqe.status(), (0, 0x02), "{name}, opcode {opcode}");
+            assert!(cqe.dnr, "{name}");
+        }
+    }
+    assert!(disk.bytes(5, 1).iter().all(|&b| b == 0));
+    // The same command without the field is accepted.
+    assert_eq!(rig.io(base()).status(), (0, 0));
+    assert_eq!(disk.bytes(5, 1), vec![0xEE; 512]);
+}
+
+#[test]
+fn bad_prp_is_a_status_and_a_failed_write_leaves_the_disk_unchanged() {
+    let (mut rig, disk) = Rig::with_disk();
+    rig.mem_write(BUF_A, &pattern(1024, 1));
+    rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(20, 1));
+    let good = disk.bytes(20, 2);
+    // PRP1 in the controller's own MMIO window and outside RAM: Data Transfer Error.
+    for bad in [NVME_MMIO_BASE, RAM_BYTES + 0x1000] {
+        let write = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(bad, 0).rw(20, 0));
+        assert_eq!(write.status(), (0, 0x04), "write from {bad:#x}");
+        assert!(!write.dnr, "a transfer error may be retried");
+        let read = rig.io(Sqe::new(OPC_READ).nsid(1).prp(bad, 0).rw(20, 0));
+        assert_eq!(read.status(), (0, 0x04), "read into {bad:#x}");
+    }
+    // PRP2 as the second page must be page aligned: PRP Offset Invalid.
+    let cqe = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A + 0xE00, BUF_B + 8)
+        .rw(20, 1));
+    assert_eq!(cqe.status(), (0, 0x13));
+    // PRP1 not dword aligned: Invalid Field.
+    let cqe = rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_A + 2, 0).rw(20, 0));
+    assert_eq!(cqe.status(), (0, 0x02));
+    assert_eq!(disk.bytes(20, 2), good);
+}
+
+#[test]
+fn a_failing_backend_completes_with_internal_error() {
+    let mut rig = rig();
+    rig.nvme.attach_backend(Box::new(FailingBackend)).unwrap();
+    rig.enable();
+    rig.create_io_queues();
+    for opcode in [OPC_READ, OPC_WRITE, OPC_FLUSH] {
+        let cqe = rig.io(Sqe::new(opcode).nsid(1).prp(BUF_A, 0).rw(0, 0));
+        assert_eq!(cqe.status(), (0, 0x06), "opcode {opcode}");
+        assert!(!cqe.dnr);
+    }
+}
+
+#[test]
+fn other_io_opcodes_are_invalid_command_opcode() {
+    let (mut rig, _) = Rig::with_disk();
+    // Write Uncorrectable, Compare, Write Zeroes, Dataset Management, Verify, Copy.
+    for opcode in [0x04, 0x05, 0x08, 0x09, 0x0C, 0x19, 0x7F, 0x80, 0xFF] {
+        let cqe = rig.io(Sqe::new(opcode).nsid(1).prp(BUF_A, 0).rw(0, 0));
+        assert_eq!(cqe.status(), (0, 0x01), "I/O opcode {opcode:#x}");
+        assert!(cqe.dnr);
+    }
+}
+
+#[test]
+fn without_a_backend_io_is_namespace_not_ready_until_one_is_attached() {
+    let mut rig = rig();
+    rig.enable();
+    rig.create_io_queues();
+    for opcode in [OPC_READ, OPC_WRITE, OPC_FLUSH] {
+        let cqe = rig.io(Sqe::new(opcode).nsid(1).prp(BUF_A, 0).rw(0, 0));
+        assert_eq!(cqe.status(), (0, 0x82), "opcode {opcode}");
+        assert!(!cqe.dnr);
+    }
+    // An invalid NSID is still reported as such, before the missing backend.
+    let cqe = rig.io(Sqe::new(OPC_READ).nsid(2).prp(BUF_A, 0).rw(0, 0));
+    assert_eq!(cqe.status(), (0, 0x0B));
+    // The disk can only change while the controller is off.
+    let disk = SharedBackend::new(DISK_SECTORS);
+    assert_eq!(
+        rig.nvme.attach_backend(Box::new(disk.clone())),
+        Err(NvmeAttachError::ControllerEnabled)
+    );
+    rig.set_dword(0x14, 0);
+    assert_eq!(
+        rig.nvme.attach_backend(Box::new(EmptyBackend)),
+        Err(NvmeAttachError::EmptyBackend)
+    );
+    rig.nvme.attach_backend(Box::new(disk.clone())).unwrap();
+    rig.restart();
+    let cqe = rig.io(Sqe::new(OPC_FLUSH).nsid(1));
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(disk.flushes(), 1);
+}
+
+#[test]
+fn identify_namespace_follows_the_size_of_the_attached_backend() {
+    let mut rig = rig();
+    // The configured size (SECTORS) is replaced by the backend's.
+    rig.nvme
+        .attach_backend(Box::new(InMemoryBackend::new(DISK_SECTORS).unwrap()))
+        .unwrap();
+    rig.enable();
+    let (cqe, page) = rig.identify(0, 1);
+    assert_eq!(cqe.status(), (0, 0));
+    for offset in [0, 8, 16] {
+        assert_eq!(u64_at(&page, offset), DISK_SECTORS, "NSZE/NCAP/NUSE");
+    }
+    assert_eq!(page[26], 0, "FLBAS: format 0");
+    assert_eq!(u32_at(&page, 128) >> 16 & 0xFF, 9, "LBAF0.LBADS = 9");
+    let (_, controller) = rig.identify(1, 0);
+    assert_eq!(
+        u128::from_le_bytes(controller[280..296].try_into().unwrap()),
+        u128::from(DISK_SECTORS) * 512,
+        "TNVMCAP"
+    );
+    assert_eq!(controller[77], 8, "MDTS");
+}
+
+#[test]
+fn a_full_completion_queue_holds_back_writes_until_the_host_moves_the_head() {
+    let (mut rig, disk) = Rig::with_disk();
+    rig.mem_write(BUF_A, &[0x5A; 512]);
+    // Three Flushes fill the 4-entry CQ (one slot stays free by definition).
+    for _ in 0..3 {
+        rig.io_queue(Sqe::new(OPC_FLUSH).nsid(1));
+    }
+    assert_eq!(rig.service().completions, 3);
+    let cid = rig.io_queue(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(7, 0));
+    let report = rig.service();
+    assert_eq!((report.commands, report.completions), (0, 0));
+    assert!(
+        disk.bytes(7, 1).iter().all(|&b| b == 0),
+        "the write is not executed while its completion has no room"
+    );
+    // The host consumes the three completions; the write then runs.
+    for _ in 0..3 {
+        assert!(rig.io_poll().is_some());
+    }
+    let report = rig.service();
+    assert_eq!((report.commands, report.completions), (1, 1));
+    assert_eq!(disk.bytes(7, 1), vec![0x5A; 512]);
+    let cqe = rig.io_poll().unwrap();
+    assert_eq!((cqe.cid, cqe.status()), (cid, (0, 0)));
+}
+
+#[test]
+fn io_on_a_submission_queue_that_does_not_exist_is_not_executed() {
+    let mut rig = Rig::enabled();
+    // No I/O queue exists: the doorbell is the invalid-register event, the
+    // command in memory is never fetched and no completion appears.
+    rig.mem_write(IO_SQ, &Sqe::new(OPC_FLUSH).nsid(1).raw(0x900));
+    rig.set_dword(IO1_SQ_DOORBELL, 1);
+    let report = rig.service();
+    assert_eq!((report.commands, report.completions), (0, 0));
+    assert_eq!(rig.dword(0x1C) & 0b11, 1, "the controller stays ready");
+    // Queue ids that were never created: Invalid Queue Identifier.
+    let cqe = rig.admin(Sqe::new(OPC_DELETE_SQ).cdw(1, 0));
+    assert_eq!(cqe.status(), (1, 0x01));
+    // After Delete I/O SQ the queue is gone again.
+    rig.create_io_queues();
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_SQ).cdw(1, 0)).status(),
+        (0, 0)
+    );
+    rig.mem_write(IO_SQ, &Sqe::new(OPC_FLUSH).nsid(1).raw(0x901));
+    rig.set_dword(IO1_SQ_DOORBELL, 1);
+    let report = rig.service();
+    assert_eq!((report.commands, report.completions), (0, 0));
+    assert_eq!(
+        rig.admin(Sqe::new(OPC_DELETE_CQ).cdw(1, 0)).status(),
+        (0, 0)
+    );
+}
+
+#[test]
+fn smart_health_log_counts_host_io_commands_and_data_units() {
+    let (mut rig, _) = Rig::with_disk();
+    rig.mem_write(BUF_A, &pattern(0x1000, 2));
+    // 8 sectors written twice, read once; 16 sectors written in total.
+    for _ in 0..2 {
+        rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(0, 7));
+    }
+    rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_B, 0).rw(0, 7));
+    // Failed commands are not counted.
+    rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_B, 0).rw(DISK_SECTORS, 0));
+    let (cqe, page) = rig.log_page(0x02, 512, 0, true);
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(
+        u64_at(&page, 32),
+        1,
+        "data units read (1000 sectors, rounded up)"
+    );
+    assert_eq!(u64_at(&page, 48), 1, "data units written");
+    assert_eq!(u64_at(&page, 64), 1, "host read commands");
+    assert_eq!(u64_at(&page, 80), 2, "host write commands");
+    assert_eq!(u64_at(&page, 176), 1, "the failed read is in the error log");
 }

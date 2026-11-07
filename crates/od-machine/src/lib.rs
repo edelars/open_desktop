@@ -117,8 +117,8 @@ pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;
 
 pub use nvme::{
-    BackendError, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeBackend, NvmeConfig, NvmeConfigError,
-    NvmeDevice, NvmeHandle, NvmeServiceReport,
+    BackendError, InMemoryBackend, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeAttachError, NvmeBackend,
+    NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, NvmeServiceReport,
 };
 
 pub use pio_step::step_diagnostic_pio_u8;
