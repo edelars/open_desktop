@@ -279,6 +279,30 @@ update. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md),
 [CPU contract](CPU_CONTRACT.md#bounded-paged-cpu-to-pio-profile-pagedcpl0piou8v1-s4-24c)
 and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
 
+## Stage 4 guest UART echo image (S4-24d)
+
+`Stage4UartEchoProbeV1` is an explicit strict profile over the fixed Stage 4
+board and page-table layout. Its code bytes are exactly `EC EE F4` (`IN AL,DX`,
+`OUT DX,AL`, `HLT`). The profile loader checks this sequence; the legacy
+`Stage4FlatProbeV1` loader continues to reject it. `PagedVcpuSession` retains
+the selected profile and only resets with another image matching that profile.
+
+The CLI injects at most one externally supplied RX byte by scheduling and
+dispatching one bounded UART RX event before guest execution. `--expect-byte` is
+an independent host expectation; it is not passed to the guest or used to
+produce TX. Empty RBR retains the existing PIO error. Completion requires HLT,
+three retired instructions, `RIP=0x400003`, RAX equal to the expected byte, and
+actual UART TX exactly `[expected]`. The result reports `observed_rax`; the
+memory-specific `observed_data_qword` remains null for this profile.
+
+Budgets and deterministic cancellation expose the committed instruction prefix.
+Cancellation at zero is handled before RX delivery; later cancellation counts
+guest instruction-boundary polls. The profile does not add LSR polling loops,
+baud timing, FIFO behavior, IRQ/APIC, HLT wakeup, host threads or a scheduler.
+The builder verifies the assembled bytes/layout and artifact hashes. See the
+[S4-24d report](../reports/STAGE_4_S4-24D_2026-11-07.md) and
+[verification method](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo).
+
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 
 `Stage4FlatProbeV1` is a bounded, project-owned freestanding image contract.

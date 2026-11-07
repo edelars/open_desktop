@@ -64,7 +64,9 @@ fn main() -> ExitCode {
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),
         Some("--diagnostic") => return diagnostic::run(&args[1..]),
         Some("--diagnostic-replay") => return diagnostic::replay(&args[1..]),
-        Some("--stage4-probe") => return stage4_probe::run(&args),
+        Some("--stage4-probe") | Some("--stage4-uart-echo-probe") => {
+            return stage4_probe::run(&args);
+        }
         Some("--stage4-stack-probe") => return stage4_stack_probe::run(&args),
         Some("--stage4-alias-probe") => return stage4_alias_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),

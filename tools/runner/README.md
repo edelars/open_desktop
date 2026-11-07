@@ -43,9 +43,29 @@ exhaustion is `work_limit`. This is a deterministic cancellation source; real
 VMHost/OS signal wiring belongs to S4-41. After the quantum, the owner drains
 committed polling-UART TX once.
 
+## Stage 4 guest UART echo
+
+Build and run the strict one-byte guest echo image:
+
+```sh
+python3 tools/build/build_stage4_flat_probe.py \
+  --profile uart-echo-probe --output-dir work/stage4/uart_echo_probe
+cargo run --offline -p od-runner -- \
+  --stage4-uart-echo-probe work/stage4/uart_echo_probe/flat_probe.bin \
+  --rx-byte 0xff --expect-byte 0xff
+```
+
+The image must satisfy `Stage4UartEchoProbeV1` and contain only `IN AL,DX`,
+`OUT DX,AL`, `HLT`. `--rx-byte` and `--expect-byte` each accept decimal or
+`0x` hexadecimal bytes. RX travels through the session's bounded RX event path;
+the expected byte is an independent host-side predicate. Success requires the
+guest's RAX, exact retirement/RIP and actual drained UART output to match. With
+no injected RX byte, reading the empty RBR returns the existing `pio_error`.
+See the [S4-24d report](../../docs/reports/STAGE_4_S4-24D_2026-11-07.md).
+
 Standard output contains one deterministic JSON object. It includes
 `schema_version`, `profile`, `status`, `exit`, `retired`, `rip`, `activity`,
-`rflags_defined`, `serial_bytes`, `observed_data_qword`, and `error`. Values
+`rflags_defined`, `serial_bytes`, `observed_rax`, `observed_data_qword`, and `error`. Values
 that do not exist before machine handoff are `null`; guest integers are
 hexadecimal strings and serial output is an array of byte values.
 

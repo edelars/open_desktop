@@ -8,8 +8,8 @@ admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-06c
 CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read and
 reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
-COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
-slices. S4-11e cross-page word read is implemented and accepted after independent
+COM1 polling TX, bounded S4-24b CPU PIO, bounded S4-24c paged CPU PIO and
+bounded S4-24d guest UART RX→IN→OUT echo slices. S4-11e cross-page word read is implemented and accepted after independent
 review; its findings were fixed and no P0—P3 items remain. S4-11f word-MOV
 cross-page fetch is implemented and accepted after independent review with no
 remaining P0—P3 findings. Этап 4 не завершён: S4-00—S4-01,
@@ -138,6 +138,16 @@ formatting, layout, diff, JSON/link checks прошли; независимое
 и [JSON evidence](data/stage4/s4-24c-paged-pio.json). Не заявляются mixed
 runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 или Linux support. Parent S4-24 и Stage 4 остаются открытыми.
+
+В S4-24d добавлен строгий freestanding `Stage4UartEchoProbeV1` (`IN AL,DX` →
+`OUT DX,AL` → `HLT`) и отдельный runner path. Внешний RX byte проходит через
+session RX generation/deadline queue и UART; success отдельно сверяет expected
+byte, guest RAX, RIP/retirement и фактически переданный UART TX. Пустой RBR
+остаётся PIO error. Runner CLI — 9/9, builder→CLI — 2/2, 13 paged-session tests,
+runner all-targets check, fmt и diff прошли. Layout check остаётся на известной
+ISSUE-056 (`smoke/`). Независимые code/docs reviews чистые. Не заявляются guest
+LSR polling loop, baud timing, IRQ/APIC, HLT wakeup или полное S4-24. Подробности:
+[отчёт](STAGE_4_S4-24D_2026-11-07.md), [manifest](data/stage4/s4-24d-uart-echo.json).
 
 В S4-24b реализован `DiagnosticCpl0PioU8V1`: один bare `EC`/`EE` за вызов,
 Long64 CPL0, CR0/CR4 `None`, instruction fetch через flat identity RAM.

@@ -412,6 +412,24 @@ check passed; workspace check, JSON/link validation and independent
 exception delivery/CR2 update, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 or Linux behavior. Parent S4-24 remains open.
 
+## S4-24d: guest UART RX→IN→OUT echo
+
+`cargo test -p od-machine --lib paged_vcpu_session::tests --offline --
+--test-threads=1` passed 13 tests, including strict profile selection,
+profile-preserving reset and receiver release after guest `IN`. The runner CLI
+suite passed 9 tests: RX values `0x00`, `0x80`, `0xff`, exact RAX/RIP/TX
+prefixes under budgets and cancellation, empty-RBR PIO failure, mismatched or
+absent expectation, invalid bytes/options, and filenames equal to option names.
+The build CLI suite passed 2 tests, including identical ELF and raw artifacts
+from two builds followed by the real builder→runner echo path.
+
+`cargo check -p od-runner --all-targets --offline`, formatting and diff checks
+passed. `python3 tools/check_layout.py` remains blocked by the pre-existing
+unmapped root `smoke/` (`ISSUE-056`). Independent Sol/high code and documentation
+reviews passed without remaining findings. This proves one-shot polling echo;
+it does not prove guest LSR polling loops, IRQ/APIC, HLT wakeup, baud timing or
+the full S4-24 acceptance. See [report](../reports/STAGE_4_S4-24D_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

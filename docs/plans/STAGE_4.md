@@ -1315,6 +1315,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** `cargo test -p od-isa --all-targets --locked --offline` — 2014 unit, 6 paged и 7 legacy тестов; `cargo test -p od-machine --all-targets --locked --offline` — 105 тестов, включая 7 paged. Workspace check, fmt, layout, diff, JSON/link validation и independent review прошли.
 - **Не заявлено:** mixed runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT или Linux. Полный Stage 4 и parent S4-24 остаются открытыми.
 
+#### S4-24d. Guest UART RX→IN→OUT echo profile
+
+- [x] Ограниченный S4-24d принят после независимого `gpt-6.1-sol/high` ревью без замечаний P0–P3; S4-24 остаётся открытым.
+- **Зависимости среза:** S4-24a/b/c, S4-21c/d, S4-22b, S4-23c/d и S4-32a. Это не закрывает parent acceptance S4-21/22/23; IRQ-вариант S4-24 по-прежнему зависит от S4-27.
+- **Контракт:** отдельный `Stage4UartEchoProbeV1` raw image содержит только `IN AL,DX → OUT DX,AL → HLT` (`EC EE F4`) и использует прежний board/page-table handoff. Runner через RX event queue подаёт независимый byte; expected byte применяется только в host completion predicate. Success требует HLT, ровно 3 retirement, RIP `0x400003`, RAX равный ожиданию и реальный UART TX из одного совпадающего byte. Пустой RBR проходит штатным PIO error.
+- **Проверки и границы:** 13 `PagedVcpuSession` tests, 9 runner CLI tests, 2 builder→CLI tests, runner all-targets check, fmt и diff прошли. `check_layout.py` сообщает уже известный root `smoke/` (`ISSUE-056`). См. [отчёт](../reports/STAGE_4_S4-24D_2026-11-07.md), [manifest](../reports/data/stage4/s4-24d-uart-echo.json), [методику](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo). Гостевой LSR polling loop, IRQ/APIC, HLT wakeup, baud timing и общий scheduler не реализованы.
+
 ### S4-25. Local APIC одного CPU
 
 - [ ] Принято после ревью.

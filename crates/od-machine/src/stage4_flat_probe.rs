@@ -184,6 +184,12 @@ pub fn load_stage4_flat_probe(
     load_stage4_image(image, &CODE, 0)
 }
 
+pub fn load_stage4_uart_echo_probe(
+    image: &[u8],
+) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
+    load_stage4_image(image, &[0xec, 0xee, 0xf4], 0)
+}
+
 pub(crate) fn load_stage4_image(
     image: &[u8],
     code: &[u8],

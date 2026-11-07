@@ -4,7 +4,7 @@ use crate::{
     EventGeneration, EventQueueError, GuestPhysicalRange, LoadedStage4FlatProbe, Long64ProbeConfig,
     PagedProbeExit, PagedProbeQuantumReport, ProbeConfigError, Stage4FlatProbeLoadError,
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError, VirtualClock,
-    VirtualClockError, load_stage4_flat_probe,
+    VirtualClockError, load_stage4_flat_probe, load_stage4_uart_echo_probe,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, StiShadow};
 
@@ -29,9 +29,16 @@ pub enum PagedVcpuError {
     Clock(VirtualClockError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedProbeProfile {
+    Flat,
+    UartEcho,
+}
+
 /// Fixed-image, synchronous owner. Time and dispatch decisions belong to the caller.
 pub struct PagedVcpuSession {
     machine: LoadedStage4FlatProbe,
+    profile: PagedProbeProfile,
     rflags_defined: u64,
     host: PagedVcpuHostState,
     rx: UartRxEventPump,
@@ -40,12 +47,22 @@ pub struct PagedVcpuSession {
 
 impl PagedVcpuSession {
     pub fn new(image: &[u8], rx_capacity: usize, tsc_hz: u64) -> Result<Self, PagedVcpuError> {
+        Self::with_profile(image, rx_capacity, tsc_hz, PagedProbeProfile::Flat)
+    }
+
+    pub fn with_profile(
+        image: &[u8],
+        rx_capacity: usize,
+        tsc_hz: u64,
+        profile: PagedProbeProfile,
+    ) -> Result<Self, PagedVcpuError> {
         let clock = VirtualClock::new(tsc_hz).map_err(PagedVcpuError::Clock)?;
-        let machine = Self::prepare(image)?;
+        let machine = Self::prepare(image, profile)?;
         let rflags_defined = machine.rflags_defined();
         let rx = UartRxEventPump::new(rx_capacity, machine.uart());
         Ok(Self {
             machine,
+            profile,
             rflags_defined,
             host: PagedVcpuHostState::Active,
             rx,
@@ -53,8 +70,15 @@ impl PagedVcpuSession {
         })
     }
 
-    fn prepare(image: &[u8]) -> Result<LoadedStage4FlatProbe, PagedVcpuError> {
-        let machine = load_stage4_flat_probe(image).map_err(PagedVcpuError::Image)?;
+    fn prepare(
+        image: &[u8],
+        profile: PagedProbeProfile,
+    ) -> Result<LoadedStage4FlatProbe, PagedVcpuError> {
+        let machine = match profile {
+            PagedProbeProfile::Flat => load_stage4_flat_probe(image),
+            PagedProbeProfile::UartEcho => load_stage4_uart_echo_probe(image),
+        }
+        .map_err(PagedVcpuError::Image)?;
         let state = machine.state();
         Long64ProbeConfig::from_cpu_state(state, machine.cr3(), machine.efer())
             .map_err(PagedVcpuError::Paging)?;
@@ -144,7 +168,7 @@ impl PagedVcpuSession {
 
     /// Build and validate first; generation exhaustion leaves the owner unchanged.
     pub fn reset(&mut self, image: &[u8]) -> Result<(), PagedVcpuError> {
-        let replacement = Self::prepare(image)?;
+        let replacement = Self::prepare(image, self.profile)?;
         let flags = replacement.rflags_defined();
         self.rx
             .reset_and_retarget(self.rx.generation(), replacement.uart())
@@ -277,6 +301,48 @@ mod tests {
 
     fn run(s: &mut PagedVcpuSession, n: u64) -> PagedProbeQuantumReport {
         s.run(n, || false, |_| {}).unwrap()
+    }
+
+    #[test]
+    fn echo_profile_is_strict_and_reset_preserves_profile() {
+        let flat = image();
+        let mut echo = flat.clone();
+        echo[0x6000..0x6005].copy_from_slice(&[0xec, 0xee, 0xf4, 0, 0]);
+        assert!(PagedVcpuSession::new(&echo, 1, 1).is_err());
+        assert!(PagedVcpuSession::with_profile(&flat, 1, 1, PagedProbeProfile::UartEcho).is_err());
+        let mut session =
+            PagedVcpuSession::with_profile(&echo, 1, 1, PagedProbeProfile::UartEcho).unwrap();
+        session
+            .schedule_rx(session.rx_generation(), 1, 0, 0x80)
+            .unwrap();
+        let generation = session.rx_generation();
+        let state = session.state().clone();
+        let clock = *session.clock();
+        assert!(session.reset(&flat).is_err());
+        assert_eq!(session.pending_rx(), 1);
+        assert_eq!(session.rx_generation(), generation);
+        assert_eq!(*session.state(), state);
+        assert_eq!(*session.clock(), clock);
+        session.reset(&echo).unwrap();
+        assert_eq!(session.pending_rx(), 0);
+        assert_eq!(session.state().rip, 0x400000);
+    }
+
+    #[test]
+    fn echo_in_releases_receiver_and_tx_drain_is_once() {
+        let mut echo = image();
+        echo[0x6000..0x6005].copy_from_slice(&[0xec, 0xee, 0xf4, 0, 0]);
+        let mut session =
+            PagedVcpuSession::with_profile(&echo, 1, 1, PagedProbeProfile::UartEcho).unwrap();
+        let generation = session.rx_generation();
+        session.schedule_rx(generation, 1, 0, 0x80).unwrap();
+        assert_eq!(session.dispatch_rx(1, || false).unwrap().delivered, 1);
+        assert_eq!(run(&mut session, 1).instructions_executed, 1);
+        session.schedule_rx(generation, 2, 0, 0xff).unwrap();
+        assert_eq!(session.dispatch_rx(1, || false).unwrap().delivered, 1);
+        assert_eq!(run(&mut session, 2).exit, PagedProbeExit::Halted);
+        assert_eq!(session.drain_tx(), [0x80]);
+        assert!(session.drain_tx().is_empty());
     }
 
     fn read_rx(s: &mut PagedVcpuSession) -> u32 {

@@ -96,3 +96,51 @@ fn built_artifacts_are_reproducible_payload_driven_and_fail_closed() {
         let _ = fs::remove_dir_all(root.join(directory));
     }
 }
+
+#[test]
+fn uart_echo_fixture_is_reproducible_and_runs() {
+    let root = repo_root();
+    let names = [
+        format!("work/stage4/echo-{}-a", std::process::id()),
+        format!("work/stage4/echo-{}-b", std::process::id()),
+    ];
+    for name in &names {
+        let output = Command::new("python3")
+            .current_dir(&root)
+            .args([
+                "tools/build/build_stage4_flat_probe.py",
+                "--profile",
+                "uart-echo-probe",
+                "--output-dir",
+                name,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let a = root.join(&names[0]).join("flat_probe.bin");
+    let b = root.join(&names[1]).join("flat_probe.bin");
+    assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap());
+    let a_elf = root.join(&names[0]).join("flat_probe.elf");
+    let b_elf = root.join(&names[1]).join("flat_probe.elf");
+    assert_eq!(fs::read(&a_elf).unwrap(), fs::read(&b_elf).unwrap());
+    let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .arg("--stage4-uart-echo-probe")
+        .arg(&a)
+        .args(["--rx-byte", "255", "--expect-byte", "255"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(json(&output)["serial_bytes"], serde_json::json!([255]));
+    for name in &names {
+        let _ = fs::remove_dir_all(root.join(name));
+    }
+}

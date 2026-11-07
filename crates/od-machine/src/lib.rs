@@ -71,14 +71,16 @@ pub use paged_probe::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
     run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_probe, run_paged_stack_probe,
 };
-pub use paged_vcpu_session::{PagedVcpuError, PagedVcpuHostState, PagedVcpuSession};
+pub use paged_vcpu_session::{
+    PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
+};
 pub use stage4_alias_probe::load_stage4_alias_probe;
 pub use stage4_flat_probe::{
     LoadedStage4FlatProbe, STAGE4_FLAT_PROBE_CR3, STAGE4_FLAT_PROBE_DATA_GVA,
     STAGE4_FLAT_PROBE_EFER, STAGE4_FLAT_PROBE_ENTRY_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,
     STAGE4_FLAT_PROBE_IMAGE_GPA, STAGE4_FLAT_PROBE_RAM_BYTES, STAGE4_FLAT_PROBE_STACK_TOP_GVA,
     STAGE4_FLAT_PROBE_UART_BASE, Stage4FlatProbeLayoutError, Stage4FlatProbeLoadError,
-    load_stage4_flat_probe,
+    load_stage4_flat_probe, load_stage4_uart_echo_probe,
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;

@@ -1,0 +1,23 @@
+{
+  "slice": "S4-24d",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "strict guest UART RX to IN to OUT to HLT profile and runner acceptance",
+  "review": "independent gpt-6.1-sol/high code and docs review passed with no remaining P0-P3 findings",
+  "checks": {
+    "machine_session": "cargo test -p od-machine --lib paged_vcpu_session::tests --offline -- --test-threads=1: 13 passed",
+    "runner_cli": "cargo test -p od-runner --test stage4_probe_cli --offline -- --test-threads=1: 9 passed",
+    "runner_build_cli": "cargo test -p od-runner --test stage4_probe_build_cli --offline -- --test-threads=1: 2 passed",
+    "runner_check": "cargo check -p od-runner --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "layout": "python3 tools/check_layout.py: failed on pre-existing unmapped root directory smoke/ (ISSUE-056)",
+    "graphify_update": "graphify update .: 27667 nodes, 69526 edges, 1134 communities; built_at_commit verified to match final HEAD"
+  },
+  "limitations": [
+    "one-shot polling echo only; no guest LSR polling loop or divisor programming",
+    "no baud timing, FIFO, IRQ/APIC, HLT wakeup or host scheduler",
+    "S4-24 remains open for IRQ and broader guest-visible acceptance",
+    "layout validation remains blocked by existing ISSUE-056"
+  ]
+}
