@@ -583,6 +583,30 @@ Sol/high review passed. This remains a caller-driven flat identity profile; it
 does not establish paged IRETQ, automatic polling, HLT wakeup, JIT or Linux
 acceptance. See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md).
 
+## S4-27c: caller-driven STI-profile APIC quantum
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo check -p od-machine --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The 18 diagnostic session tests cover a pending level
+IRQ across `CLI; STI; NOP` caller quanta, selection only after the shadow
+clears, TPR-blocked eligibility, the STI profile's restricted handler
+instruction, delivery abort, and no-mutation admission rejection for
+insufficient flag definedness, missing shadow, configured TSC, non-Running
+activity, wrong CPL, paused state, CR0/CR3/CR4 and invalid Blocking+IF=0. A
+partial REP iteration-budget exit must block APIC delivery and IRETQ until an
+ordinary run retires the REP instruction. Successful entry remains
+acknowledged if the handler attempt is unsupported. Independent Sol/high
+review passed with no findings.
+
+The caller certifies the instruction boundary and absence of pending
+synchronous/debug/NMI/MOV-SS inhibition, serializes the complete CPU/APIC/IOAPIC
+operation, and supplies the private synchronous RAM and ISA entry guarantees.
+This method does not cover arbitrary instructions or the rest of the guest
+instruction stream; it is a bounded bridge over the existing exact STI
+profile. HLT wakeup, MOV SS/NMI, TSC/RDTSC, REP continuation inside the quantum,
+JIT, automatic EOI/IRET and Linux acceptance remain open. See the
+[S4-27c report](../reports/STAGE_4_S4-27C_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

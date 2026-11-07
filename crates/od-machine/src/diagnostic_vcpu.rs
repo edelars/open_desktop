@@ -4,14 +4,16 @@ use crate::{IdentityMemoryAdapter, LocalApicHandle, MachineBus};
 use crate::{VirtualClock, VirtualClockError};
 use od_isa::execute::{
     RdtscControls, RunConfig, RunExit, run_with_rflags_defined,
-    run_with_rflags_defined_and_rdtsc_source,
+    run_with_rflags_defined_and_rdtsc_source, run_with_sti_profile,
 };
 use od_isa::interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptOutsideProfile,
     deliver_maskable_interrupt,
 };
 use od_isa::iretq::{IretqProfile, IretqReadPhase, IretqRunExit, run_with_iretq_profile};
-use od_isa::memory::{AccessContext, ArchitecturalFault, MemoryError};
+use od_isa::memory::{
+    AccessContext, ArchitecturalFault, InstructionMode, MemoryError, PrivilegeLevel,
+};
 use od_isa::{INTEGER_FLAGS, LongModeState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +46,22 @@ pub enum DiagnosticIretqResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticInterruptResult {
     NoDelivery,
+    OutsideProfile(InterruptOutsideProfile),
+    Delivered {
+        vector: u8,
+        handler: DiagnosticRunResult,
+    },
+    Terminal(DiagnosticTerminalExit),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticStiApicQuantumResult {
+    /// Ordinary execution without interrupt delivery in the STI APIC profile.
+    Ordinary(DiagnosticRunResult),
+    /// The session does not meet the STI APIC profile's admission conditions.
+    ProfileRejected,
+    /// A terminal result from the ordinary STI-profile quantum.
+    TerminalExecution(DiagnosticRunResult),
     OutsideProfile(InterruptOutsideProfile),
     Delivered {
         vector: u8,
@@ -100,6 +118,7 @@ pub struct DiagnosticVcpuSession {
     status: DiagnosticVcpuState,
     clock: Option<VirtualClock>,
     rdtsc_controls: Option<RdtscControls>,
+    completed_boundary: bool,
 }
 
 impl DiagnosticVcpuSession {
@@ -122,6 +141,7 @@ impl DiagnosticVcpuSession {
             status: DiagnosticVcpuState::Runnable,
             clock: None,
             rdtsc_controls: None,
+            completed_boundary: true,
         })
     }
 
@@ -150,6 +170,7 @@ impl DiagnosticVcpuSession {
             status: DiagnosticVcpuState::Runnable,
             clock: Some(clock),
             rdtsc_controls: Some(rdtsc_controls),
+            completed_boundary: true,
         })
     }
 
@@ -250,7 +271,16 @@ impl DiagnosticVcpuSession {
             )
             .map_err(DiagnosticVcpuControlError::ExecutionInput)?
         };
+        Ok(self.record_run_result(result))
+    }
+
+    fn record_run_result(&mut self, result: od_isa::execute::RunResult) -> DiagnosticRunResult {
         self.rflags_defined = result.rflags_defined;
+        if matches!(result.exit, RunExit::RepIterationBudgetExhausted) {
+            self.completed_boundary = false;
+        } else if result.instructions_executed > 0 {
+            self.completed_boundary = true;
+        }
 
         let exit = match result.exit {
             RunExit::InstructionBudgetExhausted => {
@@ -274,11 +304,11 @@ impl DiagnosticVcpuSession {
             RunExit::StopAddress => self.terminal(DiagnosticTerminalExit::StopAddress),
         };
 
-        Ok(DiagnosticRunResult {
+        DiagnosticRunResult {
             exit,
             instructions_executed: result.instructions_executed,
             rflags_defined: result.rflags_defined,
-        })
+        }
     }
 
     /// Deliver one pending IRQ at a caller-certified completed instruction
@@ -291,6 +321,9 @@ impl DiagnosticVcpuSession {
     ) -> Result<DiagnosticInterruptResult, DiagnosticVcpuControlError> {
         if self.status != DiagnosticVcpuState::Runnable {
             return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        if !self.completed_boundary {
+            return Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported);
         }
         if self.state.rflags & (1 << 9) == 0
             || self.state.sti_shadow == Some(od_isa::StiShadow::Blocking)
@@ -335,6 +368,96 @@ impl DiagnosticVcpuSession {
         }
     }
 
+    /// Execute one bounded STI-profile quantum at a caller-certified boundary.
+    /// The caller serializes APIC/IOAPIC operations, certifies a fresh completed
+    /// boundary, private synchronous RAM, and absence of pending synchronous,
+    /// debug or NMI events and MOV-SS inhibition. The STI and interrupt-entry
+    /// profile exclusions, including one vCPU, non-PVI Long64 and disabled
+    /// VMX, SMM and CET, also apply.
+    pub fn run_sti_apic_quantum(
+        &mut self,
+        apic: &LocalApicHandle,
+    ) -> DiagnosticStiApicQuantumResult {
+        if self.status != DiagnosticVcpuState::Runnable
+            || self.access_context.mode != InstructionMode::Long64
+            || self.access_context.privilege != PrivilegeLevel::Ring0
+            || self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow.is_none()
+            || (self.state.sti_shadow == Some(od_isa::StiShadow::Blocking)
+                && self.state.rflags & (1 << 9) == 0)
+            || self.state.cr0.is_some()
+            || self.state.cr3.is_some()
+            || self.state.cr4.is_some()
+            || self.rflags_defined != INTEGER_FLAGS
+            || self.clock.is_some()
+            || self.rdtsc_controls.is_some()
+            || !self.completed_boundary
+        {
+            return DiagnosticStiApicQuantumResult::ProfileRejected;
+        }
+        let vector = if self.state.rflags & (1 << 9) != 0
+            && self.state.sti_shadow == Some(od_isa::StiShadow::Clear)
+        {
+            apic.eligible()
+        } else {
+            None
+        };
+        if let Some(vector) = vector {
+            let mut candidate = self.state.clone();
+            let mut committed_write = |_| {};
+            let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+            match deliver_maskable_interrupt(
+                &mut candidate,
+                &mut memory,
+                vector,
+                self.access_context,
+                self.rflags_defined,
+            ) {
+                InterruptDeliveryResult::OutsideProfile(reason) => {
+                    return DiagnosticStiApicQuantumResult::OutsideProfile(reason);
+                }
+                InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
+                    let terminal =
+                        DiagnosticTerminalExit::InterruptDeliveryAborted { phase, cause };
+                    self.terminal(terminal.clone());
+                    return DiagnosticStiApicQuantumResult::Terminal(terminal);
+                }
+                InterruptDeliveryResult::Delivered { .. } => {
+                    if !apic.acknowledge_vector(vector, || self.state = candidate) {
+                        let terminal = DiagnosticTerminalExit::InterruptSelectionChanged;
+                        self.terminal(terminal.clone());
+                        return DiagnosticStiApicQuantumResult::Terminal(terminal);
+                    }
+                }
+            }
+            let handler = self.run_sti_quantum();
+            return DiagnosticStiApicQuantumResult::Delivered { vector, handler };
+        }
+        let result = self.run_sti_quantum();
+        if matches!(result.exit, DiagnosticExit::Terminal(_)) {
+            DiagnosticStiApicQuantumResult::TerminalExecution(result)
+        } else {
+            DiagnosticStiApicQuantumResult::Ordinary(result)
+        }
+    }
+
+    fn run_sti_quantum(&mut self) -> DiagnosticRunResult {
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        let result = run_with_sti_profile(
+            &mut self.state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: self.access_context,
+            },
+            &od_isa::StiProfile::NonPviLong64V1,
+            || false,
+        );
+        self.record_run_result(result)
+    }
+
     /// Attempt one same-CPL0 IRETQ. The caller certifies private synchronous
     /// RAM and the remaining prerequisites of the ISA IRETQ profile.
     pub fn run_same_cpl0_iretq(
@@ -342,6 +465,9 @@ impl DiagnosticVcpuSession {
     ) -> Result<DiagnosticIretqResult, DiagnosticVcpuControlError> {
         if self.status != DiagnosticVcpuState::Runnable {
             return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        if !self.completed_boundary {
+            return Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported);
         }
         let mut candidate = self.state.clone();
         let mut committed_write = |_| {};
@@ -1000,5 +1126,265 @@ mod tests {
         );
         assert_eq!(cpu.state().rip, RAM_START + 1);
         assert_eq!(cpu.status(), &DiagnosticVcpuState::Runnable);
+    }
+
+    fn put(cpu: &mut DiagnosticVcpuSession, address: u64, bytes: &[u8]) {
+        for (offset, byte) in bytes.iter().enumerate() {
+            cpu.bus
+                .write_physical(
+                    GuestPhysicalAddress::new(address + offset as u64),
+                    AccessWidth::Byte,
+                    u64::from(*byte),
+                    |_| {},
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn sti_apic_waits_through_cli_sti_and_shadow() {
+        let (mut cpu, io, apic) = irq_session(0x7000);
+        cpu.rflags_defined = INTEGER_FLAGS;
+        cpu.state.rflags &= !0x200;
+        put(&mut cpu, 0x4100, &[0xfa, 0xfb, 0x90]);
+        put(&mut cpu, 0x4000, &[0xfa]);
+        io.set_intin4(true).unwrap();
+        for rip in [0x4101, 0x4102, 0x4103] {
+            assert!(matches!(
+                cpu.run_sti_apic_quantum(&apic),
+                DiagnosticStiApicQuantumResult::Ordinary(DiagnosticRunResult {
+                    instructions_executed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(cpu.state.rip, rip);
+            assert_eq!(apic.pending(), Some(0x51));
+        }
+        assert_eq!(cpu.state.sti_shadow, Some(od_isa::StiShadow::Clear));
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Delivered {
+                vector: 0x51,
+                handler: DiagnosticRunResult {
+                    instructions_executed: 1,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn sti_apic_respects_tpr_and_restricted_handler() {
+        let (mut cpu, io, apic) = irq_session(0x7000);
+        cpu.rflags_defined = INTEGER_FLAGS;
+        cpu.state.rflags &= !0x200;
+        put(&mut cpu, 0x4100, &[0xfb]);
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                AccessWidth::Dword,
+                0x60,
+                |_| {},
+            )
+            .unwrap();
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Ordinary(_)
+        ));
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(apic.eligible(), None);
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                AccessWidth::Dword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        put(&mut cpu, 0x4101, &[0x90]);
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Ordinary(_)
+        ));
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Delivered {
+                vector: 0x51,
+                handler: DiagnosticRunResult {
+                    exit: DiagnosticExit::Terminal(DiagnosticTerminalExit::Unsupported { .. }),
+                    ..
+                }
+            }
+        ));
+        assert_eq!(apic.pending(), None);
+        assert_eq!(cpu.state.rip, 0x4000);
+        assert!(matches!(
+            cpu.run(1, || false),
+            Err(DiagnosticVcpuControlError::NotRunnable(_))
+        ));
+    }
+
+    #[test]
+    fn sti_apic_uses_eligible_not_pending_when_if_is_set() {
+        let (mut cpu, io, apic) = irq_session(0x7000);
+        cpu.rflags_defined = INTEGER_FLAGS;
+        put(&mut cpu, 0x4100, &[0xfb]);
+        put(&mut cpu, 0x4000, &[0xfa]);
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                AccessWidth::Dword,
+                0x60,
+                |_| {},
+            )
+            .unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(apic.eligible(), None);
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Ordinary(DiagnosticRunResult {
+                instructions_executed: 1,
+                ..
+            })
+        ));
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                AccessWidth::Dword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Delivered { vector: 0x51, .. }
+        ));
+    }
+
+    #[test]
+    fn sti_apic_delivery_abort_preserves_pending_and_is_terminal() {
+        let (mut cpu, io, apic) = irq_session(0x9000);
+        cpu.rflags_defined = INTEGER_FLAGS;
+        let before = cpu.state.clone();
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Terminal(
+                DiagnosticTerminalExit::InterruptDeliveryAborted { .. }
+            )
+        ));
+        assert_eq!(cpu.state, before);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert!(matches!(
+            cpu.run(1, || false),
+            Err(DiagnosticVcpuControlError::NotRunnable(_))
+        ));
+    }
+
+    #[test]
+    fn sti_apic_rejects_invalid_admission_without_mutation() {
+        fn snapshot(bus: &mut MachineBus) -> Vec<u64> {
+            let mut values = (0x1000..0x8000)
+                .map(|address| {
+                    bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Byte)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            for offset in [0x80, 0xf0, 0x110, 0x190, 0x210] {
+                values.push(
+                    bus.read_physical(
+                        GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + offset),
+                        AccessWidth::Dword,
+                    )
+                    .unwrap(),
+                );
+            }
+            values.push(
+                bus.read_physical(
+                    GuestPhysicalAddress::new(crate::IO_APIC_MMIO_BASE + 0x10),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            );
+            values
+        }
+        for case in 0..10 {
+            let (mut cpu, io, apic) = irq_session(0x7000);
+            cpu.rflags_defined = INTEGER_FLAGS;
+            io.set_intin4(true).unwrap();
+            match case {
+                0 => cpu.rflags_defined = 0,
+                1 => cpu.state.sti_shadow = None,
+                2 => cpu.clock = Some(VirtualClock::new(1).unwrap()),
+                3 => cpu.state.activity = None,
+                4 => cpu.access_context.privilege = PrivilegeLevel::Ring3,
+                5 => cpu.pause().unwrap(),
+                6 => cpu.state.cr0 = Some(0),
+                7 => cpu.state.cr3 = Some(0),
+                8 => cpu.state.cr4 = Some(0),
+                _ => {
+                    cpu.state.sti_shadow = Some(od_isa::StiShadow::Blocking);
+                    cpu.state.rflags &= !0x200;
+                }
+            }
+            let before = cpu.state.clone();
+            let status = cpu.status.clone();
+            let pending = apic.pending();
+            let eligible = apic.eligible();
+            let rflags_defined = cpu.rflags_defined;
+            let completed_boundary = cpu.completed_boundary;
+            let memory_and_devices = snapshot(&mut cpu.bus);
+            assert_eq!(
+                cpu.run_sti_apic_quantum(&apic),
+                DiagnosticStiApicQuantumResult::ProfileRejected
+            );
+            assert_eq!(cpu.state, before);
+            assert_eq!(cpu.status, status);
+            assert_eq!(apic.pending(), pending);
+            assert_eq!(apic.eligible(), eligible);
+            assert_eq!(cpu.rflags_defined, rflags_defined);
+            assert_eq!(cpu.completed_boundary, completed_boundary);
+            assert_eq!(snapshot(&mut cpu.bus), memory_and_devices, "case {case}");
+        }
+    }
+
+    #[test]
+    fn rep_partial_prevents_apic_entry_until_normal_retirement() {
+        let (mut cpu, io, apic) = irq_session(0x7000);
+        cpu.rflags_defined = INTEGER_FLAGS;
+        put(&mut cpu, 0x4100, &[0xf3, 0xaa]);
+        cpu.state.gpr[od_isa::Register::Rcx as usize] = 1025;
+        cpu.state.gpr[od_isa::Register::Rdi as usize] = 0x5000;
+        let partial = run(&mut cpu, 1);
+        assert_eq!(
+            partial.exit,
+            DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget)
+        );
+        assert!(!cpu.completed_boundary);
+        io.set_intin4(true).unwrap();
+        let before = cpu.state.clone();
+        assert_eq!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::ProfileRejected
+        );
+        assert!(matches!(
+            cpu.deliver_interrupt_and_step(&apic),
+            Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported)
+        ));
+        assert!(matches!(
+            cpu.run_same_cpl0_iretq(),
+            Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported)
+        ));
+        assert_eq!(cpu.state, before);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(run(&mut cpu, 1).instructions_executed, 1);
+        assert!(cpu.completed_boundary);
+        assert!(matches!(
+            cpu.run_sti_apic_quantum(&apic),
+            DiagnosticStiApicQuantumResult::Delivered { .. }
+        ));
     }
 }

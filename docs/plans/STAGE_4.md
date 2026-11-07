@@ -1413,6 +1413,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 12 `diagnostic_vcpu` tests, 8 API tests, 10 Local APIC tests, 25 `od-isa::iretq` tests; package all-targets, fmt/diff и независимый Sol/high review прошли. Graphify и layout details — в [отчёте](../reports/STAGE_4_S4-27B_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json); методика — [S4-27b](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume).
 - **Граница:** caller-driven same-CPL0 diagnostic flat identity path; нет автоматического interrupt polling, paged IRETQ, межуровневого return, полного IF/STI/MOV SS/NMI/HLT scheduler, JIT или Linux acceptance. Полный S4-27 остаётся открытым.
 
+#### S4-27c. Caller-driven STI-profile APIC quantum
+
+- [x] Ограниченный S4-27c принят после независимого `gpt-6.1-sol/high` review без оставшихся замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** `DiagnosticVcpuSession::run_sti_apic_quantum` на каждой явной caller boundary проверяет один Local APIC vector через `eligible()`, затем либо выполняет существующий interrupt entry → точный acknowledge → одну попытку handler instruction, либо один quantum существующего `NonPviLong64V1` STI-профиля с instruction budget 1. Предусловия нового API проверяются до APIC и guest memory; обычный `run()` не меняет режим исполнения.
+- **Поддержанный STI язык:** профиль начинает admission заново на каждом вызове; при `IF=0, Clear` допустимы CLI/STI, при `IF=1, Clear` — STI, при `IF=1, Blocking` — NOP/STI/CLI. Поэтому `CLI; STI; NOP` между вызовами удерживает запрос pending до снятия shadow. После IRQ entry обработчик ограничен тем же профилем; например, NOP как первая handler instruction даёт terminal Unsupported, но entry и APIC acknowledge остаются committed.
+- **Предусловия и границы:** caller сериализует CPU/APIC/IOAPIC, удостоверяет completed boundary, отсутствие synchronous/debug/NMI/MOV-SS inhibition, private synchronous RAM, один vCPU и ограничения ISA entry. Требуются Runnable Long64/CPL0 Running state, явный STI shadow, `rflags_defined = INTEGER_FLAGS`, отсутствие configured TSC/RDTSC и `CR0/CR3/CR4`; `Blocking` при IF=0 отклоняется без мутаций. REP iteration-budget exit делает границу непригодной для APIC entry, IRETQ и STI quantum до последующего retirement обычным `run()`.
+- **Проверки:** 18 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27C_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27c-sti-apic-quantum.json); методика — [S4-27c](../testing/MACHINE.md#s4-27c-caller-driven-sti-profile-apic-quantum).
+- **Граница:** только exact STI profile и caller-driven flat identity diagnostic path; нет произвольного instruction stream, MOV SS/NMI delivery, REP continuation внутри нового quantum, HLT wakeup, TSC/RDTSC, JIT, автоматического возврата/EOI или Linux acceptance. Полный S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

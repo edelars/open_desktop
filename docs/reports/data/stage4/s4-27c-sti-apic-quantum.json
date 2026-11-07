@@ -1,0 +1,22 @@
+{
+  "slice": "S4-27c",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Caller-driven one-instruction-budget APIC polling using the existing exact NonPviLong64V1 STI profile",
+  "review": "Independent gpt-6.1-sol/high review found two P2 issues; both were fixed, and repeat review passed with no findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 18 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Post-documentation rebuild: 27,784 nodes, 70,474 edges, 933 communities",
+    "layout_check": "only the pre-existing unmapped root smoke/ directory (ISSUE-056); local links resolve"
+  },
+  "limitations": [
+    "caller-driven flat identity Long64/CPL0 diagnostic path; caller serializes vCPU and APIC/IOAPIC operations",
+    "only the exact existing NonPviLong64V1 instruction subset is admitted, including for the first handler instruction",
+    "partial REP iteration-budget exit blocks interrupt entry and IRETQ until an ordinary run retires it",
+    "MOV SS/NMI scheduling, HLT wakeup, TSC/RDTSC, arbitrary instruction execution, JIT, automatic EOI/IRET, board registration and Linux acceptance remain unimplemented",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

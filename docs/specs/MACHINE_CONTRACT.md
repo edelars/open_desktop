@@ -1480,6 +1480,45 @@ See the [S4-27b report](../reports/STAGE_4_S4-27B_2026-11-07.md),
 [verification method](../testing/MACHINE.md#s4-27b-guest-eoi-same-cpl-iretq-and-resume),
 and [evidence manifest](../reports/data/stage4/s4-27b-guest-eoi-iretq.json).
 
+## S4-27c. Caller-driven STI-profile APIC quantum
+
+`DiagnosticVcpuSession::run_sti_apic_quantum` is an opt-in one-instruction-
+budget diagnostic operation. At each caller-supplied boundary it checks one
+vector with `LocalApicHandle::eligible()`. If IF is set, the STI shadow is
+clear, and the vector is eligible, it performs the existing Long64/CPL0 entry,
+acknowledges that exact vector, and attempts one handler instruction. Otherwise
+it attempts one instruction through the existing `NonPviLong64V1` STI
+execution profile. This operation does not schedule or poll in the background.
+
+The STI profile starts admission anew on each call. Its admitted bare
+instructions are limited: with IF clear and shadow clear, CLI or STI; with IF
+set and shadow clear, STI; with IF set and a blocking shadow, NOP, STI or CLI.
+Thus a request remains pending across `CLI; STI; NOP` quanta and can be selected
+on the next call after NOP clears the shadow. This does not support arbitrary
+intervening guest instructions. The first handler instruction is subject to
+the same profile; a successful entry and APIC acknowledgement remain committed
+if that attempt is unsupported or faults.
+
+Admission rejects before APIC selection or guest-memory access unless the
+session is Runnable Long64/CPL0 with explicit Running activity and STI shadow,
+`rflags_defined = INTEGER_FLAGS`, no configured TSC/RDTSC, no CR0/CR3/CR4, and
+a tracked completed instruction boundary. A blocking STI shadow with IF clear
+is rejected. The caller serializes CPU/APIC/IOAPIC operations and certifies no
+pending synchronous, debug, NMI or MOV-SS inhibition, one vCPU, private
+synchronous RAM, and the remaining ISA entry preconditions. Admission rejection
+does not change guest or host session state.
+
+A partial REP iteration-budget exit invalidates the tracked instruction
+boundary. The new quantum, S4-27a interrupt entry and same-CPL IRETQ reject
+that state until an ordinary `run()` retires the instruction. A fault or
+unsupported execution remains terminal under the existing session rules.
+HLT wakeup, MOV SS/NMI scheduling, TSC/RDTSC, arbitrary instruction execution,
+JIT integration and automatic EOI/IRET are outside this slice.
+
+See the [S4-27c report](../reports/STAGE_4_S4-27C_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27c-caller-driven-sti-profile-apic-quantum),
+and [evidence manifest](../reports/data/stage4/s4-27c-sti-apic-quantum.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing
