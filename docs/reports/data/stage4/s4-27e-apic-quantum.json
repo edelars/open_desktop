@@ -1,0 +1,23 @@
+{
+  "slice": "S4-27e",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Caller-driven ordinary interpreter quantum with APIC eligibility check and committed handler entry",
+  "review": "Independent gpt-6.1-sol/high review found one P2 pre-entry STOP-state issue; fixed and repeat review passed with no findings.",
+  "checks": {
+    "diagnostic_vcpu_tests": "cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1: 29 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Post-documentation rebuild: 27,845 nodes, 70,629 edges, 978 communities",
+    "layout_check": "exit 1 only for the existing unmapped root smoke/ directory (ISSUE-056); local links and anchors resolve"
+  },
+  "limitations": [
+    "caller-driven one-instruction interpreter quantum only",
+    "explicit Clear STI shadow required; general STI/MOV-SS/NMI arbitration remains open",
+    "longer interpreter runs, JIT block exits, event-queue dispatch and automatic scheduling are not integrated",
+    "guest EOI and IRETQ remain explicit caller operations",
+    "HLT integration beyond the separate S4-27d wait profile and Linux acceptance remain open",
+    "parent S4-27 and Stage 4 remain open"
+  ]
+}

@@ -55,6 +55,19 @@ pub enum DiagnosticInterruptResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticApicQuantumResult {
+    ProfileRejected,
+    Stopped,
+    Ordinary(DiagnosticRunResult),
+    OutsideProfile(InterruptOutsideProfile),
+    Delivered {
+        vector: u8,
+        handler: DiagnosticRunResult,
+    },
+    Terminal(DiagnosticTerminalExit),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticStiApicQuantumResult {
     /// Ordinary execution without interrupt delivery in the STI APIC profile.
     Ordinary(DiagnosticRunResult),
@@ -529,6 +542,74 @@ impl DiagnosticVcpuSession {
                 Ok(DiagnosticInterruptResult::Delivered { vector, handler })
             }
         }
+    }
+
+    /// Poll APIC at a caller-certified completed boundary and attempt one
+    /// ordinary instruction. The caller serializes CPU/APIC/IOAPIC operations
+    /// and certifies private synchronous RAM, one vCPU, no pending synchronous,
+    /// debug or NMI events or MOV-SS inhibition, and the ISA entry exclusions
+    /// including disabled CET, VMX, SMM and shadow stacks.
+    pub fn run_apic_quantum(
+        &mut self,
+        apic: &LocalApicHandle,
+        mut stop_requested: impl FnMut() -> bool,
+    ) -> Result<DiagnosticApicQuantumResult, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable
+            || self.access_context.mode != InstructionMode::Long64
+            || self.access_context.privilege != PrivilegeLevel::Ring0
+            || self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow != Some(od_isa::StiShadow::Clear)
+            || self.state.cr0.is_some()
+            || self.state.cr3.is_some()
+            || self.state.cr4.is_some()
+            || self.rflags_defined & !INTEGER_FLAGS != 0
+            || !self.completed_boundary
+        {
+            return Ok(DiagnosticApicQuantumResult::ProfileRejected);
+        }
+        if stop_requested() {
+            self.stop();
+            return Ok(DiagnosticApicQuantumResult::Stopped);
+        }
+        let vector = if self.state.rflags & (1 << 9) != 0 {
+            apic.eligible()
+        } else {
+            None
+        };
+        if let Some(vector) = vector {
+            let mut candidate = self.state.clone();
+            let mut committed_write = |_| {};
+            let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+            match deliver_maskable_interrupt(
+                &mut candidate,
+                &mut memory,
+                vector,
+                self.access_context,
+                self.rflags_defined,
+            ) {
+                InterruptDeliveryResult::OutsideProfile(reason) => {
+                    return Ok(DiagnosticApicQuantumResult::OutsideProfile(reason));
+                }
+                InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
+                    let terminal =
+                        DiagnosticTerminalExit::InterruptDeliveryAborted { phase, cause };
+                    self.terminal(terminal.clone());
+                    return Ok(DiagnosticApicQuantumResult::Terminal(terminal));
+                }
+                InterruptDeliveryResult::Delivered { .. } => {
+                    if !apic.acknowledge_vector(vector, || self.state = candidate) {
+                        let terminal = DiagnosticTerminalExit::InterruptSelectionChanged;
+                        self.terminal(terminal.clone());
+                        return Ok(DiagnosticApicQuantumResult::Terminal(terminal));
+                    }
+                }
+            }
+            let handler = self.run(1, &mut stop_requested)?;
+            return Ok(DiagnosticApicQuantumResult::Delivered { vector, handler });
+        }
+        Ok(DiagnosticApicQuantumResult::Ordinary(
+            self.run(1, &mut stop_requested)?,
+        ))
     }
 
     /// Execute one bounded STI-profile quantum at a caller-certified boundary.
@@ -1764,6 +1845,305 @@ mod tests {
             assert_eq!(cpu.rflags_defined, rflags_defined);
             assert_eq!(cpu.completed_boundary, completed_boundary);
             assert_eq!(snapshot(&mut cpu.bus), memory_and_devices, "case {case}");
+        }
+    }
+
+    fn self_ipi(cpu: &mut DiagnosticVcpuSession, vector: u8) {
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x300),
+                AccessWidth::Dword,
+                0x4_4000 | u64::from(vector),
+                |_| {},
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn apic_quantum_matches_ordinary_run_with_flags_and_tsc() {
+        let (mut a, _, apic) = irq_session(0x7000);
+        let (mut b, _, _) = irq_session(0x7000);
+        for cpu in [&mut a, &mut b] {
+            put(cpu, 0x4100, &[0x0f, 0x31, 0x90]);
+            cpu.rflags_defined = 0x40;
+            cpu.clock = Some(VirtualClock::new(1_000_000_000).unwrap());
+            cpu.rdtsc_controls = Some(RdtscControls { cr4_tsd: false });
+            cpu.advance_time_ns(1234).unwrap();
+        }
+        for _ in 0..2 {
+            let expected = b.run(1, || false).unwrap();
+            assert_eq!(
+                a.run_apic_quantum(&apic, || false).unwrap(),
+                DiagnosticApicQuantumResult::Ordinary(expected)
+            );
+            assert_eq!(a.state, b.state);
+            assert_eq!(a.rflags_defined, b.rflags_defined);
+        }
+        assert_eq!(a.state.gpr[od_isa::Register::Rax as usize], 1234);
+    }
+
+    #[test]
+    fn apic_quantum_blocks_if_and_tpr_and_rejects_invalid_boundaries() {
+        for tpr in [false, true] {
+            let (mut cpu, _, apic) = irq_session(0x7000);
+            put(&mut cpu, 0x4100, &[0x90]);
+            self_ipi(&mut cpu, 0x61);
+            if tpr {
+                cpu.bus
+                    .write_physical(
+                        GuestPhysicalAddress::new(crate::LOCAL_APIC_MMIO_BASE + 0x80),
+                        AccessWidth::Dword,
+                        0x70,
+                        |_| {},
+                    )
+                    .unwrap();
+            } else {
+                cpu.state.rflags &= !0x200;
+            }
+            assert!(matches!(
+                cpu.run_apic_quantum(&apic, || false).unwrap(),
+                DiagnosticApicQuantumResult::Ordinary(DiagnosticRunResult {
+                    instructions_executed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(cpu.state.rip, 0x4101);
+            assert_eq!(apic.pending(), Some(0x61));
+        }
+        for case in 0..9 {
+            let (mut cpu, _, apic) = irq_session(0x7000);
+            self_ipi(&mut cpu, 0x61);
+            match case {
+                0 => cpu.state.sti_shadow = None,
+                1 => cpu.state.sti_shadow = Some(od_isa::StiShadow::Blocking),
+                2 => cpu.state.activity = Some(od_isa::CpuActivity::Halted),
+                3 => cpu.completed_boundary = false,
+                4 => cpu.pause().unwrap(),
+                5 => cpu.stop(),
+                6 => {
+                    cpu.terminal(DiagnosticTerminalExit::StopAddress);
+                }
+                7 => cpu.state.cr3 = Some(0),
+                _ => cpu.access_context.privilege = PrivilegeLevel::Ring3,
+            }
+            let before = cpu.state.clone();
+            let status = cpu.status.clone();
+            assert_eq!(
+                cpu.run_apic_quantum(&apic, || panic!("rejected callback"))
+                    .unwrap(),
+                DiagnosticApicQuantumResult::ProfileRejected
+            );
+            assert_eq!(cpu.state, before);
+            assert_eq!(cpu.status, status);
+            assert_eq!(apic.pending(), Some(0x61));
+        }
+    }
+
+    #[test]
+    fn apic_quantum_stop_and_profile_failure_do_not_execute() {
+        let (mut cpu, _, apic) = irq_session(0x7000);
+        self_ipi(&mut cpu, 0x61);
+        cpu.state.rip = 0x9000;
+        let before = cpu.state.clone();
+        assert_eq!(
+            cpu.run_apic_quantum(&apic, || true).unwrap(),
+            DiagnosticApicQuantumResult::Stopped
+        );
+        assert_eq!(cpu.state, before);
+        assert_eq!(cpu.status, DiagnosticVcpuState::Stopped);
+        assert_eq!(apic.pending(), Some(0x61));
+        assert_eq!(
+            cpu.run_apic_quantum(&apic, || panic!("stopped callback"))
+                .unwrap(),
+            DiagnosticApicQuantumResult::ProfileRejected
+        );
+        assert_eq!(cpu.state, before);
+        assert_eq!(cpu.status, DiagnosticVcpuState::Stopped);
+        assert_eq!(apic.pending(), Some(0x61));
+
+        let (mut cpu, _, apic) = irq_session(0x7000);
+        self_ipi(&mut cpu, 0x61);
+        cpu.state.idtr = None;
+        let before = cpu.state.clone();
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::OutsideProfile(_)
+        ));
+        assert_eq!(cpu.state, before);
+        assert_eq!(apic.pending(), Some(0x61));
+    }
+
+    #[test]
+    fn apic_quantum_pending_during_handler_then_delivers_before_resume() {
+        let (mut cpu, _, apic) = irq_return_session(0x7000);
+        put(&mut cpu, 0x4000, &[0x90, 0x89, 0x07, 0x48, 0xcf]);
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x3000 + 0x61 * 16),
+                AccessWidth::Qword,
+                0x8e00_0020_4000,
+                |_| {},
+            )
+            .unwrap();
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x3008 + 0x61 * 16),
+                AccessWidth::Qword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x3000 + 0x62 * 16),
+                AccessWidth::Qword,
+                0x8e00_0020_4000,
+                |_| {},
+            )
+            .unwrap();
+        cpu.bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x3008 + 0x62 * 16),
+                AccessWidth::Qword,
+                0,
+                |_| {},
+            )
+            .unwrap();
+        self_ipi(&mut cpu, 0x61);
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Delivered { vector: 0x61, .. }
+        ));
+        for (addr, value) in [
+            (0x6ff8, 0x10),
+            (0x6ff0, 0x7000),
+            (0x6fe8, 0x202),
+            (0x6fe0, 8),
+            (0x6fd8, 0x4100),
+        ] {
+            assert_eq!(
+                cpu.bus
+                    .read_physical(GuestPhysicalAddress::new(addr), AccessWidth::Qword)
+                    .unwrap(),
+                value
+            );
+        }
+        self_ipi(&mut cpu, 0x62);
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Ordinary(_)
+        ));
+        assert_eq!(apic.pending(), Some(0x62));
+        assert_eq!(
+            cpu.run_same_cpl0_iretq().unwrap(),
+            DiagnosticIretqResult::Retired
+        );
+        assert_eq!(cpu.state.rip, 0x4100);
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Delivered { vector: 0x62, .. }
+        ));
+        assert_eq!(cpu.state.rip, 0x4001);
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Ordinary(_)
+        ));
+        assert_eq!(
+            cpu.run_same_cpl0_iretq().unwrap(),
+            DiagnosticIretqResult::Retired
+        );
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Ordinary(_)
+        ));
+        assert_eq!(cpu.state.gpr[0], 0x1234_5678_9abc_def0);
+    }
+
+    #[test]
+    fn apic_quantum_handler_failure_and_stop_keep_entry() {
+        for case in 0..3 {
+            let (mut cpu, io, apic) = irq_session(0x7000);
+            if case == 0 {
+                put(&mut cpu, 0x4000, &[0x0f, 0x0b]);
+            }
+            if case == 1 {
+                cpu.state.gpr[od_isa::Register::Rbx as usize] = 0x9000;
+            }
+            io.set_intin4(true).unwrap();
+            let mut calls = 0;
+            let result = cpu
+                .run_apic_quantum(&apic, || {
+                    calls += 1;
+                    case == 2 && calls > 1
+                })
+                .unwrap();
+            assert!(matches!(
+                result,
+                DiagnosticApicQuantumResult::Delivered {
+                    vector: 0x51,
+                    handler: DiagnosticRunResult {
+                        exit: DiagnosticExit::Terminal(_) | DiagnosticExit::Stopped,
+                        ..
+                    }
+                }
+            ));
+            assert_eq!(cpu.state.rip, 0x4000);
+            assert_eq!(cpu.state.gpr[od_isa::Register::Rsp as usize], 0x6fd8);
+            assert_eq!(apic.pending(), None);
+        }
+    }
+
+    #[test]
+    fn apic_quantum_delivery_abort_does_not_acknowledge_or_retry() {
+        let (mut cpu, io, apic) = irq_session(0x9000);
+        let before = cpu.state.clone();
+        io.set_intin4(true).unwrap();
+        assert!(matches!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::Terminal(
+                DiagnosticTerminalExit::InterruptDeliveryAborted { .. }
+            )
+        ));
+        assert_eq!(cpu.state, before);
+        assert_eq!(apic.pending(), Some(0x51));
+        assert_eq!(
+            cpu.run_apic_quantum(&apic, || false).unwrap(),
+            DiagnosticApicQuantumResult::ProfileRejected
+        );
+        assert_eq!(apic.pending(), Some(0x51));
+    }
+
+    #[test]
+    fn apic_quantum_rep_partial_blocks_next_entry() {
+        for handler in [false, true] {
+            let (mut cpu, io, apic) = irq_session(0x7000);
+            put(
+                &mut cpu,
+                if handler { 0x4000 } else { 0x4100 },
+                &[0xf3, 0xaa],
+            );
+            cpu.state.gpr[od_isa::Register::Rcx as usize] = 1025;
+            cpu.state.gpr[od_isa::Register::Rdi as usize] = 0x5000;
+            if handler {
+                io.set_intin4(true).unwrap();
+            }
+            let result = cpu.run_apic_quantum(&apic, || false).unwrap();
+            let result = match result {
+                DiagnosticApicQuantumResult::Ordinary(r) => r,
+                DiagnosticApicQuantumResult::Delivered { handler: r, .. } => r,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                result.exit,
+                DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget)
+            );
+            assert!(!cpu.completed_boundary);
+            let before = cpu.state.clone();
+            assert_eq!(
+                cpu.run_apic_quantum(&apic, || false).unwrap(),
+                DiagnosticApicQuantumResult::ProfileRejected
+            );
+            assert_eq!(cpu.state, before);
         }
     }
 

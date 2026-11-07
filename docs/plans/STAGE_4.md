@@ -1431,6 +1431,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 22 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и повторное независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27D_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27d-hlt-apic-wake.json); методика — [S4-27d](../testing/MACHINE.md#s4-27d-explicit-hlt-wait-and-maskable-apic-wake).
 - **Граница:** только synchronous caller polling и maskable APIC wake на flat identity path. Нет asynchronous arrival, NMI/debug/MOV SS wake, timer/deadline source, general scheduler, JIT, автоматического handler execution или Linux acceptance. Полный S4-27 остаётся открытым.
 
+#### S4-27e. Ordinary APIC quantum and pending IRQ during handler
+
+- [x] Ограниченный S4-27e принят после исправления P2 по STOP и повторного независимого `gpt-6.1-sol/high` review без оставшихся замечаний; parent S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** новый `run_apic_quantum` на caller-certified completed boundary сначала проверяет STOP, затем при IF=1 выбирает один `eligible()` vector и выполняет candidate entry → acknowledge того же vector → обычный `run(1)` для handler. При IF=0 или отсутствии eligible vector исполняется обычный quantum. В отличие от 27c, используется полный обычный interpreter, включая текущую `rflags_defined` и configured TSC/RDTSC; требуется явный Clear STI shadow. Старые public result enums не расширяются.
+- **Pending during handler:** тестовый IRQ B приходит как self-IPI во время handler IRQ A. При IF=0 запрос остаётся в IRR; после guest EOI и явного IRETQ следующий `run_apic_quantum` доставляет B до fetch возобновляемой инструкции. После второго EOI/IRETQ основной поток возобновляется.
+- **STOP и отказ:** pre-entry STOP переводит session в `Stopped` до APIC/memory callbacks и сохраняет pending request; повторный quantum отклонён. `OutsideProfile` и delivery abort не переходят к обычному исполнению; abort terminal, сохраняет pending IRQ и не допускает retry. Fault/unsupported/stopped handler не откатывают успешный entry. REP partial invalidates boundary до последующего retirement.
+- **Проверки:** 29 `diagnostic_vcpu` tests, `od-machine --all-targets`, fmt/diff и повторное независимое Sol/high review прошли. Graphify и layout evidence записаны в [отчёте](../reports/STAGE_4_S4-27E_2026-11-07.md) и [manifest](../reports/data/stage4/s4-27e-apic-quantum.json); методика — [S4-27e](../testing/MACHINE.md#s4-27e-ordinary-apic-quantum).
+- **Граница:** обычная caller-driven interpreter session с fixed one-instruction budget; нет автоматической доставки в многоинструкционном run/JIT block, общего event queue arbitration, MOV SS/NMI, HLT wake integration, автоматического EOI/IRET или Linux acceptance. Полный S4-27 остаётся открытым.
+
 ### S4-28. APIC timer
 
 - [ ] Принято после ревью.

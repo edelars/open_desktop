@@ -628,6 +628,25 @@ asynchronous event arrival, NMI/debug/MOV-SS, timer, general scheduler, JIT or
 automatic handler/EOI/IRET is implemented. See the
 [S4-27d report](../reports/STAGE_4_S4-27D_2026-11-07.md).
 
+## S4-27e: ordinary APIC quantum
+
+Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,
+`cargo check -p od-machine --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The 29 diagnostic-session tests cover ordinary-run
+parity for RFLAGS definedness and configured TSC, IF=0 and TPR-blocked pending
+vectors, explicit STOP before APIC/memory, profile rejection without fallback,
+entry delivery and handler terminal outcomes, frame-write abort/no retry, and
+REP partial-boundary rejection. The end-to-end pending-during-handler case
+posts vector B while handling vector A; B remains in IRR with IF clear, then
+the next quantum after guest EOI/IRETQ enters B before fetching the interrupted
+instruction. A second EOI/IRETQ resumes the original stream. Independent
+Sol/high review passed after fixing STOP to persist the Stopped session state.
+
+This is explicit one-budget interpreter polling. It does not provide automatic
+arbitration inside longer runs or JIT blocks, general event-queue dispatch,
+MOV-SS/NMI, HLT integration or Linux acceptance. See the
+[S4-27e report](../reports/STAGE_4_S4-27E_2026-11-07.md).
+
 ## S4-32a: reproducible flat probe
 
 The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the

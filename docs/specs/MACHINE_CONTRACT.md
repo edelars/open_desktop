@@ -1559,6 +1559,43 @@ See the [S4-27d report](../reports/STAGE_4_S4-27D_2026-11-07.md),
 [verification method](../testing/MACHINE.md#s4-27d-explicit-hlt-wait-and-maskable-apic-wake),
 and [evidence manifest](../reports/data/stage4/s4-27d-hlt-apic-wake.json).
 
+## S4-27e. Ordinary APIC quantum and pending IRQ during handler
+
+`DiagnosticVcpuSession::run_apic_quantum` arbitrates one eligible maskable
+vector at a caller-certified completed boundary. STOP is checked before APIC
+selection or guest-memory access. If IF is set and `LocalApicHandle::eligible()`
+returns a vector, the existing Long64/CPL0 entry helper constructs a candidate
+frame; acknowledgement of the exact vector publishes the CPU, after which the
+ordinary session runner attempts one handler instruction. `OutsideProfile` or
+delivery abort never falls through to an ordinary quantum. After successful
+entry, a handler fault, unsupported instruction or stop does not roll back the
+frame or APIC acknowledgement.
+
+If IF is clear or no vector is eligible, the ordinary runner attempts one
+instruction with budget 1. TPR/PPR-blocked requests remain pending. Existing
+`rflags_defined` and an explicitly configured RDTSC source are preserved. This
+API requires Runnable Long64/CPL0 with Running activity, `Some(Clear)` STI
+shadow, a tracked completed boundary, and no CR0/CR3/CR4; caller-side
+serialization, private synchronous RAM and absence of pending synchronous,
+debug, NMI or MOV-SS inhibition remain prerequisites. A partial REP
+iteration-budget exit blocks a subsequent APIC quantum until ordinary execution
+retires the instruction.
+
+The caller-driven scenario posts a second vector while the first handler is
+active. IF=0 keeps it pending through the guest EOI. After explicit IRETQ, the
+next quantum delivers the second vector before fetching the resumed instruction.
+The second EOI/IRETQ then permits the interrupted stream to continue. This
+does not add automatic polling inside longer interpreter runs, JIT block exits,
+event-queue arbitration, HLT integration or general interruptibility handling.
+
+STOP before delivery sets the existing session status to Stopped and preserves
+the pending APIC request; later quantum calls cannot resume it. The caller must
+serialize complete CPU/APIC/IOAPIC operations.
+
+See the [S4-27e report](../reports/STAGE_4_S4-27E_2026-11-07.md),
+[verification method](../testing/MACHINE.md#s4-27e-ordinary-apic-quantum),
+and [evidence manifest](../reports/data/stage4/s4-27e-apic-quantum.json).
+
 ## S4-32c: freestanding stack probe
 
 `Stage4StackProbeV1` is a strict raw-image profile layered on the existing
