@@ -461,6 +461,25 @@ delivery, handler execution, IDT/IF/shadow behavior, HLT wakeup and Linux boot
 are not covered. The selected register behavior is based on Intel SDM release
 093, Volume 3A, Chapter 13. See the [slice report](../reports/STAGE_4_S4-25A_2026-11-07.md).
 
+## S4-28a1 one-shot Local APIC timer
+
+Run `cargo test -p od-machine --lib local_apic::tests --offline` and
+`cargo test -p od-machine --lib io_apic::tests --offline`. The Local APIC tests
+cover timer MMIO through `MachineBus`, initial/current count boundaries,
+divider encodings and rejection of divider changes while armed, zero/cancel/
+rearm, due dispatch, masked expiry, reset and global-disable invalidation,
+software-disable mask/rejection behavior, legal/illegal LVT vectors, unmasked
+IOAPIC level-vector conflicts, generation exhaustion and atomic failure when
+an edge cannot be posted. The IOAPIC tests verify the fallible
+pair-reset API preserves the established level-route behavior.
+
+`cargo check -p od-machine --all-targets --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. Local APIC: 19 passed;
+IOAPIC: 11 passed. Independent Sol/high review passed after fixing the software
+disable behavior. This device-only slice has no vCPU clock integration,
+production event pump, CPU entry, HLT wakeup or periodic mode. See the
+[S4-28a1 report](../reports/STAGE_4_S4-28A1_2026-11-07.md).
+
 ## S4-25b: CPU-owned IA32_APIC_BASE enable
 
 Run `cargo test -p od-isa --lib apic_base_tests --offline` and

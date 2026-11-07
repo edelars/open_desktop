@@ -2,7 +2,7 @@
 //!
 //! The version register is unavailable: its Max LVT field cannot represent
 //! zero implemented LVT entries. No CPU interrupt delivery is performed.
-use crate::apic_pair::PairState;
+use crate::apic_pair::{LEVEL, MASK, PairState, Timer};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
 
@@ -68,6 +68,16 @@ impl LocalApic {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(PairState::default())))
     }
+    /// Create an opt-in one-shot timer with its own caller-driven clock.
+    /// This does not connect a vCPU clock, HLT wakeup, periodic or deadline
+    /// mode, NMI, MOV-SS, a Linux profile, or a general scheduler.
+    pub fn with_timer(clock: crate::VirtualClock, timer_hz: u64) -> Result<Self, DeviceError> {
+        let pair = PairState {
+            timer: Some(Timer::new(clock, timer_hz)?),
+            ..PairState::default()
+        };
+        Ok(Self(Arc::new(Mutex::new(pair))))
+    }
     pub fn handle(&self) -> LocalApicHandle {
         LocalApicHandle(Arc::clone(&self.0))
     }
@@ -93,8 +103,61 @@ impl LocalApicHandle {
             .reset_local()
     }
     /// Atomically reset the pair, discarding all accepted requests.
-    pub fn reset_pair(&self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = PairState::default();
+    pub fn reset_pair(&self) -> Result<(), DeviceError> {
+        self.reset_checked()
+    }
+    /// Reset both controllers, retaining the timer clock and configuration.
+    pub fn reset_checked(&self) -> Result<(), DeviceError> {
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(timer) = &mut pair.timer {
+            timer.reset()?;
+        }
+        pair.local = State::default();
+        pair.route = Default::default();
+        Ok(())
+    }
+    /// Advance only this timer's private virtual clock.
+    pub fn advance_timer_ns(&self, delta: u64) -> Result<(), DeviceError> {
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let timer = pair
+            .timer
+            .as_mut()
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
+        timer
+            .clock
+            .advance_time_ns(delta)
+            .map_err(|_| DeviceError::UnsupportedConfiguration)
+    }
+    /// Dispatch at most one due timer event without entering the CPU.
+    pub fn dispatch_timer(&self) -> Result<bool, DeviceError> {
+        let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let timer = pair
+            .timer
+            .as_ref()
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
+        let generation = timer.queue.generation();
+        let now = timer.clock.now_ns();
+        if timer
+            .queue
+            .peek_due(generation, now)
+            .map_err(|_| DeviceError::UnsupportedConfiguration)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let lvt = timer.lvt;
+        let mut queue = timer.queue.clone();
+        queue
+            .remove_due(generation, now)
+            .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+        if lvt & MASK == 0 {
+            pair.edge(lvt as u8)?;
+        }
+        // The private timer cannot disappear while the pair lock is held.
+        if let Some(timer) = pair.timer.as_mut() {
+            timer.queue = queue;
+        }
+        Ok(true)
     }
     /// Disable is rejected while a level request awaits EOI.
     pub fn set_global_enabled(&self, enabled: bool) -> Result<(), DeviceError> {
@@ -232,6 +295,19 @@ fn bank(offset: u64, base: u64) -> Option<usize> {
 impl BusDevice for LocalApic {
     fn read(&mut self, a: DeviceAccess) -> Result<u64, DeviceError> {
         let offset = validate(a)?;
+        if matches!(offset, 0x320 | 0x380 | 0x390 | 0x3e0) {
+            let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            if !pair.local.global_enabled {
+                return Err(DeviceError::UnsupportedConfiguration);
+            }
+            let t = pair.timer.as_ref().ok_or(DeviceError::UnknownOffset)?;
+            return Ok(u64::from(match offset {
+                0x320 => t.lvt,
+                0x380 => t.initial,
+                0x390 => t.current(),
+                _ => t.divide,
+            }));
+        }
         self.with_state(|s| {
             if !s.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
@@ -259,14 +335,54 @@ impl BusDevice for LocalApic {
             if !pair.local.global_enabled {
                 return Err(DeviceError::UnsupportedConfiguration);
             }
+            if matches!(offset, 0x320 | 0x380 | 0x390 | 0x3e0) {
+                let timer = pair.timer.as_ref().ok_or(DeviceError::UnknownOffset)?;
+                if offset == 0x390 {
+                    return Err(DeviceError::ReadOnly);
+                }
+                if timer.due() {
+                    return Err(DeviceError::Busy);
+                }
+                match offset {
+                    0x320 => {
+                        if value & !u64::from(MASK | 0xff) != 0
+                            || value & 0xff < 16
+                            || (value & u64::from(MASK) == 0 && pair.local.svr & 0x100 == 0)
+                            || (value & u64::from(MASK) == 0
+                                && pair.route.low & LEVEL != 0
+                                && pair.route.low as u8 == value as u8)
+                        {
+                            return Err(DeviceError::UnsupportedConfiguration);
+                        }
+                        pair.timer.as_mut().unwrap().lvt = value as u32;
+                        return Ok(());
+                    }
+                    0x380 if value <= u64::from(u32::MAX) => {
+                        return pair.timer.as_mut().unwrap().arm(value as u32);
+                    }
+                    0x3e0 if value & !0xb == 0 && timer.queue.is_empty() => {
+                        pair.timer.as_mut().unwrap().divide = value as u32;
+                        return Ok(());
+                    }
+                    _ => return Err(DeviceError::UnsupportedConfiguration),
+                }
+            }
             match offset {
                 0x80 if value <= 0xff => {
                     pair.local.tpr = value as u8;
                     Ok(())
                 }
                 0xf0 if value & !0x1ff == 0 => {
-                    if value & 0x100 == 0 && pair.route.remote_irr {
+                    if value & 0x100 == 0
+                        && (pair.route.remote_irr
+                            || pair.timer.as_ref().is_some_and(|t| !t.queue.is_empty()))
+                    {
                         return Err(DeviceError::UnsupportedConfiguration);
+                    }
+                    if value & 0x100 == 0 {
+                        if let Some(timer) = pair.timer.as_mut() {
+                            timer.lvt |= MASK;
+                        }
                     }
                     pair.local.svr = value as u16;
                     Ok(())
@@ -630,8 +746,7 @@ mod tests {
         assert_eq!(apic.with_state(|s| s.clone()), before_apic);
     }
 
-    fn setup() -> (MachineBus, LocalApicHandle) {
-        let device = LocalApic::new();
+    fn setup_device(device: LocalApic) -> (MachineBus, LocalApicHandle) {
         let handle = device.handle();
         let base = GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE);
         let map = MachineMemoryMap::new(
@@ -655,6 +770,15 @@ mod tests {
         .unwrap();
         (bus, handle)
     }
+    fn setup() -> (MachineBus, LocalApicHandle) {
+        setup_device(LocalApic::new())
+    }
+    fn timer_setup(hz: u64) -> (MachineBus, LocalApicHandle) {
+        let (mut bus, handle) =
+            setup_device(LocalApic::with_timer(crate::VirtualClock::new(1).unwrap(), hz).unwrap());
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        (bus, handle)
+    }
     fn read(bus: &mut MachineBus, offset: u64) -> Result<u64, BusAccessError> {
         bus.read_physical(
             GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
@@ -674,6 +798,214 @@ mod tests {
             device_index: 0,
             source: error,
         }
+    }
+
+    #[test]
+    fn timer_unmask_while_software_disabled_is_atomic() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(MASK | 0x40)).unwrap();
+        write(&mut bus, 0xf0, 0xff).unwrap();
+        let before = apic.0.lock().unwrap().clone();
+        assert_eq!(
+            write(&mut bus, 0x320, 0x40),
+            Err(error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(*apic.0.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn timer_software_disable_masks_idle_lvt_through_expiry_and_reenable() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, 0x40).unwrap();
+        write(&mut bus, 0xf0, 0xff).unwrap();
+        assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK | 0x40)));
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x380, 1).unwrap();
+        apic.advance_timer_ns(1).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK | 0x40)));
+        assert_eq!(apic.pending(), None);
+        assert_eq!(apic.eligible(), None);
+    }
+
+    #[test]
+    fn timer_lvt_vector_validation_includes_masked_entries() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        for vector in 0..16 {
+            for mask in [0, MASK] {
+                let before = apic.0.lock().unwrap().clone();
+                assert_eq!(
+                    write(&mut bus, 0x320, u64::from(mask | vector)),
+                    Err(error(DeviceError::UnsupportedConfiguration))
+                );
+                assert_eq!(*apic.0.lock().unwrap(), before);
+            }
+        }
+        for vector in [16, 255] {
+            for mask in [0, MASK] {
+                let value = u64::from(mask | vector);
+                write(&mut bus, 0x320, value).unwrap();
+                assert_eq!(read(&mut bus, 0x320), Ok(value));
+            }
+        }
+    }
+
+    #[test]
+    fn timer_count_boundary_rearm_cancel_and_dispatch() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, 0x40).unwrap();
+        write(&mut bus, 0x3e0, 0xb).unwrap(); // divide by one
+        write(&mut bus, 0x380, 3).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(3));
+        apic.advance_timer_ns(2).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(1));
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 5).unwrap();
+        apic.advance_timer_ns(3).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 0).unwrap();
+        apic.advance_timer_ns(3).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+        assert_eq!(write(&mut bus, 0x320, 0x41), Err(error(DeviceError::Busy)));
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x40));
+        assert!(!apic.dispatch_timer().unwrap());
+    }
+
+    #[test]
+    fn timer_divider_mask_reset_and_overflow_are_bounded() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, u64::from(MASK | 0x40)).unwrap();
+        write(&mut bus, 0x3e0, 0).unwrap(); // divide by two
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(3).unwrap();
+        assert_eq!(read(&mut bus, 0x390), Ok(1));
+        assert!(write(&mut bus, 0x3e0, 0xb).is_err());
+        apic.advance_timer_ns(1).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x320, 0x40).unwrap();
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0x380, 10).unwrap();
+        apic.reset_checked().unwrap();
+        assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK)));
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+        assert_eq!(
+            apic.0
+                .lock()
+                .unwrap()
+                .timer
+                .as_ref()
+                .unwrap()
+                .clock
+                .now_ns(),
+            4
+        );
+        apic.advance_timer_ns(u64::MAX - 4).unwrap();
+        assert!(write(&mut bus, 0x380, 1).is_err());
+        assert_eq!(read(&mut bus, 0x380), Ok(0));
+    }
+
+    #[test]
+    fn timer_generation_and_reset_failure_are_atomic() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x380, 5).unwrap();
+        let old = apic
+            .0
+            .lock()
+            .unwrap()
+            .timer
+            .as_ref()
+            .unwrap()
+            .queue
+            .generation();
+        write(&mut bus, 0x380, 6).unwrap();
+        {
+            let mut pair = apic.0.lock().unwrap();
+            let timer = pair.timer.as_mut().unwrap();
+            assert!(timer.queue.validate_generation(old).is_err());
+            timer.queue.exhaust_generation_for_test();
+        }
+        let before = apic.0.lock().unwrap().clone();
+        assert!(apic.reset_checked().is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        assert!(apic.set_global_enabled(false).is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        assert!(write(&mut bus, 0x380, 0).is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        let mut cpu = od_isa::msr::ApicBaseCpu::new(od_isa::LongModeState::default());
+        cpu.state.gpr[od_isa::Register::Rcx as usize] = 0x1b;
+        cpu.state.gpr[od_isa::Register::Rax as usize] = od_isa::msr::ApicBaseCpu::DISABLED;
+        let original = cpu.clone();
+        let context = od_isa::AccessContext {
+            privilege: od_isa::PrivilegeLevel::Ring0,
+            ..Default::default()
+        };
+        assert!(
+            step_apic_base_msr(
+                &mut cpu,
+                &apic,
+                &mut MsrCode(vec![0x0f, 0x30]),
+                context,
+                1,
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(cpu, original);
+        assert_eq!(*apic.0.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn timer_rejects_level_vector_conflict_in_both_directions() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, 0x40).unwrap();
+        assert!(apic.0.lock().unwrap().set_low(LEVEL | 0x40).is_err());
+        write(&mut bus, 0x320, u64::from(MASK | 0x40)).unwrap();
+        apic.0.lock().unwrap().set_low(LEVEL | 0x40).unwrap();
+        assert!(write(&mut bus, 0x320, 0x40).is_err());
+    }
+
+    #[test]
+    fn timer_failed_edge_retains_due_event() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x320, 0x40).unwrap();
+        write(&mut bus, 0x380, 1).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        // Simulate an edge refusal to exercise the transactional retry path.
+        apic.0.lock().unwrap().route.low = LEVEL | 0x40;
+        let before = apic.0.lock().unwrap().clone();
+        assert!(apic.dispatch_timer().is_err());
+        assert_eq!(*apic.0.lock().unwrap(), before);
+        apic.0.lock().unwrap().route.low = MASK;
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x40));
+    }
+
+    #[test]
+    fn timer_disable_and_local_reset_keep_clock_and_invalidate_deadline() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x320, 0x40).unwrap();
+        write(&mut bus, 0x380, 10).unwrap();
+        apic.advance_timer_ns(1).unwrap();
+        assert!(write(&mut bus, 0xf0, 0xff).is_err());
+        apic.reset().unwrap();
+        assert_eq!(read(&mut bus, 0x320), Ok(u64::from(MASK)));
+        assert!(!apic.dispatch_timer().unwrap());
+        write(&mut bus, 0x380, 10).unwrap();
+        apic.set_global_enabled(false).unwrap();
+        apic.set_global_enabled(true).unwrap();
+        assert_eq!(read(&mut bus, 0x380), Ok(0));
+        assert!(!apic.dispatch_timer().unwrap());
+        let pair = apic.0.lock().unwrap();
+        let timer = pair.timer.as_ref().unwrap();
+        assert_eq!(timer.clock.now_ns(), 1);
+        assert_eq!(timer.hz, 1_000_000_000);
     }
 
     #[test]

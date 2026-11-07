@@ -1270,6 +1270,41 @@ Behavior follows Intel's [64 and IA-32 SDM release 093, Volume 3A](https://cdrdv
 enable state, priority, interrupt request/service state and EOI). This bounded
 profile is not full Local APIC compatibility. See the [S4-25a report](../reports/STAGE_4_S4-25A_2026-11-07.md) and [verification method](../testing/MACHINE.md#s4-25a-fixed-edge-local-apic-register-core).
 
+## One-shot Local APIC timer (S4-28a1)
+
+`LocalApic::with_timer(clock, timer_hz)` opts into one Local APIC timer with an
+explicit nonzero frequency distinct from the clock's TSC frequency. The legacy
+constructor has no timer registers. Timer MMIO uses aligned dword accesses at
+LVT Timer (`0x320`), Initial Count (`0x380`), read-only Current Count (`0x390`)
+and Divide Configuration (`0x3e0`). Only one-shot mode is supported; reserved
+bits and other modes are rejected before state mutation. Divider encodings map
+to 2, 4, 8, 16, 32, 64, 128 or 1; Divide Configuration can change only while
+there is no active deadline. A zero initial count cancels; a nonzero count arms
+or replaces the single deadline. Current Count is derived from elapsed virtual
+nanoseconds and the configured timer frequency/divider, using checked wide
+arithmetic and a rounded-up deadline.
+
+The opt-in timer owns a caller-driven clock and one-entry event queue inside the
+same APIC-pair mutex. Reprogram, cancellation and reset advance the queue
+generation, so a previously extracted deadline is stale. `dispatch_timer`
+processes at most one due event without entering the CPU. An unmasked expiry
+requests its fixed-edge vector in IRR; a masked expiry consumes the deadline
+without requesting an interrupt. The timer vector must be 16–255. An unmasked
+timer LVT cannot match the configured IOAPIC level vector; a masked timer LVT
+may use that vector, but unmasking the conflict is rejected. While the APIC is
+software-disabled, the timer LVT is masked and attempts to unmask it are
+rejected. Software disable while a deadline is active is also rejected without
+changing state. A due timer must be dispatched before writable timer-register
+accesses; they return `Busy` while a due event remains pending. The Current
+Count register remains read-only.
+
+This child slice does not connect the timer clock to a vCPU session, advance
+time during guest execution, dispatch from a production scheduler, enter a CPU
+handler, wake HLT, or implement periodic/TSC-deadline modes. It is not Linux
+timer-profile evidence. The register and vector profile follows Intel's
+[64 and IA-32 SDM release 089, Volumes 1–4](https://cdrdv2-public.intel.com/868137/325462-sdm-vol-1-2abcd-3abcd-4.pdf),
+Volume 3A §§11.4.7.2, 12.5.2 and 12.5.4. See the [S4-28a1 report](../reports/STAGE_4_S4-28A1_2026-11-07.md).
+
 ## CPU-owned IA32_APIC_BASE enable (S4-25b)
 
 The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and

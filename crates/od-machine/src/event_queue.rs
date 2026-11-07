@@ -42,7 +42,7 @@ pub(crate) enum SingleSlotError {
 /// Events are ordered by deadline and then by insertion order. Rescheduling an
 /// event assigns it a new insertion order. This queue does not advance time or
 /// dispatch events; its owner decides when to call [`pop_due`](Self::pop_due).
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EventQueue {
     entries: Vec<Entry>,
     capacity: usize,
@@ -51,6 +51,10 @@ pub struct EventQueue {
 }
 
 impl EventQueue {
+    #[cfg(test)]
+    pub(crate) fn exhaust_generation_for_test(&mut self) {
+        self.generation = EventGeneration(u64::MAX);
+    }
     /// Create an empty queue with a fixed logical capacity.
     pub fn new(capacity: usize) -> Self {
         Self {

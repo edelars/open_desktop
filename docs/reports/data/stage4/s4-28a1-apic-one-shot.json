@@ -1,0 +1,22 @@
+{
+  "slice": "S4-28a1",
+  "date": "2026-11-07",
+  "status": "accepted",
+  "scope": "Opt-in one-shot Local APIC timer MMIO, private capacity-one deadline queue and caller-driven time/expiry controls",
+  "review": "Independent gpt-6.1-sol/high review passed after fixing software-disable LVT masking; no remaining findings.",
+  "specification": "Intel 64 and IA-32 SDM release 089, Volume 3A §§11.4.7.2, 12.5.2, 12.5.4",
+  "checks": {
+    "local_apic_tests": "cargo test -p od-machine --lib local_apic::tests --offline: 19 passed",
+    "io_apic_tests": "cargo test -p od-machine --lib io_apic::tests --offline: 11 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "graphify_update": "Updated after code and documentation changes"
+  },
+  "limitations": [
+    "Timer uses an explicit private caller-driven VirtualClock, not the vCPU session clock",
+    "No production scheduler/event pump or CPU interrupt entry",
+    "No HLT wakeup, periodic mode, TSC-deadline mode or Linux timer profile",
+    "Parent S4-28, S4-27 and Stage 4 remain open"
+  ]
+}

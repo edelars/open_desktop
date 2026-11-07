@@ -1478,6 +1478,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** нулевой count, masked expiry, перепрограммирование до deadline, periodic handler+EOI, HLT wakeup, pause/resume, reset.
 - **Готово:** guest получает ожидаемое число interrupts в контролируемом virtual-time тесте, а Linux-профиль имеет работоспособный источник времени и событий.
 
+#### S4-28a1. One-shot Local APIC timer device
+
+- [x] Ограниченный device-срез принят после исправления P2 и повторного независимого `gpt-6.1-sol/high` ревью без замечаний. S4-28, S4-27 и Stage 4 остаются открытыми.
+- **Реализация:** opt-in Local APIC timer через `MachineBus`: LVT Timer, Initial/Current Count и Divide Configuration; только one-shot. Явная timer frequency отделена от TSC frequency; timer владеет отдельными caller-driven VirtualClock и capacity-one EventQueue. Expiry ставит один fixed-edge vector в IRR; masked expiry снимает deadline без IRQ.
+- **Атомарность:** rearm/cancel и reset меняют поколение единственного события; stale event не может сработать после reprogram/reset. Ошибки поколения, MMIO, reset и конфликта unmasked LVT с level-route не публикуют частичное состояние. Software disable при активном deadline отклоняется; idle timer LVT маскируется, а unmask при disabled отклоняется. Divider меняется только без активного отсчёта.
+- **Проверки и ограничения:** Local APIC tests 19/19, IOAPIC regression tests 11/11, `od-machine --all-targets`, fmt и diff check прошли. См. [отчёт](../reports/STAGE_4_S4-28A1_2026-11-07.md), [manifest](../reports/data/stage4/s4-28a1-apic-one-shot.json), [контракт](../specs/MACHINE_CONTRACT.md#one-shot-local-apic-timer-s4-28a1) и [методику](../testing/MACHINE.md#s4-28a1-one-shot-local-apic-timer). Не подключены vCPU session clock, periodic/TSC-deadline, production scheduler/event pump, CPU delivery, HLT wakeup или Linux timer profile.
+
 ### S4-29. Закрыть необходимые legacy зависимости
 
 - [ ] Локально принято после ревью либо scope исключён по source/config audit; Linux-проверка обязательна в S4-38.

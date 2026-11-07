@@ -449,7 +449,7 @@ mod tests {
             assert_eq!(apic.reset(), Err(DeviceError::UnsupportedConfiguration));
             assert_eq!(*io.0.lock().unwrap(), before);
         }
-        apic.reset_pair();
+        apic.reset_pair().unwrap();
         assert_eq!(*io.0.lock().unwrap(), PairState::default());
     }
 
@@ -499,7 +499,7 @@ mod tests {
             Err(device_error(DeviceError::UnsupportedConfiguration))
         );
         assert_eq!(apic.pending(), Some(0x51));
-        apic.reset_pair();
+        apic.reset_pair().unwrap();
         assert_eq!(apic.pending(), None);
         select(&mut bus, 0x18);
         assert_eq!(read(&mut bus, 0x10).unwrap(), u64::from(MASK));

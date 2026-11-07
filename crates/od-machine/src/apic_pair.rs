@@ -1,5 +1,5 @@
 //! Atomic state transitions for the single Local APIC and INTIN4 route.
-use crate::{DeviceError, local_apic::State};
+use crate::{DeviceError, EventQueue, VirtualClock, local_apic::State};
 
 pub(crate) const MASK: u32 = 1 << 16;
 pub(crate) const LEVEL: u32 = 1 << 15;
@@ -26,11 +26,92 @@ impl Default for Route {
 pub(crate) struct PairState {
     pub local: State,
     pub route: Route,
+    pub timer: Option<Timer>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct Timer {
+    pub clock: VirtualClock,
+    pub hz: u64,
+    pub queue: EventQueue,
+    pub lvt: u32,
+    pub initial: u32,
+    pub divide: u32,
+    pub start: u64,
+}
+
+impl Timer {
+    pub fn new(clock: VirtualClock, hz: u64) -> Result<Self, DeviceError> {
+        if hz == 0 {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        Ok(Self {
+            clock,
+            hz,
+            queue: EventQueue::new(1),
+            lvt: MASK,
+            initial: 0,
+            divide: 0,
+            start: 0,
+        })
+    }
+    fn divisor(&self) -> u128 {
+        let n = (self.divide & 3) | ((self.divide >> 1) & 4);
+        if n == 7 { 1 } else { 2u128 << n }
+    }
+    pub fn current(&self) -> u32 {
+        if self.queue.is_empty() {
+            return 0;
+        }
+        let elapsed = u128::from(self.clock.now_ns() - self.start);
+        let ticks = elapsed * u128::from(self.hz) / (1_000_000_000u128 * self.divisor());
+        u128::from(self.initial).saturating_sub(ticks) as u32
+    }
+    pub fn due(&self) -> bool {
+        self.queue
+            .next_deadline()
+            .is_some_and(|d| d <= self.clock.now_ns())
+    }
+    pub fn arm(&mut self, count: u32) -> Result<(), DeviceError> {
+        let deadline = if count == 0 {
+            None
+        } else {
+            let numerator = u128::from(count)
+                .checked_mul(self.divisor())
+                .and_then(|v| v.checked_mul(1_000_000_000))
+                .ok_or(DeviceError::UnsupportedConfiguration)?;
+            let hz = u128::from(self.hz);
+            let duration = numerator.div_ceil(hz);
+            let deadline = u128::from(self.clock.now_ns())
+                .checked_add(duration)
+                .ok_or(DeviceError::UnsupportedConfiguration)?;
+            Some(u64::try_from(deadline).map_err(|_| DeviceError::UnsupportedConfiguration)?)
+        };
+        self.queue
+            .replace_single(self.queue.generation(), deadline)
+            .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+        self.initial = count;
+        self.start = self.clock.now_ns();
+        Ok(())
+    }
+    pub fn reset(&mut self) -> Result<(), DeviceError> {
+        self.queue
+            .replace_single(self.queue.generation(), None)
+            .map_err(|_| DeviceError::UnsupportedConfiguration)?;
+        self.lvt = MASK;
+        self.initial = 0;
+        self.divide = 0;
+        self.start = self.clock.now_ns();
+        Ok(())
+    }
 }
 impl PairState {
     pub fn reset_local(&mut self) -> Result<(), DeviceError> {
         if self.route.remote_irr {
             return Err(DeviceError::UnsupportedConfiguration);
+        }
+        if let Some(timer) = &mut self.timer {
+            timer.reset()?;
         }
         self.local = State::default();
         Ok(())
@@ -56,6 +137,9 @@ impl PairState {
             if !enabled {
                 if self.route.remote_irr {
                     return Err(DeviceError::UnsupportedConfiguration);
+                }
+                if let Some(timer) = &mut self.timer {
+                    timer.reset()?;
                 }
                 self.local = State::default();
             }
@@ -100,6 +184,14 @@ impl PairState {
         Ok(())
     }
     pub fn set_low(&mut self, value: u32) -> Result<(), DeviceError> {
+        if value & LEVEL != 0
+            && self
+                .timer
+                .as_ref()
+                .is_some_and(|t| t.lvt & MASK == 0 && t.lvt as u8 == value as u8)
+        {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         let old = self.route.low;
         let changed =
             (old ^ value) & LEVEL != 0 || (old & LEVEL != 0 && (old as u8 != value as u8));
