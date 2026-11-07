@@ -15,16 +15,16 @@
 //! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
-//! ECC, with slice C1 also RSAES, OAEP and ECDH (the `TPMA_ALGORITHM` bits follow the type column
+//! ECC, with slice C1 also RSAES, OAEP and ECDH, with slice C2 HMAC (the `TPMA_ALGORITHM` bits follow the type column
 //! of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
 //!
-//! `TPM_CAP_HANDLES`: PCR, defined NV indices, loaded HMAC sessions (`TPM_HT_LOADED_SESSION`),
+//! `TPM_CAP_HANDLES`: PCR, defined NV indices, loaded sessions (`TPM_HT_LOADED_SESSION`: HMAC and
+//! policy, slice C2) and saved sessions (`TPM_HT_SAVED_SESSION`),
 //! loaded sequence and key objects (transient), persistent objects, the permanent handles of the hierarchies and the null
 //! hierarchy (`TPM_RH_OWNER`, `TPM_RH_NULL`, `TPM_RH_LOCKOUT`, `TPM_RH_ENDORSEMENT`,
-//! `TPM_RH_PLATFORM`); saved sessions (`TPM_HT_SAVED_SESSION`) and the other handle types list
-//! nothing.
+//! `TPM_RH_PLATFORM`); the other handle types list nothing.
 //! NOT VERIFIED against TPM 2.0 Library v185: the answer for `TPM_CAP_TPM_PROPERTIES` with a
 //! `property` outside the fixed and variable groups (an empty list is returned), the
 //! `TPM_PT_MANUFACTURER` value `ODTP` (not a TCG-registered vendor ID) and the firmware version;
@@ -73,6 +73,10 @@ impl Entries {
 }
 
 impl Tpm {
+    fn active_sessions(&self) -> usize {
+        self.sessions.loaded() + self.context.saved_count()
+    }
+
     fn tagged_properties(&self) -> Vec<(u32, u32)> {
         let total = COMMANDS.len() as u32;
         vec![
@@ -117,12 +121,13 @@ impl Tpm {
             (pt::HR_LOADED, self.sessions.loaded() as u32),
             (
                 pt::HR_LOADED_AVAIL,
-                (MAX_SESSIONS - self.sessions.loaded()) as u32,
+                (MAX_SESSIONS - self.active_sessions()) as u32,
             ),
-            (pt::HR_ACTIVE, self.sessions.loaded() as u32),
+            // Active sessions: loaded and saved ones (a saved session keeps its slot).
+            (pt::HR_ACTIVE, self.active_sessions() as u32),
             (
                 pt::HR_ACTIVE_AVAIL,
-                (MAX_SESSIONS - self.sessions.loaded()) as u32,
+                (MAX_SESSIONS - self.active_sessions()) as u32,
             ),
             (
                 pt::HR_TRANSIENT_AVAIL,
@@ -162,8 +167,10 @@ impl Tpm {
                 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
                 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
                 // are our reading of the "S O" and "E" types.
-                let algs: [(u16, u32); 11] = [
+                let algs: [(u16, u32); 12] = [
                     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+                    // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
+                    (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
                     (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
                     (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
                     (alg::SHA256, TPMA_ALGORITHM_HASH),
@@ -201,6 +208,8 @@ impl Tpm {
             cap::HANDLES => {
                 entry_size = 4;
                 let ht = handle::handle_type(property);
+                let session_type =
+                    matches!(ht, handle::HT_HMAC_SESSION | handle::HT_POLICY_SESSION);
                 let listed: Vec<u32> = match ht {
                     handle::HT_PCR => (0..limits::PCR_COUNT as u32).collect(),
                     handle::HT_TRANSIENT => {
@@ -210,8 +219,12 @@ impl Tpm {
                     }
                     handle::HT_PERSISTENT => self.persistent.objects.handles(),
                     handle::HT_NV_INDEX => self.persistent.nv.handles(),
-                    // `TPM_HT_LOADED_SESSION` (same value as the HMAC session type).
+                    // `TPM_HT_LOADED_SESSION` (same value as the HMAC session type): the loaded
+                    // HMAC and policy sessions, with their own handle types (Part 3, clause 30.2).
                     handle::HT_HMAC_SESSION => self.sessions.loaded_handles(),
+                    // `TPM_HT_SAVED_SESSION` (same value as the policy session type): the saved
+                    // sessions, all with the HMAC handle type (the TPM does not track their type).
+                    handle::HT_POLICY_SESSION => self.context.saved_handles(),
                     handle::HT_PERMANENT => vec![
                         handle::RH_OWNER,
                         handle::RH_NULL,
@@ -219,15 +232,21 @@ impl Tpm {
                         handle::RH_ENDORSEMENT,
                         handle::RH_PLATFORM,
                     ],
-                    // Defined handle types without entries: saved sessions (0x03, no context
-                    // saving yet), external and permanent NV (0x11, 0x12), persistent objects.
-                    handle::HT_POLICY_SESSION | 0x11 | 0x12 => Vec::new(),
+                    // Defined handle types without entries: external and permanent NV (0x11,
+                    // 0x12).
+                    0x11 | 0x12 => Vec::new(),
                     _ => return Err(Rc::VALUE.in_param(2)),
                 };
-                for h in listed
-                    .into_iter()
-                    .filter(|h| *h >= property && handle::handle_type(*h) == ht)
-                {
+                // The session types list handles of both session families, so they compare the
+                // slot number; the other types the whole handle.
+                let at_or_after = |h: u32| {
+                    if session_type {
+                        (h & 0x00FF_FFFF) >= (property & 0x00FF_FFFF)
+                    } else {
+                        h >= property && handle::handle_type(h) == ht
+                    }
+                };
+                for h in listed.into_iter().filter(|h| at_or_after(*h)) {
                     entries.push(|w| w.u32(h));
                 }
             }

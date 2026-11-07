@@ -15,6 +15,8 @@ use crate::{Rc, Tpm};
 mod tests_b;
 #[path = "tests_c1.rs"]
 mod tests_c1;
+#[path = "tests_c2.rs"]
+mod tests_c2;
 #[path = "tests_obj.rs"]
 mod tests_obj;
 
@@ -558,8 +560,13 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x154, 0x157, 0x159, 0x15C,
         0x15D, 0x15E, 0x165, 0x167, 0x169, 0x173, 0x174, 0x176, 0x177, 0x17A, 0x17B, 0x17C, 0x17D,
         0x17E, 0x181, 0x182, 0x185, 0x186,
+        // Slice C2: Certify, PolicySecret, HMAC, Quote, ContextLoad/Save, PolicyAuthValue,
+        // PolicyCommandCode, PolicyOR, PolicyPCR, PolicyRestart, PolicyGetDigest.
+        0x148, 0x151, 0x155, 0x158, 0x161, 0x162, 0x16B, 0x16C, 0x171, 0x17F, 0x180, 0x189,
     ];
-    assert_eq!(expected.len(), 44);
+    let mut expected = expected;
+    expected.sort_unstable();
+    assert_eq!(expected.len(), 56);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -583,7 +590,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(44)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(56)[..]].concat()
     );
 }
 
@@ -593,9 +600,12 @@ fn capability_commands_paging_and_more_data() {
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0, 5));
     assert!(more && count == 5 && body.len() == 20);
     let (more, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x17E, 100));
-    assert!(!more && count == 5, "0x17E, 0x181, 0x182, 0x185, 0x186");
-    assert_eq!(body.len(), 20);
-    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x187, 100));
+    assert!(
+        !more && count == 8,
+        "0x17E, 0x17F, 0x180, 0x181, 0x182, 0x185, 0x186, 0x189"
+    );
+    assert_eq!(body.len(), 32);
+    let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x18A, 100));
     assert!(!more && count == 0);
     // propertyCount 0: empty list, moreData YES because entries remain.
     let (more, _, _, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0, 0));
@@ -606,8 +616,8 @@ fn capability_commands_paging_and_more_data() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 11);
-    // RSA, AES, KEYEDHASH, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 12);
+    // RSA, HMAC, AES, KEYEDHASH, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -615,6 +625,8 @@ fn capability_algs_pcrs_and_handles() {
         body,
         [
             &[0x00, 0x01, 0, 0, 0, 9][..],
+            // HMAC "H X" (slice C2).
+            &[0x00, 0x05, 0, 0, 1, 4],
             &[0x00, 0x06, 0, 0, 0, 10],
             &[0x00, 0x08, 0, 0, 0, 12],
             &[0x00, 0x0B, 0, 0, 0, 4],

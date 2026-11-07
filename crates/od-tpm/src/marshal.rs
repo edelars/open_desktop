@@ -709,8 +709,9 @@ pub enum PublicParams {
         scheme: Scheme,
         curve: u16,
     },
-    /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is always `TPM_ALG_NULL` (sealed data).
-    KeyedHash,
+    /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is `TPM_ALG_NULL` (sealed data, or an HMAC
+    /// key without a default hash) or `TPM_ALG_HMAC` with SHA-256 (an HMAC key, slice C2).
+    KeyedHash { scheme: Scheme },
 }
 
 /// `TPMU_PUBLIC_ID` (Table 212).
@@ -738,7 +739,7 @@ impl TpmtPublic {
         match self.params {
             PublicParams::Rsa { .. } => alg::RSA,
             PublicParams::Ecc { .. } => alg::ECC,
-            PublicParams::KeyedHash => alg::KEYEDHASH,
+            PublicParams::KeyedHash { .. } => alg::KEYEDHASH,
         }
     }
 
@@ -770,7 +771,7 @@ impl TpmtPublic {
                 // `kdf`: TPMT_KDF_SCHEME with TPM_ALG_NULL.
                 w.u16(alg::NULL);
             }
-            PublicParams::KeyedHash => w.u16(alg::NULL),
+            PublicParams::KeyedHash { scheme } => scheme.marshal(w),
         }
         match &self.unique {
             Unique::Rsa(n) => w.tpm2b(n),
@@ -854,11 +855,9 @@ impl TpmtPublic {
                 )
             }
             _ => {
-                if r.u16()? != alg::NULL {
-                    return Err(r.err(Rc::VALUE));
-                }
+                let scheme = Scheme::unmarshal(r, &[alg::HMAC], Rc::VALUE)?;
                 let d = r.tpm2b(limits::MAX_DIGEST_SIZE)?.to_vec();
-                (PublicParams::KeyedHash, Unique::Digest(d))
+                (PublicParams::KeyedHash { scheme }, Unique::Digest(d))
             }
         };
         Ok(TpmtPublic {

@@ -114,7 +114,9 @@ pub(super) fn sealed() -> TpmtPublic {
         name_alg: alg::SHA256,
         attributes: oa::FIXED_TPM | oa::FIXED_PARENT | oa::USER_WITH_AUTH,
         auth_policy: vec![],
-        params: PublicParams::KeyedHash,
+        params: PublicParams::KeyedHash {
+            scheme: Scheme::NULL,
+        },
         unique: Unique::Digest(vec![]),
     }
 }
@@ -760,10 +762,13 @@ fn create_primary_template_errors() {
         &go(&mut t, &ecc_sign(), &[1u8; 33], b""),
         Rc::SIZE.in_param(1),
     );
-    // Keyed hash: HMAC/XOR use (sign or decrypt) is not implemented; sealed without data.
-    let mut bad = sealed();
-    bad.attributes |= oa::SIGN;
-    err(&go(&mut t, &bad, b"", b"x"), Rc::ATTRIBUTES.in_param(2));
+    // Keyed hash: XOR (`decrypt`) and restricted keys are not implemented (an HMAC key with `sign`
+    // is slice C2); sealed without data.
+    for extra in [oa::DECRYPT, oa::RESTRICTED | oa::SIGN, oa::X509_SIGN] {
+        let mut bad = sealed();
+        bad.attributes |= extra;
+        err(&go(&mut t, &bad, b"", b"x"), Rc::ATTRIBUTES.in_param(2));
+    }
     err(&go(&mut t, &sealed(), b"", b""), Rc::ATTRIBUTES.in_param(2));
     let mut bad = sealed();
     bad.attributes |= oa::SENSITIVE_DATA_ORIGIN;
@@ -1247,14 +1252,15 @@ fn sign_and_verify_errors() {
         &sign(&mut t, xkey, b"x", &DIGEST, &ecc_sig_scheme()),
         Rc::ATTRIBUTES.in_handle(1),
     );
-    // userWithAuth CLEAR: no password or HMAC can authorize (policy sessions do not exist).
+    // userWithAuth CLEAR: no password or HMAC can authorize, only a policy session (Part 3, clause
+    // 5.6, step 7: TPM_RC_POLICY_FAIL with the session number).
     let mut pol = ecc_sign();
     pol.attributes &= !oa::USER_WITH_AUTH;
     let pk = parse_child(&create_child(&mut t, parent, b"parent-pw", b"p", b"", &pol));
     let (pkey, _) = parse_loaded(&load(&mut t, parent, b"parent-pw", &pk.private, &pk.public));
     err(
         &sign(&mut t, pkey, b"p", &DIGEST, &ecc_sig_scheme()),
-        Rc::AUTH_UNAVAILABLE,
+        Rc::POLICY_FAIL.in_session(1),
     );
     // An unloaded key; trailing octets.
     err(
@@ -1646,7 +1652,7 @@ fn seal_and_unseal() {
         &create_child(&mut t, parent, b"parent-pw", b"", &[1u8; 129], &sealed()),
         Rc::SIZE.in_param(1),
     );
-    // A data object without userWithAuth cannot be authorized.
+    // A data object without userWithAuth cannot be authorized by a password.
     let mut pol = sealed();
     pol.attributes &= !oa::USER_WITH_AUTH;
     let pk = parse_child(&create_child(
@@ -1660,7 +1666,7 @@ fn seal_and_unseal() {
     let (pkey, _) = parse_loaded(&load(&mut t, parent, b"parent-pw", &pk.private, &pk.public));
     err(
         &run(&mut t, with_pw(cc::UNSEAL, &[pkey], &[b""], &[])),
-        Rc::AUTH_UNAVAILABLE,
+        Rc::POLICY_FAIL.in_session(1),
     );
 }
 

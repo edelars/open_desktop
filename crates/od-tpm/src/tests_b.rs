@@ -69,15 +69,15 @@ pub(super) fn shutdown(t: &mut Tpm, kind: u16) {
 
 /// Client side of an HMAC session (Part 1 v184, clauses 17.6.5-17.6.10).
 pub(super) struct Hs {
-    handle: u32,
+    pub(super) handle: u32,
     /// `sessionKey`: empty for an unbound, unsalted session.
-    key: Vec<u8>,
-    nonce_tpm: Vec<u8>,
+    pub(super) key: Vec<u8>,
+    pub(super) nonce_tpm: Vec<u8>,
     /// `(handle, authValue)` the session was bound to.
-    bound: Option<(u32, Vec<u8>)>,
+    pub(super) bound: Option<(u32, Vec<u8>)>,
 }
 
-fn trimmed(v: &[u8]) -> Vec<u8> {
+pub(super) fn trimmed(v: &[u8]) -> Vec<u8> {
     let end = v.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
     v[..end].to_vec()
 }
@@ -94,7 +94,13 @@ fn kdfa_256(key: &[u8], label: &[u8], u: &[u8], v: &[u8]) -> Vec<u8> {
     crate::crypto::hmac_sha256(key, &[&data]).to_vec()
 }
 
-fn start_params(nonce_caller: &[u8], salt: &[u8], kind: u8, sym: &[u8], hash: u16) -> Vec<u8> {
+pub(super) fn start_params(
+    nonce_caller: &[u8],
+    salt: &[u8],
+    kind: u8,
+    sym: &[u8],
+    hash: u16,
+) -> Vec<u8> {
     cat(&[
         &tpm2b(nonce_caller),
         &tpm2b(salt),
@@ -104,17 +110,29 @@ fn start_params(nonce_caller: &[u8], salt: &[u8], kind: u8, sym: &[u8], hash: u1
     ])
 }
 
-fn start_cmd(key: u32, bind: u32, params: &[u8]) -> Vec<u8> {
+pub(super) fn start_cmd(key: u32, bind: u32, params: &[u8]) -> Vec<u8> {
     plain(cc::START_AUTH_SESSION, &[key, bind], params)
 }
 
 pub(super) fn start_hmac(t: &mut Tpm, bind: u32, bind_auth: &[u8], nonce_caller: &[u8]) -> Hs {
+    start_session(t, se::HMAC, bind, bind_auth, nonce_caller)
+}
+
+/// Starts a session of type `kind` (`TPM_SE_*`); a policy session is never bound (the client
+/// keeps `bound` empty and uses the session key only as the key derivation of `bind`).
+pub(super) fn start_session(
+    t: &mut Tpm,
+    kind: u8,
+    bind: u32,
+    bind_auth: &[u8],
+    nonce_caller: &[u8],
+) -> Hs {
     let resp = run(
         t,
         start_cmd(
             NULL,
             bind,
-            &start_params(nonce_caller, &[], se::HMAC, &u16b(alg::NULL), alg::SHA256),
+            &start_params(nonce_caller, &[], kind, &u16b(alg::NULL), alg::SHA256),
         ),
     );
     ok(&resp);
@@ -129,7 +147,7 @@ pub(super) fn start_hmac(t: &mut Tpm, bind: u32, bind_auth: &[u8], nonce_caller:
         let auth = trimmed(bind_auth);
         (
             kdfa_256(&auth, b"ATH", &nonce_tpm, nonce_caller),
-            Some((bind, auth)),
+            (kind == se::HMAC).then_some((bind, auth)),
         )
     };
     Hs {
@@ -140,25 +158,25 @@ pub(super) fn start_hmac(t: &mut Tpm, bind: u32, bind_auth: &[u8], nonce_caller:
     }
 }
 
-fn name_of(h: u32) -> Vec<u8> {
+pub(super) fn name_of(h: u32) -> Vec<u8> {
     h.to_be_bytes().to_vec()
 }
 
 /// Options of one HMAC-authorized command.
 pub(super) struct Hc {
-    code: u32,
-    handles: Vec<u32>,
+    pub(super) code: u32,
+    pub(super) handles: Vec<u32>,
     pub(super) names: Vec<Vec<u8>>,
-    params: Vec<u8>,
+    pub(super) params: Vec<u8>,
     /// Handle and authValue of the entity that the session authorizes.
-    entity: (u32, Vec<u8>),
-    attrs: u8,
-    nonce_caller: Vec<u8>,
+    pub(super) entity: (u32, Vec<u8>),
+    pub(super) attrs: u8,
+    pub(super) nonce_caller: Vec<u8>,
     /// authValue of the entity after the command (for the response HMAC).
-    entity_after: Vec<u8>,
+    pub(super) entity_after: Vec<u8>,
 }
 
-fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
+pub(super) fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
     let mut cp = Sha256::new();
     cp.update(c.code.to_be_bytes());
     for n in &c.names {
@@ -200,7 +218,7 @@ fn hmac_command(s: &Hs, c: &Hc, empty_hmac: bool, corrupt: bool) -> Vec<u8> {
 /// `(nonceTPM, sessionAttributes, hmac)` of one acknowledgement.
 type Ack = (Vec<u8>, u8, Vec<u8>);
 
-fn split_response(resp: &[u8], nh: usize) -> (Vec<u8>, Vec<Ack>) {
+pub(super) fn split_response(resp: &[u8], nh: usize) -> (Vec<u8>, Vec<Ack>) {
     ok(resp);
     assert_eq!(u16::from_be_bytes([resp[0], resp[1]]), st::SESSIONS);
     let at = 10 + 4 * nh;
@@ -923,8 +941,8 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
         ),
         Rc::VALUE.in_param(2),
     );
-    // Session types: policy, trial and an invalid value.
-    for kind in [se::POLICY, se::TRIAL, 2, 0xFF] {
+    // Session types: 2 and 0xFF are no session types (policy and trial exist since slice C2).
+    for kind in [2, 0x04, 0xFF] {
         err(
             &run(
                 &mut t,
@@ -2292,8 +2310,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    // From 0x121 on: 44 commands less EvictControl (0x120).
-    assert_eq!(count, 43);
+    // From 0x121 on: 56 commands less EvictControl (0x120).
+    assert_eq!(count, 55);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))

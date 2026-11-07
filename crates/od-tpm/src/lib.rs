@@ -21,9 +21,11 @@
 //! `Debug`; no function of this crate logs.
 
 mod asym;
+mod attest;
 pub mod capability;
 pub mod codes;
 pub mod command;
+mod context;
 pub mod crypto;
 mod da;
 pub mod dispatch;
@@ -34,6 +36,7 @@ pub mod nv;
 pub mod object;
 mod object_cmd;
 pub mod pcr;
+mod policy;
 pub mod random;
 pub mod response;
 pub mod session;

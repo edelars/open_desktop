@@ -8,7 +8,7 @@
 //! snapshot (slice C1 of phase B; the codec is `snapshot.rs`). The transient objects are volatile
 //! (flushed by `Startup`/`_TPM_Init`). The hierarchy proof values are not stored: they are derived
 //! from the seeds (`object_cmd.rs`).
-//! Volatile: PCR, sequences, sessions, objects, hierarchy enables and `platformAuth`,
+//! Volatile: PCR, sequences, sessions, saved-context state, objects, hierarchy enables and `platformAuth`,
 //! `started`/`failed`, the state saved by `Shutdown(STATE)`, the DRBG, the DA timers.
 //!
 //! **The snapshot is sensitive data.** Its bytes contain the seeds, the authorization values, the
@@ -34,6 +34,7 @@
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::context::ContextState;
 use crate::da::{DaPersistent, DaVolatile};
 use crate::dispatch;
 use crate::hash::Sequences;
@@ -117,6 +118,8 @@ pub(crate) struct Persistent {
 pub(crate) struct SavedState {
     pub pcrs: SavedPcrs,
     pub hier: HierarchyVolatile,
+    /// The context protection state: saved contexts stay loadable across Restart and Resume.
+    pub ctx: ContextState,
 }
 
 /// The vTPM command processor. Created with owner entropy; commands go through
@@ -133,8 +136,10 @@ pub struct Tpm {
     pub(crate) saved: Option<SavedState>,
     pub(crate) pcrs: Pcrs,
     pub(crate) sequences: Sequences,
-    /// Loaded HMAC authorization sessions.
+    /// Loaded authorization sessions (HMAC, policy, trial).
     pub(crate) sessions: Sessions,
+    /// Context protection (`context.rs`): saved sessions and the counters of saved contexts.
+    pub(crate) context: ContextState,
     /// Loaded transient objects (not sequences).
     pub(crate) objects: Objects,
     /// Volatile hierarchy state: `platformAuth`, enables, Null seed.
@@ -197,6 +202,7 @@ impl Tpm {
             pcrs: Pcrs::new(),
             sequences: Sequences::default(),
             sessions: Sessions::default(),
+            context: ContextState::default(),
             objects: Objects::default(),
             hv: HierarchyVolatile::default(),
             power_ms: 0,
@@ -226,6 +232,7 @@ impl Tpm {
         self.pcrs = Pcrs::new();
         self.sequences.clear();
         self.sessions.clear();
+        self.context = ContextState::default();
         self.objects.clear();
         // `phEnable` is SET on any `_TPM_Init`; the rest of the platform controls is volatile.
         self.hv = HierarchyVolatile::default();
@@ -297,7 +304,7 @@ impl Tpm {
     }
 
     /// `Clock` and `Time` for `TPMS_TIME_INFO`.
-    fn time_info(&self) -> TpmsTimeInfo {
+    pub(crate) fn time_info(&self) -> TpmsTimeInfo {
         TpmsTimeInfo {
             time: self.power_ms,
             clock_info: TpmsClockInfo {

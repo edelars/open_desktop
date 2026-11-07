@@ -19,6 +19,10 @@ impl Rc {
     pub const INITIALIZE: Rc = Rc(RC_VER1);
     pub const FAILURE: Rc = Rc(RC_VER1 + 0x001);
     pub const SEQUENCE: Rc = Rc(RC_VER1 + 0x003);
+    /// Slice C2 (Part 2, Table 20): policy sessions and `TPM2_PolicyPCR`.
+    pub const POLICY: Rc = Rc(RC_VER1 + 0x026);
+    pub const PCR_CHANGED: Rc = Rc(RC_VER1 + 0x028);
+    pub const CPHASH: Rc = Rc(RC_VER1 + 0x051);
     pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
     pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);
     pub const AUTH_MISSING: Rc = Rc(RC_VER1 + 0x025);
@@ -61,6 +65,9 @@ impl Rc {
     pub const TICKET: Rc = Rc(RC_FMT1 + 0x020);
     pub const RESERVED_BITS: Rc = Rc(RC_FMT1 + 0x021);
     pub const BAD_AUTH: Rc = Rc(RC_FMT1 + 0x022);
+    pub const POLICY_FAIL: Rc = Rc(RC_FMT1 + 0x01D);
+    pub const EXPIRED: Rc = Rc(RC_FMT1 + 0x023);
+    pub const POLICY_CC: Rc = Rc(RC_FMT1 + 0x024);
     pub const BINDING: Rc = Rc(RC_FMT1 + 0x025);
     pub const CURVE: Rc = Rc(RC_FMT1 + 0x026);
     pub const ECC_POINT: Rc = Rc(RC_FMT1 + 0x027);
@@ -239,6 +246,13 @@ mod tests {
         assert_eq!(Rc::CURVE.0, 0x0A6);
         assert_eq!(Rc::ECC_POINT.0, 0x0A7);
         assert_eq!(Rc::OBJECT_HANDLES.0, 0x906);
+        // Codes of phase B slice C2 (Table 20 of the same text).
+        assert_eq!(Rc::POLICY.0, 0x126);
+        assert_eq!(Rc::PCR_CHANGED.0, 0x128);
+        assert_eq!(Rc::CPHASH.0, 0x151);
+        assert_eq!(Rc::POLICY_FAIL.0, 0x09D);
+        assert_eq!(Rc::EXPIRED.0, 0x0A3);
+        assert_eq!(Rc::POLICY_CC.0, 0x0A4);
     }
 
     #[test]

@@ -48,8 +48,9 @@
 //! exponent other than 65537, `TPM_RC_HASH` for a `nameAlg` of NULL in a created object,
 //! `TPM_RC_SIZE` for a malformed `inPrivate`, `TPM_RC_SENSITIVE` for a private area that does not
 //! unmarshal, `TPM_RC_KEY_SIZE`/`TPM_RC_BINDING` for a sensitive area that does not match the
-//! public area, `TPM_RC_AUTH_UNAVAILABLE` for authorizing an object whose `userWithAuth` is
-//! CLEAR (policy sessions do not exist yet) or that has no private part, `TPM_RC_HIERARCHY` for
+//! public area, `TPM_RC_POLICY_FAIL` for a password or HMAC session on an object whose `userWithAuth`
+//! is CLEAR (policy sessions are required, Part 3 5.6), `TPM_RC_AUTH_UNAVAILABLE` for an object
+//! that has no private part, `TPM_RC_HIERARCHY` for
 //! objects of a disabled hierarchy, the Qualified Name input (`parentQN || Name`, both with their
 //! `nameAlg` prefix), the `creationHash` input (marshaled `TPMS_CREATION_DATA` without a size), the
 //! `name` input of tickets (the Name buffer without a size), the creation PCR digest (SHA-256
@@ -356,10 +357,20 @@ pub(crate) fn check_public(
         set(object_attr::RESTRICTED),
     );
     match &public.params {
-        PublicParams::KeyedHash => {
-            // Sealed data only: HMAC and XOR keys are not implemented in slice B.
-            if sign || decrypt || restricted || set(object_attr::X509_SIGN) {
+        PublicParams::KeyedHash { scheme } => {
+            // Sealed data (neither `sign` nor `decrypt`, scheme NULL) or an unrestricted HMAC
+            // signing key (`sign`, scheme NULL or HMAC with SHA-256; slice C2). XOR keys
+            // (`decrypt`), restricted keyed hashes (they need tickets) and `x509sign` are refused.
+            if decrypt || restricted || set(object_attr::X509_SIGN) {
                 return Err(bad(Rc::ATTRIBUTES));
+            }
+            let ok = if sign {
+                matches!(scheme.alg, alg::NULL | alg::HMAC)
+            } else {
+                scheme.alg == alg::NULL
+            };
+            if !ok {
+                return Err(bad(Rc::SCHEME));
             }
         }
         PublicParams::Rsa {
@@ -448,9 +459,17 @@ fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
 pub(crate) fn check_creation(public: &TpmtPublic, sens: &TpmsSensitiveCreate) -> Result<(), Rc> {
     let origin = public.attributes & object_attr::SENSITIVE_DATA_ORIGIN != 0;
     match public.params {
-        PublicParams::KeyedHash => {
-            // A data object with no data is invalid (sign and decrypt are CLEAR).
-            if sens.data.is_empty() || origin {
+        PublicParams::KeyedHash { .. } => {
+            // A sealed-data object with no data is invalid (sign and decrypt are CLEAR), and its
+            // data come from the caller. An HMAC key (`sign`) takes the caller's key and no
+            // `sensitiveDataOrigin`, or the TPM generates one (data empty, origin SET).
+            let hmac_key = public.attributes & object_attr::SIGN != 0;
+            let valid = if hmac_key {
+                sens.data.is_empty() == origin
+            } else {
+                !sens.data.is_empty() && !origin
+            };
+            if !valid {
                 return Err(Rc::ATTRIBUTES.in_param(2));
             }
         }
@@ -511,14 +530,20 @@ pub(crate) fn derive_object(
             let (x, y) = ecc_public(&key).ok_or(Rc::FAILURE)?;
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }
-        PublicParams::KeyedHash => {
+        PublicParams::KeyedHash { .. } => {
             let seed = new_seed(rng)?;
+            // An HMAC key without caller data is generated: one digest of random octets.
+            let data: Zeroizing<Vec<u8>> = if data.is_empty() {
+                new_seed(rng)?
+            } else {
+                Zeroizing::new(data.to_vec())
+            };
             // unique = H(obfuscate || key) (Part 1, Equation 48).
             let mut h = Sha256::new();
             h.update(&seed[..]);
-            h.update(data);
+            h.update(&data[..]);
             let unique = Unique::Digest(h.finalize().to_vec());
-            (Secret::Data(Zeroizing::new(data.to_vec())), unique, seed)
+            (Secret::Data(data), unique, seed)
         }
     };
     public.unique = unique;
@@ -625,7 +650,7 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
             }
             Secret::Ecc(key)
         }
-        PublicParams::KeyedHash => {
+        PublicParams::KeyedHash { .. } => {
             if secret.len() > MAX_SYM_DATA {
                 return Err(Rc::KEY_SIZE);
             }
@@ -649,7 +674,12 @@ pub(crate) fn sensitive_from_bytes(bytes: &[u8], public: &TpmtPublic) -> Result<
 /// AES-128-CFB (full-block feedback, as `TPMT_SYM_DEF_OBJECT` AES/128/CFB states) of `data` under
 /// the 16-octet `sym_key` and `iv`; `encrypt` selects the direction. The result has the length
 /// of `data`.
-fn aes128_cfb(sym_key: &[u8], iv: &[u8; 16], data: &[u8], encrypt: bool) -> Zeroizing<Vec<u8>> {
+pub(crate) fn aes128_cfb(
+    sym_key: &[u8],
+    iv: &[u8; 16],
+    data: &[u8],
+    encrypt: bool,
+) -> Zeroizing<Vec<u8>> {
     let mut key = Zeroizing::new([0u8; 16]);
     let n = key.len().min(sym_key.len());
     key[..n].copy_from_slice(&sym_key[..n]);
@@ -739,7 +769,7 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
     }
     let a = public.attributes;
     if a & object_attr::X509_SIGN != 0
-        && (a & object_attr::SIGN == 0 || matches!(public.params, PublicParams::KeyedHash))
+        && (a & object_attr::SIGN == 0 || matches!(public.params, PublicParams::KeyedHash { .. }))
     {
         return Err(bad(Rc::ATTRIBUTES));
     }
@@ -761,7 +791,7 @@ pub(crate) fn check_external_public(public: &TpmtPublic) -> Result<(), Rc> {
             }
         }
         // Sealed data without its private part is of no use; keep the object model simple.
-        (PublicParams::KeyedHash, _) => return Err(bad(Rc::TYPE)),
+        (PublicParams::KeyedHash { .. }, _) => return Err(bad(Rc::TYPE)),
         _ => return Err(bad(Rc::KEY)),
     }
     Ok(())

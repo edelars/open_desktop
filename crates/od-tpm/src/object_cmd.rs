@@ -6,8 +6,9 @@
 //! `CreatePrimary` (a hierarchy), `Create`, `Load`, `Unseal`, `Sign` (the object, role USER) and
 //! `EvictControl` (owner or platform) needs a password or HMAC session; `LoadExternal`,
 //! `ReadPublic` and `VerifySignature` need none. The authValue of an object is available only if
-//! it has a private part and `userWithAuth` is SET (policy sessions do not exist yet); otherwise
-//! the dispatcher answers `TPM_RC_AUTH_UNAVAILABLE` (NOT VERIFIED, `object.rs`).
+//! it has a private part and `userWithAuth` is SET; with `userWithAuth` CLEAR only a policy
+//! session authorizes (`TPM_RC_POLICY_FAIL` for a password or HMAC, Part 3, clause 5.6, step 7),
+//! and without a private part nothing does (`TPM_RC_AUTH_UNAVAILABLE`); see `policy.rs`.
 //!
 //! Tickets (Part 2 v184, clauses 10.7.3 and 10.7.4): the creation ticket is
 //! `HMAC(proof, TPM_ST_CREATION || name || H(creationData))` and the verified ticket
@@ -100,14 +101,31 @@ impl Tpm {
         Ok(())
     }
 
-    /// The authValue that authorizes USER-role use of an object, or `TPM_RC_AUTH_UNAVAILABLE` if
-    /// the object has no private part or `userWithAuth` is CLEAR.
-    pub(crate) fn object_auth(&self, h: u32, idx: usize) -> Result<AuthValue, Rc> {
+    /// The authValue of an object used as an authorization handle (Part 3, clause 5.6, steps 1,
+    /// 5 and 7): `TPM_RC_AUTH_UNAVAILABLE` if the object has no private part; for a password or
+    /// HMAC session (`policy` false) `TPM_RC_POLICY_FAIL` when the USER role needs a policy
+    /// (`userWithAuth` CLEAR) and `TPM_RC_AUTH_TYPE` when the ADMIN role does (`adminWithPolicy`
+    /// SET); a policy session passes here and is checked against the `authPolicy` by the
+    /// dispatcher.
+    pub(crate) fn object_auth(
+        &self,
+        h: u32,
+        idx: usize,
+        admin: bool,
+        policy: bool,
+    ) -> Result<AuthValue, Rc> {
         let o = self.object(h).ok_or(Rc::reference_handle(idx))?;
-        match &o.sensitive {
-            Some(s) if o.has(object_attr::USER_WITH_AUTH) => Ok(s.auth.clone()),
-            _ => Err(Rc::AUTH_UNAVAILABLE),
+        let s = o.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+        if !policy {
+            if admin {
+                if o.has(object_attr::ADMIN_WITH_POLICY) {
+                    return Err(Rc::AUTH_TYPE);
+                }
+            } else if !o.has(object_attr::USER_WITH_AUTH) {
+                return Err(Rc::POLICY_FAIL.in_session((idx + 1) as u8));
+            }
         }
+        Ok(s.auth.clone())
     }
 
     /// The Name of the object behind a handle, for a cpHash.
@@ -140,7 +158,7 @@ impl Tpm {
     /// and `ehProof` and nothing needs to be stored. NOT VERIFIED: that this satisfies the
     /// "second HMAC with the EPS as key" shape of the clause (it uses KDFa/HMAC with the EPS as
     /// key and the SPS as context).
-    fn proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
+    pub(crate) fn proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
         let p = &self.persistent;
         Some(match hierarchy {
             handle::RH_PLATFORM => {
@@ -528,7 +546,7 @@ impl Tpm {
         }
         let key_scheme = match &o.public.params {
             PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-            PublicParams::KeyedHash => return Err(Rc::KEY.in_handle(1)),
+            PublicParams::KeyedHash { .. } => return Err(Rc::KEY.in_handle(1)),
         };
         // The key's scheme wins; inScheme must repeat it or be NULL. A key with a NULL scheme
         // signs with inScheme.

@@ -21,6 +21,7 @@
 //! `GetTestResult` is empty here.
 
 use crate::codes::su;
+use crate::context::ContextState;
 use crate::hierarchy::HierarchyVolatile;
 use crate::marshal::{Reader, Writer};
 use crate::pcr::{self, Pcrs};
@@ -92,6 +93,7 @@ impl Tpm {
                 // TPM Resume.
                 self.pcrs.restore(&s.pcrs);
                 self.hv = HierarchyVolatile::after_resume(s.hier);
+                self.context = s.ctx;
                 self.persistent.restart_count = self.persistent.restart_count.wrapping_add(1);
             }
             (_, saved) => {
@@ -101,12 +103,15 @@ impl Tpm {
                     (Some(s), _) => {
                         // TPM Restart.
                         self.hv = HierarchyVolatile::after_restart(s.hier);
+                        self.context = s.ctx;
+                        self.context.restart();
                         self.persistent.restart_count =
                             self.persistent.restart_count.wrapping_add(1);
                     }
                     (None, seed) => {
                         // TPM Reset.
                         self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
+                        self.context = ContextState::default();
                         self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
                         self.persistent.restart_count = 0;
                     }
@@ -137,6 +142,7 @@ impl Tpm {
                 self.saved = Some(SavedState {
                     pcrs: self.pcrs.save(),
                     hier: self.hv.clone(),
+                    ctx: self.context.clone(),
                 })
             }
             _ => return Err(Rc::VALUE.in_param(1)),

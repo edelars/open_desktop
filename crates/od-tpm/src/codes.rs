@@ -12,6 +12,20 @@
 
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
+    /// Slice C2 of phase B (S7-23): attestation, policy, context and `TPM2_HMAC` (Table 14 values,
+    /// checked against the v184 text 2026-11-07).
+    pub const CERTIFY: u32 = 0x0000_0148;
+    pub const POLICY_SECRET: u32 = 0x0000_0151;
+    pub const HMAC: u32 = 0x0000_0155;
+    pub const QUOTE: u32 = 0x0000_0158;
+    pub const CONTEXT_LOAD: u32 = 0x0000_0161;
+    pub const CONTEXT_SAVE: u32 = 0x0000_0162;
+    pub const POLICY_AUTH_VALUE: u32 = 0x0000_016B;
+    pub const POLICY_COMMAND_CODE: u32 = 0x0000_016C;
+    pub const POLICY_OR: u32 = 0x0000_0171;
+    pub const POLICY_PCR: u32 = 0x0000_017F;
+    pub const POLICY_RESTART: u32 = 0x0000_0180;
+    pub const POLICY_GET_DIGEST: u32 = 0x0000_0189;
     /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
     pub const DICTIONARY_ATTACK_LOCK_RESET: u32 = 0x0000_0139;
     pub const DICTIONARY_ATTACK_PARAMETERS: u32 = 0x0000_013A;
@@ -67,6 +81,11 @@ pub mod st {
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
     pub const HASHCHECK: u16 = 0x8024;
+    /// Attestation structure tags (Table 23): `TPM2_Certify` and `TPM2_Quote`.
+    pub const ATTEST_CERTIFY: u16 = 0x8017;
+    pub const ATTEST_QUOTE: u16 = 0x8018;
+    /// Ticket tag of `TPM2_PolicySecret` (Table 23).
+    pub const AUTH_SECRET: u16 = 0x8023;
 }
 
 /// Table 26 (v184): `TPM_CAP` capability selectors.
@@ -141,6 +160,8 @@ pub mod pt {
 /// Table 8 (v184): `TPM_ALG_ID` values used in phase A.
 pub mod alg {
     pub const RSA: u16 = 0x0001;
+    /// `TPM_ALG_HMAC`: the scheme of a keyed-hash signing key (`TPM2_HMAC`, slice C2).
+    pub const HMAC: u16 = 0x0005;
     pub const KEYEDHASH: u16 = 0x0008;
     pub const SHA256: u16 = 0x000B;
     pub const NULL: u16 = 0x0010;
@@ -233,6 +254,10 @@ pub mod handle {
         (h >> 24) as u8
     }
 }
+
+/// Part 2 v184, `TPM_CONSTANTS32`: `TPM_GENERATED_VALUE`, the first field of every attestation
+/// structure.
+pub const TPM_GENERATED_VALUE: u32 = 0xFF54_4347;
 
 /// Table 3 (v184): `TPM_SPEC_*`. The project targets v185 (ADR-0009); `REVISION` reports 185.
 /// NOT VERIFIED against TPM 2.0 Library v185: v185 `TPM_SPEC_YEAR`/`TPM_SPEC_DAY_OF_YEAR` and the
