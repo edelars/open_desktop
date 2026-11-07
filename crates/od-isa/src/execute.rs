@@ -16739,6 +16739,11 @@ pub fn step_paged_pio_u8<P: crate::PortIo>(
 /// Execute one instruction from the bounded `PagedCpl0ProbeV1` allowlist.
 /// Fetch/decode happens exactly once through the supplied guest memory; the
 /// machine remains responsible for selecting and validating CR3/EFER.
+///
+/// Allowlist (Long64/CPL0): `IN AL,DX`, `OUT DX,AL`, `HLT`, the paged MOV forms
+/// of this profile, and (S7-03) `MOV r8, imm8` (`B0+r ib`, no prefixes, only the
+/// target byte changes) and `MOV r16, imm16` (`66 B8+r iw`, exactly one `66`,
+/// bits 63:16 preserved). Other `MOV imm` forms stay `Unsupported`.
 pub fn step_paged_probe<P: crate::PortIo>(
     _profile: PagedCpl0ProbeV1,
     state: &mut LongModeState,
@@ -17570,6 +17575,13 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
     };
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    let base_profile = !user_mov
+        && !user_load_only
+        && !allow_stack_forms
+        && !allow_cr3
+        && !allow_cr0_wp
+        && !cr0_mov_only
+        && !allow_mov_cr0;
     let unsupported = || {
         result(
             PagedProbeExit::Unsupported {
@@ -17864,6 +17876,30 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             state.rip = next_rip;
             state.activity = Some(crate::CpuActivity::Halted);
             return result(PagedProbeExit::Halted, 1);
+        }
+        // S7-03: `B0+r ib` and `66 B8+r iw` are admitted only in the base
+        // `PagedCpl0ProbeV1` profile; every other profile keeps them
+        // unsupported. RFLAGS is not touched.
+        Operation::MovImmediate {
+            dst: Operand::Register(destination),
+            value,
+        } if base_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && ((instruction.length == 2
+                && matches!(instruction.opcode.byte, 0xb0..=0xb7)
+                && instruction.prefixes == Prefixes::default()
+                && destination.size() == OperandSize::Byte)
+                || (instruction.length == 4
+                    && matches!(instruction.opcode.byte, 0xb8..=0xbf)
+                    && instruction.prefixes
+                        == (Prefixes {
+                            operand_override: true,
+                            ..Prefixes::default()
+                        })
+                    && destination.size() == OperandSize::Word)) =>
+        {
+            state.write(destination, value);
+            state.rip = next_rip;
         }
         _ => return unsupported(),
     }

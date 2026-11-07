@@ -765,3 +765,168 @@ fn store_backend_failure_preserves_cpu_definedness_and_retirement() {
     assert_eq!(cpu, before);
     assert!(pio.reads.is_empty() && pio.writes.is_empty());
 }
+
+fn gpr_patterns() -> [u64; 16] {
+    let mut gpr = [0u64; 16];
+    for (index, slot) in gpr.iter_mut().enumerate() {
+        let n = index as u64 + 1;
+        *slot = 0x1122_3344_5566_7788u64.rotate_left(n as u32 * 5) ^ (n * 0x0101_0101_0101_0101);
+    }
+    gpr
+}
+
+fn ring0() -> AccessContext {
+    context(InstructionMode::Long64, PrivilegeLevel::Ring0)
+}
+
+#[test]
+fn paged_probe_mov_r8_imm8_writes_only_the_target_byte() {
+    for opcode in 0xb0u8..=0xb7 {
+        let mut memory = Memory::new(&[opcode, 0x5a]);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let defined = DEFINED & !(1 << 6);
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired, "opcode {opcode:#x}");
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let r = usize::from(opcode & 7);
+        let mut expected = before.clone();
+        if r < 4 {
+            expected.gpr[r] = (before.gpr[r] & !0xff) | 0x5a;
+        } else {
+            let base = r - 4;
+            expected.gpr[base] = (before.gpr[base] & !0xff00) | (0x5a << 8);
+        }
+        expected.rip = RIP + 2;
+        assert_eq!(cpu, expected, "opcode {opcode:#x}");
+        assert_eq!(cpu.rflags, before.rflags);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn paged_probe_mov_r16_imm16_writes_only_the_low_word() {
+    for opcode in 0xb8u8..=0xbf {
+        let mut memory = Memory::new(&[0x66, opcode, 0xf8, 0x03]);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let defined = DEFINED & !(1 << 6);
+
+        let result = step_with_defined(&mut cpu, &mut memory, &mut pio, ring0(), defined);
+
+        assert_eq!(result.exit, PagedProbeExit::Retired, "opcode {opcode:#x}");
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        let r = usize::from(opcode & 7);
+        let mut expected = before.clone();
+        expected.gpr[r] = (before.gpr[r] & !0xffff) | 0x03f8;
+        expected.rip = RIP + 4;
+        assert_eq!(cpu, expected, "opcode {opcode:#x}");
+        assert_eq!(cpu.rflags, before.rflags);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn paged_probe_mov_immediate_neighbours_stay_unsupported() {
+    // (bytes, expected Unsupported opcode). Results are the decoder's actual
+    // classification; the decoder is not modified by S7-03.
+    let cases: &[(&[u8], u8)] = &[
+        (&[0xba, 0xf8, 0x03, 0x00, 0x00], 0xba), // MOV EDX,imm32 without 66
+        (&[0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8], 0xb8), // REX.W MOV RAX,imm64
+        (&[0x41, 0xb0, 0x58], 0xb0),             // REX.B MOV R8B,imm8
+        (&[0x40, 0xb4, 0x58], 0xb4),             // REX MOV SPL,imm8
+        (&[0x66, 0xb0, 0x58], 0xb0),             // 66 B0
+        (&[0x66, 0x66, 0xba, 0xf8, 0x03], 0xba), // repeated 66
+        (&[0x66, 0x41, 0xba, 0xf8, 0x03], 0xba), // 66 + REX
+        (&[0x67, 0xb0, 0x58], 0xb0),             // address override
+        (&[0x2e, 0xb0, 0x58], 0xb0),             // segment override
+        (&[0xf3, 0xb0, 0x58], 0xb0),             // F3
+        (&[0xf2, 0xb0, 0x58], 0xb0),             // F2
+        (&[0xc6, 0xc0, 0x58], 0xc6),             // MOV r/m8,imm8
+        (&[0x66, 0xc7, 0xc2, 0xf8, 0x03], 0xc7), // MOV r/m16,imm16
+        (&[0xc7, 0xc2, 0xf8, 0x03, 0x00, 0x00], 0xc7), // MOV r/m32,imm32
+    ];
+    for (bytes, opcode) in cases {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(&mut cpu, &mut memory, &mut pio, ring0());
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: *opcode },
+            "bytes {bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "bytes {bytes:02x?}");
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before, "bytes {bytes:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn other_paged_profiles_keep_mov_immediate_unsupported() {
+    use od_isa::execute::{PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0StackProbeV1};
+    for (bytes, opcode) in [
+        (&[0xb0u8, 0x58][..], 0xb0u8),
+        (&[0x66, 0xba, 0xf8, 0x03][..], 0xba),
+    ] {
+        for profile in ["stack", "cr3", "cr0wp"] {
+            let mut memory = Memory::new(bytes);
+            let mut cpu = state();
+            cpu.gpr = gpr_patterns();
+            if profile != "stack" {
+                cpu.cr3 = Some(0x1000);
+            }
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+            let result = match profile {
+                "stack" => execute::step_paged_stack_probe(
+                    PagedCpl0StackProbeV1,
+                    &mut cpu,
+                    &mut memory,
+                    &mut pio,
+                    ring0(),
+                    DEFINED,
+                ),
+                "cr3" => execute::step_paged_cr3_probe(
+                    PagedCpl0Cr3ProbeV1,
+                    &mut cpu,
+                    &mut memory,
+                    &mut pio,
+                    ring0(),
+                    0xd00,
+                    DEFINED,
+                ),
+                _ => execute::step_paged_cr0_wp_probe(
+                    PagedCpl0Cr0WpProbeV1,
+                    &mut cpu,
+                    &mut memory,
+                    &mut pio,
+                    ring0(),
+                    0xd00,
+                    DEFINED,
+                ),
+            };
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{profile} {bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(cpu, before, "{profile} {bytes:02x?}");
+        }
+    }
+}
