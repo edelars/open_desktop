@@ -51,7 +51,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | CPU state, x86 decoder, interpreter | `crates/od-isa/src/` |
 | IR, ARM64 emitter, dispatcher, JIT-кеш | `crates/od-jit/src/` |
 | Гостевая RAM/MMU/TLB, vCPU и устройства | `crates/od-machine/src/` |
-| Процессор команд TPM 2.0 и его состояние: чистая логика без шины и устройств; CRB-устройство остаётся в `od-machine` (решение D8, [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md)) | `crates/od-tpm/src/` (создаётся в S7-21) |
+| Процессор команд TPM 2.0 и его состояние: чистая логика без шины и устройств; CRB-устройство остаётся в `od-machine` (решение D8, [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md)) | `crates/od-tpm/src/` (фаза A — S7-21: команды Startup/Capability/Random/PCR/Hash/Clock; фаза B — S7-23) |
 | Формат диска, метаданные и контейнер снимка | `crates/od-storage/src/` |
 | macOS host-примитивы, JIT memory, glue C ABI | `crates/od-host/src/` |
 | Общие генераторы/сравнение/сокращение тестов | `crates/od-testkit/src/` |
@@ -112,7 +112,7 @@ raw `execution_kind=unknown`, отдельная physical acceptance остаё�
 ### Неочевидные границы
 
 - Прошивка: `firmware/uefi/` — отдельный Cargo-проект вне корневого workspace (корневой `Cargo.toml` перечисляет его в `exclude`, в `members` его нет). Он собирается для guest-target `x86_64-unknown-none` скриптом `tools/build/build_firmware.py`, а его host-side тесты запускаются `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`; `cargo check --workspace` прошивку не проверяет. Команды, версии и карта модулей — в `firmware/uefi/README.md`.
-- vTPM: процессор команд, состояние и кодек persistent state — `crates/od-tpm/`; CRB-регистры и выдача байтов state host-стороне — `od-machine`; клиент TCG2 и measured boot — `firmware/uefi/`; защита ключей и хранение — этап 9 (S9-27). Каталог `crates/od-tpm/src` вносится в машиночитаемый перечень ниже вместе с созданием crate в S7-21.
+- vTPM: процессор команд, состояние и кодек persistent state — `crates/od-tpm/`; CRB-регистры и выдача байтов state host-стороне — `od-machine`; клиент TCG2 и measured boot — `firmware/uefi/`; защита ключей и хранение — этап 9 (S9-27). Crate создан в S7-21 (фаза A), каталог `crates/od-tpm/src` внесён в машиночитаемый перечень ниже.
 - Гостевое устройство: модель и guest-visible registers — в `od-machine`; системный backend — в host-слое; guest driver — в `guest/`; wire contract — в `protocols/guest/`.
 - Снимок: остановка CPU/I/O и сбор согласованного состояния — в `od-machine`; запись контейнера/дисковых данных — в `od-storage`.
 - JIT: блоки и dispatcher — в `od-jit`; отображение исполняемой памяти через macOS — в `od-host`, предоставляемое через узкий интерфейс.
@@ -175,6 +175,7 @@ crates/od-isa/src
 crates/od-jit/src
 crates/od-machine/src
 crates/od-storage/src
+crates/od-tpm/src
 crates/od-host/src
 crates/od-testkit/src
 include/open_desktop
