@@ -1435,7 +1435,7 @@ general WRMSR, compatibility SYSRET, exception delivery from CPL3, Linux entry
 assembly, or Linux boot claim. The synthetic initial CPL3 CPU state is supplied
 by the fixture. See the [S4-20c report](../reports/STAGE_4_S4-20C_2026-11-06.md),
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
-[verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
+  [verification record](../testing/MACHINE.md#s4-20c-paged-syscall--kernel-store--sysretq--user-load).
 
 <a id="paged-cpl3-mov-store-load-after-iretq-s4-20d"></a>
 
@@ -1477,6 +1477,49 @@ This slice does not add general CPL3 exception delivery, privileged-instruction
 or Linux boot. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
+
+<a id="paged-cpl3-mov-cr0-after-iretq-s4-20e"></a>
+
+## Paged CPL3 MOV CR0 after IRETQ (S4-20e)
+
+`step_paged_cpl3_mov_cr0` is a separate opt-in machine entry for the bounded
+privileged-instruction check after the accepted paged IRETQ to CPL3. It derives
+CPL from the committed CS selector and cache and CR3 from CPU state. Its fixed
+profile is Long64, canonical48, physical36, four-level 4 KiB paging,
+`CR0=0x80010033`, `CR4=0x20`, and `EFER=0xd00`. A malformed user CS, unsupported
+controls, live TF/RF/AC, or active STI shadow is rejected before instruction
+fetch. The instruction RIP offset must be at most `0xff1`; `0xff2` and above
+are rejected before fetch so the decoder's maximum instruction length stays
+within one page.
+
+The exact bare `0F 22 C0` (`MOV CR0,RAX`) fetches and decodes, then raises
+`#GP(0)` at CPL3. This result is independent of RAX and IOPL and does not
+retire or commit CR0 or other instruction CPU state. Exact `F0 0F 22 C0`
+raises `#UD` only after full fetch/decode; an instruction-fetch fault takes
+precedence until decoding completes. Fetch page walks may already have
+committed A-bit updates and their callbacks before either execution fault.
+The entry reports those effects separately from guest faults and backend
+errors. It does not deliver the exception through an IDT, switch stacks, or
+perform CPL3 exception handling.
+
+Tracked fetch tests cover supervisor-only permissions at all four paging
+levels, NX, and a non-present user leaf (`PFEC=0x14`) through this new entry.
+They check CR2, faulting RIP, no retirement, preservation of CPU state except
+the architecturally updated CR2, exact A-bit PTE values, and callback ranges.
+The physical instruction-fetch failure is reported as `OperandPhysical` at GPA
+`0x30000`, without retirement. A separate page-walk unit test injects failures
+at the internal table-writer seam for fetch A-bit writes and checks
+`TableWrite`, level/address/bit, and the committed update prefix; this checks
+the shared walker path rather than injecting through the machine entry.
+The IRETQ → user load → user store → `MOV CR0,RAX` case confirms that the
+earlier store remains committed after `#GP(0)`.
+
+This slice generates #GP/#UD results but does not deliver exceptions. Other
+CR forms, general CPL3 exception delivery, IDT/TSS stack switching, and
+cross-page instruction fetch remain outside its contract. See the
+[S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+[plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
+[verification record](../testing/MACHINE.md#s4-20e-paged-cpl3-mov-cr0-after-iretq).
 
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 

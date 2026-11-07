@@ -2068,6 +2068,74 @@ mod tracked_access_tests {
     }
 
     #[test]
+    fn fetch_accessed_write_failures_are_tracked_before_physical_fetch() {
+        let levels = [
+            PageTableLevel::Pml4,
+            PageTableLevel::Pdpt,
+            PageTableLevel::Pd,
+            PageTableLevel::Pt,
+        ];
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        let original = [0x2007, 0x3007, 0x4007, 0x4007];
+        let fetch = request_as(privilege(PrivilegeLevel::Ring3), RamAccessOperation::Fetch);
+        for failed_index in 0..levels.len() {
+            let (mut memory, paging) = setup(0x4007, 0x6000);
+            let failed_address = GuestPhysicalAddress::new(addresses[failed_index]);
+            let mut callbacks = Vec::new();
+            let mut attempts = Vec::new();
+            let mut writer =
+                |memory: &mut PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    attempts.push(address);
+                    if address == failed_address {
+                        Err(MemoryAccessError::Unmapped(address))
+                    } else {
+                        write_tracked_table_entry(memory, address, value, callback)
+                    }
+                };
+            let mut callback = |range| callbacks.push(range);
+            let report = access_long64_4k_internal_with_writer(
+                &mut memory,
+                &paging,
+                fetch,
+                &mut callback,
+                false,
+                None,
+                &mut writer,
+            );
+            assert!(
+                matches!(report.outcome, Err(TrackedAccessError::TableWrite { level, entry_address, bit: AdBit::Accessed, source: MemoryAccessError::Unmapped(source_address) }) if level == levels[failed_index] && entry_address == failed_address && source_address == failed_address)
+            );
+            assert_eq!(report.ad_update_count, failed_index);
+            assert_eq!(report.ad_updates, expected_accessed_updates(failed_index));
+            assert_eq!(
+                attempts,
+                addresses[..=failed_index]
+                    .iter()
+                    .copied()
+                    .map(GuestPhysicalAddress::new)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                logged(&callbacks),
+                addresses[..failed_index]
+                    .iter()
+                    .map(|address| (*address, 8))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                entries(&memory),
+                std::array::from_fn(
+                    |index| original[index] | if index < failed_index { 1 << 5 } else { 0 }
+                )
+            );
+            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+        }
+    }
+
+    #[test]
     fn dirty_write_failure_preserves_accessed_prefix_without_operand_commit() {
         let (mut memory, paging) = setup(0x4007, 0x6000);
         let dirty_address = GuestPhysicalAddress::new(0x4020);

@@ -1937,7 +1937,9 @@ fn cpl3_mov_after_iretq_enforces_user_page_permissions() {
             put_bytes(
                 &mut bus,
                 0x9000,
-                &[0x48, 0x8b, 0x03, 0x48, 0x89, 0x0b, 0x48, 0x8b, 0x03],
+                &[
+                    0x48, 0x8b, 0x03, 0x48, 0x89, 0x0b, 0x48, 0x8b, 0x03, 0x0f, 0x22, 0xc0,
+                ],
             );
         } else {
             put_bytes(&mut bus, 0x9000, &[0x48, 0x89, 0x0b, 0x48, 0x8b, 0x03]);
@@ -2097,6 +2099,23 @@ fn cpl3_mov_after_iretq_enforces_user_page_permissions() {
                 assert_eq!(load.cpu.exit, PagedProbeExit::Retired);
                 assert_eq!(state.gpr[Register::Rax as usize], 0xabc0_1234_5678_9012);
                 assert_eq!(state.rip, HANDLER_RIP + 9);
+                let before = state.clone();
+                let fault = od_machine::step_paged_cpl3_mov_cr0(
+                    &mut state,
+                    &mut bus,
+                    od_isa::INTEGER_FLAGS,
+                    |_| {},
+                )
+                .unwrap();
+                assert!(
+                    matches!(fault.cpu.exit, PagedProbeExit::Fault(ref f) if f.vector == 13 && f.error_code == Some(0))
+                );
+                assert_eq!(state, before);
+                assert_eq!(
+                    bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+                        .unwrap(),
+                    0xabc0_1234_5678_9012
+                );
             }
         } else if clear == 0x100 {
             assert!(matches!(store.cpu.exit, PagedProbeExit::Backend(_)));
@@ -2156,7 +2175,14 @@ fn cpl3_mov_entry_is_first_user_fetch_and_reports_exact_page_walk_effects() {
         (0x10010, 0x12007),
         (0x12010, 0x9007),
     ];
-    for (fault_level, nx) in [(0, false), (1, false), (2, false), (3, false), (3, true)] {
+    for (fault_level, nx) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, false),
+        (3, true),
+        (4, false),
+    ] {
         let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
         put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
         put_bytes(&mut bus, 0x9000, &LOAD);
@@ -2181,6 +2207,9 @@ fn cpl3_mov_entry_is_first_user_fetch_and_reports_exact_page_walk_effects() {
         let mut expected_code_ptes = code_pte.map(|(a, v)| (a, v));
         if nx {
             expected_code_ptes[3].1 |= 1 << 63;
+            put_qword(&mut bus, expected_code_ptes[3].0, expected_code_ptes[3].1);
+        } else if fault_level == 4 {
+            expected_code_ptes[3].1 &= !1;
             put_qword(&mut bus, expected_code_ptes[3].0, expected_code_ptes[3].1);
         } else {
             expected_code_ptes[fault_level].1 &= !4;
@@ -2217,7 +2246,10 @@ fn cpl3_mov_entry_is_first_user_fetch_and_reports_exact_page_walk_effects() {
         let fault = mov.page_fault.as_ref().unwrap();
         assert_eq!(mov.cpu.exit, PagedProbeExit::Fault(fault.fault().clone()));
         assert_eq!(mov.cpu.instructions_executed, 0);
-        assert_eq!(fault.fault().error_code, Some(0x15));
+        assert_eq!(
+            fault.fault().error_code,
+            Some(if fault_level == 4 { 0x14 } else { 0x15 })
+        );
         assert_eq!(fault.cr2_value(), USER_CODE);
         assert_eq!(fault.saved_rip(), USER_CODE);
         assert_eq!(state.cr2, Some(USER_CODE));
@@ -2229,19 +2261,38 @@ fn cpl3_mov_entry_is_first_user_fetch_and_reports_exact_page_walk_effects() {
             (0x1008, expected_code_ptes[0].1 | 0x20),
             (0xf000, expected_code_ptes[1].1 | 0x20),
             (0x10010, expected_code_ptes[2].1 | 0x20),
-            (0x12010, expected_code_ptes[3].1 | 0x20),
+            (
+                0x12010,
+                if fault_level == 4 {
+                    expected_code_ptes[3].1
+                } else {
+                    expected_code_ptes[3].1 | 0x20
+                },
+            ),
         ];
+        let expected_updates = if fault_level == 4 {
+            &expected_updates[..3]
+        } else {
+            &expected_updates[..]
+        };
         assert_eq!(
             mov.ad_updates
                 .iter()
                 .map(|u| (u.address.get(), u.after, u.bit))
                 .collect::<Vec<_>>(),
-            expected_updates.map(|(address, after)| (address, after, AdBit::Accessed))
+            expected_updates
+                .iter()
+                .copied()
+                .map(|(address, after)| (address, after, AdBit::Accessed))
+                .collect::<Vec<_>>()
         );
         let expected_callbacks = [0x1008, 0xf000, 0x10010, 0x12010]
-            .map(|address| GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap());
+            .into_iter()
+            .take(expected_updates.len())
+            .map(|address| GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(callbacks, expected_callbacks);
-        for (address, expected) in expected_updates {
+        for (address, expected) in expected_updates.iter().copied() {
             assert_eq!(
                 bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
                     .unwrap(),
@@ -3583,6 +3634,465 @@ fn syscall_paging_effects_exact_on_success_and_store_failures() {
                 expected,
                 "{scenario}: {address:#x}"
             );
+        }
+    }
+}
+
+#[test]
+fn cpl3_mov_cr0_first_fetch_enforces_user_page_permissions() {
+    use od_isa::{execute::PagedProbeExit, iretq::IretqResult};
+    use od_machine::{AdBit, step_paged_cpl3_mov_cr0, step_paged_iretq_to_cpl3};
+
+    const USER_CODE: u64 = 0x80_0040_2000;
+    let code_pte = [
+        (0x1008, 0xf007),
+        (0xf000, 0x10007),
+        (0x10010, 0x12007),
+        (0x12010, 0x9007),
+    ];
+    for (fault_level, nx) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, false),
+        (3, true),
+        (4, false),
+    ] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+        put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+        put_bytes(&mut bus, 0x9000, &[0x0f, 0x22, 0xc0]);
+        put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+        put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+        for (address, value) in code_pte {
+            put_qword(&mut bus, address, value);
+        }
+        // The user data mapping is separate from the user code leaf.
+        for (address, value) in [(0x10000, 0x11007), (0x11000, DATA_PHYSICAL | 7)] {
+            put_qword(&mut bus, address, value);
+        }
+        for (offset, value) in [
+            (0, USER_CODE),
+            (8, 0x1b),
+            (16, 0x202),
+            (24, 0x0070_2000),
+            (32, 0x23),
+        ] {
+            put_qword(&mut bus, 0xd027 + offset, value);
+        }
+        let mut expected_code_ptes = code_pte.map(|(a, v)| (a, v));
+        if nx {
+            expected_code_ptes[3].1 |= 1 << 63;
+            put_qword(&mut bus, expected_code_ptes[3].0, expected_code_ptes[3].1);
+        } else if fault_level == 4 {
+            expected_code_ptes[3].1 &= !1;
+            put_qword(&mut bus, expected_code_ptes[3].0, expected_code_ptes[3].1);
+        } else {
+            expected_code_ptes[fault_level].1 &= !4;
+            put_qword(
+                &mut bus,
+                expected_code_ptes[fault_level].0,
+                expected_code_ptes[fault_level].1,
+            );
+        }
+        let mut state = initial_state(0x202);
+        state.cs_cache.as_mut().unwrap().flags = 0xa;
+        state.gpr[Register::Rbx as usize] = 0x80_0000_0000;
+        let mut callbacks = Vec::new();
+        let iret = step_paged_iretq_to_cpl3(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+            callbacks.push(r)
+        })
+        .unwrap();
+        assert_eq!(iret.cpu, IretqResult::Retired);
+        // None of these user-code paging entries was touched by the ring-0 return.
+        for (address, _) in expected_code_ptes {
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap()
+                    & 0x20,
+                0
+            );
+        }
+        callbacks.clear();
+        let before = state.clone();
+        let mov = step_paged_cpl3_mov_cr0(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+            callbacks.push(r)
+        })
+        .unwrap();
+        let fault = mov.page_fault.as_ref().unwrap();
+        assert_eq!(mov.cpu.exit, PagedProbeExit::Fault(fault.fault().clone()));
+        assert_eq!(mov.cpu.instructions_executed, 0);
+        assert_eq!(
+            fault.fault().error_code,
+            Some(if fault_level == 4 { 0x14 } else { 0x15 })
+        );
+        assert_eq!(fault.fault().linear_address, Some(USER_CODE));
+        assert_eq!(fault.cr2_value(), USER_CODE);
+        assert_eq!(fault.saved_rip(), USER_CODE);
+        assert_eq!(state.cr2, Some(USER_CODE));
+        let mut expected_state = before.clone();
+        expected_state.cr2 = Some(USER_CODE);
+        assert_eq!(state, expected_state);
+        assert_eq!(state.rip, before.rip);
+        assert_eq!(state.cs_selector, before.cs_selector);
+        assert_eq!(state.ss_selector, before.ss_selector);
+        assert_eq!(state.gpr, before.gpr);
+        let expected_updates = [
+            (0x1008, expected_code_ptes[0].1 | 0x20),
+            (0xf000, expected_code_ptes[1].1 | 0x20),
+            (0x10010, expected_code_ptes[2].1 | 0x20),
+            (
+                0x12010,
+                if fault_level == 4 {
+                    expected_code_ptes[3].1
+                } else {
+                    expected_code_ptes[3].1 | 0x20
+                },
+            ),
+        ];
+        let expected_updates = if fault_level == 4 {
+            &expected_updates[..3]
+        } else {
+            &expected_updates[..]
+        };
+        assert_eq!(
+            mov.ad_updates
+                .iter()
+                .map(|u| (u.address.get(), u.after, u.bit))
+                .collect::<Vec<_>>(),
+            expected_updates
+                .iter()
+                .copied()
+                .map(|(address, after)| (address, after, AdBit::Accessed))
+                .collect::<Vec<_>>()
+        );
+        let expected_callbacks = [0x1008, 0xf000, 0x10010, 0x12010]
+            .into_iter()
+            .take(expected_updates.len())
+            .map(|address| GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(callbacks, expected_callbacks);
+        for (address, expected) in expected_updates.iter().copied() {
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(mov.ad_updates.iter().all(|u| u.bit == AdBit::Accessed));
+        assert!(mov.access_error.is_none());
+    }
+}
+
+#[test]
+fn cpl3_mov_cr0_faults_without_committing_cpu_state() {
+    use od_isa::{execute::PagedProbeExit, iretq::IretqResult};
+    use od_machine::{step_paged_cpl3_mov_cr0, step_paged_iretq_to_cpl3};
+    const USER_CODE: u64 = 0x80_0040_2000;
+    for (locked, rax, iopl) in [
+        (false, 0x80000033, 0),
+        (false, 0x80010033, 3),
+        (false, 0, 0),
+        (true, 0, 0),
+    ] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+        put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+        put_bytes(
+            &mut bus,
+            0x9000,
+            if locked {
+                &[0xf0, 0x0f, 0x22, 0xc0]
+            } else {
+                &[0x0f, 0x22, 0xc0]
+            },
+        );
+        put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+        put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+        for (address, value) in [
+            (0x1008, 0xf007),
+            (0xf000, 0x10007),
+            (0x10010, 0x12007),
+            (0x12010, 0x9007),
+        ] {
+            put_qword(&mut bus, address, value);
+        }
+        for (offset, value) in [
+            (0, USER_CODE),
+            (8, 0x1b),
+            (16, 0x202),
+            (24, 0x0070_2000),
+            (32, 0x23),
+        ] {
+            put_qword(&mut bus, 0xd027 + offset, value);
+        }
+        let mut state = initial_state(0x202);
+        state.cs_cache.as_mut().unwrap().flags = 0xa;
+        state.gpr[Register::Rax as usize] = rax;
+        state.cr2 = Some(0x1234);
+        assert_eq!(
+            step_paged_iretq_to_cpl3(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |_| {})
+                .unwrap()
+                .cpu,
+            IretqResult::Retired
+        );
+        let profile_state = state.clone();
+        for invalid in [
+            {
+                let mut s = profile_state.clone();
+                s.cs_selector = Some(8);
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.cr0 = Some(0x8000_0033);
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.cr4 = Some(0);
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.rflags |= 1 << 8;
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.rflags |= 1 << 16;
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.rflags |= 1 << 18;
+                s
+            },
+            {
+                let mut s = profile_state.clone();
+                s.sti_shadow = Some(od_isa::StiShadow::Blocking);
+                s
+            },
+        ] {
+            let mut invalid = invalid;
+            let snapshot = invalid.clone();
+            let mut callbacks = Vec::new();
+            let rejected =
+                step_paged_cpl3_mov_cr0(&mut invalid, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+                    callbacks.push(r)
+                })
+                .unwrap();
+            assert!(matches!(rejected.cpu.exit, PagedProbeExit::Rejected(_)));
+            assert_eq!(invalid, snapshot);
+            assert!(callbacks.is_empty());
+        }
+        put_bytes(&mut bus, 0x9000, &[0x90]);
+        let mut other_form = profile_state.clone();
+        let mut callbacks = Vec::new();
+        let other =
+            step_paged_cpl3_mov_cr0(&mut other_form, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+                callbacks.push(r)
+            })
+            .unwrap();
+        assert!(matches!(other.cpu.exit, PagedProbeExit::Unsupported { .. }));
+        assert_eq!(other.cpu.instructions_executed, 0);
+        assert_eq!(other_form.rip, profile_state.rip);
+        assert!(
+            callbacks
+                .iter()
+                .all(|r| ![DATA_PHYSICAL].contains(&r.start().get()))
+        );
+        assert!(
+            callbacks
+                .iter()
+                .all(|r| ![0x30000, DATA_PHYSICAL].contains(&r.start().get()))
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+                .unwrap(),
+            SENTINEL
+        );
+        put_bytes(
+            &mut bus,
+            0x9000,
+            if locked {
+                &[0xf0, 0x0f, 0x22, 0xc0]
+            } else {
+                &[0x0f, 0x22, 0xc0]
+            },
+        );
+        for (address, value) in [
+            (0x1008, 0xf007),
+            (0xf000, 0x10007),
+            (0x10010, 0x12007),
+            (0x12010, 0x9007),
+        ] {
+            put_qword(&mut bus, address, value);
+        }
+        state.rflags |= iopl << 12;
+        let before = state.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_cpl3_mov_cr0(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+            callbacks.push(r)
+        })
+        .unwrap();
+        match report.cpu.exit {
+            PagedProbeExit::Fault(fault) => {
+                assert_eq!(fault.vector, if locked { 6 } else { 13 });
+                assert_eq!(fault.error_code, if locked { None } else { Some(0) });
+                assert_eq!(fault.linear_address, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(state, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert!(report.page_fault.is_none() && report.access_error.is_none());
+        assert_eq!(
+            callbacks
+                .iter()
+                .map(|r| (r.start().get(), r.len()))
+                .collect::<Vec<_>>(),
+            [(0x1008, 8), (0xf000, 8), (0x10010, 8), (0x12010, 8)]
+        );
+        for (address, expected) in [
+            (0x1008, 0xf027),
+            (0xf000, 0x10027),
+            (0x10010, 0x12027),
+            (0x12010, 0x9027),
+        ] {
+            assert_eq!(
+                bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn cpl3_mov_cr0_physical_fetch_failure_keeps_walk_effects_without_retirement() {
+    use od_isa::{execute::PagedProbeExit, iretq::IretqResult};
+    use od_machine::{
+        AdBit, TrackedAccessError, step_paged_cpl3_mov_cr0, step_paged_iretq_to_cpl3,
+    };
+    const USER_CODE: u64 = 0x80_0040_2000;
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+    put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+    put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+    put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+    for (address, value) in [
+        (0x1008, 0xf007),
+        (0xf000, 0x10007),
+        (0x10010, 0x12007),
+        (0x12010, 0x30007),
+    ] {
+        put_qword(&mut bus, address, value);
+    }
+    for (offset, value) in [
+        (0, USER_CODE),
+        (8, 0x1b),
+        (16, 0x202),
+        (24, 0x0070_2000),
+        (32, 0x23),
+    ] {
+        put_qword(&mut bus, 0xd027 + offset, value);
+    }
+    let mut state = initial_state(0x202);
+    state.cs_cache.as_mut().unwrap().flags = 0xa;
+    assert_eq!(
+        step_paged_iretq_to_cpl3(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |_| {})
+            .unwrap()
+            .cpu,
+        IretqResult::Retired
+    );
+    let before = state.clone();
+    let mut callbacks = Vec::new();
+    let report = step_paged_cpl3_mov_cr0(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+        callbacks.push(r)
+    })
+    .unwrap();
+    assert!(matches!(report.cpu.exit, PagedProbeExit::Backend(_)));
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(report.page_fault.is_none());
+    assert!(
+        matches!(report.access_error, Some(TrackedAccessError::OperandPhysical { address, .. }) if address.get() == 0x30000)
+    );
+    assert_eq!(
+        report
+            .ad_updates
+            .iter()
+            .map(|u| (u.address.get(), u.after, u.bit))
+            .collect::<Vec<_>>(),
+        [
+            (0x1008, 0xf027, AdBit::Accessed),
+            (0xf000, 0x10027, AdBit::Accessed),
+            (0x10010, 0x12027, AdBit::Accessed),
+            (0x12010, 0x30027, AdBit::Accessed)
+        ]
+    );
+    assert_eq!(
+        callbacks
+            .iter()
+            .map(|r| (r.start().get(), r.len()))
+            .collect::<Vec<_>>(),
+        [(0x1008, 8), (0xf000, 8), (0x10010, 8), (0x12010, 8)]
+    );
+}
+
+#[test]
+fn cpl3_mov_cr0_instruction_offset_boundary_is_exact() {
+    use od_isa::{execute::PagedProbeExit, iretq::IretqResult};
+    use od_machine::{step_paged_cpl3_mov_cr0, step_paged_iretq_to_cpl3};
+    const USER_CODE: u64 = 0x80_0040_2000;
+    for (offset, expect_gp) in [(0xff1, true), (0xff2, false)] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x20000);
+        put_bytes(&mut bus, 0x8000, &[0x48, 0xcf]);
+        put_bytes(&mut bus, 0x9ff1, &[0x0f, 0x22, 0xc0]);
+        put_bytes(&mut bus, 0xb018, &[0xff, 0xff, 0, 0, 0, 0xfb, 0xaf, 0]);
+        put_bytes(&mut bus, 0xb020, &[0xff, 0xff, 0, 0, 0, 0xf3, 0xcf, 0]);
+        for (address, value) in [
+            (0x1008, 0xf007),
+            (0xf000, 0x10007),
+            (0x10010, 0x12007),
+            (0x12010, 0x9007),
+        ] {
+            put_qword(&mut bus, address, value);
+        }
+        for (offset_in_frame, value) in [
+            (0, USER_CODE + offset),
+            (8, 0x1b),
+            (16, 0x202),
+            (24, 0x0070_2000),
+            (32, 0x23),
+        ] {
+            put_qword(&mut bus, 0xd027 + offset_in_frame, value);
+        }
+        let mut state = initial_state(0x202);
+        state.cs_cache.as_mut().unwrap().flags = 0xa;
+        assert_eq!(
+            step_paged_iretq_to_cpl3(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |_| {})
+                .unwrap()
+                .cpu,
+            IretqResult::Retired
+        );
+        let mut callbacks = Vec::new();
+        let report = step_paged_cpl3_mov_cr0(&mut state, &mut bus, od_isa::INTEGER_FLAGS, |r| {
+            callbacks.push(r)
+        })
+        .unwrap();
+        if expect_gp {
+            assert!(
+                matches!(report.cpu.exit, PagedProbeExit::Fault(ref f) if f.vector == 13 && f.error_code == Some(0))
+            );
+            assert_eq!(report.cpu.instructions_executed, 0);
+            assert_eq!(callbacks.len(), 4);
+        } else {
+            assert!(matches!(
+                report.cpu.exit,
+                PagedProbeExit::Unsupported { .. }
+            ));
+            assert_eq!(report.cpu.instructions_executed, 0);
+            assert!(callbacks.is_empty());
+            assert!(report.ad_updates.is_empty());
         }
     }
 }

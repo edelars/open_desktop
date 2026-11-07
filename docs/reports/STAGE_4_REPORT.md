@@ -25,6 +25,17 @@ no remaining P0–P3 findings. Its exact scope, checks and limitations are in th
 [JSON evidence](data/stage4/s4-20c-paged-syscall-roundtrip-2026-11-06.json).
 Parent S4-20 and Stage 4 remain open.
 
+S4-20e implements a bounded CPL3 `MOV CR0,RAX` privilege-fault entry after
+IRETQ. The exact instruction produces `#GP(0)`, the exact LOCK form produces
+`#UD`, and tracked fetch faults retain precedence and paging effects. Direct
+system coverage now includes non-present fetch PFEC `0x14` for the new entry.
+The implementation checks and its remaining review status are recorded in the
+[S4-20e report](STAGE_4_S4-20E_2026-11-07.md) and
+[JSON evidence](data/stage4/s4-20e-paged-cpl3-mov-cr0-2026-11-07.json).
+The follow-up Sol finding was corrected; independent code and documentation
+reviews passed with no remaining findings. S4-20e is accepted; S4-20 and Stage
+4 remain open.
+
 S4-20d adds a bounded CPL3 paged store→load path after the accepted IRETQ and
 load, with tracked user/supervisor write protection and exact fault evidence.
 It is accepted after independent review with no P0–P3 findings. See the

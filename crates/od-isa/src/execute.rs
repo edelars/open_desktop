@@ -150853,6 +150853,46 @@ mod paged_cr0_wp_probe_tests {
     }
 
     #[test]
+    fn cpl3_mov_cr0_fetch_faults_precede_gp_and_lock_ud() {
+        let ring3 = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..AccessContext::default()
+        };
+        for code in [&[0x0f, 0x22, 0xc0][..], &[0xf0, 0x0f, 0x22, 0xc0][..]] {
+            for offset in 0..code.len() {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rip = 0x1000;
+                let before = state.clone();
+                let fault = ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0x15),
+                    linear_address: Some(0x1000 + offset as u64),
+                };
+                let mut memory = Memory::at(code, 0x1000);
+                memory.fetch_error = Some((
+                    0x1000 + offset as u64,
+                    MemoryError::Architectural(fault.clone()),
+                ));
+                let result = step_mov_cr0_wp(
+                    MovCr0WpLong64V1,
+                    &mut state,
+                    &mut memory,
+                    ring3,
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                );
+                assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert_eq!(
+                    memory.fetches,
+                    (0x1000..=0x1000 + offset as u64).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mov_cr0_wp_commits_typed_effect_flags_and_identical_writes() {
         let wp_clear = Cr0Profile::BASE & !(1 << 16);
         for (old_cr0, new_cr0) in [

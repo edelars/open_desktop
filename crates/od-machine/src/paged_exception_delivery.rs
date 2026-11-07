@@ -456,6 +456,82 @@ pub fn step_paged_cpl3_mov(
     })
 }
 
+/// Execute the bounded user-mode MOV CR0 privilege check through tracked paging.
+pub fn step_paged_cpl3_mov_cr0(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedCr0WpMovStepReport, PagedExceptionDeliveryError> {
+    use od_isa::execute::{PagedProbeExit, PagedProbeRejection};
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    let valid_cs = state.cs_selector.is_some_and(|s| s & !7 != 0 && s & 7 == 3)
+        && state.cs_cache.is_some_and(|c| {
+            c.access == 0xfb && c.flags == 0xa && c.base == 0 && c.limit == u32::MAX
+        });
+    let rejection = if !valid_cs {
+        Some(PagedProbeRejection::WrongPrivilege)
+    } else if state.cr0 != Some(0x8001_0033) || state.cr4 != Some(0x20) {
+        Some(PagedProbeRejection::ControlRegistersOutsideProfile)
+    } else if state.rflags & ((1 << 8) | (1 << 16) | (1 << 18)) != 0 {
+        Some(PagedProbeRejection::UserMovFlagsOutsideProfile)
+    } else {
+        None
+    };
+    if let Some(reason) = rejection {
+        return Ok(PagedCr0WpMovStepReport {
+            cpu: PagedProbeResult {
+                exit: PagedProbeExit::Rejected(reason),
+                instructions_executed: 0,
+                rflags_defined,
+            },
+            page_fault: None,
+            access_error: None,
+            ad_updates: Vec::new(),
+            committed_writes: Vec::new(),
+        });
+    }
+    let cr3 = state.cr3.ok_or(PagedExceptionDeliveryError::Configuration(
+        ProbeConfigError::MissingCpuRegister { register: "CR3" },
+    ))?;
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, 0xd00)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: PrivilegeLevel::Ring3,
+        origin: AccessOrigin::Explicit,
+    };
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let cpu = od_isa::execute::step_mov_cr0_wp(
+        od_isa::MovCr0WpLong64V1,
+        state,
+        &mut memory,
+        context,
+        0xd00,
+        rflags_defined,
+    );
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedCr0WpMovStepReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
 pub fn deliver_paged_page_fault(
     state: &mut LongModeState,
     bus: &mut MachineBus,

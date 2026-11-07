@@ -784,3 +784,46 @@ instructions, invalid-selector IRETQ and CPL3 exception delivery remain outside
 this slice. See the [S4-20d report](../reports/STAGE_4_S4-20D_2026-11-06.md),
 [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты), and
 [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d).
+
+<a id="s4-20e-paged-cpl3-mov-cr0-after-iretq"></a>
+
+## S4-20e: paged CPL3 MOV CR0 after IRETQ
+
+`cpl3_mov_cr0_first_fetch_enforces_user_page_permissions` executes the new
+`step_paged_cpl3_mov_cr0` entry as the first user instruction after paged
+IRETQ. The matrix covers supervisor-only fetch at each paging level, NX, and a
+non-present leaf. For the non-present case it asserts `PFEC=0x14`, linear
+address/CR2 and saved RIP equal to the user instruction address, zero
+retirement, and unchanged CPU state except CR2. It checks the three completed
+A-bit updates, exact readbacks of the three present ancestor entries, and
+ordered write callbacks; no D-bit update or operand write occurs. The
+non-present leaf is not read back after the fault.
+
+`cpl3_mov_cr0_faults_without_committing_cpu_state` checks `#GP(0)` for the
+bare instruction for varied RAX and IOPL values, and `#UD` for the exact LOCK
+form. It verifies no retirement, no partial CPU commit, and preservation of
+the CR2 sentinel. The same fixture checks rejection before fetch/callbacks for
+invalid CS, CR0/CR4, TF/RF/AC and active STI shadow, and checks an unlisted
+instruction without operand access. `cpl3_mov_cr0_instruction_offset_boundary_is_exact`
+checks `0xff1` acceptance and `0xff2` pre-fetch rejection.
+`cpl3_mov_cr0_physical_fetch_failure_keeps_walk_effects_without_retirement`
+checks `OperandPhysical` at GPA `0x30000` and retention of successful earlier
+A updates. ISA fetch-fault tests inject a fault at each byte of bare and LOCK
+encodings to verify fetch precedence over #GP/#UD. The page-walk test
+`fetch_accessed_write_failures_are_tracked_before_physical_fetch` injects
+`TableWrite` failures at each A-bit level through the internal writer seam;
+this validates the shared walker, not the machine-entry report projection.
+
+The established S4-20e evidence includes 10 `cpl3_` ISA tests and 39 system
+test functions, with one additional non-present-fetch assertion case added
+inside the system suite. The targeted first-fetch test also passed separately.
+The page-walk A-write matrix and its new fetch-specific case passed, as did
+`cargo check -p od-machine --all-targets --offline`, formatting and
+`git diff --check`. Graphify was updated after the code changes in the primary
+checkout (27,555 nodes, 69,202 edges). Sol review identified that non-present PFEC `0x14` needed to
+exercise the new entry; the direct system case was added and its targeted test
+passed. Independent Sol code and documentation reviews passed with no
+remaining findings. See the
+[S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+[machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-cr0-after-iretq-s4-20e),
+and [plan](../plans/STAGE_4.md#s4-20-cpl3-и-системные-вызовывозвраты).

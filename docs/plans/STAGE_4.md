@@ -1148,6 +1148,37 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-store-load-after-iretq-s4-20d) и
   [verification record](../testing/MACHINE.md#s4-20d-paged-cpl3-mov-store-load-after-iretq).
 
+#### S4-20e. CPL3 paged MOV CR0 после IRETQ
+
+- [x] Ограниченный срез принят после независимых Sol code/docs reviews без
+  оставшихся замечаний; родительский S4-20 и этап 4 остаются открытыми.
+- **Профиль:** Long64, canonical48, physical36, четыре уровня по 4 KiB,
+  `CR0=0x80010033`, `CR4=0x20`, `EFER=0xd00`. CPL и CR3 берутся из CPU;
+  некорректный CS, TF, RF и AC отклоняются до fetch. Смещение RIP больше
+  `0xff1` исключено до fetch.
+- **Цель:** после IRETQ пользовательский `0F 22 C0` вызывает #GP(0),
+  `F0 0F 22 C0` вызывает #UD; fault при fetch имеет приоритет. Изменения
+  A от завершённых page walks сохраняются; CR0 и состояние инструкции не
+  фиксируются. Доставка исключения и переключение стека остаются вне среза.
+- **Результаты:** direct system entry test подтверждает #GP(0), LOCK #UD,
+  fetch precedence, supervisor-only/NX fetch PFEC `0x15` и nonpresent fetch
+  PFEC `0x14` с точными linear address, CR2, saved RIP, A effects и callbacks;
+  также проверены физический fetch backend, сохранение предыдущего store,
+  граница RIP и profile admission. Page-walk A-write отказ проверен на общем
+  writer seam, но не внедрён end-to-end через machine report adapter.
+- **Проверки:** 10 `cpl3_` ISA тестов; 39 system test functions с одной
+  дополнительной nonpresent-fetch assertion case внутри suite; targeted
+  `cpl3_mov_cr0_first_fetch_enforces_user_page_permissions`; page-walk
+  A-write failure matrix и fetch-specific case; `cargo check -p od-machine
+  --all-targets --offline`, fmt и diff-check пройдены. Graphify после кода:
+  27 555 узлов, 69 202 связи. Повторное независимое Sol code review после
+  исправления P3 прошло без замечаний P0–P3; docs review также завершено без
+  оставшихся замечаний.
+- **Результат:** [S4-20e report](../reports/STAGE_4_S4-20E_2026-11-07.md),
+  [manifest](../reports/data/stage4/s4-20e-paged-cpl3-mov-cr0-2026-11-07.json),
+  [machine contract](../specs/MACHINE_CONTRACT.md#paged-cpl3-mov-cr0-after-iretq-s4-20e) и
+  [verification record](../testing/MACHINE.md#s4-20e-paged-cpl3-mov-cr0-after-iretq).
+
 ### S4-21. Жизненный цикл одного vCPU
 
 - [ ] Принято после ревью.
