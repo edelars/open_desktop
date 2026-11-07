@@ -24,6 +24,10 @@
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
 //! `TPM2_NV_UndefineSpaceSpecial` only).
+//! Slice B of phase B: the Name of a transient or persistent object in a cpHash is its Name
+//! (`nameAlg || H(TPMT_PUBLIC)`), and an object is authorized with its authValue only while it has
+//! a private part and `userWithAuth` is SET (`TPM_RC_AUTH_UNAVAILABLE` otherwise; NOT VERIFIED
+//! against TPM 2.0 Library v185/v184: this code for those cases, see `object.rs`).
 
 use sha2::{Digest, Sha256};
 
@@ -33,6 +37,7 @@ use crate::crypto::DIGEST;
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
+use crate::object::is_object_hierarchy;
 use crate::pcr::resolve_pcr_handle;
 use crate::response::{Output, Rc, SessionAck, error_response, success_response};
 use crate::session::{
@@ -86,13 +91,15 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 30] = [
+pub(crate) static COMMANDS: [CommandSpec; 39] = [
+    spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
     ext(spec(cc::CLEAR, 1, 1, false, true, false)),
     spec(cc::CLEAR_CONTROL, 1, 1, false, true, false),
     spec(cc::HIERARCHY_CHANGE_AUTH, 1, 1, false, true, false),
     spec(cc::NV_DEFINE_SPACE, 1, 1, false, true, false),
+    spec(cc::CREATE_PRIMARY, 1, 1, true, false, false),
     spec(cc::NV_WRITE, 2, 1, false, true, false),
     spec(cc::NV_WRITE_LOCK, 2, 1, false, true, false),
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
@@ -104,10 +111,17 @@ pub(crate) static COMMANDS: [CommandSpec; 30] = [
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
     spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
+    spec(cc::CREATE, 1, 1, false, false, false),
+    spec(cc::LOAD, 1, 1, true, false, false),
     spec(cc::SEQUENCE_UPDATE, 1, 1, false, false, false),
+    spec(cc::SIGN, 1, 1, false, false, false),
+    spec(cc::UNSEAL, 1, 1, false, false, false),
     spec(cc::FLUSH_CONTEXT, 0, 0, false, false, false),
+    spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
+    spec(cc::READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::START_AUTH_SESSION, 2, 0, true, false, false),
+    spec(cc::VERIFY_SIGNATURE, 1, 0, false, false, false),
     spec(cc::GET_CAPABILITY, 0, 0, false, false, false),
     spec(cc::GET_RANDOM, 0, 0, false, false, false),
     spec(cc::GET_TEST_RESULT, 0, 0, false, false, false),
@@ -161,6 +175,10 @@ fn handle_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> Result<Aut
             tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
         }
         handle::HT_NV_INDEX => tpm.nv_auth(h).ok_or(Rc::HANDLE.in_handle(n)),
+        // Transient (not a sequence) and persistent objects (slice B).
+        handle::HT_TRANSIENT | handle::HT_PERSISTENT if tpm.object(h).is_some() => {
+            tpm.object_auth(h, i)
+        }
         _ => {
             let slot = tpm.seq_slot(h, i)?;
             // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
@@ -179,6 +197,9 @@ fn response_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> AuthValu
     match handle::handle_type(h) {
         handle::HT_PERMANENT => tpm.permanent_auth(h).unwrap_or_else(AuthValue::empty),
         handle::HT_NV_INDEX => tpm.nv_auth(h).unwrap_or_else(AuthValue::empty),
+        handle::HT_TRANSIENT | handle::HT_PERSISTENT if tpm.object(h).is_some() => {
+            tpm.object_auth_now(h).unwrap_or_else(AuthValue::empty)
+        }
         _ => tpm
             .seq_slot(h, i)
             .map_or_else(|_| AuthValue::empty(), |slot| tpm.seq_auth(slot)),
@@ -191,7 +212,8 @@ fn response_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> AuthValu
 fn handle_name(tpm: &Tpm, h: u32) -> Vec<u8> {
     match handle::handle_type(h) {
         handle::HT_NV_INDEX => tpm.nv_name(h).unwrap_or_else(|| h.to_be_bytes().to_vec()),
-        handle::HT_TRANSIENT | handle::HT_PERSISTENT => Vec::new(),
+        // An object has its Name, a sequence object the Empty Buffer.
+        handle::HT_TRANSIENT | handle::HT_PERSISTENT => tpm.object_name(h).unwrap_or_default(),
         _ => h.to_be_bytes().to_vec(),
     }
 }
@@ -397,6 +419,15 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::NV_READ => tpm.cmd_nv_read(&inv, &mut p)?,
         cc::NV_WRITE_LOCK => tpm.cmd_nv_write_lock(&inv, &mut p)?,
         cc::NV_READ_LOCK => tpm.cmd_nv_read_lock(&inv, &mut p)?,
+        cc::CREATE_PRIMARY => tpm.cmd_create_primary(&inv, &mut p)?,
+        cc::CREATE => tpm.cmd_create(&inv, &mut p)?,
+        cc::LOAD => tpm.cmd_load(&inv, &mut p)?,
+        cc::LOAD_EXTERNAL => tpm.cmd_load_external(&mut p)?,
+        cc::READ_PUBLIC => tpm.cmd_read_public(&inv, &mut p)?,
+        cc::UNSEAL => tpm.cmd_unseal(&inv, &mut p)?,
+        cc::EVICT_CONTROL => tpm.cmd_evict_control(&inv, &mut p)?,
+        cc::SIGN => tpm.cmd_sign(&inv, &mut p)?,
+        cc::VERIFY_SIGNATURE => tpm.cmd_verify_signature(&inv, &mut p)?,
         // Unreachable while the table and this match agree; a missing arm is the safe answer.
         _ => return Err(Rc::COMMAND_CODE),
     };
@@ -477,7 +508,23 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
                 return Err(Rc::VALUE.in_handle(1));
             }
         }
-        cc::START_AUTH_SESSION => check_start_auth_session_handles(handles)?,
+        cc::START_AUTH_SESSION => check_start_auth_session_handles(tpm, handles)?,
+        cc::CREATE_PRIMARY => {
+            // `TPMI_RH_HIERARCHY` (Part 3, Table 174): owner, platform, endorsement or null.
+            if !is_object_hierarchy(handles[0]) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+        }
+        cc::CREATE | cc::LOAD | cc::READ_PUBLIC | cc::UNSEAL | cc::SIGN | cc::VERIFY_SIGNATURE => {
+            tpm.check_object_handle(handles[0], 0, false)?
+        }
+        cc::EVICT_CONTROL => {
+            // `TPMI_RH_PROVISION` (Part 3, Table 213): owner or platform.
+            if !matches!(handles[0], handle::RH_OWNER | handle::RH_PLATFORM) {
+                return Err(Rc::VALUE.in_handle(1));
+            }
+            tpm.check_object_handle(handles[1], 1, true)?;
+        }
         cc::NV_DEFINE_SPACE
         | cc::NV_UNDEFINE_SPACE
         | cc::NV_READ_PUBLIC
@@ -490,13 +537,17 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
     Ok(())
 }
 
-/// `tpmKey` and `bind` of `TPM2_StartAuthSession` in slice A: `tpmKey` is `TPM_RH_NULL` (no
-/// object can be loaded: a transient handle is "not loaded", a persistent one does not exist),
-/// `bind` is `TPM_RH_NULL` or a hierarchy authorization handle.
-fn check_start_auth_session_handles(handles: &[u32; 2]) -> Result<(), Rc> {
+/// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` (salted sessions
+/// are not implemented: a loaded object as `tpmKey` is `TPM_RC_VALUE`, an unloaded transient
+/// handle "not loaded", a missing persistent one `TPM_RC_HANDLE`), `bind` is `TPM_RH_NULL` or a
+/// hierarchy authorization handle (binding to an object is not implemented).
+/// NOT VERIFIED against TPM 2.0 Library v185/v184: the code `TPM_RC_VALUE` for an object handle
+/// that the TPM could use but this implementation does not.
+fn check_start_auth_session_handles(tpm: &Tpm, handles: &[u32; 2]) -> Result<(), Rc> {
     let key = handles[0];
     if key != handle::RH_NULL {
         return Err(match handle::handle_type(key) {
+            _ if tpm.object(key).is_some() => Rc::VALUE.in_handle(1),
             handle::HT_TRANSIENT => Rc::reference_handle(0),
             handle::HT_PERSISTENT => Rc::HANDLE.in_handle(1),
             _ => Rc::VALUE.in_handle(1),
@@ -507,6 +558,7 @@ fn check_start_auth_session_handles(handles: &[u32; 2]) -> Result<(), Rc> {
         return Ok(());
     }
     Err(match handle::handle_type(bind) {
+        _ if tpm.object(bind).is_some() => Rc::VALUE.in_handle(2),
         handle::HT_TRANSIENT => Rc::reference_handle(1),
         handle::HT_PERSISTENT => Rc::HANDLE.in_handle(2),
         // NV indices, PCR, ...: not bindable in slice A.
@@ -530,6 +582,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 30);
+        assert_eq!(COMMANDS.len(), 39);
     }
 }

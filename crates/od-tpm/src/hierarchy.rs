@@ -15,7 +15,9 @@
 //! `authPolicy` values (`platformPolicy`, `ownerPolicy`, ...) and `TPM2_SetPrimaryPolicy` are not
 //! implemented: policy sessions are not (slice A), so every policy is the Empty Buffer. The
 //! hierarchy proof values (`shProof`, `ehProof`, `phProof`, `nullProof`) belong to tickets and
-//! primary keys (slice B); `TPM2_Clear` therefore changes only the storage seed.
+//! primary keys; slice B derives them from the seeds (`object_cmd.rs`), so `TPM2_Clear` changes
+//! the storage seed and with it `shProof` and `ehProof`, but not the endorsement seed (EPS): the
+//! endorsement primary key does not change (`TPM2_ChangeEPS` is not implemented).
 //!
 //! Lockout authorization exists as an authorization value only: there is no dictionary-attack
 //! logic yet (slice C), so a wrong `lockoutAuth` is `TPM_RC_BAD_AUTH`, never a lockout.
@@ -224,6 +226,11 @@ impl Tpm {
             }
             _ => return Err(Rc::VALUE.in_param(1)),
         }
+        // Disabling a hierarchy flushes its transient objects (Part 3, clause 24.2.1); its
+        // persistent objects stay but cannot be used while it is disabled (`object_cmd.rs`).
+        if !state && matches!(enable, h::RH_OWNER | h::RH_ENDORSEMENT | h::RH_PLATFORM) {
+            self.objects.flush_hierarchy(enable);
+        }
         Ok(Output::default())
     }
 
@@ -264,9 +271,9 @@ impl Tpm {
     /// `TPM2_ClearControl`. Effects implemented: new storage seed, `shEnable` and `ehEnable` SET,
     /// owner, endorsement and lockout authorization values Empty, NV indices without
     /// `TPMA_NV_PLATFORMCREATE` deleted, `Clock` zero, `resetCount` and `restartCount` zero,
-    /// `safe` YES, `pcrUpdateCounter` incremented. Not applicable yet: flushing objects of the
-    /// Storage and Endorsement hierarchies (no objects), new `shProof`/`ehProof` (no proofs),
-    /// empty policies (no policies).
+    /// `safe` YES, `pcrUpdateCounter` incremented, objects of the Storage and Endorsement
+    /// hierarchies flushed, `shProof` and `ehProof` changed (derived from the new seed). Not
+    /// applicable yet: empty policies (no policies).
     pub(crate) fn cmd_clear(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.finish()?;
         if self.persistent.hier.disable_clear {
@@ -285,6 +292,12 @@ impl Tpm {
         hp.endorsement_auth_set = false;
         hp.lockout_auth_set = false;
         self.persistent.nv.remove_owner_created();
+        // Flush the resident objects (transient and persistent) of the Storage and Endorsement
+        // hierarchies; the proofs follow the new storage seed (`object_cmd.rs`, `proof`).
+        for hierarchy in [h::RH_OWNER, h::RH_ENDORSEMENT] {
+            self.objects.flush_hierarchy(hierarchy);
+            self.persistent.objects.flush_hierarchy(hierarchy);
+        }
         self.clock_epoch_ms = self.power_ms;
         self.persistent.clock_base_ms = 0;
         self.persistent.reset_count = 0;

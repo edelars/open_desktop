@@ -13,6 +13,8 @@ use crate::{Rc, Tpm};
 
 #[path = "tests_b.rs"]
 mod tests_b;
+#[path = "tests_obj.rs"]
+mod tests_obj;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
@@ -538,15 +540,16 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     let mut t = started();
     // Expected list written out independently of the dispatch table (Part 2 Table 14 codes).
     let expected: Vec<u32> = vec![
-        // Slice A of phase B: HierarchyControl, NV_UndefineSpace, Clear, ClearControl,
-        // HierarchyChangeAuth, NV_DefineSpace, NV_Write, NV_WriteLock.
-        0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x137, 0x138, // Phase A.
-        0x13C, 0x13D, 0x13E, 0x143, 0x144, 0x145, 0x146,
-        // NV_Read, NV_ReadLock; SequenceUpdate; FlushContext, NV_ReadPublic, StartAuthSession.
-        0x14E, 0x14F, 0x15C, 0x165, 0x169, 0x176, // Phase A.
-        0x17A, 0x17B, 0x17C, 0x17D, 0x17E, 0x181, 0x182, 0x185, 0x186,
+        // Slice B of phase B: EvictControl (0x120), CreatePrimary (0x131), Create (0x153), Load
+        // (0x157), Sign (0x15D), Unseal (0x15E), LoadExternal (0x167), ReadPublic (0x173),
+        // VerifySignature (0x177). Slice A: HierarchyControl, NV_UndefineSpace, Clear,
+        // ClearControl, HierarchyChangeAuth, NV_DefineSpace, NV_Write, NV_WriteLock. The rest is
+        // phase A, slice A (NV_Read, NV_ReadLock, FlushContext, NV_ReadPublic, StartAuthSession).
+        0x120, 0x121, 0x122, 0x126, 0x127, 0x129, 0x12A, 0x131, 0x137, 0x138, 0x13C, 0x13D, 0x13E,
+        0x143, 0x144, 0x145, 0x146, 0x14E, 0x14F, 0x153, 0x157, 0x15C, 0x15D, 0x15E, 0x165, 0x167,
+        0x169, 0x173, 0x176, 0x177, 0x17A, 0x17B, 0x17C, 0x17D, 0x17E, 0x181, 0x182, 0x185, 0x186,
     ];
-    assert_eq!(expected.len(), 30);
+    assert_eq!(expected.len(), 39);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -570,7 +573,7 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(30)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(39)[..]].concat()
     );
 }
 
@@ -593,10 +596,28 @@ fn capability_commands_paging_and_more_data() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 1);
-    // TPM_ALG_SHA256 with TPMA_ALGORITHM.hash.
-    assert_eq!(body, [0x00, 0x0B, 0, 0, 0, 4]);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 0);
+    assert!(!more && c == cap::ALGS && count == 8);
+    // RSA, AES, KEYEDHASH, SHA256, RSASSA, ECDSA, ECC, CFB with their TPMA_ALGORITHM bits (Part 2,
+    // Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA and ECDSA "A X", ECC "A O";
+    // AES "S O" and CFB "E" are NOT VERIFIED).
+    assert_eq!(
+        body,
+        [
+            &[0x00, 0x01, 0, 0, 0, 9][..],
+            &[0x00, 0x06, 0, 0, 0, 10],
+            &[0x00, 0x08, 0, 0, 0, 12],
+            &[0x00, 0x0B, 0, 0, 0, 4],
+            &[0x00, 0x14, 0, 0, 1, 1],
+            &[0x00, 0x18, 0, 0, 1, 1],
+            &[0x00, 0x23, 0, 0, 0, 9],
+            &[0x00, 0x43, 0, 0, 2, 0],
+        ]
+        .concat()
+    );
+    // Paging starts at the given algorithm ID.
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 4);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 0);
 
     let r = get_cap(&mut t, cap::PCRS, 0, 100);
     let p = params(&r, 0);
@@ -685,7 +706,10 @@ fn capability_tpm_properties() {
     assert_eq!(var.len(), count as usize);
     assert!(var.windows(2).all(|w| w[0].0 < w[1].0));
     let v = |tag: u32| var.iter().find(|p| p.0 == tag).map(|p| p.1);
-    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(3));
+    // Three sequence slots plus eight object slots (slice B).
+    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(11));
+    assert_eq!(v(pt::HR_PERSISTENT), Some(0));
+    assert_eq!(v(pt::HR_PERSISTENT_AVAIL), Some(16));
     assert_eq!(v(pt::HR_NV_INDEX), Some(0));
     assert_eq!(v(pt::HR_LOADED), Some(0));
     assert_eq!(v(pt::HR_LOADED_AVAIL), Some(64));
@@ -709,7 +733,7 @@ fn capability_empty_lists_and_errors() {
         assert!(!more && cc_ == c && count == 0);
     }
     // Capabilities that are not implemented: TPM_RC_VALUE, parameter 1.
-    for c in [0x7, 0x8, 0x9, 0xA, 0xB, 0x100, 0xFFFF_FFFF] {
+    for c in [0x7, 0x9, 0xA, 0xB, 0x100, 0xFFFF_FFFF] {
         err(&get_cap(&mut t, c, 0, 1), Rc(0x1C4));
     }
     err(

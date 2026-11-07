@@ -311,7 +311,11 @@ impl Tpm {
             }
             handle::HT_TRANSIENT => match self.seq_slot(h, 0) {
                 Ok(slot) => self.sequences.release(slot),
-                Err(_) => return Err(Rc::HANDLE.in_param(1)),
+                Err(_) => {
+                    if !self.objects.release(h) {
+                        return Err(Rc::HANDLE.in_param(1));
+                    }
+                }
             },
             _ => return Err(Rc::VALUE.in_param(1)),
         }

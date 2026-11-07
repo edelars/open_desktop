@@ -12,11 +12,14 @@
 
 /// Table 14 (v184): `TPM_CC` command codes of the phase A profile.
 pub mod cc {
+    /// Slice B of phase B (S7-23): object commands (Table 14 values, checked 2026-11-07).
+    pub const EVICT_CONTROL: u32 = 0x0000_0120;
     pub const HIERARCHY_CONTROL: u32 = 0x0000_0121;
     pub const NV_UNDEFINE_SPACE: u32 = 0x0000_0122;
     pub const CLEAR: u32 = 0x0000_0126;
     pub const CLEAR_CONTROL: u32 = 0x0000_0127;
     pub const HIERARCHY_CHANGE_AUTH: u32 = 0x0000_0129;
+    pub const CREATE_PRIMARY: u32 = 0x0000_0131;
     pub const NV_DEFINE_SPACE: u32 = 0x0000_012A;
     pub const NV_WRITE: u32 = 0x0000_0137;
     pub const NV_WRITE_LOCK: u32 = 0x0000_0138;
@@ -29,10 +32,17 @@ pub mod cc {
     pub const STIR_RANDOM: u32 = 0x0000_0146;
     pub const NV_READ: u32 = 0x0000_014E;
     pub const NV_READ_LOCK: u32 = 0x0000_014F;
+    pub const CREATE: u32 = 0x0000_0153;
+    pub const LOAD: u32 = 0x0000_0157;
     pub const SEQUENCE_UPDATE: u32 = 0x0000_015C;
+    pub const SIGN: u32 = 0x0000_015D;
+    pub const UNSEAL: u32 = 0x0000_015E;
     pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
+    pub const LOAD_EXTERNAL: u32 = 0x0000_0167;
     pub const NV_READ_PUBLIC: u32 = 0x0000_0169;
+    pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const START_AUTH_SESSION: u32 = 0x0000_0176;
+    pub const VERIFY_SIGNATURE: u32 = 0x0000_0177;
     pub const GET_CAPABILITY: u32 = 0x0000_017A;
     pub const GET_RANDOM: u32 = 0x0000_017B;
     pub const GET_TEST_RESULT: u32 = 0x0000_017C;
@@ -48,6 +58,9 @@ pub mod cc {
 pub mod st {
     pub const NO_SESSIONS: u16 = 0x8001;
     pub const SESSIONS: u16 = 0x8002;
+    /// Tickets (Table 23): creation and verified.
+    pub const CREATION: u16 = 0x8021;
+    pub const VERIFIED: u16 = 0x8022;
     pub const HASHCHECK: u16 = 0x8024;
 }
 
@@ -60,6 +73,7 @@ pub mod cap {
     pub const AUDIT_COMMANDS: u32 = 0x0000_0004;
     pub const PCRS: u32 = 0x0000_0005;
     pub const TPM_PROPERTIES: u32 = 0x0000_0006;
+    pub const ECC_CURVES: u32 = 0x0000_0008;
 }
 
 /// Table 30 (v184): `TPM_PT` property tags (PT_FIXED = 0x100, PT_VAR = 0x200).
@@ -108,12 +122,48 @@ pub mod pt {
     pub const HR_ACTIVE: u32 = VAR + 5;
     pub const HR_ACTIVE_AVAIL: u32 = VAR + 6;
     pub const HR_TRANSIENT_AVAIL: u32 = VAR + 7;
+    pub const HR_PERSISTENT: u32 = VAR + 8;
+    pub const HR_PERSISTENT_AVAIL: u32 = VAR + 9;
+    pub const HR_PERSISTENT_MIN: u32 = FIXED + 15;
 }
 
 /// Table 8 (v184): `TPM_ALG_ID` values used in phase A.
 pub mod alg {
+    pub const RSA: u16 = 0x0001;
+    pub const KEYEDHASH: u16 = 0x0008;
     pub const SHA256: u16 = 0x000B;
     pub const NULL: u16 = 0x0010;
+    pub const RSASSA: u16 = 0x0014;
+    pub const ECDSA: u16 = 0x0018;
+    pub const ECC: u16 = 0x0023;
+    /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
+    pub const AES: u16 = 0x0006;
+    pub const CFB: u16 = 0x0043;
+}
+
+/// Table 12 (v184): `TPM_ECC_CURVE`.
+pub mod curve {
+    pub const NIST_P256: u16 = 0x0003;
+}
+
+/// Table 39 (v184): `TPMA_OBJECT` bits.
+pub mod object_attr {
+    pub const FIXED_TPM: u32 = 1 << 1;
+    pub const ST_CLEAR: u32 = 1 << 2;
+    pub const FIXED_PARENT: u32 = 1 << 4;
+    pub const SENSITIVE_DATA_ORIGIN: u32 = 1 << 5;
+    pub const USER_WITH_AUTH: u32 = 1 << 6;
+    pub const ADMIN_WITH_POLICY: u32 = 1 << 7;
+    pub const FIRMWARE_LIMITED: u32 = 1 << 8;
+    pub const SVN_LIMITED: u32 = 1 << 9;
+    pub const NO_DA: u32 = 1 << 10;
+    pub const ENCRYPTED_DUPLICATION: u32 = 1 << 11;
+    pub const RESTRICTED: u32 = 1 << 16;
+    pub const DECRYPT: u32 = 1 << 17;
+    pub const SIGN: u32 = 1 << 18;
+    pub const X509_SIGN: u32 = 1 << 19;
+    /// Reserved bits: 0, 3, 15:12, 31:20.
+    pub const RESERVED: u32 = 0x1 | 0x8 | 0xF000 | 0xFFF0_0000;
 }
 
 /// Table 24 (v184): `TPM_SU` startup/shutdown types.
@@ -151,6 +201,10 @@ pub mod handle {
     pub const HT_PERMANENT: u8 = 0x40;
     pub const HT_TRANSIENT: u8 = 0x80;
     pub const HT_PERSISTENT: u8 = 0x81;
+    /// `PERSISTENT_FIRST`, `PLATFORM_PERSISTENT`, `PERSISTENT_LAST` (Part 2, Table 36).
+    pub const PERSISTENT_FIRST: u32 = 0x8100_0000;
+    pub const PLATFORM_PERSISTENT: u32 = 0x8180_0000;
+    pub const PERSISTENT_LAST: u32 = 0x81FF_FFFF;
     pub const RH_OWNER: u32 = 0x4000_0001;
     pub const RH_NULL: u32 = 0x4000_0007;
     pub const RS_PW: u32 = 0x4000_0009;

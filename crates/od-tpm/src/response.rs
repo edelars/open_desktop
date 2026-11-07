@@ -18,9 +18,11 @@ impl Rc {
     // Format-zero (RC_VER1 + n).
     pub const INITIALIZE: Rc = Rc(RC_VER1);
     pub const FAILURE: Rc = Rc(RC_VER1 + 0x001);
+    pub const SEQUENCE: Rc = Rc(RC_VER1 + 0x003);
     pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
     pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);
     pub const AUTH_MISSING: Rc = Rc(RC_VER1 + 0x025);
+    pub const AUTH_UNAVAILABLE: Rc = Rc(RC_VER1 + 0x02F);
     pub const COMMAND_SIZE: Rc = Rc(RC_VER1 + 0x042);
     pub const COMMAND_CODE: Rc = Rc(RC_VER1 + 0x043);
     pub const AUTHSIZE: Rc = Rc(RC_VER1 + 0x044);
@@ -32,6 +34,7 @@ impl Rc {
     pub const NV_UNINITIALIZED: Rc = Rc(RC_VER1 + 0x04A);
     pub const NV_SPACE: Rc = Rc(RC_VER1 + 0x04B);
     pub const NV_DEFINED: Rc = Rc(RC_VER1 + 0x04C);
+    pub const SENSITIVE: Rc = Rc(RC_VER1 + 0x055);
     pub const NEEDS_TEST: Rc = Rc(RC_VER1 + 0x053);
 
     // Format-one (RC_FMT1 + n); index modifiers are added with the `in_*` methods.
@@ -39,20 +42,33 @@ impl Rc {
     pub const HASH: Rc = Rc(RC_FMT1 + 0x003);
     pub const VALUE: Rc = Rc(RC_FMT1 + 0x004);
     pub const HIERARCHY: Rc = Rc(RC_FMT1 + 0x005);
+    pub const KEY_SIZE: Rc = Rc(RC_FMT1 + 0x007);
     pub const MODE: Rc = Rc(RC_FMT1 + 0x009);
+    pub const TYPE: Rc = Rc(RC_FMT1 + 0x00A);
     pub const HANDLE: Rc = Rc(RC_FMT1 + 0x00B);
+    pub const KDF: Rc = Rc(RC_FMT1 + 0x00C);
+    pub const RANGE: Rc = Rc(RC_FMT1 + 0x00D);
     pub const AUTH_FAIL: Rc = Rc(RC_FMT1 + 0x00E);
     pub const NONCE: Rc = Rc(RC_FMT1 + 0x00F);
+    pub const SCHEME: Rc = Rc(RC_FMT1 + 0x012);
     pub const SIZE: Rc = Rc(RC_FMT1 + 0x015);
     pub const SYMMETRIC: Rc = Rc(RC_FMT1 + 0x016);
     pub const TAG: Rc = Rc(RC_FMT1 + 0x017);
     pub const INSUFFICIENT: Rc = Rc(RC_FMT1 + 0x01A);
+    pub const SIGNATURE: Rc = Rc(RC_FMT1 + 0x01B);
+    pub const KEY: Rc = Rc(RC_FMT1 + 0x01C);
+    pub const INTEGRITY: Rc = Rc(RC_FMT1 + 0x01F);
+    pub const TICKET: Rc = Rc(RC_FMT1 + 0x020);
     pub const RESERVED_BITS: Rc = Rc(RC_FMT1 + 0x021);
     pub const BAD_AUTH: Rc = Rc(RC_FMT1 + 0x022);
+    pub const BINDING: Rc = Rc(RC_FMT1 + 0x025);
+    pub const CURVE: Rc = Rc(RC_FMT1 + 0x026);
+    pub const ECC_POINT: Rc = Rc(RC_FMT1 + 0x027);
 
     // Warnings (RC_WARN + n).
     pub const OBJECT_MEMORY: Rc = Rc(RC_WARN + 0x002);
     pub const SESSION_HANDLES: Rc = Rc(RC_WARN + 0x005);
+    pub const OBJECT_HANDLES: Rc = Rc(RC_WARN + 0x006);
     pub const LOCALITY: Rc = Rc(RC_WARN + 0x007);
     pub const REFERENCE_H0: u32 = RC_WARN + 0x010;
     pub const REFERENCE_S0: u32 = RC_WARN + 0x018;
@@ -202,6 +218,24 @@ mod tests {
         assert_eq!(Rc::SYMMETRIC.0, 0x096);
         assert_eq!(Rc::SESSION_HANDLES.0, 0x905);
         assert_eq!(Rc::RESERVED_BITS.0, 0x0A1);
+        // Codes of phase B slice B (Table 20 of the same text).
+        assert_eq!(Rc::SEQUENCE.0, 0x103);
+        assert_eq!(Rc::AUTH_UNAVAILABLE.0, 0x12F);
+        assert_eq!(Rc::SENSITIVE.0, 0x155);
+        assert_eq!(Rc::ATTRIBUTES.0, 0x082);
+        assert_eq!(Rc::KEY_SIZE.0, 0x087);
+        assert_eq!(Rc::TYPE.0, 0x08A);
+        assert_eq!(Rc::KDF.0, 0x08C);
+        assert_eq!(Rc::RANGE.0, 0x08D);
+        assert_eq!(Rc::SCHEME.0, 0x092);
+        assert_eq!(Rc::SIGNATURE.0, 0x09B);
+        assert_eq!(Rc::KEY.0, 0x09C);
+        assert_eq!(Rc::INTEGRITY.0, 0x09F);
+        assert_eq!(Rc::TICKET.0, 0x0A0);
+        assert_eq!(Rc::BINDING.0, 0x0A5);
+        assert_eq!(Rc::CURVE.0, 0x0A6);
+        assert_eq!(Rc::ECC_POINT.0, 0x0A7);
+        assert_eq!(Rc::OBJECT_HANDLES.0, 0x906);
     }
 
     #[test]

@@ -62,7 +62,7 @@ fn shutdown(t: &mut Tpm, kind: u16) {
 // ---------------------------------------------------------------- HMAC session client
 
 /// Client side of an HMAC session (Part 1 v184, clauses 17.6.5-17.6.10).
-struct Hs {
+pub(super) struct Hs {
     handle: u32,
     /// `sessionKey`: empty for an unbound, unsalted session.
     key: Vec<u8>,
@@ -102,7 +102,7 @@ fn start_cmd(key: u32, bind: u32, params: &[u8]) -> Vec<u8> {
     plain(cc::START_AUTH_SESSION, &[key, bind], params)
 }
 
-fn start_hmac(t: &mut Tpm, bind: u32, bind_auth: &[u8], nonce_caller: &[u8]) -> Hs {
+pub(super) fn start_hmac(t: &mut Tpm, bind: u32, bind_auth: &[u8], nonce_caller: &[u8]) -> Hs {
     let resp = run(
         t,
         start_cmd(
@@ -139,10 +139,10 @@ fn name_of(h: u32) -> Vec<u8> {
 }
 
 /// Options of one HMAC-authorized command.
-struct Hc {
+pub(super) struct Hc {
     code: u32,
     handles: Vec<u32>,
-    names: Vec<Vec<u8>>,
+    pub(super) names: Vec<Vec<u8>>,
     params: Vec<u8>,
     /// Handle and authValue of the entity that the session authorizes.
     entity: (u32, Vec<u8>),
@@ -212,7 +212,7 @@ fn split_response(resp: &[u8], nh: usize) -> (Vec<u8>, Vec<Ack>) {
 }
 
 /// Runs an HMAC-authorized command, checks the response HMAC and rolls the client nonce.
-fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
+pub(super) fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
     let resp = run(t, hmac_command(s, c, false, false));
     if rc(&resp) != 0 {
         return resp;
@@ -249,7 +249,7 @@ fn run_hmac(t: &mut Tpm, s: &mut Hs, c: &Hc) -> Vec<u8> {
     resp
 }
 
-fn hc(code: u32, handles: &[u32], params: Vec<u8>, entity: (u32, &[u8])) -> Hc {
+pub(super) fn hc(code: u32, handles: &[u32], params: Vec<u8>, entity: (u32, &[u8])) -> Hc {
     Hc {
         code,
         handles: handles.to_vec(),
@@ -2253,7 +2253,8 @@ fn capability_handles_list_the_new_entities() {
 fn capability_commands_report_the_extensive_and_nv_attributes() {
     let mut t = started();
     let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x121, 1000));
-    assert_eq!(count, 30);
+    // From 0x121 on: 39 commands less EvictControl (0x120).
+    assert_eq!(count, 38);
     let attrs: Vec<u32> = body
         .chunks(4)
         .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))

@@ -1,12 +1,28 @@
-//! Symmetric primitives of the vTPM over the RustCrypto crates `hmac` and `sha2` (ADR-0009,
-//! decision 2): HMAC-SHA-256, a constant-time HMAC check and KDFa.
+//! Primitives of the vTPM over the RustCrypto crates `hmac`, `sha2`, `rsa` and `p256` (ADR-0009,
+//! decision 2): HMAC-SHA-256, a constant-time HMAC check, KDFa, and (slice B of phase B) RSA-2048
+//! PKCS#1 v1.5 and ECC P-256 ECDSA key generation, signing and verification.
 //!
 //! The protocol-level constructions (KDFa, session HMACs, the DRBG that uses them) stay in this
 //! crate; only the primitives come from the libraries. No function here logs or prints a key.
+//!
+//! RSA and the timing side channel (ISSUE-064, RUSTSEC-2023-0071): the private RSA operation
+//! (`rsa_sign`) is the `rsa =0.10.0-rc.22` implementation, for which no constant-time version is
+//! confirmed; the advisory has no patched release. This is an accepted risk recorded in
+//! `docs/KNOWN_ISSUES.md` (ISSUE-064) and ADR-0009: the exposure is a timing attack on the host
+//! process that runs the vTPM, not on a firmware stack. Signing is called with a blinding RNG (the
+//! TPM DRBG), which the crate documents as the mitigation it offers; that does not make the
+//! implementation constant-time and is not claimed to. ECDSA runs on `p256` (`crypto-bigint`
+//! arithmetic); its constant-time property is the vendor's claim, not checked here (ADR-0009).
 
 use hmac::{Hmac, KeyInit, Mac};
+use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
+use rsa::rand_core::{TryCryptoRng, TryRng};
+use rsa::traits::{PrivateKeyParts, PublicKeyParts};
+use rsa::{BoxedUint, Pkcs1v15Sign};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
+
+use crate::random::Drbg;
 
 /// Digest size of SHA-256, the only session and DRBG hash.
 pub(crate) const DIGEST: usize = 32;
@@ -81,6 +97,202 @@ pub(crate) fn kdfa_sha256(
         *first &= 0xFFu8 >> (8 - bits % 8);
     }
     out
+}
+
+// ---------------------------------------------------------------------------- asymmetric keys
+
+/// The TPM DRBG seen as a `rand_core` generator, for key generation and RSA blinding. A reseed
+/// request of the DRBG (never reached in practice) is an error of the generator.
+pub(crate) struct DrbgRng<'a>(pub &'a mut Drbg);
+
+/// The DRBG needs a reseed.
+#[derive(Debug)]
+pub(crate) struct DrbgExhausted;
+
+impl core::fmt::Display for DrbgExhausted {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("DRBG reseed required")
+    }
+}
+
+impl core::error::Error for DrbgExhausted {}
+
+impl TryRng for DrbgRng<'_> {
+    type Error = DrbgExhausted;
+
+    fn try_next_u32(&mut self) -> Result<u32, DrbgExhausted> {
+        let mut b = [0u8; 4];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u32::from_le_bytes(b))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, DrbgExhausted> {
+        let mut b = [0u8; 8];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u64::from_le_bytes(b))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), DrbgExhausted> {
+        self.0.generate(dst).ok_or(DrbgExhausted)
+    }
+}
+
+impl TryCryptoRng for DrbgRng<'_> {}
+
+/// An RSA-2048 private key (two primes, exponent 65537).
+pub(crate) type RsaPrivate = rsa::PrivateKey;
+/// An ECC P-256 private key.
+pub(crate) type EccPrivate = p256::ecdsa::SigningKey;
+
+/// Bytes of an RSA-2048 modulus.
+const RSA_BYTES: usize = 256;
+/// Bytes of one RSA prime.
+const PRIME_BYTES: usize = RSA_BYTES / 2;
+
+/// Generates an RSA-2048 key (public exponent 65537) from `rng`. The result is a function of the
+/// bytes the generator yields, so a generator seeded identically gives the same key (primary
+/// objects); the prime search is that of `rsa`/`crypto-primes` at the pinned versions.
+pub(crate) fn rsa_generate(rng: &mut Drbg) -> Option<RsaPrivate> {
+    RsaPrivate::new(&mut DrbgRng(rng), 2048).ok()
+}
+
+/// `n` as 256 big-endian octets.
+pub(crate) fn rsa_modulus(key: &RsaPrivate) -> Vec<u8> {
+    key.n_bytes().to_vec()
+}
+
+/// The two primes of the key, `p || q`, 128 octets each; wiped on drop.
+pub(crate) fn rsa_primes(key: &RsaPrivate) -> Option<Zeroizing<Vec<u8>>> {
+    let primes = key.primes();
+    if primes.len() != 2 {
+        return None;
+    }
+    let mut out = Zeroizing::new(Vec::with_capacity(RSA_BYTES));
+    for p in primes {
+        let b = p.to_be_bytes();
+        // Left-pad to the fixed width (both primes have 1024 bits, so no padding occurs).
+        if b.len() > PRIME_BYTES {
+            return None;
+        }
+        let pad = out.len() + PRIME_BYTES - b.len();
+        out.resize(pad, 0);
+        out.extend_from_slice(&b);
+    }
+    Some(out)
+}
+
+/// Rebuilds the key from `p || q` and checks that it matches the public modulus `n` and that the
+/// exponent is 65537. `None` is a mismatch (`TPM_RC_BINDING`) or an invalid key.
+pub(crate) fn rsa_from_primes(pq: &[u8], n: &[u8]) -> Option<RsaPrivate> {
+    if pq.len() != RSA_BYTES || n.len() != RSA_BYTES {
+        return None;
+    }
+    let p = BoxedUint::from_be_slice(&pq[..PRIME_BYTES], 1024).ok()?;
+    let q = BoxedUint::from_be_slice(&pq[PRIME_BYTES..], 1024).ok()?;
+    let key = RsaPrivate::from_p_q(p, q, BoxedUint::from(65537u64)).ok()?;
+    (key.n_bytes().as_ref() == n).then_some(key)
+}
+
+/// RSASSA-PKCS1-v1_5 with SHA-256 over `digest` (already a SHA-256 digest). Private operation:
+/// see the ISSUE-064 note at the top of this module.
+pub(crate) fn rsa_sign(key: &RsaPrivate, digest: &[u8], rng: &mut Drbg) -> Option<Vec<u8>> {
+    key.pkcs1v15_sign_prehash_with_rng::<Sha256, _>(&mut DrbgRng(rng), digest)
+        .ok()
+}
+
+/// Verifies an RSASSA-PKCS1-v1_5 SHA-256 signature with the public key `(n, 65537)`.
+pub(crate) fn rsa_verify(n: &[u8], digest: &[u8], sig: &[u8]) -> bool {
+    let Ok(n) = BoxedUint::from_be_slice(n, (n.len() * 8) as u32) else {
+        return false;
+    };
+    let Ok(key) = rsa::PublicKey::new(n, BoxedUint::from(65537u64)) else {
+        return false;
+    };
+    key.verify(Pkcs1v15Sign::new::<Sha256>(), digest, sig)
+        .is_ok()
+}
+
+/// A P-256 private key from `rng`: 32 octets per attempt until the value is in `[1, n - 1]`.
+pub(crate) fn ecc_generate(rng: &mut Drbg) -> Option<EccPrivate> {
+    for _ in 0..64 {
+        let mut b = Zeroizing::new([0u8; 32]);
+        rng.generate(&mut b[..])?;
+        if let Ok(k) = EccPrivate::from_slice(&b[..]) {
+            return Some(k);
+        }
+    }
+    None
+}
+
+/// The private scalar, 32 octets; wiped on drop.
+pub(crate) fn ecc_scalar(key: &EccPrivate) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(key.to_bytes().to_vec())
+}
+
+/// The private key from its scalar (`None` if zero or not below the group order).
+pub(crate) fn ecc_from_scalar(d: &[u8]) -> Option<EccPrivate> {
+    if d.len() != 32 {
+        return None;
+    }
+    EccPrivate::from_slice(d).ok()
+}
+
+/// Affine coordinates `(x, y)` of the public point, 32 octets each.
+pub(crate) fn ecc_public(key: &EccPrivate) -> Option<(Vec<u8>, Vec<u8>)> {
+    let point = key.verifying_key().to_sec1_point(false);
+    let b = point.as_bytes();
+    (b.len() == 65 && b[0] == 4).then(|| (b[1..33].to_vec(), b[33..].to_vec()))
+}
+
+/// `true` if `(x, y)` is a point of the curve (both coordinates 32 octets).
+pub(crate) fn ecc_point_valid(x: &[u8], y: &[u8]) -> bool {
+    ecc_verifying_key(x, y).is_some()
+}
+
+fn ecc_verifying_key(x: &[u8], y: &[u8]) -> Option<p256::ecdsa::VerifyingKey> {
+    if x.len() != 32 || y.len() != 32 {
+        return None;
+    }
+    let mut sec1 = Vec::with_capacity(65);
+    sec1.push(4);
+    sec1.extend_from_slice(x);
+    sec1.extend_from_slice(y);
+    p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).ok()
+}
+
+/// ECDSA over P-256 of a SHA-256 `digest`: `(r, s)`, 32 octets each (RFC 6979 nonce).
+pub(crate) fn ecc_sign(key: &EccPrivate, digest: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let sig: p256::ecdsa::Signature = key.sign_prehash(digest).ok()?;
+    let (r, s) = sig.split_bytes();
+    Some((r.to_vec(), s.to_vec()))
+}
+
+/// Verifies an ECDSA P-256 signature `(r, s)` of `digest` with the public point `(x, y)`.
+/// `r` and `s` are given as TPM2B values (leading zeros may be stripped).
+pub(crate) fn ecc_verify(x: &[u8], y: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
+    let Some(key) = ecc_verifying_key(x, y) else {
+        return false;
+    };
+    let (Some(r), Some(s)) = (pad32(r), pad32(s)) else {
+        return false;
+    };
+    let mut rs = [0u8; 64];
+    rs[..32].copy_from_slice(&r);
+    rs[32..].copy_from_slice(&s);
+    let Ok(sig) = p256::ecdsa::Signature::from_slice(&rs) else {
+        return false;
+    };
+    key.verify_prehash(digest, &sig).is_ok()
+}
+
+/// Left-pads a big-endian value of at most 32 octets to 32.
+fn pad32(v: &[u8]) -> Option<[u8; 32]> {
+    if v.len() > 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out[32 - v.len()..].copy_from_slice(v);
+    Some(out)
 }
 
 #[cfg(test)]

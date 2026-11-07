@@ -85,6 +85,8 @@ impl Tpm {
         let saved = self.saved.take();
         self.sequences.clear();
         self.sessions.clear();
+        // Transient objects are flushed by every `Startup` (Part 3, clause 12.2.1).
+        self.objects.clear();
         match (startup_type, saved) {
             (su::STATE, Some(s)) => {
                 // TPM Resume.

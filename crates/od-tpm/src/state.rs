@@ -6,8 +6,11 @@
 //! clock base, `resetCount`, `restartCount` and the orderly-shutdown flag go into the snapshot;
 //! the hierarchy authorization values and the NV store (`hierarchy.rs`, `nv.rs`) survive
 //! `_TPM_Init` but are NOT in the snapshot yet.
-//! Volatile: PCR, sequences, sessions, hierarchy enables and `platformAuth`, `started`/`failed`,
-//! the state saved by `Shutdown(STATE)`, the DRBG.
+//! Slice B of phase B adds the persistent objects (in memory, NOT in the snapshot yet) and the
+//! transient objects (volatile, flushed by `Startup`/`_TPM_Init`). The hierarchy proof values are
+//! not stored: they are derived from the seeds (`object_cmd.rs`).
+//! Volatile: PCR, sequences, sessions, objects, hierarchy enables and `platformAuth`,
+//! `started`/`failed`, the state saved by `Shutdown(STATE)`, the DRBG.
 //!
 //! Snapshot bytes contain the seeds in clear text; they are handed to the owner as is until
 //! S9-27 protects them. Seeds and DRBG state are wiped on drop and never reach `Debug`.
@@ -34,6 +37,7 @@ use crate::hash::Sequences;
 use crate::hierarchy::{HierarchyPersistent, HierarchyVolatile};
 use crate::marshal::{TpmsClockInfo, TpmsTimeInfo, Writer};
 use crate::nv::NvStore;
+use crate::object::{Objects, PersistentObjects};
 use crate::pcr::{Pcrs, SavedPcrs};
 use crate::random::{Drbg, MIN_ENTROPY_LEN};
 use crate::response::{Output, Rc};
@@ -95,6 +99,8 @@ pub(crate) struct Persistent {
     pub(crate) hier: HierarchyPersistent,
     /// NV indices (not in the snapshot yet).
     pub(crate) nv: NvStore,
+    /// Persistent objects made by `TPM2_EvictControl` (not in the snapshot yet).
+    pub(crate) objects: PersistentObjects,
 }
 
 /// What `Shutdown(STATE)` saves for `Startup(CLEAR)` (Restart) and `Startup(STATE)` (Resume):
@@ -120,6 +126,8 @@ pub struct Tpm {
     pub(crate) sequences: Sequences,
     /// Loaded HMAC authorization sessions.
     pub(crate) sessions: Sessions,
+    /// Loaded transient objects (not sequences).
+    pub(crate) objects: Objects,
     /// Volatile hierarchy state: `platformAuth`, enables, Null seed.
     pub(crate) hv: HierarchyVolatile,
     /// Latest `now_ms` the owner passed: milliseconds since `_TPM_Init` (power-on).
@@ -162,6 +170,7 @@ impl Tpm {
             orderly: true,
             hier: HierarchyPersistent::default(),
             nv: NvStore::default(),
+            objects: PersistentObjects::default(),
         };
         Ok(Tpm::assemble(persistent, drbg))
     }
@@ -176,6 +185,7 @@ impl Tpm {
             pcrs: Pcrs::new(),
             sequences: Sequences::default(),
             sessions: Sessions::default(),
+            objects: Objects::default(),
             hv: HierarchyVolatile::default(),
             power_ms: 0,
             clock_safe: false,
@@ -203,6 +213,7 @@ impl Tpm {
         self.pcrs = Pcrs::new();
         self.sequences.clear();
         self.sessions.clear();
+        self.objects.clear();
         // `phEnable` is SET on any `_TPM_Init`; the rest of the platform controls is volatile.
         self.hv = HierarchyVolatile::default();
     }
@@ -295,6 +306,7 @@ impl Tpm {
             orderly,
             hier: HierarchyPersistent::default(),
             nv: NvStore::default(),
+            objects: PersistentObjects::default(),
         };
         Ok(Tpm::assemble(persistent, drbg))
     }
