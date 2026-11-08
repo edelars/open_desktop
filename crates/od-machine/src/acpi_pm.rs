@@ -79,6 +79,32 @@ pub struct AcpiPmDescriptor {
     pub port_bytes: u32,
 }
 
+/// SCI route of the board (S4-31c decision): GSI 9, level-triggered, active-low,
+/// delivered through an interrupt source override (the MADT entry is S4-31f).
+/// The PM block raises no interrupt yet; this is a manifest/handoff fact only.
+pub const ACPI_SCI_GSI: u32 = 9;
+/// `irq_flags` of the SCI in a handoff device entry: bit 0 level, bit 1 active-low.
+pub const ACPI_SCI_IRQ_FLAGS: u32 = 0b11;
+
+impl AcpiPmDescriptor {
+    /// Handoff `param0` of device code 9: the four register ports as `u16` lanes,
+    /// `PM1a_EVT_BLK` (bits 0..16), `PM1a_CNT_BLK` (16..32), `PM_TMR_BLK` (32..48)
+    /// and `RESET_REG` (48..64). Lengths and widths are the fixed constants of
+    /// this descriptor (4, 2, 4 bytes and an 8-bit reset register).
+    pub const fn handoff_param0(&self) -> u64 {
+        self.pm1a_evt_blk as u64
+            | (self.pm1a_cnt_blk as u64) << 16
+            | (self.pm_tmr_blk as u64) << 32
+            | (self.reset_reg as u64) << 48
+    }
+
+    /// Handoff `param1` of device code 9: `RESET_VALUE` (bits 0..8) and the S5
+    /// `SLP_TYP` (bits 8..16); the rest is zero.
+    pub const fn handoff_param1(&self) -> u64 {
+        self.reset_value as u64 | (self.slp_typ_s5 as u64) << 8
+    }
+}
+
 pub const ACPI_PM_DESCRIPTOR: AcpiPmDescriptor = AcpiPmDescriptor {
     smi_cmd: ACPI_SMI_CMD,
     pm1a_evt_blk: ACPI_PM1A_EVT_BLK,

@@ -30,6 +30,8 @@ pub mod device_type {
     pub const NVRAM: u32 = 5;
     pub const TPM_CRB: u32 = 6;
     pub const PCIE_ECAM: u32 = 7;
+    /// ACPI fixed hardware: PM block and SCI route (handoff v1.2, S4-31c).
+    pub const ACPI_PM: u32 = 9;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +46,8 @@ pub enum ManifestError {
     AbsentDeviceHasAddress(u32),
     /// `irq_flags` has bits above bit 1.
     ReservedIrqFlags(u32),
+    /// An ACPI PM entry (code 9) that cannot be described by the FADT; the text names the field.
+    BadAcpiPm(&'static str),
 }
 
 /// One 48-byte device entry.
@@ -154,6 +158,92 @@ impl BoardManifest {
     }
 }
 
+/// Length of `PM1a_EVT_BLK` (PM1_STS + PM1_EN), `PM1a_CNT_BLK`, `PM_TMR_BLK` and `RESET_REG`
+/// in bytes. They are constants of the board's PM block (`ACPI_PM_DESCRIPTOR`), not handoff fields.
+const PM1_EVT_LEN: u32 = 4;
+const PM1_CNT_LEN: u32 = 2;
+const PM_TMR_LEN: u32 = 4;
+const RESET_REG_LEN: u32 = 1;
+
+/// The ACPI fixed hardware entry (device code 9, handoff v1.2): the PM block ports and the SCI
+/// route. Decoded from `param0` (four `u16` lanes: `PM1a_EVT_BLK`, `PM1a_CNT_BLK`, `PM_TMR_BLK`,
+/// `RESET_REG`) and `param1` (`RESET_VALUE`, S5 `SLP_TYP`). The FADT serializer (S4-31e) takes
+/// this value; the whole-block parser of the handoff is S7-04.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcpiPmEntry {
+    /// First port and number of ports of the whole PM block.
+    pub base_port: u16,
+    pub port_count: u16,
+    pub pm1a_evt_blk: u16,
+    pub pm1a_cnt_blk: u16,
+    pub pm_tmr_blk: u16,
+    pub reset_reg: u16,
+    pub reset_value: u8,
+    pub slp_typ_s5: u8,
+    /// SCI global system interrupt.
+    pub sci_gsi: u32,
+    pub sci_level: bool,
+    pub sci_active_low: bool,
+}
+
+impl AcpiPmEntry {
+    /// Validates a code-9 entry: `PRESENT | PIO` only, block inside the 16-bit port space, the
+    /// four registers inside the block, in order and without overlap, a real SCI GSI, `param1`
+    /// bits above 16 and `SLP_TYP` above 7 are zero.
+    pub const fn from_entry(entry: &DeviceEntry) -> Result<Self, ManifestError> {
+        if entry.device_type != device_type::ACPI_PM {
+            return Err(ManifestError::BadAcpiPm("device type is not 9"));
+        }
+        if entry.flags != FLAG_PRESENT | FLAG_PIO {
+            return Err(ManifestError::BadAcpiPm("flags must be PRESENT | PIO"));
+        }
+        if entry.irq_flags & !(IRQ_LEVEL | IRQ_ACTIVE_LOW) != 0 {
+            return Err(ManifestError::ReservedIrqFlags(entry.irq_flags));
+        }
+        if entry.length == 0 || entry.base.saturating_add(entry.length) > 0x1_0000 {
+            return Err(ManifestError::BadAcpiPm(
+                "block outside the 16-bit port space",
+            ));
+        }
+        if entry.gsi == GSI_NONE {
+            return Err(ManifestError::BadAcpiPm("SCI needs a GSI"));
+        }
+        if entry.param1 >> 16 != 0 || (entry.param1 >> 8) & 0xFF > 7 {
+            return Err(ManifestError::BadAcpiPm(
+                "param1 reserved bits or SLP_TYP above 7",
+            ));
+        }
+        let evt = (entry.param0 & 0xFFFF) as u32;
+        let cnt = ((entry.param0 >> 16) & 0xFFFF) as u32;
+        let tmr = ((entry.param0 >> 32) & 0xFFFF) as u32;
+        let reset = ((entry.param0 >> 48) & 0xFFFF) as u32;
+        let (start, end) = (entry.base as u32, (entry.base + entry.length) as u32);
+        if evt < start
+            || evt + PM1_EVT_LEN > cnt
+            || cnt + PM1_CNT_LEN > tmr
+            || tmr + PM_TMR_LEN > reset
+            || reset + RESET_REG_LEN > end
+        {
+            return Err(ManifestError::BadAcpiPm(
+                "registers must lie in the block in the order EVT, CNT, TMR, RESET",
+            ));
+        }
+        Ok(AcpiPmEntry {
+            base_port: entry.base as u16,
+            port_count: entry.length as u16,
+            pm1a_evt_blk: evt as u16,
+            pm1a_cnt_blk: cnt as u16,
+            pm_tmr_blk: tmr as u16,
+            reset_reg: reset as u16,
+            reset_value: (entry.param1 & 0xFF) as u8,
+            slp_typ_s5: ((entry.param1 >> 8) & 0xFF) as u8,
+            sci_gsi: entry.gsi,
+            sci_level: entry.irq_flags & IRQ_LEVEL != 0,
+            sci_active_low: entry.irq_flags & IRQ_ACTIVE_LOW != 0,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +331,121 @@ mod tests {
         assert_eq!(
             BoardManifest::from_entries(irq),
             Err(ManifestError::ReservedIrqFlags(4))
+        );
+    }
+
+    /// The code-9 entry as `od-machine` emits it with `acpi_tables` (FIRMWARE_BOOT.md 6.3),
+    /// bytes written out by hand in little-endian order (the same 48 bytes as the machine's
+    /// own test).
+    const PM_ENTRY_RAW: [u8; DEVICE_ENTRY_SIZE] = [
+        0x09, 0x00, 0x00, 0x00, // type
+        0x03, 0x00, 0x00, 0x00, // flags: PRESENT | PIO
+        0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // base 0x0600
+        0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // length 0x10
+        0x09, 0x00, 0x00, 0x00, // gsi 9
+        0x03, 0x00, 0x00, 0x00, // level, active-low
+        0x00, 0x06, 0x04, 0x06, 0x08, 0x06, 0x0C, 0x06, // param0
+        0x06, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // param1
+    ];
+
+    #[test]
+    fn code_9_entry_is_decoded_into_the_pm_block_and_the_sci_route() {
+        let entry = DeviceEntry::parse(&PM_ENTRY_RAW);
+        assert_eq!(entry.device_type, device_type::ACPI_PM);
+        let pm = AcpiPmEntry::from_entry(&entry).unwrap();
+        assert_eq!(
+            pm,
+            AcpiPmEntry {
+                base_port: 0x600,
+                port_count: 0x10,
+                pm1a_evt_blk: 0x600,
+                pm1a_cnt_blk: 0x604,
+                pm_tmr_blk: 0x608,
+                reset_reg: 0x60C,
+                reset_value: 0x06,
+                slp_typ_s5: 5,
+                sci_gsi: 9,
+                sci_level: true,
+                sci_active_low: true,
+            }
+        );
+        // const fn: usable in a const item.
+        const PM: Result<AcpiPmEntry, ManifestError> = AcpiPmEntry::from_entry(&DeviceEntry {
+            device_type: 9,
+            flags: FLAG_PRESENT | FLAG_PIO,
+            base: 0x600,
+            length: 0x10,
+            gsi: 9,
+            irq_flags: IRQ_LEVEL | IRQ_ACTIVE_LOW,
+            param0: 0x060C_0608_0604_0600,
+            param1: 0x0506,
+        });
+        assert_eq!(PM, Ok(pm));
+    }
+
+    #[test]
+    fn code_9_entries_that_the_fadt_cannot_use_are_rejected() {
+        let good = DeviceEntry::parse(&PM_ENTRY_RAW);
+        let bad = |edit: fn(&mut DeviceEntry)| {
+            let mut e = good;
+            edit(&mut e);
+            AcpiPmEntry::from_entry(&e)
+        };
+        assert!(matches!(
+            bad(|e| e.device_type = 7),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.flags = FLAG_PRESENT),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.flags = 0),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.length = 0),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.base = 0xFFF8),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.gsi = GSI_NONE),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert_eq!(
+            bad(|e| e.irq_flags = 4),
+            Err(ManifestError::ReservedIrqFlags(4))
+        );
+        assert!(matches!(
+            bad(|e| e.param1 |= 1 << 16),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.param1 = 0x0806),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        // A register outside the block, out of order or overlapping.
+        assert!(matches!(
+            bad(|e| e.length = 0x0C),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.param0 = 0x060C_0608_0602_0600),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        assert!(matches!(
+            bad(|e| e.param0 = 0x060C_0604_0608_0600),
+            Err(ManifestError::BadAcpiPm(_))
+        ));
+        // The v1.0 manifest still has exactly seven devices and does not accept code 9.
+        let mut entries = all_absent();
+        entries[6] = good;
+        assert_eq!(
+            BoardManifest::from_entries(entries),
+            Err(ManifestError::UnknownDeviceType(9))
         );
     }
 }

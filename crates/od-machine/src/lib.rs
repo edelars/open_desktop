@@ -37,8 +37,8 @@ pub use acpi_pm::{
     ACPI_PM_TMR_LEN, ACPI_PM1_CNT_BM_RLD, ACPI_PM1_CNT_GBL_RLS, ACPI_PM1_CNT_LEN,
     ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1_CNT_SLP_TYP_MASK,
     ACPI_PM1_CNT_SLP_TYP_SHIFT, ACPI_PM1_EVT_LEN, ACPI_PM1A_CNT_BLK, ACPI_PM1A_EVT_BLK,
-    ACPI_RESET_REG, ACPI_RESET_REG_WIDTH_BITS, ACPI_RESET_VALUE, ACPI_SLP_TYP_S5, ACPI_SMI_CMD,
-    AcpiPm, AcpiPmDescriptor, AcpiPmHandle, MachineStopReason,
+    ACPI_RESET_REG, ACPI_RESET_REG_WIDTH_BITS, ACPI_RESET_VALUE, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS,
+    ACPI_SLP_TYP_S5, ACPI_SMI_CMD, AcpiPm, AcpiPmDescriptor, AcpiPmHandle, MachineStopReason,
 };
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
@@ -69,11 +69,12 @@ pub use diagnostic_vcpu::{
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
 pub use firmware_board::{
-    FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE, FIRMWARE_BOOT_STACK_TOP,
-    FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES,
-    FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE, FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES,
-    FIRMWARE_ROM_BASE, FirmwareBoardConfig, FirmwareBoardError, FirmwareRunReport,
-    LoadedFirmwareBoard, load_firmware_image,
+    FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_FACS_BYTES, FIRMWARE_ACPI_TABLES_BASE,
+    FIRMWARE_ACPI_TABLES_BYTES, FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE,
+    FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_HANDOFF_GPA,
+    FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
+    FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
+    FirmwareBoardError, FirmwareRunReport, LoadedFirmwareBoard, load_firmware_image,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};

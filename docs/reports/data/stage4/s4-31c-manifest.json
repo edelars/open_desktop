@@ -1,0 +1,60 @@
+{
+  "slice": "S4-31c",
+  "date": "2026-11-08",
+  "source": [
+    "crates/od-machine/src/firmware_board.rs",
+    "crates/od-machine/src/acpi_pm.rs",
+    "firmware/uefi/src/acpi/manifest.rs",
+    "docs/specs/FIRMWARE_BOOT.md",
+    "docs/specs/MACHINE_CONTRACT.md"
+  ],
+  "flag": {
+    "name": "FirmwareBoardConfig::acpi_tables",
+    "default": false,
+    "requires": "acpi_pm (otherwise FirmwareBoardError::Config)"
+  },
+  "handoff": {
+    "default_unchanged": true,
+    "golden_test": "handoff_block_is_byte_identical_to_the_reference (not edited)",
+    "with_flag": {
+      "version_minor": 2,
+      "device_count_added": 1,
+      "region_count_added": 3,
+      "total_size_added_bytes": 144,
+      "image_handoff_minor_max_required": 2
+    }
+  },
+  "device_code_9": {
+    "meaning": "ACPI fixed hardware: PM block and SCI route",
+    "why_9": "first free code of the reserved range 8-15 after NVMe (8)",
+    "flags": "PRESENT|PIO (3)",
+    "base": "0x0600",
+    "length": "0x10",
+    "gsi": 9,
+    "irq_flags": "0b11 (level, active-low)",
+    "param0": "0x060C_0608_0604_0600 (PM1a_EVT, PM1a_CNT, PM_TMR, RESET_REG, u16 lanes)",
+    "param1": "0x0506 (RESET_VALUE 6, SLP_TYP S5 5)",
+    "table_index": "8 with NVMe (after code 8), else 7"
+  },
+  "acpi_area": {
+    "range": "[0x000E_0000, 0x000F_0000)",
+    "in_memory_map": "part of low RAM, memory map unchanged",
+    "regions": [
+      {"type": 1, "kind": "RAM", "base": "0x0", "length": "0xE_0000"},
+      {"type": 11, "kind": "ACPI_TABLES (E820 reclaim in S4-37, RSDP at 0xE_0000)", "base": "0xE_0000", "length": "0xF000"},
+      {"type": 12, "kind": "ACPI_NVS (E820 NVS in S4-37, FACS at 0xE_F000)", "base": "0xE_F000", "length": "0x1000"},
+      {"type": 1, "kind": "RAM (zero)", "base": "0xF_0000", "length": "0x1_0000"}
+    ]
+  },
+  "firmware": {
+    "parser": "AcpiPmEntry::from_entry (const fn), device_type::ACPI_PM = 9",
+    "boardmanifest_v1_0_unchanged": true
+  },
+  "tests": {
+    "od_machine_new": 6,
+    "od_machine_lib_passed": 416,
+    "od_machine_full_run": "complete: 570 passed, 0 failed, exit 0; firmware/uefi 101 passed, 0 failed",
+    "firmware_total": 101,
+    "firmware_new": 2
+  }
+}
