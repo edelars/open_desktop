@@ -153,16 +153,17 @@ pub const fn validate_mcfg(table: &[u8]) -> Result<(), McfgError> {
     Ok(())
 }
 
-/// The checked window: the only values that reach the table.
-struct EcamWindow {
-    base: u64,
-    segment: u16,
-    start_bus: u8,
-    end_bus: u8,
+/// The checked window: the only values that reach the table. `pub(super)` since S4-31b: the
+/// DSDT applies the same checks to the window it describes (one rule set for MCFG and DSDT).
+pub(super) struct EcamWindow {
+    pub(super) base: u64,
+    pub(super) segment: u16,
+    pub(super) start_bus: u8,
+    pub(super) end_bus: u8,
 }
 
 impl EcamWindow {
-    const fn from_entry(entry: &DeviceEntry) -> Result<Self, McfgError> {
+    pub(super) const fn from_entry(entry: &DeviceEntry) -> Result<Self, McfgError> {
         if entry.device_type != device_type::PCIE_ECAM {
             return Err(McfgError::NotEcamEntry(entry.device_type));
         }

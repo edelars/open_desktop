@@ -1,0 +1,83 @@
+{
+  "slice": "S4-31b",
+  "date": "2026-11-08",
+  "source": [
+    "firmware/uefi/src/acpi/dsdt.rs",
+    "firmware/uefi/src/acpi/mcfg.rs",
+    "firmware/uefi/src/acpi/dsdt/tests.rs",
+    "firmware/uefi/src/acpi/dsdt/const_tests.rs",
+    "docs/specs/ACPI_SMBIOS_TABLES.md"
+  ],
+  "decision": "variant B (Opus): one build_dsdt; build_dsdt_with_ecam_resources removed",
+  "device_pci0_crs_added": "IO(Decode16, 0xCF8, 0xCF8, 1, 8) after WordBusNumber 0..0",
+  "device_ecam": {
+    "name": "ECAM",
+    "hid": "PNP0C02",
+    "uid": 0,
+    "crs": "Memory32Fixed(ReadWrite, base, 0x100000)"
+  },
+  "order": [
+    "PCI0",
+    "ECAM",
+    "COM<n>"
+  ],
+  "ecam_checks": "shared with MCFG: mcfg::EcamWindow::from_entry; error DsdtError::Ecam(McfgError); DsdtError::BadPcieEcam removed",
+  "golden_replaced": {
+    "name": "reference_both",
+    "reason": "old golden used an ECAM entry outside the S4-30c board contract (base 0xC000_0000, 256 MiB, buses 0..=0xFF)",
+    "old": {
+      "len": 176,
+      "len_hex": "0xB0",
+      "checksum": "0x0E"
+    },
+    "new": {
+      "base": "0xFC10_0000",
+      "length": "1 MiB",
+      "buses": "0..=0",
+      "len": 230,
+      "len_hex": "0xE6",
+      "checksum": "0xFE"
+    }
+  },
+  "reference_ecam_only": {
+    "len": 179,
+    "len_hex": "0xB3",
+    "checksum": "0xD9"
+  },
+  "reference_built_by": "by hand from the AML grammar; cross-checked byte for byte by a separate Python script computing PkgLength, length and checksum from the parts (not saved, no code shared with Rust)",
+  "unchanged_goldens": [
+    "reference_com2_only",
+    "reference_empty",
+    "aml/tests.rs"
+  ],
+  "firmware_uefi_tests_before": 94,
+  "firmware_uefi_tests_passed": 99,
+  "firmware_uefi_tests_failed": 0,
+  "tests_replaced": [
+    "pci_entries_that_cannot_be_described_are_rejected",
+    "bus_range_reaches_bbn_seg_and_crs"
+  ],
+  "tests_added": 5,
+  "fmt_check": "clean",
+  "clippy_lib_tests_new_warnings": 0,
+  "check_x86_64_unknown_none": "clean",
+  "review": "pending",
+  "open": [
+    "Linux acceptance of the PNP0C02 window not checked against kernel sources; S4-38",
+    "IO 0xCF8 is a consumed resource, not a bridge window; no PCI apertures (ISSUE-065)"
+  ],
+  "not_implemented": [
+    "_S5 (S4-31e)",
+    "PM block resources",
+    "PCI MMIO windows",
+    "FADT",
+    "FACS",
+    "MADT",
+    "RSDP",
+    "XSDT",
+    "blob",
+    "manifest/handoff",
+    "od-machine",
+    "E820"
+  ]
+}
