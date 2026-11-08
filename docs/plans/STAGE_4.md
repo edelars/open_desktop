@@ -338,8 +338,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - S4-10b: отдельный opt-in RAM-only профиль 2 MiB (`access_long64_2m_ram`,
   `step_paged_mov_2m_ram`) реализован как вертикальный поднабор: PDE PS=1,
   reserved bits 20:13, A/D на PDE, exact qword MOV, fetch в пределах 4 KiB
-  страницы RIP. MMIO, 1 GiB, CPU-owned CR3 и смешанные сценарии с CR3 switch,
-  полная матрица прав и системная приёмка остаются открытыми.
+  страницы RIP. MMIO, 1 GiB, полная матрица прав и системная приёмка остаются открытыми;
+  CPU-owned CR3 со смешанными картами — S4-12e.
   [Отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
 - Полный S4-10 остаётся открытым до S4-00 manifest: 2 MiB/1 GiB leaves,
   необходимые modes, alignment/reserved/permissions/A-D matrix и Linux boot
@@ -430,6 +430,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   [manifest](../reports/data/stage4/s4-12d-cr0-wp-machine.json). See
   [CPU contract](../specs/CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
   and [machine contract](../specs/MACHINE_CONTRACT.md#cpu-owned-cr0wp-translation-handoff-s4-12d).
+- [x] S4-12e (вертикальный поднабор) реализован и проверен локально; независимое ревью — см. [отчёт](../reports/STAGE_4_S4-12E_2026-11-08.md).
+  `run_paged_cr3_probe_2m_ram` — тот же CPU-owned CR3 quantum, но tracked walk принимает 2 MiB PDE
+  (RAM-only); корни A и B могут отображать одни регионы 4 KiB и 2 MiB страницами. Проверены:
+  равенство полного и пошагового quantum (CPU, RAM, definedness, callbacks, порядок context change),
+  fault/reserved 2 MiB PDE после retired CR3 write, NX PDE при data read, отказ legacy quantum на 2 MiB,
+  граница fetch и operand, STOP/budget. Загружаемый freestanding probe и 2 MiB MMIO не входят.
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.
 - **Проверка:** guest instructions меняют действующий перевод; запрещённые записи дают правильное исключение и не оставляют частично обновлённый CR state. Проверить startup state и порядок включения обязательных bits.

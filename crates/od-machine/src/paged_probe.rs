@@ -108,6 +108,7 @@ pub fn run_paged_probe(
         false,
         false,
         false,
+        false,
         state,
         bus,
         cr3,
@@ -136,6 +137,7 @@ pub fn run_paged_stack_probe(
 ) -> PagedProbeQuantumReport {
     run_paged_probe_inner(
         true,
+        false,
         false,
         false,
         state,
@@ -168,6 +170,42 @@ pub fn run_paged_cr3_probe(
         false,
         true,
         false,
+        false,
+        state,
+        bus,
+        0,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+    )
+}
+
+/// Run the CPU-owned CR3 quantum through mixed 4 KiB/2 MiB RAM mappings.
+///
+/// Same CPU profile, report and context-change semantics as
+/// [`run_paged_cr3_probe`]; the tracked walk additionally accepts a PDE with
+/// PS=1 as a 2 MiB leaf. RAM only. The CPU profile itself keeps instruction
+/// fetch inside the 4 KiB page of RIP (an RIP too close to the page end is
+/// `Unsupported` before any fetch) and each operand within one 4 KiB page (a
+/// crossing is a backend `CrossesPage` error, not a guest `#PF`).
+pub fn run_paged_cr3_probe_2m_ram(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        true,
+        false,
+        true,
         state,
         bus,
         0,
@@ -197,6 +235,7 @@ pub fn run_paged_cr0_wp_probe(
         false,
         false,
         true,
+        false,
         state,
         bus,
         0,
@@ -213,6 +252,7 @@ fn run_paged_probe_inner(
     stack_profile: bool,
     cpu_cr3_profile: bool,
     cpu_cr0_wp_profile: bool,
+    large_ram_profile: bool,
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -384,6 +424,7 @@ fn run_paged_probe_inner(
             memory,
             paging,
             instruction_rip,
+            large_ram_profile,
             committed_write: &mut committed_write,
             page_fault: None,
             memory_error: None,
@@ -643,6 +684,7 @@ struct PagedProbeMemory<'a> {
     memory: &'a mut crate::PhysicalMemory,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
+    large_ram_profile: bool,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -655,20 +697,30 @@ impl PagedProbeMemory<'_> {
         context: AccessContext,
         operation: RamAccessOperation,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
-        let result = crate::access_long64_4k_ram(
-            self.memory,
-            &self.paging,
-            TrackedAccessRequest {
-                instruction_rip: self.instruction_rip,
-                address: GuestLinearAddress::new(address),
-                context: AccessContext {
-                    origin: AccessOrigin::Explicit,
-                    ..context
-                },
-                operation,
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context: AccessContext {
+                origin: AccessOrigin::Explicit,
+                ..context
             },
-            &mut *self.committed_write,
-        );
+            operation,
+        };
+        let result = if self.large_ram_profile {
+            crate::access_long64_2m_ram(
+                self.memory,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            )
+        } else {
+            crate::access_long64_4k_ram(
+                self.memory,
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            )
+        };
         match result.outcome {
             Ok(outcome) => Ok(outcome),
             Err(TrackedAccessError::PageFault { record, .. }) => {

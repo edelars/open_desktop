@@ -6,7 +6,7 @@ use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PagedProbeRejection, PortAddress,
     PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx,
-    run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_probe,
+    run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_cr3_probe_2m_ram, run_paged_probe,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -1063,4 +1063,343 @@ fn cr0_wp_profile_rejects_qword_store_crossing_a_guest_page() {
     assert!(result.memory_error.is_none());
     assert_eq!(qword(&mut bus, DATA_PHYSICAL), original);
     assert!(!writes.contains(&range(DATA_PHYSICAL)));
+}
+
+const MIXED_ROOT_B: u64 = 0x11_000;
+const MIXED_PD_B: u64 = 0x13_000;
+const MIXED_DATA_OFFSET: u64 = 0x17_000;
+
+/// Root A: 4 KiB mappings. Root B: 4 KiB code page, but the whole data region
+/// (PD index 4) is one 2 MiB leaf at physical 0. Guest program:
+/// A: MOV CR3,RAX -> B: MOV RAX,[RBX] (loads root A from the 2 MiB page) ->
+/// B: MOV CR3,RAX -> A.
+fn mixed_cr3_fixture() -> (MachineBus, LongModeState) {
+    let mut bus = cr3_switch_fixture();
+    put(&mut bus, MIXED_PD_B + 0x20, 0x87);
+    put(&mut bus, MIXED_DATA_OFFSET, ROOT);
+    put_bytes_at(&mut bus, 0x16_000 + 6, &[0x0f, 0x22, 0xd8]);
+    let mut state = initial_cr3_state();
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR + MIXED_DATA_OFFSET;
+    (bus, state)
+}
+
+fn run_mixed(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    budget: u64,
+    defined: u64,
+    writes: &mut Vec<GuestPhysicalRange>,
+) -> od_machine::PagedProbeQuantumReport {
+    run_paged_cr3_probe_2m_ram(
+        state,
+        bus,
+        EFER,
+        context(),
+        budget,
+        defined,
+        || false,
+        |range| writes.push(range),
+    )
+}
+
+#[test]
+fn mixed_cr3_roots_whole_and_split_quantum_match() {
+    let run_all = |split: bool| {
+        let (mut bus, mut state) = mixed_cr3_fixture();
+        let (mut writes, mut changes) = (Vec::new(), Vec::new());
+        let (mut defined, mut retired) = (FLAGS_DEFINED, 0);
+        loop {
+            let report = run_mixed(
+                &mut state,
+                &mut bus,
+                if split { 1 } else { 3 },
+                defined,
+                &mut writes,
+            );
+            assert_eq!(report.exit, PagedProbeExit::BudgetExhausted);
+            retired += report.instructions_executed;
+            defined = report.rflags_defined;
+            changes.extend(report.translation_context_changes);
+            if retired == 3 {
+                break;
+            }
+        }
+        (bus, state, defined, writes, changes)
+    };
+    let (mut whole_bus, whole, whole_defined, whole_writes, whole_changes) = run_all(false);
+    let (mut split_bus, split, split_defined, split_writes, split_changes) = run_all(true);
+    assert_eq!(whole, split);
+    assert_eq!(whole_defined, split_defined);
+    assert_eq!(whole_writes, split_writes);
+    assert_eq!(whole_changes, split_changes);
+    assert_eq!(
+        whole_changes,
+        [
+            od_isa::execute::TranslationContextChange::Cr3Write {
+                old_cr3: ROOT,
+                new_cr3: MIXED_ROOT_B,
+            },
+            od_isa::execute::TranslationContextChange::Cr3Write {
+                old_cr3: MIXED_ROOT_B,
+                new_cr3: ROOT,
+            },
+        ]
+    );
+    assert_eq!(whole.cr3, Some(ROOT));
+    assert_eq!(whole.gpr[Register::Rax as usize], ROOT);
+    assert_eq!(whole.rip, CODE_LINEAR + 9);
+    // Reading through the 2 MiB data PDE sets only its accessed bit (no stores, so no dirty bit).
+    assert_eq!(qword(&mut whole_bus, MIXED_PD_B + 0x20) & 0x60, 0x20);
+    for address in (0..RAM_SIZE).step_by(8) {
+        assert_eq!(
+            qword(&mut whole_bus, address),
+            qword(&mut split_bus, address),
+            "{address:#x}"
+        );
+    }
+}
+
+#[test]
+fn mixed_cr3_quantum_keeps_legacy_quantum_rejecting_two_mib_pages() {
+    let (mut bus, mut state) = mixed_cr3_fixture();
+    let report = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        3,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+    assert!(matches!(
+        report.memory_error,
+        Some(od_machine::TrackedAccessError::UnsupportedPageSize { .. })
+    ));
+    assert_eq!(report.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(MIXED_ROOT_B));
+}
+
+#[test]
+fn mixed_cr3_large_leaf_faults_are_precise_after_the_root_switch() {
+    // (PDE, expected #PF error code): not present; reserved bit 13 of a 2 MiB PDE.
+    for (pde, error_code) in [(0u64, 0u32), (0x87 | (1 << 13), 9)] {
+        let (mut bus, mut state) = mixed_cr3_fixture();
+        put(&mut bus, MIXED_PD_B + 0x20, pde);
+        let mut writes = Vec::new();
+        let report = run_mixed(&mut state, &mut bus, 3, FLAGS_DEFINED, &mut writes);
+        let PagedProbeExit::Fault(fault) = &report.exit else {
+            panic!("pde {pde:#x}: {:?}", report.exit)
+        };
+        assert_eq!(fault.vector, 14, "pde {pde:#x}");
+        assert_eq!(fault.error_code, Some(error_code), "pde {pde:#x}");
+        assert_eq!(fault.linear_address, Some(DATA_LINEAR + MIXED_DATA_OFFSET));
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state.cr3, Some(MIXED_ROOT_B));
+        assert_eq!(state.rip, CODE_LINEAR + 3);
+        assert_eq!(report.translation_context_changes.len(), 1);
+        assert!(!writes.is_empty());
+    }
+
+    // Data reads ignore NX on the PDE, so the whole program still completes.
+    let (mut bus, mut state) = mixed_cr3_fixture();
+    put(&mut bus, MIXED_PD_B + 0x20, 0x87 | (1 << 63));
+    let mut writes = Vec::new();
+    let report = run_mixed(&mut state, &mut bus, 3, FLAGS_DEFINED, &mut writes);
+    assert_eq!(report.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(report.instructions_executed, 3);
+}
+
+#[test]
+fn mixed_cr3_quantum_never_walks_the_next_code_page_and_honours_stop_and_budget() {
+    // An RIP near the page end is Unsupported before any fetch; the next page's PTE
+    // is never walked (its accessed bit stays clear) and no guest fault is raised.
+    for offset in [0xff2u64, 0xfff] {
+        let (mut bus, mut state) = mixed_cr3_fixture();
+        map_next_code_page(&mut bus, 0x8000 | 7);
+        put_byte(&mut bus, CODE_PHYSICAL + offset, 0x0f);
+        put_byte(&mut bus, 0x8000, 0x22);
+        state.rip = CODE_LINEAR + offset;
+        let before = state.clone();
+        let mut writes = Vec::new();
+        let report = run_mixed(&mut state, &mut bus, 1, FLAGS_DEFINED, &mut writes);
+        assert!(
+            matches!(report.exit, PagedProbeExit::Unsupported { .. }),
+            "{offset:#x}: {:?}",
+            report.exit
+        );
+        assert!(report.page_fault.is_none());
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(qword(&mut bus, 0x4008) & 0x20, 0);
+        assert!(!writes.contains(&range(0x4008)));
+        assert_eq!(state, before);
+    }
+
+    // A qword operand crossing a 4 KiB boundary inside a 2 MiB leaf is a backend
+    // CrossesPage error (retired MOV CR3 stays retired).
+    let (mut bus, mut state) = mixed_cr3_fixture();
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR + MIXED_DATA_OFFSET + 0xffc;
+    let mut writes = Vec::new();
+    let report = run_mixed(&mut state, &mut bus, 3, FLAGS_DEFINED, &mut writes);
+    assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+    assert!(matches!(
+        report.memory_error,
+        Some(od_machine::TrackedAccessError::CrossesPage { .. })
+    ));
+    assert_eq!(report.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(MIXED_ROOT_B));
+
+    // STOP and a zero budget are honoured before any fetch.
+    for stop in [true, false] {
+        let (mut bus, mut state) = mixed_cr3_fixture();
+        let before = state.clone();
+        let mut writes = Vec::new();
+        let report = run_paged_cr3_probe_2m_ram(
+            &mut state,
+            &mut bus,
+            EFER,
+            context(),
+            0,
+            FLAGS_DEFINED,
+            || stop,
+            |range| writes.push(range),
+        );
+        assert_eq!(
+            report.exit,
+            if stop {
+                PagedProbeExit::Stopped
+            } else {
+                PagedProbeExit::BudgetExhausted
+            }
+        );
+        assert_eq!(state, before);
+        assert!(writes.is_empty());
+    }
+}
+
+/// Like `mixed_cr3_fixture`, but root B's code region is a 2 MiB leaf too (PD index 2, base 0),
+/// so the instructions under root B live at physical offsets 3 and 6 of that leaf.
+fn mixed_cr3_large_code_fixture() -> (MachineBus, LongModeState) {
+    let (mut bus, state) = mixed_cr3_fixture();
+    put(&mut bus, MIXED_PD_B + 0x10, 0x87);
+    put_bytes_at(&mut bus, 3, &[0x48, 0x8b, 0x03, 0x0f, 0x22, 0xd8]);
+    (bus, state)
+}
+
+#[test]
+fn mixed_cr3_code_in_a_two_mib_leaf_runs_whole_and_split() {
+    let run_all = |split: bool| {
+        let (mut bus, mut state) = mixed_cr3_large_code_fixture();
+        let (mut writes, mut changes) = (Vec::new(), Vec::new());
+        let (mut defined, mut retired) = (FLAGS_DEFINED, 0);
+        while retired < 3 {
+            let before = writes.len();
+            let report = run_mixed(
+                &mut state,
+                &mut bus,
+                if split { 1 } else { 3 },
+                defined,
+                &mut writes,
+            );
+            assert_eq!(report.exit, PagedProbeExit::BudgetExhausted);
+            if split && retired == 0 {
+                // The context change is consumed before any walk under root B.
+                assert_eq!(report.translation_context_changes.len(), 1);
+                assert!(!writes[before..].contains(&range(MIXED_PD_B + 0x10)));
+            }
+            retired += report.instructions_executed;
+            defined = report.rflags_defined;
+            changes.extend(report.translation_context_changes);
+        }
+        (bus, state, defined, writes, changes)
+    };
+    let (mut whole_bus, whole, whole_defined, whole_writes, whole_changes) = run_all(false);
+    let (mut split_bus, split, split_defined, split_writes, split_changes) = run_all(true);
+    assert_eq!(whole, split);
+    assert_eq!(whole_defined, split_defined);
+    assert_eq!(whole_writes, split_writes);
+    assert_eq!(whole_changes, split_changes);
+    assert_eq!(whole.cr3, Some(ROOT));
+    assert_eq!(whole.rip, CODE_LINEAR + 9);
+    // Fetching through the code PDE sets its accessed bit; there are no stores.
+    assert_eq!(qword(&mut whole_bus, MIXED_PD_B + 0x10) & 0x60, 0x20);
+    assert!(whole_writes.contains(&range(MIXED_PD_B + 0x10)));
+    for address in (0..RAM_SIZE).step_by(8) {
+        assert_eq!(
+            qword(&mut whole_bus, address),
+            qword(&mut split_bus, address),
+            "{address:#x}"
+        );
+    }
+}
+
+#[test]
+fn mixed_cr3_two_mib_code_leaf_faults_and_page_end_guard() {
+    // NX on the code PDE: the fetch after the retired CR3 write raises #PF(P|I).
+    let (mut bus, mut state) = mixed_cr3_large_code_fixture();
+    put(&mut bus, MIXED_PD_B + 0x10, 0x87 | (1 << 63));
+    let mut writes = Vec::new();
+    let report = run_mixed(&mut state, &mut bus, 3, FLAGS_DEFINED, &mut writes);
+    let PagedProbeExit::Fault(fault) = &report.exit else {
+        panic!("{:?}", report.exit)
+    };
+    assert_eq!(fault.vector, 14);
+    assert_eq!(fault.error_code, Some(0x11));
+    assert_eq!(fault.linear_address, Some(CODE_LINEAR + 3));
+    assert_eq!(report.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(MIXED_ROOT_B));
+    assert_eq!(report.translation_context_changes.len(), 1);
+
+    // Near the end of a 4 KiB page inside the 2 MiB leaf the CPU profile refuses to fetch,
+    // so decode never walks into the next 4 KiB page of the leaf.
+    for offset in [0xff2u64, 0xfff] {
+        let (mut bus, mut state) = mixed_cr3_large_code_fixture();
+        state.cr3 = Some(MIXED_ROOT_B);
+        state.rip = CODE_LINEAR + offset;
+        let before = state.clone();
+        let mut writes = Vec::new();
+        let report = run_mixed(&mut state, &mut bus, 1, FLAGS_DEFINED, &mut writes);
+        assert!(
+            matches!(report.exit, PagedProbeExit::Unsupported { .. }),
+            "{offset:#x}: {:?}",
+            report.exit
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert!(writes.is_empty(), "{offset:#x}: no walk before the guard");
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn mixed_cr3_table_pointer_outside_ram_and_same_root_write() {
+    // A present table pointer outside RAM under root B is a backend error after the retired
+    // MOV CR3 and the walk's committed A updates.
+    let (mut bus, mut state) = mixed_cr3_fixture();
+    put(&mut bus, MIXED_PD_B + 0x20, 0x4000_0007);
+    let mut writes = Vec::new();
+    let report = run_mixed(&mut state, &mut bus, 3, FLAGS_DEFINED, &mut writes);
+    assert!(matches!(report.exit, PagedProbeExit::Backend(_)));
+    assert!(matches!(
+        report.memory_error,
+        Some(od_machine::TrackedAccessError::TableRead { .. })
+    ));
+    assert_eq!(report.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(MIXED_ROOT_B));
+    assert_eq!(report.translation_context_changes.len(), 1);
+    assert!(!writes.is_empty());
+
+    // Writing the current root back still reports a context change.
+    let (mut bus, mut state) = mixed_cr3_fixture();
+    state.gpr[Register::Rax as usize] = ROOT;
+    let mut writes = Vec::new();
+    let report = run_mixed(&mut state, &mut bus, 1, FLAGS_DEFINED, &mut writes);
+    assert_eq!(report.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(
+        report.translation_context_changes,
+        [od_isa::execute::TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3: ROOT,
+        }]
+    );
 }

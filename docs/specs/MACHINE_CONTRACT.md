@@ -600,8 +600,8 @@ bounded `CrossesPage` memory error до walk следующей страницы
 `step_paged_mov` поведение не меняют: PDE PS=1 по-прежнему `UnsupportedPageSize`.
 
 Не входит в профиль: MMIO, 1 GiB leaves, TLB/кэш трансляций, LA57, PCID/global,
-JIT, CPU-owned CR3 вариант и смешанные 4 KiB/2 MiB сценарии с переключением CR3
-(`step_paged_mov_2m_ram` принимает CR3 явным аргументом). Полная матрица U/S,
+JIT. `step_paged_mov_2m_ram` принимает CR3 явным аргументом; CPU-owned CR3 со смешанными
+4 KiB/2 MiB картами — отдельный quantum [S4-12e](#cpu-owned-cr3-quantum-with-mixed-ram-pages-s4-12e). Полная матрица U/S,
 R/W, WP, NX/NXE по уровням и физическая проверка остаются открытыми. См.
 [отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
 
@@ -871,6 +871,26 @@ guest #GP.
 The profile does not implement other CR0 bits, PE/PG transitions, EFER changes,
 TLB invalidation, exception delivery or CR2. See the [CPU contract](CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
 for the exact CPU allowlist and values.
+
+## CPU-owned CR3 quantum with mixed RAM pages (S4-12e)
+
+`run_paged_cr3_probe_2m_ram` is an opt-in bounded quantum for the existing
+`PagedCpl0Cr3ProbeV1` instruction profile (`MOV CR3,RAX` and `MOV RAX,[RBX]`; other forms keep
+their `Unsupported` outcome). It takes the same arguments and returns the same report as
+`run_paged_cr3_probe`, including the retirement-ordered `translation_context_changes`, and the
+CR3 snapshot is replaced at the retirement boundary exactly as in S4-12c. The only difference is
+the tracked RAM walk, which additionally accepts a PDE with PS=1 as a 2 MiB leaf
+(`access_long64_2m_ram`, [S4-10b](#s4-10b-отдельный-ram-профиль-2-mib-вертикальный-поднабор)):
+root A and root B may therefore map the same virtual regions through 4 KiB and 2 MiB leaves. A/D
+bits go on the leaf used (the PDE for 2 MiB); a failing walk keeps the A/D updates and callbacks
+already committed.
+
+The CPU profile keeps instruction fetch inside the 4 KiB page of RIP (an RIP at or after offset
+`0xff2` is `Unsupported` before any fetch, so the next page's PTE is never walked) and each operand
+within one 4 KiB page (a qword crossing is a backend `CrossesPage` error, not a guest `#PF`). The
+profile is RAM-only: no MMIO, no 1 GiB leaves, no TLB or JIT, and no 2 MiB variant of the CR0.WP
+quantum. `run_paged_cr3_probe` keeps rejecting 2 MiB leaves (`UnsupportedPageSize`). See the
+[S4-12e report](../reports/STAGE_4_S4-12E_2026-11-08.md).
 
 ## Experimental pure-translation cache boundary
 
