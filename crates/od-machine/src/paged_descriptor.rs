@@ -120,6 +120,126 @@ pub fn step_paged_lgdt(
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedLtrError {
+    Configuration(ProbeConfigError),
+}
+
+/// Bounded-profile rejections of `LTR AX` that are outside the guest exception
+/// model; the CPU state is unchanged and no D bit or busy descriptor image was
+/// written. Accessed bits set by the preceding walk stay committed, and when the
+/// descriptor aliases a page table they may land in the descriptor bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedLtrRejection {
+    /// The TSS descriptor shares a 4 KiB page with a page table used to reach it.
+    TableAlias,
+    /// The read and write-permission walks disagreed about the descriptor mapping.
+    TranslationChanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedLtrReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub memory_error: Option<TrackedAccessError>,
+    pub rejection: Option<PagedLtrRejection>,
+}
+
+/// Execute exact `LTR AX` (`0F 00 D8`) through RAM-only tracked paging.
+///
+/// The 16-byte GDT TSS descriptor is read, validated (CPL0, selector, GDT
+/// limit, available 64-bit TSS, present, canonical base), then its busy bit is
+/// set with one descriptor-image write after the leaf D bit. The call needs
+/// exclusive ownership of RAM: the caller must exclude DMA, other vCPUs and host
+/// writers; this is not system-wide locked-bus atomicity. CR3 and EFER are
+/// explicit as in the other paged descriptor steps. On any fault or rejection
+/// the CPU state is unchanged; page-table A bits and their callbacks stay
+/// committed.
+pub fn step_paged_ltr_ax(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedLtrReport, PagedLtrError> {
+    use crate::page_walk::{LtrTransactionError as Tx, commit_paged_ltr_descriptor};
+    use od_isa::execute::{PagedLtrPreparation, prepare_paged_ltr_ax};
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedLtrError::Configuration)?;
+    let instruction_rip = state.rip;
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let (preparation, mut page_fault, mut memory_error) = {
+        let mut memory = PagedDescriptorMemory {
+            bus,
+            paging,
+            instruction_rip,
+            instruction_name: "LTR",
+            committed_write: &mut committed_write,
+            page_fault: None,
+            memory_error: None,
+        };
+        let preparation = prepare_paged_ltr_ax(state, &mut memory, context, efer, rflags_defined);
+        (preparation, memory.page_fault, memory.memory_error)
+    };
+    let mut rejection = None;
+    let cpu = match &preparation {
+        PagedLtrPreparation::Exit(result) => result.clone(),
+        PagedLtrPreparation::Ready { .. } => {
+            let (physical, _) = bus.split_for_pio_step();
+            let transaction = commit_paged_ltr_descriptor(
+                physical,
+                &paging,
+                state,
+                &preparation,
+                context,
+                &mut committed_write,
+            );
+            let exit = match transaction {
+                Ok(prepared) => {
+                    prepared.commit(state);
+                    od_isa::PagedProbeExit::Retired
+                }
+                Err(Tx::Descriptor(fault)) => od_isa::PagedProbeExit::Fault(fault),
+                Err(Tx::Access(TrackedAccessError::PageFault { record, .. })) => {
+                    let fault = record.fault().clone();
+                    page_fault = Some(record);
+                    od_isa::PagedProbeExit::Fault(fault)
+                }
+                Err(Tx::Access(error)) => {
+                    let message = format!("paged LTR descriptor access failed: {error:?}");
+                    memory_error = Some(error);
+                    od_isa::PagedProbeExit::Backend(MemoryError::Backend(message))
+                }
+                Err(error) => {
+                    rejection = Some(match error {
+                        Tx::TableAlias => PagedLtrRejection::TableAlias,
+                        Tx::TranslationChanged => PagedLtrRejection::TranslationChanged,
+                        Tx::Access(_) | Tx::Descriptor(_) => unreachable!(),
+                    });
+                    od_isa::PagedProbeExit::Unsupported { opcode: 0x0f }
+                }
+            };
+            let instructions_executed = u64::from(matches!(exit, od_isa::PagedProbeExit::Retired));
+            od_isa::PagedProbeResult {
+                exit,
+                instructions_executed,
+                rflags_defined,
+            }
+        }
+    };
+    Ok(PagedLtrReport {
+        cpu,
+        page_fault,
+        memory_error,
+        rejection,
+    })
+}
+
 /// Shared RAM-only tracked-memory contract for the bounded LGDT/LIDT adapters.
 struct PagedDescriptorMemory<'a> {
     bus: &'a mut MachineBus,

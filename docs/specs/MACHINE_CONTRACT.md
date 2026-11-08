@@ -1957,6 +1957,51 @@ See the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md) and
 
 <a id="secondary-pf-df-delivery-and-shutdown-s4-19c"></a>
 
+## Paged `LTR AX` (S4-18d)
+
+`step_paged_ltr_ax` composes `prepare_paged_ltr_ax` / `prepare_paged_ltr_commit`
+with the uncached tracked four-level RAM walker. It accepts only bare `0F 00 D8`
+(`LTR AX`) in the same fixed Long64 profile as the bounded LGDT/LIDT entries:
+CR0/CR4/EFER equal to the profile values, 36-bit CR3, a present GDTR, a running
+CPU and no STI shadow. Instruction bytes are fetched one at a time and only inside
+the page of RIP. A `LOCK` prefix is `#UD`; CPL != 0 is `#GP(0)` after the exact
+fetch; other encodings are `Unsupported` with no descriptor access.
+
+Selector checks precede any descriptor access: null → `#GP(0)`; TI=1 or a
+descriptor outside the GDT limit → `#GP(selector)`; a descriptor address that
+wraps or is non-canonical → `#GP(0)`. A descriptor whose 16 bytes would cross a
+4 KiB page is `Unsupported` before access. The descriptor is read through a
+supervisor (`DescriptorTable`) walk, one 16-byte RAM-only operand. The shared
+validator `validate_tss_descriptor` then requires an available 64-bit TSS (type 9,
+busy/other types `#GP(selector)`), present (`#NP(selector)`), a zero upper type
+field (bits 12:8 of the upper dword; other upper bits are ignored; `#GP(selector)`)
+and a canonical base (`#GP(0)`); limit honours the G bit. The `#GP(0)` code for a
+non-canonical base and the check order are profile choices that are not yet
+confirmed against the SDM text or hardware.
+
+Only after validation a second, write-permission walk of the same address runs
+(WP applies: a read-only GDT page raises `#PF` with W set, CR2 = descriptor
+address, without CPU or descriptor change). Its translation must equal the read
+walk; if the descriptor's 4 KiB page is also a page-table page used to reach it,
+the step is rejected as `PagedLtrRejection::TableAlias` (a mismatch is
+`TranslationChanged`, not reachable with the current walker since A bits do not change
+translations), reported as `Unsupported`, with no D or busy-descriptor write. The A
+bits set by the walks stay committed and, for an aliased descriptor, may change
+its bytes.
+On success the leaf D bit is written when clear, then the 16-byte descriptor
+image with the busy bit set, and only then TR (selector, base, limit, access
+byte with busy bit, G/AVL flags) and RIP are committed (RIP += 3). Fetch and A-bit
+writes are reported in order through the callback, then the D write, then the
+descriptor write. On any fault or rejection the CPU state is unchanged and page
+table A bits (and their callbacks) from earlier walks stay committed.
+
+The step needs exclusive RAM ownership for the duration of the call (no DMA,
+other vCPUs or host writers); it is not system-wide locked-bus atomicity and has
+no TLB, JIT or cross-page support. No TSS contents are read, no stack switching
+or task switching is modelled, and `TaskRegisterCache` is rejected by the legacy
+fragment adapter. CR3 and EFER are explicit arguments, like the other paged
+descriptor steps. See the [S4-18d report](../reports/STAGE_4_S4-18D_2026-11-08.md).
+
 ## Secondary #PF, #DF delivery, and shutdown (S4-19c)
 
 Within the existing Long64/CPL0/same-CPL/IST=0 exception profile, an actual

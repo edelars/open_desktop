@@ -60,8 +60,8 @@ pub use page_walk::{
 };
 
 pub use paged_descriptor::{
-    PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, step_paged_lgdt,
-    step_paged_lidt,
+    PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,
+    PagedLtrRejection, PagedLtrReport, step_paged_lgdt, step_paged_lidt, step_paged_ltr_ax,
 };
 pub use paged_exception_delivery::{
     PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryOutcome,

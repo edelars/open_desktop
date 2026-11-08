@@ -20110,3 +20110,14 @@ changes only IDTR and RIP, retires once, and preserves other CPU state and
 RFLAGS definedness. Descriptor-source faults leave CPU state unchanged. The
 loaded IDT base is not walked. Other encodings and control states remain
 unsupported.
+
+### S4-18d — bounded paged LTR AX state
+
+`LongModeState::tr` carries `TaskRegisterCache` (selector, 64-bit base, limit with the G
+bit applied, descriptor access byte and the AVL/G nibble). It is populated only by
+`prepare_paged_ltr_commit(..).commit(..)` after the caller has written the busy descriptor
+image; `validate_tss_descriptor` is a pure check (CPL0, selector/GDT limit, available 64-bit
+TSS, present, canonical base, in that order) that faults with `#GP(0)`, `#GP(selector)` or
+`#NP(selector)`. The legacy fragment adapter rejects a present `tr`. No TSS contents,
+task switching or stack switching are modelled. See the
+[machine contract](MACHINE_CONTRACT.md#paged-ltr-ax-s4-18d).

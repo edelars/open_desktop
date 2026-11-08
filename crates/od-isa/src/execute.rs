@@ -16434,6 +16434,199 @@ pub fn step_paged_lgdt(
     }
 }
 
+/// Result of the fetch and selector checks for the bounded paged LTR profile.
+/// `Ready` is only preparation: no descriptor or CPU state has changed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedLtrPreparation {
+    Ready {
+        selector: u16,
+        descriptor_address: u64,
+        next_rip: u64,
+    },
+    Exit(PagedProbeResult<std::convert::Infallible>),
+}
+
+/// CPU values prepared before the caller commits the descriptor update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedPagedLtrCommit {
+    busy_descriptor: [u8; 16],
+    tr: crate::TaskRegisterCache,
+    next_rip: u64,
+}
+
+impl PreparedPagedLtrCommit {
+    /// Full descriptor image whose busy bit the caller must commit to memory.
+    pub fn busy_descriptor(&self) -> &[u8; 16] {
+        &self.busy_descriptor
+    }
+
+    /// Apply only after the caller has committed the matching descriptor image.
+    pub fn commit(self, state: &mut LongModeState) {
+        state.tr = Some(self.tr);
+        state.rip = self.next_rip;
+    }
+}
+
+/// Validate a fetched descriptor and prepare its busy image and CPU commit.
+/// A preparation that already exited is returned as `None` without validation.
+/// The caller must keep the descriptor snapshot and CPU state stable until commit.
+pub fn prepare_paged_ltr_commit(
+    preparation: &PagedLtrPreparation,
+    cpl: PrivilegeLevel,
+    gdtr: crate::state::Gdtr,
+    mut descriptor: [u8; 16],
+) -> Result<Option<PreparedPagedLtrCommit>, ArchitecturalFault> {
+    let PagedLtrPreparation::Ready {
+        selector, next_rip, ..
+    } = preparation
+    else {
+        return Ok(None);
+    };
+    let mut tr = crate::validate_tss_descriptor(cpl, *selector, gdtr, descriptor)?;
+    // LTR's SDM operation marks the descriptor busy before loading it into TR.
+    descriptor[5] |= 2;
+    tr.access = descriptor[5];
+    Ok(Some(PreparedPagedLtrCommit {
+        busy_descriptor: descriptor,
+        tr,
+        next_rip: *next_rip,
+    }))
+}
+
+/// Fetch exact `LTR AX` (`0F 00 D8`) and prepare its GDT descriptor address
+/// without reading the TSS descriptor. Profile and fetch checks follow the
+/// bounded LGDT/LIDT contract: exact CR0/CR4/EFER, running CPU, no STI shadow.
+/// A `LOCK` prefix is `#UD`; CPL != 0 is `#GP(0)` after the exact fetch.
+pub fn prepare_paged_ltr_ax(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    rflags_defined: u64,
+) -> PagedLtrPreparation {
+    let exit = |exit| {
+        PagedLtrPreparation::Exit(PagedProbeResult {
+            exit,
+            instructions_executed: 0,
+            rflags_defined,
+        })
+    };
+    let reject = |reason| exit(PagedProbeExit::Rejected(reason));
+    let fault = |vector, code| {
+        exit(PagedProbeExit::Fault(ArchitecturalFault {
+            vector,
+            error_code: code,
+            linear_address: None,
+        }))
+    };
+    if rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    let Some(gdtr) = state.gdtr else {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    };
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return exit(PagedProbeExit::Halted);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff > 0xffd {
+        return exit(PagedProbeExit::Unsupported { opcode: 0x0f });
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    // Bytes are fetched one at a time and only inside the page of RIP, so a
+    // rejected form never walks the next code page.
+    let mut offset = 0u64;
+    let mut locked = false;
+    for expected in [0x0f, 0x00, 0xd8] {
+        loop {
+            if (state.rip & 0xfff) + offset >= 4096 {
+                return exit(PagedProbeExit::Unsupported { opcode: 0x0f });
+            }
+            let Some(address) = state.rip.checked_add(offset) else {
+                return fault(13, Some(0));
+            };
+            if !canonical(address) {
+                return fault(13, Some(0));
+            }
+            let byte = match memory.fetch(address, context) {
+                Ok(byte) => byte,
+                Err(MemoryError::Architectural(f)) => return exit(PagedProbeExit::Fault(f)),
+                Err(error) => return exit(PagedProbeExit::Backend(error)),
+            };
+            offset += 1;
+            if offset == 1 && byte == 0xf0 {
+                locked = true;
+                continue;
+            }
+            if byte != expected {
+                return exit(PagedProbeExit::Unsupported { opcode: byte });
+            }
+            break;
+        }
+    }
+    if locked {
+        return fault(6, None);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return fault(13, Some(0));
+    }
+    let selector = state.gpr[0] as u16;
+    if selector & !3 == 0 {
+        return fault(13, Some(0));
+    }
+    let code = u32::from(selector & !3);
+    let table_offset = u64::from(selector & !7);
+    if selector & 4 != 0 || table_offset + 15 > u64::from(gdtr.limit) {
+        return fault(13, Some(code));
+    }
+    let Some(address) = gdtr.base.checked_add(table_offset) else {
+        return fault(13, Some(0));
+    };
+    let Some(end) = address.checked_add(15) else {
+        return fault(13, Some(0));
+    };
+    if !canonical(address) || !canonical(end) {
+        return fault(13, Some(0));
+    }
+    if address & 0xfff > 0xff0 {
+        return exit(PagedProbeExit::Unsupported { opcode: 0x0f });
+    }
+    let Some(next_rip) = state.rip.checked_add(3) else {
+        return fault(13, Some(0));
+    };
+    PagedLtrPreparation::Ready {
+        selector,
+        descriptor_address: address,
+        next_rip,
+    }
+}
+
 struct FetchCapture<'a, M> {
     inner: &'a mut M,
     bytes: Vec<(u64, u8)>,
@@ -52574,6 +52767,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52662,6 +52856,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52717,6 +52912,7 @@ mod tests {
         let before = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52777,6 +52973,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52823,6 +53020,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52893,6 +53091,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52972,6 +53171,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53021,6 +53221,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53075,6 +53276,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53138,6 +53340,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53257,6 +53460,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53311,6 +53515,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53368,6 +53573,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53419,6 +53625,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53477,6 +53684,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53528,6 +53736,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53611,6 +53820,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53654,6 +53864,7 @@ mod tests {
         let before = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53716,6 +53927,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53760,6 +53972,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53845,6 +54058,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53906,6 +54120,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54008,6 +54223,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54057,6 +54273,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54106,6 +54323,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54161,6 +54379,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54212,6 +54431,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54294,6 +54514,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54345,6 +54566,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54419,6 +54641,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -54507,6 +54730,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54583,6 +54807,7 @@ mod tests {
                 let mut state = LongModeState {
                     syscall: None,
                     cr2: None,
+                    tr: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -54663,6 +54888,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54808,6 +55034,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54956,6 +55183,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55005,6 +55233,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55053,6 +55282,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55111,6 +55341,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55159,6 +55390,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55236,6 +55468,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55336,6 +55569,7 @@ mod tests {
                 let mut state = LongModeState {
                     syscall: None,
                     cr2: None,
+                    tr: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -55486,6 +55720,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55583,6 +55818,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -55678,6 +55914,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55758,6 +55995,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55812,6 +56050,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55877,6 +56116,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55928,6 +56168,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56002,6 +56243,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56072,6 +56314,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56143,6 +56386,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56214,6 +56458,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56285,6 +56530,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56356,6 +56602,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56427,6 +56674,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56498,6 +56746,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56558,6 +56807,7 @@ mod tests {
         let mut extended_state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56617,6 +56867,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -56692,6 +56943,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56914,6 +57166,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57010,6 +57263,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -57085,6 +57339,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -57263,6 +57518,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57309,6 +57565,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57366,6 +57623,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57428,6 +57686,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57490,6 +57749,7 @@ mod tests {
                 let mut state = LongModeState {
                     syscall: None,
                     cr2: None,
+                    tr: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -57545,6 +57805,7 @@ mod tests {
                 let mut state = LongModeState {
                     syscall: None,
                     cr2: None,
+                    tr: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -57622,6 +57883,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57701,6 +57963,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57759,6 +58022,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57813,6 +58077,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57867,6 +58132,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57921,6 +58187,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57966,6 +58233,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58020,6 +58288,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58068,6 +58337,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58123,6 +58393,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58178,6 +58449,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58231,6 +58503,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58362,6 +58635,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58579,6 +58853,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59377,6 +59652,7 @@ mod tests {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -59449,6 +59725,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59498,6 +59775,7 @@ mod tests {
         let mut state = LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -196828,5 +197106,84 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert!(memory.accesses.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod paged_ltr_tests {
+    use super::*;
+    use crate::TaskRegisterCache;
+    use crate::state::Gdtr;
+
+    fn descriptor() -> [u8; 16] {
+        [
+            0x67, 0x45, 0x78, 0x56, 0x34, 0x89, 0x91, 0x12, 0x00, 0x80, 0xff, 0xff, 0, 0, 0, 0,
+        ]
+    }
+
+    fn ready() -> PagedLtrPreparation {
+        PagedLtrPreparation::Ready {
+            selector: 8,
+            descriptor_address: 0x1008,
+            next_rip: 0x203,
+        }
+    }
+
+    fn gdtr() -> Gdtr {
+        Gdtr {
+            base: 0x1000,
+            limit: 31,
+        }
+    }
+
+    #[test]
+    fn commit_preparation_builds_busy_image_and_changes_only_tr_and_rip() {
+        let mut state = LongModeState {
+            rip: 0x200,
+            gdtr: Some(gdtr()),
+            ..LongModeState::default()
+        };
+        state.gpr[0] = 0xabcdef;
+        let before = state.clone();
+        let prepared =
+            prepare_paged_ltr_commit(&ready(), PrivilegeLevel::Ring0, gdtr(), descriptor())
+                .unwrap()
+                .unwrap();
+        assert_eq!(state, before, "preparation does not touch the CPU");
+        let mut busy = descriptor();
+        busy[5] = 0x8b;
+        assert_eq!(*prepared.busy_descriptor(), busy);
+        let mut expected = before;
+        expected.rip = 0x203;
+        expected.tr = Some(TaskRegisterCache {
+            selector: 8,
+            base: 0xffff_8000_1234_5678,
+            limit: 0x14567fff,
+            access: 0x8b,
+            flags: 9,
+        });
+        prepared.commit(&mut state);
+        assert_eq!(state, expected);
+    }
+
+    #[test]
+    fn commit_preparation_faults_and_exits_do_not_validate_or_change_state() {
+        for (access, vector) in [(0x8b, 13), (0x09, 11)] {
+            let mut invalid = descriptor();
+            invalid[5] = access;
+            let fault = prepare_paged_ltr_commit(&ready(), PrivilegeLevel::Ring0, gdtr(), invalid)
+                .unwrap_err();
+            assert_eq!((fault.vector, fault.error_code), (vector, Some(8)));
+        }
+        let exited = PagedLtrPreparation::Exit(PagedProbeResult {
+            exit: PagedProbeExit::Halted,
+            instructions_executed: 0,
+            rflags_defined: 0,
+        });
+        // An earlier exit is passed through without validating the (invalid) image.
+        assert_eq!(
+            prepare_paged_ltr_commit(&exited, PrivilegeLevel::Ring3, gdtr(), [0xff; 16]),
+            Ok(None)
+        );
     }
 }

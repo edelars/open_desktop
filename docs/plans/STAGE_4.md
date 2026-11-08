@@ -845,6 +845,17 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Нормативная основа:** Intel SDM version 090, [Vol. 1 §6.14.1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf)
   и [Vol. 3A §3.4.5](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
 
+#### S4-18d — bounded paged LTR AX
+
+- [x] Реализован и проверен локально; независимое ревью — см. [отчёт S4-18d](../reports/STAGE_4_S4-18D_2026-11-08.md).
+- **Реализовано:** `step_paged_ltr_ax` (`0F 00 D8`) в профиле LGDT/LIDT; чтение 16-байтового
+  TSS-дескриптора из GDT через supervisor walk, `validate_tss_descriptor`, write-permission walk,
+  D leaf, запись дескриптора с busy-битом, затем commit `TaskRegisterCache` (`LongModeState::tr`) и RIP.
+  Отказы: `#UD` (LOCK), `#GP`/`#NP`, `#PF` (W), `TableAlias`/`TranslationChanged`.
+- **Граница:** без чтения содержимого TSS, stack/task switching, IST, TLB/JIT, cross-page
+  descriptor, MMIO-дескриптора и SMP-атомарности; CR3/EFER явные аргументы. S4-18 остаётся открытым.
+- **Нормативная основа:** Intel SDM Vol. 2 (`LTR`) и Vol. 3A §7.2.3 (64-bit TSS descriptor).
+
 <a id="s4-19-доставка-исключений-и-восстановление-после-fault"></a>
 
 ### S4-19. Доставка исключений и восстановление после fault

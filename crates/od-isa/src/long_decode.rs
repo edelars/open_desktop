@@ -21555,6 +21555,7 @@ mod tests {
             let mut state = crate::LongModeState {
                 syscall: None,
                 cr2: None,
+                tr: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,

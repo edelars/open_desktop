@@ -60,7 +60,8 @@ pub use port_io::PortIo;
 pub use state::{
     CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
-    RegisterView, StackSegmentDescriptorCache, StiShadow,
+    RegisterView, StackSegmentDescriptorCache, StiShadow, TaskRegisterCache,
+    validate_tss_descriptor,
 };
 pub use sti::StiProfile;
 pub use swapgs::SwapgsProfile;

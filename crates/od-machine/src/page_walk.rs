@@ -656,6 +656,9 @@ struct WalkTranslation {
     leaf_address: GuestPhysicalAddress,
     leaf_value: u64,
     leaf_level: PageTableLevel,
+    /// Physical bases of the tables visited (PML4 first); levels not visited
+    /// (past a 2 MiB leaf) are `None`.
+    table_pages: [Option<GuestPhysicalAddress>; 4],
 }
 
 struct WalkResult {
@@ -747,7 +750,9 @@ fn walk_long64_4k_with_writer(
     };
     let mut leaf = (GuestPhysicalAddress::new(0), 0u64);
     let mut large_leaf = false;
-    for level in levels {
+    let mut table_pages = [None; 4];
+    for (table_index, level) in levels.into_iter().enumerate() {
+        table_pages[table_index] = Some(GuestPhysicalAddress::new(table_base));
         let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
         let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
         let entry_value = match memory.read_u64(entry_address) {
@@ -912,6 +917,7 @@ fn walk_long64_4k_with_writer(
             } else {
                 PageTableLevel::Pt
             },
+            table_pages,
         }),
         trace,
         ad_updates,
@@ -1254,6 +1260,153 @@ fn access_long64_4k_internal_with_writer(
             ad_update_count,
         ),
     }
+}
+
+/// Errors from the bounded paged LTR descriptor transaction. Architectural
+/// descriptor faults and guest `#PF` are part of the guest exception model; the
+/// remaining variants are bounded-profile rejections.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum LtrTransactionError {
+    Access(TrackedAccessError),
+    TableAlias,
+    TranslationChanged,
+    Descriptor(od_isa::memory::ArchitecturalFault),
+}
+
+fn descriptor_ram_error(
+    memory: &PhysicalMemory,
+    physical: GuestPhysicalAddress,
+    write: bool,
+) -> Result<(), TrackedAccessError> {
+    let physical_error = |source| TrackedAccessError::OperandPhysical {
+        address: physical,
+        source,
+    };
+    match memory.locate_region_kind(physical, 16) {
+        Ok(MemoryRegionKind::Ram) => Ok(()),
+        Ok(MemoryRegionKind::Mmio) => {
+            Err(TrackedAccessError::DeviceUnavailable { address: physical })
+        }
+        Ok(kind) => Err(physical_error(if write {
+            MemoryAccessError::ReadOnlyRegion(kind)
+        } else {
+            MemoryAccessError::UnreadableRegion(kind)
+        })),
+        Err(source) => Err(physical_error(source)),
+    }
+}
+
+/// Owner-exclusive read, validate and busy-bit commit of one 16-byte GDT TSS
+/// descriptor: read walk, validation, write-permission walk, then the leaf D
+/// update and the descriptor image write. Nothing is written before every
+/// check passes; page-table A bits (and their callbacks) from the walks remain
+/// committed when a later check fails. The caller must exclude DMA, other
+/// vCPUs and host writers for the duration of the call.
+pub(crate) fn commit_paged_ltr_descriptor(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    state: &od_isa::LongModeState,
+    preparation: &od_isa::execute::PagedLtrPreparation,
+    context: AccessContext,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<od_isa::execute::PreparedPagedLtrCommit, LtrTransactionError> {
+    let od_isa::execute::PagedLtrPreparation::Ready {
+        descriptor_address, ..
+    } = preparation
+    else {
+        unreachable!("caller passes only ready preparations")
+    };
+    let address = GuestLinearAddress::new(*descriptor_address);
+    let context = context.descriptor_table();
+    if address.0 & 0xfff > 0xff0 {
+        return Err(LtrTransactionError::Access(
+            TrackedAccessError::CrossesPage { address, width: 16 },
+        ));
+    }
+    let read = walk_long64_4k(
+        memory,
+        paging,
+        state.rip,
+        address,
+        context,
+        AccessKind::Read,
+        &mut committed_write,
+    )
+    .translation
+    .map_err(LtrTransactionError::Access)?;
+    let page = read.physical.get() & !0xfff;
+    if read.table_pages.iter().flatten().any(|p| p.get() == page) {
+        return Err(LtrTransactionError::TableAlias);
+    }
+    descriptor_ram_error(memory, read.physical, false).map_err(LtrTransactionError::Access)?;
+    let mut snapshot = [0u8; 16];
+    memory
+        .read_bytes(read.physical, &mut snapshot)
+        .map_err(|source| {
+            LtrTransactionError::Access(TrackedAccessError::OperandPhysical {
+                address: read.physical,
+                source,
+            })
+        })?;
+    let prepared = od_isa::execute::prepare_paged_ltr_commit(
+        preparation,
+        context.privilege,
+        state.gdtr.expect("ready preparation requires GDTR"),
+        snapshot,
+    )
+    .map_err(LtrTransactionError::Descriptor)?
+    .expect("ready preparation");
+
+    // Write-permission walk: sets A bits but not D, and never writes the operand.
+    let write = walk_long64_4k(
+        memory,
+        paging,
+        state.rip,
+        address,
+        context,
+        AccessKind::Write,
+        &mut committed_write,
+    )
+    .translation
+    .map_err(LtrTransactionError::Access)?;
+    if read.physical != write.physical
+        || read.leaf_address != write.leaf_address
+        || read.table_pages != write.table_pages
+    {
+        return Err(LtrTransactionError::TranslationChanged);
+    }
+    let page = write.physical.get() & !0xfff;
+    if write.table_pages.iter().flatten().any(|p| p.get() == page) {
+        return Err(LtrTransactionError::TableAlias);
+    }
+    descriptor_ram_error(memory, write.physical, true).map_err(LtrTransactionError::Access)?;
+
+    if write.leaf_value & (1 << 6) == 0 {
+        let after = write.leaf_value | (1 << 6);
+        memory
+            .write_u64(write.leaf_address, after, &mut committed_write)
+            .map_err(|source| {
+                LtrTransactionError::Access(TrackedAccessError::TableWrite {
+                    level: write.leaf_level,
+                    entry_address: write.leaf_address,
+                    bit: AdBit::Dirty,
+                    source,
+                })
+            })?;
+    }
+    memory
+        .write_bytes(
+            write.physical,
+            prepared.busy_descriptor(),
+            &mut committed_write,
+        )
+        .map_err(|source| {
+            LtrTransactionError::Access(TrackedAccessError::OperandPhysical {
+                address: write.physical,
+                source,
+            })
+        })?;
+    Ok(prepared)
 }
 
 pub(crate) fn read_long64_4k_bounded_ram_read(

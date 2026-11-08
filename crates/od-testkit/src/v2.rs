@@ -1344,6 +1344,7 @@ impl IntegerState {
         Ok(LongModeState {
             syscall: None,
             cr2: None,
+            tr: None,
             cr3: None,
             sti_shadow: self.sti_shadow.map(|shadow| match shadow {
                 StiShadowSnapshot::Clear => od_isa::StiShadow::Clear,

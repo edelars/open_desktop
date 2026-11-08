@@ -250,6 +250,8 @@ pub struct LongModeState {
     pub gdtr: Option<Gdtr>,
     /// IDTR state populated only by the bounded local LIDT profile.
     pub idtr: Option<Idtr>,
+    /// Task register state populated only by the bounded paged LTR profile.
+    pub tr: Option<TaskRegisterCache>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,
     /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
@@ -290,6 +292,77 @@ pub struct Gdtr {
 pub struct Idtr {
     pub base: u64,
     pub limit: u16,
+}
+
+/// Architectural fields of a 64-bit TSS descriptor, including the selector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskRegisterCache {
+    pub selector: u16,
+    pub base: u64,
+    pub limit: u32,
+    pub access: u8,
+    /// Architectural AVL and granularity bits in descriptor-nibble positions.
+    pub flags: u8,
+}
+
+/// Validate an already fetched descriptor without accessing memory or changing CPU state.
+/// The selected profile uses canonical48 and checks CPL, selector, full GDT
+/// limit, type, presence, upper type field and base in that order. The error
+/// code of a non-canonical base (`#GP(0)`) and this check order are profile
+/// choices not yet confirmed against the SDM text or hardware.
+pub fn validate_tss_descriptor(
+    cpl: crate::PrivilegeLevel,
+    selector: u16,
+    gdtr: Gdtr,
+    descriptor: [u8; 16],
+) -> Result<TaskRegisterCache, crate::ArchitecturalFault> {
+    let fault = |vector, code| crate::ArchitecturalFault {
+        vector,
+        error_code: Some(code),
+        linear_address: None,
+    };
+    if cpl != crate::PrivilegeLevel::Ring0 {
+        return Err(fault(13, 0));
+    }
+    let code = u32::from(selector & !3);
+    let offset = u32::from(selector & !7);
+    if selector & !3 == 0 || selector & 4 != 0 || offset + 15 > u32::from(gdtr.limit) {
+        return Err(fault(13, code));
+    }
+    let access = descriptor[5];
+    if access & 0x1f != 9 {
+        return Err(fault(13, code));
+    }
+    if access & 0x80 == 0 {
+        return Err(fault(11, code));
+    }
+    // Only the type field (bits 12:8) of the upper dword must be zero; the
+    // remaining upper bits are reserved and ignored.
+    if descriptor[13] & 0x1f != 0 {
+        return Err(fault(13, code));
+    }
+    let base = u64::from(u16::from_le_bytes([descriptor[2], descriptor[3]]))
+        | (u64::from(descriptor[4]) << 16)
+        | (u64::from(descriptor[7]) << 24)
+        | (u64::from(u32::from_le_bytes(descriptor[8..12].try_into().unwrap())) << 32);
+    if !crate::long_decode::canonical(base) {
+        return Err(fault(13, 0));
+    }
+    let raw_limit = u32::from(u16::from_le_bytes([descriptor[0], descriptor[1]]))
+        | (u32::from(descriptor[6] & 0x0f) << 16);
+    let flags = descriptor[6] >> 4 & 0x9;
+    let limit = if flags & 8 != 0 {
+        (raw_limit << 12) | 0xfff
+    } else {
+        raw_limit
+    };
+    Ok(TaskRegisterCache {
+        selector,
+        base,
+        limit,
+        access,
+        flags,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -356,6 +429,7 @@ impl Default for LongModeState {
             es_cache: None,
             gdtr: None,
             idtr: None,
+            tr: None,
             fs_cache: None,
             gs_cache: None,
             x87: None,
@@ -399,6 +473,7 @@ pub enum FragmentAdapterError {
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
     UnsupportedIdtr(Idtr),
+    UnsupportedTaskRegister(TaskRegisterCache),
     UnsupportedDsCache(DsDescriptorCache),
     UnsupportedEsCache(DataSegmentDescriptorCache),
     UnsupportedCsSelector(u16),
@@ -493,6 +568,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(idtr) = state.idtr {
             return Err(FragmentAdapterError::UnsupportedIdtr(idtr));
+        }
+        if let Some(tr) = state.tr {
+            return Err(FragmentAdapterError::UnsupportedTaskRegister(tr));
         }
         if let Some(fs_cache) = state.fs_cache {
             return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
@@ -757,6 +835,7 @@ mod tests {
                     let mut state = LongModeState {
                         syscall: None,
                         cr2: None,
+                        tr: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -996,6 +1075,91 @@ mod tests {
         assert_eq!(
             FragmentState::try_from(&state),
             Err(FragmentAdapterError::UnsupportedKernelGsBase(0))
+        );
+    }
+}
+
+#[cfg(test)]
+mod task_register_tests {
+    use super::*;
+    use crate::PrivilegeLevel::{Ring0, Ring3};
+
+    fn gdtr() -> Gdtr {
+        Gdtr {
+            base: 0x1000,
+            limit: 31,
+        }
+    }
+
+    fn descriptor() -> [u8; 16] {
+        [
+            0x67, 0x45, 0x78, 0x56, 0x34, 0x89, 0x91, 0x12, 0x00, 0x80, 0xff, 0xff, 0, 0, 0, 0,
+        ]
+    }
+
+    #[test]
+    fn valid_available_tss_decodes_base_limit_and_flags() {
+        let cache = validate_tss_descriptor(Ring0, 8, gdtr(), descriptor()).unwrap();
+        assert_eq!(
+            cache,
+            TaskRegisterCache {
+                selector: 8,
+                base: 0xffff_8000_1234_5678,
+                limit: 0x14567fff,
+                access: 0x89,
+                flags: 9,
+            }
+        );
+        // Reserved bits of the upper dword (outside the type field) are ignored.
+        let mut reserved = descriptor();
+        reserved[12] = 0xff;
+        reserved[13] = 0xe0;
+        reserved[15] = 0xff;
+        assert!(validate_tss_descriptor(Ring0, 8, gdtr(), reserved).is_ok());
+        // Byte granularity keeps the raw limit and clears the G flag.
+        let mut byte_granular = descriptor();
+        byte_granular[6] = 0x12;
+        let cache = validate_tss_descriptor(Ring0, 8, gdtr(), byte_granular).unwrap();
+        assert_eq!((cache.limit, cache.flags), (0x24567, 1));
+    }
+
+    #[test]
+    fn validation_faults_follow_the_documented_order() {
+        let fault = |cpl, selector, descriptor| {
+            let error = validate_tss_descriptor(cpl, selector, gdtr(), descriptor).unwrap_err();
+            (error.vector, error.error_code)
+        };
+        assert_eq!(fault(Ring3, 8, descriptor()), (13, Some(0)));
+        assert_eq!(fault(Ring0, 0, descriptor()), (13, Some(0)));
+        assert_eq!(fault(Ring0, 0xc, descriptor()), (13, Some(0xc)));
+        assert_eq!(fault(Ring0, 0x18, descriptor()), (13, Some(0x18)));
+        let mut busy = descriptor();
+        busy[5] = 0x8b;
+        assert_eq!(fault(Ring0, 8, busy), (13, Some(8)));
+        let mut upper = descriptor();
+        upper[13] = 1;
+        assert_eq!(fault(Ring0, 8, upper), (13, Some(8)));
+        // Not-present is reported before a bad upper type field.
+        let mut absent = descriptor();
+        absent[5] = 0x09;
+        assert_eq!(fault(Ring0, 8, absent), (11, Some(8)));
+        absent[13] = 1;
+        assert_eq!(fault(Ring0, 8, absent), (11, Some(8)));
+        let mut noncanonical = descriptor();
+        noncanonical[9] = 0x01;
+        assert_eq!(fault(Ring0, 8, noncanonical), (13, Some(0)));
+    }
+
+    #[test]
+    fn fragment_adapter_rejects_task_register_state() {
+        let cache = validate_tss_descriptor(Ring0, 8, gdtr(), descriptor()).unwrap();
+        let state = LongModeState {
+            tr: Some(cache),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedTaskRegister(cache))
         );
     }
 }
