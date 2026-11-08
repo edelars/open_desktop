@@ -1582,9 +1582,27 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** точная последовательность Linux `pci_check_type1`: запись в 0xCFB игнорируется, latch читается назад и восстанавливается; обращения через `MachineBus::read_port`/`write_port` с реальным `PortRegionBinding`; декодирование bus/device/function/register; байт и слово через 0xCFC+n; невыровненное обращение и qword отвергаются до изменения состояния; BAR sizing и Command через conf1 видны через ECAM и обратно; отличие bus>0 (absent через conf1, `UnknownOffset` через ECAM) задокументировано. Полные `cargo test`, `clippy`, `fmt` для `od-machine`; независимое ревью (Opus, high).
 - **Готово:** Linux-подобная проба conf1 видит функцию из общей таблицы; ECAM и conf1 читают одно состояние; различия задокументированы; `check_layout` без новых ошибок.
 
+#### S4-30c. ECAM и conf1 в карте платы и на шине (opt-in, без host bridge)
+
+- [ ] Принято после ревью.
+- **Где:** `od-machine` (карта, `MachineBus`, manifest), `firmware_board.rs` (handoff код 7), `VIRTUAL_BOARD.md`, `MACHINE_CONTRACT.md`, `FIRMWARE_BOOT.md`.
+- **Сделать:** зарегистрировать ECAM `[0xFC10_0000, 0xFC20_0000)` как не-RAM MMIO в единой карте платы; зарегистрировать одно PCI-config устройство на `MachineBus` (MMIO на ECAM + PIO на 0xCF8–0xCFF, общее состояние, bus 0 пустой). Добавить типизированный дескриптор в manifest (segment 0, bus 0–0, base, size). Включать через opt-in флаг платы по образцу `nvme: Option`: без флага handoff v1.0 байт-в-байт прежний; с флагом код 7 получает `PRESENT = 1` с той же base и диапазоном шин. Дефолт не менять. **Не делать:** MCFG и PNP0C02 (S4-31), генерацию E820 и loader (S4-37), host bridge и любые функции, BAR→MMIO и PCI MMIO aperture, MSI, ACPI PM.
+- **Проверка:** в карте нет пересечений с RAM, ROM, framebuffer, дисплеем, NVMe, IOAPIC и LAPIC; ECAM внутри physical36 и ниже 4 GiB; `patch_physical_ram` на ECAM отвергается; через `MachineBus::read_physical` все 32 устройства bus 0 читаются как `0xFFFF_FFFF`; пробы Linux type1/type2 через `read_port`/`write_port`; запись через conf1 видна через ECAM на diagnostic endpoint в `#[cfg(test)]`; регрессия: handoff по умолчанию байт-в-байт прежний, с флагом код 7 принимает существующий DSDT-builder (`PCIE_ECAM`); независимое ревью (Opus, high).
+- **Готово:** ECAM и conf1 зарегистрированы в плате под флагом; дефолтный handoff не меняется; дескриптор готов для S4-31 и S4-37.
+
+#### S7-14a. ACPI fixed hardware для полного FADT: PM1a, PM timer, reset register (перенесён из этапа 7)
+
+- [ ] Принято после ревью.
+- **Почему здесь:** решение пользователя — S7-14a выполняется в этапе 4, потому что FADT (S4-31) ссылается на адреса PM-блока. Полный FADT, без `HW_REDUCED_ACPI`; reset register — отдельный порт PM-блока, 0xCF9 остаётся явной `UnknownOffset`. RTC/CMOS и HPET остаются в этапе 7 (S7-14).
+- **Где:** `crates/od-machine/src/acpi_pm.rs` (PM1a evt/cnt, PM timer, reset register), `firmware_board.rs` (адреса в карте и поля handoff), `docs/specs/MACHINE_CONTRACT.md` (раздел PM-блока), `docs/specs/VIRTUAL_BOARD.md` (карта портов).
+- **Сделать:** PM1a_EVT_BLK и PM1a_CNT_BLK; `SCI_EN` в PM1a_CNT установлен с сброса; `SMI_CMD = 0`; PM_TMR_BLK на 3.579545 MHz от virtual clock; reset register — SystemIO шириной 1 байт, флаг `RESET_REG_SUP`, запись `RESET_VALUE` останавливает машину с причиной `Reset` (сам сброс — S7-26). Запись `SLP_TYP/SLP_EN` для S5 → причина `Shutdown`. Адреса вне `0xCF8–0xCFF`, без пересечений с существующими PIO-устройствами. Не реализовывать HW_REDUCED, RTC/CMOS, HPET, PIC/PIT/8042, сам FADT (S4-31).
+- **Проверка:** unit-тесты каждого регистра `od-machine`; PM timer монотонен и соответствует virtual clock; S5 и reset дают разные причины остановки; `0xCF9` по-прежнему `UnknownOffset`; адреса не пересекаются с ECAM, conf1, NVMe и другими портами (тест карты); регистры видны через `MachineBus::read_port`/`write_port`. Проверка ACPI mode и SCI в гостевой Linux — S4-38.
+- **Готово:** полный FADT (S4-31) ссылается на существующие адреса PM-блока; `ResetSystem` и S5 используют реальные регистры.
+
 ### S4-31. Подготовить минимальные discovery tables
 
 - [ ] Принято после ревью.
+- **Предусловие:** S7-14a (блок выше) — FADT ссылается на адреса PM-блока. Полный FADT, без `HW_REDUCED_ACPI`; reset register — отдельный порт PM-блока; 0xCF9 остаётся `UnknownOffset`.
 - **Где:** resolved manifest — `od-machine`; форматы ACPI — `firmware/uefi/src/`; orchestration — `tools/build/`; отдельные firmware tests.
 - **Сделать:** определить по выбранному kernel точный набор таблиц, включая необходимые RSDP/root/FADT/MADT/MCFG и их зависимости. Из machine manifest получить адреса, reservations, APIC/ECAM/routes. Не считать заранее любой короткий список достаточным.
 - **Путь сборки:** отдельная freestanding guest-target сборка firmware формирует data-only ACPI blob для фиксированного manifest; packaging только извлекает bytes/sections и metadata, не дублирует serializer. Сохранить version, manifest hash, load ranges, RSDP address. UEFI services и исполнение firmware не требуются; firmware не добавляется в host workspace.

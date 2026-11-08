@@ -204,7 +204,7 @@
 | S7-11 | S7-10, S7-14 | Runtime Services: время, `SetVirtualAddressMap`, `ResetSystem`, RT-переменные |
 | S7-12 | S7-01, S7-02 | Собственный AML-кодировщик и DSDT из manifest |
 | S7-13 | S7-06, S7-12, S7-14; состав — после S7-30 | ACPI (RSDP/XSDT/FADT/MADT/MCFG/HPET/TPM2/DSDT) и SMBIOS из handoff block, configuration tables |
-| S7-14 | S7-03; перечень — после S7-30; координация с S4-29 | ACPI fixed hardware в `od-machine`: PM1, PM timer, reset register, RTC/CMOS, HPET |
+| S7-14 | S7-03; перечень — после S7-30; координация с S4-29 | RTC/CMOS и HPET в `od-machine` (ACPI fixed hardware перенесён в этап 4 как S7-14a) |
 | S7-15 | S7-06; требует принятого S10-03 | GOP поверх собственного дисплейного устройства |
 | S7-16 | S7-03; PCI-привязка blocked до S4-30 | Минимальный NVMe-контроллер в `od-machine` |
 | S7-17 | S7-06, S7-16 | Драйвер NVMe прошивки: Block I/O, Disk I/O, GPT partitions |
@@ -432,13 +432,13 @@
 - **Готово:** ОС-загрузчик получает ACPI/SMBIOS стандартным путём; таблицы согласованы с картой и устройствами машины; S4-31 может собрать blob без второго сериализатора.
 - **Не делать:** не включать таблицы для отсутствующих устройств; не копировать `OEMID` и строки реальных вендоров; не заявлять «ACPI полный» — только перечисленный набор.
 
-### S7-14. Реализовать ACPI fixed hardware, RTC/CMOS и HPET в `od-machine`
+### S7-14. Реализовать RTC/CMOS и HPET в `od-machine`
 
-- [ ] Принято после ревью. Точный перечень устройств берётся из S7-30 (что реально нужно Windows) и из S4-29 (что нужно Linux); до S7-30 — реализовать минимум для `ResetSystem`/`Shutdown` и `GetTime`: PM1a (event/control, `SLP_TYP/SLP_EN` для S5), reset register, PM timer, RTC/CMOS с часами от virtual clock.
-- **Где:** `crates/od-machine/src/acpi_pm.rs` (PM1a, PM timer, reset register — PIO по адресам из `firmware_board.rs`), `crates/od-machine/src/rtc_cmos.rs` (порты `0x70/0x71`, регистры времени/даты, статусные A/B/C/D, периодический IRQ8 — только если понадобится по S7-30/S4-29), `crates/od-machine/src/hpet.rs` (MMIO `0xFED0_0000`, один таймер, 64-бит counter на virtual clock) — только если S7-30 подтвердит необходимость, `firmware_board.rs` (поля handoff block), `MACHINE_CONTRACT.md` (разделы устройств), координация с `STAGE_4.md` S4-29 (одна реализация RTC для обоих этапов).
-- **Сделать:** регистры по ACPI 6.6 «Fixed Hardware Programming Model» и по описанию RTC MC146818-совместимого интерфейса (публичный datasheet, редакцию записать); запись `SLP_EN` с типом S5 → машина останавливается с причиной `Shutdown`; запись в reset register → причина `Reset` (сброс машины как операция — S7-26 после S4-21); PM timer 3.579545 MHz от virtual clock; RTC читает/пишет время относительно virtual clock и базовой даты из handoff block. Поля адресов регистров добавляются в handoff block (S7-03) для FADT S7-13.
-- **Проверить:** unit-тесты `od-machine` каждого регистра, PM timer монотонен и соответствует virtual clock, S5 и reset дают разные причины остановки, чтение RTC после сдвига virtual clock на 61 с даёт +1 мин 1 с; мини-образ `build_firmware.py --smoke pm` (без UEFI) пишет `SLP_EN` → runner печатает `Shutdown`. Проверка через `GetTime`/`ResetSystem` из UEFI — в S7-11.
-- **Готово:** `ResetSystem` и `GetTime` работают через реальные регистры; FADT S7-13 ссылается на существующие адреса.
+- [ ] Принято после ревью. ACPI fixed hardware (PM1a, PM timer, reset register) перенесён в этап 4 как S7-14a — см. [STAGE_4.md](STAGE_4.md) (блок «S7-14a»). Здесь — RTC/CMOS с часами от virtual clock, и HPET только если S7-30 подтвердит необходимость. Точный перечень берётся из S7-30 и из S4-29; до S7-30 — минимум для `GetTime` (RTC/CMOS).
+- **Где:** `crates/od-machine/src/rtc_cmos.rs` (порты `0x70/0x71`, регистры времени/даты, статусные A/B/C/D, периодический IRQ8 — только если понадобится по S7-30/S4-29), `crates/od-machine/src/hpet.rs` (MMIO `0xFED0_0000`, один таймер, 64-бит counter на virtual clock) — только если S7-30 подтвердит необходимость, `firmware_board.rs` (поля handoff block), `MACHINE_CONTRACT.md` (разделы устройств), координация с `STAGE_4.md` S4-29 (одна реализация RTC для обоих этапов).
+- **Сделать:** RTC читает/пишет время относительно virtual clock и базовой даты из handoff block; регистры по описанию RTC MC146818-совместимого интерфейса (публичный datasheet, редакцию записать). PM-регистры и reset register — в S7-14a (этап 4). Поля адресов RTC добавляются в handoff block (S7-03) для FADT S7-13.
+- **Проверить:** unit-тесты `od-machine` каждого RTC-регистра; чтение RTC после сдвига virtual clock на 61 с даёт +1 мин 1 с. Проверка через `GetTime` из UEFI — в S7-11.
+- **Готово:** `GetTime` работает через реальный RTC; `ResetSystem` использует reset register из S7-14a.
 - **Не делать:** не реализовывать PIC/PIT/8042 без подтверждённой необходимости (S4-29/S7-30); не делать два RTC для этапов 4 и 7; не раздувать HPET до нескольких таймеров без потребителя.
 
 ### S7-15. Реализовать GOP поверх собственного дисплейного устройства
