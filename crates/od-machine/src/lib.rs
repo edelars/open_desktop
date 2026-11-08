@@ -139,8 +139,9 @@ pub use pio_step::step_diagnostic_pio_u8;
 
 pub use pci_ecam::{
     EcamAddress, EcamAddressError, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_BASE,
-    PCI_ECAM_BYTES, PCI_ECAM_END_BUS, PCI_ECAM_START_BUS, PciEcam, PciEcamError, PciFunction,
-    Type0Config, Type0ConfigError, decode_ecam_offset,
+    PCI_ECAM_BYTES, PCI_ECAM_DESCRIPTOR, PCI_ECAM_END_BUS, PCI_ECAM_SEGMENT, PCI_ECAM_START_BUS,
+    PciEcam, PciEcamDescriptor, PciEcamError, PciFunction, Type0Config, Type0ConfigError,
+    decode_ecam_offset,
 };
 
 pub use physical_memory::{

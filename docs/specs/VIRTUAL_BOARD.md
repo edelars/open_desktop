@@ -98,7 +98,7 @@ interrupt support.
 | `[0xFFC0_0000, 0x1_0000_0000)` | ROM прошивки 4 MiB, read-only; исполняется shadow-копия в RAM, не ROM |
 | `[0x1_0000_0000, …)` | Верхняя RAM, `R − 0xF400_0000`, не выше `2^36` |
 
-Общий объём RAM `R`: от 128 MiB до `0xF_F400_0000`, кратно 2 MiB. Окно ECAM `[0xFC10_0000, 0xFC20_0000)` выбрано в S4-30a для bus 0 (без production-функций), но не входит в карту платы v1: `firmware_board.rs` и manifest его не регистрируют, код 7 остаётся `PRESENT = 0`. Окна HPET и ACPI fixed hardware не назначены (S7-14).
+Общий объём RAM `R`: от 128 MiB до `0xF_F400_0000`, кратно 2 MiB. Окно ECAM `[0xFC10_0000, 0xFC20_0000)` выбрано в S4-30a для bus 0 и входит в карту платы только под opt-in флагом `FirmwareBoardConfig::pci_ecam` (S4-30c, по умолчанию выключен): с флагом это не-RAM MMIO-регион, PCI-config устройство (ECAM + conf1 `0xCF8..=0xCFF`) на шине платы, код 7 handoff — `PRESENT = 1`; bus 0 пустой (host bridge и функций плата не объявляет). Без флага окна нет, код 7 — `PRESENT = 0`, handoff v1.0 прежний байт в байт. Окна HPET и ACPI fixed hardware не назначены (S7-14).
 
 ## Владение состоянием и адресами
 

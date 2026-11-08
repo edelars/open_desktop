@@ -1584,7 +1584,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-30c. ECAM и conf1 в карте платы и на шине (opt-in, без host bridge)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high; два раунда). Отчёт: [STAGE_4_S4-30C_2026-11-08.md](../reports/STAGE_4_S4-30C_2026-11-08.md); evidence: [s4-30c-board-ecam.json](../reports/data/stage4/s4-30c-board-ecam.json).
 - **Где:** `od-machine` (карта, `MachineBus`, manifest), `firmware_board.rs` (handoff код 7), `VIRTUAL_BOARD.md`, `MACHINE_CONTRACT.md`, `FIRMWARE_BOOT.md`.
 - **Сделать:** зарегистрировать ECAM `[0xFC10_0000, 0xFC20_0000)` как не-RAM MMIO в единой карте платы; зарегистрировать одно PCI-config устройство на `MachineBus` (MMIO на ECAM + PIO на 0xCF8–0xCFF, общее состояние, bus 0 пустой). Добавить типизированный дескриптор в manifest (segment 0, bus 0–0, base, size). Включать через opt-in флаг платы по образцу `nvme: Option`: без флага handoff v1.0 байт-в-байт прежний; с флагом код 7 получает `PRESENT = 1` с той же base и диапазоном шин. Дефолт не менять. **Не делать:** MCFG и PNP0C02 (S4-31), генерацию E820 и loader (S4-37), host bridge и любые функции, BAR→MMIO и PCI MMIO aperture, MSI, ACPI PM.
 - **Проверка:** в карте нет пересечений с RAM, ROM, framebuffer, дисплеем, NVMe, IOAPIC и LAPIC; ECAM внутри physical36 и ниже 4 GiB; `patch_physical_ram` на ECAM отвергается; через `MachineBus::read_physical` все 32 устройства bus 0 читаются как `0xFFFF_FFFF`; пробы Linux type1/type2 через `read_port`/`write_port`; запись через conf1 видна через ECAM на diagnostic endpoint в `#[cfg(test)]`; регрессия: handoff по умолчанию байт-в-байт прежний, с флагом код 7 принимает существующий DSDT-builder (`PCIE_ECAM`); независимое ревью (Opus, high).

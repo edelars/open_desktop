@@ -1286,3 +1286,21 @@ directions. The bus>0 difference (absent through conf1, `UnknownOffset` through
 ECAM) is a test. `cargo test -p od-machine pci_ecam`. Host bridge, MCFG, BAR
 mapping, conf2 and reset control are not covered. See
 [report](../reports/STAGE_4_S4-30B_2026-11-08.md).
+
+## S4-30c ECAM на плате (opt-in)
+
+47. S4-30c checks the board-level registration of the ECAM window and conf1 ports
+behind `FirmwareBoardConfig::pci_ecam` (off by default): the default handoff stays
+byte for byte identical to the golden reference with code 7 `PRESENT = 0`; with the
+flag code 7 is `PRESENT = 1` (base `0xFC10_0000`, length `0x10_0000`, segment 0,
+buses 0-0) inside handoff v1.0 with one extra MMIO region owned by entry 6; the
+window is a non-RAM `Mmio` region disjoint from RAM, ROM, both framebuffers, display
+registers, NVMe, IOAPIC and LAPIC, below 4 GiB and inside physical36;
+`patch_physical_ram` on the window is rejected; all 32 devices of the empty bus 0
+read all ones through `MachineBus::read_physical`; the Linux type1 probe passes and
+type2 is rejected through `read_port`/`write_port` on the board instance; a conf1 write
+is visible through ECAM on a `#[cfg(test)]` diagnostic endpoint. Firmware side:
+`cd firmware/uefi && cargo test` includes the exact 48 bytes of entry 7 being accepted
+by the DSDT builder (`PCIE_ECAM`). `cargo test -p od-machine firmware_board` and
+`cargo test -p od-machine pci_ecam`. MCFG, E820, host bridge, functions and BAR
+mapping are not covered. See [report](../reports/STAGE_4_S4-30C_2026-11-08.md).

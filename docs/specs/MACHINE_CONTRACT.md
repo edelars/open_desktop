@@ -2678,7 +2678,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   ROM `[0xFFC0_0000, 2^32)`, framebuffer экрана 0 (и экрана 1 при
   `second_screen`), `Mmio` регистров дисплея, IOAPIC и Local APIC, порт COM1
   `0x3F8` (8 портов). Одна и та же таблица из семи записей строит шину, окна карты
-  и устройства handoff block. NVRAM, TPM CRB, ECAM — записи с `PRESENT = 0`, в
+  и устройства handoff block. NVRAM, TPM CRB, ECAM (по умолчанию; с флагом `pci_ecam` — S4-30c, ниже) — записи с `PRESENT = 0`, в
   карту и на шину не добавляются.
 - **Образ.** Принимается только образ ровно `0x0040_0000` байт с заголовком v1
   (FIRMWARE_BOOT.md 3.2): magic, `format_version`, `header_size`, `image_size`,
@@ -2816,7 +2816,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **Type-0.** Vendor/Device ID, Revision/Class code, Header type 0x00 — RO. Class code — 24 бита; большее значение → `Type0ConfigError::InvalidClassCode`. Command (0x04): RW только bit0 (I/O), bit1 (memory), bit2 (bus master); Status RO 0. BAR0 (0x10): 32-bit memory, размер степень двойки ≥ 16, хранит биты `!(size-1) & 0xFFFF_FFF0`, биты 0..3 RO 0; запись 0xFFFF_FFFF читается как маска. BAR1..BAR5 RO 0. Interrupt line (0x3C) RW 8 бит, Interrupt pin (0x3D) RO 0, Capabilities pointer 0. Область 0x100–0xFFF: чтение 0, запись игнорируется.
 
-**Не реализовано.** MCFG (S4-31); handoff код 7 остаётся `PRESENT = 0` (до S4-30 целиком / S7-13); BAR→MMIO mapping и влияние Command на decode (биты только хранятся); host bridge 00:00.0; capabilities, MSI/MSI-X. Тестовый endpoint существует только в `#[cfg(test)]`.
+**Не реализовано.** MCFG (S4-31); handoff код 7 остаётся `PRESENT = 0` без флага `pci_ecam` (S4-30c); BAR→MMIO mapping и влияние Command на decode (биты только хранятся); host bridge 00:00.0; capabilities, MSI/MSI-X. Тестовый endpoint существует только в `#[cfg(test)]`.
 
 ## Legacy conf1 (S4-30b)
 
@@ -2838,4 +2838,22 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **Отличие bus > 0.** Conf1 может адресовать 256 шин. Bus ≠ 0 — обычный absent-доступ (все единицы, запись игнорируется). В ECAM тот же bus выходит за `[start_bus, end_bus]` и даёт `DeviceError::UnknownOffset`; окно покрывает только bus 0, поэтому по шине такие адреса до устройства не доходят.
 
-**Не реализовано.** Host bridge 00:00.0, MCFG, E820, handoff код 7 (`PRESENT = 0`), BAR→MMIO mapping и Command.MEM decode, conf2 (0xCFA forward register и окно 0xC000), reset control 0xCF9, регистрация в `firmware_board.rs` и manifest платы.
+**Не реализовано.** Host bridge 00:00.0, MCFG, E820, handoff код 7 (`PRESENT = 0` без флага `pci_ecam`, S4-30c), BAR→MMIO mapping и Command.MEM decode, conf2 (0xCFA forward register и окно 0xC000), reset control 0xCF9, регистрация в `firmware_board.rs` и manifest платы.
+
+## ECAM и conf1 на плате (S4-30c)
+
+Реализация: `crates/od-machine/src/firmware_board.rs` (`FirmwareBoardConfig::pci_ecam`, `board_devices`, `load_firmware_image`), дескриптор — `pci_ecam.rs` (`PCI_ECAM_DESCRIPTOR`). Ограниченный срез S4-30: родительский S4-30 остаётся открытым.
+
+**Флаг.** `FirmwareBoardConfig::pci_ecam: bool`, по умолчанию `false`. Без флага плата, карта, шина и handoff не отличаются от S4-30b: handoff v1.0 байт в байт прежний (golden-тест), окно и порты `0xCF8..=0xCFF` не зарегистрированы (чтение — ошибка шины), код 7 — `PRESENT = 0`. Флаг не требует `handoff_minor_max ≥ 1`: код 7 — слот v1.0.
+
+**Дескриптор.** `PciEcamDescriptor { segment, start_bus, end_bus, base, size }`, константа `PCI_ECAM_DESCRIPTOR = { 0, 0, 0, 0xFC10_0000, 0x10_0000 }`; compile-time проверка `size == (end_bus - start_bus + 1) << 20`. Это единственный источник записи кода 7 (`param0 = segment`, `param1 = handoff_param1() = start_bus | end_bus << 8`) и будущей аллокации MCFG (S4-31).
+
+**Карта.** С флагом запись кода 7 `PRESENT` (MMIO) даёт в `MachineMemoryMap` регион `MemoryRegionKind::Mmio` `[0xFC10_0000, 0xFC20_0000)`: существующий вариант, не RAM, без backing-хранилища (`write_bytes`/`patch_physical_ram` → `ReadOnlyRegion(Mmio)`). Регион порождается общим циклом по MMIO-записям таблицы устройств (как LAPIC, IOAPIC, дисплей, NVMe), отдельного пути карты нет. Проверено: нет пересечений с RAM (в том числе максимальным `0xF_F400_0000`), ROM, обоими framebuffer, регистрами дисплея, NVMe, IOAPIC, LAPIC; окно ниже 4 GiB и внутри physical36. Boot page tables (4 KiB identity, `RW|NX`) покрывают окно тем же PT-блоком, что и регистры дисплея, `N` не меняется.
+
+**Шина.** Одно устройство `PciEcam` добавляется в `bus_devices` после COM1, LAPIC, IOAPIC, дисплея и (если включён) NVMe; его индекс — `bus_devices.len()` в момент добавления. Две привязки с одним `device_index`: `MmioBinding` на `0xFC10_0000` и `PortRegionBinding` на `0xCF8` длиной 8. Состояние общее (S4-30a/S4-30b). Плата не вызывает `add_function`: bus 0 пустой, все 32 устройства (и функции 1..7) читаются `0xFFFF_FFFF`/`0xFFFF`/`0xFF`, записи молча игнорируются. Побочное следствие: с флагом `0xCF9` отвечает `DeviceError::UnknownOffset` (reset control не реализован), без флага — `UnmappedPort`.
+
+**Diagnostic endpoint.** Только в `#[cfg(test)]`: тесты строят `PciEcam` с функцией 00:03.0 (`Type0Config`) и передают её приватному `load_firmware_image_with_pci`; публичный `load_firmware_image` всегда передаёт пустой `PciEcam`. Без флага переданное устройство не регистрируется (тест).
+
+**Linux-пробы.** На экземпляре платы: `pci_check_type1` проходит часть с чтением латча назад; `pci_check_type2` отвергается. Как и в S4-30b, `pci_sanity_check` (`direct.c:204–216`) отвергает conf1, пока нет ни DMI-года BIOS ≥ 2001, ни функции на bus 0 с классом 0x0600 или 0x0300, ни vendor Intel/Compaq; обход — `pci=nochecks`. После отказа Linux пробует type2, и он тоже не проходит. Задача S4-31/S4-38 (SMBIOS-год или функция класса host bridge/VGA), не дефект среза.
+
+**Не реализовано.** MCFG и PNP0C02/`_CRS` (S4-31); генерация E820 и loader (S4-37); host bridge и любые функции; BAR→MMIO mapping и PCI MMIO aperture; MSI/MSI-X; ACPI PM и reset register (S7-14a); дефолтный handoff не менялся.

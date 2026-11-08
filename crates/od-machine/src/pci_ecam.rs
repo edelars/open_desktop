@@ -2,8 +2,10 @@
 //! (S4-30a, S4-30b).
 //!
 //! One segment, one bus (0). The window is a plain MMIO region served by
-//! [`PciEcam`]. No production function is registered; BAR decode is not mapped
-//! into the physical memory map (stored bits only).
+//! [`PciEcam`]. The board registers it behind an opt-in flag (S4-30c,
+//! `FirmwareBoardConfig::pci_ecam`) with an empty bus 0: no production function is
+//! registered; BAR decode is not mapped into the physical memory map (stored
+//! bits only).
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::collections::BTreeMap;
@@ -17,6 +19,44 @@ pub const PCI_ECAM_BYTES: u64 = 0x10_0000;
 /// `PCI_CONF1_PORT_BYTES` long and ends at 0xCFF (CONFIG_DATA at 0xCFC).
 pub const PCI_CONF1_BASE_PORT: u16 = 0xCF8;
 pub const PCI_CONF1_PORT_BYTES: u32 = 8;
+
+/// PCI segment group of the only root (S4-30c).
+pub const PCI_ECAM_SEGMENT: u16 = 0;
+
+/// Typed board descriptor of the ECAM window: one segment, a bus range and the
+/// MMIO window (S4-30c). It is the single source of the handoff device entry
+/// (code 7: `param0` = segment, `param1` = `start_bus | end_bus << 8`) and of
+/// the future MCFG allocation (S4-31).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PciEcamDescriptor {
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub base: u64,
+    pub size: u64,
+}
+
+impl PciEcamDescriptor {
+    /// Handoff `param1` of device code 7.
+    pub const fn handoff_param1(&self) -> u64 {
+        self.start_bus as u64 | (self.end_bus as u64) << 8
+    }
+}
+
+/// The ECAM window of the board: segment 0, bus 0 only, 1 MiB.
+pub const PCI_ECAM_DESCRIPTOR: PciEcamDescriptor = PciEcamDescriptor {
+    segment: PCI_ECAM_SEGMENT,
+    start_bus: PCI_ECAM_START_BUS,
+    end_bus: PCI_ECAM_END_BUS,
+    base: PCI_ECAM_BASE,
+    size: PCI_ECAM_BYTES,
+};
+
+// ECAM gives every bus exactly 1 MiB (256 devices*functions * 4 KiB).
+const _: () = assert!(
+    PCI_ECAM_DESCRIPTOR.size
+        == (PCI_ECAM_DESCRIPTOR.end_bus as u64 - PCI_ECAM_DESCRIPTOR.start_bus as u64 + 1) << 20
+);
 
 const COMMAND_RW_MASK: u32 = 0x0007;
 
@@ -432,6 +472,22 @@ mod tests {
         const _: () = assert!(NVME_MMIO_BASE + NVME_MMIO_BYTES <= PCI_ECAM_BASE);
         const _: () = assert!(PCI_ECAM_BASE + PCI_ECAM_BYTES <= 0xFEC0_0000);
         assert_eq!(PCI_ECAM_BYTES, 1 << 20);
+    }
+
+    #[test]
+    fn descriptor_matches_the_window_constants() {
+        let d = PCI_ECAM_DESCRIPTOR;
+        assert_eq!(
+            (d.segment, d.start_bus, d.end_bus, d.base, d.size),
+            (0, 0, 0, 0xFC10_0000, 0x10_0000)
+        );
+        assert_eq!(d.handoff_param1(), 0);
+        let wide = PciEcamDescriptor {
+            start_bus: 4,
+            end_bus: 7,
+            ..d
+        };
+        assert_eq!(wide.handoff_param1(), 4 | (7 << 8));
     }
 
     #[test]
