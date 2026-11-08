@@ -12,9 +12,76 @@
 
 ## Записи
 
-<a id="issue-057-s4-secondary-page-fault-requires-double-fault-delivery"></a>
+<a id="issue-055-s9-host-durability-guarantee-unconfirmed"></a>
 
-### ISSUE-057 — Secondary page fault during exception delivery is terminal
+### ISSUE-055 — Host durability guarantee for macOS/APFS is unconfirmed
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** host storage backend `od-host` ([`storage_io.rs`](../crates/od-host/src/storage_io.rs)) / `od-storage` ([`io.rs`](../crates/od-storage/src/io.rs)) (S9-03, S9-06), контракт [STORAGE_FORMAT.md §7](specs/STORAGE_FORMAT.md#7-host-durability-api--статус-частично-реализовано-не-подтверждено-испытаниями).
+- **Статус:** открыта. Это неподтверждённая платформенная гарантия, а не обнаруженный runtime-дефект. Обновлено после коммитов `a59338a`…`69e0b02`: flush данных файла на macOS реализован через `fcntl(F_FULLFSYNC)` (`69e0b02`), но не проверен испытаниями; открыто для namespace durability, power-loss и non-APFS/network томов.
+- **Суть и последствия:** для выбранной кандидатной комбинации (macOS Tahoe 26.7.1, APFS, внутренний SSD) источник семантики сброса содержимого файла есть (локальная man `fcntl`, `F_FULLFSYNC`), но нет проверяемого источника и реализации durability namespace (create, rename, directory entry), а исполнение на конкретном накопителе не проверено испытаниями. Без этого нельзя доказывать порядок data → metadata → publication → ack и заявлять power-loss свойства. Реализованный file-data flush не доказывает namespace durability и power-loss; S9-06 не принята, claims durability за пределами file-data не допускаются.
+- **Основание:** локальная man-страница `fcntl(2)`, macOS 26.7.1 (проверено 2026-11-05) — источник семантики `F_FULLFSYNC`: `fsync` плюс запрос накопителю сбросить буферы, barrier для ранее `fsync`-нутых данных, реализован на APFS; некоторые FireWire-накопители игнорируют запрос. Подтверждённым остаётся только это; сопоставление ENOTSUP/EINVAL man-страница не описывает (защитное предположение). Context7 Rust std (`/websites/doc_rust-lang_stable_std`): `File::sync_all` — «attempts to sync … to disk», `sync_data` может не синхронизировать metadata; namespace durability не описана. Источников по `F_BARRIERFSYNC` и namespace durability APFS нет. Правило плана [этапа 9 §3, п. 3](plans/STAGE_9.md#3-правила-исполнителя-и-размещение) запрещает угадывать гарантию.
+- **Реализовано (факт кода):** `F_FULLFSYNC` на заблокированном writable fd только на macOS; ENOTSUP -> `UnsupportedDurability`, прочие сбои (включая EINVAL) -> sticky `reconcile_required`. Сопоставление ENOTSUP/EINVAL — защитное предположение, не подтверждённое man `fcntl`.
+- **Следующий шаг:** получить проверяемый источник (официальная документация Apple/man pages конкретной версии), реализовать и проверить namespace durability, затем испытания уровней 1–3 по [STORAGE_RECOVERY.md](testing/STORAGE_RECOVERY.md). До этого durable операции для namespace отвечают `unsupported_durability`.
+
+<a id="issue-056-s9-cpu-state-not-single-owner"></a>
+
+### ISSUE-056 — Architectural CPU state has no single versioned owner
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** `od-isa::LongModeState`, `od-isa::MsrProfile`, `od-machine::Long64ProbeConfig`; будущий S9-24.
+- **Статус:** открыта; архитектурная граница для checkpoint, не runtime-дефект текущих bounded срезов.
+- **Суть и последствия:** [`LongModeState`](../crates/od-isa/src/state.rs) несёт многие поля как `Option`, заполняемые только отдельными профилями, и не содержит CR2, CR3, CR8, EFER, DR*, LDTR, TR, XSAVE/AVX, general MSR и pending event state. CR3/EFER передаются отдельно через [`Long64ProbeConfig`](../crates/od-machine/src/page_walk.rs) и синтетический `MsrProfile::EferReadOnlyV1` ([`msr.rs`](../crates/od-isa/src/msr.rs)). Versioned codec отсутствует (только `Clone`/`PartialEq`). Полный CPU checkpoint по плану этапа 9 требует одного owner всего объявленного архитектурного состояния в `od-isa`; сейчас его нельзя собрать из одного объекта без потери полей или подстановки defaults.
+- **Основание:** инвентаризация S9-01 ([VM_STATE.md](specs/VM_STATE.md#22-cpu-ram-устройства-время)), `rg` по `crates/od-isa/src/state.rs` 2026-11-05. Предположение, требующее проверки при S4-12/S4-18…21: возможно, часть состояния намеренно остаётся probe-конфигурацией до полного lifecycle.
+- **Следующий шаг:** при закрытии этапа 4 задать единый versioned CPU state профиля в `od-isa` и его validation (S9-24); до этого full-VM checkpoint заблокирован.
+
+<a id="issue-057-s9-cow-zeroed-gen2-slot-indistinguishable"></a>
+
+### ISSUE-057 (закрыто) — S9-10 CoW: обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва до барьера 1 первого commit
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** `od-storage`, прототип CoW ([`cow_proto.rs`](../crates/od-storage/src/cow_proto.rs), коммит `61a99e0`; тесты [`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)).
+- **Статус:** закрыто (2026-11-05), коммит `01ef35d`. Формат CoW при этом по-прежнему не принят (S9-40).
+- **Суть и последствия:** если слот подтверждённого поколения 2 обнулён, а копия корня поколения 2 в конце файла тоже повреждена, байты файла совпадают с состоянием после обрыва до первого barrier первого commit (поколение 1 есть, хвост без валидного корня). Writable open трактует это как `UnfinishedCandidate` на поколении 1, и следующий commit может затереть подтверждённое поколение 2: потеря acked данных при двойном повреждении. Salvage сообщает случай как незавершённый кандидат и ничего не пишет.
+- **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
+- **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
+
+<a id="issue-066-s7-16-nvme-spec-values-not-verified"></a>
+
+### ISSUE-066 — S7-16: значения NVMe в `od-machine` частично сверены (Linux `nvme.h`, не спецификация), остальное не сверено, I/O не реализован
+
+- **Дата обнаружения:** 2026-11-07, при реализации S7-16 (срез A).
+- **Компонент:** `crates/od-machine/src/nvme/`, [NVME_DEVICE.md](specs/NVME_DEVICE.md).
+- **Статус:** открыта.
+- **Суть и последствия:** текст NVMe Base 2.4, NVM Command Set 1.3 и PCIe Transport 1.4 получить не удалось (страница спецификаций не даёт прямых ссылок, PDF 2.4 не найден, PDF 2.3 не извлекается через `WebFetch` и индексатор). Значения, перечисленные в [NVME_DEVICE.md §1](specs/NVME_DEVICE.md), сверены с заголовком Linux `include/linux/nvme.h` (master, 2026-11-07), **не** с текстом NVMe Base 2.4. NOT VERIFIED остаются: `CAP.CQR` (бит 16), AER info 0/1, правила PRP, умолчания features, поведение при ошибках, обязательность команд, LID `0x00` и `0x05`, `VS` 2.0.0 против 2.4.0. Открытые вопросы среза A: (1) проверка `IOSQES`/`IOCQES` при `CC.EN = 1` (`CFS`) против проверки при Create I/O SQ/CQ — вероятное отклонение (`controller.rs`, `enable`); (2) Supported Log Pages (`0x00`) и Commands Supported and Effects (`0x05`) не реализованы, обязательность не сверена — первый кандидат в дефекты; (3) `VS = 2.0.0`; (4) запись doorbell гостем не покрыта тестом end-to-end (см. NVME_DEVICE.md §3). Кроме того, срез A не реализует обязательные I/O-команды `Read`/`Write`/`Flush` (срез B): контроллер не читает диск, прошивка (S7-17) им воспользоваться не может.
+- **Основание:** [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md), раздел S7-16; NVME_DEVICE.md §1, §10, §11.
+- **Следующий шаг:** до ревью среза A и до S7-17 получить текст спецификаций и сверить значения, помеченные NOT VERIFIED (NVME_DEVICE.md §11); решить вопрос `IOSQES`/`IOCQES`; реализовать срез B; после сверки снять пометки `NOT VERIFIED` в исходниках и документе.
+
+<a id="issue-065-s7-dsdt-pci0-has-no-io-mmio-windows-or-interrupt-routes"></a>
+
+### ISSUE-065 — S7-12: DSDT PCI0 has no I/O, MMIO windows or interrupt routes
+
+- **Дата обнаружения:** 2026-11-07.
+- **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
+- **Статус:** открыта; ограничение контракта, не runtime-дефект (PCI0 не выводится, пока запись PCIe ECAM имеет `PRESENT = 0`, до S4-30).
+- **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
+- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна ECAM, HPET и ACPI fixed hardware «не назначены, S4-30, S7-14»); тест `dsdt_for_pci_root_and_com1_matches_the_independent_reference`.
+- **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.
+
+<a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>
+
+### ISSUE-064 — Selected `rsa` crate has no constant-time private operations (RUSTSEC-2023-0071)
+
+- **Дата обнаружения:** 2026-11-07.
+- **Компонент:** `crates/od-tpm/` (`src/crypto.rs`: `rsa_sign`, `rsa_generate`; приватные RSA-операции фазы B, S7-23); выбор зависимости — [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md#условие-d9-о-constant-time-rsa).
+- **Статус:** открыта, принятый риск по решению владельца D9 ([план этапа 7, §1.1](plans/STAGE_7.md#11-решения-владельца-проекта-2026-11-07)). **Код, использующий `rsa`, есть со срезом B S7-23 (2026-11-07, ожидает ревью):** `TPM2_Sign` с RSA-ключом и генерация RSA-ключей в `CreatePrimary`/`Create`; **со срезом C1 (2026-11-07, ожидает ревью) появилась `TPM2_RSA_Decrypt`** (RSAES, OAEP и «сырой» RSA; приватная операция `rsa` с blinding от DRBG — тот же модуль и те же риски); принятый риск действует. До замены на constant-time версию `rsa` операция `Sign` с RSA-ключом создаёт риск timing-атаки на host-процесс с vTPM (на прошивке это не стек, прошивка секретов не хранит); подпись вызывается с RNG для blinding (генератор TPM), constant-time этим не заявляется.
+- **Суть и последствия:** D9 требует для приватных операций RSA на host версию `rsa` с constant-time арифметикой. На 2026-11-07 такой версии нет: последняя стабильная `0.9.10`, предрелиз `0.10.0-rc.22`; advisory RUSTSEC-2023-0071 (Marvin, утечка приватного ключа по времени) имеет `patched = []`. Выбран `=0.10.0-rc.22`. Marvin — атака именно на расшифровку RSAES PKCS#1 v1.5 по времени ответа, поэтому `RSA_Decrypt` (RSAES, а при формировании окна наблюдения — и OAEP/«сырой» RSA того же модуля) её прямая цель; принятый риск D9 действует. Затронуты `TPM2_Sign` с RSA-ключом (реализовано, срез B), `RSA_Decrypt` (реализовано, срез C1), а после среза C2 — salted `StartAuthSession`, `ActivateCredential`, `Import` с RSA-ключами; гостевой код может наблюдать время их исполнения. Проверка подписи в прошивке (операция с открытым ключом) не затронута.
+- **Основание:** `rustsec/advisory-db`, `crates/rsa/RUSTSEC-2023-0071.md` (прочитан 2026-11-07): «Still affected as of 2026-09-12: rsa 0.9.10 (latest stable) and rsa 0.10.0-rc.18»; README `rsa 0.10.0-rc.22` ссылается на продолжающуюся работу по constant-time hardening; версии — crates.io API.
+- **Следующий шаг:** `VTPM.md` («Фаза B, срез B» и «Фаза B, срез C1») записывает, что приватный RSA используют `Sign`, `RSA_Decrypt` и генерация ключей; стойкость к timing-атакам не заявляется (срез C2 добавит остальные команды в этот список). Закрыть, когда advisory получит `patched` или выйдет версия с подтверждённой constant-time реализацией: обновить версию в ADR-0009 и `Cargo.toml` с ревью.
+
+<a id="issue-063-s4-secondary-page-fault-requires-double-fault-delivery"></a>
+
+### ISSUE-063 — Secondary page fault during exception delivery is terminal
 
 - **Дата обнаружения:** 2026-11-06.
 - **Компонент:** `od-isa` page-fault delivery and `od-machine` paged exception adapter.
@@ -433,7 +500,7 @@
 ### ISSUE-006 — Неполный control frame блокирует готовый RESULT
 
 - **Дата обнаружения:** 2026-10-22.
-- **Компонент:** `apps/vmhost/Sources/main.swift`, `ControlFrame.read`.
+- **Компонент:** `apps/vmhost/Sources/VMHostMain.swift`, `ControlFrame.read`.
 - **Статус:** решена 22 октября 2026 года.
 - **Суть и последствия:** POLLIN означает наличие хотя бы части кадра; блокирующий read всего кадра переставал обслуживать completion pipe. VMHost теперь неблокирующе накапливает данные и декодирует только полные кадры, продолжая опрашивать completion.
 - **Воспроизведение:** после RUN_ACK передать один байт `O` следующего header и держать socket открытым. Для конечного budget=2000000 RESULT не пришёл за 2 s, тогда как контроль без частичного кадра завершился за 0.021 s со стартом процесса. Полные входы — в [ревью S0](reports/STAGE_0_REVIEW_2026-10-22.md).
@@ -463,7 +530,7 @@
 - **Компонент:** `apps/vmhost` control loop и VMHost completion signaling.
 - **Статус:** решена 22 октября 2026 года для короткого VMHost RUN→RESULT path; длительная нагрузка и отдельный STOP latency требуют дальнейшей проверки.
 - **Проблема и последствия:** первоначальный loop ожидал worker completion через `poll()` control socket с timeout 50 ms. Один короткий `MOV RAX,1` integration run дал медианный RUN→RESULT 51.33 ms [51.16–51.61] на 20 fresh VMHost processes.
-- **Основание:** [S0-13 CPU baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md), раздел VMHost integration pilot; raw samples до/после в локальном `work/stage-0/2026-10-22-e04-vmhost-abi-ipc-resource/`. Все 40 процессов вернули ожидаемые `RAX=1`, `RIP=10`, exit reason 0 и instruction count 1. Источник timeout и реализация completion signal: `apps/vmhost/Sources/main.swift`, `serviceStopRequests()` и `FragmentWorker`.
+- **Основание:** [S0-13 CPU baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md), раздел VMHost integration pilot; raw samples до/после в локальном `work/stage-0/2026-10-22-e04-vmhost-abi-ipc-resource/`. Все 40 процессов вернули ожидаемые `RAX=1`, `RIP=10`, exit reason 0 и instruction count 1. Источник timeout и реализация completion signal: `apps/vmhost/Sources/VMHostMain.swift`, `serviceStopRequests()` и `FragmentWorker`.
 - **Результат:** VMHost теперь одновременно ждёт control socket и completion pipe без периодического timeout. В повторе из 20 запусков медиана RUN→RESULT составила 138.1 μs [114.5–479.7], примерно в 372 раза меньше исходного пилота. Повторные launcher и isolation smoke прошли. Изменение и ограничения измерения описаны в [S0-13 baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md).
 - **Ограничения и следующий шаг:** сравнение было одним коротким сеансом при неконтролируемых условиях и не является изолированной мерой IPC или результатом длительной нагрузки. После исправления отдельный busy-helper pilot измерил STOP_ACK и STOP→RESULT; значения и ограничения описаны в S0-13 report. Для финального решения повторить с контролируемым фоном и длительной нагрузкой.
 
@@ -1850,6 +1917,39 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Основание и результат:** all 21 files reported as broken by `python3 tools/check_layout.py` were found in `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop` and copied to the same relative `work/` paths in the main worktree. The layout checker now passes: `Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes.`
 - **Граница:** `work/` remains Git-ignored, so these local evidence files are available in this main worktree but are not part of the source commit. If portable evidence is needed, curate the required records into `docs/reports/data/stage3/` under the project's evidence policy.
 
+### ISSUE-058 — VMHost control race smoke fails on HEAD (Stage 10 session)
+
+- **Дата обнаружения:** 2026-11-06, при проверке регрессии S10-06 и S10-07.
+- **Компонент:** `tests/system/vmhost_control_race_smoke.py` с `apps/vmhost` и `apps/macos` launcher; не связан с дисплейным транспортом этапа 10.
+- **Статус:** открыта. Воспроизводится на HEAD ветки `feat/s9-stage` без правок этапа 10 (два прогона у каждого варианта).
+- **Суть и последствия:** скрипт завершается с `unsupported version: VMHost sent a response after rejecting the frame`. Причина не исследована; возможная регрессия control v1 или ошибка теста. Обычный путь VMHost по остальным `vmhost_*` smoke-скриптам проходит.
+- **Основание:** запуски S10-06 и S10-07 на release-сборке; отдельный прогон на чистом HEAD.
+- **Следующий шаг:** определить, какой из двух сторон (тест или VMHost) отклоняется от протокола control v1, и исправить соответствующую сторону; до этого не считать `vmhost_control_race_smoke.py` зелёным.
+
+### ISSUE-059 — VMHost isolation smoke is intermittently red
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-07.
+- **Компонент:** `tests/system/vmhost_isolation_smoke.py`.
+- **Статус:** открыта; причина не установлена.
+- **Суть и последствия:** в 2 из 9 запусков скрипт завершился с кодом 1 (`surviving VMHost returned RAX=546, reason=2`); в остальных — код 0. Скрипт не использует launcher; файлы VMHost в этих коммитах не менялись, но сравнение с HEAD до S10-06 не выполнено.
+- **Следующий шаг:** воспроизвести при повторных прогонах, найти условие гонки в тесте или в изоляции двух VMHost-процессов; до этого результат трактовать как нестабильный.
+
+### ISSUE-060 — test_stage3_harness has seven failing count assertions
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-07.
+- **Компонент:** `tests/cpu/stage3_harness.py` (`python3 -m unittest test_stage3_harness` из `tests/cpu`).
+- **Статус:** открыта; на чистом снимке HEAD падают те же 7 из 152 тестов (закреплённые счётчики, например `152 != 151`).
+- **Суть и последствия:** инфраструктурный тест не отражает актуальный набор тестов; это не следствие этапа 10.
+- **Следующий шаг:** обновить закреплённые счётчики или сами тесты в отдельной задаче по Stage 3 harness.
+
+### ISSUE-061 — od-host JIT library tests are intermittently failing
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-04.
+- **Компонент:** `crates/od-host` lib tests (`s3_20*`, `native_register_v1_corpus`, ошибка `MappingAlreadyLive`).
+- **Статус:** открыта.
+- **Суть и последствия:** на HEAD `5acd5e5` падают 23 теста, при других прогонах 21; число меняется от прогона к прогону, что похоже на гонку при параллельном запуске. Новые display-тесты проходят. Причина не исследована.
+- **Следующий шаг:** запустить с `--test-threads=1` и воспроизвести; определить, какой общий ресурс (mapping) конфликтует между тестами.
+
 <a id="issue-055-workspace-check-invalidmovcr0lock"></a>
 
 ### ISSUE-055 — Workspace check does not handle the InvalidMovCr0Lock decode error
@@ -1860,6 +1960,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** `cargo check --workspace --all-targets --offline` fails because two exhaustive matches do not cover `od_isa::long_decode::DecodeError::InvalidMovCr0Lock`. This blocks workspace-wide build validation; the affected cases are independent of the new `od-machine` mutable session.
 - **Основание и результат:** the previously recorded exhaustive-match gap was resolved in both JIT consumers. `block::tests::lock_mov_cr0_is_an_exact_unsupported_boundary_and_preserves_progress` verifies exact RIP, typed `InvalidMovCr0Lock`, length 4, and preserved decoded prefix; `memory_dispatch::tests::lock_mov_cr0_stops_strict_dispatch_without_retirement_or_tail_execution` verifies strict `Unsupported`, zero retirement at entry, and stopping after the preceding supported memory artifact without executing the suffix. The LOCK MOV CR3 regression also passes. Fresh `cargo check --workspace --all-targets --offline` completed with exit code 0. Details and commands: [S4-01b report](reports/STAGE_4_S4-01B_2026-11-06.md) and [manifest](reports/data/stage4/s4-01b-invalid-mov-cr0-lock-2026-11-06.json).
 - **Граница:** this closes only the missing `InvalidMovCr0Lock` classification in `od-jit`. JIT/native admission was not widened; the parent S4-01 baseline and Stage 4 remain open.
+
+<a id="issue-062-cargo-fmt-check-fails-in-unrelated-files"></a>
+
+### ISSUE-062 — `cargo fmt --all -- --check` fails in files outside stage 11
+
+- **Дата обнаружения:** 2026-11-06, при проверке S11-07.
+- **Компонент:** `crates/od-host/src/display.rs` (строки 13, 812, 1995), `crates/od-machine/src/lib.rs` (строка 33), `tools/power-loss/src/main.rs` (строки 170, 301).
+- **Статус:** открыта; проверка форматирования, не runtime-дефект.
+- **Суть и последствия:** на HEAD `cargo fmt --all -- --check` возвращает exit 1 из-за неотформатированных файлов, которые не относятся к задаче S11-07. Новый код этапа 11 проверяется `rustfmt --check` по своим файлам и проходит.
+- **Основание:** вывод `cargo fmt --all -- --check` на worktree `feat/s9-stage` после S11-07 (exit 1; перечисленные строки).
+- **Следующий шаг:** отдельным change-only-формат коммитом привести перечисленные файлы к `rustfmt`, не смешивая с функциональными правками; после этого вернуть полный `cargo fmt --all -- --check` в обязательные проверки.
 
 <a id="issue-056-layout-check-unmapped-smoke-root"></a>
 

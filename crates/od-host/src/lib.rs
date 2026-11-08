@@ -1,7 +1,16 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
+mod display;
+#[cfg(all(unix, test))]
+mod raw_file_tests;
 pub mod session;
 mod session_abi_v1;
+#[cfg(target_os = "macos")]
+mod storage_abi_v1;
+#[cfg(unix)]
+pub mod storage_io;
+#[cfg(unix)]
+pub mod storage_policy;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::ptr::NonNull;
@@ -78887,6 +78896,9 @@ pub(crate) mod tests {
         use std::os::unix::process::ExitStatusExt;
         use std::process::{Command, Stdio};
 
+        // Do not fork while a storage test holds a writer lock (see
+        // `storage_io::process_spawn_guard`).
+        let _spawn_guard = crate::storage_io::process_spawn_guard();
         let status = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

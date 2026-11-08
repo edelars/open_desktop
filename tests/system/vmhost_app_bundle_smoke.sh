@@ -1,7 +1,20 @@
 #!/bin/sh
+# Smoke of the OpenDesktop.app bundle (S11-05c): JIT execution of a fragment by the VMHost helper inside the bundle.
+#
+# Usage: sh tests/system/vmhost_app_bundle_smoke.sh [APP_BUNDLE [LAUNCHER]]
+#   APP_BUNDLE  default: the bundle built by `python3 tools/build/build_app_bundle.py` (target/app-bundle/OpenDesktop.app)
+#   LAUNCHER    default: apps/.build/debug/open-desktop-launcher-smoke (built here with `swift build --product ...`)
+# Checks: plutil -lint of Info.plist, codesign --verify --strict --deep of the application and --strict of the helper
+# Contents/Helpers/od-vmhost, then the launcher runs a fragment through that helper (exit status of the launcher).
+#
+# Legacy interface (3 to 5 arguments: LAUNCHER VMHOST ENTITLEMENTS [PRESERVED_APP_BUNDLE [CODESIGN_TOOL]]) is kept only for
+# tests/cpu/stage3_harness.py (frozen Stage 3 evidence); it is not normative. Without it that harness cannot run.
 set -eu
 
-if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
+root=$(cd "$(dirname "$0")/../.." && pwd)
+
+if [ "$#" -ge 3 ]; then
+if [ "$#" -gt 5 ]; then
     echo "usage: $0 LAUNCHER VMHOST ENTITLEMENTS [PRESERVED_APP_BUNDLE [CODESIGN_TOOL]]" >&2
     exit 2
 fi
@@ -59,3 +72,35 @@ fi
 if [ "$#" -ge 4 ]; then
     echo "vmhost_app_bundle_status=passed"
 fi
+exit 0
+fi
+
+if [ "$#" -gt 2 ]; then
+    echo "usage: $0 [APP_BUNDLE [LAUNCHER]]" >&2
+    exit 2
+fi
+codesign_tool=codesign
+
+if [ "$#" -ge 1 ]; then
+    app=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+else
+    build_output=$(python3 "$root/tools/build/build_app_bundle.py")
+    printf '%s\n' "$build_output"
+    app=$(printf '%s\n' "$build_output" | sed -n 's/^app_bundle_path=//p' | tail -n 1)
+    if [ -z "$app" ]; then
+        echo "build_app_bundle.py did not report app_bundle_path" >&2
+        exit 1
+    fi
+fi
+if [ "$#" -ge 2 ]; then
+    launcher=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+else
+    (cd "$root/apps" && swift build --product open-desktop-launcher-smoke)
+    launcher=$root/apps/.build/debug/open-desktop-launcher-smoke
+fi
+helper=$app/Contents/Helpers/od-vmhost
+
+plutil -lint "$app/Contents/Info.plist"
+"$codesign_tool" --verify --strict --verbose=2 "$helper"
+"$codesign_tool" --verify --strict --deep --verbose=2 "$app"
+"$launcher" --vmhost "$helper" --hex '48 2b c1 75 fb' --rax 3 --rcx 1 --budget 32

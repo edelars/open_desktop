@@ -16,11 +16,23 @@
   width 64 корректно представляет адрес `u64::MAX` с длиной 1.
 - `MachineMemoryMap::new(width, regions)` сортирует regions, проверяет width
   1—64, checked bounds и запрещает overlap. Карта не меняется после создания.
-- `MemoryRegionKind` различает `Ram`, `Rom`, `Reserved` и `Mmio`. Сейчас backing
-  создаётся только для RAM; ROM/reserved/MMIO классифицируются и отклоняют доступ
-  до появления соответствующих владельцев.
+- `MemoryRegionKind` различает `Ram`, `Rom`, `Reserved`, `Mmio` и `Framebuffer`.
+  Backing создаётся для RAM, `Framebuffer` и (S7-03) `Rom`; reserved/MMIO
+  классифицируются и отклоняют доступ до появления соответствующих владельцев.
+  `Rom` читается, любая запись отклоняется `ReadOnlyRegion(Rom)`, наполняет её
+  только машинный загрузчик (раздел «Firmware board v1 and handoff»).
+  `Framebuffer` — память дисплейного устройства (раздел «Display device
+  (S10-03)»): её backing не входит в `RamLimits`, карта принимает не больше одного
+  такого региона, начало и длина кратны 4 KiB, длина не больше `0x0240_0000`
+  (иначе `MultipleFramebufferRegions` / `InvalidFramebufferRegion` при построении
+  карты, до allocation).
 - Port I/O, E820, boot reservations, aliases и remapping пока не реализованы и
   не должны моделироваться перекрывающимися RAM regions.
+- Карта firmware board v1 (окна ROM и NVRAM, boot reservations внутри одного
+  `Ram`, handoff block, временные таблицы страниц) и семантика `Rom` для неё
+  (чтение данных; запись — backend-ошибка; fetch — `#PF` по NX) описаны в
+  [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью); реализованная
+  часть и её границы — раздел «Firmware board v1 and handoff» ниже (S7-03).
 
 ## RAM ownership и доступ
 
@@ -53,6 +65,14 @@ little-endian encoding.
 Это консервативная invalidation основа для code snapshots, а не заявление о
 цене write path: на страницу RAM расходуется 8 байт, а каждая запись проверяет
 и повышает версии затронутых страниц. Измерений пока нет; решение provisional.
+
+Запись в `Framebuffer` (device-owned pixel memory, S10-03) фиксируется тем же
+`write_bytes`, но обходит и callback, и поиск/повышение page generations:
+для `Framebuffer` поколения не создаются, поэтому framebuffer-запись не может
+привести к `AddressOverflow` или `CodeGenerationExhausted`, а от байтов
+framebuffer не зависит ни один code-кеш. `code_page_generation` и
+`MachineBus::tracked_code_snapshot` отвергают `Framebuffer` так же, как любой
+не-RAM region (`UnreadableRegion`).
 
 ## Executable RAM snapshot и loader patch (S4-16a)
 
@@ -302,6 +322,207 @@ baud timing, FIFO behavior, IRQ/APIC, HLT wakeup, host threads or a scheduler.
 The builder verifies the assembled bytes/layout and artifact hashes. See the
 [S4-24d report](../reports/STAGE_4_S4-24D_2026-11-07.md) and
 [verification method](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo).
+
+## Display device (S10-03)
+
+Нормативное guest-visible поведение — [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md);
+здесь записаны только реализованные границы `crates/od-machine/src/display_device.rs`.
+
+- **Карта.** Регистры — `BusDevice` `DisplayDevice`, привязанный `MmioBinding` к
+  региону `Mmio` длиной `0x1000` (`DISPLAY_REGISTERS_BASE = 0xFC00_0000`).
+  Пиксели — регион `Framebuffer` (`DISPLAY_FRAMEBUFFER_BASE = 0xF800_0000`,
+  `DISPLAY_FRAMEBUFFER_BYTES = 0x0240_0000`) внутри `PhysicalMemory`; у
+  устройства байтов кадра нет. Один экран, один формат `BGRX8888`, stride
+  `width × 4`, максимум 4096 × 2304.
+- **Backing и доступ.** Память заполнена нулями; `read_physical`/`write_physical`/
+  flat- и paged-доступ к данным работают как для RAM (любая ширина, невыровненный
+  доступ внутри региона), без committed-write callback. Instruction fetch
+  в `IdentityMemoryAdapter` и `step_diagnostic_pio_u8` — `MemoryError::Backend`
+  (сообщение «unsupported»); в tracked paged-пути fetch — `TrackedAccessError::
+  OperandPhysical { UnreadableRegion(Framebuffer) }`, а элементы таблиц страниц
+  внутри региона (оба walker-а) — `UnreadableRegion(Framebuffer)` в
+  `TableRead`. Везде это backend-ошибка, не `#PF`; A/D-биты в регион не пишутся.
+  Доступ, пересекающий границу региона, и доступ в резерв
+  `0xFA40_0000–0xFBFF_FFFF` отвергаются существующими правилами карты.
+- **Регистры.** Допустимы только `IoSpace::Mmio`, `AccessWidth::Dword`, offset
+  кратен 4 и внутри окна; иначе `DeviceError::{UnsupportedSpace,
+  UnsupportedWidth, Misaligned, UnknownOffset}` до изменения состояния (на шине —
+  `BusAccessError::Device`, в tracked paged-пути — `MmioBackend`). RO и
+  зарезервированные offsets игнорируют запись; `MODE_COMMIT` читается как `0`;
+  `FRAME_GENERATION` — RO + doorbell. Ошибки, исправимые гостем
+  (`SIZE_NOT_SET`, `UNSUPPORTED_SIZE`, `UNSUPPORTED_FORMAT`, `INVALID_COMMAND`,
+  `NO_ACTIVE_MODE`, `COUNTER_EXHAUSTED`), видны только в `STATUS`; порядок
+  проверок `MODE_COMMIT` — раздел 5 контракта устройства, лимиты сравниваются до
+  умножения.
+- **Согласование при сборке.** `BusDevice::framebuffer_binding()` (по умолчанию
+  `None`) возвращает `FB_BASE`/`FB_SIZE` устройства. `MachineBus::new` отвергает
+  `BusBuildError::Display(..)`, если регион `Framebuffer` есть без устройства или
+  наоборот, если начало/длина региона отличаются от регистров, если устройств
+  больше одного, если оно не привязано к MMIO, привязано к нескольким MMIO-регионам или окно
+  не равно `0x1000`.
+- **Host API.** `DisplayDevice::new_with_handle()` возвращает устройство и
+  типизированный `DisplayHandle`, делящий состояние с ним (по образцу
+  `Uart16550Handle`, без downcast из `MachineBus`). Handle даёт
+  `current_mode() -> DisplayMode` (все поля `0` = режима нет),
+  `frame_generation()`, `mode_change_count()`, `has_current_frame()`, `reset()` и
+  `read_frame_into(&MachineBus, &mut [u8]) -> Result<FrameInfo, DisplayReadError>`.
+  Чтение копирует ровно `stride × height` байт с начала региона `Framebuffer`
+  и сверяет счётчик смены режима до и после копирования (`ModeChanged`); отказы:
+  `NoActiveMode`, `NoFrame`, `BufferLength`, `Memory`. Оно ничего не меняет:
+  doorbell не звонит, регистры и `generation` не трогает.
+- **Правило вызова.** Весь host API handle вызывается только между квантами
+  исполнения гостя, владельцем `MachineBus` и тем же потоком, который исполняет
+  квант; `read_frame_into` принимает именно ту шину, которой принадлежит
+  устройство. Handle не потокобезопасен как протокол: `Mutex` внутри защищает
+  состояние от поломки, но не упорядочивает чтение кадра относительно записей гостя.
+  Готовность кадра host определяет только по `frame_generation()`; по таймеру
+  память не сканируется.
+- **Reset.** `DisplayHandle::reset()` — host-операция: режим и регистры
+  возвращаются к значениям после reset, `mode_change_count` растёт на 1, если
+  режим был активен; `generation` и память framebuffer сохраняются.
+- **Не реализовано.** Курсор, несколько экранов, PCI/BAR, прерывания,
+  dirty rects, snapshot/restore, другие форматы (список режимов и события —
+  ревизия 2, следующий раздел). Dword MMIO-запись в
+  tracked paged CPU-пути остаётся блокером гостевого probe S10-08
+  (DISPLAY_DEVICE.md, 13.1): `PagedMovMemoryAdapter` пишет только qword, а
+  qword-запись в регистр — backend-ошибка `UnsupportedWidth`.
+- **Проверено.** Unit-тесты в `display_device.rs`, `physical_memory.rs`,
+  `page_walk.rs` и интеграционные `tests/display_device.rs`: значения после reset,
+  успешный commit, каждый отказ, чтение кадра после гостевых записей без
+  callback, обнаружение смены режима между чтениями и во время копирования,
+  запись в RO-регистр, ширины и offsets, fetch и page tables в framebuffer,
+  согласование карты и устройства. На `feat/s9-stage` нет page generations и
+  `tracked_code_snapshot` (они есть на `main`): пункты 7.4 (а)–(д) контракта
+  устройства про них не сверены и не реализованы здесь.
+
+## Display device, revision 2 (S10-13)
+
+Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 14, и
+[DISPLAY_DRIVER_V1.md](../../protocols/guest/DISPLAY_DRIVER_V1.md). Здесь записаны
+только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
+написан и ожидает ревью.
+
+- **Ревизия.** `VERSION = 2`, `CAPS = 0x3` на момент S10-13 (бит 0 `MODE_LIST`,
+  бит 1 `EVENTS`; биты 2–3 зарезервированы, равны `0`). С блоком курсора
+  (раздел «Display device, cursor (S10-14)» ниже) `CAPS = 0x7`. Один тип `DisplayDevice` обслуживает
+  гостей обеих ревизий: регистры ревизии 1, их значения, порядок проверок,
+  счётчики, backend-ошибки и host API раздела «Display device (S10-03)» не
+  изменены; меняются только значения `VERSION` и `CAPS`. Новые регистры
+  занимают бывший резерв `0x100–0x1FC` и `0x400–0x7FC`; `0x200–0x3FC`, `IRQ_*` и
+  остальной резерв читаются как `0`, запись игнорируется.
+- **Регистры.** 17 именованных (`DRIVER_PROTOCOLS`, `DRIVER_PROTOCOL`,
+  `EVENT_STATUS`, `MODE_COUNT`, `EVENT_PENDING`, `EVENT_CAPACITY`, `EVENT_POP`,
+  `EVENT_SEQ_LO/HI`, `EVENT_TYPE`, `EVENT_ARG0..3`, `RESPONSE_SEQ_LO/HI`,
+  `REQUEST_RESPONSE`) и `MODE_TABLE`. Доступ — как в ревизии 1: только
+  `Mmio`, `Dword`, выровненный; иначе `DeviceError` до изменения состояния.
+  `DRIVER_PROTOCOL` — класс «RW с проверкой»: допустимое значение (`0` или `1`)
+  применяется, недопустимое даёт `PROTOCOL_ERROR = UNSUPPORTED_PROTOCOL`.
+- **Список режимов.** Константа устройства: `MODE_COUNT = 14`, записи по 16
+  байт (`width`, `height`, `format = 1`, `0`), записи `i ≥ 14` читаются нулями.
+  Чтение без побочных эффектов; reset список не меняет; `MODE_COMMIT` им не
+  ограничен.
+- **Очередь событий.** Ёмкость `DISPLAY_EVENT_CAPACITY = 16` записей
+  (`seq: u64`, `type`, 4 аргумента). `EVENT_POP` берёт голову в защёлку; защёлку
+  меняют только успешный `EVENT_POP` гостя, `DRIVER_PROTOCOL <- 0` и reset, host
+  её не трогает. Пока `DRIVER_PROTOCOL = 0`, очередь пуста и `EVENT_PENDING = 0`.
+  Ошибки `EVENT_STATUS` (`POP_ERROR`, `RESPONSE_ERROR`, `PROTOCOL_ERROR`) —
+  `INVALID_COMMAND`, `NOT_ENABLED`, `QUEUE_EMPTY`, `STALE_REQUEST`,
+  `MODE_MISMATCH`, `UNSUPPORTED_PROTOCOL` (`0x07–0x0B`); в `STATUS` они не
+  попадают.
+- **Host API** (`DisplayHandle`, без downcast): `driver_protocol()`,
+  `post_mode_request(width, height, format) -> Result<u64, DisplayRequestError>`,
+  `mode_request_state() -> Option<ModeRequestState>`. Проверки постановки по
+  порядку: `NoDriver`, `InvalidMode` (проверки `MODE_COMMIT` 2–4),
+  `SequenceExhausted`, `QueueFull`; при отказе состояние не меняется. Новый
+  запрос удаляет непринятый `MODE_REQUEST` экрана 0 и вытесняет открытый;
+  переполнение не сбрасывает старые события. Правило вызова — как у остального
+  handle: только между квантами, владельцем `MachineBus`, в его потоке.
+- **Ответ.** `REQUEST_RESPONSE` проверяет кодирование (`ACCEPT = 0x01`,
+  `REJECT` с причиной `1..=3` в битах 15:8, биты 31:16 нулевые), затем
+  `DRIVER_PROTOCOL`, затем открытый запрос с номером из `RESPONSE_SEQ_HI:LO`,
+  затем для `ACCEPT` — равенство активного режима запрошенному (`MODE_MISMATCH`).
+  Режим меняет только `MODE_COMMIT`.
+- **Reset.** `DisplayHandle::reset()` дополнительно выключает протокол как
+  `DRIVER_PROTOCOL <- 0` (открытый запрос → `Cancelled`), обнуляет
+  `RESPONSE_SEQ_*` и `EVENT_STATUS`; `next_event_seq` и последний запрос
+  сохраняются.
+- **Не реализовано.** Блок второго экрана, прерывания, snapshot,
+  путь запроса UI → VMHost → C ABI `od-host` (ABI в этом срезе не менялся;
+  DISPLAY_DEVICE.md, 14.15.1), драйверы. Гостевой CPU-путь по-прежнему не имеет
+  dword MMIO-записи (13.1), поэтому гостевой код не проверен: события и ответы
+  проверены записями и чтениями через `MachineBus`.
+- **Проверено.** Unit-тесты `display_device.rs` и интеграционные
+  `tests/display_device.rs`: значения после reset регистров 14.5, неизменность
+  при записи в RO и резерв, проба ревизии 1, таблица режимов (побайтное сравнение образа, собранного из dword-чтений; каждая
+  запись проходит commit), `DRIVER_PROTOCOL`, порядок и защёлка очереди,
+  объединение и вытеснение, ответы (`ACCEPT`/`REJECT`/`MODE_MISMATCH`/
+  `STALE_REQUEST`, неверные кодирования, `seq` с разницей в `HI`), порядок
+  отказов host API, `QueueFull`/`SequenceExhausted` через прямую подготовку
+  состояния в тесте, reset, backend-ошибки на новых смещениях.
+
+## Display device, cursor (S10-14)
+
+Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 15. Здесь записаны
+только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
+устройства написан и ожидает ревью. Display host ABI, VMHost, frame transport v2
+и UI не реализованы.
+
+- **Блок.** Опциональный блок ревизии 2 по `CAPS` биту 2: `CAPS = 0x7`,
+  `VERSION` остаётся `2`. Блок `0x200–0x2FC` существует только при этом бите
+  (в коде проверка `CAPS & CAPS_CURSOR`); `0x22C` и `0x238–0x2FC` — резерв
+  (чтение `0`, запись игнорируется), `0x300–0x3FC` по-прежнему резерв. Регистры
+  версий 1 и 2, `MODE_COMMIT`, doorbell, очередь событий и `DRIVER_PROTOCOL`
+  не изменены; запись вне блока состояния курсора не меняет (кроме reset).
+- **Регистры** (13): `CURSOR_MAX_WIDTH/HEIGHT` (`64`), `CURSOR_FORMATS` (`0x4`),
+  `CURSOR_STATUS` (RO; `DATA_ERROR` 7:0, `IMAGE_ERROR` 15:8, `POSITION_ERROR`
+  23:16, `ENABLE_ERROR` 31:24), `CURSOR_WIDTH/HEIGHT/FORMAT/HOTSPOT` (RW, как
+  записано, проверка при commit), `CURSOR_IMAGE_INDEX` (RW с автоинкрементом),
+  `CURSOR_IMAGE_DATA`/`CURSOR_IMAGE_COMMIT` (WO), `CURSOR_POSITION` и
+  `CURSOR_ENABLE` (RW с проверкой). Доступ — как у остального окна: только
+  `Mmio`, `Dword`, выровненный; иначе `DeviceError` до изменения состояния, в
+  том числе до автоинкремента индекса и записи в `staging`. Новые коды
+  `0x0C–0x0F` (`INDEX_OUT_OF_RANGE`, `HOTSPOT_OUT_OF_IMAGE`,
+  `POSITION_OUT_OF_FRAME`, `NO_CURSOR_IMAGE`); все ошибки исправимы гостем,
+  в `STATUS`/`EVENT_STATUS` не попадают.
+- **Образ.** От 1×1 до 64×64, формат `2` (`BGRA8888_PREMUL`, слово `0xAARRGGBB`,
+  строки без паддинга). Буферы `staging` и `active` по 4096 слов (16 KiB)
+  лежат в состоянии устройства: не в карте гостя, не во `Framebuffer`, запись не
+  вызывает committed-write callback. `CURSOR_IMAGE_COMMIT` по проверкам 15.6.2
+  копирует первые `W × H` слов `staging` в `active` одним действием под
+  блокировкой состояния; `staging` после commit сохраняется. Пиксели не
+  проверяются.
+- **Счётчики** (только host): `cursor_seq` растёт на успешный commit, на
+  изменившую значение запись `CURSOR_POSITION`/`CURSOR_ENABLE` и на reset, если
+  было что показывать; `shape_seq ← cursor_seq` при commit. Не зависят от
+  `generation` и `mode_change_count`; курсор их, `STATUS`, режим и память кадра
+  не меняет, `MODE_COMMIT` и doorbell не меняют курсор. При `cursor_seq = 2^64 − 1`
+  три команды дают `COUNTER_EXHAUSTED`; reset в этом состоянии скрывает курсор,
+  но счётчик не растёт (допущение 15.9).
+- **Host API** (`DisplayHandle`, без downcast, только между квантами, владельцем
+  `MachineBus`): `cursor_state() -> CursorState` (`cursor_seq`, `enabled`, `x`,
+  `y`, `shape: Option<CursorShapeInfo>` с `shape_seq`, `width`, `height`,
+  `format`, `hot_x`, `hot_y`) и
+  `read_cursor_image_into(&mut [u8]) -> Result<CursorShapeInfo, CursorReadError>`
+  (`NoShape`, `BufferLength`; копирует ровно `W × H × 4` байт `active`, порядок
+  B, G, R, A; параметры и байты берутся под одной блокировкой). Шина не нужна.
+  Обе функции только читают.
+- **Reset.** `DisplayHandle::reset()` возвращает регистры блока к значениям
+  после reset, обнуляет `staging` и `active`, снимает форму (`shape_seq = 0`),
+  скрывает курсор и ставит позицию `(0, 0)`; `cursor_seq` растёт на 1, если была
+  форма, курсор был включён или позиция была ненулевой.
+- **Не реализовано.** Display host ABI и test-only профиль `3`, VMHost, frame
+  transport v2, наложение в UI, snapshot, драйверные последовательности курсора
+  (DISPLAY_DRIVER_V1.md), гостевой CPU-путь с dword MMIO (13.1): регистры
+  проверены записями через `MachineBus`.
+- **Проверено.** Unit-тесты `display_device.rs` и интеграционные
+  `tests/display_device.rs`: значения после reset блока, неизменность при записи
+  в RO и резерв, RW-регистры и WO-чтение `0`, автоинкремент и диапазон
+  `IMAGE_INDEX`, каждая проверка commit по порядку и граничные размеры,
+  атомарность commit и сохранение `staging`, позиция против активного кадра,
+  `CURSOR_ENABLE`, неизменность кадра при 1 000 перемещений, reset,
+  насыщение счётчика, backend-ошибки. Замер: загрузка 64×64 (4 102 записи через
+  `MachineBus`) — 56–160 мкс в release и около 0,9 мс в debug; один прогон с eprintln, запуск `cargo test -p od-machine --release --offline -- --nocapture` (одна машина, без
+  CPU-пути; в CPU-пути не измерено).
 
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 
@@ -2432,3 +2653,155 @@ device accesses, instruction fetch through JIT memory, TLB caching, executable
 alias invalidation or interpreter fallback orchestration. It is evidence for
 one V2 load on the production machine RAM owner, not acceptance of parent
 S4-15. See the [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md).
+
+## Firmware board v1 and handoff (S7-03)
+
+**Статус: реализовано исполнителем, ожидает ревью.** Контракт — [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md);
+код — `crates/od-machine/src/firmware_board.rs` (`load_firmware_image`,
+`FirmwareBoardConfig`, `LoadedFirmwareBoard`), ROM backing — `physical_memory.rs`
+и `bus.rs`. `od-machine` не знает UEFI, PE и ACPI: он проверяет плоский образ
+`ODFWIMG1`, кладёт его в ROM и в RAM-shadow, строит временные таблицы и handoff
+block, отдаёт `LongModeState`. Это не reset vector и не real mode.
+
+**Реализовано.**
+
+- **ROM.** Регион `Rom` имеет read backing (при создании нули). Данные читаются через
+  `PhysicalMemory::read_bytes`, `MachineBus::read_physical` и `read_flat_bytes`.
+  Любая запись гостя или обычного загрузчика (`write_bytes`, `write_physical`,
+  `write_flat_bytes`) возвращает `ReadOnlyRegion(Rom)` и не вызывает callback;
+  единственный писатель — `pub(crate)` `load_rom_bytes`, который вызывает только
+  `load_firmware_image`. Page generations и code tracking для ROM не создаются
+  (`code_page_generation` отклоняет `Rom`).
+- **Плата.** Карта строится из `FirmwareBoardConfig` (`ram_bytes` кратно 2 MiB в
+  `[128 MiB, 0xF_F400_0000]`, `second_screen`, `tsc_hz`, UUID, серийный номер) и
+  таблицы устройств: RAM (нижняя `[0, min(R, 0xF400_0000))`, верхняя от 4 GiB),
+  ROM `[0xFFC0_0000, 2^32)`, framebuffer экрана 0 (и экрана 1 при
+  `second_screen`), `Mmio` регистров дисплея, IOAPIC и Local APIC, порт COM1
+  `0x3F8` (8 портов). Одна и та же таблица из семи записей строит шину, окна карты
+  и устройства handoff block. NVRAM, TPM CRB, ECAM — записи с `PRESENT = 0`, в
+  карту и на шину не добавляются.
+- **Образ.** Принимается только образ ровно `0x0040_0000` байт с заголовком v1
+  (FIRMWARE_BOOT.md 3.2): magic, `format_version`, `header_size`, `image_size`,
+  `link_base`, `entry_offset ∈ [0x40, image_size)`, `handoff_major = 1`,
+  `flags = 0`, reserved нули, CRC-32. Любое несовпадение — `FirmwareBoardError`
+  до создания шины и vCPU. Образ копируется в ROM, затем **читается из ROM** и
+  записывается в shadow `[0x0020_0000, 0x0060_0000)` одной записью (page
+  generations shadow растут обычным путём).
+- **Таблицы страниц.** Identity, только 4 KiB, с `CR3 = 0x0060_0000`: листья RAM
+  `P|RW`, ROM `P|NX`, `Mmio`/`Framebuffer` `P|RW|NX`, промежуточные уровни `P|RW`,
+  `Reserved` не отображается. Размер `N` считается по формуле раздела 4 и сверен
+  тестом с таблицей документа (110, 2097, 32780 страниц для трёх размеров RAM;
+  при минимальной RAM текущей платы — 91). Порядок страниц: PML4, затем PDPT/PD/PT
+  по первому использованию при обходе регионов по возрастанию адреса.
+- **Handoff block v1.0** по GPA `0x0010_0000` строится одним кодом из той же карты и
+  таблицы устройств: заголовок `0xA0`, `region_table_offset = 0xA0`,
+  `device_table_offset = 0xA0 + 32·N`, 7 устройств по 48 байт, CRC-32, UUID и
+  серийный номер из конфигурации (по умолчанию нули и пусто), `tsc_hz` из
+  конфигурации (по умолчанию `1_000_000_000`). Типы регионов 1–4, 6–10 заполняются;
+  тип 5 (`NVRAM`) не возникает. Тест сравнивает блок побайтно с эталоном,
+  сгенерированным независимым скриптом по таблицам документа.
+- **Состояние входа.** Long64/CPL0, `CR0 = 0x8001_0033`, `CR4 = 0x20`,
+  `EFER = 0xD00`, `CR3 = 0x0060_0000`, `RIP = 0x0020_0000 + entry_offset`,
+  `RSP = 0x0015_0000`, `RDI = 0x0010_0000`, остальные GPR 0, `RFLAGS = 2`.
+  `CR4 = 0x20`, а не `0x620`: `0x620` — состояние вызова EFI-образа, которое
+  ставит сама прошивка (FIRMWARE_BOOT.md, разделы 5 и 7), и paged-квант принимает
+  только `CR4 = 0x20`.
+- **Запуск.** `LoadedFirmwareBoard::run` — один квант существующего
+  `run_paged_probe`. `run_boot(budget)` повторяет кванты: STOP-предикат —
+  `Uart16550Handle::holding_occupied()` (квант завершается на записи THR, раздел 11
+  FIRMWARE_BOOT.md); после каждого кванта holding → shift → транскрипт, затем
+  `advance_time_ns(retired × 1 ns)` явным вызовом `VirtualClock`; останов по
+  `HLT`, ошибке или бюджету (`Stopped` при исчерпанном бюджете отдаётся как
+  `BudgetExhausted`).
+- **COM1 при входе настроен** (`LCR = 0x03`, делитель 1), как у flat probe: иначе
+  polling UART отклоняет запись THR (`UnsupportedConfiguration`). Это состояние
+  входа перечислено в FIRMWARE_BOOT.md, раздел 5 (строка «COM1»); инициализация
+  прошивки по разделу 11 записывает те же значения и остаётся допустимой.
+- **Runner.** `od-runner boot-firmware --image <bin> --com1-out <file> --budget <steps>`
+  печатает JSON-отчёт (шаги, кванты, причина останова, `rip`, SHA-256 образа и
+  handoff block, виртуальное время, разобранная строка `OD-FW STOP`) и записывает
+  транскрипт COM1. Строка `OD-FW STOP` разбирается только как ПОСЛЕДНЯЯ непустая
+  строка транскрипта (FIRMWARE_BOOT.md, раздел 12): STOP, за которым идёт ещё
+  текст, не считается STOP (код 0). Коды выхода: 0 — `HLT` без строки `OD-FW STOP`
+  последней строкой; 3 — неверные аргументы или файл; 4 — отказ загрузчика
+  (транскрипт не пишется); 5 — гость не остановился по `HLT` или ошибка прогона
+  (транскрипт COM1 с уже записанными байтами пишется и в этом случае, даже пустой);
+  6 — `HLT` после `OD-FW STOP` последней строкой.
+
+**Границы (не реализовано и не доказано).**
+
+- **Гостевой код ограничен allowlist paged-кванта.** `step_paged_probe` исполняет
+  только `MOV RAX,[RBX]`, `MOV [RBX],RCX`, `IN AL,DX`, `OUT DX,AL`, `HLT` (без
+  префиксов) и, по решению S7-03 ([CPU_CONTRACT.md](CPU_CONTRACT.md), «Расширение
+  S7-03»), `MOV r8,imm8` (`B0+r ib`, без префиксов) и `MOV r16,imm16`
+  (`66 B8+r iw`, ровно один `66`). Остальные формы `MOV imm` (`B8+r id`, REX,
+  `C6`/`C7`) остаются `Unsupported`. Контракт входа обнуляет все GPR кроме `RSP` и
+  `RDI`, поэтому образ `build_firmware.py --smoke` (`mov al,'X'; mov dx,0x3F8;
+  out dx,al; hlt`) сам задаёт `AL` и `DX`: в машине он завершается `Halted`,
+  `retired = 4`, COM1 содержит ровно `X` (тест
+  `smoke_code_writes_x_to_com1_with_zero_gprs_at_entry`, runner —
+  `smoke_code_prints_x_and_halts`). Исполнение настоящей прошивки (GDT/IDT, `LRETQ`,
+  `MOV CR4`, `STI`, `CMP`, `Jcc`, `CALL`) по-прежнему требует расширения
+  CPU-профиля — blocker S7-04, см. FIRMWARE_BOOT.md раздел 7.
+- **Чтение ROM гостем через paged-кванты** по-прежнему отклоняется walker'ом как
+  RAM-only (`UnreadableRegion`); прямое чтение ROM доступно на уровне шины и
+  физической памяти. Для v1 это не требуется: образ исполняется из shadow.
+- Fetch из ROM — `#PF`, error code `0x11`, адрес fetch (тест
+  `instruction_fetch_from_rom_is_a_page_fault_by_nx`); backend-ошибка не
+  возникает, пока листья ROM помечены NX.
+- Не реализованы: повторное копирование shadow при сбросе (S7-26), NVRAM (S7-10),
+  ACPI fixed hardware и reset register (S7-14), TPM CRB (S7-22), ECAM (S4-30),
+  NVMe: PCI-привязка и прерывания (S7-16: срезы A и B выполнены, раздел «NVMe controller» ниже), доставка IRQ и APIC timer в paged-пути, SMP, выбор размеров RAM и
+  UUID/серийного номера из командной строки runner (используются значения по
+  умолчанию: 128 MiB, один экран, нулевой UUID, пустой серийный номер).
+- Расширение handoff block (новые поля и устройства) повышает `version_minor`
+  по правилам раздела 6.4 FIRMWARE_BOOT.md; машина выдаёт v1.0 и принимает образы
+  с любым `handoff_minor_max`; v1.1 (запись NVMe) — только при `FirmwareBoardConfig::nvme = Some(..)`
+  и образе с `handoff_minor_max ≥ 1`.
+
+Проверки: `cargo test -p od-machine --offline` (модуль `firmware_board`, `physical_memory`),
+`cargo test -p od-runner --offline --test firmware_boot_cli`,
+`python3 -m unittest tools/build/test_build_firmware.py`; методика —
+[FIRMWARE.md](../testing/FIRMWARE.md).
+
+## NVMe controller (S7-16, срезы A и B)
+
+**Статус: срезы A (управление) и B (ввод-вывод `Read`, `Write`, `Flush`) реализованы
+исполнителем, ожидают ревью.** Контракт устройства,
+регистры, команды, границы, разрывы и значения без сверки со спецификацией —
+[NVME_DEVICE.md](NVME_DEVICE.md); код — `crates/od-machine/src/nvme/`.
+
+- **Шина.** Контроллер — `BusDevice` на одном `Mmio`-регионе `[0xFC00_1000, +0x2000)`
+  (`NVME_MMIO_BASE`, `NVME_MMIO_BYTES`), как дисплей; `MachineBus` не менялся.
+  Ошибки доступа к окну — `DeviceError` по классам контракта шины:
+  `UnsupportedWidth` (байт, слово, `Qword` на doorbell), `Misaligned`,
+  `CrossesRegister` (`Qword` через границу регистров), `ReadOnly`, `WriteOnly`
+  (чтение doorbell), `Busy` (запись `AQA/ASQ/ACQ` при `CC.EN = 1`), `UnknownOffset`
+  (doorbell за пределами пяти очередей), `UnsupportedConfiguration` (doorbell при
+  `CSTS.RDY = 0`). Ошибка возвращается до изменения состояния устройства.
+- **DMA.** `BusDevice` не видит RAM, поэтому doorbell только запоминает указатели;
+  команды исполняются в `NvmeHandle::service(&mut MachineBus, committed_write)`,
+  который владелец машины вызывает между квантами. Доступ к памяти — только RAM
+  (через `MachineBus::memory_kind` и `read_flat_bytes`/`write_flat_bytes`); записи
+  проходят через `committed_write`. PRP в MMIO, ROM, framebuffer и вне карты —
+  статус `Data Transfer Error` команды, не доступ и не паника. Обращение к очереди
+  не в RAM — `CSTS.CFS`.
+- **Плата.** `FirmwareBoardConfig::nvme: Option<NvmeConfig>` (по умолчанию `None`):
+  при `Some` в таблицу устройств handoff block добавляется запись кода 8 (`version_minor = 1`),
+  в карту — регион `Mmio`, на шину — устройство; `LoadedFirmwareBoard::nvme()` отдаёт handle;
+  `run_boot` останавливает квант после doorbell-записи и вызывает `service` между квантами и один
+  раз перед запуском. Без конфигурации окна нет (`Unmapped`), handoff остаётся v1.0, эталон
+  `REFERENCE_HANDOFF_HEX` не изменился.
+- **Ввод-вывод (срез B).** `Read`, `Write`, `Flush` исполняются в том же `service` через
+  `trait NvmeBackend` (512-байтные секторы); `od-machine` реализует только `InMemoryBackend`
+  (тесты, мини-образы), файловый/CoW backend подключает владелец машины над `od-storage` через
+  `NvmeHandle::attach_backend` (только при `CC.EN = 0`; `NSZE` = размер backend). Без backend
+  I/O-команда — `Namespace Not Ready`. Ошибки (NSID ≠ 1, LBA вне `NSZE`, `NLB` больше `MDTS`,
+  `FUA`/`LR`/`DSM`/SGL, PRP, отказ backend) — статусы NVMe, не паника; файлового ввода-вывода
+  в `od-machine` нет. Значения статусов `LBA Out of Range`/`Namespace Not Ready`/`Internal Error`
+  не сверены с NVMe Base 2.4.
+- **Не реализовано:** LBA 4 KiB, файловый backend, `Dataset Management`/`Write Zeroes`/`Compare`,
+  `FUA`, прерывания (нет IRQ-маршрута), PCI-привязка (S4-30), SGL, Namespace Management, firmware
+  download/commit, несколько NS, `Device Self-test`. Время исполнения команд не моделируется.
+
+Проверки: `cargo test -p od-machine --offline` (модули `nvme`, `firmware_board`).

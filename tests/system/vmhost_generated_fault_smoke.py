@@ -12,16 +12,22 @@ import time
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LAUNCHER = ROOT / "apps" / ".build" / "debug" / "open-desktop-launcher-smoke"
+# The helper is not a SwiftPM target; apps/vmhost/README.md builds it (debugging recipe, not normative).
+DEFAULT_HELPER = ROOT / "target" / "od-vmhost-generated-fault-smoke"
+
+
 def main() -> int:
-    if len(sys.argv) not in (3, 5):
+    if len(sys.argv) not in (1, 3, 5):
         print(
-            f"usage: {Path(sys.argv[0]).name} LAUNCHER GENERATED_FAULT_HELPER [--diagnostics-dir DIR]",
+            f"usage: {Path(sys.argv[0]).name} [LAUNCHER GENERATED_FAULT_HELPER [--diagnostics-dir DIR]]",
             file=sys.stderr,
         )
         return 2
 
-    launcher = str(Path(sys.argv[1]).resolve())
-    helper = str(Path(sys.argv[2]).resolve())
+    launcher = str(Path(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LAUNCHER).resolve())
+    helper = str(Path(sys.argv[2] if len(sys.argv) > 1 else DEFAULT_HELPER).resolve())
     diagnostics_dir = Path(sys.argv[4]).resolve() if len(sys.argv) == 5 else None
     if len(sys.argv) == 5 and sys.argv[3] != "--diagnostics-dir":
         print("expected --diagnostics-dir before diagnostics path", file=sys.stderr)

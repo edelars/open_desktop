@@ -389,7 +389,8 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 `od_isa::execute::step_paged_probe` admits one instruction from the exact
 Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
 (`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
-`F4` (`HLT`). The CPU entry validates its profile admission and CR0/CR4 before
+`F4` (`HLT`); S7-03 extends it with `B0+r ib` and `66 B8+r iw` only (see
+«Расширение S7-03» below). The CPU entry validates its profile admission and CR0/CR4 before
 fetch. It receives page-aware `GuestMemory`; CR3/EFER validation and selecting
 the four-level 4 KiB paging context belong to the machine entry.
 
@@ -407,6 +408,30 @@ general-purpose mixed runner, Linux/kernel boot, IRQ/APIC, or the complete
 vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
 [S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md) and
 [machine verification record](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum).
+
+#### Расширение S7-03: `MOV` с непосредственным операндом в `PagedCpl0ProbeV1`
+
+**Статус:** решение архитектора по blocker S7-03 ([отчёт этапа 7](../reports/STAGE_7_REPORT.md#5-решение-s7-03-blocker)); реализовано в S7-03 (`step_paged_probe_inner`, тесты `crates/od-isa/tests/paged_probe_profile.rs`, `crates/od-machine/tests/paged_probe_quantum.rs`, `crates/od-machine/src/firmware_board.rs`, `tools/runner/tests/firmware_boot_cli.rs`); ждёт ревью, до его завершения гарантия не считается принятой. Причина: вход в прошивку ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), раздел 5) обнуляет все GPR, кроме `RSP` и `RDI`, поэтому без записи регистра константой гость не может задать ни порт COM1 в `DX`, ни байт в `AL`. Декодер `long_decode` уже разбирает `B0`–`BF` в `Operation::MovImmediate` (общий decode-контракт не меняется); расширяется только allowlist исполнения базового профиля.
+
+К allowlist `PagedCpl0ProbeV1` (только `step_paged_probe`, Long64, CPL0, те же проверки admission, CR0/CR4 и activity, что выше) добавляются ровно две формы:
+
+| Encoding | Длина | Префиксы | Операция | Результат |
+|---|---|---|---|---|
+| `B0+r ib`, `r = 0…7` | 2 | никаких (`Prefixes::default()`, без REX) | `MOV r8, imm8`: `AL, CL, DL, BL, AH, CH, DH, BH` | пишется только целевой байт (биты 7:0 для `B0`–`B3`, биты 15:8 RAX/RCX/RDX/RBX для `B4`–`B7`); остальные биты и регистры не меняются |
+| `66 B8+r iw`, `r = 0…7` | 4 | ровно один `66`, без REX и других префиксов | `MOV r16, imm16`: `AX, CX, DX, BX, SP, BP, SI, DI` | пишутся биты 15:0; биты 63:16 сохраняются |
+
+Обе формы: `opcode.map = Primary`, без ModRM, `RIP += длина`, `instructions_executed = 1`, выход `Retired`; RFLAGS и `rflags_defined` не меняются; обращений к памяти данных и к портам нет. Fetch всех байт (включая непосредственный операнд) идёт через тот же page-aware `GuestMemory`; fault при fetch любого байта возвращается как архитектурный результат до изменения регистров.
+
+Остаются вне профиля (не исполняются: `instructions_executed = 0`, состояние CPU не меняется, результат — существующая классификация декодера, для перечисленных ниже — `Unsupported { opcode }` с байтом опкода):
+
+- `B8+r id` без `66` (`MOV r32, imm32`, например `BA F8 03 00 00`);
+- любая форма с REX: `40`–`4F` перед `B0`–`BF` (`SPL/BPL/SIL/DIL`, `R8B`–`R15B`, `R8W`–`R15W`, `MOV r64, imm64` — `48 B8 io`);
+- `66` перед `B0`–`B7`, повторный `66`, `67`, сегментные префиксы, `F2`/`F3` и любые сочетания префиксов, кроме указанных в таблице (допуск проверяет точный набор `Prefixes` и длину 2 или 4); `F0` (LOCK) не допускается и сохраняет классификацию декодера;
+- `C6 /0` и `C7 /0` (`MOV r/m, imm`), любые другие операции с непосредственным операндом (`ADD`, `CMP`, `OR` и т. п.).
+
+Профили, построенные на том же внутреннем шаге, расширение **не** получают: `PagedCpl0Cr3ProbeV1` (S4-12c), `PagedCpl0Cr0WpProbeV1` (S4-12d), стековый профиль `step_paged_stack_probe`, CPL3-профили `step_paged_cpl3_mov`/`step_paged_cpl3_load` и `PagedCpl0PioU8V1` (S4-24c) сохраняют свои allowlist, и `B0`–`BF` в них остаются `Unsupported`. Расширение не добавляет JIT-пути, flat identity-пути, `MOV CR4`, сегментных переходов, `LRETQ`/`IRETQ` или других инструкций, нужных настоящей прошивке: это по-прежнему blocker S7-04 ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md), раздел 7).
+
+Проверка (обязательна для S7-03): позитивный тест на каждую из 16 форм (значение целевой части, сохранность остальных битов и регистров, `RIP`, флаги), отрицательные тесты на соседние формы из списка выше и на другие профили, fault при fetch непосредственного операнда через границу страницы, мини-образ `build_firmware.py --smoke` в `boot-firmware` печатает `X` в COM1 и останавливается по `HLT`.
 
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 

@@ -1,0 +1,18 @@
+[package]
+name = "od-power-loss"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "od-power-loss"
+path = "src/main.rs"
+
+[dependencies]
+od-host = { path = "../../crates/od-host" }
+# The CoW image modules are a prototype exposed under this feature until a
+# format is accepted (S9-40); this driver is one of its real-device users.
+od-storage = { path = "../../crates/od-storage", features = ["test-support"] }
+
+[lints]
+workspace = true

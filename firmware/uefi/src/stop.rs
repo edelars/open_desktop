@@ -1,0 +1,65 @@
+//! Final stop line of the firmware (FIRMWARE_BOOT.md, section 12).
+//!
+//! Format: `OD-FW STOP code=0xNN detail=0xDDDDDDDDDDDDDDDD\r\n`.
+
+/// `RDI` at entry is not the handoff block address.
+pub const STOP_INVALID_RDI: u8 = 0x01;
+/// Internal firmware error (panic handler).
+pub const STOP_INTERNAL: u8 = 0x30;
+
+const PREFIX: &[u8] = b"OD-FW STOP code=0x";
+const MIDDLE: &[u8] = b" detail=0x";
+const SUFFIX: &[u8] = b"\r\n";
+
+/// Length of the stop line in bytes.
+pub const STOP_LINE_LEN: usize = PREFIX.len() + 2 + MIDDLE.len() + 16 + SUFFIX.len();
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Renders the stop line without `core::fmt` (upper-case hex, fixed width).
+pub fn format_stop_line(code: u8, detail: u64) -> [u8; STOP_LINE_LEN] {
+    let mut line = [0u8; STOP_LINE_LEN];
+    let mut at = 0;
+    let mut put = |bytes: &[u8], line: &mut [u8; STOP_LINE_LEN]| {
+        line[at..at + bytes.len()].copy_from_slice(bytes);
+        at += bytes.len();
+    };
+    put(PREFIX, &mut line);
+    put(
+        &[HEX[(code >> 4) as usize], HEX[(code & 0xF) as usize]],
+        &mut line,
+    );
+    put(MIDDLE, &mut line);
+    let mut digits = [0u8; 16];
+    for (index, digit) in digits.iter_mut().enumerate() {
+        *digit = HEX[((detail >> (60 - 4 * index)) & 0xF) as usize];
+    }
+    put(&digits, &mut line);
+    put(SUFFIX, &mut line);
+    debug_assert_eq!(at, STOP_LINE_LEN);
+    line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_documented_line() {
+        let line = format_stop_line(STOP_INTERNAL, 0x0000_0000_0000_002A);
+        assert_eq!(
+            &line[..],
+            b"OD-FW STOP code=0x30 detail=0x000000000000002A\r\n".as_slice()
+        );
+        assert_eq!(line.len(), 48);
+    }
+
+    #[test]
+    fn formats_full_width_detail_and_low_code() {
+        let line = format_stop_line(STOP_INVALID_RDI, 0xFEDC_BA98_7654_3210);
+        assert_eq!(
+            &line[..],
+            b"OD-FW STOP code=0x01 detail=0xFEDCBA9876543210\r\n".as_slice()
+        );
+    }
+}

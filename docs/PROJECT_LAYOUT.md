@@ -41,11 +41,17 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 |---|---|
 | SwiftUI/AppKit, окна и библиотека VM | `apps/macos/Sources/` |
 | Ресурсы и настройки подписи приложения | `apps/macos/Resources/`, `apps/macos/Configuration/` |
+| Общая Swift-библиотека приложения и CLI (цель `ODShared`, без `libod_host.a`; решение [ADR-0006](decisions/ADR-0006-desktop-app-shell.md)) | `apps/macos/Sources/Shared/` |
+| Манифест Swift Package приложения, VMHost и CLI | `apps/Package.swift` |
+| C-цель атомных функций транспорта кадров (`ODAtomics`) | `apps/macos/Sources/ODAtomics/` |
+| C-цель объявлений C ABI движка для VMHost (`ODHostABI`) | `apps/vmhost/Sources/ODHostABI/` |
+| CLI управления машинами (`odctl`) | `apps/cli/Sources/` (создаётся в S11-13) |
 | Жизненный цикл VMHost, IPC transport, мост к Rust | `apps/vmhost/Sources/` |
 | Настройки helper/подписи | `apps/vmhost/Configuration/` |
 | CPU state, x86 decoder, interpreter | `crates/od-isa/src/` |
 | IR, ARM64 emitter, dispatcher, JIT-кеш | `crates/od-jit/src/` |
 | Гостевая RAM/MMU/TLB, vCPU и устройства | `crates/od-machine/src/` |
+| Процессор команд TPM 2.0 и его состояние: чистая логика без шины и устройств; CRB-устройство остаётся в `od-machine` (решение D8, [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md)) | `crates/od-tpm/src/` (фаза A — S7-21: команды Startup/Capability/Random/PCR/Hash/Clock; фаза B, срез A — S7-23: модули `hierarchy.rs` (иерархии, seeds, auth, enables, Clear), `session.rs` (HMAC-сессии, StartAuthSession, FlushContext), `nv.rs` (база NV-индексов), `crypto.rs` (HMAC/KDFa на крейте `hmac`, RSA-2048 на `rsa` и ECC P-256 на `p256`); фаза B, срез B — S7-23: модули `object.rs` (объекты, шаблоны, вывод primary-ключей, защита `outPrivate`) и `object_cmd.rs` (`CreatePrimary`, `Create`, `Load`, `LoadExternal`, `ReadPublic`, `Unseal`, `EvictControl`, `Sign`, `VerifySignature`); фаза B, срез C1 — S7-23: модули `asym.rs` (`RSA_Encrypt`, `RSA_Decrypt`, `ECDH_ZGen`), `da.rs` (защита от подбора, `DictionaryAttackLockReset`, `DictionaryAttackParameters`) и `snapshot.rs` (кодек payload snapshot `ODTPMSTA`, v3 начиная со среза C3); фаза B, срез C2 — S7-23: модули `policy.rs` (policy-сессии, `Policy*`, проверка авторизации policy-сессией), `context.rs` (`ContextSave`, `ContextLoad`) и `attest.rs` (`TPM2_HMAC`, `Quote`, `Certify`); фаза B, срез C3 — S7-23: модуль `paramenc.rs` (шифрование параметров сессий, AES-128-CFB и XOR), NV counter/bits/extend (`nv.rs`), `GetTime` и NULL `signHandle` (`attest.rs`); шаблоны EK и сертификат EK — не сделаны, ждут решения владельца) |
 | Формат диска, метаданные и контейнер снимка | `crates/od-storage/src/` |
 | macOS host-примитивы, JIT memory, glue C ABI | `crates/od-host/src/` |
 | Общие генераторы/сравнение/сокращение тестов | `crates/od-testkit/src/` |
@@ -64,7 +70,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | Сборочная orchestration и генерация | `tools/build/` |
 | Запуск и обработка benchmarks | `tools/bench/` |
 | Межкомпонентные CPU/system/compat сценарии | `tests/cpu/`, `tests/system/`, `tests/compat/` |
-| Небольшие собственные тестовые данные | `tests/fixtures/x86/`, `tests/fixtures/guest/` |
+| Небольшие собственные тестовые данные | `tests/fixtures/x86/`, `tests/fixtures/guest/` (в том числе `tests/fixtures/guest/stage10/` для дисплея этапа 10), `tests/fixtures/firmware/` (fixtures прошивки этапа 7; каталог создаёт S7-08) |
 | Планы реализации | `docs/plans/` |
 | Найденные недоделки и проблемы, не устранённые в ходе задачи | `docs/KNOWN_ISSUES.md` |
 | Контракты CPU/платы/требований, обзоры ABI/протоколов | `docs/specs/` |
@@ -95,10 +101,18 @@ raw evidence остаётся в ignored `work/stage2/s2-39k-acceptance-20261104
 Harness не меняет native fixture admission. Linux native A/B/A/B прошёл;
 raw `execution_kind=unknown`, отдельная physical acceptance остаётся открытой.
 
+Документы этапа 10 ([план](plans/STAGE_10.md)): контракт дисплейного устройства `specs/DISPLAY_DEVICE.md`, host ABI `specs/DISPLAY_HOST_ABI_V1.md`, транспорт кадров `../protocols/control/FRAME_TRANSPORT_V1.md`, протокол display-only драйвера `../protocols/guest/DISPLAY_DRIVER_V1.md`, host C ABI `../include/open_desktop/display_abi_v1.h`, транспорт ввода `../protocols/control/INPUT_TRANSPORT_V1.md`, методика `testing/DISPLAY.md`, отчёт `reports/STAGE_10_REPORT.md`. Файлы, которых ещё нет, создаёт соответствующая задача S10-NN; пока файла нет, его описание в плане не означает реализацию.
+
+Документы этапа 7 ([план](plans/STAGE_7.md)): отчёт `reports/STAGE_7_REPORT.md`, контракт входа в прошивку `specs/FIRMWARE_BOOT.md`, сборка прошивки `../firmware/uefi/README.md`, поддержанный профиль UEFI `specs/UEFI_PROFILE.md`, NVRAM-устройство `specs/NVRAM_DEVICE.md`, таблицы ACPI и SMBIOS `specs/ACPI_SMBIOS_TABLES.md`, NVMe-контроллер `specs/NVME_DEVICE.md`, ADR vTPM `decisions/ADR-0009-vtpm-placement-and-crypto.md` (S7-20) и контракт `specs/VTPM.md` (раздел «Состояние и границы» — S7-20, остальное — S7-21…S7-23), ADR ключей Secure Boot `decisions/ADR-000N-secure-boot-keys.md`, ADR транспорта установочного носителя `decisions/ADR-000N-install-media-transport.md`, требования Windows boot path `specs/WINDOWS_PLATFORM_REQUIREMENTS.md`, методика `testing/FIRMWARE.md`. Файлы, которых ещё нет, создаёт соответствующая задача S7-NN (номера ADR назначаются при создании); пока файла нет, его описание в плане не означает реализацию. Каталог fixtures `tests/fixtures/firmware/` создаёт S7-08.
+
+Документы этапа 11 ([план](plans/STAGE_11.md)): отчёт `reports/STAGE_11_REPORT.md`, решение об оболочке приложения `decisions/ADR-0006-desktop-app-shell.md`; далее по задачам — методика `testing/DESKTOP_APP.md`, контракт bundle `specs/VM_BUNDLE.md`, control v2 `../protocols/control/CONTROL_PROTOCOL_V2.md`, storage ABI `specs/STORAGE_HOST_ABI_V1.md` и `../include/open_desktop/storage_abi_v1.h`, каталог ошибок `specs/USER_FACING_ERRORS.md`, CLI `specs/CLI.md`, ADR транспорта агента `decisions/ADR-0007-agent-channel-transport.md` (создаётся в S11-20) и протокол агента `../protocols/guest/AGENT_PROTOCOL_V1.md`, устройство и ABI агента `specs/AGENT_CHANNEL_DEVICE.md`, `specs/AGENT_HOST_ABI_V1.md`, `../include/open_desktop/agent_abi_v1.h`, общие папки `specs/SHARED_FOLDERS.md`, сеть `decisions/ADR-0008-network-backend.md` и `specs/NETWORK.md`, `specs/NIC_DEVICE.md`, `specs/AUDIO_DEVICE.md`, scope-документы `specs/GUEST_WINDOW_INTEGRATION_SCOPE.md`, `specs/USB_PRINT_SCOPE.md`. Каталоги `apps/cli/` и `tests/fixtures/guest/stage11/` создают S11-13 и S11-23 и тогда же добавляют их в машиночитаемый перечень ниже. Файлы, которых ещё нет, создаёт соответствующая задача S11-NN; пока файла нет, его описание в плане не означает реализацию.
+
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 
 ### Неочевидные границы
 
+- Прошивка: `firmware/uefi/` — отдельный Cargo-проект вне корневого workspace (корневой `Cargo.toml` перечисляет его в `exclude`, в `members` его нет). Он собирается для guest-target `x86_64-unknown-none` скриптом `tools/build/build_firmware.py`, а его host-side тесты запускаются `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`; `cargo check --workspace` прошивку не проверяет. Команды, версии и карта модулей — в `firmware/uefi/README.md`.
+- vTPM: процессор команд, состояние и кодек persistent state — `crates/od-tpm/`; CRB-регистры и выдача байтов state host-стороне — `od-machine`; клиент TCG2 и measured boot — `firmware/uefi/`; защита ключей и хранение — этап 9 (S9-27). Crate создан в S7-21 (фаза A), каталог `crates/od-tpm/src` внесён в машиночитаемый перечень ниже.
 - Гостевое устройство: модель и guest-visible registers — в `od-machine`; системный backend — в host-слое; guest driver — в `guest/`; wire contract — в `protocols/guest/`.
 - Снимок: остановка CPU/I/O и сбор согласованного состояния — в `od-machine`; запись контейнера/дисковых данных — в `od-storage`.
 - JIT: блоки и dispatcher — в `od-jit`; отображение исполняемой памяти через macOS — в `od-host`, предоставляемое через узкий интерфейс.
@@ -116,7 +130,8 @@ raw `execution_kind=unknown`, отдельная physical acceptance остаё�
 apps/macos --> control protocol --> apps/vmhost
 apps/vmhost --> public C ABI --> od-host
 od-host --> od-machine / od-jit / od-storage / od-isa
-od-machine --> od-isa / od-jit / od-storage
+od-machine --> od-isa / od-jit / od-storage / od-tpm
+od-tpm --> только общие криптобиблиотеки (ADR-0009); crate'ов проекта не использует
 od-jit --> od-isa
 od-storage --> стандартные библиотеки / внедрённый storage I/O contract
 od-testkit --> od-isa; прочие компоненты только для проверок
@@ -149,13 +164,18 @@ apps/macos/Sources
 apps/macos/Resources
 apps/macos/Configuration
 apps/macos/Tests
+apps/macos/Sources/Shared
+apps/macos/Sources/ODAtomics/include
+apps/cli/Sources/odctl
 apps/vmhost/Sources
+apps/vmhost/Sources/ODHostABI/include
 apps/vmhost/Configuration
 apps/vmhost/Tests
 crates/od-isa/src
 crates/od-jit/src
 crates/od-machine/src
 crates/od-storage/src
+crates/od-tpm/src
 crates/od-host/src
 crates/od-testkit/src
 include/open_desktop

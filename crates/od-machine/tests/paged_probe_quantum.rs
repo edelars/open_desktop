@@ -1403,3 +1403,33 @@ fn mixed_cr3_table_pointer_outside_ram_and_same_root_write() {
         }]
     );
 }
+
+#[test]
+fn paged_probe_mov_immediate_fetch_fault_on_immediate_commits_nothing() {
+    let (mut bus, _) = fixture();
+    // `66 BA` occupies the last two bytes of the mapped code page; the
+    // immediate bytes live on the next page, which is not mapped.
+    put_bytes_at(&mut bus, CODE_PHYSICAL + 0xffe, &[0x66, 0xba]);
+    map_next_code_page(&mut bus, 0);
+    let mut state = initial_state(0);
+    state.rip = CODE_LINEAR + 0xffe;
+    let before = state.clone();
+    let mut callbacks = Vec::new();
+
+    let result = run(&mut state, &mut bus, 2, || false, &mut callbacks);
+
+    let next_page = CODE_LINEAR + 0x1000;
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x10),
+            linear_address: Some(next_page),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state.gpr[Register::Rdx as usize], u64::from(COM1));
+    assert_eq!(state.rip, CODE_LINEAR + 0xffe);
+    assert_eq!(state, before);
+    assert!(result.page_fault.is_some());
+}

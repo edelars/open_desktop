@@ -55,8 +55,16 @@ impl GuestMemory for IdentityMemoryAdapter<'_> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         self.record(AccessKind::Fetch, context);
         let physical = GuestPhysicalAddress::new(address);
-        if self.bus.memory_kind(physical, 1).map_err(Self::error)? == MemoryRegionKind::Mmio {
-            return Err(Self::error("instruction fetch from MMIO is unsupported"));
+        match self.bus.memory_kind(physical, 1).map_err(Self::error)? {
+            MemoryRegionKind::Ram => {}
+            MemoryRegionKind::Mmio => {
+                return Err(Self::error("instruction fetch from MMIO is unsupported"));
+            }
+            kind => {
+                return Err(Self::error(format!(
+                    "instruction fetch from {kind:?} memory is unsupported"
+                )));
+            }
         }
         let mut byte = [0];
         self.bus

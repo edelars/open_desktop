@@ -3,10 +3,13 @@
 mod apic_pair;
 mod bus;
 mod diagnostic_vcpu;
+mod display_device;
 mod event_queue;
+mod firmware_board;
 mod identity_memory_adapter;
 mod io_apic;
 mod local_apic;
+mod nvme;
 mod page_walk;
 mod paged_descriptor;
 mod paged_exception_delivery;
@@ -28,9 +31,20 @@ mod uart_rx_events;
 mod virtual_clock;
 
 pub use bus::{
-    AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError, IoSpace,
-    MachineBus, MmioBinding, PortAddress, PortRange, PortRegionBinding, TrackedCodePatchError,
-    TrackedCodeSnapshot, TrackedCodeSnapshotError,
+    AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
+    DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
+    PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
+    TrackedCodeSnapshotError,
+};
+
+pub use display_device::{
+    CursorReadError, CursorShapeInfo, CursorState, DISPLAY_CURSOR_FORMAT_BGRA8888_PREMUL,
+    DISPLAY_CURSOR_IMAGE_WORDS, DISPLAY_CURSOR_MAX_HEIGHT, DISPLAY_CURSOR_MAX_WIDTH,
+    DISPLAY_EVENT_CAPACITY, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH, DISPLAY_REGISTERS_BASE,
+    DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle,
+    DisplayMode, DisplayReadError, DisplayRejectReason, DisplayRequestError, FrameInfo,
+    ModeRequestOutcome, ModeRequestState, SecondScreenState,
 };
 
 pub use diagnostic_vcpu::{
@@ -43,6 +57,14 @@ pub use diagnostic_vcpu::{
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
+
+pub use firmware_board::{
+    FIRMWARE_BOOT_PAGE_TABLES_GPA, FIRMWARE_BOOT_STACK_BASE, FIRMWARE_BOOT_STACK_TOP,
+    FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES,
+    FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE, FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES,
+    FIRMWARE_ROM_BASE, FirmwareBoardConfig, FirmwareBoardError, FirmwareRunReport,
+    LoadedFirmwareBoard, load_firmware_image,
+};
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 pub use io_apic::{IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, IoApicHandle};
@@ -106,6 +128,11 @@ pub use stage4_flat_probe::{
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;
+
+pub use nvme::{
+    BackendError, InMemoryBackend, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeAttachError, NvmeBackend,
+    NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, NvmeServiceReport,
+};
 
 pub use pio_step::step_diagnostic_pio_u8;
 

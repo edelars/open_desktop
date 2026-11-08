@@ -304,8 +304,14 @@ def check_launcher(launcher, vmhost, code, args, expected_reason):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("launcher", help="path to the built launcher smoke binary")
-    parser.add_argument("vmhost", help="path to the built VMHost smoke binary")
+    parser.add_argument(
+        "launcher", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "open-desktop-launcher-smoke"),
+        help="path to the built launcher smoke binary (default: apps/.build/debug/open-desktop-launcher-smoke)",
+    )
+    parser.add_argument(
+        "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
+        help="path to the built VMHost binary (default: apps/.build/debug/od-vmhost)",
+    )
     parser.add_argument("--diagnostics-dir", type=Path)
     args = parser.parse_args()
     global DIAGNOSTICS_DIR

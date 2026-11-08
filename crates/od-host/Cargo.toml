@@ -11,8 +11,10 @@ crate-type = ["rlib", "staticlib"]
 od-isa = { path = "../od-isa" }
 od-jit = { path = "../od-jit" }
 od-machine = { path = "../od-machine" }
+od-storage = { path = "../od-storage" }
 
 [dev-dependencies]
+od-storage = { path = "../od-storage", features = ["test-support"] }
 od-testkit = { path = "../od-testkit" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"

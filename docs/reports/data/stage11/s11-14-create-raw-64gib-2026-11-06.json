@@ -1,0 +1,240 @@
+{
+  "task": "S11-14",
+  "metric": "create-raw-64gib",
+  "title": "PREPARE_DISK 64 GiB (RAW) и odctl create --disk-gib 64",
+  "label": "test-only, без гостя",
+  "unit": "ms",
+  "repeats_counted": 5,
+  "warmup_runs": 1,
+  "command": "python3 tools/build/build_app_bundle.py && (cd apps && swift build) && python3 tools/bench/desktop_lifecycle_bench.py --repeat 5 --configuration release",
+  "fingerprint": {
+    "mac_model": "Mac15,11",
+    "macos_build": "25G241",
+    "build_mode": {
+      "bundle (od-vmhost, OpenDesktop)": "release (declared with --configuration; build_app_bundle.py default is release)",
+      "odctl": "debug (/private/tmp/open_desktop-s9/apps/.build/debug/odctl)"
+    },
+    "git_revision": "831fad8",
+    "git_tracked_changes": 0,
+    "git_tree_clean_tracked": true,
+    "git_untracked_entries": 4,
+    "swift_version": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)",
+    "cargo_version": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "vmhost_profile": "display-test-pattern (control v2 profile 1, memory 256 MiB, 1 vCPU, 1 screen), test-only, без гостя",
+    "vmhost": "/private/tmp/open_desktop-s9/target/app-bundle/OpenDesktop.app/Contents/Helpers/od-vmhost",
+    "proposed_not_from_plan": {
+      "macos_version": "26.7.1",
+      "chip": "Apple M3 Max",
+      "host_page_size": "16384",
+      "note": "fields of this object are the executor's proposal (DESKTOP_APP.md section 3, rule 2), not required by the plan"
+    }
+  },
+  "conditions": {
+    "power": "Now drawing from 'AC Power'",
+    "load_average_1_5_15_min_before": [
+      6.01,
+      5.45,
+      4.21
+    ],
+    "free_space_gib_before": 65.6,
+    "python": "3.15.2",
+    "other_load": "not controlled: an ordinary interactive session, other processes of the user were running"
+  },
+  "primary_series": "prepare_disk_ms",
+  "warmup": {
+    "value": 0.309458,
+    "counted": false,
+    "note": "warm-up run, discarded from statistics"
+  },
+  "samples": [
+    0.134667,
+    0.175209,
+    0.141708,
+    0.12925,
+    0.134125
+  ],
+  "min": 0.12925,
+  "median": 0.134667,
+  "max": 0.175209,
+  "series": {
+    "prepare_disk_ms": {
+      "unit": "ms",
+      "warmup": {
+        "value": 0.309458,
+        "counted": false,
+        "note": "warm-up run, discarded from statistics"
+      },
+      "samples": [
+        0.134667,
+        0.175209,
+        0.141708,
+        0.12925,
+        0.134125
+      ],
+      "min": 0.12925,
+      "median": 0.134667,
+      "max": 0.175209
+    },
+    "logical_bytes": {
+      "unit": "bytes",
+      "warmup": {
+        "value": 68719476736,
+        "counted": false,
+        "note": "warm-up run, discarded from statistics"
+      },
+      "samples": [
+        68719476736,
+        68719476736,
+        68719476736,
+        68719476736,
+        68719476736
+      ],
+      "min": 68719476736,
+      "median": 68719476736,
+      "max": 68719476736
+    },
+    "allocated_bytes": {
+      "unit": "bytes (st_blocks * 512)",
+      "warmup": {
+        "value": 0,
+        "counted": false,
+        "note": "warm-up run, discarded from statistics"
+      },
+      "samples": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "min": 0,
+      "median": 0,
+      "max": 0
+    },
+    "odctl_create_ms": {
+      "unit": "ms",
+      "warmup": {
+        "value": 16.113875,
+        "counted": false,
+        "note": "warm-up run, discarded from statistics"
+      },
+      "samples": [
+        12.490375,
+        12.463208,
+        12.192209,
+        12.27275,
+        11.918625
+      ],
+      "min": 11.918625,
+      "median": 12.27275,
+      "max": 12.490375
+    }
+  },
+  "notes": [
+    "Ёмкость: 64 GiB = 68719476736 байт. Образ создаётся PREPARE_DISK внутри временного bundle; удаляется после каждого прогона.",
+    "Первая серия: от записи кадра PREPARE_DISK до ACK. Вторая: вся команда `odctl create --disk-gib N` (включая запуск od-vmhost и запись config.plist).",
+    "Отказ (например insufficient_space) записывается как результат в поле prepare_disk_runs / odctl_create_runs и не подменяется меньшим диском.",
+    "Данные профиля test-only не переносятся на продуктовую VM (без гостя, без диска).",
+    "Первый прогон (прогрев) записан в warmup и не входит в min/median/max; входит ли прогрев в пять повторов, ждёт подтверждения владельца.",
+    "Разброс (min..max) нужно читать вместе с медианой; сравнения вариантов в этой задаче нет, поэтому выводов о скорости нет."
+  ],
+  "prepare_disk_runs": {
+    "warmup": {
+      "progress_frames": 1,
+      "outcome": "ok",
+      "prepare_disk_ms": 0.309458,
+      "logical_bytes": 68719476736,
+      "allocated_bytes": 0
+    },
+    "counted": [
+      {
+        "progress_frames": 1,
+        "outcome": "ok",
+        "prepare_disk_ms": 0.134667,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "progress_frames": 1,
+        "outcome": "ok",
+        "prepare_disk_ms": 0.175209,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "progress_frames": 1,
+        "outcome": "ok",
+        "prepare_disk_ms": 0.141708,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "progress_frames": 1,
+        "outcome": "ok",
+        "prepare_disk_ms": 0.12925,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "progress_frames": 1,
+        "outcome": "ok",
+        "prepare_disk_ms": 0.134125,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      }
+    ],
+    "outcomes": [
+      "ok"
+    ]
+  },
+  "odctl_create_runs": {
+    "warmup": {
+      "exit_code": 0,
+      "outcome": "ok",
+      "odctl_create_ms": 16.113875,
+      "logical_bytes": 68719476736,
+      "allocated_bytes": 0
+    },
+    "counted": [
+      {
+        "exit_code": 0,
+        "outcome": "ok",
+        "odctl_create_ms": 12.490375,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "exit_code": 0,
+        "outcome": "ok",
+        "odctl_create_ms": 12.463208,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "exit_code": 0,
+        "outcome": "ok",
+        "odctl_create_ms": 12.192209,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "exit_code": 0,
+        "outcome": "ok",
+        "odctl_create_ms": 12.27275,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      },
+      {
+        "exit_code": 0,
+        "outcome": "ok",
+        "odctl_create_ms": 11.918625,
+        "logical_bytes": 68719476736,
+        "allocated_bytes": 0
+      }
+    ],
+    "outcomes": [
+      "ok"
+    ]
+  },
+  "requested_capacity_bytes": 68719476736
+}

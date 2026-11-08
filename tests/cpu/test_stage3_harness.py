@@ -4856,11 +4856,11 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     self.assertEqual(
                         command["argv"], [sys.executable, script_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"]
                     )
-            self.assertIn("apps/vmhost/Sources/VMHostABI.h", harness.PROCESS_SOURCE_PATHS)
+            self.assertIn("apps/vmhost/Sources/ODHostABI/include/VMHostABI.h", harness.PROCESS_SOURCE_PATHS)
             self.assertIn("include/open_desktop/session_abi_v1.h", harness.PROCESS_SOURCE_PATHS)
-            self.assertIn("apps/vmhost/Sources/ControlFrame.swift", harness.PROCESS_SOURCE_PATHS)
+            self.assertIn("apps/macos/Sources/Shared/ControlFrame.swift", harness.PROCESS_SOURCE_PATHS)
             self.assertIn(
-                "apps/vmhost/Sources/VMHostABI.h",
+                "apps/vmhost/Sources/ODHostABI/include/VMHostABI.h",
                 commands["process_compile_vmhost"],
             )
             self.assertEqual(

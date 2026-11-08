@@ -5,12 +5,17 @@ members = [
     "crates/od-jit",
     "crates/od-machine",
     "crates/od-storage",
+    "crates/od-tpm",
     "crates/od-host",
     "crates/od-testkit",
     "tools/runner",
     "tools/x86-runner",
     "tools/bench",
+    "tools/image-tool",
+    "tools/power-loss",
 ]
+# Guest-target firmware: own Cargo project with its own target (firmware/uefi/README.md).
+exclude = ["firmware/uefi"]
 
 [workspace.package]
 version = "0.1.0"

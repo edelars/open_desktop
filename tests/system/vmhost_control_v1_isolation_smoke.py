@@ -7,6 +7,7 @@ import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 
 MAGIC = b"ODCP"
@@ -174,7 +175,10 @@ def check_isolation(vmhost):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("vmhost", help="path to the signed od-vmhost-smoke executable")
+    parser.add_argument(
+        "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
+        help="path to the od-vmhost executable (default: apps/.build/debug/od-vmhost)",
+    )
     args = parser.parse_args()
     check_isolation(args.vmhost)
 

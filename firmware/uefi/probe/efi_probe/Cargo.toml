@@ -1,0 +1,25 @@
+# Own Cargo project, not a member of the root workspace and not part of firmware/uefi.
+# S7-01: proof that a PE32+ EFI image builds (x86_64-unknown-uefi, rust-lld in lld-link mode).
+# Not an S7-06 test application and not the S7-11 runtime image.
+[package]
+name = "efi_probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Open Desktop S7-01 PE32+ build proof (not a test application, not the RT image)"
+
+[workspace]
+
+[[bin]]
+name = "efi_probe"
+path = "src/main.rs"
+test = false
+bench = false
+doc = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
