@@ -1561,7 +1561,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-30. Минимальная PCI/PCIe configuration
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (закрыт срезами S4-30a, S4-30b, S4-30c; Claude Opus, high). Закрытие: ECAM и conf1 — на шине и в карте платы под opt-in флагом; bus 0 пустой, production-устройств на этапе 4 нет, поэтому требование «production devices имеют backend» выполняется пустым множеством. Явно не сделано и не требуется этапу 4: BAR→MMIO mapping и decode-биты Command (биты только хранятся; BAR sizing проверяется на diagnostic endpoint), MCFG (S4-31), host bridge (отложен до этапа 7 по решению пользователя), MSI/MSI-X без объявленного устройства.
 - **Где:** `od-machine`, board manifest и `VIRTUAL_BOARD.md`.
 - **Сделать:** один segment/root и static topology; ECAM и, если нужен выбранному Linux, другой configuration access. Absent functions, widths, readonly fields, BAR probing/sizing/alignment и decode enable определить явно. Не объявлять NVMe/NIC до их реализации.
 - **Проверка:** перечисление пустых/существующих functions, BAR probe, invalid bus/device/function/offset, согласованность BAR и physical map. Использовать малый собственный тестовый endpoint, если нужен для BAR tests, и пометить его diagnostic-only.
