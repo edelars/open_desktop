@@ -59,6 +59,18 @@ pub struct DeviceEntry {
     pub param1: u64,
 }
 
+/// An all-zero entry, the filler of unused slots (`DeviceEntry::default()` is not const).
+const ABSENT_ENTRY: DeviceEntry = DeviceEntry {
+    device_type: 0,
+    flags: 0,
+    base: 0,
+    length: 0,
+    gsi: 0,
+    irq_flags: 0,
+    param0: 0,
+    param1: 0,
+};
+
 fn le32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
@@ -85,11 +97,11 @@ impl DeviceEntry {
         }
     }
 
-    pub fn is_present(&self) -> bool {
+    pub const fn is_present(&self) -> bool {
         self.flags & FLAG_PRESENT != 0
     }
 
-    pub fn is_pio(&self) -> bool {
+    pub const fn is_pio(&self) -> bool {
         self.flags & FLAG_PIO != 0
     }
 }
@@ -103,10 +115,13 @@ pub struct BoardManifest {
 impl BoardManifest {
     /// Accepts the entries in any order and checks FIRMWARE_BOOT.md 6.3/6.5 for devices: each
     /// type 1..=7 exactly once, reserved bits zero, no address for an absent device.
-    pub fn from_entries(entries: [DeviceEntry; DEVICE_COUNT]) -> Result<Self, ManifestError> {
-        let mut slots = [DeviceEntry::default(); DEVICE_COUNT];
+    pub const fn from_entries(entries: [DeviceEntry; DEVICE_COUNT]) -> Result<Self, ManifestError> {
+        let mut slots = [ABSENT_ENTRY; DEVICE_COUNT];
         let mut seen = [false; DEVICE_COUNT];
-        for entry in entries {
+        let mut i = 0;
+        while i < DEVICE_COUNT {
+            let entry = entries[i];
+            i += 1;
             let index = match entry.device_type {
                 1..=7 => (entry.device_type - 1) as usize,
                 other => return Err(ManifestError::UnknownDeviceType(other)),
@@ -131,9 +146,11 @@ impl BoardManifest {
     }
 
     /// The entry of a device type (1..=7).
-    pub fn device(&self, device_type: u32) -> Option<&DeviceEntry> {
-        let index = usize::try_from(device_type.checked_sub(1)?).ok()?;
-        self.devices.get(index)
+    pub const fn device(&self, device_type: u32) -> Option<&DeviceEntry> {
+        if device_type == 0 || device_type as usize > DEVICE_COUNT {
+            return None;
+        }
+        Some(&self.devices[device_type as usize - 1])
     }
 }
 

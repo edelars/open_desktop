@@ -15,6 +15,7 @@
 //! conf1 on the board (S4-30c)"): segment 0, buses 0..=0, a 1 MiB window below 4 GiB. Anything
 //! else is an error, nothing is rounded or defaulted.
 
+use super::bytes::{copy_at, fill_range, head_mut, tri};
 use super::manifest::{BoardManifest, DeviceEntry, device_type};
 use super::table::{SDT_HEADER_LEN, TableError, finish_checksum, validate_table, write_header};
 
@@ -89,7 +90,10 @@ impl From<TableError> for McfgError {
 }
 
 /// Builds the MCFG from the PCIe ECAM entry of the manifest.
-pub fn build_mcfg(manifest: &BoardManifest, out: &mut [u8]) -> Result<usize, McfgError> {
+///
+/// A `const fn` (S4-31b0): evaluated at compile time it gives the table as static bytes, called
+/// at run time it gives the same bytes.
+pub const fn build_mcfg(manifest: &BoardManifest, out: &mut [u8]) -> Result<usize, McfgError> {
     match manifest.device(device_type::PCIE_ECAM) {
         Some(entry) => build_mcfg_from_entry(entry, out),
         None => Err(McfgError::MissingEcam),
@@ -99,43 +103,50 @@ pub fn build_mcfg(manifest: &BoardManifest, out: &mut [u8]) -> Result<usize, Mcf
 /// Builds the MCFG from one device entry, which must be the PCIe ECAM entry (type 7). The
 /// entry is checked first, the table is written into `out` (all 60 bytes, reserved ones as
 /// zero) and checked by [`validate_mcfg`] before the length is returned.
-pub fn build_mcfg_from_entry(entry: &DeviceEntry, out: &mut [u8]) -> Result<usize, McfgError> {
-    let window = EcamWindow::from_entry(entry)?;
-    let table = out
-        .get_mut(..MCFG_LEN_ONE_ENTRY)
-        .ok_or(TableError::TooShort)?;
-    write_header(
-        table,
-        MCFG_SIGNATURE,
-        MCFG_REVISION,
-        MCFG_OEM_TABLE_ID,
-        MCFG_LEN_ONE_ENTRY as u32,
-    )?;
-    table[SDT_HEADER_LEN..MCFG_FIXED_LEN].fill(0);
+pub const fn build_mcfg_from_entry(
+    entry: &DeviceEntry,
+    out: &mut [u8],
+) -> Result<usize, McfgError> {
+    let window = tri!(EcamWindow::from_entry(entry));
+    if out.len() < MCFG_LEN_ONE_ENTRY {
+        return Err(McfgError::Table(TableError::TooShort));
+    }
+    let table = head_mut(out, MCFG_LEN_ONE_ENTRY);
+    tri!(
+        write_header(
+            table,
+            MCFG_SIGNATURE,
+            MCFG_REVISION,
+            MCFG_OEM_TABLE_ID,
+            MCFG_LEN_ONE_ENTRY as u32,
+        ),
+        McfgError::Table
+    );
+    fill_range(table, SDT_HEADER_LEN, MCFG_FIXED_LEN, 0);
     let at = MCFG_FIXED_LEN;
     // Future note: in MCFG the base field is the address of bus 0 of the segment, not the
     // start of the window; Linux adds PCI_MMCFG_BUS_OFFSET(bus) to cfg->address
     // (arch/x86/pci/mmconfig_64.c:105, `start = cfg->address + BUS_OFFSET(start_bus)`). If start_bus != 0 is ever allowed, write
     // `base - (start_bus << 20)` here. Today the range is 0..=0 (OutsideStage4Contract), so
     // the two are equal.
-    table[at..at + 8].copy_from_slice(&window.base.to_le_bytes());
-    table[at + 8..at + 10].copy_from_slice(&window.segment.to_le_bytes());
+    copy_at(table, at, &window.base.to_le_bytes());
+    copy_at(table, at + 8, &window.segment.to_le_bytes());
     table[at + 10] = window.start_bus;
     table[at + 11] = window.end_bus;
-    table[at + 12..at + 16].fill(0);
-    finish_checksum(table)?;
-    validate_mcfg(table)?;
+    fill_range(table, at + 12, at + 16, 0);
+    tri!(finish_checksum(table), McfgError::Table);
+    tri!(validate_mcfg(table));
     Ok(MCFG_LEN_ONE_ENTRY)
 }
 
 /// Checks signature, `Length`, checksum and that the entry area is a non-empty whole number
 /// of 16-byte allocation structures.
-pub fn validate_mcfg(table: &[u8]) -> Result<(), McfgError> {
-    validate_table(table, &MCFG_SIGNATURE)?;
-    let entries = table
-        .len()
-        .checked_sub(MCFG_FIXED_LEN)
-        .ok_or(McfgError::BadEntryArea)?;
+pub const fn validate_mcfg(table: &[u8]) -> Result<(), McfgError> {
+    tri!(validate_table(table, &MCFG_SIGNATURE), McfgError::Table);
+    let entries = match table.len().checked_sub(MCFG_FIXED_LEN) {
+        Some(entries) => entries,
+        None => return Err(McfgError::BadEntryArea),
+    };
     if entries == 0 || !entries.is_multiple_of(MCFG_ENTRY_LEN) {
         return Err(McfgError::BadEntryArea);
     }
@@ -151,7 +162,7 @@ struct EcamWindow {
 }
 
 impl EcamWindow {
-    fn from_entry(entry: &DeviceEntry) -> Result<Self, McfgError> {
+    const fn from_entry(entry: &DeviceEntry) -> Result<Self, McfgError> {
         if entry.device_type != device_type::PCIE_ECAM {
             return Err(McfgError::NotEcamEntry(entry.device_type));
         }
@@ -164,8 +175,10 @@ impl EcamWindow {
         if entry.param1 >> 16 != 0 {
             return Err(McfgError::ReservedParamBits(entry.param1));
         }
-        let segment =
-            u16::try_from(entry.param0).map_err(|_| McfgError::SegmentOutOfRange(entry.param0))?;
+        if entry.param0 > u16::MAX as u64 {
+            return Err(McfgError::SegmentOutOfRange(entry.param0));
+        }
+        let segment = entry.param0 as u16;
         let start_bus = (entry.param1 & 0xFF) as u8;
         let end_bus = ((entry.param1 >> 8) & 0xFF) as u8;
         if start_bus > end_bus {
@@ -174,7 +187,7 @@ impl EcamWindow {
                 end: end_bus,
             });
         }
-        let expected = (u64::from(end_bus) - u64::from(start_bus) + 1) * ECAM_BYTES_PER_BUS;
+        let expected = (end_bus as u64 - start_bus as u64 + 1) * ECAM_BYTES_PER_BUS;
         if entry.length != expected {
             return Err(McfgError::LengthMismatch {
                 expected,
@@ -188,10 +201,10 @@ impl EcamWindow {
             return Err(McfgError::BaseUnaligned(entry.base));
         }
         // An overflowing sum is reported as the largest end.
-        let end = entry
-            .base
-            .checked_add(entry.length)
-            .ok_or(McfgError::WindowAbove4Gib { end: u64::MAX })?;
+        let end = match entry.base.checked_add(entry.length) {
+            Some(end) => end,
+            None => return Err(McfgError::WindowAbove4Gib { end: u64::MAX }),
+        };
         if end > 1 << 32 {
             return Err(McfgError::WindowAbove4Gib { end });
         }
@@ -514,5 +527,81 @@ mod tests {
             validate_mcfg(&other),
             Err(McfgError::Table(TableError::SignatureMismatch))
         );
+    }
+
+    // S4-31b0: the same serializer evaluated at compile time. The manifest and both tables are
+    // built in const items; the hand-written REFERENCE above is the golden for them.
+    const BOARD_ENTRY: DeviceEntry = DeviceEntry {
+        device_type: 7,
+        flags: FLAG_PRESENT,
+        base: ECAM_BASE,
+        length: 0x10_0000,
+        gsi: GSI_NONE,
+        irq_flags: 0,
+        param0: 0,
+        param1: 0,
+    };
+
+    const MCFG_FROM_ENTRY: [u8; 60] = {
+        let mut out = [0u8; 60];
+        match build_mcfg_from_entry(&BOARD_ENTRY, &mut out) {
+            Ok(60) => {}
+            _ => panic!("build_mcfg_from_entry failed in a const context"),
+        }
+        out
+    };
+
+    const BOARD_MANIFEST: BoardManifest = {
+        let mut entries = [BOARD_ENTRY; DEVICE_COUNT];
+        let mut i = 0;
+        while i < DEVICE_COUNT {
+            if i != 6 {
+                entries[i] = DeviceEntry {
+                    device_type: i as u32 + 1,
+                    flags: 0,
+                    base: 0,
+                    length: 0,
+                    gsi: GSI_NONE,
+                    irq_flags: 0,
+                    param0: 0,
+                    param1: 0,
+                };
+            }
+            i += 1;
+        }
+        match BoardManifest::from_entries(entries) {
+            Ok(manifest) => manifest,
+            Err(_) => panic!("from_entries failed in a const context"),
+        }
+    };
+
+    /// Static bytes of the stage-4 table: a `static` filled by the const `build_mcfg`.
+    static MCFG_STATIC: [u8; 60] = {
+        let mut out = [0u8; 60];
+        match build_mcfg(&BOARD_MANIFEST, &mut out) {
+            Ok(60) => {}
+            _ => panic!("build_mcfg failed in a const context"),
+        }
+        out
+    };
+
+    #[test]
+    fn const_evaluated_tables_equal_the_hand_written_reference() {
+        assert_eq!(MCFG_FROM_ENTRY, REFERENCE);
+        assert_eq!(MCFG_STATIC, REFERENCE);
+    }
+
+    #[test]
+    fn const_and_runtime_calls_agree() {
+        let runtime = build(&board_entry()).unwrap();
+        assert_eq!(MCFG_STATIC, runtime);
+        // The const validator accepts the const table and still rejects a damaged one.
+        const _: () = assert!(validate_mcfg(&MCFG_FROM_ENTRY).is_ok());
+        let mut damaged = MCFG_STATIC;
+        damaged[50] ^= 0x80;
+        assert!(matches!(
+            validate_mcfg(&damaged),
+            Err(McfgError::Table(TableError::BadChecksum { .. }))
+        ));
     }
 }

@@ -132,7 +132,7 @@ fn build_err(m: &BoardManifest) -> DsdtError {
 /// Пересчитано после удаления `_ADR` у PCI0 (устройство имеет `_HID` или `_ADR`, не оба): 6 bytes
 /// (`08 5F 41 44 52 00`) dropped, so Length 0xB6 -> 0xB0, Scope PkgLength 145 -> 139
 /// (`41 09` -> `4B 08`), Device PkgLength 85 -> 79 (`45 05` -> `4F 04`), checksum 0xDC -> 0x0E.
-fn reference_both() -> Vec<u8> {
+pub(super) fn reference_both() -> Vec<u8> {
     hex("44 53 44 54 B0 00 00 00 02 0E 4F 50 4E 44 53 4B \
          4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
          01 00 00 00 10 4B 08 5C 5F 53 42 5F 5B 82 4F 04 \

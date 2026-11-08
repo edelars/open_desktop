@@ -7,6 +7,7 @@ use super::AmlError;
 use super::opcodes::{
     DUAL_NAME_PREFIX, MULTI_NAME_PREFIX, NULL_NAME, PARENT_PREFIX_CHAR, ROOT_CHAR,
 };
+use crate::acpi::bytes::tri;
 
 /// Most segments in one path (declared name or absolute path).
 pub const MAX_SEGS: usize = 8;
@@ -22,11 +23,17 @@ impl NameSeg {
     pub const PAD: NameSeg = NameSeg([b'_'; 4]);
 
     /// Validates four raw bytes: lead `A-Z` or `_`, the rest `A-Z`, `0-9` or `_`.
-    pub fn from_bytes(bytes: [u8; 4]) -> Result<Self, AmlError> {
+    pub const fn from_bytes(bytes: [u8; 4]) -> Result<Self, AmlError> {
         let lead_ok = bytes[0].is_ascii_uppercase() || bytes[0] == b'_';
-        let rest_ok = bytes[1..]
-            .iter()
-            .all(|&c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_');
+        let mut rest_ok = true;
+        let mut i = 1;
+        while i < 4 {
+            let c = bytes[i];
+            if !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_') {
+                rest_ok = false;
+            }
+            i += 1;
+        }
         if lead_ok && rest_ok {
             Ok(NameSeg(bytes))
         } else {
@@ -35,13 +42,22 @@ impl NameSeg {
     }
 
     /// Parses 1 to 4 characters and pads with `_`.
-    pub fn parse(text: &str) -> Result<Self, AmlError> {
+    pub const fn parse(text: &str) -> Result<Self, AmlError> {
         let raw = text.as_bytes();
-        if raw.is_empty() || raw.len() > 4 {
+        Self::parse_range(raw, 0, raw.len())
+    }
+
+    /// Parses `raw[from..to]` (1 to 4 characters) and pads with `_`.
+    const fn parse_range(raw: &[u8], from: usize, to: usize) -> Result<Self, AmlError> {
+        if to <= from || to - from > 4 {
             return Err(AmlError::BadNameSeg);
         }
         let mut bytes = [b'_'; 4];
-        bytes[..raw.len()].copy_from_slice(raw);
+        let mut i = from;
+        while i < to {
+            bytes[i - from] = raw[i];
+            i += 1;
+        }
         Self::from_bytes(bytes)
     }
 }
@@ -57,7 +73,7 @@ pub struct AmlName {
 }
 
 impl AmlName {
-    fn empty() -> Self {
+    const fn empty() -> Self {
         AmlName {
             absolute: false,
             parents: 0,
@@ -67,41 +83,55 @@ impl AmlName {
     }
 
     /// A relative name made of one segment.
-    pub fn from_seg(seg: NameSeg) -> Self {
+    pub const fn from_seg(seg: NameSeg) -> Self {
         let mut name = Self::empty();
         name.segs[0] = seg;
         name.count = 1;
         name
     }
 
-    pub fn segs(&self) -> &[NameSeg] {
-        &self.segs[..usize::from(self.count)]
+    pub const fn segs(&self) -> &[NameSeg] {
+        self.segs.split_at(self.count as usize).0
     }
 
     /// Parses ASL-style text: `\_SB.PCI0`, `^FOO`, `ABCD`, `\` (root alone).
-    pub fn parse(text: &str) -> Result<Self, AmlError> {
+    pub const fn parse(text: &str) -> Result<Self, AmlError> {
+        let raw = text.as_bytes();
         let mut name = Self::empty();
-        let mut rest = text;
-        if let Some(stripped) = rest.strip_prefix('\\') {
+        let mut at = 0;
+        if !raw.is_empty() && raw[0] == b'\\' {
             name.absolute = true;
-            rest = stripped;
+            at = 1;
         } else {
-            while let Some(stripped) = rest.strip_prefix('^') {
-                name.parents = name.parents.checked_add(1).ok_or(AmlError::NameTooLong)?;
-                rest = stripped;
+            while at < raw.len() && raw[at] == b'^' {
+                name.parents = match name.parents.checked_add(1) {
+                    Some(parents) => parents,
+                    None => return Err(AmlError::NameTooLong),
+                };
+                at += 1;
             }
         }
-        if rest.is_empty() {
+        if at == raw.len() {
             return Ok(name);
         }
-        for part in rest.split('.') {
-            name.push(NameSeg::parse(part)?)?;
+        // Split the rest at '.'; an empty part (leading, trailing or doubled dot) is a bad seg.
+        let mut start = at;
+        loop {
+            let mut end = start;
+            while end < raw.len() && raw[end] != b'.' {
+                end += 1;
+            }
+            tri!(name.push(tri!(NameSeg::parse_range(raw, start, end))));
+            if end == raw.len() {
+                break;
+            }
+            start = end + 1;
         }
         Ok(name)
     }
 
-    fn push(&mut self, seg: NameSeg) -> Result<(), AmlError> {
-        let index = usize::from(self.count);
+    const fn push(&mut self, seg: NameSeg) -> Result<(), AmlError> {
+        let index = self.count as usize;
         if index == MAX_SEGS {
             return Err(AmlError::NameTooLong);
         }
@@ -111,51 +141,68 @@ impl AmlName {
     }
 
     /// Decodes a NameString from AML bytes; returns the name and the bytes consumed.
-    pub fn decode(bytes: &[u8]) -> Result<(Self, usize), AmlError> {
+    pub const fn decode(bytes: &[u8]) -> Result<(Self, usize), AmlError> {
         let mut name = Self::empty();
         let mut at = 0;
-        match bytes.first().copied() {
-            None => return Err(AmlError::Truncated),
-            Some(ROOT_CHAR) => {
+        if bytes.is_empty() {
+            return Err(AmlError::Truncated);
+        }
+        match bytes[0] {
+            ROOT_CHAR => {
                 name.absolute = true;
                 at = 1;
             }
-            Some(PARENT_PREFIX_CHAR) => {
-                while bytes.get(at) == Some(&PARENT_PREFIX_CHAR) {
-                    name.parents = name.parents.checked_add(1).ok_or(AmlError::NameTooLong)?;
+            PARENT_PREFIX_CHAR => {
+                while at < bytes.len() && bytes[at] == PARENT_PREFIX_CHAR {
+                    name.parents = match name.parents.checked_add(1) {
+                        Some(parents) => parents,
+                        None => return Err(AmlError::NameTooLong),
+                    };
                     at += 1;
                 }
             }
-            Some(_) => {}
+            _ => {}
         }
-        let seg_at = |at: usize| -> Result<NameSeg, AmlError> {
-            let raw = bytes.get(at..at + 4).ok_or(AmlError::Truncated)?;
-            NameSeg::from_bytes([raw[0], raw[1], raw[2], raw[3]])
-        };
-        match bytes.get(at).copied().ok_or(AmlError::Truncated)? {
+        if at >= bytes.len() {
+            return Err(AmlError::Truncated);
+        }
+        match bytes[at] {
             NULL_NAME => at += 1,
             DUAL_NAME_PREFIX => {
-                name.push(seg_at(at + 1)?)?;
-                name.push(seg_at(at + 5)?)?;
+                tri!(name.push(tri!(seg_at(bytes, at + 1))));
+                tri!(name.push(tri!(seg_at(bytes, at + 5))));
                 at += 9;
             }
             MULTI_NAME_PREFIX => {
-                let n = usize::from(*bytes.get(at + 1).ok_or(AmlError::Truncated)?);
+                if at + 1 >= bytes.len() {
+                    return Err(AmlError::Truncated);
+                }
+                let n = bytes[at + 1] as usize;
                 if n == 0 {
                     return Err(AmlError::BadNameSeg);
                 }
-                for i in 0..n {
-                    name.push(seg_at(at + 2 + 4 * i)?)?;
+                let mut i = 0;
+                while i < n {
+                    tri!(name.push(tri!(seg_at(bytes, at + 2 + 4 * i))));
+                    i += 1;
                 }
                 at += 2 + 4 * n;
             }
             _ => {
-                name.push(seg_at(at)?)?;
+                tri!(name.push(tri!(seg_at(bytes, at))));
                 at += 4;
             }
         }
         Ok((name, at))
     }
+}
+
+/// The NameSeg at `bytes[at..at + 4]`.
+const fn seg_at(bytes: &[u8], at: usize) -> Result<NameSeg, AmlError> {
+    if at + 4 > bytes.len() {
+        return Err(AmlError::Truncated);
+    }
+    NameSeg::from_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
 /// Absolute path of a namespace object or scope; the empty path is the root `\`.
@@ -171,36 +218,50 @@ impl AbsPath {
         len: 0,
     };
 
-    pub fn depth(&self) -> usize {
-        usize::from(self.len)
+    pub const fn depth(&self) -> usize {
+        self.len as usize
     }
 
     /// Resolves a declared name against this scope: absolute names ignore it, `^` climbs.
-    pub fn resolve(&self, name: &AmlName) -> Result<AbsPath, AmlError> {
+    pub const fn resolve(&self, name: &AmlName) -> Result<AbsPath, AmlError> {
         let mut path = if name.absolute {
             AbsPath::ROOT
         } else {
-            let keep = self
-                .depth()
-                .checked_sub(usize::from(name.parents))
-                .ok_or(AmlError::BadParentPrefix)?;
+            let keep = match self.depth().checked_sub(name.parents as usize) {
+                Some(keep) => keep,
+                None => return Err(AmlError::BadParentPrefix),
+            };
             let mut base = *self;
             base.len = keep as u8;
             base
         };
-        for seg in name.segs() {
+        let segs = name.segs();
+        let mut i = 0;
+        while i < segs.len() {
             let index = path.depth();
             if index == MAX_SEGS {
                 return Err(AmlError::NameTooLong);
             }
-            path.segs[index] = *seg;
+            path.segs[index] = segs[i];
             path.len += 1;
+            i += 1;
         }
         Ok(path)
     }
 
-    fn same(&self, other: &AbsPath) -> bool {
-        self.segs[..self.depth()] == other.segs[..other.depth()]
+    const fn same(&self, other: &AbsPath) -> bool {
+        if self.depth() != other.depth() {
+            return false;
+        }
+        let mut i = 0;
+        while i < self.depth() {
+            let (a, b) = (self.segs[i].0, other.segs[i].0);
+            if a[0] != b[0] || a[1] != b[1] || a[2] != b[2] || a[3] != b[3] {
+                return false;
+            }
+            i += 1;
+        }
+        true
     }
 }
 
@@ -225,11 +286,18 @@ impl Registry {
         }
     }
 
-    pub fn contains(&self, path: &AbsPath) -> bool {
-        self.paths[..self.count].iter().any(|p| p.same(path))
+    pub const fn contains(&self, path: &AbsPath) -> bool {
+        let mut i = 0;
+        while i < self.count {
+            if self.paths[i].same(path) {
+                return true;
+            }
+            i += 1;
+        }
+        false
     }
 
-    pub fn insert(&mut self, path: AbsPath) -> Result<(), AmlError> {
+    pub const fn insert(&mut self, path: AbsPath) -> Result<(), AmlError> {
         if self.contains(&path) {
             return Err(AmlError::DuplicateName);
         }
