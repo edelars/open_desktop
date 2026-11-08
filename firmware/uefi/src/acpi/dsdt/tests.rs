@@ -3,9 +3,12 @@
 //! The reference tables below were generated once by an independent Python program written from
 //! the ACPI 6.4 text (AML grammar chapter 20, resource descriptors 6.4, table header 5.2.6); the
 //! generator was not saved and shares no code with the Rust encoder. `ReturnOp` is not used by
-//! the DSDT. Board values are the FIRMWARE_BOOT.md v1.0 defaults for COM1; the PCIe ECAM entry
-//! is a *test configuration* (its base and length are not a board map; only segment and bus
-//! range reach the DSDT).
+//! the DSDT. Board values are the FIRMWARE_BOOT.md v1.0 defaults for COM1.
+//!
+//! S4-31b: the PCIe ECAM entry is the stage-4 board window (MACHINE_CONTRACT.md, S4-30c: memory
+//! `[0xFC10_0000, +1 MiB)`, segment 0, buses 0..=0). The earlier S7-12 test configuration (base
+//! 0xC000_0000, 256 MiB, buses 0..=0xFF) is outside the board contract and no longer builds; the
+//! golden `reference_both` was replaced by a table for the board window (see its comment).
 
 use super::*;
 use crate::acpi::manifest::{
@@ -57,18 +60,26 @@ fn com1(base: u64, length: u64, gsi: u32, irq: u32, number: u64) -> DeviceEntry 
     )
 }
 
-/// Test configuration: one segment, buses 0..=0xFF (`param1 = start | end << 8`).
+/// ECAM entry at the board base `0xFC10_0000`: buses `start..=end`, length
+/// `(end - start + 1) << 20` for a consistent range (1 MiB otherwise). `param1 = start | end << 8`.
 fn ecam(start: u64, end: u64) -> DeviceEntry {
+    let buses = if end >= start { end - start + 1 } else { 1 };
     entry(
         device_type::PCIE_ECAM,
         FLAG_PRESENT,
-        0xC000_0000,
-        0x1000_0000,
+        0xFC10_0000,
+        buses << 20,
         GSI_NONE,
         0,
         0,
         start | (end << 8),
     )
+}
+
+/// The stage-4 board ECAM entry (MACHINE_CONTRACT.md, S4-30c): memory window
+/// `[0xFC10_0000, +1 MiB)`, segment 0, buses 0..=0.
+fn board_ecam() -> DeviceEntry {
+    ecam(0, 0)
 }
 
 fn manifest(com: DeviceEntry, pci: DeviceEntry) -> BoardManifest {
@@ -122,28 +133,45 @@ fn build_err(m: &BoardManifest) -> DsdtError {
     build_dsdt(m, &mut out).unwrap_err()
 }
 
-/// `\_SB` with `PCI0` (segment 0, buses 0..=0xFF) and `COM1` (0x3F8, 8 ports, GSI 4, edge,
-/// active-high). Layout: header 36 bytes (Length 0xB0); `10 4B 08` Scope(`\_SB_`, PkgLength 139);
-/// `5B 82 4F 04` Device(`PCI0`, PkgLength 79) with `_HID` PNP0A08, `_CID` PNP0A03, `_UID` 0,
-/// `_SEG` 0, `_BBN` 0, `_CRS` (Buffer 0x15: WordBusNumber 0..0xFF + End Tag), `_PRT` `12 02 00`;
-/// `5B 82 31` Device(`COM1`) with `_HID` PNP0501, `_UID` 1, `_CRS` (Buffer 0x16: IO, Extended
-/// Interrupt GSI 4, End Tag). Checksum 0x0E.
+/// `\_SB` with `PCI0` (segment 0, buses 0..=0), `ECAM` (PNP0C02, window 0xFC10_0000 + 1 MiB)
+/// and `COM1` (0x3F8, 8 ports, GSI 4, edge, active-high), for the board ECAM window.
 ///
-/// Пересчитано после удаления `_ADR` у PCI0 (устройство имеет `_HID` или `_ADR`, не оба): 6 bytes
-/// (`08 5F 41 44 52 00`) dropped, so Length 0xB6 -> 0xB0, Scope PkgLength 145 -> 139
-/// (`41 09` -> `4B 08`), Device PkgLength 85 -> 79 (`45 05` -> `4F 04`), checksum 0xDC -> 0x0E.
+/// Assembled by hand from the AML grammar (DefDevice 20.2.5.2: `5B 82` PkgLength NameString body;
+/// DefName `08`; PkgLength 20.2.4: one byte below 64, else lead byte `0x40 | low nibble` and
+/// `value >> 4`; Buffer `11` PkgLength size; Memory32Fixed 6.4.3.4: `86 09 00` info base length;
+/// IO 6.4.2.5: `47` decode min max align length; WordBusNumber 6.4.3.5.3; EISA id `PNP0C02` =
+/// `41 D0 0C 02`) and cross-checked by a separate Python script that computes every PkgLength
+/// from the pieces (not saved, no code shared with the Rust encoder).
+///
+/// Layout: header 36 bytes (Length 0xE6); `10 41 0C` Scope(`\_SB_`, PkgLength 193 = 5 + 89 + 46 +
+/// 51 + 2); `5B 82 47 05` Device(`PCI0`, PkgLength 87 = 2 + 4 + 81) with `_HID` PNP0A08, `_CID`
+/// PNP0A03, `_UID` 0, `_SEG` 0, `_BBN` 0, `_CRS` (Buffer, PkgLength 0x1D = 1 + 2 + 26, size
+/// `0A 1A`: WordBusNumber 0..0 length 1 (16 bytes), IO(Decode16, 0xCF8, 0xCF8, 1, 8) (8 bytes),
+/// End Tag (2 bytes)), `_PRT` `12 02 00`: 89 bytes; `5B 82 2C` Device(`ECAM`, PkgLength 44 = 1 +
+/// 4 + 39) with `_HID` PNP0C02, `_UID` 0, `_CRS` (Buffer, PkgLength 0x11 = 1 + 2 + 14, size
+/// `0A 0E`: Memory32Fixed ReadWrite base `00 00 10 FC` length `00 00 10 00`, End Tag): 46 bytes;
+/// `5B 82 31` Device(`COM1`) with `_HID` PNP0501, `_UID` 1, `_CRS` (Buffer 0x16: IO, Extended
+/// Interrupt GSI 4, End Tag): 51 bytes. Total 36 + 1 + 2 + 191 = 230 = 0xE6 bytes, checksum 0xFE.
+///
+/// Replaces the S7-12 golden (PCI0 for buses 0..=0xFF, base 0xC000_0000, 256 MiB; Length 0xB0,
+/// checksum 0x0E): that entry is outside the board contract (S4-30c) and MCFG-style checks reject
+/// it. The COM1-only, COM2-only and empty tables did not change.
 pub(super) fn reference_both() -> Vec<u8> {
-    hex("44 53 44 54 B0 00 00 00 02 0E 4F 50 4E 44 53 4B \
+    hex("44 53 44 54 E6 00 00 00 02 FE 4F 50 4E 44 53 4B \
          4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
-         01 00 00 00 10 4B 08 5C 5F 53 42 5F 5B 82 4F 04 \
+         01 00 00 00 10 41 0C 5C 5F 53 42 5F 5B 82 47 05 \
          50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
          43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
          53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
-         15 0A 12 88 0D 00 02 0C 00 00 00 00 00 FF 00 00 \
-         00 00 01 79 00 08 5F 50 52 54 12 02 00 5B 82 31 \
-         43 4F 4D 31 08 5F 48 49 44 0C 41 D0 05 01 08 5F \
-         55 49 44 01 08 5F 43 52 53 11 16 0A 13 47 01 F8 \
-         03 F8 03 01 08 89 06 00 03 01 04 00 00 00 79 00")
+         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
+         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
+         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
+         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
+         00 79 00 5B 82 31 43 4F 4D 31 08 5F 48 49 44 0C \
+         41 D0 05 01 08 5F 55 49 44 01 08 5F 43 52 53 11 \
+         16 0A 13 47 01 F8 03 F8 03 01 08 89 06 00 03 01 \
+         04 00 00 00 79 00")
 }
 
 /// `\_SB` with only `COM2` (0x2F8, GSI 3, level, active-low). Checksum 0x5A.
@@ -165,7 +193,7 @@ fn reference_empty() -> Vec<u8> {
 
 #[test]
 fn dsdt_for_pci_root_and_com1_matches_the_independent_reference() {
-    let m = manifest(com1(0x3F8, 8, 4, 0, 1), ecam(0, 0xFF));
+    let m = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
     assert_eq!(build(&m), reference_both());
 }
 
@@ -186,7 +214,7 @@ fn dsdt_without_devices_is_an_empty_system_bus_scope() {
 
 #[test]
 fn absent_devices_are_not_emitted() {
-    let only_pci = build(&manifest(absent(device_type::COM1), ecam(0, 0xFF)));
+    let only_pci = build(&manifest(absent(device_type::COM1), board_ecam()));
     let pnp0501 = [0x41, 0xD0, 0x05, 0x01];
     assert!(!only_pci.windows(4).any(|w| w == pnp0501));
     assert!(!only_pci.windows(4).any(|w| w == *b"COM1"));
@@ -199,7 +227,7 @@ fn absent_devices_are_not_emitted() {
     for table in [
         &only_pci,
         &only_com,
-        &build(&manifest(com1(0x3F8, 8, 4, 0, 1), ecam(0, 0xFF))),
+        &build(&manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam())),
     ] {
         assert!(!table.windows(4).any(|w| w == [0x41, 0xD0, 0x0B, 0x00]));
         assert!(!table.windows(4).any(|w| w == [0x41, 0xD0, 0x01, 0x03]));
@@ -222,19 +250,22 @@ fn com1_without_an_interrupt_has_only_the_io_range() {
 }
 
 #[test]
-fn bus_range_reaches_bbn_seg_and_crs() {
-    // Buses 4..=7: `_BBN` 4 (ByteConst 0A 04), `_CRS` WordBusNumber min 4 max 7 length 4.
-    let m = manifest(absent(device_type::COM1), ecam(4, 7));
-    let table = build(&m);
-    let bbn = hex("08 5F 42 42 4E 0A 04");
-    assert!(table.windows(bbn.len()).any(|w| w == bbn.as_slice()));
-    let word = hex("88 0D 00 02 0C 00 00 00 04 00 07 00 00 00 04 00");
-    assert!(table.windows(word.len()).any(|w| w == word.as_slice()));
+fn board_bus_range_reaches_seg_bbn_and_crs() {
+    // Buses 0..=0 (the only range the board contract allows): `_SEG` 0, `_BBN` 0 (`00`),
+    // `_CRS` WordBusNumber min 0 max 0 length 1.
+    let table = build(&manifest(absent(device_type::COM1), board_ecam()));
+    for needle in [
+        hex("08 5F 53 45 47 00"),
+        hex("08 5F 42 42 4E 00"),
+        hex("88 0D 00 02 0C 00 00 00 00 00 00 00 00 00 01 00"),
+    ] {
+        assert!(table.windows(needle.len()).any(|w| w == needle.as_slice()));
+    }
 }
 
 #[test]
 fn built_table_has_consistent_length_checksum_and_header() {
-    let table = build(&manifest(com1(0x3F8, 8, 4, 0, 1), ecam(0, 0xFF)));
+    let table = build(&manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam()));
     assert_eq!(&table[..4], b"DSDT");
     assert_eq!(
         u32::from_le_bytes(table[4..8].try_into().unwrap()) as usize,
@@ -309,24 +340,8 @@ fn com1_entries_that_cannot_be_described_are_rejected() {
 }
 
 #[test]
-fn pci_entries_that_cannot_be_described_are_rejected() {
-    let no_com = absent(device_type::COM1);
-    let bad = |e: DeviceEntry| build_err(&manifest(no_com, e));
-    let mut pio = ecam(0, 0xFF);
-    pio.flags |= FLAG_PIO;
-    assert_eq!(bad(pio), DsdtError::BadPcieEcam);
-    let mut segment = ecam(0, 0xFF);
-    segment.param0 = 0x1_0000;
-    assert_eq!(bad(segment), DsdtError::BadPcieEcam);
-    let mut reserved = ecam(0, 0xFF);
-    reserved.param1 |= 1 << 16;
-    assert_eq!(bad(reserved), DsdtError::BadPcieEcam);
-    assert_eq!(bad(ecam(5, 4)), DsdtError::BadPcieEcam);
-}
-
-#[test]
 fn small_output_buffers_are_reported() {
-    let m = manifest(com1(0x3F8, 8, 4, 0, 1), ecam(0, 0xFF));
+    let m = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
     let mut tiny = [0u8; 20];
     assert_eq!(
         build_dsdt(&m, &mut tiny),
@@ -357,7 +372,7 @@ fn dsdt_built_from_raw_device_entries_matches_the_reference() {
     };
     let none = GSI_NONE;
     let m = BoardManifest::from_entries([
-        raw(7, 1, 0xC000_0000, 0x1000_0000, none, 0, 0, 0xFF00),
+        raw(7, 1, 0xFC10_0000, 0x10_0000, none, 0, 0, 0),
         raw(1, 3, 0x3F8, 8, 4, 0, 1, 0),
         raw(2, 1, 0xFEE0_0000, 0x1000, none, 0, 0, 0),
         raw(3, 1, 0xFEC0_0000, 0x1000, none, 0, 0, 0),
@@ -390,4 +405,210 @@ fn ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted() {
     assert!(table.windows(word.len()).any(|w| w == word.as_slice()));
     assert!(table.windows(4).any(|w| w == *b"PCI0"));
     validate_dsdt(&table).unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------
+// S4-31b: PNP0C02 reservation and the conf1 ports in `build_dsdt`. `reference_both` above and
+// `reference_ecam_only` below were assembled by hand from the ACPI AML grammar and cross-checked
+// by a separate script (see the comment of `reference_both`); they share no code with the encoder.
+// ---------------------------------------------------------------------------------------------
+
+use crate::acpi::mcfg::McfgError;
+
+/// The same as `reference_both` without `COM1`: Scope body 5 + 89 + 46 = 140, PkgLength 142 =
+/// `4E 08`, table 36 + 1 + 2 + 140 = 179 = 0xB3 bytes, checksum 0xD9.
+fn reference_ecam_only() -> Vec<u8> {
+    hex("44 53 44 54 B3 00 00 00 02 D9 4F 50 4E 44 53 4B \
+         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
+         01 00 00 00 10 4E 08 5C 5F 53 42 5F 5B 82 47 05 \
+         50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
+         43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
+         53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
+         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
+         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
+         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
+         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
+         00 79 00")
+}
+
+fn contains(table: &[u8], needle: &[u8]) -> bool {
+    table.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn board_ecam_without_com1_matches_the_hand_assembled_reference() {
+    let table = build(&manifest(absent(device_type::COM1), board_ecam()));
+    assert_eq!(table, reference_ecam_only());
+    // Length and checksum separately, not through the encoder.
+    assert_eq!(table.len(), 0xB3);
+    assert_eq!(&table[4..8], &0xB3u32.to_le_bytes());
+    assert_eq!(table[9], 0xD9);
+    assert_eq!(table.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
+    validate_dsdt(&table).unwrap();
+}
+
+#[test]
+fn board_ecam_with_com1_has_the_golden_length_and_checksum() {
+    let table = build(&manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam()));
+    assert_eq!(table, reference_both());
+    assert_eq!(table.len(), 0xE6);
+    assert_eq!(&table[4..8], &0xE6u32.to_le_bytes());
+    assert_eq!(table[9], 0xFE);
+    validate_dsdt(&table).unwrap();
+    // COM1 is the same 51 bytes as in the COM-only tables: the ECAM-only table plus COM1.
+    assert!(table.ends_with(&reference_both()[0xE6 - 51..]));
+}
+
+#[test]
+fn pnp0c02_device_carries_the_ecam_window_as_memory32_fixed() {
+    let table = build(&manifest(absent(device_type::COM1), board_ecam()));
+    let device = hex(
+        "5B 82 2C 45 43 41 4D 08 5F 48 49 44 0C 41 D0 0C 02 08 5F 55 49 44 00 \
+                      08 5F 43 52 53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 00 79 00",
+    );
+    assert!(contains(&table, &device));
+    // Another base moves only the base bytes of the descriptor.
+    let mut moved = board_ecam();
+    moved.base = 0xFC20_0000;
+    let table = build(&manifest(absent(device_type::COM1), moved));
+    assert!(contains(
+        &table,
+        &hex("86 09 00 01 00 00 20 FC 00 00 10 00")
+    ));
+    assert!(!contains(&table, &hex("86 09 00 01 00 00 10 FC")));
+    validate_dsdt(&table).unwrap();
+    // A window that ends exactly at 4 GiB is valid (Memory32Fixed base 0xFFF00000).
+    let mut top = board_ecam();
+    top.base = 0xFFF0_0000;
+    let table = build(&manifest(absent(device_type::COM1), top));
+    assert!(contains(
+        &table,
+        &hex("86 09 00 01 00 00 F0 FF 00 00 10 00")
+    ));
+    validate_dsdt(&table).unwrap();
+}
+
+#[test]
+fn pci0_crs_has_the_conf1_io_range_after_the_bus_number() {
+    let table = build(&manifest(absent(device_type::COM1), board_ecam()));
+    // `_CRS` of PCI0 whole: WordBusNumber 0..0, IO 0xCF8..0xCF8 align 1 length 8, End Tag.
+    let crs = hex(
+        "08 5F 43 52 53 11 1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 00 01 00 \
+                   47 01 F8 0C F8 0C 01 08 79 00",
+    );
+    assert!(contains(&table, &crs));
+    // Exactly one conf1 descriptor in the table.
+    let io = hex("47 01 F8 0C F8 0C 01 08");
+    assert_eq!(
+        table
+            .windows(io.len())
+            .filter(|w| *w == io.as_slice())
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn without_an_ecam_entry_there_is_no_pci0_no_conf1_and_no_pnp0c02() {
+    let none = absent(device_type::PCIE_ECAM);
+    for m in [
+        manifest(com1(0x2F8, 8, 3, IRQ_LEVEL | IRQ_ACTIVE_LOW, 2), none),
+        manifest(absent(device_type::COM1), none),
+        manifest(com1(0x3F8, 8, 4, 0, 1), none),
+    ] {
+        let table = build(&m);
+        assert!(!contains(&table, b"PCI0"));
+        assert!(!contains(&table, b"ECAM"));
+        assert!(!contains(&table, &hex("47 01 F8 0C F8 0C 01 08")));
+        assert!(!contains(&table, &[0x41, 0xD0, 0x0C, 0x02]));
+    }
+}
+
+#[test]
+fn ecam_entries_that_mcfg_rejects_are_rejected_with_the_mcfg_reason() {
+    let none = absent(device_type::COM1);
+    let bad = |e: DeviceEntry| build_err(&manifest(none, e));
+    let mut pio = board_ecam();
+    pio.flags |= FLAG_PIO;
+    assert_eq!(bad(pio), DsdtError::Ecam(McfgError::PioWindow));
+    let mut short = board_ecam();
+    short.length = 0x1000;
+    assert_eq!(
+        bad(short),
+        DsdtError::Ecam(McfgError::LengthMismatch {
+            expected: 0x10_0000,
+            actual: 0x1000,
+        })
+    );
+    let mut zero = board_ecam();
+    zero.length = 0;
+    assert!(matches!(
+        bad(zero),
+        DsdtError::Ecam(McfgError::LengthMismatch { .. })
+    ));
+    let mut high = board_ecam();
+    high.base = 0x1_0000_0000;
+    assert_eq!(
+        bad(high),
+        DsdtError::Ecam(McfgError::WindowAbove4Gib { end: 0x1_0010_0000 })
+    );
+    let mut zero_base = board_ecam();
+    zero_base.base = 0;
+    assert_eq!(bad(zero_base), DsdtError::Ecam(McfgError::ZeroBase));
+    let mut unaligned = board_ecam();
+    unaligned.base = 0xFC10_1000;
+    assert_eq!(
+        bad(unaligned),
+        DsdtError::Ecam(McfgError::BaseUnaligned(0xFC10_1000))
+    );
+    // Segment: above 16 bits, and a valid segment outside the board contract.
+    let mut huge_segment = board_ecam();
+    huge_segment.param0 = 0x1_0000;
+    assert_eq!(
+        bad(huge_segment),
+        DsdtError::Ecam(McfgError::SegmentOutOfRange(0x1_0000))
+    );
+    let mut segment = board_ecam();
+    segment.param0 = 1;
+    assert_eq!(
+        bad(segment),
+        DsdtError::Ecam(McfgError::OutsideStage4Contract {
+            segment: 1,
+            start: 0,
+            end: 0,
+        })
+    );
+    // Bus order and range: inverted, and a consistent range outside buses 0..=0 .
+    assert_eq!(
+        bad(ecam(5, 4)),
+        DsdtError::Ecam(McfgError::BusRangeInverted { start: 5, end: 4 })
+    );
+    assert!(matches!(
+        bad(ecam(4, 7)),
+        DsdtError::Ecam(McfgError::OutsideStage4Contract {
+            start: 4,
+            end: 7,
+            ..
+        })
+    ));
+    // The former S7-12 range 0..=0xFF needs 256 MiB: at the board base it passes the length
+    // check and ends above 4 GiB; at a low base it is outside the board contract.
+    assert!(matches!(
+        bad(ecam(0, 0xFF)),
+        DsdtError::Ecam(McfgError::WindowAbove4Gib { .. })
+    ));
+    let mut wide = ecam(0, 0xFF);
+    wide.base = 0xC000_0000;
+    assert!(matches!(
+        bad(wide),
+        DsdtError::Ecam(McfgError::OutsideStage4Contract { end: 0xFF, .. })
+    ));
+    // `param1` bits above bit 15.
+    let mut reserved = board_ecam();
+    reserved.param1 = 1 << 16;
+    assert_eq!(
+        bad(reserved),
+        DsdtError::Ecam(McfgError::ReservedParamBits(1 << 16))
+    );
 }

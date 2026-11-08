@@ -20,7 +20,9 @@ const fn absent(device_type: u32) -> DeviceEntry {
 }
 
 /// The manifest of `dsdt_for_pci_root_and_com1_matches_the_independent_reference`: COM1 at
-/// 0x3F8 (8 ports, GSI 4, edge, active-high) and a PCIe root with buses 0..=0xFF.
+/// 0x3F8 (8 ports, GSI 4, edge, active-high) and the stage-4 board ECAM window
+/// `[0xFC10_0000, +1 MiB)`, buses 0..=0 (S4-31b; the S7-12 configuration was outside the board
+/// contract).
 const MANIFEST: BoardManifest = {
     let com1 = DeviceEntry {
         flags: FLAG_PRESENT | FLAG_PIO,
@@ -32,9 +34,8 @@ const MANIFEST: BoardManifest = {
     };
     let pci = DeviceEntry {
         flags: FLAG_PRESENT,
-        base: 0xC000_0000,
-        length: 0x1000_0000,
-        param1: 0xFF << 8,
+        base: 0xFC10_0000,
+        length: 0x10_0000,
         ..absent(device_type::PCIE_ECAM)
     };
     let entries = [
@@ -75,9 +76,9 @@ fn const_dsdt_equals_the_golden_reference_byte_for_byte() {
     // `reference_both` is the independent hand-checked table of the golden runtime test.
     let (bytes, len) = DSDT;
     assert_eq!(&bytes[..len], reference_both().as_slice());
-    // Length 0xB0 and checksum 0x0E, checked separately.
-    assert_eq!(len, 0xB0);
-    assert_eq!(&bytes[4..8], &0xB0u32.to_le_bytes());
-    assert_eq!(bytes[9], 0x0E);
+    // Length 0xE6 and checksum 0xFE, checked separately.
+    assert_eq!(len, 0xE6);
+    assert_eq!(&bytes[4..8], &0xE6u32.to_le_bytes());
+    assert_eq!(bytes[9], 0xFE);
     assert_eq!(validate_dsdt(&bytes[..len]), Ok(()));
 }
