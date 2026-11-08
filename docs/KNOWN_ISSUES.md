@@ -63,7 +63,7 @@
 
 - **Дата обнаружения:** 2026-11-07.
 - **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
-- **Статус:** открыта; ограничение контракта, не runtime-дефект (PCI0 не выводится, пока запись PCIe ECAM имеет `PRESENT = 0`, до S4-30).
+- **Статус:** открыта; ограничение контракта, не runtime-дефект (PCI0 не выводится, пока запись PCIe ECAM имеет `PRESENT = 0`; срез S4-30a реализовал окно ECAM `[0xFC10_0000, 0xFC20_0000)` и модель функций в `od-machine`, но handoff остаётся `PRESENT = 0` до MCFG/S4-30 целиком и S7-13).
 - **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
 - **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна ECAM, HPET и ACPI fixed hardware «не назначены, S4-30, S7-14»); тест `dsdt_for_pci_root_and_com1_matches_the_independent_reference`.
 - **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.

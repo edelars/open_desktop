@@ -1261,3 +1261,10 @@ does not move time. Stage 4 runner CLI tests passed 8 cases and the artifact
 build CLI passed 1; runner all-targets check, formatting, and diff checks also
 passed. The independent Sol/high review found no code findings. The runner's
 frequency is diagnostic and is not advertised to the guest. See [report](../reports/STAGE_4_S4-22B_2026-11-07.md).
+## S4-30a PCI ECAM window and type-0 function model
+
+45. S4-30a checks the ECAM window decode, width/alignment errors, absent-function
+all-ones reads and ignored writes, a `#[cfg(test)]` diagnostic type-0 endpoint
+(read-only fields, Command mask, BAR0 sizing) and MMIO dispatch through
+`MachineBus`: `cargo test -p od-machine pci_ecam`. BAR-to-MMIO mapping and
+MCFG are not covered. See [report](../reports/STAGE_4_S4-30A_2026-11-08.md).

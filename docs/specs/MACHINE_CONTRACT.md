@@ -2805,3 +2805,15 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   download/commit, несколько NS, `Device Self-test`. Время исполнения команд не моделируется.
 
 Проверки: `cargo test -p od-machine --offline` (модули `nvme`, `firmware_board`).
+
+## PCI ECAM window and type-0 function model (S4-30a)
+
+Реализация: `crates/od-machine/src/pci_ecam.rs`. Это ограниченный срез S4-30; плата по умолчанию ECAM не регистрирует, production-функций нет.
+
+**Окно.** `PCI_ECAM_BASE = 0xFC10_0000`, сегмент 0, `start_bus = end_bus = 0`, длина `0x10_0000` (1 MiB), MMIO-регион `[0xFC10_0000, 0xFC20_0000)`. Не пересекает дисплей `[0xF400_0000, 0xFC00_1000)`, NVMe `[0xFC00_1000, 0xFC00_3000)` и APIC `0xFEC0_0000+`. Адрес: `base + (bus << 20) + (dev << 15) + (fn << 12) + reg`, dev 0..31, fn 0..7, reg 0..4095. Регистрировать можно только функцию 0 (`add_function` с fn ≠ 0 → `InvalidSlot`): type-0 header не задаёт multi-function bit, поэтому функции 1..7 не моделируются.
+
+**Доступ.** Допустимы 1, 2, 4 байта, выровненные по ширине. Qword → `DeviceError::UnsupportedWidth`; невыровненный → `DeviceError::Misaligned`; PIO-пространство → `UnsupportedSpace`; bus вне `[start, end]` → `DeviceError::UnknownOffset` (не absent). Ошибка возвращается до любых изменений состояния. Чтение absent-функции даёт все единицы своей ширины; запись в absent-функцию молча игнорируется.
+
+**Type-0.** Vendor/Device ID, Revision/Class code, Header type 0x00 — RO. Class code — 24 бита; большее значение → `Type0ConfigError::InvalidClassCode`. Command (0x04): RW только bit0 (I/O), bit1 (memory), bit2 (bus master); Status RO 0. BAR0 (0x10): 32-bit memory, размер степень двойки ≥ 16, хранит биты `!(size-1) & 0xFFFF_FFF0`, биты 0..3 RO 0; запись 0xFFFF_FFFF читается как маска. BAR1..BAR5 RO 0. Interrupt line (0x3C) RW 8 бит, Interrupt pin (0x3D) RO 0, Capabilities pointer 0. Область 0x100–0xFFF: чтение 0, запись игнорируется.
+
+**Не реализовано.** MCFG (S4-31); handoff код 7 остаётся `PRESENT = 0` (до S4-30 целиком / S7-13); BAR→MMIO mapping и влияние Command на decode (биты только хранятся); legacy 0xCF8/0xCFC; host bridge 00:00.0; capabilities, MSI/MSI-X. Тестовый endpoint существует только в `#[cfg(test)]`.

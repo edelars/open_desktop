@@ -1567,6 +1567,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** перечисление пустых/существующих functions, BAR probe, invalid bus/device/function/offset, согласованность BAR и physical map. Использовать малый собственный тестовый endpoint, если нужен для BAR tests, и пометить его diagnostic-only.
 - **Готово:** config transactions работают через guest memory/PIO, а обнаруживаемые production devices имеют реальный backend. MSI/MSI-X не требовать без объявленного устройства, которому они нужны.
 
+#### S4-30a. ECAM window и type-0 function model (ограниченный срез)
+
+- [x] Ограниченный срез реализован и проверен; ревью пройдено (Claude Opus, high; два раунда, замечания исправлены).
+- **Сделано:** `crates/od-machine/src/pci_ecam.rs`: окно `[0xFC10_0000, 0xFC20_0000)`, bus 0, absent/width/alignment/readonly/BAR sizing, diagnostic-only тестовый endpoint в `#[cfg(test)]`.
+- **Отчёт:** [STAGE_4_S4-30A_2026-11-08.md](../reports/STAGE_4_S4-30A_2026-11-08.md); evidence: [s4-30a-ecam.json](../reports/data/stage4/s4-30a-ecam.json).
+- **Родительский S4-30 остаётся открытым:** нет MCFG, BAR→MMIO mapping, production device backend, legacy 0xCF8/0xCFC, host bridge; ECAM не регистрируется платой, handoff код 7 остаётся `PRESENT = 0`.
+
 ### S4-31. Подготовить минимальные discovery tables
 
 - [ ] Принято после ревью.
