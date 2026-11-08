@@ -1,0 +1,93 @@
+{
+  "slice": "S7-14a",
+  "date": "2026-11-08",
+  "source": [
+    "crates/od-machine/src/acpi_pm.rs",
+    "crates/od-machine/src/firmware_board.rs",
+    "crates/od-machine/src/lib.rs"
+  ],
+  "architecture": "opt-in FirmwareBoardConfig::acpi_pm: one AcpiPm bus device with one PortRegionBinding 0x0600..0x0610; stop reason latched on the device and polled by run_boot through the STOP predicate; board clock is a VirtualClockHandle shared with the PM timer; handoff untouched",
+  "flag": {
+    "name": "FirmwareBoardConfig::acpi_pm",
+    "default": false
+  },
+  "descriptor": {
+    "base_port": "0x0600",
+    "port_bytes": "0x10",
+    "smi_cmd": 0,
+    "pm1a_evt_blk": "0x0600",
+    "pm1_evt_len": 4,
+    "pm1a_cnt_blk": "0x0604",
+    "pm1_cnt_len": 2,
+    "pm_tmr_blk": "0x0608",
+    "pm_tmr_len": 4,
+    "tmr_val_ext": false,
+    "reset_reg": "0x060C",
+    "reset_reg_width_bits": 8,
+    "reset_value": "0x06",
+    "timer_hz": 3579545,
+    "slp_typ_s5": 5
+  },
+  "other_pio_devices": {
+    "com1": "0x3F8..=0x3FF",
+    "pci_conf1": "0xCF8..=0xCFF",
+    "0xCF9": "UnknownOffset (unchanged)"
+  },
+  "handoff": {
+    "default": "byte for byte unchanged (golden handoff_block_is_byte_identical_to_the_reference)",
+    "with_flag": "identical to default; the PM block is not in the handoff"
+  },
+  "stop_reasons": {
+    "shutdown": "SLP_TYP=5 with SLP_EN in PM1_CNT",
+    "reset": "RESET_VALUE 0x06 to RESET_REG",
+    "latched": "first reason stays; cleared only by the reset operation (S7-26)"
+  },
+  "api_changes": [
+    "LoadedFirmwareBoard::clock() returns VirtualClock snapshot",
+    "FirmwareRunReport.stop_reason"
+  ],
+  "od_machine_tests_passed": 564,
+  "od_machine_tests_failed": 0,
+  "od_machine_tests_added": 27,
+  "od_machine_tests_added_breakdown": {
+    "acpi_pm": 17,
+    "firmware_board": 10
+  },
+  "workspace_check": "cargo check --workspace --all-targets --offline: clean",
+  "not_implemented": [
+    "HW_REDUCED_ACPI",
+    "FADT",
+    "MADT/MCFG",
+    "SCI route and PM1 events",
+    "GPE0/GPE1",
+    "PM1b",
+    "ACPI_ENABLE/DISABLE via SMI_CMD",
+    "sleep states S1-S4",
+    "machine reset operation (S7-26)",
+    "RTC/CMOS 0x70/0x71",
+    "HPET",
+    "PIC/PIT/8042",
+    "0xCF9 reset control"
+  ],
+  "known_limitations": [
+    "ISSUE-067: PM_TMR is frozen inside a quantum; the board clock advances only between quanta (S4-37/S4-38 decide)"
+  ],
+  "fadt_handoff_to_s4_31": {
+    "flags": [
+      "PWR_BUTTON=1",
+      "SLP_BUTTON=1",
+      "FIX_RTC=1",
+      "TMR_VAL_EXT=0",
+      "RESET_REG_SUP=1",
+      "HW_REDUCED_ACPI=0"
+    ],
+    "zero_fields": [
+      "PM1b_*",
+      "PM2_CNT_BLK",
+      "GPE0_BLK",
+      "GPE1_BLK",
+      "SMI_CMD"
+    ],
+    "choose": "SCI_INT"
+  }
+}

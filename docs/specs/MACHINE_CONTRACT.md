@@ -2856,4 +2856,38 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 **Linux-пробы.** На экземпляре платы: `pci_check_type1` проходит часть с чтением латча назад; `pci_check_type2` отвергается. Как и в S4-30b, `pci_sanity_check` (`direct.c:204–216`) отвергает conf1, пока нет ни DMI-года BIOS ≥ 2001, ни функции на bus 0 с классом 0x0600 или 0x0300, ни vendor Intel/Compaq; обход — `pci=nochecks`. После отказа Linux пробует type2, и он тоже не проходит. Задача S4-31/S4-38 (SMBIOS-год или функция класса host bridge/VGA), не дефект среза.
 
-**Не реализовано.** MCFG и PNP0C02/`_CRS` (S4-31); генерация E820 и loader (S4-37); host bridge и любые функции; BAR→MMIO mapping и PCI MMIO aperture; MSI/MSI-X; ACPI PM и reset register (S7-14a); дефолтный handoff не менялся.
+**Не реализовано.** MCFG и PNP0C02/`_CRS` (S4-31); генерация E820 и loader (S4-37); host bridge и любые функции; BAR→MMIO mapping и PCI MMIO aperture; MSI/MSI-X; ACPI PM и reset register (сделано отдельным срезом S7-14a, см. раздел ниже); дефолтный handoff не менялся.
+
+## ACPI fixed hardware (S7-14a)
+
+Реализация: `crates/od-machine/src/acpi_pm.rs` (`AcpiPm`, `AcpiPmHandle`, `ACPI_PM_DESCRIPTOR`, `MachineStopReason`), подключение — `firmware_board.rs` (`FirmwareBoardConfig::acpi_pm`). Полный FADT, без `HW_REDUCED_ACPI`; сам FADT — S4-31, сброс как операция — S7-26.
+
+**Флаг и handoff.** `FirmwareBoardConfig::acpi_pm: bool`, по умолчанию `false`. Без флага порты PM-блока не зарегистрированы (чтение — `UnmappedPort`). Handoff block не описывает PM-блок (у handoff v1.0/v1.1 нет кода устройства для него, новый код потребовал бы изменения контракта): с флагом и без него handoff байт в байт одинаков и равен эталону (golden-тест). Источник адресов для FADT — типизированный `ACPI_PM_DESCRIPTOR`, как `PCI_ECAM_DESCRIPTOR` для MCFG. Карта памяти не меняется: PM-блок живёт только в пространстве портов.
+
+**Адреса (PIO, один блок `0x0600..0x0610`, одно устройство, одна `PortRegionBinding`).** Выбор: рядом нет ни одного устройства платы (COM1 `0x3F8..=0x3FF`, conf1 `0xCF8..=0xCFF`; NVMe, ECAM, LAPIC, IOAPIC, дисплей — MMIO и в пространстве портов не присутствуют); блок целиком ниже `0xCF8`; `0xCF9` остаётся `UnknownOffset` у устройства conf1 (reset control PCI не реализован). База `0x0600` — привычная для PM-блока PC-платформ; порты RTC/CMOS `0x70/0x71`, PIC, PIT и 8042 блок не пересекает.
+
+| Поле FADT | Значение |
+|---|---|
+| `SMI_CMD` | `0` (нет SMI-обработчика; `ACPI_ENABLE/DISABLE` нет, `SCI_EN` не переключается) |
+| `PM1a_EVT_BLK` / `PM1_EVT_LEN` | `0x0600` / 4 (`PM1_STS` 16 бит + `PM1_EN` 16 бит) |
+| `PM1b_EVT_BLK`, `PM1b_CNT_BLK`, `PM2_CNT_BLK`, `GPE0_BLK`, `GPE1_BLK` | `0` (не реализованы) |
+| `PM1a_CNT_BLK` / `PM1_CNT_LEN` | `0x0604` / 2 |
+| `PM_TMR_BLK` / `PM_TMR_LEN` | `0x0608` / 4; флаг `TMR_VAL_EXT = 0` (24-битный счётчик) |
+| `RESET_REG` | SystemIO (address space id 1), `register_bit_width = 8`, `bit_offset = 0`, access size byte, адрес `0x060C`; флаг `RESET_REG_SUP = 1` |
+| `RESET_VALUE` | `0x06` |
+| `\_S5` `SLP_TYP` | `5` (`ACPI_SLP_TYP_S5`; пакет `\_S5` составит S4-31) |
+
+**Регистры.** Доступ — только `IoSpace::Pio`, ширина 1/2/4 (Qword — `UnsupportedWidth`), естественное выравнивание (`Misaligned`), доступ не выходит за один регистр (`CrossesRegister`, в частности 32-битный доступ к `PM1_STS`+`PM1_EN` отвергается), промежутки блока (`0x606`, `0x607`, `0x60D..0x60F`) — `UnknownOffset`; все проверки до изменения состояния.
+- `PM1_STS` (`+0`, 16 бит): write-one-to-clear; источников событий нет, поэтому после сброса `0` и не меняется (`TMR_STS`, `PWRBTN_STS` и прочие не взводятся).
+- `PM1_EN` (`+2`, 16 бит): хранит биты `TMR_EN`, `GBL_EN`, `PWRBTN_EN`, `SLPBTN_EN`, `RTC_EN` (маска `0x0721`), остальные читаются `0`. SCI-маршрута нет, включённое событие ничего не вызывает.
+- `PM1_CNT` (`+4`, 16 бит): `SCI_EN` (бит 0) равен `1` с сброса и записью не меняется; `BM_RLD` (бит 1) и `SLP_TYP` (биты 10–12) хранятся; `GBL_RLS` (бит 2) и `SLP_EN` (бит 13) только для записи и читаются `0`, `GBL_RLS` игнорируется. Запись `SLP_EN = 1` с `SLP_TYP = 5` (с учётом `SLP_TYP`, записанного в той же или предыдущей записи, в том числе побайтно) защёлкивает причину `Shutdown`. Запись `SLP_EN = 1` с другим `SLP_TYP` игнорируется: другие состояния сна не объявлены (`\_S1..\_S4` в DSDT нет), машина не засыпает, `SLP_EN` читается `0`.
+- `PM_TMR` (`+8`, 32 бита): `floor(now_ns × 3 579 545 / 10^9)` по virtual clock платы, маска 24 бита (счётчик заворачивается каждые 4.687 с). Время не идёт само: оно двигается только `LoadedFirmwareBoard::advance_time_ns` и `run_boot`; чтение время не двигает. **Ограничение (ISSUE-067):** `run_boot` двигает часы на `instructions_executed` только между квантами, а квант заканчивается на записи в COM1 THR, doorbell NVMe, остановке PM, `HLT` или конце бюджета; внутри кванта `PM_TMR` стоит, и ожидание по нему (UEFI `Stall`, калибровка Linux) не завершится до конца бюджета. Механизм квантов не менялся; решение (закрывать квант на чтении `PM_TMR`) — S4-37/S4-38. Запись — `ReadOnly`.
+- `RESET_REG` (`+0xC`, 1 байт): чтение — `WriteOnly`, запись шире байта — `CrossesRegister`. Запись `0x06` защёлкивает причину `Reset`; другое значение игнорируется.
+
+**Остановка.** Причина защёлкивается на устройстве (`MachineStopReason::{Reset, Shutdown}`), первая причина остаётся: повторные команды её не меняют, снять остановку сможет только операция сброса (S7-26). `AcpiPmHandle::stop_request()` читает причину. С флагом `LoadedFirmwareBoard::run_boot` добавляет её опрос в предикат STOP после каждой инструкции: машина останавливается сразу после `OUT`, `FirmwareRunReport { exit: PagedProbeExit::Stopped, stop_reason: Some(..) }`; остановка по запросу не превращается в `BudgetExhausted`, повторный `run_boot` не исполняет ни одной инструкции. Без флага `stop_reason` всегда `None`. Сам сброс (состояние CPU и устройств, перезапуск) этим срезом не выполняется.
+
+**Изменение API платы.** `LoadedFirmwareBoard::clock()` теперь возвращает снимок `VirtualClock` (значение), а не ссылку: часы платы лежат в `VirtualClockHandle`, который делят плата (единственный advancer) и таймер PM. `FirmwareRunReport` получил поле `stop_reason`.
+
+**Передача S4-31 (поля FADT).** Нули в `PM1b_*`, `PM2_CNT_BLK`, `GPE0_BLK`, `GPE1_BLK` и их длинах, `SMI_CMD = 0`, `ACPI_ENABLE/DISABLE = 0`. `Flags`: `PWR_BUTTON = 1` и `SLP_BUTTON = 1` (источников кнопок нет; ноль означал бы «кнопка есть как fixed feature»), `FIX_RTC = 1` (`RTC_STS`/`RTC_EN` не поддержаны), `TMR_VAL_EXT = 0`, `RESET_REG_SUP = 1`, `HW_REDUCED_ACPI = 0`. Замечание: регистр `PM1_EN` (маска `0x0721`) хранит биты `PWRBTN_EN`/`SLPBTN_EN`/`RTC_EN`, но событий от этих источников нет — биты только запоминаются и не формируют `PM1_STS`. `SCI_INT` выбирает S4-31 (маршрут SCI пока не реализован). `RESET_REG`, `RESET_VALUE` и `\_S5` — из таблицы выше.
+
+**Не реализовано.** `HW_REDUCED_ACPI`; сам FADT и таблицы MADT/MCFG (S4-31, S7-13); SCI и его маршрут к IOAPIC, события PM1, GPE0/GPE1, PM1b, PM2; `ACPI_ENABLE/DISABLE` через `SMI_CMD`; состояния сна S1–S4; сам сброс (S7-26); RTC/CMOS `0x70/0x71`, HPET, PIC/PIT/8042 (S7-14 и далее); `0xCF9` по-прежнему `UnknownOffset`. Проверка ACPI mode и SCI в гостевом Linux — S4-38.

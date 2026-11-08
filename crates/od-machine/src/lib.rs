@@ -1,5 +1,6 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
+mod acpi_pm;
 mod apic_pair;
 mod bus;
 mod diagnostic_vcpu;
@@ -31,6 +32,14 @@ mod uart16550;
 mod uart_rx_events;
 mod virtual_clock;
 
+pub use acpi_pm::{
+    ACPI_PM_BASE_PORT, ACPI_PM_DESCRIPTOR, ACPI_PM_PORT_BYTES, ACPI_PM_TIMER_HZ, ACPI_PM_TMR_BLK,
+    ACPI_PM_TMR_LEN, ACPI_PM1_CNT_BM_RLD, ACPI_PM1_CNT_GBL_RLS, ACPI_PM1_CNT_LEN,
+    ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1_CNT_SLP_TYP_MASK,
+    ACPI_PM1_CNT_SLP_TYP_SHIFT, ACPI_PM1_EVT_LEN, ACPI_PM1A_CNT_BLK, ACPI_PM1A_EVT_BLK,
+    ACPI_RESET_REG, ACPI_RESET_REG_WIDTH_BITS, ACPI_RESET_VALUE, ACPI_SLP_TYP_S5, ACPI_SMI_CMD,
+    AcpiPm, AcpiPmDescriptor, AcpiPmHandle, MachineStopReason,
+};
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,

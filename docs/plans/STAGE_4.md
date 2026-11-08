@@ -1592,7 +1592,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S7-14a. ACPI fixed hardware для полного FADT: PM1a, PM timer, reset register (перенесён из этапа 7)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high; два раунда). Отчёт: [STAGE_4_S7-14A_2026-11-08.md](../reports/STAGE_4_S7-14A_2026-11-08.md). Ограничение PM_TMR внутри кванта — ISSUE-067.
 - **Почему здесь:** решение пользователя — S7-14a выполняется в этапе 4, потому что FADT (S4-31) ссылается на адреса PM-блока. Полный FADT, без `HW_REDUCED_ACPI`; reset register — отдельный порт PM-блока, 0xCF9 остаётся явной `UnknownOffset`. RTC/CMOS и HPET остаются в этапе 7 (S7-14).
 - **Где:** `crates/od-machine/src/acpi_pm.rs` (PM1a evt/cnt, PM timer, reset register), `firmware_board.rs` (адреса в карте и поля handoff), `docs/specs/MACHINE_CONTRACT.md` (раздел PM-блока), `docs/specs/VIRTUAL_BOARD.md` (карта портов).
 - **Сделать:** PM1a_EVT_BLK и PM1a_CNT_BLK; `SCI_EN` в PM1a_CNT установлен с сброса; `SMI_CMD = 0`; PM_TMR_BLK на 3.579545 MHz от virtual clock; reset register — SystemIO шириной 1 байт, флаг `RESET_REG_SUP`, запись `RESET_VALUE` останавливает машину с причиной `Reset` (сам сброс — S7-26). Запись `SLP_TYP/SLP_EN` для S5 → причина `Shutdown`. Адреса вне `0xCF8–0xCFF`, без пересечений с существующими PIO-устройствами. Не реализовывать HW_REDUCED, RTC/CMOS, HPET, PIC/PIT/8042, сам FADT (S4-31).
