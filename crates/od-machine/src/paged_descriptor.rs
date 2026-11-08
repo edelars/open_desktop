@@ -56,6 +56,7 @@ pub fn step_paged_lidt(
         paging,
         instruction_rip,
         instruction_name: "LIDT",
+        segment_load: false,
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
@@ -98,6 +99,7 @@ pub fn step_paged_lgdt(
         paging,
         instruction_rip,
         instruction_name: "LGDT",
+        segment_load: false,
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
@@ -179,6 +181,7 @@ pub fn step_paged_ltr_ax(
             paging,
             instruction_rip,
             instruction_name: "LTR",
+            segment_load: false,
             committed_write: &mut committed_write,
             page_fault: None,
             memory_error: None,
@@ -240,12 +243,107 @@ pub fn step_paged_ltr_ax(
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedSegmentMovError {
+    Configuration(ProbeConfigError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedSegmentMovReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub memory_error: Option<TrackedAccessError>,
+}
+
+macro_rules! paged_segment_mov_step {
+    ($(#[$doc:meta])* $name:ident, $name_str:literal, $cpu:path) => {
+        $(#[$doc])*
+        pub fn $name(
+            state: &mut LongModeState,
+            bus: &mut MachineBus,
+            cr3: u64,
+            efer: u64,
+            context: AccessContext,
+            rflags_defined: u64,
+            mut committed_write: impl FnMut(GuestPhysicalRange),
+        ) -> Result<PagedSegmentMovReport, PagedSegmentMovError> {
+            let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+                .map_err(PagedSegmentMovError::Configuration)?;
+            let instruction_rip = state.rip;
+            let mut memory = PagedDescriptorMemory {
+                bus,
+                paging,
+                instruction_rip,
+                instruction_name: $name_str,
+                segment_load: true,
+                committed_write: &mut committed_write,
+                page_fault: None,
+                memory_error: None,
+            };
+            let mut cpu = $cpu(
+                state,
+                &mut memory,
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                },
+                efer,
+                rflags_defined,
+            );
+            // A descriptor whose eight bytes cross a 4 KiB page is outside the
+            // bounded profile rather than a guest exception or backend failure.
+            if matches!(
+                memory.memory_error,
+                Some(TrackedAccessError::CrossesPage { .. })
+            ) {
+                cpu.exit = od_isa::PagedProbeExit::Unsupported { opcode: 0x8e };
+            }
+            Ok(PagedSegmentMovReport {
+                cpu,
+                page_fault: memory.page_fault,
+                memory_error: memory.memory_error,
+            })
+        }
+    };
+}
+
+paged_segment_mov_step!(
+    /// Execute exact `MOV DS,AX` (`8E D8`) through RAM-only tracked paging.
+    ///
+    /// The 8-byte GDT descriptor is read through a supervisor
+    /// (`DescriptorTable`) walk, validated by the CPU loader, its accessed bit is
+    /// set with one byte write when clear, and only then the DS cache, selector
+    /// and RIP are committed. A fault at any point leaves the CPU unchanged;
+    /// page-table A bits (and D for the accessed-bit write) already committed by
+    /// walks stay committed. CR3 and EFER are explicit, like the other paged
+    /// descriptor steps. Null and LDT selectors, missing GDTR/cache, and
+    /// descriptors crossing a 4 KiB page are `Unsupported`.
+    step_paged_mov_ds, "MOV DS", od_isa::execute::step_paged_mov_ds
+);
+paged_segment_mov_step!(
+    /// Execute exact `MOV ES,AX` (`8E C0`); see [`step_paged_mov_ds`].
+    step_paged_mov_es, "MOV ES", od_isa::execute::step_paged_mov_es
+);
+paged_segment_mov_step!(
+    /// Execute exact `MOV FS,AX` (`8E E0`); see [`step_paged_mov_ds`]. Also
+    /// commits the 32-bit descriptor base into `fs_base`.
+    step_paged_mov_fs, "MOV FS", od_isa::execute::step_paged_mov_fs
+);
+paged_segment_mov_step!(
+    /// Execute exact `MOV GS,AX` (`8E E8`); see [`step_paged_mov_ds`]. Also
+    /// commits the 32-bit descriptor base into `gs_base`.
+    step_paged_mov_gs, "MOV GS", od_isa::execute::step_paged_mov_gs
+);
+
 /// Shared RAM-only tracked-memory contract for the bounded LGDT/LIDT adapters.
 struct PagedDescriptorMemory<'a> {
     bus: &'a mut MachineBus,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     instruction_name: &'static str,
+    /// Set only by the bounded `MOV Sreg,AX` steps: admits the 8-byte descriptor
+    /// read and the one-byte accessed-bit write (both RAM-only).
+    segment_load: bool,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
@@ -301,9 +399,30 @@ impl GuestMemory for PagedDescriptorMemory<'_> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
+        if self.segment_load
+            && destination.len() == 8
+            && context.origin == AccessOrigin::DescriptorTable
+        {
+            return match self.access(
+                address,
+                context,
+                RamAccessOperation::Read {
+                    width: crate::AccessWidth::Qword,
+                },
+            )? {
+                TrackedAccessOutcome::Read(value) => {
+                    destination.copy_from_slice(&value.to_le_bytes());
+                    Ok(())
+                }
+                _ => Err(MemoryError::Backend(format!(
+                    "paged {} descriptor read returned a non-read result",
+                    self.instruction_name
+                ))),
+            };
+        }
         if destination.len() != 10 {
             return Err(MemoryError::Backend(format!(
-                "paged {} only reads a 10-byte pseudo-descriptor",
+                "paged {} only reads a 10-byte pseudo-descriptor or an 8-byte descriptor",
                 self.instruction_name
             )));
         }
@@ -338,7 +457,30 @@ impl GuestMemory for PagedDescriptorMemory<'_> {
         }
     }
 
-    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        // The only admitted write is the one-byte descriptor accessed-bit update.
+        if self.segment_load && source.len() == 1 && context.origin == AccessOrigin::DescriptorTable
+        {
+            return match self.access(
+                address,
+                context,
+                RamAccessOperation::Write {
+                    width: crate::AccessWidth::Byte,
+                    value: u64::from(source[0]),
+                },
+            )? {
+                TrackedAccessOutcome::Written => Ok(()),
+                _ => Err(MemoryError::Backend(format!(
+                    "paged {} descriptor write returned a non-write result",
+                    self.instruction_name
+                ))),
+            };
+        }
         Err(MemoryError::Backend(format!(
             "paged {} does not write guest memory",
             self.instruction_name
@@ -1079,6 +1221,7 @@ mod tests {
             paging,
             instruction_rip: CODE,
             instruction_name: "LIDT",
+            segment_load: false,
             committed_write: &mut notify,
             page_fault: None,
             memory_error: None,

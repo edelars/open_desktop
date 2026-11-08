@@ -20121,3 +20121,11 @@ TSS, present, canonical base, in that order) that faults with `#GP(0)`, `#GP(sel
 `#NP(selector)`. The legacy fragment adapter rejects a present `tr`. No TSS contents,
 task switching or stack switching are modelled. See the
 [machine contract](MACHINE_CONTRACT.md#paged-ltr-ax-s4-18d).
+
+### S4-18e — bounded paged MOV DS/ES/FS/GS state
+
+`od_isa::execute::step_paged_mov_ds/es/fs/gs` gate the existing GDT segment loaders
+(`load_*_gdt_selector`) behind the exact two-byte `MOV Sreg,AX` forms. The hidden `ds_cache`,
+`es_cache`, `fs_cache` and `gs_cache` must already be present; the selector, cache (and base for
+FS/GS) and RIP change only after the descriptor read and the optional accessed-bit write have
+succeeded. See the [machine contract](MACHINE_CONTRACT.md#paged-mov-dsesfsgs-ax-s4-18e).

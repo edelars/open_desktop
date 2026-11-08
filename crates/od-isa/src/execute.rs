@@ -16627,6 +16627,145 @@ pub fn prepare_paged_ltr_ax(
     }
 }
 
+/// Shared body of the bounded paged `MOV Sreg,AX` profiles (`8E /r`, ModRM
+/// `modrm`, register source AX). The profile follows the bounded LGDT/LIDT
+/// contract: exact CR0/CR4/EFER, 36-bit CR3, a present GDTR and the matching
+/// descriptor cache, CPL0, a running CPU and no STI shadow. Only the two
+/// instruction bytes are fetched, and only inside the page of RIP. A missing
+/// GDTR is `Rejected(ControlRegistersMissing)` before any fetch; after the
+/// fetch, a null or LDT selector or a missing cache is `Unsupported`.
+/// Descriptor faults (`#GP`/`#NP`), descriptor reads and the accessed-bit write
+/// happen through `memory`; the cache, selector and RIP are committed only after
+/// every memory effect has succeeded.
+fn step_paged_mov_sreg<M: GuestMemory>(
+    state: &mut LongModeState,
+    memory: &mut M,
+    context: AccessContext,
+    efer: u64,
+    rflags_defined: u64,
+    modrm: u8,
+    load: fn(&mut LongModeState, &mut M, AccessContext, u16) -> Result<bool, MemoryError>,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    let unsupported = || result(PagedProbeExit::Unsupported { opcode: 0x8e }, 0);
+    if rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.gdtr.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff > 0xffe || context.privilege != PrivilegeLevel::Ring0 {
+        return unsupported();
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    for (offset, expected) in [0x8e, modrm].into_iter().enumerate() {
+        let address = state.rip.wrapping_add(offset as u64);
+        if !canonical(address) {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        match memory.fetch(address, context) {
+            Ok(byte) if byte == expected => {}
+            Ok(byte) => return result(PagedProbeExit::Unsupported { opcode: byte }, 0),
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        }
+    }
+    let selector = state.gpr[0] as u16;
+    match load(state, memory, context, selector) {
+        Ok(true) => {
+            state.rip = state.rip.wrapping_add(2);
+            result(PagedProbeExit::Retired, 1)
+        }
+        Ok(false) => unsupported(),
+        Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
+}
+
+macro_rules! paged_mov_sreg_entry {
+    ($(#[$doc:meta])* $name:ident, $modrm:expr, $load:ident) => {
+        $(#[$doc])*
+        pub fn $name(
+            state: &mut LongModeState,
+            memory: &mut impl GuestMemory,
+            context: AccessContext,
+            efer: u64,
+            rflags_defined: u64,
+        ) -> PagedProbeResult<std::convert::Infallible> {
+            step_paged_mov_sreg(
+                state,
+                memory,
+                context,
+                efer,
+                rflags_defined,
+                $modrm,
+                |state, memory, context, selector| $load(state, memory, context, selector),
+            )
+        }
+    };
+}
+
+paged_mov_sreg_entry!(
+    /// Execute the bounded paged `MOV DS,AX` (`8E D8`) profile.
+    step_paged_mov_ds, 0xd8, load_ds_gdt_selector
+);
+paged_mov_sreg_entry!(
+    /// Execute the bounded paged `MOV ES,AX` (`8E C0`) profile.
+    step_paged_mov_es, 0xc0, load_es_gdt_selector
+);
+paged_mov_sreg_entry!(
+    /// Execute the bounded paged `MOV FS,AX` (`8E E0`) profile.
+    step_paged_mov_fs, 0xe0, load_fs_gdt_selector
+);
+paged_mov_sreg_entry!(
+    /// Execute the bounded paged `MOV GS,AX` (`8E E8`) profile.
+    step_paged_mov_gs, 0xe8, load_gs_gdt_selector
+);
+
 struct FetchCapture<'a, M> {
     inner: &'a mut M,
     bytes: Vec<(u64, u8)>,

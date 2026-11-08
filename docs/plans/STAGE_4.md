@@ -856,6 +856,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   descriptor, MMIO-дескриптора и SMP-атомарности; CR3/EFER явные аргументы. S4-18 остаётся открытым.
 - **Нормативная основа:** Intel SDM Vol. 2 (`LTR`) и Vol. 3A §7.2.3 (64-bit TSS descriptor).
 
+#### S4-18e — bounded paged MOV DS/ES/FS/GS
+
+- [x] Реализован и проверен локально; независимое ревью — см. [отчёт S4-18e](../reports/STAGE_4_S4-18E_2026-11-08.md).
+- **Реализовано:** `step_paged_mov_ds/es/fs/gs` (`8E D8/C0/E0/E8`, источник AX) в профиле LGDT/LIDT/LTR:
+  RAM-only чтение 8-байтового GDT-дескриптора через supervisor walk, существующие CPU-проверки
+  (`#GP`/`#NP`), запись accessed-бита одним byte write, затем commit selector/cache/base и RIP.
+- **Граница:** CPL0, только AX, без null/LDT селекторов, SS/CS, TLB/JIT, дескриптора через
+  границу страницы и изоляции alias с page-table страницей. S4-18 остаётся открытым.
+
 <a id="s4-19-доставка-исключений-и-восстановление-после-fault"></a>
 
 ### S4-19. Доставка исключений и восстановление после fault

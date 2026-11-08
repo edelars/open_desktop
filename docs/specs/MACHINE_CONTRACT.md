@@ -2002,6 +2002,39 @@ or task switching is modelled, and `TaskRegisterCache` is rejected by the legacy
 fragment adapter. CR3 and EFER are explicit arguments, like the other paged
 descriptor steps. See the [S4-18d report](../reports/STAGE_4_S4-18D_2026-11-08.md).
 
+## Paged `MOV DS/ES/FS/GS, AX` (S4-18e)
+
+`step_paged_mov_ds`, `step_paged_mov_es`, `step_paged_mov_fs` and `step_paged_mov_gs`
+compose the existing CPU GDT segment loaders with the uncached tracked four-level RAM
+walker. Each accepts only the bare two-byte form `8E D8` / `8E C0` / `8E E0` / `8E E8`
+(source AX) in the same fixed Long64 profile as the bounded LGDT/LIDT/LTR entries: CR0/CR4/EFER
+equal to the profile values, 36-bit CR3, a present GDTR, the matching hidden descriptor
+cache, CPL0 (otherwise `Unsupported` before any fetch), a running CPU and no STI shadow.
+Only the two instruction bytes are fetched and only inside the page of RIP.
+
+The selector is the low 16 bits of RAX. A null or TI=1 selector and a missing hidden cache are
+`Unsupported` after the two-byte fetch (so the fetch walk's A bits and callbacks are already
+committed); a selector outside the GDT limit is `#GP(selector)`, as is a descriptor address (or its
+last byte) that is non-canonical or wraps, before any GDT walk. The 8-byte GDT descriptor is read through a
+supervisor (`DescriptorTable`) walk as one RAM-only qword; it must be a present, readable,
+non-system segment with `max(CPL, RPL) <= DPL` (`#GP(selector)` / `#NP(selector)`; the error code
+has RPL cleared). When the descriptor's accessed bit is clear it is set with one one-byte
+descriptor-table write after the leaf D bit (CR0.WP applies: a read-only GDT page raises `#PF`
+with W set and CR2 = descriptor address + 5). The selector, hidden cache (and `fs_base`/`gs_base`
+for FS/GS, 32-bit base) and RIP (+2) are committed only after every memory effect succeeded.
+On any fault the CPU is unchanged; A bits (and the leaf D bit) written by earlier walks stay
+committed. Fetch and A-bit writes are reported through the callback in order, then the D write,
+then the accessed-bit byte.
+
+A descriptor whose eight bytes would cross a 4 KiB page is `Unsupported` (the report carries
+`TrackedAccessError::CrossesPage`); a physical hole, ROM, an MMIO region (no device dispatch) or
+RAM ending inside the descriptor is a backend error. CR3 and EFER are explicit arguments. Not
+covered: null-selector loads, LDT selectors, SS/CS, long-mode system descriptors and TLB/JIT. When
+the descriptor shares a physical page with the page tables that translate it, the order is: A bits
+(read walk), descriptor read, leaf D bit (write walk), accessed-bit byte; no A/D update is lost, and
+the hidden cache holds the descriptor bytes read before the D write (as on hardware). See the
+[S4-18e report](../reports/STAGE_4_S4-18E_2026-11-08.md).
+
 ## Secondary #PF, #DF delivery, and shutdown (S4-19c)
 
 Within the existing Long64/CPL0/same-CPL/IST=0 exception profile, an actual
