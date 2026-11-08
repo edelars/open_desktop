@@ -1,5 +1,6 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
+mod acpi_blob;
 mod acpi_pm;
 mod apic_pair;
 mod bus;
@@ -31,6 +32,13 @@ mod translation_probe_cache;
 mod uart16550;
 mod uart_rx_events;
 mod virtual_clock;
+
+pub use acpi_blob::{
+    ACPI_BLOB_ALIGN, ACPI_BLOB_DIR_ENTRY_BYTES, ACPI_BLOB_HEADER_BYTES, ACPI_BLOB_MAGIC,
+    ACPI_BLOB_MAX_TABLES, ACPI_BLOB_RSDP_SLOT_BYTES, ACPI_BLOB_VERSION, ACPI_MANIFEST_HASH_TAG,
+    ACPI_RECLAIM_END, ACPI_REGION_BASE, ACPI_REGION_END, AcpiBlobError, AcpiBlobTable,
+    AcpiManifestHash, ValidatedAcpiBlob, acpi_manifest_hash, validate_acpi_blob,
+};
 
 pub use acpi_pm::{
     ACPI_PM_BASE_PORT, ACPI_PM_DESCRIPTOR, ACPI_PM_PORT_BYTES, ACPI_PM_TIMER_HZ, ACPI_PM_TMR_BLK,

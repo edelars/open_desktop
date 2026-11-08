@@ -11,6 +11,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=src/start.S");
     println!("cargo:rerun-if-changed=linker.ld");
+    println!("cargo:rerun-if-changed=acpi_blob.ld");
     println!("cargo:rerun-if-env-changed=OD_FW_CLANG");
 
     let target = env::var("TARGET").unwrap_or_default();
@@ -40,11 +41,19 @@ fn main() {
         panic!("`{clang}` failed to assemble src/start.S ({status})");
     }
 
-    println!("cargo:rustc-link-arg-bins={}", object.display());
+    // Link arguments are per binary: `od-firmware` is the flat firmware image, `od-acpi-blob`
+    // (S4-31d) only carries the `.acpi_blob` section and has its own linker script.
+    println!("cargo:rustc-link-arg-bin=od-firmware={}", object.display());
     println!(
-        "cargo:rustc-link-arg-bins=-T{}",
+        "cargo:rustc-link-arg-bin=od-firmware=-T{}",
         manifest_dir.join("linker.ld").display()
     );
-    println!("cargo:rustc-link-arg-bins=-zmax-page-size=4096");
-    println!("cargo:rustc-link-arg-bins=--build-id=none");
+    println!("cargo:rustc-link-arg-bin=od-firmware=-zmax-page-size=4096");
+    println!("cargo:rustc-link-arg-bin=od-firmware=--build-id=none");
+    println!(
+        "cargo:rustc-link-arg-bin=od-acpi-blob=-T{}",
+        manifest_dir.join("acpi_blob.ld").display()
+    );
+    println!("cargo:rustc-link-arg-bin=od-acpi-blob=-zmax-page-size=4096");
+    println!("cargo:rustc-link-arg-bin=od-acpi-blob=--build-id=none");
 }

@@ -1,0 +1,69 @@
+{
+  "slice": "S4-31d",
+  "date": "2026-11-08",
+  "source": [
+    "firmware/uefi/src/acpi/blob.rs",
+    "firmware/uefi/src/acpi/sha256.rs",
+    "firmware/uefi/src/acpi/manifest.rs",
+    "firmware/uefi/src/acpi_blob_main.rs",
+    "firmware/uefi/acpi_blob.ld",
+    "firmware/uefi/build.rs",
+    "tools/build/build_stage4_acpi_blob.py",
+    "crates/od-machine/src/acpi_blob.rs",
+    "crates/od-machine/src/firmware_board.rs",
+    "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"
+  ],
+  "architecture": "freestanding bin od-acpi-blob (x86_64-unknown-none) puts a const-evaluated static in section .acpi_blob; packaging cuts the section out and reads the header, it never serializes; od-machine validates against the manifest hash of the resolved board",
+  "blob": {
+    "magic": "ODACPIB1",
+    "version": 1,
+    "header_bytes": "0x60",
+    "directory_entry_bytes": 16,
+    "payload_start": "RSDP slot 0x40 bytes (empty until S4-31g), then DSDT, MCFG, 16-aligned, zero gaps",
+    "bytes": 492,
+    "sha256": "5cf5a93ae4053a216004d9c8bc266e17d44093fddeb5611f99e2765b622cc5c0",
+    "manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "manifest_hash_scheme": "SHA-256(\"ODACPI-MANIFEST1\" || 48-byte handoff device entries ordered by type code)",
+    "load_range": "[0x000E_0000, 0x000E_016C)",
+    "rsdp_address": 0,
+    "tables": ["DSDT 0xE6 bytes at payload 0x40", "MCFG 0x3C bytes at payload 0x130"]
+  },
+  "region": {
+    "outer": "[0x000E_0000, 0x000F_0000)",
+    "tables_part": "[0x000E_0000, 0x000E_F000)",
+    "nvs_part": "[0x000E_F000, 0x000F_0000) (FACS only, S4-31e)"
+  },
+  "determinism": {
+    "clean_builds": 2,
+    "separate_cargo_target_dirs": true,
+    "section_bytes_equal": true,
+    "elf_bytes_equal": true,
+    "blob_sha256_equal": true
+  },
+  "validator_rejects": [
+    "foreign manifest hash (board without ECAM, board with NVMe, flipped hash bit)",
+    "overlap of two tables",
+    "payload outside [0xE_0000, 0xF_0000) (below, above, straddling the end, u64 overflow)",
+    "payload reaching into the NVS part",
+    "bad checksum",
+    "bad length (table header vs directory, past payload, shorter than SDT header, total_len, payload_len)",
+    "unexpected or repeated signature, signature mismatch",
+    "misaligned table or load base, table in the RSDP slot",
+    "non-zero RSDP address, non-zero reserved fields, non-zero gap bytes"
+  ],
+  "tests": {
+    "firmware_uefi": { "passed": 114, "before": 101 },
+    "od_machine_full": { "passed": 585, "before": 570, "new_acpi_blob": 15 },
+    "python_packaging": { "passed": 5 },
+    "python_build_firmware_unchanged": { "passed": 26 }
+  },
+  "handoff_default": "byte for byte unchanged (golden handoff_block_is_byte_identical_to_the_reference, not edited)",
+  "not_done": [
+    "FADT/FACS/_S5 (S4-31e)",
+    "MADT (S4-31f)",
+    "RSDP/XSDT and full blob layout (S4-31g)",
+    "loader and placement in RAM (S4-37)",
+    "E820 (S4-37)"
+  ],
+  "review": "pending"
+}

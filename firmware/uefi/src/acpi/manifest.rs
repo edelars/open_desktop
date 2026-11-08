@@ -4,6 +4,8 @@
 //! whole handoff block belong to the firmware core (S7-04); this module covers the 48-byte
 //! device entries the ACPI tables are built from.
 
+use super::bytes::copy_at;
+
 /// Size of one device table entry (FIRMWARE_BOOT.md, 6.3).
 pub const DEVICE_ENTRY_SIZE: usize = 48;
 /// Number of device entries in v1.0: types 1..=7, each exactly once.
@@ -99,6 +101,21 @@ impl DeviceEntry {
             param0: le64(raw, 0x20),
             param1: le64(raw, 0x28),
         }
+    }
+
+    /// Encodes the entry into the 48 bytes of FIRMWARE_BOOT.md 6.3 (the inverse of
+    /// [`DeviceEntry::parse`]); the manifest hash of the ACPI blob (S4-31d) is taken over them.
+    pub const fn to_bytes(&self) -> [u8; DEVICE_ENTRY_SIZE] {
+        let mut raw = [0u8; DEVICE_ENTRY_SIZE];
+        copy_at(&mut raw, 0x00, &self.device_type.to_le_bytes());
+        copy_at(&mut raw, 0x04, &self.flags.to_le_bytes());
+        copy_at(&mut raw, 0x08, &self.base.to_le_bytes());
+        copy_at(&mut raw, 0x10, &self.length.to_le_bytes());
+        copy_at(&mut raw, 0x18, &self.gsi.to_le_bytes());
+        copy_at(&mut raw, 0x1C, &self.irq_flags.to_le_bytes());
+        copy_at(&mut raw, 0x20, &self.param0.to_le_bytes());
+        copy_at(&mut raw, 0x28, &self.param1.to_le_bytes());
+        raw
     }
 
     pub const fn is_present(&self) -> bool {
@@ -283,6 +300,25 @@ mod tests {
             (1, 3, 0x3F8, 8, 4, 1)
         );
         assert!(e.is_present() && e.is_pio());
+    }
+
+    #[test]
+    fn to_bytes_is_the_inverse_of_parse() {
+        let entry = DeviceEntry {
+            device_type: 9,
+            flags: FLAG_PRESENT | FLAG_PIO,
+            base: 0x600,
+            length: 0x10,
+            gsi: 9,
+            irq_flags: 0b11,
+            param0: 0x060C_0608_0604_0600,
+            param1: 0x0506,
+        };
+        let raw = entry.to_bytes();
+        assert_eq!(DeviceEntry::parse(&raw), entry);
+        assert_eq!(&raw[0x20..0x28], &0x060C_0608_0604_0600u64.to_le_bytes());
+        const CONST_RAW: [u8; DEVICE_ENTRY_SIZE] = ABSENT_ENTRY.to_bytes();
+        assert_eq!(CONST_RAW, [0u8; DEVICE_ENTRY_SIZE]);
     }
 
     #[test]

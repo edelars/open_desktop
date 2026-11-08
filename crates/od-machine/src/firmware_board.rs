@@ -160,6 +160,23 @@ impl Default for FirmwareBoardConfig {
     }
 }
 
+impl FirmwareBoardConfig {
+    /// Manifest hash of the ACPI table blob for this board (S4-31d): SHA-256 over the resolved
+    /// device table (the entries the handoff block would carry), see
+    /// [`crate::acpi_manifest_hash`]. A blob built for another configuration carries another
+    /// hash and is refused by [`crate::validate_acpi_blob`]; changing the configuration
+    /// therefore requires rebuilding the blob.
+    pub fn acpi_manifest_hash(&self) -> Result<crate::AcpiManifestHash, FirmwareBoardError> {
+        validate_config(self)?;
+        let devices = board_devices(self.nvme.is_some(), self.pci_ecam, self.acpi_tables);
+        let encoded: Vec<[u8; DEVICE_ENTRY_BYTES]> =
+            devices.iter().copied().map(DeviceEntry::to_bytes).collect();
+        crate::acpi_manifest_hash(&encoded).map_err(|_| {
+            FirmwareBoardError::Config("the device table has an invalid or repeated type code")
+        })
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum FirmwareBoardError {
     ImageSize {
@@ -359,6 +376,19 @@ impl DeviceEntry {
     }
     const fn is_mmio(&self) -> bool {
         self.present() && self.flags & DEVICE_PIO == 0
+    }
+    /// The 48-byte handoff encoding of the entry (FIRMWARE_BOOT.md 6.3).
+    fn to_bytes(self) -> [u8; DEVICE_ENTRY_BYTES] {
+        let mut raw = [0u8; DEVICE_ENTRY_BYTES];
+        raw[0x00..0x04].copy_from_slice(&self.code.to_le_bytes());
+        raw[0x04..0x08].copy_from_slice(&self.flags.to_le_bytes());
+        raw[0x08..0x10].copy_from_slice(&self.base.to_le_bytes());
+        raw[0x10..0x18].copy_from_slice(&self.length.to_le_bytes());
+        raw[0x18..0x1C].copy_from_slice(&self.gsi.to_le_bytes());
+        raw[0x1C..0x20].copy_from_slice(&self.irq_flags.to_le_bytes());
+        raw[0x20..0x28].copy_from_slice(&self.param0.to_le_bytes());
+        raw[0x28..0x30].copy_from_slice(&self.param1.to_le_bytes());
+        raw
     }
     const fn absent(code: u32) -> Self {
         Self {
