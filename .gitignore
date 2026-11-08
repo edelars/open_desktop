@@ -32,5 +32,6 @@ __pycache__/
 
 .opencode/*
 .codex/*
+.claude/*
 /graphify-out/*
 /iso/*
