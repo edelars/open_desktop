@@ -1,4 +1,5 @@
-//! PCI ECAM window and type-0 configuration function model (S4-30a).
+//! PCI ECAM window, legacy conf1 ports and type-0 configuration function model
+//! (S4-30a, S4-30b).
 //!
 //! One segment, one bus (0). The window is a plain MMIO region served by
 //! [`PciEcam`]. No production function is registered; BAR decode is not mapped
@@ -12,7 +13,23 @@ pub const PCI_ECAM_START_BUS: u8 = 0;
 pub const PCI_ECAM_END_BUS: u8 = 0;
 pub const PCI_ECAM_BYTES: u64 = 0x10_0000;
 
+/// First port of the legacy conf1 block (CONFIG_ADDRESS); the block is
+/// `PCI_CONF1_PORT_BYTES` long and ends at 0xCFF (CONFIG_DATA at 0xCFC).
+pub const PCI_CONF1_BASE_PORT: u16 = 0xCF8;
+pub const PCI_CONF1_PORT_BYTES: u32 = 8;
+
 const COMMAND_RW_MASK: u32 = 0x0007;
+
+// Offsets inside the conf1 block.
+const CONF1_ADDRESS_OFFSET: u64 = 0; // 0xCF8, latch changes by dword write only
+const CONF1_LEGACY_OFFSET: u64 = 2; // 0xCFA..=0xCFB: byte/word reads all ones, writes ignored
+const CONF1_LEGACY_LAST: u64 = 3;
+const CONF1_DATA_OFFSET: u64 = 4; // 0xCFC..=0xCFF
+const CONF1_DATA_LAST: u64 = 7;
+const CONF1_ENABLE: u32 = 1 << 31;
+/// Stored latch bits: enable (31), bus (23:16), device (15:11), function
+/// (10:8), register (7:2). Bits 30:24 and 1:0 are unsupported and read as 0.
+const CONF1_LATCH_MASK: u32 = 0x80FF_FFFC;
 
 /// A decoded ECAM address.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,10 +184,15 @@ impl PciFunction for Type0Config {
     }
 }
 
-/// ECAM window device. Holds functions by `(bus, device, function)`.
+/// PCI configuration device. Holds functions by `(bus, device, function)` and
+/// serves them through two front ends over the same table: the ECAM MMIO
+/// window (`IoSpace::Mmio`) and legacy conf1 ports 0xCF8..=0xCFF
+/// (`IoSpace::Pio`, offsets relative to [`PCI_CONF1_BASE_PORT`]). The device is
+/// registered on the bus once per space (two bindings, one `device_index`).
 #[derive(Default)]
 pub struct PciEcam {
     functions: BTreeMap<(u8, u8, u8), Box<dyn PciFunction>>,
+    conf1_latch: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,10 +231,30 @@ impl PciEcam {
         Ok(())
     }
 
-    fn validate(access: DeviceAccess) -> Result<(EcamAddress, AccessWidth), DeviceError> {
-        if access.space != IoSpace::Mmio {
-            return Err(DeviceError::UnsupportedSpace);
+    /// Shared read path for ECAM and conf1. Absent function: all ones.
+    fn config_read(&mut self, address: EcamAddress, width: AccessWidth) -> u32 {
+        match self
+            .functions
+            .get_mut(&(address.bus, address.device, address.function))
+        {
+            Some(function) => function.config_read(address.register, width),
+            None => all_ones(width),
         }
+    }
+
+    /// Shared write path for ECAM and conf1. Absent function: dropped (master
+    /// abort), not an error.
+    fn config_write(&mut self, address: EcamAddress, width: AccessWidth, value: u32) {
+        if let Some(function) =
+            self.functions
+                .get_mut(&(address.bus, address.device, address.function))
+        {
+            function.config_write(address.register, width, value);
+        }
+    }
+
+    /// Checks width and alignment for both spaces before any state changes.
+    fn validate_shape(access: DeviceAccess) -> Result<(), DeviceError> {
         let len = match access.width {
             AccessWidth::Qword => return Err(DeviceError::UnsupportedWidth),
             width => u64::from(width.bytes()),
@@ -220,33 +262,114 @@ impl PciEcam {
         if !access.offset.is_multiple_of(len) {
             return Err(DeviceError::Misaligned);
         }
+        Ok(())
+    }
+
+    fn validate_ecam(access: DeviceAccess) -> Result<(EcamAddress, AccessWidth), DeviceError> {
+        Self::validate_shape(access)?;
         let address = decode_ecam_offset(access.offset).map_err(|_| DeviceError::UnknownOffset)?;
         Ok((address, access.width))
+    }
+
+    /// Target of the data port for the latched address, or `None` when the
+    /// enable bit is clear or the bus is not 0 (reads as all ones, writes are
+    /// dropped). `n` is the byte offset inside the data dword (0..=3).
+    fn conf1_target(&self, n: u16) -> Option<EcamAddress> {
+        let latch = self.conf1_latch;
+        if latch & CONF1_ENABLE == 0 {
+            return None;
+        }
+        let bus = ((latch >> 16) & 0xFF) as u8;
+        if bus != PCI_ECAM_START_BUS {
+            // Conf1 can name any of 256 buses; only bus 0 exists. Unlike ECAM
+            // (which rejects out-of-range buses with `UnknownOffset`), this is
+            // an ordinary absent access: all ones / write dropped.
+            return None;
+        }
+        Some(EcamAddress {
+            bus,
+            device: ((latch >> 11) & 0x1F) as u8,
+            function: ((latch >> 8) & 0x7) as u8,
+            register: (latch & 0xFC) as u16 + n,
+        })
+    }
+
+    fn read_conf1(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        Self::validate_shape(access)?;
+        match (access.offset, access.width) {
+            (CONF1_ADDRESS_OFFSET, AccessWidth::Dword) => Ok(u64::from(self.conf1_latch)),
+            // The latch is dword-only; 0xCF9..=0xCFB are separate registers.
+            // Byte/word reads of 0xCF8..=0xCFB never expose latch bytes: they
+            // read all ones, so the Linux conf2 probe (`inb(0xCF8) == 0 &&
+            // inb(0xCFA) == 0`) fails whatever the latch holds.
+            (CONF1_ADDRESS_OFFSET | CONF1_LEGACY_OFFSET..=CONF1_LEGACY_LAST, width) => {
+                Ok(u64::from(all_ones(width)))
+            }
+            (CONF1_DATA_OFFSET..=CONF1_DATA_LAST, width) => {
+                let n = (access.offset - CONF1_DATA_OFFSET) as u16;
+                Ok(match self.conf1_target(n) {
+                    Some(address) => u64::from(self.config_read(address, width)),
+                    None => u64::from(all_ones(width)),
+                })
+            }
+            // 0xCF9 is the reset control register; reset is not implemented.
+            // An explicit error: a silent ignore would hide a reset that does
+            // not work. Offsets past the block take the same path.
+            _ => Err(DeviceError::UnknownOffset),
+        }
+    }
+
+    fn write_conf1(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        Self::validate_shape(access)?;
+        match (access.offset, access.width) {
+            (CONF1_ADDRESS_OFFSET, AccessWidth::Dword) => {
+                self.conf1_latch = (value as u32) & CONF1_LATCH_MASK;
+                Ok(())
+            }
+            // Byte/word writes to 0xCF8..=0xCFB (including Linux `outb` to 0xCFB
+            // and the conf2 probe's `outb` to 0xCF8/0xCFA) are ignored.
+            (CONF1_ADDRESS_OFFSET | CONF1_LEGACY_OFFSET..=CONF1_LEGACY_LAST, _) => Ok(()),
+            (CONF1_DATA_OFFSET..=CONF1_DATA_LAST, width) => {
+                let n = (access.offset - CONF1_DATA_OFFSET) as u16;
+                if let Some(address) = self.conf1_target(n) {
+                    self.config_write(address, width, value as u32);
+                }
+                Ok(())
+            }
+            // 0xCF9: reset control not implemented (see `read_conf1`).
+            _ => Err(DeviceError::UnknownOffset),
+        }
+    }
+}
+
+fn all_ones(width: AccessWidth) -> u32 {
+    match width {
+        AccessWidth::Byte => 0xFF,
+        AccessWidth::Word => 0xFFFF,
+        _ => 0xFFFF_FFFF,
     }
 }
 
 impl BusDevice for PciEcam {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
-        let (address, width) = Self::validate(access)?;
-        let key = (address.bus, address.device, address.function);
-        match self.functions.get_mut(&key) {
-            Some(function) => Ok(u64::from(function.config_read(address.register, width))),
-            None => Ok(match width {
-                AccessWidth::Byte => 0xFF,
-                AccessWidth::Word => 0xFFFF,
-                _ => 0xFFFF_FFFF,
-            }),
+        match access.space {
+            IoSpace::Mmio => {
+                let (address, width) = Self::validate_ecam(access)?;
+                Ok(u64::from(self.config_read(address, width)))
+            }
+            IoSpace::Pio => self.read_conf1(access),
         }
     }
 
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
-        let (address, width) = Self::validate(access)?;
-        let key = (address.bus, address.device, address.function);
-        if let Some(function) = self.functions.get_mut(&key) {
-            function.config_write(address.register, width, value as u32);
+        match access.space {
+            IoSpace::Mmio => {
+                let (address, width) = Self::validate_ecam(access)?;
+                self.config_write(address, width, value as u32);
+                Ok(())
+            }
+            IoSpace::Pio => self.write_conf1(access, value),
         }
-        // Absent function: write is dropped (master abort), not an error.
-        Ok(())
     }
 }
 
@@ -255,7 +378,8 @@ mod tests {
     use super::*;
     use crate::{
         BusAccessError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-        MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
+        MemoryRegionKind, MemoryRegionSpec, MmioBinding, PortAddress, PortRange, PortRegionBinding,
+        RamLimits,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -384,12 +508,14 @@ mod tests {
         assert!(ecam.read(acc(base + 1, Byte)).is_ok());
         assert!(ecam.read(acc(base + 2, Word)).is_ok());
         assert!(ecam.read(acc(base + 4, Dword)).is_ok());
+        // The conf1 block is reached only through `IoSpace::Pio` (S4-30b): a
+        // byte read of the latch offset is all ones, never an ECAM access.
         let pio = DeviceAccess {
             space: IoSpace::Pio,
             offset: 0,
             width: Byte,
         };
-        assert_eq!(ecam.read(pio), Err(DeviceError::UnsupportedSpace));
+        assert_eq!(ecam.read(pio), Ok(0xFF));
     }
 
     struct Counting(Rc<Cell<u32>>);
@@ -565,7 +691,12 @@ mod tests {
                 region_start: GuestPhysicalAddress::new(PCI_ECAM_BASE),
                 device_index: 0,
             }],
-            vec![],
+            // Same device object as the ECAM window: one table, two bindings.
+            vec![PortRegionBinding {
+                range: PortRange::new(PortAddress::new(PCI_CONF1_BASE_PORT), PCI_CONF1_PORT_BYTES)
+                    .unwrap(),
+                device_index: 0,
+            }],
         )
         .unwrap()
     }
@@ -644,6 +775,360 @@ mod tests {
                 vec![],
             )
             .is_err()
+        );
+    }
+
+    // ---- S4-30b: legacy conf1 over the same function table ----
+
+    const CF8: u16 = 0xCF8;
+    const CFC: u16 = 0xCFC;
+
+    fn port(p: u16) -> PortAddress {
+        PortAddress::new(p)
+    }
+
+    /// Conf1 address for bus 0.
+    fn conf1(dev: u32, func: u32, reg: u32) -> u32 {
+        0x8000_0000 | (dev << 11) | (func << 8) | (reg & 0xFC)
+    }
+
+    fn device_error(result: Result<impl std::fmt::Debug, BusAccessError>) -> DeviceError {
+        match result {
+            Err(BusAccessError::Device { source, .. }) => source,
+            other => panic!("expected device error, got {other:?}"),
+        }
+    }
+
+    fn inl(bus: &mut MachineBus, p: u16) -> u32 {
+        bus.read_port(port(p), Dword).unwrap()
+    }
+
+    fn outl(bus: &mut MachineBus, p: u16, v: u32) {
+        bus.write_port(port(p), Dword, v).unwrap();
+    }
+
+    fn ecam_at(o: u64) -> GuestPhysicalAddress {
+        GuestPhysicalAddress::new(PCI_ECAM_BASE + o)
+    }
+
+    #[test]
+    fn linux_pci_check_type1_sequence() {
+        let mut bus = bus_with_ecam();
+        // Exact order of pci_check_type1 (arch/x86/pci/direct.c): outb 0xCFB,
+        // save latch, write 0x80000000, read it back, sanity check, restore.
+        bus.write_port(port(0xCFB), Byte, 0x01).unwrap();
+        let saved = inl(&mut bus, CF8);
+        assert_eq!(saved, 0);
+        outl(&mut bus, CF8, 0x8000_0000);
+        assert_eq!(inl(&mut bus, CF8), 0x8000_0000);
+        // pci_sanity_check reads the class word (0x0A) and the vendor word
+        // (0x00) of 00:00.0; no host bridge is declared, so both are all ones.
+        outl(&mut bus, CF8, conf1(0, 0, 0x0A));
+        assert_eq!(bus.read_port(port(CFC + 2), Word), Ok(0xFFFF));
+        outl(&mut bus, CF8, conf1(0, 0, 0x00));
+        assert_eq!(bus.read_port(port(CFC), Word), Ok(0xFFFF));
+        outl(&mut bus, CF8, saved);
+        assert_eq!(inl(&mut bus, CF8), 0);
+        // A non-zero previous latch is restored exactly.
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        bus.write_port(port(0xCFB), Byte, 0x01).unwrap();
+        let saved = inl(&mut bus, CF8);
+        outl(&mut bus, CF8, 0x8000_0000);
+        assert_eq!(inl(&mut bus, CF8), 0x8000_0000);
+        outl(&mut bus, CF8, saved);
+        assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 0x3C));
+    }
+
+    #[test]
+    fn latch_keeps_only_supported_bits() {
+        let mut bus = bus_with_ecam();
+        outl(&mut bus, CF8, 0xFFFF_FFFF);
+        assert_eq!(inl(&mut bus, CF8), 0x80FF_FFFC);
+        outl(&mut bus, CF8, 0x7FFF_FFFF);
+        assert_eq!(inl(&mut bus, CF8), 0x00FF_FFFC);
+        outl(&mut bus, CF8, 0x0F00_0003);
+        assert_eq!(inl(&mut bus, CF8), 0);
+        // Bits 1:0 are dropped: register field 0 with bits 1:0 = 3 reads back as 0.
+        outl(&mut bus, CF8, conf1(3, 0, 0) | 3);
+        assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 0));
+    }
+
+    #[test]
+    fn disabled_latch_reads_ones_and_drops_writes() {
+        let mut bus = bus_with_ecam();
+        // Aim the latch at the endpoint but keep bit 31 clear.
+        let aimed = conf1(3, 0, 0) & 0x7FFF_FFFF;
+        outl(&mut bus, CF8, aimed);
+        assert_eq!(inl(&mut bus, CF8), aimed);
+        assert_eq!(bus.read_port(port(CFC), Byte), Ok(0xFF));
+        assert_eq!(bus.read_port(port(CFC + 2), Word), Ok(0xFFFF));
+        assert_eq!(inl(&mut bus, CFC), 0xFFFF_FFFF);
+        // Write command through the disabled latch, then enable and look.
+        outl(&mut bus, CF8, aimed | (4 & 0xFC));
+        bus.write_port(port(CFC), Word, 0x7).unwrap();
+        outl(&mut bus, CF8, conf1(3, 0, 4));
+        assert_eq!(bus.read_port(port(CFC), Word), Ok(0));
+        // The latch survives the data accesses.
+        assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 4));
+    }
+
+    #[test]
+    fn conf1_decodes_device_function_register() {
+        let mut bus = bus_with_ecam();
+        outl(&mut bus, CF8, conf1(3, 0, 0));
+        assert_eq!(
+            inl(&mut bus, CFC),
+            u32::from(TEST_VENDOR) | (u32::from(TEST_DEVICE) << 16)
+        );
+        // Byte and word through CFC+n.
+        assert_eq!(
+            bus.read_port(port(CFC), Byte),
+            Ok(u32::from(TEST_VENDOR & 0xFF))
+        );
+        assert_eq!(
+            bus.read_port(port(CFC + 1), Byte),
+            Ok(u32::from(TEST_VENDOR >> 8))
+        );
+        assert_eq!(bus.read_port(port(CFC), Word), Ok(u32::from(TEST_VENDOR)));
+        assert_eq!(
+            bus.read_port(port(CFC + 2), Word),
+            Ok(u32::from(TEST_DEVICE))
+        );
+        // Register field plus n: latch register 0x08 + byte 3 is class code.
+        outl(&mut bus, CF8, conf1(3, 0, 0x08));
+        assert_eq!(inl(&mut bus, CFC), 0xFF00_0001);
+        assert_eq!(bus.read_port(port(CFC + 3), Byte), Ok(0xFF));
+        // Other devices and functions are absent.
+        for (dev, func) in [(0, 0), (2, 0), (4, 0), (31, 0), (3, 1), (3, 7)] {
+            outl(&mut bus, CF8, conf1(dev, func, 0));
+            assert_eq!(inl(&mut bus, CFC), 0xFFFF_FFFF, "{dev}:{func}");
+            assert_eq!(bus.read_port(port(CFC + 1), Byte), Ok(0xFF));
+        }
+        // Writes: byte at 0xCFC+n merges into the register (interrupt line).
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        bus.write_port(port(CFC), Byte, 0xA5).unwrap();
+        assert_eq!(bus.read_port(port(CFC), Byte), Ok(0xA5));
+        assert_eq!(bus.read_port(port(CFC + 1), Byte), Ok(0));
+        // The highest conf1 register (0xFC) is reachable and reads zero.
+        outl(&mut bus, CF8, conf1(3, 0, 0xFC));
+        assert_eq!(inl(&mut bus, CFC), 0);
+        // Writes to an absent function are dropped and never reach it.
+        let calls = Rc::new(Cell::new(0));
+        let mut ecam = PciEcam::new();
+        ecam.add_function(0, 1, 0, Box::new(Counting(calls.clone())))
+            .unwrap();
+        let pio = |offset, width| DeviceAccess {
+            space: IoSpace::Pio,
+            offset,
+            width,
+        };
+        ecam.write(pio(0, Dword), u64::from(conf1(2, 0, 4)))
+            .unwrap();
+        ecam.write(pio(4, Dword), 0xFFFF_FFFF).unwrap();
+        assert_eq!(ecam.read(pio(4, Dword)), Ok(0xFFFF_FFFF));
+        assert_eq!(calls.get(), 0);
+        ecam.write(pio(0, Dword), u64::from(conf1(1, 0, 4)))
+            .unwrap();
+        ecam.write(pio(4, Word), 1).unwrap();
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn conf1_rejects_bad_shapes_without_changing_state() {
+        let mut bus = bus_with_ecam();
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        bus.write_port(port(CFC), Byte, 0x42).unwrap();
+        let snapshot = |bus: &mut MachineBus| {
+            (
+                inl(bus, CF8),
+                bus.read_port(port(CFC), Byte).unwrap(),
+                bus.read_physical(ecam_at(off(3, 0, 0x3C)), Byte).unwrap(),
+            )
+        };
+        let before = snapshot(&mut bus);
+        assert_eq!(before, (conf1(3, 0, 0x3C), 0x42, 0x42));
+        // Qword is rejected by the bus; the device rejects it too.
+        assert_eq!(
+            bus.write_port(port(CFC), Qword, 0xFF),
+            Err(BusAccessError::UnsupportedWidth)
+        );
+        assert_eq!(
+            bus.read_port(port(CFC), Qword),
+            Err(BusAccessError::UnsupportedWidth)
+        );
+        let mut ecam = ecam_with_endpoint();
+        let pio = |offset, width| DeviceAccess {
+            space: IoSpace::Pio,
+            offset,
+            width,
+        };
+        assert_eq!(ecam.read(pio(4, Qword)), Err(DeviceError::UnsupportedWidth));
+        assert_eq!(
+            ecam.write(pio(0, Qword), 0xFFFF_FFFF),
+            Err(DeviceError::UnsupportedWidth)
+        );
+        // Misaligned data accesses. Inside the block the device reports
+        // `Misaligned`; accesses that also run past 0xCFF never reach it.
+        for (p, w) in [(CFC + 1, Word), (CFC - 2, Dword), (CFC - 3, Dword)] {
+            assert_eq!(
+                device_error(bus.write_port(port(p), w, 0xFFFF_FFFF)),
+                DeviceError::Misaligned
+            );
+            assert_eq!(
+                device_error(bus.read_port(port(p), w)),
+                DeviceError::Misaligned
+            );
+        }
+        for (p, w) in [(CFC + 1, Dword), (CFC + 2, Dword), (CFC + 3, Word)] {
+            assert_eq!(
+                bus.write_port(port(p), w, 0xFFFF_FFFF),
+                Err(BusAccessError::CrossesRegion)
+            );
+            assert_eq!(
+                bus.read_port(port(p), w),
+                Err(BusAccessError::CrossesRegion)
+            );
+        }
+        for (offset, w) in [(5, Dword), (6, Dword), (7, Word), (5, Word)] {
+            assert_eq!(
+                ecam.write(pio(offset, w), 0xFFFF_FFFF),
+                Err(DeviceError::Misaligned)
+            );
+            assert_eq!(ecam.read(pio(offset, w)), Err(DeviceError::Misaligned));
+        }
+        // The latch changes only by dword write: byte/word writes are ignored
+        // and byte/word reads give all ones (never latch bytes).
+        for w in [Byte, Word] {
+            bus.write_port(port(CF8), w, 0x8000_0000).unwrap();
+            assert_eq!(bus.read_port(port(CF8), w).unwrap(), all_ones(w));
+        }
+        // Outside the block: not a device access at all.
+        assert_eq!(
+            bus.write_port(port(0xD00), Byte, 1),
+            Err(BusAccessError::UnmappedPort(port(0xD00)))
+        );
+        // Every rejected access on the bus above left the latch and the function intact.
+        assert_eq!(snapshot(&mut bus), before);
+    }
+
+    #[test]
+    fn conf1_and_ecam_share_function_state() {
+        let mut bus = bus_with_ecam();
+        // BAR0 sizing through conf1, seen through ECAM.
+        outl(&mut bus, CF8, conf1(3, 0, 0x10));
+        assert_eq!(inl(&mut bus, CFC), 0);
+        outl(&mut bus, CFC, 0xFFFF_FFFF);
+        assert_eq!(inl(&mut bus, CFC), 0xFFFF_F000);
+        assert_eq!(
+            bus.read_physical(ecam_at(off(3, 0, 0x10)), Dword),
+            Ok(0xFFFF_F000)
+        );
+        // Program the BAR through ECAM, read it back through conf1.
+        bus.write_physical(ecam_at(off(3, 0, 0x10)), Dword, 0x1234_5678, |_| {})
+            .unwrap();
+        assert_eq!(inl(&mut bus, CFC), 0x1234_5000);
+        // Command through conf1 (word at 0xCFC), seen through ECAM, and back.
+        outl(&mut bus, CF8, conf1(3, 0, 0x04));
+        bus.write_port(port(CFC), Word, 0xFFFF).unwrap();
+        assert_eq!(bus.read_physical(ecam_at(off(3, 0, 4)), Word), Ok(0x7));
+        bus.write_physical(ecam_at(off(3, 0, 4)), Word, 0x2, |_| {})
+            .unwrap();
+        assert_eq!(bus.read_port(port(CFC), Word), Ok(0x2));
+        // ECAM access does not disturb the conf1 latch.
+        assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 0x04));
+    }
+
+    #[test]
+    fn conf1_bus_above_zero_is_absent_but_ecam_bus_is_error() {
+        let mut bus = bus_with_ecam();
+        // Conf1 names bus 1: ordinary absent access.
+        for bus_number in [1u32, 0x7F, 0xFF] {
+            outl(&mut bus, CF8, conf1(3, 0, 0x3C) | (bus_number << 16));
+            assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 0x3C) | (bus_number << 16));
+            assert_eq!(inl(&mut bus, CFC), 0xFFFF_FFFF);
+            assert_eq!(bus.read_port(port(CFC), Byte), Ok(0xFF));
+            bus.write_port(port(CFC), Byte, 0x99).unwrap();
+        }
+        // The write above did not land on bus 0.
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        assert_eq!(bus.read_port(port(CFC), Byte), Ok(0));
+        // ECAM, same bus: UnknownOffset at the device (the bus never even
+        // routes bus-1 offsets because the window covers bus 0 only).
+        let mut ecam = ecam_with_endpoint();
+        let bus1 = (1u64 << 20) | off(3, 0, 0x3C);
+        assert_eq!(ecam.read(acc(bus1, Byte)), Err(DeviceError::UnknownOffset));
+        assert_eq!(
+            ecam.write(acc(bus1, Byte), 1),
+            Err(DeviceError::UnknownOffset)
+        );
+        assert!(bus.read_physical(ecam_at(bus1), Byte).is_err());
+    }
+
+    #[test]
+    fn ports_cf9_cfa_cfb_are_explicit() {
+        let mut bus = bus_with_ecam();
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        bus.write_port(port(CFC), Byte, 0x42).unwrap();
+        let state = |bus: &mut MachineBus| (inl(bus, CF8), bus.read_port(port(CFC), Byte).unwrap());
+        let before = state(&mut bus);
+        // 0xCFA and 0xCFB: writes ignored, reads all ones, no state. 0xCFB
+        // gets `outb(0x01)` from pci_check_type1; 0xCFA gets `outb(0)` from the
+        // conf2 probe. Conf2 itself is not implemented.
+        for p in [0xCFAu16, 0xCFB] {
+            for v in [0x00, 0x01, 0xFF] {
+                bus.write_port(port(p), Byte, v).unwrap();
+                assert_eq!(bus.read_port(port(p), Byte), Ok(0xFF));
+            }
+        }
+        bus.write_port(port(0xCFA), Word, 0).unwrap();
+        assert_eq!(bus.read_port(port(0xCFA), Word), Ok(0xFFFF));
+        assert_eq!(state(&mut bus), before);
+        // 0xCF9 is the reset control register. Reset is not implemented, so
+        // the access is an explicit device error (not a silent success that
+        // would look like a completed reset), and nothing changes.
+        assert_eq!(
+            device_error(bus.write_port(port(0xCF9), Byte, 0x0E)),
+            DeviceError::UnknownOffset
+        );
+        assert_eq!(
+            device_error(bus.read_port(port(0xCF9), Byte)),
+            DeviceError::UnknownOffset
+        );
+        // A word at 0xCF9 is misaligned.
+        assert_eq!(
+            device_error(bus.read_port(port(0xCF9), Word)),
+            DeviceError::Misaligned
+        );
+        assert_eq!(state(&mut bus), before);
+    }
+
+    /// Linux `pci_check_type2` (arch/x86/pci/direct.c): conf2 works only if
+    /// `inb(0xCF8) == 0 && inb(0xCFA) == 0` after three `outb(0, ..)`.
+    fn check_type2_gate(bus: &mut MachineBus) -> bool {
+        bus.write_port(port(0xCFB), Byte, 0).unwrap();
+        bus.write_port(port(0xCF8), Byte, 0).unwrap();
+        bus.write_port(port(0xCFA), Byte, 0).unwrap();
+        bus.read_port(port(0xCF8), Byte).unwrap() == 0
+            && bus.read_port(port(0xCFA), Byte).unwrap() == 0
+    }
+
+    #[test]
+    fn conf2_probe_is_rejected_for_any_latch_state() {
+        let mut bus = bus_with_ecam();
+        // Fresh latch (0) would read 0x00 if latch bytes were exposed.
+        assert!(!check_type2_gate(&mut bus));
+        // After the type1 probe wrote 0x80000000 the low byte is also 0.
+        outl(&mut bus, CF8, 0x8000_0000);
+        assert!(!check_type2_gate(&mut bus));
+        // The probe's byte writes never disturb the latch.
+        assert_eq!(inl(&mut bus, CF8), 0x8000_0000);
+        outl(&mut bus, CF8, conf1(3, 0, 0x3C));
+        assert!(!check_type2_gate(&mut bus));
+        assert_eq!(inl(&mut bus, CF8), conf1(3, 0, 0x3C));
+        // The gate fails before conf2 data ports 0xC000..0xCFFF are touched.
+        assert_eq!(
+            bus.read_port(port(0xC000), Byte),
+            Err(BusAccessError::UnmappedPort(port(0xC000)))
         );
     }
 }

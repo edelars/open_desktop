@@ -1574,6 +1574,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Отчёт:** [STAGE_4_S4-30A_2026-11-08.md](../reports/STAGE_4_S4-30A_2026-11-08.md); evidence: [s4-30a-ecam.json](../reports/data/stage4/s4-30a-ecam.json).
 - **Родительский S4-30 остаётся открытым:** нет MCFG, BAR→MMIO mapping, production device backend, legacy 0xCF8/0xCFC, host bridge; ECAM не регистрируется платой, handoff код 7 остаётся `PRESENT = 0`.
 
+#### S4-30b. Legacy conf1 0xCF8/0xCFC поверх общей таблицы функций (ограниченный срез)
+
+- [x] Принято после ревью (Claude Opus, high; два раунда). Отчёт: [STAGE_4_S4-30B_2026-11-08.md](../reports/STAGE_4_S4-30B_2026-11-08.md).
+- **Где:** `od-machine` (`pci_ecam.rs` или общее config-ядро), `MACHINE_CONTRACT.md`, `docs/testing/MACHINE.md`.
+- **Сделать:** зарегистрировать PIO-диапазон 0xCF8–0xCFF для общей таблицы функций S4-30a. Dword-запись в 0xCF8 задаёт address latch: bit31 — enable, bus 0, device, function, register (маска `0xFC`); биты 1:0 и 27:24 не поддерживаются. Обращения к 0xCFC+n шириной 1/2/4 идут к функции из latch. При bit31=0 чтение даёт все единицы, запись игнорируется; bus>0 даёт absent. Поведение 0xCFB, 0xCF9 и 0xCFA задать явно. Состояние функций общее с ECAM. Не объявлять host bridge, MCFG, E820, handoff код 7.
+- **Проверка:** точная последовательность Linux `pci_check_type1`: запись в 0xCFB игнорируется, latch читается назад и восстанавливается; обращения через `MachineBus::read_port`/`write_port` с реальным `PortRegionBinding`; декодирование bus/device/function/register; байт и слово через 0xCFC+n; невыровненное обращение и qword отвергаются до изменения состояния; BAR sizing и Command через conf1 видны через ECAM и обратно; отличие bus>0 (absent через conf1, `UnknownOffset` через ECAM) задокументировано. Полные `cargo test`, `clippy`, `fmt` для `od-machine`; независимое ревью (Opus, high).
+- **Готово:** Linux-подобная проба conf1 видит функцию из общей таблицы; ECAM и conf1 читают одно состояние; различия задокументированы; `check_layout` без новых ошибок.
+
 ### S4-31. Подготовить минимальные discovery tables
 
 - [ ] Принято после ревью.

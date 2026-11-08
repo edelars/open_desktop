@@ -1268,3 +1268,21 @@ all-ones reads and ignored writes, a `#[cfg(test)]` diagnostic type-0 endpoint
 (read-only fields, Command mask, BAR0 sizing) and MMIO dispatch through
 `MachineBus`: `cargo test -p od-machine pci_ecam`. BAR-to-MMIO mapping and
 MCFG are not covered. See [report](../reports/STAGE_4_S4-30A_2026-11-08.md).
+
+## S4-30b Legacy conf1
+
+46. S4-30b checks legacy conf1 ports 0xCF8..0xCFF over the same function table as
+ECAM, always through `MachineBus::read_port`/`write_port` with a real
+`PortRegionBinding`: the Linux `pci_check_type1` sequence (outb 0xCFB, outl
+0x80000000 to 0xCF8, inl 0xCF8 reads it back, latch restored), latch bit mask
+`0x80FF_FFFC`, bit31=0 and bus>0 giving all ones with dropped writes,
+bus/device/function/register decode, byte and word access through 0xCFC+n,
+rejection of qword and misaligned accesses with no state change, byte/word
+access to 0xCF8 (ignored writes, all-ones reads), explicit behaviour of 0xCF9
+(reset control not implemented: `UnknownOffset`) and 0xCFA/0xCFB (writes
+ignored, all-ones reads), the Linux conf2 probe being rejected for any latch
+state, and equivalence with ECAM for BAR0 sizing and Command in both
+directions. The bus>0 difference (absent through conf1, `UnknownOffset` through
+ECAM) is a test. `cargo test -p od-machine pci_ecam`. Host bridge, MCFG, BAR
+mapping, conf2 and reset control are not covered. See
+[report](../reports/STAGE_4_S4-30B_2026-11-08.md).
