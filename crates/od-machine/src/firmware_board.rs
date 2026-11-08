@@ -7,14 +7,14 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::{
-    ACPI_PM_DESCRIPTOR, AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError,
-    DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE,
-    DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle,
-    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
-    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap,
-    MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
-    NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle,
-    PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PagedProbeExit,
+    ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AccessWidth, AcpiPm, AcpiPmHandle,
+    BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES,
+    DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE,
+    DisplayDevice, DisplayHandle, GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE,
+    IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus,
+    MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec,
+    MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice,
+    NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PagedProbeExit,
     PagedProbeQuantumReport, PciEcam, PortAddress, PortRange, PortRegionBinding, RamLimits,
     TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
     VirtualClockHandle, run_paged_probe,
@@ -44,6 +44,13 @@ pub const FIRMWARE_MIN_RAM_BYTES: u64 = 128 << 20;
 pub const FIRMWARE_MAX_RAM_BYTES: u64 = 0xF_F400_0000;
 pub const FIRMWARE_COM1_PORT: u16 = 0x03f8;
 pub const FIRMWARE_EFER: u64 = 0x0d00;
+/// ACPI table area (S4-31c, `acpi_tables`): `[0xE_0000, 0xE_F000)`, an E820 ACPI
+/// reclaim range in S4-37; the RSDP will sit at its first byte.
+pub const FIRMWARE_ACPI_TABLES_BASE: u64 = 0x000E_0000;
+pub const FIRMWARE_ACPI_TABLES_BYTES: u64 = 0xF000;
+/// FACS page `[0xE_F000, 0xF_0000)`, an E820 ACPI NVS range in S4-37.
+pub const FIRMWARE_ACPI_FACS_BASE: u64 = 0x000E_F000;
+pub const FIRMWARE_ACPI_FACS_BYTES: u64 = 0x1000;
 
 const CR0: u64 = 0x8001_0033;
 const CR4: u64 = 0x20;
@@ -77,6 +84,9 @@ const REGION_HANDOFF: u32 = 7;
 const REGION_BOOT_STACK: u32 = 8;
 const REGION_FIRMWARE_SHADOW: u32 = 9;
 const REGION_BOOT_PAGE_TABLES: u32 = 10;
+/// Sub-ranges of low RAM written only with `acpi_tables` (handoff v1.2).
+const REGION_ACPI_TABLES: u32 = 11;
+const REGION_ACPI_NVS: u32 = 12;
 
 const DEVICE_PRESENT: u32 = 1;
 const DEVICE_PIO: u32 = 2;
@@ -91,8 +101,12 @@ const DEVICE_CODE_NVME: u32 = 8;
 /// Device-table index of the PCIe ECAM entry (device code 7, a v1.0 slot).
 const DEV_ECAM_TABLE: usize = 6;
 const DEVICE_CODE_ECAM: u32 = 7;
+/// ACPI fixed hardware: PM block and SCI route (S4-31c, handoff v1.2).
+const DEVICE_CODE_ACPI_PM: u32 = 9;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
+/// Handoff minor version emitted when the ACPI fixed hardware entry (code 9) is present.
+const HANDOFF_MINOR_ACPI: u16 = 2;
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +134,14 @@ pub struct FirmwareBoardConfig {
     /// (`false` and `true` give the same bytes); `ACPI_PM_DESCRIPTOR` is the
     /// source of the FADT. With the flag `run_boot` stops on an S5 or reset write.
     pub acpi_pm: bool,
+    /// ACPI discovery tables manifest (S4-31c). `false` keeps handoff v1.0 (or
+    /// v1.1 with NVMe) byte for byte. `true` requires `acpi_pm` and adds device
+    /// code 9 (the PM block and the SCI route: GSI 9, level, active-low), splits
+    /// low RAM in the region table into RAM, `ACPI_TABLES`
+    /// `[0xE_0000, 0xE_F000)`, `ACPI_NVS` `[0xE_F000, 0xF_0000)` and RAM again,
+    /// and raises `version_minor` to 2. The memory map is unchanged (the range
+    /// is part of the low RAM region); no table bytes are written yet (S4-31d..g).
+    pub acpi_tables: bool,
 }
 
 impl Default for FirmwareBoardConfig {
@@ -133,6 +155,7 @@ impl Default for FirmwareBoardConfig {
             nvme: None,
             pci_ecam: false,
             acpi_pm: false,
+            acpi_tables: false,
         }
     }
 }
@@ -303,6 +326,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     if config.tsc_hz == 0 {
         return Err(FirmwareBoardError::Config("tsc_hz must not be zero"));
     }
+    if config.acpi_tables && !config.acpi_pm {
+        return Err(FirmwareBoardError::Config(
+            "acpi_tables describes the PM block and needs acpi_pm",
+        ));
+    }
     if config.serial.len() > 64 || config.serial.iter().any(|b| !(0x20..=0x7e).contains(b)) {
         return Err(FirmwareBoardError::Config(
             "serial must be at most 64 ASCII 0x20..0x7E bytes",
@@ -349,8 +377,8 @@ impl DeviceEntry {
 /// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM and TPM CRB
 /// are `PRESENT = 0` until S7-10 and S7-22 add them; ECAM is `PRESENT = 0` unless
 /// `pci_ecam` is set (S4-30c). With `nvme` the table gets the eighth entry,
-/// device code 8 (FIRMWARE_BOOT.md 6.3).
-fn board_devices(nvme: bool, pci_ecam: bool) -> Vec<DeviceEntry> {
+/// device code 8 (FIRMWARE_BOOT.md 6.3); with `acpi_tables` the last entry is code 9.
+fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool) -> Vec<DeviceEntry> {
     let mmio = |code, base, length| DeviceEntry {
         code,
         flags: DEVICE_PRESENT,
@@ -392,7 +420,33 @@ fn board_devices(nvme: bool, pci_ecam: bool) -> Vec<DeviceEntry> {
         // Polling only: no IRQ route in slice A (`gsi = 0xFFFF_FFFF`).
         devices.push(mmio(DEVICE_CODE_NVME, NVME_MMIO_BASE, NVME_MMIO_BYTES));
     }
+    if acpi_tables {
+        // PIO block with the SCI route; the entry follows NVMe when both exist.
+        let pm = ACPI_PM_DESCRIPTOR;
+        devices.push(DeviceEntry {
+            code: DEVICE_CODE_ACPI_PM,
+            flags: DEVICE_PRESENT | DEVICE_PIO,
+            base: u64::from(pm.base_port),
+            length: u64::from(pm.port_bytes),
+            gsi: ACPI_SCI_GSI,
+            irq_flags: ACPI_SCI_IRQ_FLAGS,
+            param0: pm.handoff_param0(),
+            param1: pm.handoff_param1(),
+        });
+    }
     devices
+}
+
+/// `version_minor` of the handoff block: 2 with the ACPI entry (code 9), else 1
+/// with the NVMe entry (code 8), else 0 (FIRMWARE_BOOT.md 6.4).
+fn handoff_minor(devices: &[DeviceEntry]) -> u16 {
+    if devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM) {
+        HANDOFF_MINOR_ACPI
+    } else if devices.iter().any(|d| d.code == DEVICE_CODE_NVME) {
+        HANDOFF_MINOR_NVME
+    } else {
+        0
+    }
 }
 
 fn range(start: u64, len: u64) -> Result<GuestPhysicalRange, FirmwareBoardError> {
@@ -553,8 +607,26 @@ fn handoff_regions(
         match region.kind {
             MemoryRegionKind::Ram if base == 0 => {
                 let tables_end = FIRMWARE_BOOT_PAGE_TABLES_GPA + page_table_bytes;
-                let pieces = [
-                    (0, FIRMWARE_HANDOFF_GPA, REGION_RAM),
+                // Code 9 present: the ACPI table area and the FACS page are cut
+                // out of low RAM below the handoff block (S4-31c).
+                let acpi = devices.iter().any(|d| d.code == DEVICE_CODE_ACPI_PM);
+                let facs_end = FIRMWARE_ACPI_FACS_BASE + FIRMWARE_ACPI_FACS_BYTES;
+                let mut pieces = Vec::new();
+                if acpi {
+                    pieces.extend([
+                        (0, FIRMWARE_ACPI_TABLES_BASE, REGION_RAM),
+                        (
+                            FIRMWARE_ACPI_TABLES_BASE,
+                            FIRMWARE_ACPI_FACS_BASE,
+                            REGION_ACPI_TABLES,
+                        ),
+                        (FIRMWARE_ACPI_FACS_BASE, facs_end, REGION_ACPI_NVS),
+                        (facs_end, FIRMWARE_HANDOFF_GPA, REGION_RAM),
+                    ]);
+                } else {
+                    pieces.push((0, FIRMWARE_HANDOFF_GPA, REGION_RAM));
+                }
+                pieces.extend([
                     (
                         FIRMWARE_HANDOFF_GPA,
                         FIRMWARE_BOOT_STACK_BASE,
@@ -573,7 +645,7 @@ fn handoff_regions(
                         REGION_BOOT_PAGE_TABLES,
                     ),
                     (tables_end, length, REGION_RAM),
-                ];
+                ]);
                 for (start, end, kind) in pieces {
                     if end > start {
                         table.push(HandoffRegion {
@@ -619,15 +691,7 @@ fn build_handoff(
     };
     block[..8].copy_from_slice(HANDOFF_MAGIC);
     put16(&mut block, 0x08, 1);
-    put16(
-        &mut block,
-        0x0A,
-        if devices.len() > BASE_DEVICE_COUNT {
-            HANDOFF_MINOR_NVME
-        } else {
-            0
-        },
-    );
+    put16(&mut block, 0x0A, handoff_minor(devices));
     put32(&mut block, 0x0C, HANDOFF_HEADER_BYTES as u32);
     put32(&mut block, 0x10, total_size as u32);
     // 0x14 crc32 is filled last.
@@ -879,15 +943,10 @@ fn load_firmware_image_with_pci(
     config: &FirmwareBoardConfig,
     pci: PciEcam,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
-    let required_minor = if config.nvme.is_some() {
-        HANDOFF_MINOR_NVME
-    } else {
-        0
-    };
-    let entry_offset = validate_image(image, required_minor)?;
+    let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
+    let entry_offset = validate_image(image, handoff_minor(&devices))?;
     validate_config(config)?;
 
-    let devices = board_devices(config.nvme.is_some(), config.pci_ecam);
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
@@ -1189,7 +1248,7 @@ mod tests {
                 second_screen,
                 ..FirmwareBoardConfig::default()
             };
-            let devices = board_devices(false, false);
+            let devices = board_devices(false, false, false);
             // `MachineMemoryMap::new` itself rejects overlaps and width overflow.
             let map = board_map(&config, &devices).unwrap();
             let table_bytes = boot_page_table_count(&map) * PAGE;
@@ -1837,7 +1896,7 @@ mod tests {
             pci_ecam: true,
             ..FirmwareBoardConfig::default()
         };
-        let devices = board_devices(true, true);
+        let devices = board_devices(true, true, false);
         let map = board_map(&config, &devices).unwrap();
         let ecam = PCI_ECAM_DESCRIPTOR;
         let (start, end) = (ecam.base, ecam.base + ecam.size);
@@ -2252,7 +2311,7 @@ mod tests {
     fn acpi_pm_does_not_alias_mmio_windows_of_the_board() {
         // Ports and MMIO are separate spaces: the PM block adds no MMIO region,
         // so the memory map and the handoff regions are identical to the default.
-        let devices = board_devices(true, true);
+        let devices = board_devices(true, true, false);
         let plain = FirmwareBoardConfig {
             ram_bytes: FIRMWARE_MAX_RAM_BYTES,
             nvme: Some(NvmeConfig::default()),
@@ -2368,6 +2427,358 @@ mod tests {
             tmr(&mut board),
             3_579_545,
             "the retired HLT moved the timer"
+        );
+    }
+
+    // ---- S4-31c: ACPI tables manifest (opt-in `acpi_tables`, handoff v1.2) ----
+
+    fn tables_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            acpi_pm: true,
+            acpi_tables: true,
+            ..reference_config()
+        }
+    }
+
+    /// An image that declares support for handoff minor 2.
+    fn minor2_image(code: &[u8]) -> Vec<u8> {
+        test_image(code, &[(0x2A, &2u16.to_le_bytes())])
+    }
+
+    fn crc_is_valid(block: &[u8]) -> bool {
+        let mut zeroed = block.to_vec();
+        zeroed[0x14..0x18].copy_from_slice(&[0; 4]);
+        le_u32(block, 0x14).unwrap() == crc32_ieee(&[&zeroed])
+    }
+
+    fn region_tuple(region: &[u8]) -> (u32, u64, u64, u32) {
+        (
+            le_u32(region, 0).unwrap(),
+            le_u64(region, 8).unwrap(),
+            le_u64(region, 0x10).unwrap(),
+            le_u32(region, 0x18).unwrap(),
+        )
+    }
+
+    #[test]
+    fn acpi_tables_is_off_by_default_and_every_default_handoff_is_unchanged() {
+        assert!(!FirmwareBoardConfig::default().acpi_tables);
+        // The golden reference (not edited by S4-31c): default, and the PM block alone.
+        assert_eq!(
+            hex(load(&hlt_image()).handoff_block()),
+            REFERENCE_HANDOFF_HEX
+        );
+        let pm = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        assert_eq!(hex(pm.handoff_block()), REFERENCE_HANDOFF_HEX);
+        // The two older flags keep their own shapes without the new one.
+        let both = FirmwareBoardConfig {
+            pci_ecam: true,
+            acpi_pm: true,
+            ..reference_config()
+        };
+        let both = load_firmware_image(&hlt_image(), &both).unwrap();
+        assert_eq!(le_u16(both.handoff_block(), 0x0A).unwrap(), 0);
+        assert_eq!(le_u32(both.handoff_block(), 0x40).unwrap(), 7);
+        let nvme = load_firmware_image(&nvme_image(&[0xf4]), &nvme_config()).unwrap();
+        assert_eq!(le_u16(nvme.handoff_block(), 0x0A).unwrap(), 1);
+        assert_eq!(le_u32(nvme.handoff_block(), 0x40).unwrap(), 8);
+    }
+
+    #[test]
+    fn acpi_tables_needs_the_pm_block_and_an_image_for_handoff_minor_2() {
+        let without_pm = FirmwareBoardConfig {
+            acpi_tables: true,
+            ..reference_config()
+        };
+        assert_eq!(
+            load_firmware_image(&minor2_image(&[0xf4]), &without_pm).err(),
+            Some(FirmwareBoardError::Config(
+                "acpi_tables describes the PM block and needs acpi_pm"
+            ))
+        );
+        for max in [0u16, 1] {
+            let image = test_image(&[0xf4], &[(0x2A, &max.to_le_bytes())]);
+            assert_eq!(
+                load_firmware_image(&image, &tables_config()).err(),
+                Some(FirmwareBoardError::ImageHeader {
+                    field: "handoff_minor_max",
+                    value: u64::from(max)
+                })
+            );
+        }
+        assert!(load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).is_ok());
+    }
+
+    #[test]
+    fn acpi_tables_adds_code_9_and_the_ram_split_to_a_v1_2_handoff() {
+        let off = load(&hlt_image());
+        let on = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        let (a, b) = (off.handoff_block(), on.handoff_block());
+        assert_eq!(le_u16(b, 0x08).unwrap(), 1, "version_major");
+        assert_eq!(le_u16(b, 0x0A).unwrap(), 2, "version_minor");
+        assert_eq!(le_u32(b, 0x0C).unwrap(), 0xA0, "header_size");
+        // 12 regions + 3 (one RAM region becomes four), 7 devices + 1.
+        assert_eq!(le_u32(a, 0x34).unwrap(), 12);
+        assert_eq!(le_u32(b, 0x34).unwrap(), 15);
+        assert_eq!(le_u32(b, 0x40).unwrap(), 8);
+        assert_eq!(le_u32(b, 0x3C).unwrap(), 0xA0 + 32 * 15);
+        let total = 0xA0 + 32 * 15 + 48 * 8;
+        assert_eq!(le_u32(b, 0x10).unwrap() as usize, total);
+        assert_eq!(b.len(), total);
+        assert_eq!(total % 8, 0);
+        assert!(crc_is_valid(b));
+        // Fields outside the counts, size, minor and CRC (tsc, uuid, serial) are the same.
+        assert_eq!(a[0x18..0x34], b[0x18..0x34]);
+        assert_eq!(a[0x48..0xA0], b[0x48..0xA0]);
+        // Entry 7 is code 9, written out by hand in little-endian order.
+        let expected: [u8; 48] = [
+            0x09, 0x00, 0x00, 0x00, // type
+            0x03, 0x00, 0x00, 0x00, // flags: PRESENT | PIO
+            0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // base 0x0600
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // length 0x10
+            0x09, 0x00, 0x00, 0x00, // gsi 9
+            0x03, 0x00, 0x00, 0x00, // level, active-low
+            0x00, 0x06, 0x04, 0x06, 0x08, 0x06, 0x0C,
+            0x06, // param0: 0x600, 0x604, 0x608, 0x60C
+            0x06, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, // param1: RESET_VALUE 6, SLP_TYP 5
+        ];
+        assert_eq!(device_entry(b, 7), expected);
+        // The seven v1.0 entries are unchanged.
+        for index in 0..7 {
+            assert_eq!(device_entry(a, index), device_entry(b, index), "{index}");
+        }
+        // Fields come from the typed descriptor and the SCI decision.
+        let d = ACPI_PM_DESCRIPTOR;
+        let entry = device_entry(b, 7);
+        assert_eq!(le_u64(entry, 0x08).unwrap(), u64::from(d.base_port));
+        assert_eq!(le_u64(entry, 0x10).unwrap(), u64::from(d.port_bytes));
+        assert_eq!(le_u32(entry, 0x18).unwrap(), 9, "SCI GSI");
+        assert_eq!(le_u32(entry, 0x1C).unwrap(), 0b11, "level and active-low");
+        assert_eq!(le_u64(entry, 0x20).unwrap(), d.handoff_param0());
+        assert_eq!(le_u64(entry, 0x28).unwrap(), d.handoff_param1());
+        assert_eq!(
+            le_u64(entry, 0x20).unwrap() & 0xFFFF,
+            u64::from(ACPI_PM1A_EVT_BLK)
+        );
+        assert_eq!(
+            (le_u64(entry, 0x20).unwrap() >> 16) & 0xFFFF,
+            u64::from(ACPI_PM1A_CNT_BLK)
+        );
+        assert_eq!(
+            (le_u64(entry, 0x20).unwrap() >> 32) & 0xFFFF,
+            u64::from(ACPI_PM_TMR_BLK)
+        );
+        assert_eq!(
+            (le_u64(entry, 0x20).unwrap() >> 48) & 0xFFFF,
+            u64::from(ACPI_RESET_REG)
+        );
+        assert_eq!(
+            le_u64(entry, 0x28).unwrap(),
+            u64::from(ACPI_RESET_VALUE) | u64::from(ACPI_SLP_TYP_S5) << 8
+        );
+    }
+
+    #[test]
+    fn acpi_tables_split_low_ram_into_reclaim_nvs_and_zero_ram() {
+        let off = load(&hlt_image());
+        let on = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        let before: Vec<_> = regions_of(off.handoff_block())
+            .into_iter()
+            .map(region_tuple)
+            .collect();
+        let after: Vec<_> = regions_of(on.handoff_block())
+            .into_iter()
+            .map(region_tuple)
+            .collect();
+        // Hand-written new region entries (first one, bytes in little-endian order).
+        assert_eq!(
+            regions_of(on.handoff_block())[1],
+            [
+                0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // type 11, attrs 0
+                0x00, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00, // base 0xE_0000
+                0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // length 0xF000
+                0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, // no owner
+            ]
+        );
+        // The region table equals the old one with the first RAM piece cut in four.
+        let mut expected = vec![
+            (REGION_RAM, 0, 0xE_0000, NO_OWNER),
+            (REGION_ACPI_TABLES, 0xE_0000, 0xF000, NO_OWNER),
+            (REGION_ACPI_NVS, 0xE_F000, 0x1000, NO_OWNER),
+            (REGION_RAM, 0xF_0000, 0x1_0000, NO_OWNER),
+        ];
+        expected.extend_from_slice(&before[1..]);
+        assert_eq!(before[0], (REGION_RAM, 0, FIRMWARE_HANDOFF_GPA, NO_OWNER));
+        assert_eq!(after, expected);
+        // Sorted, disjoint, same total as before; no RAM piece covers the new ranges.
+        for pair in after.windows(2) {
+            assert!(pair[0].1 + pair[0].2 <= pair[1].1, "{pair:?}");
+        }
+        let sum = |table: &[(u32, u64, u64, u32)]| table.iter().map(|r| r.2).sum::<u64>();
+        assert_eq!(sum(&before), sum(&after));
+        let (tables_end, facs_end) = (
+            FIRMWARE_ACPI_TABLES_BASE + FIRMWARE_ACPI_TABLES_BYTES,
+            FIRMWARE_ACPI_FACS_BASE + FIRMWARE_ACPI_FACS_BYTES,
+        );
+        assert_eq!(tables_end, FIRMWARE_ACPI_FACS_BASE);
+        assert_eq!(facs_end, 0xF_0000);
+        assert!(facs_end <= FIRMWARE_HANDOFF_GPA, "below the handoff block");
+        for r in after.iter().filter(|r| r.0 == REGION_RAM) {
+            assert!(
+                r.1 + r.2 <= FIRMWARE_ACPI_TABLES_BASE || r.1 >= facs_end,
+                "{r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn acpi_tables_leave_the_memory_map_and_page_tables_unchanged_and_ram_zero() {
+        for ram_bytes in [FIRMWARE_MIN_RAM_BYTES, FIRMWARE_MAX_RAM_BYTES] {
+            let base = FirmwareBoardConfig {
+                ram_bytes,
+                second_screen: true,
+                nvme: Some(NvmeConfig::default()),
+                pci_ecam: true,
+                acpi_pm: true,
+                ..FirmwareBoardConfig::default()
+            };
+            let with = FirmwareBoardConfig {
+                acpi_tables: true,
+                ..base.clone()
+            };
+            let map_without = board_map(&base, &board_devices(true, true, false)).unwrap();
+            let map_with = board_map(&with, &board_devices(true, true, true)).unwrap();
+            let shape = |map: &MachineMemoryMap| {
+                map.regions()
+                    .iter()
+                    .map(|r| (r.range.start().get(), r.range.len(), r.kind))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                shape(&map_without),
+                shape(&map_with),
+                "the area is part of low RAM"
+            );
+            assert_eq!(
+                boot_page_table_count(&map_without),
+                boot_page_table_count(&map_with)
+            );
+            // The area is inside the single low RAM region and disjoint from
+            // every other region of the real map (ROM, ECAM, NVMe, IOAPIC, LAPIC,
+            // display registers and both framebuffers, high RAM).
+            let (start, end) = (
+                FIRMWARE_ACPI_TABLES_BASE,
+                FIRMWARE_ACPI_FACS_BASE + FIRMWARE_ACPI_FACS_BYTES,
+            );
+            let mut inside = 0;
+            for region in map_with.regions() {
+                let r_start = region.range.start().get();
+                let r_end = r_start + region.range.len();
+                if r_start <= start && end <= r_end {
+                    inside += 1;
+                    assert_eq!(region.kind, MemoryRegionKind::Ram);
+                    assert_eq!(r_start, 0);
+                } else {
+                    assert!(r_end <= start || r_start >= end, "{region:?}");
+                }
+            }
+            assert_eq!(inside, 1);
+            let ecam = PCI_ECAM_DESCRIPTOR;
+            for (base, len) in [
+                (ecam.base, ecam.size),
+                (FIRMWARE_ROM_BASE, FIRMWARE_IMAGE_BYTES as u64),
+                (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+                (DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+                (DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+                (NVME_MMIO_BASE, NVME_MMIO_BYTES),
+                (IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE),
+                (LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE),
+            ] {
+                assert!(base >= end || base + len <= start, "{base:#x}");
+            }
+        }
+        // The PM block is port I/O (a separate space) and the area is zero RAM
+        // that the guest reads back as zero.
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        let mut area = vec![0xAAu8; 0x10_0000 - 0xE_0000];
+        board
+            .bus_mut()
+            .read_flat_bytes(
+                GuestPhysicalAddress::new(FIRMWARE_ACPI_TABLES_BASE),
+                &mut area,
+            )
+            .unwrap();
+        assert!(area.iter().all(|&byte| byte == 0));
+        assert!(device_entry(board.handoff_block(), 7)[4] & 2 != 0, "PIO");
+    }
+
+    #[test]
+    fn acpi_tables_with_every_other_flag_keep_indices_and_owners() {
+        let config = FirmwareBoardConfig {
+            second_screen: true,
+            nvme: Some(NvmeConfig::default()),
+            pci_ecam: true,
+            ..tables_config()
+        };
+        let image = minor2_image(&[0xf4]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let block = board.handoff_block().to_vec();
+        assert_eq!(le_u16(&block, 0x0A).unwrap(), 2);
+        // 13 (two screens) + 1 (ECAM) + 1 (NVMe) + 3 (RAM split) regions, 9 devices.
+        assert_eq!(le_u32(&block, 0x34).unwrap(), 18);
+        assert_eq!(le_u32(&block, 0x40).unwrap(), 9);
+        assert_eq!(block.len(), 0xA0 + 32 * 18 + 48 * 9);
+        assert!(crc_is_valid(&block));
+        let code = |index: usize| le_u32(device_entry(&block, index), 0).unwrap();
+        assert_eq!((code(6), code(7), code(8)), (7, 8, 9), "ECAM, NVMe, ACPI");
+        assert_eq!(
+            le_u32(device_entry(&block, 6), 4).unwrap(),
+            1,
+            "ECAM PRESENT"
+        );
+        let owner_of = |base: u64| {
+            regions_of(&block)
+                .into_iter()
+                .map(region_tuple)
+                .find(|r| r.1 == base)
+                .map(|r| r.3)
+                .unwrap()
+        };
+        assert_eq!(owner_of(PCI_ECAM_DESCRIPTOR.base), 6);
+        assert_eq!(owner_of(NVME_MMIO_BASE), 7);
+        assert_eq!(owner_of(DISPLAY_FRAMEBUFFER_BASE), DEV_DISPLAY as u32);
+        assert_eq!(
+            owner_of(DISPLAY_SECOND_FRAMEBUFFER_BASE),
+            DEV_DISPLAY as u32
+        );
+        assert_eq!(owner_of(FIRMWARE_ACPI_TABLES_BASE), NO_OWNER);
+        // Without NVMe the ACPI entry takes index 7.
+        let no_nvme = load_firmware_image(
+            &image,
+            &FirmwareBoardConfig {
+                nvme: None,
+                ..config
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            le_u32(device_entry(no_nvme.handoff_block(), 7), 0).unwrap(),
+            9
+        );
+        assert_eq!(le_u32(no_nvme.handoff_block(), 0x40).unwrap(), 8);
+        // The devices behind the flags still work: PM block, ECAM window, NVMe.
+        let pm = io_port(ACPI_PM1A_CNT_BLK);
+        assert_eq!(
+            board.bus_mut().read_port(pm, AccessWidth::Word),
+            Ok(u32::from(ACPI_PM1_CNT_SCI_EN))
+        );
+        assert!(board.acpi_pm().is_some() && board.nvme().is_some());
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0), AccessWidth::Dword),
+            Ok(0xFFFF_FFFF)
         );
     }
 }
