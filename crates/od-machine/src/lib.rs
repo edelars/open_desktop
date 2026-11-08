@@ -1,5 +1,6 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
+mod acpi_pm;
 mod apic_pair;
 mod bus;
 mod diagnostic_vcpu;
@@ -17,6 +18,7 @@ mod paged_memory_adapter;
 mod paged_pio_step;
 mod paged_probe;
 mod paged_vcpu_session;
+mod pci_ecam;
 mod physical_memory;
 mod pio_step;
 mod stage4_alias_probe;
@@ -30,6 +32,14 @@ mod uart16550;
 mod uart_rx_events;
 mod virtual_clock;
 
+pub use acpi_pm::{
+    ACPI_PM_BASE_PORT, ACPI_PM_DESCRIPTOR, ACPI_PM_PORT_BYTES, ACPI_PM_TIMER_HZ, ACPI_PM_TMR_BLK,
+    ACPI_PM_TMR_LEN, ACPI_PM1_CNT_BM_RLD, ACPI_PM1_CNT_GBL_RLS, ACPI_PM1_CNT_LEN,
+    ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1_CNT_SLP_TYP_MASK,
+    ACPI_PM1_CNT_SLP_TYP_SHIFT, ACPI_PM1_EVT_LEN, ACPI_PM1A_CNT_BLK, ACPI_PM1A_EVT_BLK,
+    ACPI_RESET_REG, ACPI_RESET_REG_WIDTH_BITS, ACPI_RESET_VALUE, ACPI_SLP_TYP_S5, ACPI_SMI_CMD,
+    AcpiPm, AcpiPmDescriptor, AcpiPmHandle, MachineStopReason,
+};
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
@@ -135,6 +145,13 @@ pub use nvme::{
 };
 
 pub use pio_step::step_diagnostic_pio_u8;
+
+pub use pci_ecam::{
+    EcamAddress, EcamAddressError, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_BASE,
+    PCI_ECAM_BYTES, PCI_ECAM_DESCRIPTOR, PCI_ECAM_END_BUS, PCI_ECAM_SEGMENT, PCI_ECAM_START_BUS,
+    PciEcam, PciEcamDescriptor, PciEcamError, PciFunction, Type0Config, Type0ConfigError,
+    decode_ecam_offset,
+};
 
 pub use physical_memory::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,

@@ -2678,7 +2678,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   ROM `[0xFFC0_0000, 2^32)`, framebuffer экрана 0 (и экрана 1 при
   `second_screen`), `Mmio` регистров дисплея, IOAPIC и Local APIC, порт COM1
   `0x3F8` (8 портов). Одна и та же таблица из семи записей строит шину, окна карты
-  и устройства handoff block. NVRAM, TPM CRB, ECAM — записи с `PRESENT = 0`, в
+  и устройства handoff block. NVRAM, TPM CRB, ECAM (по умолчанию; с флагом `pci_ecam` — S4-30c, ниже) — записи с `PRESENT = 0`, в
   карту и на шину не добавляются.
 - **Образ.** Принимается только образ ровно `0x0040_0000` байт с заголовком v1
   (FIRMWARE_BOOT.md 3.2): magic, `format_version`, `header_size`, `image_size`,
@@ -2805,3 +2805,89 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
   download/commit, несколько NS, `Device Self-test`. Время исполнения команд не моделируется.
 
 Проверки: `cargo test -p od-machine --offline` (модули `nvme`, `firmware_board`).
+
+## PCI ECAM window and type-0 function model (S4-30a)
+
+Реализация: `crates/od-machine/src/pci_ecam.rs`. Это ограниченный срез S4-30; плата по умолчанию ECAM не регистрирует, production-функций нет.
+
+**Окно.** `PCI_ECAM_BASE = 0xFC10_0000`, сегмент 0, `start_bus = end_bus = 0`, длина `0x10_0000` (1 MiB), MMIO-регион `[0xFC10_0000, 0xFC20_0000)`. Не пересекает дисплей `[0xF400_0000, 0xFC00_1000)`, NVMe `[0xFC00_1000, 0xFC00_3000)` и APIC `0xFEC0_0000+`. Адрес: `base + (bus << 20) + (dev << 15) + (fn << 12) + reg`, dev 0..31, fn 0..7, reg 0..4095. Регистрировать можно только функцию 0 (`add_function` с fn ≠ 0 → `InvalidSlot`): type-0 header не задаёт multi-function bit, поэтому функции 1..7 не моделируются.
+
+**Доступ.** Допустимы 1, 2, 4 байта, выровненные по ширине. Qword → `DeviceError::UnsupportedWidth`; невыровненный → `DeviceError::Misaligned`; PIO-пространство того же устройства обслуживает legacy conf1 (S4-30b, ниже); bus вне `[start, end]` → `DeviceError::UnknownOffset` (не absent). Ошибка возвращается до любых изменений состояния. Чтение absent-функции даёт все единицы своей ширины; запись в absent-функцию молча игнорируется.
+
+**Type-0.** Vendor/Device ID, Revision/Class code, Header type 0x00 — RO. Class code — 24 бита; большее значение → `Type0ConfigError::InvalidClassCode`. Command (0x04): RW только bit0 (I/O), bit1 (memory), bit2 (bus master); Status RO 0. BAR0 (0x10): 32-bit memory, размер степень двойки ≥ 16, хранит биты `!(size-1) & 0xFFFF_FFF0`, биты 0..3 RO 0; запись 0xFFFF_FFFF читается как маска. BAR1..BAR5 RO 0. Interrupt line (0x3C) RW 8 бит, Interrupt pin (0x3D) RO 0, Capabilities pointer 0. Область 0x100–0xFFF: чтение 0, запись игнорируется.
+
+**Не реализовано.** MCFG (S4-31); handoff код 7 остаётся `PRESENT = 0` без флага `pci_ecam` (S4-30c); BAR→MMIO mapping и влияние Command на decode (биты только хранятся); host bridge 00:00.0; capabilities, MSI/MSI-X. Тестовый endpoint существует только в `#[cfg(test)]`.
+
+## Legacy conf1 (S4-30b)
+
+Реализация: `crates/od-machine/src/pci_ecam.rs`. Ограниченный срез S4-30; плата по умолчанию conf1 не регистрирует, host bridge, MCFG, E820 и handoff код 7 не объявлены.
+
+**Общее состояние.** Conf1 — второй front-end того же объекта `PciEcam`: одна таблица функций `(bus, device, function)`, один `device_index`, две привязки (`MmioBinding` на окно ECAM и `PortRegionBinding` на `PCI_CONF1_BASE_PORT = 0xCF8`, `PCI_CONF1_PORT_BYTES = 8`, т. е. `0xCF8..=0xCFF`). Различаются по `DeviceAccess::space` (`Pio` — conf1). Чтение/запись функции идёт через общие `config_read`/`config_write`, поэтому BAR, Command и Interrupt line видны через оба пути. Дублирования состояния нет. Единственное собственное состояние conf1 — address latch.
+
+**Address latch (0xCF8, offset 0).** Меняется только dword-записью. Хранятся биты: 31 enable, 23:16 bus, 15:11 device, 10:8 function, 7:2 register (маска записи `0x80FF_FFFC`). Биты 30:24 и 1:0 не поддерживаются: при записи отбрасываются, читаются как 0. Dword-чтение возвращает сохранённое значение (нужно для Linux `pci_check_type1`: `outl(0x80000000)` → `inl` даёт `0x80000000`). Байтовые и словные записи в 0xCF8 игнорируются, байтовые и словные чтения 0xCF8 возвращают все единицы (`0xFF`/`0xFFFF`) независимо от латча: байты латча по узкому доступу не раскрываются.
+
+**Data port (0xCFC..=0xCFF, offsets 4..7).** Ширины 1/2/4. Обращение шириной `w` по порту `0xCFC + n` идёт к регистру `(latch & 0xFC) + n` функции из латча; `n` выровнен по `w` (иначе `Misaligned`). Qword → `UnsupportedWidth` (шина отвергает его раньше устройства). Обращение, выходящее за 0xCFF (например dword на 0xCFE), шина отвергает как `CrossesRegion`. Если bit31 = 0, либо bus ≠ 0, либо функции нет: чтение — все единицы своей ширины, запись игнорируется (не ошибка). Состояние функции при ошибке ширины/выравнивания не меняется.
+
+**0xCFA и 0xCFB.** Байтовые и словные записи игнорируются (Linux делает `outb(0x01, 0xCFB)` в `pci_check_type1` и `outb(0, 0xCFA)` в conf2-пробе), чтения возвращают все единицы своей ширины, состояния нет. Conf2 (0xCFA как forward register, окно 0xC000–0xCFFF) не реализован.
+
+**0xCF9.** Reset control (PIIX) не реализован: байтовое чтение и запись → `DeviceError::UnknownOffset` («регистра нет, reset не реализован»), состояние не меняется. Это явная ошибка, а не тихий успех: тихий игнор скрыл бы неработающий reset (ядро первым делает `inb(0xCF9)`, а затем в любом случае переходит к `BOOT_TRIPLE`). `UnsupportedSpace` не используется: PIO-пространство поддерживается. Слово на 0xCF9 → `Misaligned`.
+
+**Linux-пробы** (`linux-source-7.0.0`, `arch/x86/pci/direct.c`: `pci_check_type1` строки 223–241, `pci_check_type2` 243–261). `pci_check_type1` (`outb 0xCFB`, `inl 0xCF8`, `outl 0x80000000`, `inl 0xCF8`, `pci_sanity_check`, восстановление латча) проходит часть с чтением латча назад. `pci_check_type2` (`outb 0` на 0xCFB, 0xCF8, 0xCFA, затем `inb(0xCF8) == 0 && inb(0xCFA) == 0`) здесь не проходит при любом состоянии латча, потому что байтовые чтения 0xCF8/0xCFA дают 0xFF; ложного прохождения нет и чтения 0xC000–0xCFFF не начинаются.
+
+**Задача для S4-31/S4-38: `pci_sanity_check`.** Без host bridge и без DMI-года BIOS ≥ 2001 conf1 отвергается `pci_sanity_check` (`direct.c:204–216`: нужен год BIOS ≥ 2001, либо любая функция с классом 0x0600/0x0300 на bus 0 (цикл по всем devfn 0..0xFF), либо vendor Intel/Compaq). В этом срезе на bus 0 нет ни одной подходящей функции (тестовый endpoint 00:03.0 с vendor 0xD1A6 и классом 0xFF0000 условию не удовлетворяет), поэтому Linux после этого пробует conf2, и он тоже не проходит — это ожидаемо, не дефект. Обход через `pci=nochecks` (`PCI_NO_CHECKS`, `direct.c:200`) в этом срезе не используется. Чтобы Linux принял conf1, S4-31/S4-38 должны дать DMI/SMBIOS с годом ≥ 2001 или объявить функцию класса host bridge/VGA на bus 0 (S4-30 целиком).
+
+**Отличие bus > 0.** Conf1 может адресовать 256 шин. Bus ≠ 0 — обычный absent-доступ (все единицы, запись игнорируется). В ECAM тот же bus выходит за `[start_bus, end_bus]` и даёт `DeviceError::UnknownOffset`; окно покрывает только bus 0, поэтому по шине такие адреса до устройства не доходят.
+
+**Не реализовано.** Host bridge 00:00.0, MCFG, E820, handoff код 7 (`PRESENT = 0` без флага `pci_ecam`, S4-30c), BAR→MMIO mapping и Command.MEM decode, conf2 (0xCFA forward register и окно 0xC000), reset control 0xCF9, регистрация в `firmware_board.rs` и manifest платы.
+
+## ECAM и conf1 на плате (S4-30c)
+
+Реализация: `crates/od-machine/src/firmware_board.rs` (`FirmwareBoardConfig::pci_ecam`, `board_devices`, `load_firmware_image`), дескриптор — `pci_ecam.rs` (`PCI_ECAM_DESCRIPTOR`). Ограниченный срез S4-30: родительский S4-30 остаётся открытым.
+
+**Флаг.** `FirmwareBoardConfig::pci_ecam: bool`, по умолчанию `false`. Без флага плата, карта, шина и handoff не отличаются от S4-30b: handoff v1.0 байт в байт прежний (golden-тест), окно и порты `0xCF8..=0xCFF` не зарегистрированы (чтение — ошибка шины), код 7 — `PRESENT = 0`. Флаг не требует `handoff_minor_max ≥ 1`: код 7 — слот v1.0.
+
+**Дескриптор.** `PciEcamDescriptor { segment, start_bus, end_bus, base, size }`, константа `PCI_ECAM_DESCRIPTOR = { 0, 0, 0, 0xFC10_0000, 0x10_0000 }`; compile-time проверка `size == (end_bus - start_bus + 1) << 20`. Это единственный источник записи кода 7 (`param0 = segment`, `param1 = handoff_param1() = start_bus | end_bus << 8`) и будущей аллокации MCFG (S4-31).
+
+**Карта.** С флагом запись кода 7 `PRESENT` (MMIO) даёт в `MachineMemoryMap` регион `MemoryRegionKind::Mmio` `[0xFC10_0000, 0xFC20_0000)`: существующий вариант, не RAM, без backing-хранилища (`write_bytes`/`patch_physical_ram` → `ReadOnlyRegion(Mmio)`). Регион порождается общим циклом по MMIO-записям таблицы устройств (как LAPIC, IOAPIC, дисплей, NVMe), отдельного пути карты нет. Проверено: нет пересечений с RAM (в том числе максимальным `0xF_F400_0000`), ROM, обоими framebuffer, регистрами дисплея, NVMe, IOAPIC, LAPIC; окно ниже 4 GiB и внутри physical36. Boot page tables (4 KiB identity, `RW|NX`) покрывают окно тем же PT-блоком, что и регистры дисплея, `N` не меняется.
+
+**Шина.** Одно устройство `PciEcam` добавляется в `bus_devices` после COM1, LAPIC, IOAPIC, дисплея и (если включён) NVMe; его индекс — `bus_devices.len()` в момент добавления. Две привязки с одним `device_index`: `MmioBinding` на `0xFC10_0000` и `PortRegionBinding` на `0xCF8` длиной 8. Состояние общее (S4-30a/S4-30b). Плата не вызывает `add_function`: bus 0 пустой, все 32 устройства (и функции 1..7) читаются `0xFFFF_FFFF`/`0xFFFF`/`0xFF`, записи молча игнорируются. Побочное следствие: с флагом `0xCF9` отвечает `DeviceError::UnknownOffset` (reset control не реализован), без флага — `UnmappedPort`.
+
+**Diagnostic endpoint.** Только в `#[cfg(test)]`: тесты строят `PciEcam` с функцией 00:03.0 (`Type0Config`) и передают её приватному `load_firmware_image_with_pci`; публичный `load_firmware_image` всегда передаёт пустой `PciEcam`. Без флага переданное устройство не регистрируется (тест).
+
+**Linux-пробы.** На экземпляре платы: `pci_check_type1` проходит часть с чтением латча назад; `pci_check_type2` отвергается. Как и в S4-30b, `pci_sanity_check` (`direct.c:204–216`) отвергает conf1, пока нет ни DMI-года BIOS ≥ 2001, ни функции на bus 0 с классом 0x0600 или 0x0300, ни vendor Intel/Compaq; обход — `pci=nochecks`. После отказа Linux пробует type2, и он тоже не проходит. Задача S4-31/S4-38 (SMBIOS-год или функция класса host bridge/VGA), не дефект среза.
+
+**Не реализовано.** MCFG и PNP0C02/`_CRS` (S4-31); генерация E820 и loader (S4-37); host bridge и любые функции; BAR→MMIO mapping и PCI MMIO aperture; MSI/MSI-X; ACPI PM и reset register (сделано отдельным срезом S7-14a, см. раздел ниже); дефолтный handoff не менялся.
+
+## ACPI fixed hardware (S7-14a)
+
+Реализация: `crates/od-machine/src/acpi_pm.rs` (`AcpiPm`, `AcpiPmHandle`, `ACPI_PM_DESCRIPTOR`, `MachineStopReason`), подключение — `firmware_board.rs` (`FirmwareBoardConfig::acpi_pm`). Полный FADT, без `HW_REDUCED_ACPI`; сам FADT — S4-31, сброс как операция — S7-26.
+
+**Флаг и handoff.** `FirmwareBoardConfig::acpi_pm: bool`, по умолчанию `false`. Без флага порты PM-блока не зарегистрированы (чтение — `UnmappedPort`). Handoff block не описывает PM-блок (у handoff v1.0/v1.1 нет кода устройства для него, новый код потребовал бы изменения контракта): с флагом и без него handoff байт в байт одинаков и равен эталону (golden-тест). Источник адресов для FADT — типизированный `ACPI_PM_DESCRIPTOR`, как `PCI_ECAM_DESCRIPTOR` для MCFG. Карта памяти не меняется: PM-блок живёт только в пространстве портов.
+
+**Адреса (PIO, один блок `0x0600..0x0610`, одно устройство, одна `PortRegionBinding`).** Выбор: рядом нет ни одного устройства платы (COM1 `0x3F8..=0x3FF`, conf1 `0xCF8..=0xCFF`; NVMe, ECAM, LAPIC, IOAPIC, дисплей — MMIO и в пространстве портов не присутствуют); блок целиком ниже `0xCF8`; `0xCF9` остаётся `UnknownOffset` у устройства conf1 (reset control PCI не реализован). База `0x0600` — привычная для PM-блока PC-платформ; порты RTC/CMOS `0x70/0x71`, PIC, PIT и 8042 блок не пересекает.
+
+| Поле FADT | Значение |
+|---|---|
+| `SMI_CMD` | `0` (нет SMI-обработчика; `ACPI_ENABLE/DISABLE` нет, `SCI_EN` не переключается) |
+| `PM1a_EVT_BLK` / `PM1_EVT_LEN` | `0x0600` / 4 (`PM1_STS` 16 бит + `PM1_EN` 16 бит) |
+| `PM1b_EVT_BLK`, `PM1b_CNT_BLK`, `PM2_CNT_BLK`, `GPE0_BLK`, `GPE1_BLK` | `0` (не реализованы) |
+| `PM1a_CNT_BLK` / `PM1_CNT_LEN` | `0x0604` / 2 |
+| `PM_TMR_BLK` / `PM_TMR_LEN` | `0x0608` / 4; флаг `TMR_VAL_EXT = 0` (24-битный счётчик) |
+| `RESET_REG` | SystemIO (address space id 1), `register_bit_width = 8`, `bit_offset = 0`, access size byte, адрес `0x060C`; флаг `RESET_REG_SUP = 1` |
+| `RESET_VALUE` | `0x06` |
+| `\_S5` `SLP_TYP` | `5` (`ACPI_SLP_TYP_S5`; пакет `\_S5` составит S4-31) |
+
+**Регистры.** Доступ — только `IoSpace::Pio`, ширина 1/2/4 (Qword — `UnsupportedWidth`), естественное выравнивание (`Misaligned`), доступ не выходит за один регистр (`CrossesRegister`, в частности 32-битный доступ к `PM1_STS`+`PM1_EN` отвергается), промежутки блока (`0x606`, `0x607`, `0x60D..0x60F`) — `UnknownOffset`; все проверки до изменения состояния.
+- `PM1_STS` (`+0`, 16 бит): write-one-to-clear; источников событий нет, поэтому после сброса `0` и не меняется (`TMR_STS`, `PWRBTN_STS` и прочие не взводятся).
+- `PM1_EN` (`+2`, 16 бит): хранит биты `TMR_EN`, `GBL_EN`, `PWRBTN_EN`, `SLPBTN_EN`, `RTC_EN` (маска `0x0721`), остальные читаются `0`. SCI-маршрута нет, включённое событие ничего не вызывает.
+- `PM1_CNT` (`+4`, 16 бит): `SCI_EN` (бит 0) равен `1` с сброса и записью не меняется; `BM_RLD` (бит 1) и `SLP_TYP` (биты 10–12) хранятся; `GBL_RLS` (бит 2) и `SLP_EN` (бит 13) только для записи и читаются `0`, `GBL_RLS` игнорируется. Запись `SLP_EN = 1` с `SLP_TYP = 5` (с учётом `SLP_TYP`, записанного в той же или предыдущей записи, в том числе побайтно) защёлкивает причину `Shutdown`. Запись `SLP_EN = 1` с другим `SLP_TYP` игнорируется: другие состояния сна не объявлены (`\_S1..\_S4` в DSDT нет), машина не засыпает, `SLP_EN` читается `0`.
+- `PM_TMR` (`+8`, 32 бита): `floor(now_ns × 3 579 545 / 10^9)` по virtual clock платы, маска 24 бита (счётчик заворачивается каждые 4.687 с). Время не идёт само: оно двигается только `LoadedFirmwareBoard::advance_time_ns` и `run_boot`; чтение время не двигает. **Ограничение (ISSUE-067):** `run_boot` двигает часы на `instructions_executed` только между квантами, а квант заканчивается на записи в COM1 THR, doorbell NVMe, остановке PM, `HLT` или конце бюджета; внутри кванта `PM_TMR` стоит, и ожидание по нему (UEFI `Stall`, калибровка Linux) не завершится до конца бюджета. Механизм квантов не менялся; решение (закрывать квант на чтении `PM_TMR`) — S4-37/S4-38. Запись — `ReadOnly`.
+- `RESET_REG` (`+0xC`, 1 байт): чтение — `WriteOnly`, запись шире байта — `CrossesRegister`. Запись `0x06` защёлкивает причину `Reset`; другое значение игнорируется.
+
+**Остановка.** Причина защёлкивается на устройстве (`MachineStopReason::{Reset, Shutdown}`), первая причина остаётся: повторные команды её не меняют, снять остановку сможет только операция сброса (S7-26). `AcpiPmHandle::stop_request()` читает причину. С флагом `LoadedFirmwareBoard::run_boot` добавляет её опрос в предикат STOP после каждой инструкции: машина останавливается сразу после `OUT`, `FirmwareRunReport { exit: PagedProbeExit::Stopped, stop_reason: Some(..) }`; остановка по запросу не превращается в `BudgetExhausted`, повторный `run_boot` не исполняет ни одной инструкции. Без флага `stop_reason` всегда `None`. Сам сброс (состояние CPU и устройств, перезапуск) этим срезом не выполняется.
+
+**Изменение API платы.** `LoadedFirmwareBoard::clock()` теперь возвращает снимок `VirtualClock` (значение), а не ссылку: часы платы лежат в `VirtualClockHandle`, который делят плата (единственный advancer) и таймер PM. `FirmwareRunReport` получил поле `stop_reason`.
+
+**Передача S4-31 (поля FADT).** Нули в `PM1b_*`, `PM2_CNT_BLK`, `GPE0_BLK`, `GPE1_BLK` и их длинах, `SMI_CMD = 0`, `ACPI_ENABLE/DISABLE = 0`. `Flags`: `PWR_BUTTON = 1` и `SLP_BUTTON = 1` (источников кнопок нет; ноль означал бы «кнопка есть как fixed feature»), `FIX_RTC = 1` (`RTC_STS`/`RTC_EN` не поддержаны), `TMR_VAL_EXT = 0`, `RESET_REG_SUP = 1`, `HW_REDUCED_ACPI = 0`. Замечание: регистр `PM1_EN` (маска `0x0721`) хранит биты `PWRBTN_EN`/`SLPBTN_EN`/`RTC_EN`, но событий от этих источников нет — биты только запоминаются и не формируют `PM1_STS`. `SCI_INT` выбирает S4-31 (маршрут SCI пока не реализован). `RESET_REG`, `RESET_VALUE` и `\_S5` — из таблицы выше.
+
+**Не реализовано.** `HW_REDUCED_ACPI`; сам FADT и таблицы MADT/MCFG (S4-31, S7-13); SCI и его маршрут к IOAPIC, события PM1, GPE0/GPE1, PM1b, PM2; `ACPI_ENABLE/DISABLE` через `SMI_CMD`; состояния сна S1–S4; сам сброс (S7-26); RTC/CMOS `0x70/0x71`, HPET, PIC/PIT/8042 (S7-14 и далее); `0xCF9` по-прежнему `UnknownOffset`. Проверка ACPI mode и SCI в гостевом Linux — S4-38.

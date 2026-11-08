@@ -3,8 +3,13 @@
 //! duplicate in one scope is rejected while the AML is built.
 //!
 //! Spec: ACPI 20.2.5.1 (DefName, DefScope), 20.2.5.2 (DefMethod, DefDevice), 20.2.3 (data
-//! objects), 19.3.4 (EISAID algorithm). Bodies are closures so that PkgLength can be patched
-//! when the package closes.
+//! objects), 19.3.4 (EISAID algorithm).
+//!
+//! Containers come in two forms over one implementation. The closure form (`scope`, `device`,
+//! `method`, `package`, `name`, ...) takes a body closure and is a plain `fn`. The explicit form
+//! (`begin_scope` / `begin_device` / `begin_method` / `begin_package` ... followed by `end` /
+//! `end_package`) is a `const fn`, because closures cannot be called in a const context (S4-31b0).
+//! The closure form is the explicit form wrapped around the body call; both write identical bytes.
 
 use super::AmlError;
 use super::encoder::{Encoder, PkgMark};
@@ -13,6 +18,7 @@ use super::opcodes::{
     BUFFER_OP, DEVICE_OP_SUFFIX, EXT_OP_PREFIX, METHOD_OP, NAME_OP, PACKAGE_OP, RETURN_OP, SCOPE_OP,
 };
 use super::resource::ResourceTemplate;
+use crate::acpi::bytes::tri;
 
 /// Deepest nesting of Scope/Device/Method/Package the builder keeps state for.
 pub const MAX_NEST: usize = 8;
@@ -27,8 +33,31 @@ pub struct AmlBuilder<'a> {
     pkg_depth: usize,
 }
 
+/// An open Scope, Device or Method: returned by `begin_*`, consumed by [`AmlBuilder::end`].
+///
+/// Neither `Clone` nor `Copy`: the token is consumed by exactly one `end`. Containers must be
+/// closed in LIFO order (the innermost open one first), as the closure form does.
+#[derive(Debug)]
+pub struct Open {
+    mark: PkgMark,
+    /// The scope to return to when the container closes.
+    outer: AbsPath,
+}
+
+/// An open Package: returned by [`AmlBuilder::begin_package`], consumed by
+/// [`AmlBuilder::end_package`].
+///
+/// Neither `Clone` nor `Copy`: the token is consumed by exactly one `end_package`. Packages must
+/// be closed in LIFO order (the innermost open one first).
+#[derive(Debug)]
+pub struct OpenPackage {
+    mark: PkgMark,
+    /// Offset of the `NumElements` byte.
+    count_at: usize,
+}
+
 impl<'a> AmlBuilder<'a> {
-    pub fn new(buf: &'a mut [u8]) -> Self {
+    pub const fn new(buf: &'a mut [u8]) -> Self {
         AmlBuilder {
             enc: Encoder::new(buf),
             scope: AbsPath::ROOT,
@@ -40,15 +69,15 @@ impl<'a> AmlBuilder<'a> {
     }
 
     /// The AML written so far.
-    pub fn bytes(&self) -> &[u8] {
+    pub const fn bytes(&self) -> &[u8] {
         self.enc.bytes()
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.enc.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.enc.is_empty()
     }
 
@@ -58,10 +87,17 @@ impl<'a> AmlBuilder<'a> {
         name: &str,
         body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
-        let name = AmlName::parse(name)?;
-        let path = self.scope.resolve(&name)?;
-        self.enc.put(SCOPE_OP)?;
-        self.container(&name, path, body)
+        let open = self.begin_scope(name)?;
+        let result = body(self);
+        self.end_with(open, result)
+    }
+
+    /// Opens a Scope; close it with [`end`](Self::end).
+    pub const fn begin_scope(&mut self, name: &str) -> Result<Open, AmlError> {
+        let name = tri!(AmlName::parse(name));
+        let path = tri!(self.scope.resolve(&name));
+        tri!(self.enc.put(SCOPE_OP));
+        self.begin_container(&name, path)
     }
 
     /// `Device(name) { body }`: ExtOpPrefix DeviceOp PkgLength NameString TermList.
@@ -80,10 +116,23 @@ impl<'a> AmlBuilder<'a> {
         name: &AmlName,
         body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
-        let path = self.declare(name)?;
-        self.enc.put(EXT_OP_PREFIX)?;
-        self.enc.put(DEVICE_OP_SUFFIX)?;
-        self.container(name, path, body)
+        let open = self.begin_device_at(name)?;
+        let result = body(self);
+        self.end_with(open, result)
+    }
+
+    /// Opens a Device; close it with [`end`](Self::end).
+    pub const fn begin_device(&mut self, name: &str) -> Result<Open, AmlError> {
+        let name = tri!(AmlName::parse(name));
+        self.begin_device_at(&name)
+    }
+
+    /// Like [`begin_device`](Self::begin_device) with an already parsed name.
+    pub const fn begin_device_at(&mut self, name: &AmlName) -> Result<Open, AmlError> {
+        let path = tri!(self.declare(name));
+        tri!(self.enc.put(EXT_OP_PREFIX));
+        tri!(self.enc.put(DEVICE_OP_SUFFIX));
+        self.begin_container(name, path)
     }
 
     /// `Method(name, args, NotSerialized/Serialized) { body }`: MethodOp PkgLength NameString
@@ -96,23 +145,43 @@ impl<'a> AmlBuilder<'a> {
         serialized: bool,
         body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
+        let open = self.begin_method(name, arg_count, serialized)?;
+        let result = body(self);
+        self.end_with(open, result)
+    }
+
+    /// Opens a Method; close it with [`end`](Self::end).
+    pub const fn begin_method(
+        &mut self,
+        name: &str,
+        arg_count: u8,
+        serialized: bool,
+    ) -> Result<Open, AmlError> {
         if arg_count > 7 {
             return Err(AmlError::BadMethodFlags);
         }
-        let name = AmlName::parse(name)?;
-        self.declare(&name)?;
-        self.enc.put(METHOD_OP)?;
-        let mark = self.enc.begin_package()?;
-        self.enc.name(&name)?;
-        self.enc.put(arg_count | (u8::from(serialized) << 3))?;
-        self.nested(body)?;
-        self.enc.end_package(mark)
+        let name = tri!(AmlName::parse(name));
+        tri!(self.declare(&name));
+        tri!(self.enc.put(METHOD_OP));
+        let mark = tri!(self.enc.begin_package());
+        tri!(self.enc.name(&name));
+        tri!(self.enc.put(arg_count | ((serialized as u8) << 3)));
+        tri!(self.enter());
+        Ok(Open {
+            mark,
+            outer: self.scope,
+        })
+    }
+
+    /// Closes the Scope, Device or Method opened by the matching `begin_*`.
+    pub const fn end(&mut self, open: Open) -> Result<(), AmlError> {
+        self.end_with(open, Ok(()))
     }
 
     /// `Return(integer)`: ReturnOp followed by the integer constant (ReturnOp is NOT VERIFIED,
     /// see `opcodes::RETURN_OP`).
-    pub fn return_integer(&mut self, value: u64) -> Result<(), AmlError> {
-        self.enc.put(RETURN_OP)?;
+    pub const fn return_integer(&mut self, value: u64) -> Result<(), AmlError> {
+        tri!(self.enc.put(RETURN_OP));
         self.enc.integer(value)
     }
 
@@ -122,70 +191,79 @@ impl<'a> AmlBuilder<'a> {
         name: &str,
         value: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
-        let name = AmlName::parse(name)?;
-        self.declare(&name)?;
-        self.enc.put(NAME_OP)?;
-        self.enc.name(&name)?;
+        self.begin_name(name)?;
         value(self)
     }
 
-    pub fn name_integer(&mut self, name: &str, value: u64) -> Result<(), AmlError> {
-        self.name(name, |b| b.integer(value))
+    /// Writes `NameOp NameString` for a new object; the caller writes the DataRefObject next.
+    pub const fn begin_name(&mut self, name: &str) -> Result<(), AmlError> {
+        let name = tri!(AmlName::parse(name));
+        tri!(self.declare(&name));
+        tri!(self.enc.put(NAME_OP));
+        self.enc.name(&name)
     }
 
-    pub fn name_string(&mut self, name: &str, text: &str) -> Result<(), AmlError> {
-        self.name(name, |b| b.string(text))
+    pub const fn name_integer(&mut self, name: &str, value: u64) -> Result<(), AmlError> {
+        tri!(self.begin_name(name));
+        self.integer(value)
+    }
+
+    pub const fn name_string(&mut self, name: &str, text: &str) -> Result<(), AmlError> {
+        tri!(self.begin_name(name));
+        self.string(text)
     }
 
     /// `Name(name, EISAID("..."))`, e.g. `_HID` / `_CID`.
-    pub fn name_eisa_id(&mut self, name: &str, id: &str) -> Result<(), AmlError> {
-        let value = eisa_id(id)?;
-        self.name(name, |b| b.integer(u64::from(value)))
+    pub const fn name_eisa_id(&mut self, name: &str, id: &str) -> Result<(), AmlError> {
+        let value = tri!(eisa_id(id));
+        tri!(self.begin_name(name));
+        self.integer(value as u64)
     }
 
     /// `Name(name, ResourceTemplate() {...})`: a Buffer holding the descriptors.
-    pub fn name_resource_template(
+    pub const fn name_resource_template(
         &mut self,
         name: &str,
         template: &ResourceTemplate,
     ) -> Result<(), AmlError> {
-        self.name(name, |b| b.buffer(template.bytes()))
+        tri!(self.begin_name(name));
+        self.buffer(template.bytes())
     }
 
     /// Integer constant as a data object (counts as one element inside a Package).
-    pub fn integer(&mut self, value: u64) -> Result<(), AmlError> {
-        self.count_element()?;
+    pub const fn integer(&mut self, value: u64) -> Result<(), AmlError> {
+        tri!(self.count_element());
         self.enc.integer(value)
     }
 
     /// String constant as a data object.
-    pub fn string(&mut self, text: &str) -> Result<(), AmlError> {
-        self.count_element()?;
+    pub const fn string(&mut self, text: &str) -> Result<(), AmlError> {
+        tri!(self.count_element());
         self.enc.string(text)
     }
 
     /// `Buffer(len) {bytes}`: BufferOp PkgLength BufferSize(integer) ByteList.
-    pub fn buffer(&mut self, bytes: &[u8]) -> Result<(), AmlError> {
-        self.count_element()?;
-        self.enc.put(BUFFER_OP)?;
-        let mark = self.enc.begin_package()?;
-        self.enc.integer(bytes.len() as u64)?;
-        self.enc.put_all(bytes)?;
+    pub const fn buffer(&mut self, bytes: &[u8]) -> Result<(), AmlError> {
+        tri!(self.count_element());
+        tri!(self.enc.put(BUFFER_OP));
+        let mark = tri!(self.enc.begin_package());
+        tri!(self.enc.integer(bytes.len() as u64));
+        tri!(self.enc.put_all(bytes));
         self.enc.end_package(mark)
     }
 
     /// Reference to an already defined object by absolute name (a Package element, e.g. the
     /// `Source` field of a `_PRT` entry). Relative references are not supported.
-    pub fn name_reference(&mut self, name: &str) -> Result<(), AmlError> {
-        let name = AmlName::parse(name)?;
+    pub const fn name_reference(&mut self, name: &str) -> Result<(), AmlError> {
+        let name = tri!(AmlName::parse(name));
         if !name.absolute {
             return Err(AmlError::RelativeReference);
         }
-        let path = AbsPath::ROOT.resolve(&name)?;
+        let path = tri!(AbsPath::ROOT.resolve(&name));
         if !self.registry.contains(&path) {
             return Err(AmlError::UnknownName);
         }
-        self.count_element()?;
+        tri!(self.count_element());
         self.enc.name(&name)
     }
 
@@ -195,23 +273,29 @@ impl<'a> AmlBuilder<'a> {
         &mut self,
         body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
     ) -> Result<(), AmlError> {
-        self.count_element()?;
+        let open = self.begin_package()?;
+        let result = body(self);
+        self.end_package_with(open, result)
+    }
+
+    /// Opens a Package; the elements follow, then [`end_package`](Self::end_package) closes it.
+    pub const fn begin_package(&mut self) -> Result<OpenPackage, AmlError> {
+        tri!(self.count_element());
         if self.pkg_depth == MAX_NEST {
             return Err(AmlError::TooDeep);
         }
-        self.enc.put(PACKAGE_OP)?;
-        let mark = self.enc.begin_package()?;
+        tri!(self.enc.put(PACKAGE_OP));
+        let mark = tri!(self.enc.begin_package());
         let count_at = self.enc.len();
-        self.enc.put(0)?;
+        tri!(self.enc.put(0));
         self.pkg_counts[self.pkg_depth] = 0;
         self.pkg_depth += 1;
-        let result = body(self);
-        self.pkg_depth -= 1;
-        result?;
-        let count =
-            u8::try_from(self.pkg_counts[self.pkg_depth]).map_err(|_| AmlError::PackageTooLarge)?;
-        self.enc.patch(count_at, count);
-        self.enc.end_package(mark)
+        Ok(OpenPackage { mark, count_at })
+    }
+
+    /// Closes the Package opened by [`begin_package`](Self::begin_package).
+    pub const fn end_package(&mut self, open: OpenPackage) -> Result<(), AmlError> {
+        self.end_package_with(open, Ok(()))
     }
 
     /// `Name(name, Package() { elements })`.
@@ -223,52 +307,71 @@ impl<'a> AmlBuilder<'a> {
         self.name(name, |b| b.package(body))
     }
 
-    fn count_element(&mut self) -> Result<(), AmlError> {
+    const fn end_package_with(
+        &mut self,
+        open: OpenPackage,
+        result: Result<(), AmlError>,
+    ) -> Result<(), AmlError> {
+        self.pkg_depth -= 1;
+        tri!(result);
+        let counted = self.pkg_counts[self.pkg_depth];
+        if counted > 0xFF {
+            return Err(AmlError::PackageTooLarge);
+        }
+        self.enc.patch(open.count_at, counted as u8);
+        self.enc.end_package(open.mark)
+    }
+
+    const fn count_element(&mut self) -> Result<(), AmlError> {
         if self.pkg_depth > 0 {
             let counter = &mut self.pkg_counts[self.pkg_depth - 1];
-            *counter = counter.checked_add(1).ok_or(AmlError::PackageTooLarge)?;
+            *counter = match counter.checked_add(1) {
+                Some(count) => count,
+                None => return Err(AmlError::PackageTooLarge),
+            };
         }
         Ok(())
     }
 
     /// Registers a declared object and returns its absolute path.
-    fn declare(&mut self, name: &AmlName) -> Result<AbsPath, AmlError> {
+    const fn declare(&mut self, name: &AmlName) -> Result<AbsPath, AmlError> {
         if name.segs().is_empty() {
             return Err(AmlError::EmptyName);
         }
-        let path = self.scope.resolve(name)?;
-        self.registry.insert(path)?;
+        let path = tri!(self.scope.resolve(name));
+        tri!(self.registry.insert(path));
         Ok(path)
     }
 
-    /// Shared tail of Scope and Device: PkgLength, NameString, TermList in the new scope.
-    fn container(
-        &mut self,
-        name: &AmlName,
-        path: AbsPath,
-        body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
-    ) -> Result<(), AmlError> {
-        let mark: PkgMark = self.enc.begin_package()?;
-        self.enc.name(name)?;
+    /// Shared head of Scope and Device: PkgLength, NameString, then enter the new scope.
+    const fn begin_container(&mut self, name: &AmlName, path: AbsPath) -> Result<Open, AmlError> {
+        let mark = tri!(self.enc.begin_package());
+        tri!(self.enc.name(name));
         let outer = self.scope;
         self.scope = path;
-        let result = self.nested(body);
-        self.scope = outer;
-        result?;
-        self.enc.end_package(mark)
+        if let Err(error) = self.enter() {
+            self.scope = outer;
+            return Err(error);
+        }
+        Ok(Open { mark, outer })
     }
 
-    fn nested(
-        &mut self,
-        body: impl FnOnce(&mut Self) -> Result<(), AmlError>,
-    ) -> Result<(), AmlError> {
+    /// Counts one more level of nesting; `TooDeep` past `MAX_NEST`.
+    const fn enter(&mut self) -> Result<(), AmlError> {
         if self.depth == MAX_NEST {
             return Err(AmlError::TooDeep);
         }
         self.depth += 1;
-        let result = body(self);
+        Ok(())
+    }
+
+    /// Leaves the container (nesting and scope are restored even when the body failed), then
+    /// writes its PkgLength if the body succeeded.
+    const fn end_with(&mut self, open: Open, result: Result<(), AmlError>) -> Result<(), AmlError> {
         self.depth -= 1;
-        result
+        self.scope = open.outer;
+        tri!(result);
+        self.enc.end_package(open.mark)
     }
 }
 
@@ -276,25 +379,30 @@ impl<'a> AmlBuilder<'a> {
 /// three letters give 5 bits each (`char - 0x40`) packed into bytes 0..1 (big-endian bit order:
 /// byte 0 bit 6..2 = first letter, bit 1..0 + byte 1 bit 7..5 = second, byte 1 bit 4..0 =
 /// third); the four hex digits fill bytes 2 and 3 high nibble first.
-pub fn eisa_id(text: &str) -> Result<u32, AmlError> {
+pub const fn eisa_id(text: &str) -> Result<u32, AmlError> {
     let raw = text.as_bytes();
     if raw.len() != 7 {
         return Err(AmlError::BadString);
     }
     let mut letters = [0u8; 3];
-    for (slot, &c) in letters.iter_mut().zip(&raw[..3]) {
-        if !c.is_ascii_uppercase() {
+    let mut i = 0;
+    while i < 3 {
+        if !raw[i].is_ascii_uppercase() {
             return Err(AmlError::BadString);
         }
-        *slot = c - 0x40;
+        letters[i] = raw[i] - 0x40;
+        i += 1;
     }
     let mut digits = [0u8; 4];
-    for (slot, &c) in digits.iter_mut().zip(&raw[3..]) {
-        *slot = match c {
+    let mut i = 0;
+    while i < 4 {
+        let c = raw[3 + i];
+        digits[i] = match c {
             b'0'..=b'9' => c - b'0',
             b'A'..=b'F' => c - b'A' + 10,
             _ => return Err(AmlError::BadString),
         };
+        i += 1;
     }
     let byte0 = (letters[0] << 2) | (letters[1] >> 3);
     let byte1 = ((letters[1] & 0x07) << 5) | letters[2];

@@ -5,6 +5,8 @@
 //! HTTP 403). The rule "the entire table, including the checksum field, must add to zero" is
 //! Table 5.4 / 5.17; the 6.6 wording is NOT VERIFIED.
 
+use super::bytes::{bytes_eq, copy_at, head_mut, sub};
+
 /// Length of the header shared by all System Description Tables (Table 5.4).
 pub const SDT_HEADER_LEN: usize = 36;
 const OFFSET_LENGTH: usize = 4;
@@ -34,34 +36,43 @@ pub enum TableError {
 }
 
 /// Sum of all bytes modulo 256.
-pub fn byte_sum(bytes: &[u8]) -> u8 {
-    bytes.iter().fold(0u8, |acc, &b| acc.wrapping_add(b))
+pub const fn byte_sum(bytes: &[u8]) -> u8 {
+    let mut sum = 0u8;
+    let mut i = 0;
+    while i < bytes.len() {
+        sum = sum.wrapping_add(bytes[i]);
+        i += 1;
+    }
+    sum
 }
 
 /// Writes the 36-byte header into `out[..36]` with a zero checksum; `total_len` is the length
 /// of the whole table including the header. Call [`finish_checksum`] once the body is in place.
-pub fn write_header(
+pub const fn write_header(
     out: &mut [u8],
     signature: [u8; 4],
     revision: u8,
     oem_table_id: [u8; 8],
     total_len: u32,
 ) -> Result<(), TableError> {
-    let header = out.get_mut(..SDT_HEADER_LEN).ok_or(TableError::TooShort)?;
-    header[0..4].copy_from_slice(&signature);
-    header[4..8].copy_from_slice(&total_len.to_le_bytes());
+    if out.len() < SDT_HEADER_LEN {
+        return Err(TableError::TooShort);
+    }
+    let header = head_mut(out, SDT_HEADER_LEN);
+    copy_at(header, 0, &signature);
+    copy_at(header, 4, &total_len.to_le_bytes());
     header[8] = revision;
     header[9] = 0;
-    header[10..16].copy_from_slice(&OEM_ID);
-    header[16..24].copy_from_slice(&oem_table_id);
-    header[24..28].copy_from_slice(&OEM_REVISION.to_le_bytes());
-    header[28..32].copy_from_slice(&CREATOR_ID);
-    header[32..36].copy_from_slice(&CREATOR_REVISION.to_le_bytes());
+    copy_at(header, 10, &OEM_ID);
+    copy_at(header, 16, &oem_table_id);
+    copy_at(header, 24, &OEM_REVISION.to_le_bytes());
+    copy_at(header, 28, &CREATOR_ID);
+    copy_at(header, 32, &CREATOR_REVISION.to_le_bytes());
     Ok(())
 }
 
 /// Sets the checksum byte so that the whole table adds to zero.
-pub fn finish_checksum(table: &mut [u8]) -> Result<(), TableError> {
+pub const fn finish_checksum(table: &mut [u8]) -> Result<(), TableError> {
     if table.len() < SDT_HEADER_LEN {
         return Err(TableError::TooShort);
     }
@@ -71,11 +82,11 @@ pub fn finish_checksum(table: &mut [u8]) -> Result<(), TableError> {
 }
 
 /// Checks signature, `Length` field against the slice, and the checksum.
-pub fn validate_table(table: &[u8], signature: &[u8; 4]) -> Result<(), TableError> {
+pub const fn validate_table(table: &[u8], signature: &[u8; 4]) -> Result<(), TableError> {
     if table.len() < SDT_HEADER_LEN {
         return Err(TableError::TooShort);
     }
-    if table[0..4] != signature[..] {
+    if !bytes_eq(sub(table, 0, 4), signature) {
         return Err(TableError::SignatureMismatch);
     }
     let declared = u32::from_le_bytes([
@@ -84,7 +95,8 @@ pub fn validate_table(table: &[u8], signature: &[u8; 4]) -> Result<(), TableErro
         table[OFFSET_LENGTH + 2],
         table[OFFSET_LENGTH + 3],
     ]);
-    if usize::try_from(declared) != Ok(table.len()) {
+    // Compared as `u64`: lossless for both operands on every supported target.
+    if declared as u64 != table.len() as u64 {
         return Err(TableError::LengthMismatch {
             declared,
             actual: table.len(),

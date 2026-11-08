@@ -1261,3 +1261,58 @@ does not move time. Stage 4 runner CLI tests passed 8 cases and the artifact
 build CLI passed 1; runner all-targets check, formatting, and diff checks also
 passed. The independent Sol/high review found no code findings. The runner's
 frequency is diagnostic and is not advertised to the guest. See [report](../reports/STAGE_4_S4-22B_2026-11-07.md).
+## S4-30a PCI ECAM window and type-0 function model
+
+45. S4-30a checks the ECAM window decode, width/alignment errors, absent-function
+all-ones reads and ignored writes, a `#[cfg(test)]` diagnostic type-0 endpoint
+(read-only fields, Command mask, BAR0 sizing) and MMIO dispatch through
+`MachineBus`: `cargo test -p od-machine pci_ecam`. BAR-to-MMIO mapping and
+MCFG are not covered. See [report](../reports/STAGE_4_S4-30A_2026-11-08.md).
+
+## S4-30b Legacy conf1
+
+46. S4-30b checks legacy conf1 ports 0xCF8..0xCFF over the same function table as
+ECAM, always through `MachineBus::read_port`/`write_port` with a real
+`PortRegionBinding`: the Linux `pci_check_type1` sequence (outb 0xCFB, outl
+0x80000000 to 0xCF8, inl 0xCF8 reads it back, latch restored), latch bit mask
+`0x80FF_FFFC`, bit31=0 and bus>0 giving all ones with dropped writes,
+bus/device/function/register decode, byte and word access through 0xCFC+n,
+rejection of qword and misaligned accesses with no state change, byte/word
+access to 0xCF8 (ignored writes, all-ones reads), explicit behaviour of 0xCF9
+(reset control not implemented: `UnknownOffset`) and 0xCFA/0xCFB (writes
+ignored, all-ones reads), the Linux conf2 probe being rejected for any latch
+state, and equivalence with ECAM for BAR0 sizing and Command in both
+directions. The bus>0 difference (absent through conf1, `UnknownOffset` through
+ECAM) is a test. `cargo test -p od-machine pci_ecam`. Host bridge, MCFG, BAR
+mapping, conf2 and reset control are not covered. See
+[report](../reports/STAGE_4_S4-30B_2026-11-08.md).
+
+## S4-30c ECAM на плате (opt-in)
+
+47. S4-30c checks the board-level registration of the ECAM window and conf1 ports
+behind `FirmwareBoardConfig::pci_ecam` (off by default): the default handoff stays
+byte for byte identical to the golden reference with code 7 `PRESENT = 0`; with the
+flag code 7 is `PRESENT = 1` (base `0xFC10_0000`, length `0x10_0000`, segment 0,
+buses 0-0) inside handoff v1.0 with one extra MMIO region owned by entry 6; the
+window is a non-RAM `Mmio` region disjoint from RAM, ROM, both framebuffers, display
+registers, NVMe, IOAPIC and LAPIC, below 4 GiB and inside physical36;
+`patch_physical_ram` on the window is rejected; all 32 devices of the empty bus 0
+read all ones through `MachineBus::read_physical`; the Linux type1 probe passes and
+type2 is rejected through `read_port`/`write_port` on the board instance; a conf1 write
+is visible through ECAM on a `#[cfg(test)]` diagnostic endpoint. Firmware side:
+`cd firmware/uefi && cargo test` includes the exact 48 bytes of entry 7 being accepted
+by the DSDT builder (`PCIE_ECAM`). `cargo test -p od-machine firmware_board` and
+`cargo test -p od-machine pci_ecam`. MCFG, E820, host bridge, functions and BAR
+mapping are not covered. See [report](../reports/STAGE_4_S4-30C_2026-11-08.md).
+
+## S7-14a ACPI fixed hardware
+
+48. S7-14a checks the ACPI PM block (`0x0600..0x0610`, opt-in `FirmwareBoardConfig::acpi_pm`, off by default). Unit tests per register in `acpi_pm.rs`: `PM1_CNT.SCI_EN` is 1 from reset and cannot be cleared; `SLP_TYP`/`BM_RLD` are stored and `GBL_RLS`/`SLP_EN` read zero; `SLP_TYP = 5` with `SLP_EN` (word write, or high-byte write alone) latches `Shutdown`, another `SLP_TYP` does nothing; `RESET_VALUE = 0x06` in the one-byte reset register latches `Reset`, other values do nothing, reads are `WriteOnly`, wider writes `CrossesRegister`; S5 and reset give different reasons and the first stays; `PM1_STS` is write-one-to-clear, `PM1_EN` keeps only defined bits; the PM timer is `floor(ns * 3579545 / 1e9)` of the virtual clock, 24 bits wide, monotonic, read-only, and two reads after a clock shift differ by the expected ticks; space/width/alignment/crossing/gap errors leave no side effect. Through a real `PortRegionBinding` on `MachineBus`: `read_port`/`write_port` reach every register, device errors surface as `BusAccessError::Device`, ports past the block are `UnmappedPort`. Board tests (`firmware_board.rs`): the handoff with and without the flag is identical and equals the golden reference; without the flag the ports are `UnmappedPort`; the block does not overlap COM1 and conf1 on a board with every optional device, COM1 and conf1 still answer, `0xCF9` is still `UnknownOffset` and does not stop the machine; the memory map is identical with the flag; guest `OUT` code run through `run_boot` stops after the `OUT` with `PagedProbeExit::Stopped` and `stop_reason` `Shutdown` or `Reset`, a stop on the last budgeted instruction is not `BudgetExhausted`, a second `run_boot` retires nothing; `run_boot` moves the clock by the retired instructions and `PM_TMR` sees it after the run (the timer is frozen inside a quantum, ISSUE-067). `cargo test -p od-machine acpi_pm` and `cargo test -p od-machine firmware_board`. FADT, MADT/MCFG, SCI routing, GPE, reset operation (S7-26) and a Linux guest (S4-38) are not covered. See [report](../reports/STAGE_4_S7-14A_2026-11-08.md).
+
+## S4-31a MCFG
+
+49. S4-31a checks the MCFG serializer in the firmware crate (`firmware/uefi/src/acpi/mcfg.rs`, host tests only; `od-machine` is untouched). The 48-byte PCIe ECAM entry as the board emits it with `pci_ecam` (base `0xFC10_0000`, length `0x10_0000`, segment 0, buses 0-0) gives a 60-byte table that equals a reference written by hand field by field (signature `MCFG`, length 60, revision 1, OEM ID `OPNDSK`, OEM table ID `ODFWMCFG`, 8 reserved bytes, base, segment, start/end bus, 4 reserved bytes, checksum `0x4C` computed independently); all bytes sum to zero modulo 256; a dirty output buffer does not leak into reserved bytes and bytes past the table are untouched; two calls and two buffer histories give identical bytes. Rejections: no ECAM (`PRESENT = 0`, also through `BoardManifest`), `start_bus > end_bus`, another device type, a PIO window, zero length or any length other than 1 MiB for buses 0-0, reserved `param1` bits, segment above 16 bits, zero or unaligned base, a window ending above 4 GiB (Linux `acpi_mcfg_valid_entry` would drop it without SMBIOS), segment 1 and buses 0-1 (outside the stage-4 contract), a short output buffer (no write). The validator reports bad signature, length, checksum, and an entry area that is empty or not a whole number of 16-byte structures. `cd firmware/uefi && cargo test --offline` (90 passed, 12 of them `acpi::mcfg`). XSDT/RSDP, FADT, FACS, MADT, the DSDT with PNP0C02, blob assembly, placement and a Linux guest (S4-38) are not covered. See [report](../reports/STAGE_4_S4-31A_2026-11-08.md).
+
+## S4-31b0 const ACPI
+
+50. S4-31b0 checks that the ACPI serializers of the firmware crate are `const fn` and write the same bytes as before (host tests only, `cd firmware/uefi && cargo test --offline`; `od-machine` is untouched). Rewritten without changing a byte: the AML layer (`aml/{encoder,names,resource,builder,validate}.rs`), the table helpers (`write_header`, `finish_checksum`, `validate_table`, `byte_sum`), `build_dsdt` / `validate_dsdt` and `build_mcfg` / `build_mcfg_from_entry` / `validate_mcfg`; the manifest accessors `BoardManifest::device`, `BoardManifest::from_entries`, `DeviceEntry::is_present`, `DeviceEntry::is_pio` became `const fn` only because the serializers take the manifest. The closure form of the AML builder (`scope`, `device`, `method`, `package`, `name`, ...) is kept for the existing tests and is wrapped around the new explicit `begin_*` / `end` pair, which is the `const fn` form; one implementation writes both. Gate: all 90 earlier tests pass with `acpi/aml/tests.rs` and `acpi/dsdt/tests.rs` byte-identical to the previous commit (golden DSDT: both devices, COM2 level/active-low, empty; every AML construct) and the inline tests of `mcfg.rs`, `table.rs`, `manifest.rs` unchanged. The hand-written 60-byte MCFG reference is the golden for the const form: `build_mcfg_from_entry` evaluated in a `const` item and `build_mcfg` (const `BoardManifest::from_entries`) in a `static` both equal it byte for byte, equal the run-time call, and `validate_mcfg` accepts the const table in a const assertion. `build_dsdt` evaluated in a `const` item (manifest with COM1 and a PCIe root with buses 0-0xFF) equals the run-time call and the golden reference of the DSDT test byte for byte (length `0xB0`, checksum `0x0E`). `cargo test --offline` gives 94 passed (90 before, +2 `acpi::mcfg`, +2 `acpi::dsdt::const_tests`); `cargo fmt --check` clean; `cargo clippy --lib --tests` has only the one warning that existed before (`too_many_arguments` in `dsdt/tests.rs`); `cargo check --offline --target x86_64-unknown-none` clean. Not covered: FADT, FACS, MADT, RSDP, XSDT, blob assembly and placement, manifest/handoff extension, PNP0C02 in the DSDT (S4-31b), a Linux guest (S4-38). See [report](../reports/STAGE_4_S4-31B0_2026-11-08.md).

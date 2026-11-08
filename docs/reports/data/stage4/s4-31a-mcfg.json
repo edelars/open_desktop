@@ -1,0 +1,37 @@
+{
+  "slice": "S4-31a",
+  "date": "2026-11-08",
+  "source": ["firmware/uefi/src/acpi/mcfg.rs", "firmware/uefi/src/acpi/mod.rs", "docs/specs/ACPI_SMBIOS_TABLES.md"],
+  "document": "docs/specs/ACPI_SMBIOS_TABLES.md (existing file, new section for stage 4)",
+  "tables": {
+    "needed": ["RSDP", "XSDT", "FADT", "FACS", "DSDT", "MADT", "MCFG"],
+    "not_needed": ["HPET", "SRAT", "SLIT"],
+    "not_acpi": ["SMBIOS (not required by ACPI; decision S4-37/S4-38)"]
+  },
+  "linux_source": "linux-source-7.0.0, partial extraction (22 files); headers include/acpi/actbl*.h, tables.c, tbxfroot.c, tbutils.c, SRAT/SLIT code, hpet.c are not in the tree and were not read",
+  "mcfg": {
+    "header_len": 36,
+    "reserved_after_header": 8,
+    "entry_len": 16,
+    "length_one_entry": 60,
+    "revision": 1,
+    "oem_id": "OPNDSK",
+    "oem_table_id": "ODFWMCFG",
+    "creator_id": "ODFW",
+    "board_entry": {"base": "0xFC10_0000", "segment": 0, "start_bus": 0, "end_bus": 0, "length": "0x10_0000"},
+    "reference_checksum": "0x4C",
+    "rejections": ["NotEcamEntry", "MissingEcam", "PioWindow", "ReservedParamBits", "SegmentOutOfRange", "BusRangeInverted", "LengthMismatch", "ZeroBase", "BaseUnaligned", "WindowAbove4Gib", "OutsideStage4Contract", "Table(TooShort)"]
+  },
+  "firmware_uefi_tests_passed": 90,
+  "firmware_uefi_tests_failed": 0,
+  "firmware_uefi_tests_added": 12,
+  "firmware_uefi_tests_before": 78,
+  "fmt_check": "clean",
+  "od_machine_touched": false,
+  "open": [
+    "E820 reserved entry for the ECAM window is not in the S4-37 plan; Linux early ECAM acceptance needs it when conf1 works and SMBIOS year < 2016 or absent (mmconfig-shared.c:517-550)",
+    "const fn form of the serializer deferred to the blob build slice",
+    "RSDP revision 2 with zero RsdtAddress, MCFG/MADT/FADT layouts from headers, SRAT/SLIT and HPET absence behaviour: not verified from the extracted tree"
+  ],
+  "not_implemented": ["RSDP", "XSDT", "FADT", "FACS", "MADT", "DSDT PNP0C02", "blob", "placement", "manifest/handoff extension", "freestanding build"]
+}

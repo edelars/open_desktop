@@ -1,0 +1,22 @@
+{
+  "slice": "S4-30b",
+  "date": "2026-11-08",
+  "source": "crates/od-machine/src/pci_ecam.rs",
+  "architecture": "one PciEcam object, two bindings (MmioBinding for ECAM, PortRegionBinding for conf1), shared function table; conf1 adds only the address latch",
+  "conf1_ports": {
+    "base": "0xCF8",
+    "bytes": 8,
+    "0xCF8": "address latch, dword read/write, stored mask 0x80FF_FFFC; byte/word write ignored, byte/word read all ones",
+    "0xCF9": "reset control not implemented: DeviceError::UnknownOffset on byte read/write; word -> Misaligned",
+    "0xCFA": "byte/word write ignored, read all ones (conf2 not implemented)",
+    "0xCFB": "byte write ignored, read all ones",
+    "0xCFC-0xCFF": "data port, width 1/2/4 aligned, register = (latch & 0xFC) + n; bit31=0, bus>0 or absent function -> all ones, write ignored"
+  },
+  "pci_ecam_tests_passed": 21,
+  "pci_ecam_tests_added": 9,
+  "od_machine_tests_passed": 527,
+  "od_machine_tests_failed": 0,
+  "registered_by_board": false,
+  "handoff_code_7_present": false,
+  "not_implemented": ["host bridge 00:00.0", "MCFG", "E820 reservation", "handoff code 7", "BAR-to-MMIO mapping", "Command.MEM decode", "conf2 (0xCFA forward register, 0xC000 window)", "reset control 0xCF9", "board/manifest registration"]
+}

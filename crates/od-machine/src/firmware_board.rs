@@ -7,15 +7,17 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::{
-    AccessWidth, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
-    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
-    DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestPhysicalAddress,
-    GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE,
-    LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MemoryAccessError,
-    MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig,
-    NvmeConfigError, NvmeDevice, NvmeHandle, PagedProbeExit, PagedProbeQuantumReport, PortAddress,
-    PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
-    Uart16550PollingTx, VirtualClock, VirtualClockError, run_paged_probe,
+    ACPI_PM_DESCRIPTOR, AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError,
+    DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE,
+    DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle,
+    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
+    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap,
+    MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
+    NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle,
+    PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PagedProbeExit,
+    PagedProbeQuantumReport, PciEcam, PortAddress, PortRange, PortRegionBinding, RamLimits,
+    TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
+    VirtualClockHandle, run_paged_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -86,6 +88,9 @@ const DEV_DISPLAY: usize = 3;
 const DEV_NVME_TABLE: usize = 7;
 const DEV_NVME_BUS: usize = 4;
 const DEVICE_CODE_NVME: u32 = 8;
+/// Device-table index of the PCIe ECAM entry (device code 7, a v1.0 slot).
+const DEV_ECAM_TABLE: usize = 6;
+const DEVICE_CODE_ECAM: u32 = 7;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
 
@@ -104,6 +109,17 @@ pub struct FirmwareBoardConfig {
     /// NVMe controller (S7-16). `None` keeps handoff v1.0 byte for byte; `Some`
     /// adds device code 8 and raises `version_minor` to 1 (FIRMWARE_BOOT.md 6.3).
     pub nvme: Option<NvmeConfig>,
+    /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
+    /// over an empty bus 0. `false` keeps handoff v1.0 byte for byte (code 7
+    /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
+    /// `version_minor` and the entry count do not change) and adds the MMIO
+    /// region of the window. The board declares no PCI function.
+    pub pci_ecam: bool,
+    /// ACPI fixed hardware (S7-14a): PM1a event/control, PM timer and reset
+    /// register on ports `0x0600..0x0610`. The handoff block does not describe it
+    /// (`false` and `true` give the same bytes); `ACPI_PM_DESCRIPTOR` is the
+    /// source of the FADT. With the flag `run_boot` stops on an S5 or reset write.
+    pub acpi_pm: bool,
 }
 
 impl Default for FirmwareBoardConfig {
@@ -115,6 +131,8 @@ impl Default for FirmwareBoardConfig {
             system_uuid: [0; 16],
             serial: Vec::new(),
             nvme: None,
+            pci_ecam: false,
+            acpi_pm: false,
         }
     }
 }
@@ -328,10 +346,11 @@ impl DeviceEntry {
     }
 }
 
-/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM, TPM CRB
-/// and ECAM are `PRESENT = 0` until S7-10, S7-22 and S4-30 add them. With `nvme`
-/// the table gets the eighth entry, device code 8 (FIRMWARE_BOOT.md 6.3).
-fn board_devices(nvme: bool) -> Vec<DeviceEntry> {
+/// Device table of firmware board v1 (FIRMWARE_BOOT.md 6.3). NVRAM and TPM CRB
+/// are `PRESENT = 0` until S7-10 and S7-22 add them; ECAM is `PRESENT = 0` unless
+/// `pci_ecam` is set (S4-30c). With `nvme` the table gets the eighth entry,
+/// device code 8 (FIRMWARE_BOOT.md 6.3).
+fn board_devices(nvme: bool, pci_ecam: bool) -> Vec<DeviceEntry> {
     let mmio = |code, base, length| DeviceEntry {
         code,
         flags: DEVICE_PRESENT,
@@ -358,9 +377,17 @@ fn board_devices(nvme: bool) -> Vec<DeviceEntry> {
         mmio(4, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
         DeviceEntry::absent(5),
         DeviceEntry::absent(6),
-        DeviceEntry::absent(7),
+        DeviceEntry::absent(DEVICE_CODE_ECAM),
     ];
     debug_assert_eq!(devices.len(), BASE_DEVICE_COUNT);
+    if pci_ecam {
+        let ecam = PCI_ECAM_DESCRIPTOR;
+        devices[DEV_ECAM_TABLE] = DeviceEntry {
+            param0: u64::from(ecam.segment),
+            param1: ecam.handoff_param1(),
+            ..mmio(DEVICE_CODE_ECAM, ecam.base, ecam.size)
+        };
+    }
     if nvme {
         // Polling only: no IRQ route in slice A (`gsi = 0xFFFF_FFFF`).
         devices.push(mmio(DEVICE_CODE_NVME, NVME_MMIO_BASE, NVME_MMIO_BYTES));
@@ -652,6 +679,9 @@ pub struct FirmwareRunReport {
     pub com1: Vec<u8>,
     pub virtual_ns: u64,
     pub tsc_hz: u64,
+    /// Set when the guest asked the PM block to stop the machine (S5 or reset,
+    /// S7-14a); `exit` is then `Stopped`. Always `None` without `acpi_pm`.
+    pub stop_reason: Option<MachineStopReason>,
 }
 
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
@@ -661,7 +691,9 @@ pub struct LoadedFirmwareBoard {
     uart: Uart16550Handle,
     display: DisplayHandle,
     nvme: Option<NvmeHandle>,
-    clock: VirtualClock,
+    acpi_pm: Option<AcpiPmHandle>,
+    /// Shared with the PM timer; this board is the only advancer.
+    clock: VirtualClockHandle,
     handoff: Vec<u8>,
     page_table_bytes: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
@@ -718,15 +750,22 @@ impl LoadedFirmwareBoard {
         self.page_table_bytes
     }
 
-    pub fn clock(&self) -> &VirtualClock {
-        &self.clock
+    /// Handle of the ACPI PM block; `None` unless `FirmwareBoardConfig::acpi_pm` was set.
+    pub fn acpi_pm(&self) -> Option<AcpiPmHandle> {
+        self.acpi_pm.clone()
+    }
+
+    /// The virtual clock as of now (a snapshot; time moves only through
+    /// [`Self::advance_time_ns`]).
+    pub fn clock(&self) -> VirtualClock {
+        self.clock.snapshot()
     }
 
     /// Explicit virtual-time advance; time never moves on its own
     /// (MACHINE_CONTRACT.md, caller-driven virtual clock).
     pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), FirmwareBoardError> {
         self.clock
-            .advance_time_ns(delta_ns)
+            .advance_standalone(delta_ns)
             .map_err(FirmwareBoardError::Clock)
     }
 
@@ -767,6 +806,7 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         self.com1_log.clear();
         let nvme = self.nvme.clone();
+        let acpi_pm = self.acpi_pm.clone();
         // Doorbells the host rang before the run are executed before the guest starts.
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
@@ -778,6 +818,9 @@ impl LoadedFirmwareBoard {
                 || {
                     uart.holding_occupied()
                         || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                        || acpi_pm
+                            .as_ref()
+                            .is_some_and(|pm| pm.stop_request().is_some())
                 },
                 |_| {},
             );
@@ -795,7 +838,11 @@ impl LoadedFirmwareBoard {
                 }
             }
             self.advance_time_ns(report.instructions_executed)?;
+            let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             let exit = match report.exit {
+                // A requested machine stop is final: no further quantum, and it is
+                // not reported as an exhausted budget.
+                PagedProbeExit::Stopped if stop_reason.is_some() => PagedProbeExit::Stopped,
                 PagedProbeExit::Stopped if remaining == 0 => PagedProbeExit::BudgetExhausted,
                 PagedProbeExit::Stopped if report.instructions_executed > 0 => continue,
                 other => other,
@@ -807,8 +854,9 @@ impl LoadedFirmwareBoard {
                 retired,
                 quanta,
                 com1: self.com1_log.clone(),
-                virtual_ns: self.clock.now_ns(),
-                tsc_hz: self.clock.tsc_hz(),
+                virtual_ns: self.clock().now_ns(),
+                tsc_hz: self.clock().tsc_hz(),
+                stop_reason,
             });
         }
     }
@@ -820,6 +868,17 @@ pub fn load_firmware_image(
     image: &[u8],
     config: &FirmwareBoardConfig,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    // The board declares no PCI function: bus 0 stays empty.
+    load_firmware_image_with_pci(image, config, PciEcam::new())
+}
+
+/// Shared loader. `pci` is registered only when `config.pci_ecam` is set; the
+/// public entry point passes an empty one, tests pass a diagnostic endpoint.
+fn load_firmware_image_with_pci(
+    image: &[u8],
+    config: &FirmwareBoardConfig,
+    pci: PciEcam,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let required_minor = if config.nvme.is_some() {
         HANDOFF_MINOR_NVME
     } else {
@@ -828,7 +887,7 @@ pub fn load_firmware_image(
     let entry_offset = validate_image(image, required_minor)?;
     validate_config(config)?;
 
-    let devices = board_devices(config.nvme.is_some());
+    let devices = board_devices(config.nvme.is_some(), config.pci_ecam);
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
@@ -855,7 +914,8 @@ pub fn load_firmware_image(
     } else {
         DisplayDevice::new_with_handle()
     };
-    // Bus order: COM1, LAPIC, IOAPIC, display, then the optional NVMe controller.
+    // Bus order: COM1, LAPIC, IOAPIC, display, then the optional NVMe controller,
+    // the optional PCI configuration device and the optional ACPI PM block.
     let mut bus_devices: Vec<Box<dyn crate::BusDevice>> = vec![
         Box::new(uart_device),
         Box::new(lapic),
@@ -888,15 +948,47 @@ pub fn load_firmware_image(
         devices[DEV_COM1].length as u32,
     )
     .map_err(|_| FirmwareBoardError::BusBuild(BusBuildError::InvalidPortRange))?;
+    let mut ports = vec![PortRegionBinding {
+        range: com1,
+        device_index: DEV_COM1,
+    }];
+    // One PCI configuration device, two bindings (ECAM MMIO + conf1 PIO) with the
+    // same device index, so both front ends share one function table.
+    if devices[DEV_ECAM_TABLE].present() {
+        let device_index = bus_devices.len();
+        bus_devices.push(Box::new(pci));
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_ECAM_TABLE].base),
+            device_index,
+        });
+        ports.push(PortRegionBinding {
+            range: PortRange::new(PortAddress::new(PCI_CONF1_BASE_PORT), PCI_CONF1_PORT_BYTES)
+                .map_err(FirmwareBoardError::BusBuild)?,
+            device_index,
+        });
+    }
+    // The PM timer reads the board's clock; the board stays its only advancer.
+    let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
+    let mut acpi_pm = None;
+    if config.acpi_pm {
+        let (device, handle) = AcpiPm::new_with_handle(clock.clone());
+        ports.push(PortRegionBinding {
+            range: PortRange::new(
+                PortAddress::new(ACPI_PM_DESCRIPTOR.base_port),
+                ACPI_PM_DESCRIPTOR.port_bytes,
+            )
+            .map_err(FirmwareBoardError::BusBuild)?,
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        acpi_pm = Some(handle);
+    }
     let mut bus = MachineBus::new(
         map,
         RamLimits::new(config.ram_bytes),
         bus_devices,
         mmio,
-        vec![PortRegionBinding {
-            range: com1,
-            device_index: DEV_COM1,
-        }],
+        ports,
     )
     .map_err(FirmwareBoardError::BusBuild)?;
 
@@ -949,13 +1041,13 @@ pub fn load_firmware_image(
     };
     state.gpr[Register::Rsp as usize] = FIRMWARE_BOOT_STACK_TOP;
     state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
-    let clock = VirtualClock::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
     Ok(LoadedFirmwareBoard {
         bus,
         state,
         uart,
         display,
         nvme,
+        acpi_pm,
         clock,
         handoff,
         page_table_bytes,
@@ -966,6 +1058,11 @@ pub fn load_firmware_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ACPI_PM_TMR_BLK, ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1A_CNT_BLK,
+        ACPI_PM1A_EVT_BLK, ACPI_RESET_REG, ACPI_RESET_VALUE, ACPI_SLP_TYP_S5, DeviceError,
+        PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, Type0Config,
+    };
     use od_isa::memory::ArchitecturalFault;
 
     // Independent reference for `reference_config()`, generated by a separate
@@ -1092,7 +1189,7 @@ mod tests {
                 second_screen,
                 ..FirmwareBoardConfig::default()
             };
-            let devices = board_devices(false);
+            let devices = board_devices(false, false);
             // `MachineMemoryMap::new` itself rejects overlaps and width overflow.
             let map = board_map(&config, &devices).unwrap();
             let table_bytes = boot_page_table_count(&map) * PAGE;
@@ -1592,6 +1689,392 @@ mod tests {
         );
     }
 
+    // ---- S4-30c: PCI configuration device on the board (opt-in) ----
+
+    fn ecam_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            pci_ecam: true,
+            ..reference_config()
+        }
+    }
+
+    fn ecam_at(offset: u64) -> GuestPhysicalAddress {
+        GuestPhysicalAddress::new(PCI_ECAM_DESCRIPTOR.base + offset)
+    }
+
+    fn ecam_off(device: u64, function: u64, register: u64) -> u64 {
+        (device << 15) | (function << 12) | register
+    }
+
+    fn device_entry(block: &[u8], index: usize) -> &[u8] {
+        let table = le_u32(block, 0x3C).unwrap() as usize;
+        &block[table + index * 48..table + (index + 1) * 48]
+    }
+
+    fn regions_of(block: &[u8]) -> Vec<&[u8]> {
+        let count = le_u32(block, 0x34).unwrap() as usize;
+        (0..count)
+            .map(|i| &block[0xA0 + 32 * i..0xA0 + 32 * (i + 1)])
+            .collect()
+    }
+
+    /// Diagnostic-only endpoint at 00:03.0 (not declared by the board).
+    fn pci_with_diagnostic_endpoint() -> PciEcam {
+        let mut pci = PciEcam::new();
+        pci.add_function(
+            0,
+            3,
+            0,
+            Box::new(Type0Config::new(0xD1A6, 1, 1, 0xFF_0000, Some(4096)).unwrap()),
+        )
+        .unwrap();
+        pci
+    }
+
+    #[test]
+    fn pci_ecam_is_off_by_default_and_the_default_handoff_is_unchanged() {
+        assert!(!FirmwareBoardConfig::default().pci_ecam);
+        let mut board = load(&hlt_image());
+        // Byte for byte the reference of the previous slices (golden test above).
+        assert_eq!(hex(board.handoff_block()), REFERENCE_HANDOFF_HEX);
+        let absent = device_entry(board.handoff_block(), DEV_ECAM_TABLE).to_vec();
+        assert_eq!(le_u32(&absent, 0).unwrap(), 7);
+        assert_eq!(le_u32(&absent, 4).unwrap(), 0, "PRESENT = 0");
+        assert!(absent[8..0x18].iter().all(|&b| b == 0));
+        assert_eq!(le_u32(&absent, 0x18).unwrap(), NO_GSI);
+        // No window and no conf1 ports without the flag.
+        assert!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0), AccessWidth::Dword)
+                .is_err()
+        );
+        assert!(
+            board
+                .bus_mut()
+                .read_port(PortAddress::new(PCI_CONF1_BASE_PORT), AccessWidth::Dword)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pci_ecam_flag_makes_code_7_present_inside_handoff_v1_0() {
+        let off = load(&hlt_image());
+        let on = load_firmware_image(&hlt_image(), &ecam_config()).unwrap();
+        let (a, b) = (off.handoff_block(), on.handoff_block());
+        // Still v1.0: the code-7 slot exists since the first minor.
+        assert_eq!(le_u16(b, 0x0A).unwrap(), 0, "version_minor");
+        assert_eq!(le_u32(b, 0x40).unwrap(), 7, "device_count");
+        assert_eq!(le_u32(b, 0x34).unwrap(), le_u32(a, 0x34).unwrap() + 1);
+        assert_eq!(le_u32(b, 0x10).unwrap() as usize, b.len());
+        assert_eq!(b.len(), a.len() + 32);
+        // Entry 7: PRESENT, MMIO, base/length of the descriptor, segment 0, buses 0..=0.
+        let entry = device_entry(b, DEV_ECAM_TABLE);
+        let mut expected = [0u8; 48];
+        expected[0..4].copy_from_slice(&7u32.to_le_bytes());
+        expected[4..8].copy_from_slice(&1u32.to_le_bytes());
+        expected[8..16].copy_from_slice(&0xFC10_0000u64.to_le_bytes());
+        expected[16..24].copy_from_slice(&0x10_0000u64.to_le_bytes());
+        expected[24..28].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert_eq!(hex(entry), hex(&expected), "param0 = 0, param1 = 0");
+        // The other six entries are unchanged.
+        for index in (0..7).filter(|&i| i != DEV_ECAM_TABLE) {
+            assert_eq!(device_entry(a, index), device_entry(b, index), "{index}");
+        }
+        // One extra MMIO region owned by the entry (index 6); the rest is identical.
+        let (ra, rb) = (regions_of(a), regions_of(b));
+        let added: Vec<_> = rb.iter().filter(|r| !ra.contains(r)).collect();
+        assert_eq!(added.len(), 1);
+        let region = added[0];
+        assert_eq!(le_u32(region, 0).unwrap(), REGION_MMIO);
+        assert_eq!(le_u64(region, 8).unwrap(), 0xFC10_0000);
+        assert_eq!(le_u64(region, 0x10).unwrap(), 0x10_0000);
+        assert_eq!(le_u32(region, 0x18).unwrap(), DEV_ECAM_TABLE as u32);
+        assert!(ra.iter().all(|r| rb.contains(r)));
+        // The same 2 MiB page-table block as the display registers: N is unchanged.
+        assert_eq!(on.boot_page_table_bytes(), off.boot_page_table_bytes());
+        let mut zeroed = b.to_vec();
+        zeroed[0x14..0x18].copy_from_slice(&[0; 4]);
+        assert_eq!(le_u32(b, 0x14).unwrap(), crc32_ieee(&[&zeroed]));
+        // An image that only knows minor 0 is enough: no minor bump.
+        assert!(load_firmware_image(&hlt_image(), &ecam_config()).is_ok());
+    }
+
+    #[test]
+    fn pci_ecam_with_nvme_keeps_both_entries_and_distinct_bus_indices() {
+        let config = FirmwareBoardConfig {
+            pci_ecam: true,
+            ..nvme_config()
+        };
+        let mut board = load_firmware_image(&nvme_image(&[0xf4]), &config).unwrap();
+        let block = board.handoff_block().to_vec();
+        assert_eq!(le_u16(&block, 0x0A).unwrap(), 1);
+        assert_eq!(le_u32(&block, 0x40).unwrap(), 8);
+        assert_eq!(le_u32(device_entry(&block, 6), 4).unwrap(), 1);
+        assert_eq!(le_u64(device_entry(&block, 7), 8).unwrap(), NVME_MMIO_BASE);
+        let cap = board
+            .bus_mut()
+            .read_physical(
+                GuestPhysicalAddress::new(NVME_MMIO_BASE),
+                AccessWidth::Qword,
+            )
+            .unwrap();
+        assert_eq!(cap & 0xFFFF, 1023, "NVMe still answers");
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0), AccessWidth::Dword),
+            Ok(0xFFFF_FFFF)
+        );
+    }
+
+    #[test]
+    fn ecam_window_is_non_ram_mmio_and_disjoint_from_every_other_region() {
+        let config = FirmwareBoardConfig {
+            second_screen: true,
+            nvme: Some(NvmeConfig::default()),
+            ram_bytes: FIRMWARE_MAX_RAM_BYTES,
+            pci_ecam: true,
+            ..FirmwareBoardConfig::default()
+        };
+        let devices = board_devices(true, true);
+        let map = board_map(&config, &devices).unwrap();
+        let ecam = PCI_ECAM_DESCRIPTOR;
+        let (start, end) = (ecam.base, ecam.base + ecam.size);
+        assert!(end <= 1 << 32, "below 4 GiB");
+        assert!(
+            end <= 1u64 << map.physical_address_width(),
+            "inside physical36"
+        );
+        let mut found = 0;
+        for region in map.regions() {
+            let r_start = region.range.start().get();
+            let r_end = r_start + region.range.len();
+            if r_start == start {
+                found += 1;
+                assert_eq!(region.kind, MemoryRegionKind::Mmio);
+                assert_eq!(r_end, end);
+            } else {
+                assert!(r_end <= start || r_start >= end, "{region:?} overlaps ECAM");
+            }
+        }
+        assert_eq!(found, 1);
+        // Explicit neighbours named by the contract.
+        for (base, len) in [
+            (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+            (DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+            (DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+            (NVME_MMIO_BASE, NVME_MMIO_BYTES),
+            (IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE),
+            (LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE),
+            (FIRMWARE_ROM_BASE, FIRMWARE_IMAGE_BYTES as u64),
+        ] {
+            assert!(base + len <= start || base >= end, "{base:#x}");
+        }
+        assert!(
+            map.regions()
+                .iter()
+                .filter(|r| r.kind == MemoryRegionKind::Ram)
+                .all(|r| r.range.start().get() + r.range.len() <= start
+                    || r.range.start().get() >= end)
+        );
+    }
+
+    #[test]
+    fn patch_physical_ram_on_the_ecam_window_is_rejected() {
+        let mut board = load_firmware_image(&hlt_image(), &ecam_config()).unwrap();
+        let before = board
+            .bus_mut()
+            .read_physical(ecam_at(0), AccessWidth::Dword)
+            .unwrap();
+        for offset in [0, 0x1000, 0xF_FFFC] {
+            assert!(
+                matches!(
+                    board
+                        .bus_mut()
+                        .patch_physical_ram(ecam_at(offset), &[0, 0, 0, 0]),
+                    Err(MemoryAccessError::ReadOnlyRegion(MemoryRegionKind::Mmio))
+                ),
+                "{offset:#x}"
+            );
+        }
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0), AccessWidth::Dword)
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn empty_bus_0_reads_all_ones_for_all_32_devices_through_the_board_bus() {
+        let mut board = load_firmware_image(&hlt_image(), &ecam_config()).unwrap();
+        for device in 0..32u64 {
+            for function in [0u64, 1, 7] {
+                let at = ecam_at(ecam_off(device, function, 0));
+                for (width, ones) in [
+                    (AccessWidth::Dword, 0xFFFF_FFFFu64),
+                    (AccessWidth::Word, 0xFFFF),
+                    (AccessWidth::Byte, 0xFF),
+                ] {
+                    assert_eq!(
+                        board.bus_mut().read_physical(at, width),
+                        Ok(ones),
+                        "{device}:{function}"
+                    );
+                }
+            }
+            // Writes to an absent function are accepted and dropped.
+            let at = ecam_at(ecam_off(device, 0, 4));
+            board
+                .bus_mut()
+                .write_physical(at, AccessWidth::Word, 7, |_| {})
+                .unwrap();
+            assert_eq!(
+                board.bus_mut().read_physical(at, AccessWidth::Word),
+                Ok(0xFFFF)
+            );
+        }
+        // The last byte of the window is device 31 function 7 register 0xFFF.
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0xF_FFFF), AccessWidth::Byte),
+            Ok(0xFF)
+        );
+        // An address past the last byte of the 1 MiB window is not routed to the device.
+        assert!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(0x10_0000), AccessWidth::Byte)
+                .is_err()
+        );
+    }
+
+    fn inl(bus: &mut MachineBus, port: u16) -> u32 {
+        bus.read_port(PortAddress::new(port), AccessWidth::Dword)
+            .unwrap()
+    }
+
+    fn outl(bus: &mut MachineBus, port: u16, value: u32) {
+        bus.write_port(PortAddress::new(port), AccessWidth::Dword, value)
+            .unwrap();
+    }
+
+    fn conf1(device: u32, register: u32) -> u32 {
+        0x8000_0000 | (device << 11) | (register & 0xFC)
+    }
+
+    #[test]
+    fn linux_type1_and_type2_probes_on_the_board_instance() {
+        let mut board = load_firmware_image(&hlt_image(), &ecam_config()).unwrap();
+        let bus = board.bus_mut();
+        let outb = |bus: &mut MachineBus, port: u16, value: u32| {
+            bus.write_port(PortAddress::new(port), AccessWidth::Byte, value)
+                .unwrap();
+        };
+        // pci_check_type1: outb 0xCFB, save latch, write 0x80000000, read back, restore.
+        outb(bus, 0xCFB, 1);
+        let saved = inl(bus, 0xCF8);
+        assert_eq!(saved, 0);
+        outl(bus, 0xCF8, 0x8000_0000);
+        assert_eq!(inl(bus, 0xCF8), 0x8000_0000, "latch reads back");
+        // The latch readback above is all this test proves for type1. Sanity
+        // inputs, 00:00.0 class and vendor words, are all ones: with no function
+        // of class 0x0600/0x0300 and no DMI year >= 2001 pci_sanity_check
+        // (direct.c:204-216) rejects conf1 and Linux moves on to type2, which
+        // also fails below (MACHINE_CONTRACT.md, S4-30c). That is expected here.
+        outl(bus, 0xCF8, conf1(0, 0x0A));
+        assert_eq!(
+            bus.read_port(PortAddress::new(0xCFC + 2), AccessWidth::Word),
+            Ok(0xFFFF)
+        );
+        outl(bus, 0xCF8, conf1(0, 0));
+        assert_eq!(
+            bus.read_port(PortAddress::new(0xCFC), AccessWidth::Word),
+            Ok(0xFFFF)
+        );
+        outl(bus, 0xCF8, saved);
+        assert_eq!(inl(bus, 0xCF8), 0);
+        // pci_check_type2: three outb(0), then both bytes must read 0.
+        outb(bus, 0xCFB, 0);
+        outb(bus, 0xCF8, 0);
+        outb(bus, 0xCFA, 0);
+        let gate = bus.read_port(PortAddress::new(0xCF8), AccessWidth::Byte) == Ok(0)
+            && bus.read_port(PortAddress::new(0xCFA), AccessWidth::Byte) == Ok(0);
+        assert!(!gate, "type2 is rejected");
+        // 0xCF9 stays an explicit device error (reset is S7-14a), never a silent success.
+        assert!(
+            bus.write_port(PortAddress::new(0xCF9), AccessWidth::Byte, 0x0E)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn conf1_write_is_visible_through_ecam_on_the_diagnostic_endpoint() {
+        let mut board = load_firmware_image_with_pci(
+            &hlt_image(),
+            &ecam_config(),
+            pci_with_diagnostic_endpoint(),
+        )
+        .unwrap();
+        let bus = board.bus_mut();
+        // The function exists in both views; neighbours stay absent.
+        assert_eq!(
+            bus.read_physical(ecam_at(ecam_off(3, 0, 0)), AccessWidth::Dword),
+            Ok(0x0001_D1A6)
+        );
+        outl(bus, 0xCF8, conf1(3, 0));
+        assert_eq!(inl(bus, 0xCFC), 0x0001_D1A6);
+        for device in [0u64, 2, 4, 31] {
+            assert_eq!(
+                bus.read_physical(ecam_at(ecam_off(device, 0, 0)), AccessWidth::Dword),
+                Ok(0xFFFF_FFFF)
+            );
+        }
+        // Command and BAR0 through conf1, seen through ECAM.
+        outl(bus, 0xCF8, conf1(3, 0x04));
+        bus.write_port(PortAddress::new(0xCFC), AccessWidth::Word, 0xFFFF)
+            .unwrap();
+        assert_eq!(
+            bus.read_physical(ecam_at(ecam_off(3, 0, 4)), AccessWidth::Word),
+            Ok(7)
+        );
+        outl(bus, 0xCF8, conf1(3, 0x10));
+        outl(bus, 0xCFC, 0xFFFF_FFFF);
+        assert_eq!(
+            bus.read_physical(ecam_at(ecam_off(3, 0, 0x10)), AccessWidth::Dword),
+            Ok(0xFFFF_F000)
+        );
+        // And back: ECAM write, conf1 read.
+        bus.write_physical(
+            ecam_at(ecam_off(3, 0, 0x10)),
+            AccessWidth::Dword,
+            0x1234_5678,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(inl(bus, 0xCFC), 0x1234_5000);
+    }
+
+    #[test]
+    fn without_the_flag_a_supplied_pci_device_is_not_registered() {
+        let mut board = load_firmware_image_with_pci(
+            &hlt_image(),
+            &reference_config(),
+            pci_with_diagnostic_endpoint(),
+        )
+        .unwrap();
+        assert_eq!(hex(board.handoff_block()), REFERENCE_HANDOFF_HEX);
+        assert!(
+            board
+                .bus_mut()
+                .read_physical(ecam_at(ecam_off(3, 0, 0)), AccessWidth::Dword)
+                .is_err()
+        );
+    }
+
     #[test]
     fn run_boot_executes_commands_submitted_before_the_guest_starts() {
         const ASQ: u64 = 0x0100_0000;
@@ -1635,5 +2118,256 @@ mod tests {
         bus.read_flat_bytes(GuestPhysicalAddress::new(DATA + 4), &mut serial)
             .unwrap();
         assert_eq!(&serial, b"OD-NVME-0001");
+    }
+
+    // ---- S7-14a: ACPI fixed hardware on the board (opt-in) ----
+
+    fn pm_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            acpi_pm: true,
+            ..reference_config()
+        }
+    }
+
+    fn io_port(port: u16) -> PortAddress {
+        PortAddress::new(port)
+    }
+
+    /// `MOV AL,imm8; MOV DX,imm16; OUT DX,AL; HLT`.
+    fn out_byte_image(port: u16, value: u8) -> Vec<u8> {
+        let [lo, hi] = port.to_le_bytes();
+        test_image(&[0xb0, value, 0x66, 0xba, lo, hi, 0xee, 0xf4], &[])
+    }
+
+    #[test]
+    fn acpi_pm_is_off_by_default_and_the_handoff_never_changes() {
+        assert!(!FirmwareBoardConfig::default().acpi_pm);
+        let mut off = load(&hlt_image());
+        assert_eq!(hex(off.handoff_block()), REFERENCE_HANDOFF_HEX);
+        let on = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        assert_eq!(
+            on.handoff_block(),
+            off.handoff_block(),
+            "the PM block is not in the handoff"
+        );
+        assert!(off.acpi_pm().is_none() && on.acpi_pm().is_some());
+        for port in [
+            ACPI_PM1A_EVT_BLK,
+            ACPI_PM1A_CNT_BLK,
+            ACPI_PM_TMR_BLK,
+            ACPI_RESET_REG,
+        ] {
+            assert!(
+                matches!(
+                    off.bus_mut().read_port(io_port(port), AccessWidth::Byte),
+                    Err(BusAccessError::UnmappedPort(_))
+                ),
+                "{port:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn acpi_pm_registers_answer_through_the_board_bus() {
+        let mut board = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        let bus = board.bus_mut();
+        assert_eq!(
+            bus.read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
+            Ok(u32::from(ACPI_PM1_CNT_SCI_EN)),
+            "SCI_EN is set from reset"
+        );
+        assert_eq!(
+            bus.read_port(io_port(ACPI_PM1A_EVT_BLK), AccessWidth::Word),
+            Ok(0)
+        );
+        board.advance_time_ns(1_000_000_000).unwrap();
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword),
+            Ok(3_579_545),
+            "the PM timer follows the board clock"
+        );
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+    }
+
+    #[test]
+    fn acpi_pm_ports_avoid_com1_conf1_and_0xcf9_on_the_fully_populated_board() {
+        let d = ACPI_PM_DESCRIPTOR;
+        let pm = d.base_port..d.base_port + d.port_bytes as u16;
+        let com1 = FIRMWARE_COM1_PORT..FIRMWARE_COM1_PORT + 8;
+        let conf1 = PCI_CONF1_BASE_PORT..PCI_CONF1_BASE_PORT + PCI_CONF1_PORT_BYTES as u16;
+        for port in pm.clone() {
+            assert!(!com1.contains(&port) && !conf1.contains(&port), "{port:#x}");
+        }
+        assert!(!pm.contains(&0xCF9));
+        // The bus refuses overlapping port regions, so a successful build with
+        // every optional device proves the map; behaviour is checked below.
+        let config = FirmwareBoardConfig {
+            second_screen: true,
+            nvme: Some(NvmeConfig::default()),
+            pci_ecam: true,
+            acpi_pm: true,
+            ..reference_config()
+        };
+        let mut board = load_firmware_image(&nvme_image(&[0xf4]), &config).unwrap();
+        let bus = board.bus_mut();
+        // COM1 line status (THR empty + transmitter empty) still answers.
+        assert_eq!(
+            bus.read_port(io_port(FIRMWARE_COM1_PORT + 5), AccessWidth::Byte)
+                .map(|v| v & 0x60),
+            Ok(0x60)
+        );
+        // conf1 still reaches the PCI device, and 0xCF9 is still UnknownOffset.
+        assert_eq!(
+            bus.read_port(io_port(PCI_CONF1_BASE_PORT), AccessWidth::Dword),
+            Ok(0)
+        );
+        assert!(matches!(
+            bus.read_port(io_port(0xCF9), AccessWidth::Byte),
+            Err(BusAccessError::Device {
+                source: DeviceError::UnknownOffset,
+                ..
+            })
+        ));
+        assert!(matches!(
+            bus.write_port(io_port(0xCF9), AccessWidth::Byte, 0x06),
+            Err(BusAccessError::Device {
+                source: DeviceError::UnknownOffset,
+                ..
+            })
+        ));
+        // Writing the PCI reset-like value to 0xCF9 does not stop the machine.
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+        // The PM block is on its own device, not on the PCI one.
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn acpi_pm_does_not_alias_mmio_windows_of_the_board() {
+        // Ports and MMIO are separate spaces: the PM block adds no MMIO region,
+        // so the memory map and the handoff regions are identical to the default.
+        let devices = board_devices(true, true);
+        let plain = FirmwareBoardConfig {
+            ram_bytes: FIRMWARE_MAX_RAM_BYTES,
+            nvme: Some(NvmeConfig::default()),
+            pci_ecam: true,
+            ..FirmwareBoardConfig::default()
+        };
+        let with_pm = FirmwareBoardConfig {
+            acpi_pm: true,
+            ..plain.clone()
+        };
+        assert_eq!(
+            board_map(&plain, &devices).unwrap().regions(),
+            board_map(&with_pm, &devices).unwrap().regions()
+        );
+        // No MMIO device sits at a numerically equal address either.
+        for entry in devices.iter().filter(|d| d.is_mmio()) {
+            assert!(entry.base > u64::from(u16::MAX));
+        }
+    }
+
+    #[test]
+    fn guest_s5_write_stops_the_run_with_shutdown() {
+        // OUT to the high byte of PM1_CNT: SLP_TYP = 5 (bits 10..12) and SLP_EN (bit 13).
+        let slp = ((u16::from(ACPI_SLP_TYP_S5) << 10) | ACPI_PM1_CNT_SLP_EN) >> 8;
+        let image = out_byte_image(ACPI_PM1A_CNT_BLK + 1, slp as u8);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Stopped);
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Shutdown));
+        assert_eq!(report.retired, 3, "MOV, MOV, OUT; the HLT never runs");
+        assert_eq!(report.virtual_ns, 3);
+        // The stop is latched: running again executes nothing.
+        let again = board.run_boot(100).unwrap();
+        assert_eq!(again.exit, PagedProbeExit::Stopped);
+        assert_eq!(again.stop_reason, Some(MachineStopReason::Shutdown));
+        assert_eq!(again.retired, 0);
+    }
+
+    #[test]
+    fn guest_reset_write_stops_the_run_with_reset() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Stopped);
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+        assert_eq!(report.retired, 3);
+        assert_ne!(Some(MachineStopReason::Shutdown), report.stop_reason);
+    }
+
+    #[test]
+    fn a_stop_on_the_last_budgeted_instruction_is_not_a_budget_exhaustion() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let report = board.run_boot(3).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Stopped);
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+    }
+
+    #[test]
+    fn other_reset_values_and_a_board_without_the_flag_do_not_stop() {
+        let mut board =
+            load_firmware_image(&out_byte_image(ACPI_RESET_REG, 0x05), &pm_config()).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.stop_reason, None);
+        // Without the flag the port does not exist: a bus error, not a stop.
+        let mut off = load(&out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE));
+        let report = off.run_boot(100).unwrap();
+        assert!(
+            matches!(report.exit, PagedProbeExit::PortIo(_)),
+            "{:?}",
+            report.exit
+        );
+        assert_eq!(report.stop_reason, None);
+    }
+
+    #[test]
+    fn the_pm_timer_follows_the_board_clock() {
+        let mut board = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        board.advance_time_ns(2_000_000_000).unwrap();
+        let first = board
+            .bus_mut()
+            .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+            .unwrap();
+        board.advance_time_ns(1_000_000).unwrap();
+        let second = board
+            .bus_mut()
+            .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+            .unwrap();
+        assert_eq!(first, 7_159_090);
+        assert_eq!(second - first, 3_579);
+        assert_eq!(board.clock().now_ns(), 2_001_000_000);
+    }
+
+    #[test]
+    fn run_boot_advances_the_clock_by_retired_instructions_and_pm_tmr_sees_it() {
+        let mut board = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        // One tick of the PM timer (3.579545 MHz) completes at exactly 1 s.
+        board.advance_time_ns(999_999_999).unwrap();
+        let tmr = |board: &mut LoadedFirmwareBoard| {
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+                .unwrap()
+        };
+        assert_eq!(tmr(&mut board), 3_579_544);
+        let report = board.run_boot(10).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 1, "HLT");
+        assert_eq!(report.virtual_ns, 1_000_000_000);
+        assert_eq!(board.clock().now_ns(), 1_000_000_000);
+        assert_eq!(
+            tmr(&mut board),
+            3_579_545,
+            "the retired HLT moved the timer"
+        );
     }
 }

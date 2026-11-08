@@ -132,7 +132,7 @@ fn build_err(m: &BoardManifest) -> DsdtError {
 /// Пересчитано после удаления `_ADR` у PCI0 (устройство имеет `_HID` или `_ADR`, не оба): 6 bytes
 /// (`08 5F 41 44 52 00`) dropped, so Length 0xB6 -> 0xB0, Scope PkgLength 145 -> 139
 /// (`41 09` -> `4B 08`), Device PkgLength 85 -> 79 (`45 05` -> `4F 04`), checksum 0xDC -> 0x0E.
-fn reference_both() -> Vec<u8> {
+pub(super) fn reference_both() -> Vec<u8> {
     hex("44 53 44 54 B0 00 00 00 02 0E 4F 50 4E 44 53 4B \
          4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
          01 00 00 00 10 4B 08 5C 5F 53 42 5F 5B 82 4F 04 \
@@ -367,4 +367,27 @@ fn dsdt_built_from_raw_device_entries_matches_the_reference() {
     ])
     .unwrap();
     assert_eq!(build(&m), reference_both());
+}
+
+#[test]
+fn ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted() {
+    // The 48 raw bytes `od-machine` writes for device code 7 when the board is built with
+    // `pci_ecam` (S4-30c): PRESENT, MMIO, base 0xFC10_0000, length 0x10_0000, no IRQ,
+    // segment 0, buses 0..=0 (`firmware_board.rs` test `pci_ecam_flag_makes_code_7_present_...`).
+    let mut raw = [0u8; DEVICE_ENTRY_SIZE];
+    raw[0x00..0x04].copy_from_slice(&7u32.to_le_bytes());
+    raw[0x04..0x08].copy_from_slice(&1u32.to_le_bytes());
+    raw[0x08..0x10].copy_from_slice(&0xFC10_0000u64.to_le_bytes());
+    raw[0x10..0x18].copy_from_slice(&0x10_0000u64.to_le_bytes());
+    raw[0x18..0x1C].copy_from_slice(&GSI_NONE.to_le_bytes());
+    let pci = DeviceEntry::parse(&raw);
+    assert!(pci.is_present() && !pci.is_pio());
+    let table = build(&manifest(com1(0x3F8, 8, 4, 0, 1), pci));
+    // `_BBN` 0 and `_CRS` WordBusNumber min 0 max 0 length 1.
+    let bbn = hex("08 5F 42 42 4E 00");
+    assert!(table.windows(bbn.len()).any(|w| w == bbn.as_slice()));
+    let word = hex("88 0D 00 02 0C 00 00 00 00 00 00 00 00 00 01 00");
+    assert!(table.windows(word.len()).any(|w| w == word.as_slice()));
+    assert!(table.windows(4).any(|w| w == *b"PCI0"));
+    validate_dsdt(&table).unwrap();
 }

@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-067-s7-14a-pm-timer-frozen-inside-a-quantum"></a>
+
+### ISSUE-067 — S7-14a: PM-таймер стоит внутри кванта
+
+- **Дата обнаружения:** 2026-11-08, при ревью S7-14a.
+- **Компонент:** `crates/od-machine/src/acpi_pm.rs` (`PM_TMR`), `firmware_board.rs` (`LoadedFirmwareBoard::run_boot`, `advance_time_ns`).
+- **Статус:** открыта; ограничение среза, не дефект логики PM-блока.
+- **Суть и последствия:** `PM_TMR` читает снимок virtual clock платы, а часы двигаются только между квантами (`advance_time_ns(report.instructions_executed)`). Квант заканчивается на записи в COM1 THR, doorbell NVMe, запросе остановки PM, `HLT` или конце бюджета. Гость, который опрашивает `inl(0x608)` без этих событий, видит одно и то же значение до конца бюджета: ожидание по `PM_TMR` (UEFI `Stall`, калибровка TSC/таймеров в Linux) не завершится до конца бюджета.
+- **Основание:** чтение `run_boot` (часы двигаются после `self.run`), тест `the_pm_timer_follows_the_board_clock` и тест `run_boot_advances_the_clock_by_retired_instructions_and_pm_tmr_sees_it`. Первый проверяет, что PM_TMR следует часам платы; второй — что `run_boot` продвигает часы на отработанные инструкции. Неподвижность таймера внутри кванта ни один тест не показывает, она следует из чтения `run_boot`.
+- **Следующий шаг:** закрывать квант на чтении `PM_TMR` (или на опросе по счётчику повторных чтений) либо двигать часы внутри кванта; решение за S4-37/S4-38. Механизм квантов в S7-14a не менялся.
+
 <a id="issue-066-s7-16-nvme-spec-values-not-verified"></a>
 
 ### ISSUE-066 — S7-16: значения NVMe в `od-machine` частично сверены (Linux `nvme.h`, не спецификация), остальное не сверено, I/O не реализован
@@ -63,9 +74,9 @@
 
 - **Дата обнаружения:** 2026-11-07.
 - **Компонент:** handoff block v1.0 ([FIRMWARE_BOOT.md §6.3](specs/FIRMWARE_BOOT.md)), DSDT из manifest ([`dsdt.rs`](../firmware/uefi/src/acpi/dsdt.rs), S7-12).
-- **Статус:** открыта; ограничение контракта, не runtime-дефект (PCI0 не выводится, пока запись PCIe ECAM имеет `PRESENT = 0`, до S4-30).
+- **Статус:** открыта; ограничение контракта, не runtime-дефект (без флага платы `pci_ecam` код 7 остаётся `PRESENT = 0` и PCI0 не выводится; с флагом `pci_ecam` (S4-30c) код 7 — `PRESENT = 1`, DSDT выводит `PCI0` с одним `WordBusNumber` и пустым `_PRT`, и это ограничение становится достижимым; MCFG, `_CRS` с окнами, host bridge и функции — S4-31/S4-38/S7).
 - **Суть и последствия:** запись PCIe ECAM (тип 7) несёт только базу и длину ECAM, сегмент и диапазон шин. Окон I/O и MMIO корневого моста и маршрутов прерываний PCI в handoff block нет, а DSDT строится только из него. `_CRS` `\_SB.PCI0` поэтому содержит один `WordBusNumber`, `_PRT` — пустой пакет. ОС не получит от ACPI окон для назначения BAR и маршрутов INTx устройств PCI (NVMe S7-16, xHCI, сеть).
-- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна ECAM, HPET и ACPI fixed hardware «не назначены, S4-30, S7-14»); тест `dsdt_for_pci_root_and_com1_matches_the_independent_reference`.
+- **Основание:** чтение FIRMWARE_BOOT.md §6.3 и `docs/specs/VIRTUAL_BOARD.md` (окна HPET и ACPI fixed hardware «не назначены, S7-14»); окно ECAM выбрано в S4-30a, под флагом `pci_ecam` код 7 `PRESENT = 1` (S4-30c, MACHINE_CONTRACT.md); тесты `dsdt_for_pci_root_and_com1_matches_the_independent_reference` и `ecam_entry_emitted_by_the_board_with_the_pci_flag_is_accepted`.
 - **Следующий шаг:** при S4-30/S7-13 добавить окна и маршруты в handoff block (повышение `version_minor`, запись в FIRMWARE_BOOT.md) и вывести из них `DWordMemory`/`QWordMemory`/`IO` и `_PRT` в `dsdt.rs`; до этого не заявлять работу PCI-устройств в ОС по ACPI.
 
 <a id="issue-064-s7-rsa-private-ops-not-constant-time"></a>

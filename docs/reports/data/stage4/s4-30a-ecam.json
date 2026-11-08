@@ -1,0 +1,15 @@
+{
+  "slice": "S4-30a",
+  "date": "2026-11-08",
+  "ecam_base": "0xFC100000",
+  "ecam_bytes": "0x100000",
+  "segment": 0,
+  "start_bus": 0,
+  "end_bus": 0,
+  "source": "crates/od-machine/src/pci_ecam.rs",
+  "pci_ecam_tests_passed": 12,
+  "od_machine_tests_passed": 518,
+  "registered_by_board": false,
+  "handoff_code_7_present": false,
+  "not_implemented": ["MCFG", "BAR-to-MMIO mapping", "legacy 0xCF8/0xCFC", "host bridge 00:00.0", "MSI/MSI-X", "production device", "multi-function devices"]
+}

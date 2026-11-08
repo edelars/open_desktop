@@ -98,7 +98,7 @@ interrupt support.
 | `[0xFFC0_0000, 0x1_0000_0000)` | ROM прошивки 4 MiB, read-only; исполняется shadow-копия в RAM, не ROM |
 | `[0x1_0000_0000, …)` | Верхняя RAM, `R − 0xF400_0000`, не выше `2^36` |
 
-Общий объём RAM `R`: от 128 MiB до `0xF_F400_0000`, кратно 2 MiB. Окна ECAM, HPET и ACPI fixed hardware не назначены (S4-30, S7-14).
+Общий объём RAM `R`: от 128 MiB до `0xF_F400_0000`, кратно 2 MiB. Окно ECAM `[0xFC10_0000, 0xFC20_0000)` выбрано в S4-30a для bus 0 и входит в карту платы только под opt-in флагом `FirmwareBoardConfig::pci_ecam` (S4-30c, по умолчанию выключен): с флагом это не-RAM MMIO-регион, PCI-config устройство (ECAM + conf1 `0xCF8..=0xCFF`) на шине платы, код 7 handoff — `PRESENT = 1`; bus 0 пустой (host bridge и функций плата не объявляет). Без флага окна нет, код 7 — `PRESENT = 0`, handoff v1.0 прежний байт в байт. ACPI fixed hardware (PM1a evt/cnt, PM timer, reset register) — блок портов `0x0600..0x0610` (S7-14a; `PM1a_EVT_BLK = 0x0600`, `PM1a_CNT_BLK = 0x0604`, `PM_TMR_BLK = 0x0608`, `RESET_REG = 0x060C`, `SMI_CMD = 0`); блок не пересекает COM1 `0x3F8..=0x3FF` и conf1 `0xCF8..=0xCFF`, `0xCF9` остаётся `UnknownOffset`; в карту памяти он не входит и в handoff не описан (только `ACPI_PM_DESCRIPTOR` для FADT, S4-31); регистрируется под opt-in флагом `FirmwareBoardConfig::acpi_pm` (по умолчанию выключен). Окно HPET не назначено (S7-14); RTC/CMOS `0x70/0x71` не реализованы.
 
 ## Владение состоянием и адресами
 
