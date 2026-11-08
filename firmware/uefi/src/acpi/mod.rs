@@ -4,4 +4,5 @@
 pub mod aml;
 pub mod dsdt;
 pub mod manifest;
+pub mod mcfg;
 pub mod table;
