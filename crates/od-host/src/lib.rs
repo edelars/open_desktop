@@ -6108,6 +6108,7 @@ pub(crate) mod tests {
         );
         assert_eq!(memory.reads, 1);
 
+        drop(published);
         for displacement in [-3_i32, -2, -1] {
             let mut bytes = [0x8b, 0x04, 0x25, 0, 0, 0, 0];
             bytes[3..].copy_from_slice(&displacement.to_le_bytes());
@@ -6130,25 +6131,31 @@ pub(crate) mod tests {
             };
             state.gpr[0] = 0xfeed_face_1234_5678;
             let before = state.clone();
-            let overflow = published
-                .execute_ir_memory_dword_load_v2(
-                    &mut state,
-                    &mut memory,
-                    AccessContext::default(),
-                    1,
-                    None,
-                    &stop,
-                )
-                .unwrap();
+            let overflow = published.execute_ir_memory_dword_load_v2(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            );
+            let overflow_address = i64::from(displacement) as u64;
             assert!(matches!(
-                overflow.exit,
-                MemoryOperationExecutionExitV2::GuestFault(_)
+                overflow,
+                Err(MemoryOperationExecutionErrorV2::MemoryError(
+                    MemoryOperationMemoryErrorV2 {
+                        kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                        address,
+                        length: 4,
+                    }
+                )) if address == overflow_address
             ));
             assert_eq!(state, before);
             assert_eq!(memory.reads, 0);
             assert_eq!(memory.last_read, None);
         }
 
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut failed_memory = Memory {
             reads: 0,
             last_read: None,
@@ -6165,21 +6172,26 @@ pub(crate) mod tests {
         };
         failed_state.gpr[0] = 0xfeed_face_1234_5678;
         let before_failure = failed_state.clone();
-        let failure = published
-            .execute_ir_memory_dword_load_v2(
-                &mut failed_state,
-                &mut failed_memory,
-                AccessContext::default(),
-                1,
-                None,
-                &stop,
-            )
-            .unwrap();
+        let failure = published.execute_ir_memory_dword_load_v2(
+            &mut failed_state,
+            &mut failed_memory,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+        );
         assert!(matches!(
-            failure.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failure,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED,
+                    address,
+                    length: 0,
+                }
+            )) if address == u64::MAX - 3
         ));
         assert_eq!(failed_state, before_failure);
+        assert_eq!(failed_memory.reads, 1);
         assert_eq!(failed_memory.last_read, Some((u64::MAX - 3, 4)));
 
         let callback_stop = AtomicU8::new(0);
@@ -6453,19 +6465,23 @@ pub(crate) mod tests {
         };
         failed_state.gpr[0] = 0xfeed_face_1234_5678;
         let before_failure = failed_state.clone();
-        let failure = published
-            .execute_ir_memory_dword_load_v2(
-                &mut failed_state,
-                &mut failed_memory,
-                AccessContext::default(),
-                1,
-                None,
-                &stop,
-            )
-            .unwrap();
+        let failure = published.execute_ir_memory_dword_load_v2(
+            &mut failed_state,
+            &mut failed_memory,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+        );
         assert!(matches!(
-            failure.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failure,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED,
+                    address,
+                    length: 0,
+                }
+            )) if address == u32::MAX as u64
         ));
         assert_eq!(failed_state, before_failure);
         assert_eq!(failed_memory.reads, 1);
@@ -7315,11 +7331,16 @@ pub(crate) mod tests {
                 None,
                 &stop,
             )
-        }
-        .unwrap();
+        };
         assert!(matches!(
-            failure.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failure,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                    address: 0,
+                    length: 0,
+                }
+            ))
         ));
         assert_eq!(failed_state, before);
         assert_eq!(failed_memory.writes, vec![expected_write.clone()]);
@@ -8084,10 +8105,10 @@ pub(crate) mod tests {
                 Err(MemoryOperationExecutionErrorV2::MemoryError(
                     MemoryOperationMemoryErrorV2 {
                         kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
-                        address,
-                        length: 4,
+                        address: 0,
+                        length: 0,
                     }
-                )) if address == effective_address
+                ))
             ));
             assert_eq!(failed_state, before);
             assert_eq!(failed_ram.bytes, original_bytes);
@@ -10704,19 +10725,23 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut failed_state = before.clone();
-        let failure = published
-            .execute_ir_memory_dword_load_v2(
-                &mut failed_state,
-                &mut failed_memory,
-                AccessContext::default(),
-                1,
-                None,
-                &stop,
-            )
-            .unwrap();
+        let failure = published.execute_ir_memory_dword_load_v2(
+            &mut failed_state,
+            &mut failed_memory,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+        );
         assert!(matches!(
-            failure.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failure,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                    address: 0,
+                    length: 0,
+                }
+            ))
         ));
         assert_eq!(failed_state, before);
         assert_eq!(failed_memory.reads, 1);
@@ -10795,20 +10820,42 @@ pub(crate) mod tests {
                 failure: None,
                 stop_on_read: None,
             };
-            let fault = zero_published
-                .execute_ir_memory_dword_load_v2(
-                    &mut fault_state,
-                    &mut fault_memory,
-                    AccessContext::default(),
-                    1,
-                    None,
-                    &stop,
-                )
-                .unwrap();
-            assert!(
-                matches!(fault.exit, MemoryOperationExecutionExitV2::GuestFault(_)),
-                "expected guest fault for {expected_fault}"
+            let fault = zero_published.execute_ir_memory_dword_load_v2(
+                &mut fault_state,
+                &mut fault_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
             );
+            if rcx == u64::MAX - 2 {
+                assert!(
+                    matches!(
+                        fault,
+                        Err(MemoryOperationExecutionErrorV2::MemoryError(
+                            MemoryOperationMemoryErrorV2 {
+                                kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                                address,
+                                length: 4,
+                            }
+                        )) if address == rcx
+                    ),
+                    "expected address overflow for {expected_fault}"
+                );
+            } else {
+                assert_eq!(
+                    fault.unwrap().exit,
+                    MemoryOperationExecutionExitV2::GuestFault(
+                        od_isa::memory::ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        }
+                    ),
+                    "expected #GP(0) for {expected_fault}"
+                );
+            }
+
             assert_eq!(fault_state, before_fault);
             assert_eq!(fault_memory.reads, 0);
             assert_eq!(fault_memory.last_read, None);
@@ -11454,6 +11501,7 @@ pub(crate) mod tests {
         );
         assert_eq!(memory.writes, vec![expected_write.clone()]);
 
+        drop(published);
         for displacement in [-3_i32, -2, -1] {
             let mut bytes = [0x89, 0x04, 0x25, 0, 0, 0, 0];
             bytes[3..].copy_from_slice(&displacement.to_le_bytes());
@@ -11480,15 +11528,22 @@ pub(crate) mod tests {
                     None,
                     &stop,
                 )
-            }
-            .unwrap();
+            };
+            let overflow_address = i64::from(displacement) as u64;
             assert!(matches!(
-                overflow.exit,
-                MemoryOperationExecutionExitV2::GuestFault(_)
+                overflow,
+                Err(MemoryOperationExecutionErrorV2::MemoryError(
+                    MemoryOperationMemoryErrorV2 {
+                        kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                        address,
+                        length: 4,
+                    }
+                )) if address == overflow_address
             ));
             assert_eq!(overflow_state, before);
             assert!(overflow_memory.writes.is_empty());
         }
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
 
         let mut retry_memory = Memory {
             writes: Vec::new(),
@@ -11510,11 +11565,16 @@ pub(crate) mod tests {
                 None,
                 &stop,
             )
-        }
-        .unwrap();
+        };
         assert!(matches!(
-            failed.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failed,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED,
+                    address,
+                    length: 0,
+                }
+            )) if address == u64::MAX - 3
         ));
         assert_eq!(retry_state, before_failure);
         assert_eq!(retry_memory.writes, vec![expected_write.clone()]);
@@ -14944,7 +15004,6 @@ pub(crate) mod tests {
         assert_eq!(compiled.site().operand().displacement, i64::from(DISP));
         assert_eq!(compiled.site().next_rip(), ENTRY + 6);
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
-        drop(compiled);
         let stop = AtomicU8::new(0);
         let mut native_state = state();
         let mut native_ram = ram(source);
@@ -14976,6 +15035,8 @@ pub(crate) mod tests {
         assert_eq!(native_state.rip, ENTRY + 6);
         assert_eq!(native_ram.reads, [(ADDRESS, 4)]);
         assert_eq!(interpreted_ram.reads, [(ADDRESS, 4)]);
+        // Only one live MAP_JIT mapping is allowed per process (ISSUE-038).
+        drop(published);
 
         for (index, displacement) in [i32::MIN, i32::MAX, 0, 1].into_iter().enumerate() {
             let address = 0x1_0000_4003_u64 + (index as u64 * 0x1000);
@@ -15068,6 +15129,8 @@ pub(crate) mod tests {
         assert_eq!(wrap.exit, MemoryOperationExecutionExitV2::Complete);
         assert_eq!(wrap_state.gpr[0], u64::from(VALUE));
         assert_eq!(wrap_ram.reads, [(0, 4)]);
+        drop(wrap_published);
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
 
         let mut retry_ram = ram(source);
         retry_ram.error = Some(MemoryError::Unmapped {
@@ -15279,6 +15342,7 @@ pub(crate) mod tests {
         assert_eq!(canonical_boundary_state, before);
         assert!(canonical_boundary_ram.reads.is_empty());
 
+        drop(published);
         let overflow_source = [0x8b, 0x80, 0, 0, 0, 0];
         let overflow_compiled = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
             CodeView::new(ENTRY, &overflow_source).unwrap(),
@@ -15307,6 +15371,8 @@ pub(crate) mod tests {
         );
         assert_eq!(overflow_state, before);
         assert!(overflow_ram.reads.is_empty());
+        drop(overflow_published);
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
 
         let callback_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut callback_ram = ram(source);
@@ -20381,7 +20447,7 @@ pub(crate) mod tests {
                 MemoryOperationMemoryErrorV2 { kind, address, length }
             )) if kind == od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED
                 && address == 0xffff_ffa0
-                && length == 4
+                && length == 0
         ));
         assert_eq!(state, before);
         assert_eq!(ram.reads, [(0xffff_ffa0, 4)]);
@@ -20738,9 +20804,14 @@ pub(crate) mod tests {
         assert!(matches!(
             fault,
             Err(MemoryOperationExecutionErrorV2::MemoryError(
-                MemoryOperationMemoryErrorV2 { address: fault_address, length: 4, .. }
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED,
+                    address: fault_address,
+                    length: 0,
+                }
             )) if fault_address == address
         ));
+        assert_eq!(ram.reads, [(address, 4)]);
         assert_eq!(state, before);
         assert_eq!(ram.bytes, before_ram);
         ram.fail_read = false;
@@ -38259,10 +38330,10 @@ pub(crate) mod tests {
                     Err(MemoryOperationExecutionErrorV2::MemoryError(
                         MemoryOperationMemoryErrorV2 {
                             kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
-                            address,
-                            length: 4,
+                            address: 0,
+                            length: 0,
                         }
-                    )) if address == base
+                    ))
                 )),
                 _ => unreachable!(),
             }
@@ -38655,6 +38726,8 @@ pub(crate) mod tests {
         assert_eq!(native_ram.bytes[&(target - 2)], 0x60);
         assert_eq!(native_ram.bytes[&(target + 4)], 0x66);
 
+        // Only one live MAP_JIT mapping is allowed per process (ISSUE-038).
+        drop(published);
         for raw_displacement in [0x80_u8, 0xff, 0x00, 0x01] {
             let source = [0x89, 0x40, raw_displacement];
             let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
@@ -38708,6 +38781,7 @@ pub(crate) mod tests {
             assert_eq!(case_ram.writes, case_interpreter_ram.writes);
             assert_eq!(case_ram.bytes, case_interpreter_ram.bytes);
         }
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
 
         for wrap_rax in [u64::MAX - 20, u64::MAX - 126] {
             let wrap_target = wrap_rax.wrapping_add(0x7f);
@@ -39002,15 +39076,16 @@ pub(crate) mod tests {
                 None,
                 &AtomicU8::new(0),
             )
-        }
-        .unwrap();
+        };
         assert_eq!(
-            crossing.exit,
-            MemoryOperationExecutionExitV2::GuestFault(od_isa::memory::ArchitecturalFault {
-                vector: 13,
-                error_code: Some(0),
-                linear_address: None,
-            })
+            crossing,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                    address: crossing_target,
+                    length: 4,
+                }
+            ))
         );
         assert_eq!(crossing_state, crossing_snapshot);
         assert!(crossing_ram.writes.is_empty());
@@ -111609,14 +111684,15 @@ pub(crate) mod tests {
             Err(MemoryOperationExecutionErrorV2::MemoryError(
                 MemoryOperationMemoryErrorV2 {
                     kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
-                    address: failed_address,
-                    length: 4,
+                    address: 0,
+                    length: 0,
                 }
-            )) if failed_address == address
+            ))
         ));
         assert_eq!(failed_state, before);
         assert_eq!(failed_ram.bytes, original_bytes);
         assert_eq!(failed_ram.writes.len(), 1);
+        assert_eq!(failed_ram.writes[0].0, address);
         failed_ram.error = None;
         let retried = unsafe {
             published.execute_ir_memory_dword_store_v2(
@@ -112149,10 +112225,10 @@ pub(crate) mod tests {
                     Err(MemoryOperationExecutionErrorV2::MemoryError(
                         MemoryOperationMemoryErrorV2 {
                             kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
-                            address,
-                            length: 4,
+                            address: 0,
+                            length: 0,
                         }
-                    )) if address == base_ea
+                    ))
                 ));
                 assert_eq!(failed_state, before_failure);
                 assert_eq!(failed_ram.bytes, original_bytes);
@@ -112674,10 +112750,10 @@ pub(crate) mod tests {
             Err(MemoryOperationExecutionErrorV2::MemoryError(
                 MemoryOperationMemoryErrorV2 {
                     kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
-                    address: failed_address,
-                    length: 4,
+                    address: 0,
+                    length: 0,
                 }
-            )) if failed_address == address
+            ))
         ));
         assert_eq!(failed_state, before);
         assert_eq!(failed_ram.bytes, original_bytes);
@@ -113011,7 +113087,7 @@ pub(crate) mod tests {
                 .unwrap()
         }
 
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let published = publish_load(&[0x48, 0x8b, 0x03]);
         let device_calls = Arc::new(AtomicUsize::new(0));
 
@@ -113377,7 +113453,7 @@ pub(crate) mod tests {
         bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
             .unwrap();
         let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let mut session =
             PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
 
@@ -113535,7 +113611,7 @@ pub(crate) mod tests {
         bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
             .unwrap();
         let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let mut session =
             PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
 
@@ -113719,7 +113795,7 @@ pub(crate) mod tests {
             privilege: od_isa::memory::PrivilegeLevel::Ring3,
             origin: od_isa::memory::AccessOrigin::Explicit,
         };
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
         let mut state = od_isa::LongModeState {
             cr3: Some(CR3),
@@ -113935,7 +114011,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let kernel_context = AccessContext {
             mode: od_isa::memory::InstructionMode::Long64,
             privilege: od_isa::memory::PrivilegeLevel::Ring0,
@@ -114171,7 +114247,7 @@ pub(crate) mod tests {
             privilege: od_isa::memory::PrivilegeLevel::Ring3,
             origin: od_isa::memory::AccessOrigin::Explicit,
         };
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
         let mut alias_state = od_isa::LongModeState {
             cr3: Some(CR3),
@@ -114277,7 +114353,7 @@ pub(crate) mod tests {
         bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
             .unwrap();
         let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
-        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let _guard = jit_test_lock();
         let mut session =
             PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
 

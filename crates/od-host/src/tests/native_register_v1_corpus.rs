@@ -3617,7 +3617,18 @@ fn reduce_saved_native_register_v1_case() {
     }))
     .unwrap();
     validate_input(&source.input).expect("saved reducer source must pass admission and digest");
-    let output_dir = reducer_artifact_dir();
+    // persist_reduction refuses to overwrite, so a fixed directory makes every
+    // rerun fail. Use a per-process directory unless the caller chose one.
+    let output_dir = if std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR").is_some() {
+        reducer_artifact_dir()
+    } else {
+        let dir = std::env::temp_dir().join(format!(
+            "native-register-v1-saved-case-reducer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    };
     let report = reduce_saved_case_with(&path, &source, &output_dir, |input| {
         Ok(observe_repeated(input))
     });
@@ -3679,6 +3690,11 @@ fn reduce_saved_native_register_v1_case() {
     assert_eq!(limited.stop_reason, "evaluation_limit");
     assert_ne!(limited.stop_reason, "globally_minimal");
     persist_reduction(&limited, &injected, &injection_dir.join("limit")).unwrap();
+    if std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR").is_none() {
+        // Only the per-process scratch directory is removed; a caller-chosen
+        // artifact directory is kept for inspection.
+        let _ = fs::remove_dir_all(&output_dir);
+    }
 }
 
 #[test]

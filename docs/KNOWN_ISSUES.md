@@ -1946,9 +1946,11 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 
 - **Дата обнаружения:** 2026-11-06, при проверке S10-04.
 - **Компонент:** `crates/od-host` lib tests (`s3_20*`, `native_register_v1_corpus`, ошибка `MappingAlreadyLive`).
-- **Статус:** открыта.
+- **Статус:** закрыта 2026-11-08; `cargo test -p od-host --lib --offline` проходит 361/361 как параллельно, так и с `--test-threads=1`.
 - **Суть и последствия:** на HEAD `5acd5e5` падают 23 теста, при других прогонах 21; число меняется от прогона к прогону, что похоже на гонку при параллельном запуске. Новые display-тесты проходят. Причина не исследована.
-- **Следующий шаг:** запустить с `--test-threads=1` и воспроизвести; определить, какой общий ресурс (mapping) конфликтует между тестами.
+- **Причина (2026-11-08):** это были не гонки, а детерминированные ошибки самих тестов, воспроизводимые с `--test-threads=1` и на коммите их появления `6588d50`. (1) `s3_20el/em/fg/fh` держали живой `PublishedCode` и публиковали второй при единственной допустимой `MAP_JIT` region (ISSUE-038), отсюда `MappingAlreadyLive`; (2) остальные `s3_20*` ожидали `GuestFault` для `Unmapped` либо `address != 0, length: 4` для `Backend`, тогда как `od-jit::memory_bridge::classify_error` возвращает `Err(MemoryError{kind, address, length})`, где `length` заполняется только для `AddressOverflow`, а `address` не заполняется для `Backend`; (3) `s4_15a/16a-16e` брали `JIT_TEST_LOCK.lock().unwrap()` и падали каскадом `PoisonError`; (4) `reduce_saved_native_register_v1_case` писал в фиксированный каталог с `create_new` и падал на втором запуске.
+- **Исправление:** изменены только тесты. Вложенные публикации выполняются после `drop` предыдущего mapping и повторной публикации; ожидания приведены к фактической семантике моста с сохранением проверок состояния CPU, адреса, длины и счётчиков; poison-tolerant `jit_test_lock()`; reducer-тест использует каталог в temp с PID и удаляет его, если `OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR` не задан. Продакшен-код не менялся.
+- **Остаётся:** правило заполнения `address`/`length` в `MemoryOperationMemoryErrorV2` тестами зафиксировано, но не описано в `docs/specs/JIT_CONTRACT.md`; отчёты Stage 9/10 (`STAGE_9_REPRO.md`, `STAGE_9_REPORT.md`, `STAGE_10_REPORT.md`) упоминают эти падения как известные и историческими не правились.
 
 <a id="issue-055-workspace-check-invalidmovcr0lock"></a>
 
