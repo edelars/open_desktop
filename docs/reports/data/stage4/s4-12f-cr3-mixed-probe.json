@@ -1,0 +1,29 @@
+{
+  "base_revision": "093ec706d4346f687f4c12f4491469fe9bcd904f",
+  "builds": 2,
+  "elf_sha256": "fa7b08f378f7084b9c77b9652c15ae18d9d0537424911a5928a582766174b23e",
+  "image": {
+    "bytes": 2101248,
+    "data_gva": "0x401000",
+    "entry_gva": "0x400000",
+    "gpa": "0x1000",
+    "root_a": "0x1000",
+    "root_b": "0x5000"
+  },
+  "inputs": {
+    "entry.S": "9714a79c705e8cbf52c5d09d64c34b64ad94495cb9c855c1533bc9866fdd629f",
+    "layout.ld": "adce2cc076075c110577ff7c155d4d3b7ec47900d27b44b4f4c3269cfa1437d3"
+  },
+  "note": "base_revision is the commit before this slice; the exact fixture bytes are identified by input and image hashes",
+  "profile": "Stage4Cr3MixedProbeV1",
+  "raw_sha256": "87ab4123a359ae48d60d57940b403a12fe10928441bb97e9ba129b04160334d6",
+  "reproducible": true,
+  "schema": "stage4-cr3-mixed-probe-evidence-v1",
+  "tools": {
+    "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "host": "aarch64-apple-darwin",
+    "linker": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)",
+    "objcopy": "llvm-objcopy, compatible with GNU objcopy",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  }
+}

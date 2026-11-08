@@ -17,6 +17,7 @@ mod paged_vcpu_session;
 mod physical_memory;
 mod pio_step;
 mod stage4_alias_probe;
+mod stage4_cr3_mixed_probe;
 mod stage4_flat_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
@@ -91,6 +92,11 @@ pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
 };
 pub use stage4_alias_probe::load_stage4_alias_probe;
+pub use stage4_cr3_mixed_probe::{
+    LoadedStage4Cr3MixedProbe, STAGE4_CR3_MIXED_PROBE_IMAGE_BYTES,
+    STAGE4_CR3_MIXED_PROBE_IMAGE_GPA, STAGE4_CR3_MIXED_PROBE_ROOT_A, STAGE4_CR3_MIXED_PROBE_ROOT_B,
+    Stage4Cr3MixedProbeLoadError, load_stage4_cr3_mixed_probe,
+};
 pub use stage4_flat_probe::{
     LoadedStage4FlatProbe, STAGE4_FLAT_PROBE_CR3, STAGE4_FLAT_PROBE_DATA_GVA,
     STAGE4_FLAT_PROBE_EFER, STAGE4_FLAT_PROBE_ENTRY_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,

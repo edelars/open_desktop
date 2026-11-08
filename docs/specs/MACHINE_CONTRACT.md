@@ -892,6 +892,32 @@ profile is RAM-only: no MMIO, no 1 GiB leaves, no TLB or JIT, and no 2 MiB varia
 quantum. `run_paged_cr3_probe` keeps rejecting 2 MiB leaves (`UnsupportedPageSize`). See the
 [S4-12e report](../reports/STAGE_4_S4-12E_2026-11-08.md).
 
+## Fixed mixed-page CR3 artifact (S4-12f)
+
+`load_stage4_cr3_mixed_probe` accepts exactly one raw image of `0x201000` bytes (any other length
+or any differing byte is `InvalidImage`) and places it verbatim at GPA `0x1000` in a 4 MiB RAM
+map. It is built from `tests/fixtures/guest/stage4/cr3_mixed_probe` by
+`tools/build/build_stage4_cr3_mixed_probe.py` and runs on the [S4-12e](#cpu-owned-cr3-quantum-with-mixed-ram-pages-s4-12e)
+quantum. Layout: root A `0x1000` (PML4 → PDPT `0x2000` → PD `0x3000`, PD index 2 → PT `0x4000`,
+GVA `0x400000` → GPA `0xb000`, present only); root B `0x5000` (PML4 → PDPT `0x6000` → PD `0x7000`,
+PD index 2 = 2 MiB leaf at GPA `0x200000`); code A at GPA `0xb000`, code B at GPA `0x200000`, and
+the qword `0x1000` (root A) at GPA `0x201000`.
+
+Initial state: CPL0 Long64, CR3 = `0x1000`, RAX = `0x5000`, RBX = `0x401000`, RIP = `0x400000`,
+CR0 `0x80010033`, CR4 `0x20`, EFER `0xd00`, running, no STI shadow. The guest program is
+`MOV CR3,RAX` (A → B), `MOV RAX,[RBX]` (loads root A from the 2 MiB page) and `MOV CR3,RAX`
+(B → A). The CR3 profile does not admit `HLT`, so the image ends with a `UD2` sentinel at
+GVA `0x400009`. Three instructions retire; with a budget of 3 the quantum ends by budget with
+CR3 = `0x1000`, RAX = `0x1000`, RIP = `0x400009`, and with a larger budget the next instruction is
+a precise `#UD` (vector 6, no retirement, repeated on every further run). Both CR3 writes appear
+in `translation_context_changes` in retirement order. The host never touches CPU state or tables
+between instructions; a split run (budget 1) matches the whole run in CPU, RAM, definedness and
+callbacks, and after the first retired switch nothing has been walked under root B yet. NX or a non-present
+2 MiB PDE after the switch raise a precise `#PF` (error code `0x11` / `0x10`) with CR3 left at B
+and the walk's accessed-bit prefix committed. This is limited evidence (one vCPU, RAM only, no
+TLB/JIT, no 2 MiB MMIO or Linux boot). See the
+[S4-12f report](../reports/STAGE_4_S4-12F_2026-11-08.md).
+
 ## Experimental pure-translation cache boundary
 
 `experimental-translation-probe-cache` — opt-in measurement prototype, а не

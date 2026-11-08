@@ -436,6 +436,11 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   равенство полного и пошагового quantum (CPU, RAM, definedness, callbacks, порядок context change),
   fault/reserved 2 MiB PDE после retired CR3 write, NX PDE при data read, отказ legacy quantum на 2 MiB,
   граница fetch и operand, STOP/budget. Загружаемый freestanding probe и 2 MiB MMIO не входят.
+- [x] S4-12f (вертикальный поднабор) реализован и проверен локально; независимое ревью — см. [отчёт](../reports/STAGE_4_S4-12F_2026-11-08.md).
+  Фиксированный freestanding образ `cr3_mixed_probe` (fixture + воспроизводимая сборка + строгий загрузчик
+  `load_stage4_cr3_mixed_probe`) исполняет A/4 KiB → B/2 MiB → A на quantum S4-12e: гость сам читает root A из
+  2 MiB страницы; HLT CR3-профиль не допускает: при budget 3 quantum завершается по budget, при большем — precise #UD на UD2-sentinel. Полный/пошаговый запуск,
+  порядок context change, NX и non-present 2 MiB PDE после перехода. 2 MiB MMIO, TLB/JIT и Linux не входят.
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.
 - **Проверка:** guest instructions меняют действующий перевод; запрещённые записи дают правильное исключение и не оставляют частично обновлённый CR state. Проверить startup state и порядок включения обязательных bits.
