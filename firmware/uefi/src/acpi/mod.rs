@@ -5,7 +5,9 @@
 mod bytes;
 
 pub mod aml;
+pub mod blob;
 pub mod dsdt;
 pub mod manifest;
 pub mod mcfg;
+pub mod sha256;
 pub mod table;

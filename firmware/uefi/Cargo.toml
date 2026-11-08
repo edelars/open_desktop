@@ -19,6 +19,15 @@ test = false
 bench = false
 doc = false
 
+# S4-31d: data-only carrier of the ACPI table blob (the `.acpi_blob` section); freestanding like
+# `od-firmware`, never executed in the guest.
+[[bin]]
+name = "od-acpi-blob"
+path = "src/acpi_blob_main.rs"
+test = false
+bench = false
+doc = false
+
 [profile.dev]
 panic = "abort"
 
