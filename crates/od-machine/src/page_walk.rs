@@ -36,6 +36,7 @@ const ENTRY_USER: u64 = 1 << 2;
 const ENTRY_PS_OR_PAT: u64 = 1 << 7;
 const ENTRY_NX_BIT: u64 = 1 << 63;
 const ENTRY_ADDRESS_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
+const ENTRY_2M_RESERVED: u64 = 0x1fe000;
 
 /// Guest linear address; distinct from a guest physical address and host pointer.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -654,6 +655,7 @@ struct WalkTranslation {
     physical: GuestPhysicalAddress,
     leaf_address: GuestPhysicalAddress,
     leaf_value: u64,
+    leaf_level: PageTableLevel,
 }
 
 struct WalkResult {
@@ -698,6 +700,7 @@ fn walk_long64_4k(
         access,
         committed_write,
         &mut write_tracked_table_entry,
+        false,
     )
 }
 
@@ -710,6 +713,7 @@ fn walk_long64_4k_with_writer(
     access: AccessKind,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
     table_writer: &mut TrackedTableWriter<'_>,
+    allow_2m: bool,
 ) -> WalkResult {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 4];
@@ -742,6 +746,7 @@ fn walk_long64_4k_with_writer(
         execute_disabled: false,
     };
     let mut leaf = (GuestPhysicalAddress::new(0), 0u64);
+    let mut large_leaf = false;
     for level in levels {
         let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
         let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
@@ -789,9 +794,16 @@ fn walk_long64_4k_with_writer(
         if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
             offending |= ENTRY_PS_OR_PAT;
         }
+        let is_large_leaf =
+            allow_2m && level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0;
+        if is_large_leaf {
+            // Bits 20:13 of a 2 MiB PDE are reserved (address bits below 2 MiB).
+            offending |= entry_value & ENTRY_2M_RESERVED;
+        }
         if level != PageTableLevel::Pt
             && level != PageTableLevel::Pml4
             && entry_value & ENTRY_PS_OR_PAT != 0
+            && !is_large_leaf
         {
             return fail(
                 TrackedAccessError::UnsupportedPageSize {
@@ -852,6 +864,10 @@ fn walk_long64_4k_with_writer(
         effective.writable &= entry_value & ENTRY_WRITABLE != 0;
         effective.execute_disabled |= entry_value & ENTRY_NX_BIT != 0;
         leaf = (entry_address, entry_value | (1 << 5));
+        if is_large_leaf {
+            large_leaf = true;
+            break;
+        }
         if level != PageTableLevel::Pt {
             table_base = entry_value & ENTRY_ADDRESS_MASK;
         }
@@ -882,12 +898,20 @@ fn walk_long64_4k_with_writer(
             ad_update_count,
         );
     }
-    let physical = GuestPhysicalAddress::new((leaf.1 & ENTRY_ADDRESS_MASK) | (address.0 & 0xfff));
+    let offset_mask = if large_leaf { 0x1f_ffff } else { 0xfff };
+    let physical = GuestPhysicalAddress::new(
+        (leaf.1 & ENTRY_ADDRESS_MASK & !offset_mask) | (address.0 & offset_mask),
+    );
     WalkResult {
         translation: Ok(WalkTranslation {
             physical,
             leaf_address: leaf.0,
             leaf_value: leaf.1,
+            leaf_level: if large_leaf {
+                PageTableLevel::Pd
+            } else {
+                PageTableLevel::Pt
+            },
         }),
         trace,
         ad_updates,
@@ -907,7 +931,21 @@ pub fn access_long64_4k_ram(
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
 ) -> TrackedAccessReport {
-    access_long64_4k_internal(memory, paging, request, committed_write, false, None)
+    access_long64_4k_internal(memory, paging, request, committed_write, false, None, false)
+}
+
+/// Opt-in tracked access through 4 KiB or 2 MiB leaves, limited to RAM.
+///
+/// Behaves like [`access_long64_4k_ram`], except that a PDE with PS=1 is a
+/// 2 MiB leaf instead of `UnsupportedPageSize`. The 4 KiB operand-crossing
+/// rule is unchanged: a request crossing a 4 KiB boundary is still rejected.
+pub fn access_long64_2m_ram(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> TrackedAccessReport {
+    access_long64_4k_internal(memory, paging, request, committed_write, false, None, true)
 }
 
 pub(crate) fn access_long64_4k_with_mmio(
@@ -924,6 +962,7 @@ pub(crate) fn access_long64_4k_with_mmio(
         committed_write,
         true,
         Some(&mut mmio),
+        false,
     )
 }
 
@@ -934,6 +973,7 @@ fn access_long64_4k_internal(
     mut committed_write: impl FnMut(GuestPhysicalRange),
     set_mmio_dirty_before_dispatch: bool,
     mmio: Option<&mut MmioDispatch<'_>>,
+    allow_2m: bool,
 ) -> TrackedAccessReport {
     access_long64_4k_internal_with_writer(
         memory,
@@ -943,6 +983,7 @@ fn access_long64_4k_internal(
         set_mmio_dirty_before_dispatch,
         mmio,
         &mut write_tracked_table_entry,
+        allow_2m,
     )
 }
 
@@ -954,6 +995,7 @@ fn access_long64_4k_internal_with_writer(
     set_mmio_dirty_before_dispatch: bool,
     mut mmio: Option<&mut MmioDispatch<'_>>,
     table_writer: &mut TrackedTableWriter<'_>,
+    allow_2m: bool,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -985,6 +1027,7 @@ fn access_long64_4k_internal_with_writer(
         access,
         committed_write,
         table_writer,
+        allow_2m,
     );
     trace = walk.trace;
     ad_update_count = walk.ad_update_count;
@@ -1060,7 +1103,7 @@ fn access_long64_4k_internal_with_writer(
                 if let Err(source) = table_writer(memory, leaf.0, after, committed_write) {
                     return fail(
                         TrackedAccessError::TableWrite {
-                            level: PageTableLevel::Pt,
+                            level: translation.leaf_level,
                             entry_address: leaf.0,
                             bit: AdBit::Dirty,
                             source,
@@ -1071,7 +1114,7 @@ fn access_long64_4k_internal_with_writer(
                     );
                 }
                 ad_updates[ad_update_count] = Some(AdUpdate {
-                    level: PageTableLevel::Pt,
+                    level: translation.leaf_level,
                     address: leaf.0,
                     before: leaf.1,
                     after,
@@ -1957,6 +2000,337 @@ mod tracked_access_tests {
     }
 
     #[test]
+    fn large_leaf_offsets_dirty_and_legacy_admission() {
+        for offset in [0, 0x10000, 0x1fffff] {
+            let (mut memory, paging) = setup(0, 0x400000);
+            memory
+                .write_u64(GuestPhysicalAddress::new(0x3018), 0x201087, |_| {})
+                .unwrap();
+            let physical = 0x200000 + offset;
+            memory
+                .write_u8(GuestPhysicalAddress::new(physical), 0x5a, |_| {})
+                .unwrap();
+            let mut req = request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            });
+            req.address = GuestLinearAddress::new((LINEAR & !0x1fffff) | offset);
+            let legacy = access_long64_4k_ram(&mut memory, &paging, req, |_| {});
+            assert!(matches!(
+                legacy.outcome,
+                Err(TrackedAccessError::UnsupportedPageSize {
+                    level: PageTableLevel::Pd,
+                    ..
+                })
+            ));
+            let report = access_long64_2m_ram(&mut memory, &paging, req, |_| {});
+            assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Read(0x5a)));
+            assert_eq!(report.trace.len(), 3);
+            req.operation = RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            };
+            let mut log = Vec::new();
+            let write = access_long64_2m_ram(&mut memory, &paging, req, |range| log.push(range));
+            assert_eq!(write.outcome, Ok(TrackedAccessOutcome::Written));
+            assert_eq!(write.ad_updates[0].unwrap().level, PageTableLevel::Pd);
+            assert_eq!(write.ad_updates[0].unwrap().bit, AdBit::Dirty);
+            assert_eq!(logged(&log), [(0x3018, 8), (physical, 1)]);
+        }
+    }
+
+    #[test]
+    fn large_leaf_reserved_bits_fault_keeps_ancestor_accessed_prefix() {
+        let (mut memory, paging) = setup(0, 0x400000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x3018), 0x202087, |_| {})
+            .unwrap();
+        let mut log = Vec::new();
+        let report = access_long64_2m_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |range| log.push(range),
+        );
+        let TrackedAccessError::PageFault { record, reason } = report.outcome.unwrap_err() else {
+            panic!("expected fault")
+        };
+        assert_eq!(record.saved_rip(), RIP);
+        assert_eq!(record.cr2_value(), LINEAR);
+        assert_eq!(record.fault().error_code, Some(9));
+        assert!(matches!(
+            reason,
+            PageFaultReason::ReservedBits {
+                level: PageTableLevel::Pd,
+                offending_bits: 0x2000
+            }
+        ));
+        assert_eq!(logged(&log), [(0x1008, 8), (0x2010, 8)]);
+    }
+
+    #[test]
+    fn large_leaf_permissions_and_table_write_failures() {
+        for (pde, wp, kind, expected) in [
+            (0x200085, true, AccessKind::Write, Some(3)),
+            (0x200085, false, AccessKind::Write, None),
+            (0x8000_0000_0020_0087, true, AccessKind::Fetch, Some(17)),
+        ] {
+            let (mut memory, _) = setup(0, 0x400000);
+            memory
+                .write_u64(GuestPhysicalAddress::new(0x3018), pde, |_| {})
+                .unwrap();
+            let paging = Long64ProbeConfig::new(
+                0x8000_0033 | if wp { CR0_WP } else { 0 },
+                0x1000,
+                CR4_PAE,
+                EFER_LME | EFER_LMA | EFER_NXE,
+            )
+            .unwrap();
+            let operation = if kind == AccessKind::Fetch {
+                RamAccessOperation::Fetch
+            } else {
+                RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 42,
+                }
+            };
+            let result = access_long64_2m_ram(&mut memory, &paging, request(operation), |_| {});
+            match expected {
+                Some(code) => match result.outcome {
+                    Err(TrackedAccessError::PageFault { record, .. }) => {
+                        assert_eq!(record.fault().error_code, Some(code))
+                    }
+                    other => panic!("unexpected {other:?}"),
+                },
+                None => assert_eq!(result.outcome, Ok(TrackedAccessOutcome::Written)),
+            }
+        }
+
+        // A table-entry write failure at the PDE reports the PD level for both
+        // the accessed bit (walk) and the dirty bit (leaf update).
+        for (pde, bit, operation) in [
+            (
+                0x200087,
+                AdBit::Accessed,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                },
+            ),
+            (
+                0x2000a7,
+                AdBit::Dirty,
+                RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 1,
+                },
+            ),
+        ] {
+            let (mut memory, paging) = setup(0, 0x400000);
+            let pde_address = GuestPhysicalAddress::new(0x3018);
+            memory.write_u64(pde_address, pde, |_| {}).unwrap();
+            let mut log = Vec::new();
+            let mut callback = |range| log.push(range);
+            let mut writer =
+                |memory: &mut PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    if address == pde_address {
+                        Err(MemoryAccessError::Unmapped(address))
+                    } else {
+                        write_tracked_table_entry(memory, address, value, callback)
+                    }
+                };
+            let report = access_long64_4k_internal_with_writer(
+                &mut memory,
+                &paging,
+                request(operation),
+                &mut callback,
+                false,
+                None,
+                &mut writer,
+                true,
+            );
+            assert_eq!(
+                report.outcome,
+                Err(TrackedAccessError::TableWrite {
+                    level: PageTableLevel::Pd,
+                    entry_address: pde_address,
+                    bit,
+                    source: MemoryAccessError::Unmapped(pde_address),
+                })
+            );
+            assert_eq!(logged(&log), [(0x1008, 8), (0x2010, 8)]);
+        }
+    }
+
+    #[test]
+    fn large_leaf_aggregates_user_write_and_nx_rights_from_ancestors() {
+        let wp_paging = || {
+            Long64ProbeConfig::new(
+                0x8000_0033 | CR0_WP,
+                0x1000,
+                CR4_PAE,
+                EFER_LME | EFER_LMA | EFER_NXE,
+            )
+            .unwrap()
+        };
+        let ring3 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::Explicit,
+        };
+        let read = RamAccessOperation::Read {
+            width: AccessWidth::Byte,
+        };
+        let write = RamAccessOperation::Write {
+            width: AccessWidth::Byte,
+            value: 1,
+        };
+        // (entries, request, expected PFEC): the 2 MiB PDE alone would allow
+        // each access; the denying bit comes from the PDE (U/S) or an ancestor.
+        let cases = [
+            // Ring3 read through a supervisor-only PDE: P|U.
+            ([0x2007, 0x3007, 0x200083, 0], request_as(ring3, read), 5),
+            // Supervisor write, WP=1, read-only PDPT entry above a writable PDE: P|W.
+            ([0x2007, 0x3005, 0x200087, 0], request(write), 3),
+            // NX on the PML4 entry, instruction fetch: P|I.
+            (
+                [0x8000_0000_0000_2007, 0x3007, 0x200087, 0],
+                request(RamAccessOperation::Fetch),
+                17,
+            ),
+        ];
+        for (entries, req, expected) in cases {
+            let (mut memory, _) = setup_entries(entries, 0x400000);
+            let report = access_long64_2m_ram(&mut memory, &wp_paging(), req, |_| {});
+            let Err(TrackedAccessError::PageFault { record, reason }) = report.outcome else {
+                panic!("expected protection fault for {entries:x?}")
+            };
+            assert_eq!(record.fault().error_code, Some(expected), "{entries:x?}");
+            assert!(matches!(reason, PageFaultReason::Protection { .. }));
+            // A bits were committed on every level walked before the denial.
+            assert_eq!(report.ad_update_count, 3);
+        }
+    }
+
+    #[test]
+    fn large_leaf_reserved_mask_covers_bit_20_and_write_pfec() {
+        let (mut memory, paging) = setup(0, 0x400000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x3018), 0x300087, |_| {})
+            .unwrap();
+        let report = access_long64_2m_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 1,
+            }),
+            |_| {},
+        );
+        let Err(TrackedAccessError::PageFault { record, reason }) = report.outcome else {
+            panic!("expected fault")
+        };
+        // RSVD|W|P for a write.
+        assert_eq!(record.fault().error_code, Some(0xb));
+        assert!(matches!(
+            reason,
+            PageFaultReason::ReservedBits {
+                level: PageTableLevel::Pd,
+                offending_bits: 0x100000
+            }
+        ));
+    }
+
+    #[test]
+    fn first_write_through_fresh_large_leaf_sets_a_then_d_before_operand() {
+        let (mut memory, paging) = setup(0, 0x400000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x3018), 0x200087, |_| {})
+            .unwrap();
+        let mut log = Vec::new();
+        let report = access_long64_2m_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            }),
+            |range| log.push(range),
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            logged(&log),
+            [
+                (0x1008, 8),
+                (0x2010, 8),
+                (0x3018, 8),
+                (0x3018, 8),
+                (0x200000 + (LINEAR & 0x1fffff), 1)
+            ]
+        );
+        let bits = report.ad_updates[..report.ad_update_count]
+            .iter()
+            .map(|update| {
+                let update = update.unwrap();
+                (update.level, update.bit)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bits,
+            [
+                (PageTableLevel::Pml4, AdBit::Accessed),
+                (PageTableLevel::Pdpt, AdBit::Accessed),
+                (PageTableLevel::Pd, AdBit::Accessed),
+                (PageTableLevel::Pd, AdBit::Dirty),
+            ]
+        );
+        assert_eq!(entries(&memory)[2], 0x2000e7);
+    }
+
+    #[test]
+    fn large_leaf_does_not_admit_pdpt_ps_and_rejects_mmio_operand() {
+        // PS on a PDPT entry stays unsupported even in the 2 MiB profile.
+        let (mut memory, paging) = setup_entries([0x2007, 0x3087, 0x4007, 0], 0x400000);
+        let report = access_long64_2m_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        assert!(matches!(
+            report.outcome,
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level: PageTableLevel::Pdpt,
+                ..
+            })
+        ));
+
+        // The profile is RAM-only: a 2 MiB leaf mapped beyond RAM is an
+        // operand-physical error, never a device dispatch.
+        let (mut memory, paging) = setup(0, 0x400000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x3018), 0x4000_0087, |_| {})
+            .unwrap();
+        let report = access_long64_2m_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        assert!(matches!(
+            report.outcome,
+            Err(TrackedAccessError::OperandPhysical { .. })
+        ));
+    }
+
+    #[test]
     fn successful_read_and_fetch_commit_only_accessed_bits() {
         for operation in [
             RamAccessOperation::Read {
@@ -2026,6 +2400,7 @@ mod tracked_access_tests {
                 false,
                 None,
                 &mut writes,
+                false,
             );
 
             assert!(matches!(
@@ -2104,6 +2479,7 @@ mod tracked_access_tests {
                 false,
                 None,
                 &mut writer,
+                false,
             );
             assert!(
                 matches!(report.outcome, Err(TrackedAccessError::TableWrite { level, entry_address, bit: AdBit::Accessed, source: MemoryAccessError::Unmapped(source_address) }) if level == levels[failed_index] && entry_address == failed_address && source_address == failed_address)
@@ -2167,6 +2543,7 @@ mod tracked_access_tests {
             false,
             None,
             &mut writes,
+            false,
         );
 
         assert_eq!(

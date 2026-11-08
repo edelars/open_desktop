@@ -573,10 +573,37 @@ Pure probe не меняет RAM; tracked path сохраняет уже committ
 заявление об архитектурном приоритете реального x86 fault. PML4 bit 7 остаётся
 reserved-bit outcome, а PT bit 7 не выбирает huge page и не мешает 4 KiB leaf.
 
-2 MiB/1 GiB leaves, LA57, PCID и другие paging modes не реализованы и не
-объявлены optional до фиксации manifest S4-00. Их добавление потребует отдельной
-проверки alignment, reserved bits, permissions и A/D effects, а также отрицательных
-тестов; текущий admission boundary не заменяет эту работу.
+В 4 KiB API (`probe_long64_4k`, `access_long64_4k_ram`) 2 MiB/1 GiB leaves по-прежнему
+не поддержаны; LA57, PCID и другие paging modes не реализованы и не объявлены
+optional до фиксации manifest S4-00. Их добавление потребует отдельной проверки
+alignment, reserved bits, permissions и A/D effects, а также отрицательных
+тестов; текущий admission boundary не заменяет эту работу. Единственное
+явное исключение для 2 MiB — отдельный opt-in RAM-профиль ниже.
+
+## S4-10b: отдельный RAM-профиль 2 MiB (вертикальный поднабор)
+
+`access_long64_2m_ram` и `step_paged_mov_2m_ram` явно допускают PDE PS=1 в
+четырёхуровневом canonical48/physical36 Long64. Для такого PDE биты 20:13
+reserved (reserved-bit `#PF`: PFEC RSVD|P плюс W/I по типу доступа), бит 12 принимается как PAT (memory type не
+моделируется), физический адрес leaf берётся с выравниванием на 2 MiB плюс
+смещение `linear & 0x1fffff`. Права агрегируются по пройденным уровням, A commits
+предков сохраняются при последующем отказе, A и D leaf относятся к PDE
+(`PageTableLevel::Pd` в `AdUpdate` и `TableWrite`). Для 4 KiB leaf используется
+прежний путь; PS в PDPT остаётся `UnsupportedPageSize`.
+
+`step_paged_mov_2m_ram` — это `step_paged_mov` с явным `cr3` и теми же точными
+qword MOV; доступ только к RAM (MMIO не маршрутизируется), operand через
+4 KiB границу отклоняется как `CrossesPage` до walk. Instruction fetch ограничен
+4 KiB страницей RIP: байт fetch/decoder lookahead за её пределами отклоняется как
+bounded `CrossesPage` memory error до walk следующей страницы (PTE следующей
+страницы не получает A), это не гостевой `#PF`. Старые 4 KiB API и
+`step_paged_mov` поведение не меняют: PDE PS=1 по-прежнему `UnsupportedPageSize`.
+
+Не входит в профиль: MMIO, 1 GiB leaves, TLB/кэш трансляций, LA57, PCID/global,
+JIT, CPU-owned CR3 вариант и смешанные 4 KiB/2 MiB сценарии с переключением CR3
+(`step_paged_mov_2m_ram` принимает CR3 явным аргументом). Полная матрица U/S,
+R/W, WP, NX/NXE по уровням и физическая проверка остаются открытыми. См.
+[отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
 
 ## Cross-page admission и separate-call progress
 

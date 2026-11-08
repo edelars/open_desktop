@@ -77,6 +77,7 @@ pub fn step_paged_invlpg(
         ram_only: true,
         reject_crossing_qword: false,
         read_only_qword: false,
+        large_ram_profile: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -133,6 +134,7 @@ pub fn with_paged_mov_memory<R>(
         ram_only: true,
         reject_crossing_qword: true,
         read_only_qword: true,
+        large_ram_profile: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -182,6 +184,56 @@ pub fn step_paged_mov(
         ram_only: false,
         reject_crossing_qword: false,
         read_only_qword: false,
+        large_ram_profile: false,
+    };
+    let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
+        .map_err(PagedMovStepError::CpuInput)?;
+    Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Execute the exact one-step qword MOV through RAM-only 4 KiB/2 MiB paging.
+///
+/// Like [`step_paged_mov`] but a PDE with PS=1 is a 2 MiB leaf. The profile is
+/// bounded: RAM only (no MMIO), exact qword operands that must not cross a
+/// 4 KiB boundary, and instruction fetch confined to the 4 KiB page of RIP.
+/// Accessed/dirty bits are set on the leaf actually used (PDE for 2 MiB).
+pub fn step_paged_mov_2m_ram(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovStepReport, PagedMovStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovStepError::Configuration)?;
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: true,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -225,6 +277,7 @@ pub fn step_paged_mov_word_read(
         ram_only: false,
         reject_crossing_qword: false,
         read_only_qword: false,
+        large_ram_profile: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -293,6 +346,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         ram_only: false,
         reject_crossing_qword: false,
         read_only_qword: false,
+        large_ram_profile: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -343,6 +397,7 @@ pub fn step_paged_mov_dword_read(
         ram_only: false,
         reject_crossing_qword: false,
         read_only_qword: false,
+        large_ram_profile: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -387,6 +442,7 @@ pub struct PagedMovMemoryAdapter<'a> {
     ram_only: bool,
     reject_crossing_qword: bool,
     read_only_qword: bool,
+    large_ram_profile: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -408,7 +464,10 @@ impl PagedMovMemoryAdapter<'_> {
         };
         let report = if self.capture_effects {
             let mut writes = Vec::new();
-            let report = if self.ram_only {
+            let report = if self.large_ram_profile {
+                self.bus
+                    .access_tracked_2m_ram(&self.paging, request, |range| writes.push(range))
+            } else if self.ram_only {
                 self.bus
                     .access_tracked_ram(&self.paging, request, |range| writes.push(range))
             } else {
@@ -429,6 +488,9 @@ impl PagedMovMemoryAdapter<'_> {
                         .copied(),
                 );
             report
+        } else if self.large_ram_profile {
+            self.bus
+                .access_tracked_2m_ram(&self.paging, request, &mut *self.committed_write)
         } else if self.ram_only {
             self.bus
                 .access_tracked_ram(&self.paging, request, &mut *self.committed_write)
@@ -497,6 +559,20 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if self.read_only_qword {
             return Err(Self::unsupported("instruction fetch"));
         }
+        if self.large_ram_profile && (address & !0xfff) != (self.instruction_rip & !0xfff) {
+            // The profile admits one 4 KiB code page: reject decoder lookahead
+            // before any page walk for the next page.
+            let width = address
+                .saturating_sub(self.instruction_rip)
+                .saturating_add(1)
+                .min(u64::from(u8::MAX)) as u8;
+            let error = TrackedAccessError::CrossesPage {
+                address: GuestLinearAddress::new(self.instruction_rip),
+                width,
+            };
+            self.access_error = Some(error.clone());
+            return Err(self.map_access_error(error));
+        }
         match self.access(address, context, RamAccessOperation::Fetch)? {
             TrackedAccessOutcome::Fetched(value) => Ok(value),
             _ => Err(Self::unsupported("non-fetch result")),
@@ -521,9 +597,10 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         {
             return Err(Self::unsupported("cross-page qword read"));
         }
-        let value = if self.dword_read_profile
-            || self.word_read_profile
-            || (address & 0xfff) + u64::from(width.bytes()) > 4096
+        let value = if !self.large_ram_profile
+            && (self.dword_read_profile
+                || self.word_read_profile
+                || (address & 0xfff) + u64::from(width.bytes()) > 4096)
         {
             self.access_cross_page_read(address, context, width)?
         } else {
@@ -677,6 +754,7 @@ mod tests {
             ram_only: false,
             reject_crossing_qword: false,
             read_only_qword: false,
+            large_ram_profile: false,
         }
     }
 

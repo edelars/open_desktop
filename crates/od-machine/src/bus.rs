@@ -527,6 +527,15 @@ impl MachineBus {
         crate::page_walk::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
     }
 
+    pub(crate) fn access_tracked_2m_ram(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> TrackedAccessReport {
+        crate::page_walk::access_long64_2m_ram(&mut self.memory, paging, request, committed_write)
+    }
+
     pub(crate) fn probe_tracked_ram_access(
         &self,
         paging: &Long64ProbeConfig,

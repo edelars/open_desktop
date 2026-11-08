@@ -1803,3 +1803,106 @@ fn s4_11f_cross_page_operand_is_rejected_after_fetch_before_data_walk() {
 fn range(address: u64) -> GuestPhysicalRange {
     GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
 }
+
+fn step_2m(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    writes: &mut Vec<GuestPhysicalRange>,
+) -> PagedMovStepReport {
+    od_machine::step_paged_mov_2m_ram(
+        state,
+        bus,
+        ROOT,
+        EFER,
+        context(PrivilegeLevel::Ring0),
+        INTEGER_FLAGS & !(1 << 7),
+        |range| writes.push(range),
+    )
+    .unwrap()
+}
+
+#[test]
+fn two_mib_ram_profile_loads_stores_sets_pde_ad_and_faults_precisely() {
+    let mut bus = make_bus();
+    // PD index 4 (data) becomes a 2 MiB leaf at physical 0: P|RW|PS (+U).
+    put(&mut bus, 0x3020, 0x87);
+    put(&mut bus, 0xf000, 0x8877_6655_4433_2211);
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x8b, 0x03, 0x48, 0x89, 0x0b], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR + 0xf000;
+    cpu.gpr[1] = 0x1234_5678_9abc_def0;
+    let mut writes = Vec::new();
+
+    let load = step_2m(&mut cpu, &mut bus, &mut writes);
+    assert_eq!(load.cpu.instructions_executed, 1, "{:?}", load.cpu.exit);
+    assert_eq!(cpu.gpr[0], 0x8877_6655_4433_2211);
+    assert_eq!(qword(&mut bus, 0x3020) & 0x60, 0x20, "load sets A only");
+
+    let store = step_2m(&mut cpu, &mut bus, &mut writes);
+    assert_eq!(store.cpu.instructions_executed, 1, "{:?}", store.cpu.exit);
+    assert_eq!(qword(&mut bus, 0xf000), 0x1234_5678_9abc_def0);
+    assert_eq!(qword(&mut bus, 0x3020) & 0x60, 0x60, "store sets A and D");
+
+    // Non-present PDE: precise #PF with CR2 = operand address, state preserved.
+    put(&mut bus, 0x3020, 0);
+    cpu.rip = CODE_LINEAR;
+    cpu.gpr[0] = 0x123;
+    let failed = step_2m(&mut cpu, &mut bus, &mut writes);
+    let fault = failed.page_fault.expect("page fault");
+    assert_eq!(fault.saved_rip(), CODE_LINEAR);
+    assert_eq!(fault.cr2_value(), DATA_LINEAR + 0xf000);
+    assert_eq!(fault.fault().error_code, Some(0));
+    assert_eq!(cpu.rip, CODE_LINEAR);
+    assert_eq!(cpu.gpr[0], 0x123);
+}
+
+#[test]
+fn two_mib_ram_profile_keeps_legacy_profile_rejecting_large_pages() {
+    let mut bus = make_bus();
+    put(&mut bus, 0x3020, 0x87);
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x8b, 0x03], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR + 0xf000;
+    let mut writes = Vec::new();
+    let legacy = step(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+    assert!(matches!(
+        legacy.memory_error,
+        Some(TrackedAccessError::UnsupportedPageSize { .. })
+    ));
+    assert_eq!(legacy.cpu.instructions_executed, 0);
+}
+
+#[test]
+fn two_mib_ram_profile_rejects_qword_crossing_4k_boundary() {
+    let mut bus = make_bus();
+    put(&mut bus, 0x3020, 0x87);
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x8b, 0x03], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR + 0xffc;
+    let mut writes = Vec::new();
+    let report = step_2m(&mut cpu, &mut bus, &mut writes);
+    assert!(matches!(
+        report.memory_error,
+        Some(TrackedAccessError::CrossesPage { .. })
+    ));
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert_eq!(cpu.rip, CODE_LINEAR);
+}
+
+#[test]
+fn two_mib_ram_profile_rejects_decoder_lookahead_before_next_code_page_walk() {
+    let mut bus = make_bus();
+    // `48 8b 83 <disp32>`: the displacement lies on the next code page.
+    let mut cpu = state(CODE_LINEAR + 0xffd, &[], &mut bus);
+    for (offset, byte) in [0x48, 0x8b, 0x83].into_iter().enumerate() {
+        put_byte(&mut bus, CODE_PHYSICAL + 0xffd + offset as u64, byte);
+    }
+    put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+    let mut writes = Vec::new();
+    let report = step_2m(&mut cpu, &mut bus, &mut writes);
+    assert!(matches!(report.cpu.exit, RunExit::MemoryError(_)));
+    assert!(matches!(
+        report.memory_error,
+        Some(TrackedAccessError::CrossesPage { width: 4, .. })
+    ));
+    assert_eq!(cpu.rip, CODE_LINEAR + 0xffd);
+    // The next-page PTE was never walked, so its accessed bit stays clear.
+    assert_eq!(qword(&mut bus, 0x4008) & 0x20, 0);
+}

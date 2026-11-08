@@ -55,8 +55,8 @@ pub use page_walk::{
     InstructionProbeReport, Long64ProbeConfig, NonCanonicalAddress, PageFaultProbe,
     PageFaultReason, PageTableLevel, ProbeAccessError, ProbeConfigError, ProbeError, ProbeOutcome,
     ProbeReport, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport,
-    TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_4k_ram,
-    probe_instruction_access, probe_long64_4k,
+    TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_2m_ram,
+    access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
 };
 
 pub use paged_descriptor::{
@@ -75,8 +75,9 @@ pub use paged_exception_delivery::{
 };
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,
-    PagedMovStepReport, step_paged_invlpg, step_paged_mov, step_paged_mov_dword_read,
-    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, with_paged_mov_memory,
+    PagedMovStepReport, step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram,
+    step_paged_mov_dword_read, step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch,
+    with_paged_mov_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{

@@ -335,6 +335,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   отвергается как `UnsupportedPageSize` с сохранением уже committed A у предков;
   pure probe остаётся без мутаций, PML4 bit 7 остаётся reserved-bit fault, PT
   bit 7 допускается в 4 KiB leaf. Это не реализация huge pages.
+- S4-10b: отдельный opt-in RAM-only профиль 2 MiB (`access_long64_2m_ram`,
+  `step_paged_mov_2m_ram`) реализован как вертикальный поднабор: PDE PS=1,
+  reserved bits 20:13, A/D на PDE, exact qword MOV, fetch в пределах 4 KiB
+  страницы RIP. MMIO, 1 GiB, CPU-owned CR3 и смешанные сценарии с CR3 switch,
+  полная матрица прав и системная приёмка остаются открытыми.
+  [Отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
 - Полный S4-10 остаётся открытым до S4-00 manifest: 2 MiB/1 GiB leaves,
   необходимые modes, alignment/reserved/permissions/A-D matrix и Linux boot
   prerequisites не приняты. См. [machine contract](../specs/MACHINE_CONTRACT.md#huge-page-и-mode-admission-boundary).
