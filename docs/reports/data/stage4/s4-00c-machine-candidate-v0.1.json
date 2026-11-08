@@ -1,0 +1,190 @@
+{
+  "schema_version": "0.1",
+  "id": "s4-00c-ubuntu-generic-amd64-7.0.0-38.38",
+  "date": "2026-11-08",
+  "scope": "Candidate inventory; normative component contracts remain in docs/specs. Status is per item, not overall readiness.",
+  "status_definitions": {
+    "known": "Recorded fact with evidence, not proof of execution",
+    "selected-but-unverified": "Candidate decision, requirement or bounded local slice without integrated Linux validation",
+    "required-unimplemented": "Required integration remains unimplemented or unaccepted",
+    "unknown": "Value, proof or requirement has not yet been established"
+  },
+  "items": [
+    {
+      "id": "target",
+      "status": "known",
+      "value": "Ubuntu Generic amd64 7.0.0-38.38; one BSP/vCPU",
+      "evidence": "S4-00a/b; Stage 4 S4-00; S4-21 single-vCPU lifecycle slices",
+      "owner": "od-machine / S4-00",
+      "next_check": "Verify selected artifact and single-vCPU board together"
+    },
+    {
+      "id": "binary_identity",
+      "status": "known",
+      "value": "vmlinuz-7.0.0-38-generic SHA-256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e; package f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa; vmlinux ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f; debug vmlinux 7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f",
+      "evidence": "S4-00a/b; local SHA-256 recheck in S4-00c (2026-11-08)",
+      "owner": "S4-35 / S4-37",
+      "next_check": "Rehash exact staged files before execution"
+    },
+    {
+      "id": "source_provenance",
+      "status": "unknown",
+      "value": "Local source package 997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de, source archive 1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222, extracted config 6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d; hashes establish local bytes only (rechecked in S4-00c). Stage 2 records an earlier authenticated mapping, not independently reproduced in S4-00a/b/c.",
+      "evidence": "S4-00a/b; Stage 2 Linux profile; ISSUE-036",
+      "owner": "S4-00a / S4-35",
+      "next_check": "Recover signed provenance inputs and independently replay mapping"
+    },
+    {
+      "id": "memory_map",
+      "status": "unknown",
+      "value": "Exact Linux RAM size, extents, low-memory holes and reservations for image, page tables, boot_params, command line, initramfs, firmware tables and MMIO are not selected. Board 4 GiB is a Windows-oriented initial target, not a Linux reservation map.",
+      "evidence": "VIRTUAL_BOARD selected boundaries; S4-00b",
+      "owner": "od-machine / S4-03 / S4-31 / S4-37",
+      "next_check": "Choose nonoverlapping ranges and validate against image init_size (0x044c1000) and E820"
+    },
+    {
+      "id": "address_width",
+      "status": "selected-but-unverified",
+      "value": "Reference CPUID physical 36 bits, linear 48 bits; current local walkers use physical36/canonical48. Full Linux execution profile remains unverified.",
+      "evidence": "CPU_CONTRACT Ubuntu target; MACHINE_CONTRACT S4-10b",
+      "owner": "od-isa and od-machine / S4-00 / S4-10",
+      "next_check": "Ensure CPUID, physical map and walker agree in integrated boot"
+    },
+    {
+      "id": "cpu_cpuid",
+      "status": "selected-but-unverified",
+      "value": "Reference od-x86-64-v1-neutral-v0.1 selects max basic leaf 1, one logical CPU and the declared features in CPU_CONTRACT; it is not the full executable CPU profile (the local CPUID DiagnosticV1 is narrower).",
+      "evidence": "CPU_CONTRACT Ubuntu target; S4-00b",
+      "owner": "od-isa / S4-01",
+      "next_check": "Audit required features and implement and test every advertised capability"
+    },
+    {
+      "id": "msr",
+      "status": "required-unimplemented",
+      "value": "Full MSR allowlist and reset/exception effects are open, including EFER, FS/GS base, syscall MSRs, APIC base and conditional startup probes. Local slices (CPU-owned IA32_APIC_BASE S4-25b, bounded SYSCALL state S4-20c, GS-base and EFER read fixtures) do not establish complete Linux support.",
+      "evidence": "CPU_CONTRACT Ubuntu target; MACHINE_CONTRACT; ISSUE-027",
+      "owner": "od-isa and od-machine / S4-12",
+      "next_check": "Inventory reachable accesses and verify integrated effects and faults"
+    },
+    {
+      "id": "entry_protocol",
+      "status": "selected-but-unverified",
+      "value": "bzImage boot protocol 2.15, XLF_KERNEL_64; direct64 entry is +0x200 from the loaded protected-mode image (setup_sects=39). Handoff: Long64 paging, identity-map init_size, zero page and command line; RSI=boot_params; IF=0; flat GDT with CS=0x10 and DS/ES/SS=0x18.",
+      "evidence": "S4-00b; Linux x86 boot protocol",
+      "owner": "od-machine / S4-37",
+      "next_check": "Validate header, placement, memory mappings and registers at actual handoff"
+    },
+    {
+      "id": "entry_control",
+      "status": "selected-but-unverified",
+      "value": "Entry requires CR0.PE/PG, CR4.PAE, EFER.LME/LMA, valid CR3 and coherent Long64 state; candidate four-level policy requires CR4.LA57=0 (with max CPUID leaf 1 the recovered source's LA57 request condition is false). Other exact control bits and the initial root are not yet fixed.",
+      "evidence": "S4-00b protocol and conditional source trace; recovered pgtable_64.c rechecked in S4-00c",
+      "owner": "od-isa and od-machine / S4-12 / S4-37",
+      "next_check": "Define values, validate actual state and capture before entry"
+    },
+    {
+      "id": "entry_descriptors",
+      "status": "unknown",
+      "value": "Protocol requires flat boot CS/DS descriptors and segments; exact GDT base/limit, IDT state and remaining segment values are not recorded as an observed snapshot. Bounded paged LGDT/LIDT/LTR and MOV DS/ES/FS/GS exist (S4-18a/b/c/d/e; S4-18c is the CS accessed-bit write during #PF delivery) but are not the Linux sequence.",
+      "evidence": "S4-00b; Linux boot protocol; MACHINE_CONTRACT S4-18",
+      "owner": "od-isa and od-machine / S4-18 / S4-37",
+      "next_check": "Specify permitted initial table and segment state and capture handoff"
+    },
+    {
+      "id": "entry_observation",
+      "status": "unknown",
+      "value": "No Linux loader handoff snapshot, executed branch trace or successful boot observed.",
+      "evidence": "S4-00b",
+      "owner": "S4-37 / S4-38",
+      "next_check": "Capture CPU registers, tables, memory map and full serial trace"
+    },
+    {
+      "id": "paging_cr3",
+      "status": "selected-but-unverified",
+      "value": "Four-level 4 KiB plus 2 MiB candidate; 1 GiB, LA57 and PCID excluded from current local opt-ins. Bounded slices: S4-10b RAM-only 2 MiB leaves; S4-12c CPU-owned CR3 handoff and S4-12d CR0.WP; S4-12e mixed 4 KiB/2 MiB CR3 quantum and S4-12f freestanding mixed-page probe; S4-14d\u2013g invalidation and INVLPG/MOV CR3 handling in the mutable diagnostic session and S4-19d guest PTE repair. 2 MiB MMIO is not implemented. Old 4 KiB APIs retain their admission boundary.",
+      "evidence": "MACHINE_CONTRACT S4-10b, S4-12c-f, S4-14d-g, S4-19d; S4-00b",
+      "owner": "od-machine / S4-10 / S4-12 / S4-14",
+      "next_check": "Integrate real instruction forms, CR4 effects and invalidation; establish actual large-page requirements (including MMIO) with a runtime trace"
+    },
+    {
+      "id": "exceptions_and_cpl",
+      "status": "selected-but-unverified",
+      "value": "Bounded opt-in slices exist for paged #PF/#DF delivery, guest PTE repair with INVLPG, paged IRETQ, CPL3 loads/stores, SYSCALL/SYSRETQ and CPL3 MOV CR0 (S4-19, S4-20). They are exact-form profiles, not the Linux exception, privilege or syscall paths.",
+      "evidence": "MACHINE_CONTRACT S4-19, S4-20",
+      "owner": "od-isa and od-machine / S4-19 / S4-20",
+      "next_check": "Cover the Linux-required exception, privilege and syscall transitions and TSS/stack switching"
+    },
+    {
+      "id": "lapic",
+      "status": "selected-but-unverified",
+      "value": "Bounded opt-in single BSP xAPIC ID 0 at 0xFEE00000, 4 KiB window, physical36; fixed edge/level requests, TPR/PPR, CR8, IA32_APIC_BASE, SVR and EOI (S4-25). CPUID.APIC executable advertisement and APIC Version/discovery are not complete.",
+      "evidence": "Stage 4 S4-00 APIC subprofile; S4-25a-d; MACHINE_CONTRACT",
+      "owner": "od-machine / S4-25",
+      "next_check": "Complete Linux discovery and interrupt delivery contract and verify actual accesses"
+    },
+    {
+      "id": "uart",
+      "status": "selected-but-unverified",
+      "value": "COM1 16550A-compatible target at I/O 0x3F8 IRQ4; bounded polling TX, byte PIO paths and a guest RX-to-echo profile exist (S4-24a-d). Complete UART/IRQ4 behavior and Linux console integration are unverified.",
+      "evidence": "VIRTUAL_BOARD diagnostics; S4-24a-d; MACHINE_CONTRACT",
+      "owner": "od-machine / S4-24",
+      "next_check": "Verify required register behavior, serial capture and IRQ routing with the selected image"
+    },
+    {
+      "id": "interrupts_ioapic",
+      "status": "selected-but-unverified",
+      "value": "One IOAPIC and explicit routes are board targets. Bounded slices exist for a fixed-edge route, one level route with Remote IRR and atomic EOI (S4-26a/b), and pending-IRQ delivery to CPU entry, guest EOI/IRETQ, STI/HLT wake, ordinary APIC quantum and JIT/interpreter parity (S4-27). Linux IOAPIC discovery (MADT/MP tables), the real route set and delivery on an actual boot are unaccepted.",
+      "evidence": "VIRTUAL_BOARD interrupt boundary; S4-26a/b; S4-27a-g",
+      "owner": "od-machine and od-isa / S4-26 / S4-27",
+      "next_check": "Define the Linux route set and validate discovery, delivery, EOI and guest handler on an actual boot"
+    },
+    {
+      "id": "timer_devices",
+      "status": "selected-but-unverified",
+      "value": "Caller-driven virtual clock with bounded RDTSC (S4-22), one-shot deadline queue (S4-23), and a Local APIC timer with one-shot and caller-driven periodic modes sharing the vCPU clock (S4-28a1/a2/a4; the HLT-wake slice S4-28a3 is implemented but still awaits independent review in the plan) exist as bounded local slices.",
+      "evidence": "S4-22, S4-23, S4-28; MACHINE_CONTRACT",
+      "owner": "od-machine / S4-22 / S4-23 / S4-28",
+      "next_check": "Run these devices under the selected Linux boot and trace their use"
+    },
+    {
+      "id": "timer_linux_use",
+      "status": "unknown",
+      "value": "The Linux clocksource, TSC frequency discovery, APIC timer calibration source and any PIT/HPET/RTC requirement are not selected or verified.",
+      "evidence": "VIRTUAL_BOARD interrupt and timer; S4-00 APIC subprofile",
+      "owner": "od-machine / S4-28 / S4-38",
+      "next_check": "Select source and calibration, implement and trace Linux use"
+    },
+    {
+      "id": "pci_discovery",
+      "status": "unknown",
+      "value": "Board proposes one PCIe root/segment, static topology and ACPI MCFG; actual Linux-required devices, BARs, windows, routing and discovery are unresolved.",
+      "evidence": "VIRTUAL_BOARD PCIe boundary",
+      "owner": "od-machine / S4-30 / S4-31",
+      "next_check": "Determine required enumeration from selected boot and expose only implemented devices"
+    },
+    {
+      "id": "firmware_tables",
+      "status": "unknown",
+      "value": "Direct Linux boot can use boot data and, if required, data-only ACPI from the machine map; actual RSDP/XSDT/FADT/MADT/MCFG need and contents are not established. No UEFI execution is assumed for this entry.",
+      "evidence": "VIRTUAL_BOARD platform tables; Stage 4 S4-31 / S4-37",
+      "owner": "od-machine and firmware data / S4-31 / S4-37",
+      "next_check": "Determine required discovery tables and generate consistent descriptions from one map"
+    },
+    {
+      "id": "boot_data",
+      "status": "unknown",
+      "value": "initramfs artifact/hash, command line, zero-page fields, E820 contents, loader placement, early userspace and any block device remain to be selected.",
+      "evidence": "GUEST_REQUIREMENTS Linux; S4-00b",
+      "owner": "od-machine / S4-35 / S4-36 / S4-37",
+      "next_check": "Select and hash initramfs, define command line and boot_params, validate placement"
+    },
+    {
+      "id": "boot_evidence",
+      "status": "selected-but-unverified",
+      "value": "The Stage 4 success milestone is defined in S4-39/S4-40: reach CPL3 /init, complete the selected syscall/return path, emit the nonce, receive a timer interrupt, and continue user execution. No Linux boot, complete serial log, execution trace or reproducible runtime snapshot has been observed.",
+      "evidence": "Stage 4 plan S4-39/S4-40; no runtime evidence in S4-00a/b/c",
+      "owner": "S4-38 / S4-39 / S4-40",
+      "next_check": "Execute the defined milestone and preserve image hashes, manifest, handoff state, serial log and trace"
+    }
+  ]
+}

@@ -191,6 +191,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Открыто:** выбрать/зафиксировать loader handoff и CPU feature profile; initramfs/boot data; аутентифицированное source-to-binary provenance; фактическая загрузка Linux. S4-00 и S4-01 остаются открытыми.
 - **Проверки:** локальный read-only разбор boot header и измерение длины `vmlinuz`; SHA-256 `.deb` совпал с опубликованным checksum Ubuntu; source snapshot прочитан по ранее зафиксированным hashes. Код не менялся; тесты репозитория не запускались.
 
+#### S4-00c. Согласовать версионированный кандидат машины и prerequisites
+
+- [x] Подготовлен documentation inventory; независимое ревью — см. [отчёт S4-00c](../reports/STAGE_4_S4-00C_2026-11-08.md). S4-00, S4-01, полный S4-10 и Stage 4 остаются открытыми.
+- **Evidence:** [отчёт S4-00c](../reports/STAGE_4_S4-00C_2026-11-08.md), [manifest v0.1](../reports/data/stage4/s4-00c-machine-candidate-v0.1.json), [machine contract](../specs/MACHINE_CONTRACT.md#candidate-linux-machine-inventory-s4-00c).
+- **Границы:** один Ubuntu Generic amd64 `7.0.0-38.38`, direct64 protocol 2.15; статусы, evidence, owner и next check для CPU, MMU, карты, устройств и загрузки зафиксированы в manifest по текущему состоянию `main` (S4-10b, S4-12c–f, S4-14d–g, S4-18, S4-19, S4-20, S4-21, S4-22–S4-28).
+- **Открыто:** provenance не воспроизведён независимо, карта RAM/резерваций и состояние входа не завершены, MSR/control/descriptor, Linux-путь IRQ/timer и discovery не приняты; Linux boot и runtime evidence не наблюдались.
+- **Проверки:** пересчёт SHA-256 локальных артефактов и перечитывание recovered source (отчёт); валидность JSON (22 пункта); `tools/check_layout.py` и `git diff --check`; Rust-код не менялся.
+
 ### S4-01. Снять baseline и разбить зависимости CPU/JIT
 
 - [ ] Принято после ревью.

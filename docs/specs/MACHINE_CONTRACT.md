@@ -918,6 +918,42 @@ and the walk's accessed-bit prefix committed. This is limited evidence (one vCPU
 TLB/JIT, no 2 MiB MMIO or Linux boot). See the
 [S4-12f report](../reports/STAGE_4_S4-12F_2026-11-08.md).
 
+## Candidate Linux machine inventory (S4-00c)
+
+The versioned [candidate manifest](../reports/data/stage4/s4-00c-machine-candidate-v0.1.json)
+consolidates one Ubuntu Generic amd64 `7.0.0-38.38` direct64 target, its evidence,
+open values and ownership. It is an evidence inventory, not a separate normative
+machine specification or a claim that the machine can boot Linux. CPU and board
+policies remain in [CPU_CONTRACT](CPU_CONTRACT.md) and
+[VIRTUAL_BOARD](VIRTUAL_BOARD.md). The [S4-00c report](../reports/STAGE_4_S4-00C_2026-11-08.md)
+explains the status vocabulary and unresolved prerequisites. No entry snapshot or Linux
+boot trace has been observed. S4-00, S4-01, full S4-10 and Stage 4 remain open.
+
+### Selected Linux direct64 path
+
+Under boot protocol 2.15 the loader enters the compressed image's 64-bit entry at `+0x200`
+of the loaded protected-mode image (`setup_sects=39`; see the
+[S4-00b report](../reports/STAGE_4_S4-00B_2026-11-06.md)). It must provide long mode with
+paging, identity mappings for the image, zero page and command line, a flat GDT and segments,
+interrupts disabled and RSI pointing to `boot_params`; these are handoff requirements, not an
+observed snapshot. In the recovered source (hashes of the three S4-00a files in that report; `ident_map_64.c` and `misc.c` in the S4-00c report) the path continues as
+follows; the trace is conditional on the proposed CPUID and initial CR4 and does not prove that
+the binary executes it:
+
+| Path / condition | Source evidence | Existing owner / API | Remaining prerequisite |
+|---|---|---|---|
+| Loader enters compressed direct64 | protocol 2.15; `arch/x86/boot/compressed/head_64.S` `startup_64` loads null selectors into DS/ES/SS/FS/GS, `lgdt gdt64` + `lretq` to `__KERNEL_CS`, `load_stage1_idt`, `sev_enable` (`CONFIG_AMD_MEM_ENCRYPT=y`, CPUID probing), then masks `%cr4` | S4-37 loader; S4-12f and S4-32 are separate synthetic handoffs; paged LGDT/LIDT (S4-18a/b) | Define and validate the exact entry state (control registers, GDT/segments, tables); null-selector loads (including SS), `LRETQ`, `sev_enable` CPUID probing and the CR4 read-modify-write are not covered (S4-18e excludes null selectors and SS) |
+| `configure_5level_paging` | `head_64.S` calls it; `pgtable_64.c` requests LA57 only without `no5lvl` and with CPUID leaf 7 ECX[16] | CPU_CONTRACT reference CPUID (max basic leaf 1, so the request is false) | Confirm CPUID and `CR4.LA57=0` at entry; if `CR4.LA57` were set the source switches depth through a low-memory 32-bit trampoline |
+| Compressed identity maps | `ident_map_64.c` rounds ranges to `PMD_SIZE`, supports large PMDs (`_PAGE_PSE`) and calls `write_cr3` | S4-10b RAM-only 2 MiB profile, S4-12e mixed CR3 quantum, S4-12f probe | Real instruction forms and CR4 effects, large-page requirement from a runtime trace (2 MiB MMIO is not implemented) |
+| Decompress / relocate | `misc.c` (KASLR relocation, decompression, ELF parsing) | S4-37 loader; CPU instruction coverage per S4-01 | Run the decompressor under the selected CPU profile |
+| Main kernel `startup_64` | `arch/x86/kernel/head_64.S`: `MSR_GS_BASE` writes, `verify_cpu`, `%cr3` loads; the `lgdt`, second `MSR_GS_BASE` write and EFER `rdmsr`/`wrmsr` are in the `common_startup_64` continuation | GS-base MSR slice, paged LGDT/LIDT (S4-18a/b), MOV CR3 (S4-12b/c) | General WRMSR/EFER policy, `verify_cpu` CPUID leaves, remaining startup instructions |
+
+Direct64 therefore does not mean a direct jump to the uncompressed main kernel and does not
+avoid the decompressor's page-table work. ISSUE-027 remains open for the absolute first EFER
+access and actual startup state, and ISSUE-036 (opened for the FPU-mapping evidence) tracks the same
+signature and source-mapping reproduction gap; both cite the earlier Stage 2 mapping, which this slice
+does not reproduce.
+
 ## Experimental pure-translation cache boundary
 
 `experimental-translation-probe-cache` — opt-in measurement prototype, а не
