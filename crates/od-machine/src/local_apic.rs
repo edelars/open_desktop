@@ -203,6 +203,14 @@ impl LocalApicHandle {
     pub fn pending(&self) -> Option<u8> {
         self.with_state(|s| State::highest(&s.irr))
     }
+    /// Observe the IRR and ISR bits of one vector without side effects.
+    pub fn vector_state(&self, vector: u8) -> (bool, bool) {
+        self.with_state(|s| {
+            let index = usize::from(vector / 32);
+            let bit = 1 << (vector % 32);
+            (s.irr[index] & bit != 0, s.isr[index] & bit != 0)
+        })
+    }
     /// Observe the highest eligible vector without consuming it.
     pub fn eligible(&self) -> Option<u8> {
         self.with_state(|s| s.eligible())

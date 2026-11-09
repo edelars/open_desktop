@@ -11,6 +11,7 @@ mod stage4_alias_probe;
 mod stage4_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
+mod stage4_uart_irq_probe;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +72,7 @@ fn main() -> ExitCode {
         Some("--stage4-stack-probe") => return stage4_stack_probe::run(&args),
         Some("--stage4-alias-probe") => return stage4_alias_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
+        Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         Some("boot-firmware") => return firmware_boot::run(&args[1..]),
         _ => {}

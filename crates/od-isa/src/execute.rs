@@ -2112,6 +2112,10 @@ pub struct MovCr3WpLong64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedLidtLong64V1;
 
+/// Exact opt-in CPU profile for flat (CR0/CR3/CR4 absent) `LIDT [RSP+sign_extend(disp8)]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FlatLidtLong64V1;
+
 /// Exact opt-in CPU profile for paged `LGDT [RBP+sign_extend(disp8)]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedLgdtLong64V1;
@@ -16201,6 +16205,51 @@ pub fn step_paged_lidt(
     {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
     }
+    lidt_after_profile_gate(state, memory, context, initial_rflags_defined)
+}
+
+/// Execute exactly one bare `0F 01 5C 24 ib` LIDT in flat Long64 mode: CR0, CR3
+/// and CR4 are absent and fetch/operand access use the caller's flat memory.
+/// Everything after the profile gate is shared with the paged profile.
+pub fn step_flat_lidt(
+    _profile: FlatLidtLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0.is_some() || state.cr3.is_some() || state.cr4.is_some() || state.idtr.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    lidt_after_profile_gate(state, memory, context, initial_rflags_defined)
+}
+
+fn lidt_after_profile_gate(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
     if state.activity == Some(crate::CpuActivity::Halted) {
         return result(PagedProbeExit::Halted, 0);
     }
@@ -148536,6 +148585,54 @@ mod tests {
         state.activity = Some(crate::CpuActivity::Running);
         state.sti_shadow = Some(crate::StiShadow::Clear);
         state
+    }
+
+    #[test]
+    fn flat_lidt_loads_idtr_without_control_registers_and_rejects_paged_state() {
+        let mut state = paged_lidt_state();
+        state.cr0 = None;
+        state.cr3 = None;
+        state.cr4 = None;
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        memory.bytes[6..8].copy_from_slice(&0x0fffu16.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&0x3000u64.to_le_bytes());
+        let before = state.clone();
+        let result = step_flat_lidt(
+            FlatLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1006, 10)]);
+        let mut expected = before;
+        expected.rip += 5;
+        expected.idtr = Some(crate::state::Idtr {
+            base: 0x3000,
+            limit: 0x0fff,
+        });
+        assert_eq!(state, expected);
+
+        // A paged control-register state is outside the flat profile and is
+        // rejected before any fetch.
+        let mut paged = paged_lidt_state();
+        let mut memory = Memory::at(&lidt_code(), paged.rip);
+        let before = paged.clone();
+        let result = step_flat_lidt(
+            FlatLidtLong64V1,
+            &mut paged,
+            &mut memory,
+            lgdt_ring0(),
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(memory.fetches.is_empty());
+        assert_eq!(paged, before);
     }
 
     #[test]

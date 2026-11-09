@@ -237,8 +237,11 @@ Only byte-wide PIO accesses are admitted. With DLAB clear, offset `0` is the
 shared THR/RBR location: a write submits one TX holding byte and a read is an
 RBR read. With DLAB set, offset `0` and `1` select DLL and DLM. The other
 bounded registers are LCR, LSR and SCR. The accepted line format is 8N1 with
-a nonzero divisor; IER must remain zero, FIFO is disabled, and IIR reports no
-interrupt.
+a nonzero divisor; FIFO is disabled. As of S4-24e IER bits 0-1 and MCR OUT2 are
+accepted (see [S4-24e](#stage-4-uart-irq4-probe-s4-24e)); with IER zero IIR still
+reports no interrupt. The UART interrupt line is connected to IOAPIC INTIN4 only in the
+Stage 4 UART IRQ probe profile; on other boards (firmware board v1, flat probes) the line is
+not wired, so an IER write there is accepted but produces no IRQ.
 
 RX is one caller-injected byte. `LSR.DR` is bit `0` and is set exactly while
 the receive register is occupied. Reading RBR at offset `0` returns the byte
@@ -322,6 +325,83 @@ baud timing, FIFO behavior, IRQ/APIC, HLT wakeup, host threads or a scheduler.
 The builder verifies the assembled bytes/layout and artifact hashes. See the
 [S4-24d report](../reports/STAGE_4_S4-24D_2026-11-07.md) and
 [verification method](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo).
+
+## Stage 4 UART IRQ4 probe (S4-24e)
+
+**UART interrupt model.** `Uart16550PollingTx` gains IER bit 0 (received data
+available, RDA) and bit 1 (transmitter holding register empty, THRE); any other
+IER bit (line status, modem status) and any MCR bit except OUT2 are rejected with
+`UnsupportedConfiguration` without changing state. IIR reports `0x04` (RDA) with
+priority over `0x02` (THRE), else `0x01`; the FIFO bits stay zero. RDA is
+level-like and is cleared only by reading RBR; reading IIR is repeatable and does
+not clear it. THRE is raised when the guest enables it while the holding register
+is empty and whenever the holding register is emptied by the (explicit) transfer
+to the shift register; it is cleared by writing THR, by reading IIR when THRE is
+the reported source, and by clearing the IER bit. Writing FCR (offset 2) other
+than zero is still rejected: there is no FIFO.
+
+**OUT2 decision.** OUT2 is modelled as a gate on the interrupt output only: the
+line is `(IIR != 0x01) && MCR.OUT2`, and IIR itself does not depend on OUT2. On a
+PC the 16550 interrupt pin is gated by OUT2 and the Linux 8250 driver sets OUT2
+in `up->mcr` when it enables interrupts (`serial8250_do_set_mctrl` and the start-up
+and IRQ-probe paths in `8250_port.c`). The offline sources were not available and a
+Context7 query returned no usable text, so this rationale is from the author's
+knowledge of the driver and is not machine-verified. Modelling the gate costs one
+MCR bit; the gate is a modelling choice for this slice, not a claim about what a PC OS writes
+(real drivers often write DTR|RTS|OUT2, which this model rejects). MCR reads
+return the stored value. DTR/RTS/OUT1/loopback are not modelled.
+
+**Route owner.** The UART output is a pure level (`Uart16550Handle::interrupt_line`,
+`peek_iir`, `received_byte`; none have side effects). The only UART to IOAPIC
+connection is `Stage4UartIrqProbe`: after every operation that can change UART
+state (RX delivery, a guest PIO access) it samples the line and, on a level change,
+calls `IoApicHandle::set_intin4` once. There is no callback from the UART, no
+background scheduler and no thread. IOAPIC route and Local APIC semantics are
+unchanged: a masked edge is ignored and unmasking does not replay it (S4-26a/b),
+repeated high does not create an edge, and a vector already in service is not
+delivered again until EOI (the second edge stays latched in the IRR).
+
+**Profile `Stage4UartIrqProbeV1`.** A flat identity-mapped Long64/CPL0 guest:
+RAM `0..0x7000`, raw image 0x6000 bytes at GPA `0x1000`, entry `0x4000`, `RSP=0x6ff0`
+(the address of the IDTR pseudo-descriptor, so the interrupt frame grows below
+it), COM1 `0x3F8..0x3FF`, IOAPIC `0xFEC00000`, Local APIC `0xFEE00000`, CS=8 (code64)
+and SS=0x10, GDTR `{0x2000, 0x17}`, IDTR `{0, 0}` before the guest's `LIDT`, IF=0,
+all integer flags defined. The loader validates the GDT, exactly one IDT gate
+(vector `0x51`, selector 8, type `0x8E`, handler in the code page), the entry
+`LIDT [RSP+0]`, the IDTR and that every other byte of the image is zero. The
+guest executes `LIDT`, enables the Local APIC (`SVR=0x1FF`), unmasks INTIN4
+(redirection entry `0x51`, edge, fixed) by IOAPIC MMIO writes, programs COM1 (DLAB
+divisor, 8N1, `MCR=OUT2`, `IER=RDA`), runs `STI` and loops `HLT; JMP`. The handler
+reads IIR, reads RBR, writes the byte to THR, writes the Local APIC EOI and `IRETQ`.
+Paging is not used because maskable-interrupt entry, STI, HLT and same-CPL IRETQ
+exist only in flat form and paged LIDT/PIO exist only for paged CR0; a flat
+`step_flat_lidt` (shared body with `step_paged_lidt`, CR0/CR3/CR4 absent) was added
+so the guest installs its own IDT. The session is not a replacement for the paged
+board: Linux boot and paged IRQ entry are not claimed.
+
+**Session semantics.** `Stage4UartIrqProbe::run(budget, stop)` takes one host step
+per call to its loop: an instruction (selected by the opcode at RIP: `HLT`, `STI`,
+`LIDT`, byte `IN`/`OUT`, `IRETQ`, otherwise the generic interpreter), an interrupt
+entry, a halt-wait poll, or an idle advance. Due RX bytes are dispatched before every
+step. When the guest is halted with nothing deliverable and a future RX deadline
+exists, virtual time jumps to that deadline (trace `idle_advance`); with no future
+event the run ends with `IdleHalt` (also when a due byte is stuck behind an unread
+RBR). STOP is checked before the budget. TX completes at the end of each `OUT`
+(no baud timing). The trace records RX delivery, UART line changes, IRR set, IRQ
+entry (IRR to ISR), EOI (ISR cleared), UART port reads/writes, `LIDT`, `STI`, `HLT`,
+`IRETQ` and idle advances, bounded to 512 events. The runner command
+`--stage4-uart-irq-probe IMAGE [--budget N] [--rx BYTE@NS]... [--expect-echo B]...
+[--expect-irqs N] [--cancel-after N]` prints guest state, counts, APIC/UART state,
+budgets, the stop reason and the full trace; `guest_completed` requires an idle halt,
+the exact echo bytes, equal counts of entries, EOIs and IRETQs, and a clear IRR and
+ISR. Builder variants `--ier`, `--late-unmask`, `--omit-eoi` and `--omit-rbr-read`
+exist only to prove that broken guests fail that check.
+
+Not covered: FIFO, baud timing, line-status and modem-status interrupts, level
+route, JIT, Linux 8250 compatibility, a production scheduler, IRQ from CPL3, paged
+interrupt entry, reset of the session. Parent S4-24 stays open. See the
+[S4-24e report](../reports/STAGE_4_S4-24E_2026-11-08.md) and
+[verification method](../testing/MACHINE.md#s4-24e-uart-irq4).
 
 ## Display device (S10-03)
 

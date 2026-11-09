@@ -86,6 +86,14 @@ pub enum DiagnosticApicQuantumResult {
     Terminal(DiagnosticTerminalExit),
 }
 
+/// Result of delivering one IRQ at a boundary without running the handler.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DiagnosticIrqEntry {
+    Entered { vector: u8 },
+    OutsideProfile(InterruptOutsideProfile),
+    Terminal(DiagnosticTerminalExit),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticStiApicQuantumResult {
     /// Ordinary execution without interrupt delivery in the STI APIC profile.
@@ -908,6 +916,173 @@ impl DiagnosticVcpuSession {
         };
         self.terminal(cause.clone());
         Ok(DiagnosticIretqResult::Terminal(cause))
+    }
+
+    // Crate-private surface for the S4-24e UART IRQ probe owner. Each method
+    // is one caller-driven boundary and never schedules work.
+
+    /// Fetch up to `len` code bytes at RIP from RAM without side effects.
+    /// A short result means the next byte is not readable RAM.
+    pub(crate) fn peek_code(&mut self, len: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(len);
+        for offset in 0..len as u64 {
+            let address = crate::GuestPhysicalAddress::new(self.state.rip.wrapping_add(offset));
+            if !matches!(
+                self.bus.memory_kind(address, 1),
+                Ok(crate::MemoryRegionKind::Ram)
+            ) {
+                break;
+            }
+            match self.bus.read_physical(address, crate::AccessWidth::Byte) {
+                Ok(value) => bytes.push(value as u8),
+                Err(_) => break,
+            }
+        }
+        bytes
+    }
+
+    /// Deliver one eligible IRQ at a completed boundary without executing any
+    /// handler instruction. Returns `Ok(None)` when delivery is not possible
+    /// at this boundary (IF clear, STI shadow, no eligible vector).
+    pub(crate) fn deliver_pending_irq(
+        &mut self,
+        apic: &LocalApicHandle,
+    ) -> Result<Option<DiagnosticIrqEntry>, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        if !self.completed_boundary {
+            return Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported);
+        }
+        if self.state.rflags & (1 << 9) == 0
+            || self.state.sti_shadow == Some(od_isa::StiShadow::Blocking)
+        {
+            return Ok(None);
+        }
+        if self.state.activity != Some(od_isa::CpuActivity::Running)
+            || self.state.sti_shadow != Some(od_isa::StiShadow::Clear)
+        {
+            return Err(DiagnosticVcpuControlError::InterruptBoundaryUnsupported);
+        }
+        let Some(vector) = apic.eligible() else {
+            return Ok(None);
+        };
+        let mut candidate = self.state.clone();
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        match deliver_maskable_interrupt(
+            &mut candidate,
+            &mut memory,
+            vector,
+            self.access_context,
+            self.rflags_defined,
+        ) {
+            InterruptDeliveryResult::OutsideProfile(reason) => {
+                Ok(Some(DiagnosticIrqEntry::OutsideProfile(reason)))
+            }
+            InterruptDeliveryResult::DeliveryAborted { phase, cause } => {
+                let terminal = DiagnosticTerminalExit::InterruptDeliveryAborted { phase, cause };
+                self.terminal(terminal.clone());
+                Ok(Some(DiagnosticIrqEntry::Terminal(terminal)))
+            }
+            InterruptDeliveryResult::Delivered { .. } => {
+                if !apic.acknowledge_vector(vector, || self.state = candidate) {
+                    let terminal = DiagnosticTerminalExit::InterruptSelectionChanged;
+                    self.terminal(terminal.clone());
+                    return Ok(Some(DiagnosticIrqEntry::Terminal(terminal)));
+                }
+                Ok(Some(DiagnosticIrqEntry::Entered { vector }))
+            }
+        }
+    }
+
+    /// Execute one flat `LIDT [RSP+disp8]` at RIP.
+    pub(crate) fn step_flat_lidt(
+        &mut self,
+    ) -> Result<DiagnosticRunResult, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        let mut committed_write = |_| {};
+        let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
+        let result = od_isa::step_flat_lidt(
+            od_isa::FlatLidtLong64V1,
+            &mut self.state,
+            &mut memory,
+            self.access_context,
+            self.rflags_defined,
+        );
+        let retired = result.instructions_executed;
+        let exit = match result.exit {
+            od_isa::PagedProbeExit::Retired => {
+                self.completed_boundary = true;
+                DiagnosticExit::WorkLimit(WorkLimitReason::InstructionBudget)
+            }
+            od_isa::PagedProbeExit::Fault(fault) => {
+                self.terminal(DiagnosticTerminalExit::Fault(fault))
+            }
+            od_isa::PagedProbeExit::Unsupported { opcode } => {
+                self.terminal(DiagnosticTerminalExit::Unsupported { opcode })
+            }
+            od_isa::PagedProbeExit::Backend(error) => {
+                self.terminal(DiagnosticTerminalExit::BackendError(error))
+            }
+            other => self.terminal(DiagnosticTerminalExit::BackendError(MemoryError::Backend(
+                format!("LIDT profile exit {other:?}"),
+            ))),
+        };
+        Ok(DiagnosticRunResult {
+            exit,
+            instructions_executed: retired,
+            rflags_defined: self.rflags_defined,
+        })
+    }
+
+    /// Execute one bare `IN AL,DX` / `OUT DX,AL` through the machine PIO bus.
+    pub(crate) fn step_pio_u8(
+        &mut self,
+    ) -> Result<DiagnosticRunResult, DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        let result = crate::step_diagnostic_pio_u8(
+            &mut self.state,
+            &mut self.bus,
+            self.access_context,
+            self.rflags_defined,
+        );
+        let retired = result.instructions_executed;
+        self.rflags_defined = result.rflags_defined;
+        let exit = match result.exit {
+            od_isa::execute::PioU8Exit::Retired => {
+                self.completed_boundary = true;
+                DiagnosticExit::WorkLimit(WorkLimitReason::InstructionBudget)
+            }
+            od_isa::execute::PioU8Exit::Fault(fault) => {
+                self.terminal(DiagnosticTerminalExit::Fault(fault))
+            }
+            od_isa::execute::PioU8Exit::Unsupported { opcode } => {
+                self.terminal(DiagnosticTerminalExit::Unsupported { opcode })
+            }
+            od_isa::execute::PioU8Exit::MemoryError(error) => {
+                self.terminal(DiagnosticTerminalExit::BackendError(error))
+            }
+            od_isa::execute::PioU8Exit::PortIoError(error) => {
+                self.terminal(DiagnosticTerminalExit::BackendError(MemoryError::Backend(
+                    format!("port I/O error: {error:?}"),
+                )))
+            }
+            od_isa::execute::PioU8Exit::Rejected(error) => {
+                self.terminal(DiagnosticTerminalExit::BackendError(MemoryError::Backend(
+                    format!("port I/O admission: {error:?}"),
+                )))
+            }
+        };
+        Ok(DiagnosticRunResult {
+            exit,
+            instructions_executed: retired,
+            rflags_defined: self.rflags_defined,
+        })
     }
 
     fn terminal(&mut self, cause: DiagnosticTerminalExit) -> DiagnosticExit {

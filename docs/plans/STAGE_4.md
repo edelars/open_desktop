@@ -1376,7 +1376,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-24e. UART IRQ4 → IOAPIC → LAPIC → гостевой обработчик (ограниченный срез)
 
-- [ ] Принято после ревью.
+- [x] Ограниченный срез принят после независимого ревью (Claude Opus, high); родительский S4-24 остаётся открытым. Отчёт: [STAGE_4_S4-24E_2026-11-08.md](../reports/STAGE_4_S4-24E_2026-11-08.md).
 - **Где:** `od-machine` (UART, связь с IOAPIC/LAPIC-владельцем сессии), kernel fixture `tests/fixtures/guest/stage4/`, runner, `MACHINE_CONTRACT.md`.
 - **Сделать:** UART: IER (RDA и THRE), IIR/снятие прерывания (чтение RBR, IIR или запись THR); OUT2 в MCR — гейт обосновать по драйверу 8250 Linux или исключить с записью причины. Выход UART соединяется edge-сигналом с IOAPIC INTIN4 (`set_intin4`) внутри владельца сессии, детерминированно, без фонового scheduler. Гостевой профиль `Stage4UartIrqProbeV1`: LIDT, снятие маски IOAPIC записью в MMIO, STI;HLT. RX-событие из очереди → IRQ → обработчик читает IIR и RBR, пишет OUT, делает LAPIC EOI, IRETQ, HLT.
 - **Проверка:** негативные кейсы: IER=0 (нет IRQ); маска IOAPIC (edge при маске теряется, снятие маски не доставляет); повторный IRQ без EOI; injected regression, которая обязана ломать проверку. Builder → runner: guest state и trace событий (IRR/ISR/EOI), бюджеты и STOP.
