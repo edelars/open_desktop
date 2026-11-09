@@ -62,6 +62,24 @@ impl State {
         (self.global_enabled && self.svr & 0x100 != 0 && (vector & 0xf0) > (self.ppr() & 0xf0))
             .then_some(vector)
     }
+    /// Move one request from IRR to ISR. The caller has already selected it.
+    pub(crate) fn move_to_service(&mut self, vector: u8) {
+        let index = usize::from(vector / 32);
+        let bit = 1 << (vector % 32);
+        self.irr[index] &= !bit;
+        self.isr[index] |= bit;
+    }
+}
+
+/// Result of an interrupt acknowledge cycle (S4-25e).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptAcknowledge {
+    /// The highest eligible request moved from IRR to ISR.
+    Fixed(u8),
+    /// No request was eligible when the cycle ran, for example because it was
+    /// withdrawn after selection. The vector is `SVR[7:0]`; IRR, ISR and TMR
+    /// are untouched, so the guest must not signal EOI for it.
+    Spurious(u8),
 }
 
 impl LocalApic {
@@ -219,11 +237,34 @@ impl LocalApicHandle {
     pub fn acknowledge(&self) -> Option<u8> {
         self.with_state(|s| {
             let v = s.eligible()?;
-            let index = usize::from(v / 32);
-            let bit = 1 << (v % 32);
-            s.irr[index] &= !bit;
-            s.isr[index] |= bit;
+            s.move_to_service(v);
             Some(v)
+        })
+    }
+    /// Spurious vector `SVR[7:0]`, or `None` while the Local APIC is globally
+    /// disabled.
+    pub fn spurious_vector(&self) -> Option<u8> {
+        self.with_state(|s| s.global_enabled.then_some(s.svr as u8))
+    }
+    /// Acknowledge cycle that resolves at acknowledge time, not at an earlier
+    /// selection: the highest eligible request now moves to ISR; when none is
+    /// eligible (withdrawn, masked by a raised TPR, software-disabled) the
+    /// spurious vector is returned and no request state changes. `None` while
+    /// the Local APIC is globally disabled. A caller that must enter one
+    /// previously selected vector uses `acknowledge_vector`, which refuses a
+    /// changed selection instead of substituting another vector.
+    pub fn acknowledge_or_spurious(&self) -> Option<InterruptAcknowledge> {
+        self.with_state(|s| {
+            if !s.global_enabled {
+                return None;
+            }
+            Some(match s.eligible() {
+                Some(v) => {
+                    s.move_to_service(v);
+                    InterruptAcknowledge::Fixed(v)
+                }
+                None => InterruptAcknowledge::Spurious(s.svr as u8),
+            })
         })
     }
 
@@ -234,10 +275,7 @@ impl LocalApicHandle {
             if s.eligible() != Some(vector) {
                 return false;
             }
-            let index = usize::from(vector / 32);
-            let bit = 1 << (vector % 32);
-            s.irr[index] &= !bit;
-            s.isr[index] |= bit;
+            s.move_to_service(vector);
             publish();
             true
         })
@@ -1386,5 +1424,535 @@ mod tests {
         assert_eq!(read(&mut bus, 0x120), Ok(1));
         assert_eq!(read(&mut bus, 0xa0), Ok(0x40));
         assert_eq!(read(&mut bus, 0xf0), Ok(0x1ff));
+    }
+
+    // ---- S4-25e: closing slice ------------------------------------------
+
+    const SELF_ASSERT: u64 = 0x4_4000;
+    const UC: DeviceError = DeviceError::UnsupportedConfiguration;
+
+    fn snapshot(apic: &LocalApicHandle) -> PairState {
+        apic.0.lock().unwrap().clone()
+    }
+
+    fn set_vectors(bits: &mut [u32; 8], vectors: &[u8]) {
+        *bits = [0; 8];
+        for v in vectors {
+            bits[usize::from(v / 32)] |= 1 << (v % 32);
+        }
+    }
+
+    fn isr_vectors(bus: &mut MachineBus) -> Vec<u8> {
+        let mut out = vec![];
+        for word in 0..8u64 {
+            let value = read(bus, 0x100 + word * 16).unwrap();
+            for bit in 0..32u64 {
+                if value & (1 << bit) != 0 {
+                    out.push((word * 32 + bit) as u8);
+                }
+            }
+        }
+        out
+    }
+
+    /// Leave every Local APIC register, the level route TMR bit and the timer
+    /// LVT non-zero. The timer stays idle. Expects `timer_setup`.
+    fn dirty(bus: &mut MachineBus, apic: &LocalApicHandle) {
+        write(bus, 0xf0, 0x1aa).unwrap();
+        {
+            let mut pair = apic.0.lock().unwrap();
+            pair.set_low(LEVEL | 0x71).unwrap();
+            pair.set_line(true).unwrap();
+        }
+        assert_eq!(apic.acknowledge(), Some(0x71));
+        apic.0.lock().unwrap().set_line(false).unwrap();
+        write(bus, 0xb0, 0).unwrap(); // TMR bit of 0x71 survives its EOI
+        write(bus, 0x300, SELF_ASSERT | 0x51).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        write(bus, 0x300, SELF_ASSERT | 0x61).unwrap();
+        write(bus, 0x310, 0xab00_0000).unwrap();
+        write(bus, 0x80, 0x3f).unwrap();
+        write(bus, 0x320, 0x40).unwrap();
+        assert_eq!(read(bus, 0x1b0), Ok(1 << 17)); // TMR 0x71
+        assert_eq!(read(bus, 0x120), Ok(1 << 17)); // ISR 0x51
+        assert_eq!(read(bus, 0x230), Ok(1 << 1)); // IRR 0x61
+    }
+
+    fn arm_timer(bus: &mut MachineBus) {
+        write(bus, 0x320, u64::from(PERIODIC | 0x40)).unwrap();
+        write(bus, 0x3e0, 0xb).unwrap();
+        write(bus, 0x380, 5).unwrap();
+    }
+
+    fn assert_reset_matrix(bus: &mut MachineBus, apic: &LocalApicHandle, label: &str) {
+        for (offset, expected) in [
+            (0x20, 0),
+            (0x80, 0),
+            (0xa0, 0),
+            (0xf0, 0xff), // software disabled, spurious vector 0xff
+            (0x300, 0),
+            (0x310, 0),
+            (0x320, u64::from(MASK)), // every supported LVT entry is masked
+            (0x380, 0),
+            (0x390, 0),
+            (0x3e0, 0),
+        ] {
+            assert_eq!(read(bus, offset), Ok(expected), "{label} {offset:#x}");
+        }
+        for bank in [0x100u64, 0x180, 0x200] {
+            for word in 0..8 {
+                assert_eq!(
+                    read(bus, bank + word * 16),
+                    Ok(0),
+                    "{label} bank {bank:#x} word {word}"
+                );
+            }
+        }
+        assert_eq!(read(bus, 0x30), Err(error(DeviceError::UnknownOffset)));
+        assert_eq!(read(bus, 0xb0), Err(error(DeviceError::WriteOnly)));
+        assert_eq!(apic.pending(), None, "{label}");
+        assert_eq!(apic.eligible(), None, "{label}");
+        assert_eq!(apic.spurious_vector(), Some(0xff), "{label}");
+        apic.advance_timer_ns(100).unwrap();
+        assert!(!apic.dispatch_timer().unwrap(), "{label} deadline survived");
+    }
+
+    #[test]
+    fn reset_matrix_is_identical_for_fresh_device_and_every_reset_path() {
+        let (mut bus, apic) = setup_device(
+            LocalApic::with_timer(crate::VirtualClock::new(1).unwrap(), 1_000_000_000).unwrap(),
+        );
+        assert_reset_matrix(&mut bus, &apic, "fresh");
+
+        let paths: [(&str, fn(&LocalApicHandle)); 4] = [
+            ("reset", |a| a.reset().unwrap()),
+            ("reset_checked", |a| a.reset_checked().unwrap()),
+            ("reset_pair", |a| a.reset_pair().unwrap()),
+            ("global disable/enable", |a| {
+                a.set_global_enabled(false).unwrap();
+                a.set_global_enabled(true).unwrap();
+            }),
+        ];
+        for (label, reset) in paths {
+            let (mut bus, apic) = timer_setup(1_000_000_000);
+            dirty(&mut bus, &apic);
+            arm_timer(&mut bus);
+            assert_eq!(read(&mut bus, 0xf0), Ok(0x1aa));
+            assert_ne!(read(&mut bus, 0x390), Ok(0));
+            reset(&apic);
+            assert_reset_matrix(&mut bus, &apic, label);
+        }
+    }
+
+    #[test]
+    fn pair_reset_clears_route_and_local_reset_is_vetoed_by_remote_irr() {
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        {
+            let mut pair = apic.0.lock().unwrap();
+            pair.set_low(LEVEL | 0x51).unwrap();
+            pair.set_line(true).unwrap();
+        }
+        assert_eq!(read(&mut bus, 0x1a0), Ok(1 << 17));
+        let before = snapshot(&apic);
+        assert_eq!(apic.reset(), Err(UC));
+        assert_eq!(snapshot(&apic), before);
+        apic.reset_pair().unwrap();
+        assert_eq!(read(&mut bus, 0x1a0), Ok(0));
+        assert_eq!(read(&mut bus, 0x220), Ok(0));
+        let pair = snapshot(&apic);
+        assert_eq!(pair.route.low, MASK);
+        assert!(!pair.route.remote_irr && !pair.route.high_line);
+    }
+
+    #[test]
+    fn spurious_vector_is_returned_when_selection_is_withdrawn() {
+        use InterruptAcknowledge::{Fixed, Spurious};
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1aa).unwrap();
+        assert_eq!(apic.spurious_vector(), Some(0xaa));
+
+        // TPR raised after selection: the stale selection is refused and the
+        // acknowledge cycle returns SVR[7:0] without touching any request.
+        apic.request_fixed_edge(0x52).unwrap();
+        let selected = apic.eligible().unwrap();
+        write(&mut bus, 0x80, 0x5f).unwrap();
+        let before = snapshot(&apic);
+        let mut published = false;
+        assert!(!apic.acknowledge_vector(selected, || published = true));
+        assert!(!published);
+        assert_eq!(snapshot(&apic), before);
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xaa)));
+        assert_eq!(snapshot(&apic), before);
+        assert_eq!(apic.vector_state(0xaa), (false, false));
+        write(&mut bus, 0x80, 0).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x52)));
+        write(&mut bus, 0xb0, 0).unwrap();
+
+        // A higher vector arrives after selection: the acknowledge cycle
+        // resolves the highest eligible vector at that moment, not the stale
+        // one; acknowledge_vector refuses to substitute.
+        apic.request_fixed_edge(0x52).unwrap();
+        let selected = apic.eligible().unwrap();
+        apic.request_fixed_edge(0x72).unwrap();
+        let before = snapshot(&apic);
+        assert!(!apic.acknowledge_vector(selected, || unreachable!()));
+        assert_eq!(snapshot(&apic), before);
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x72)));
+        assert_eq!(apic.vector_state(0x72), (false, true));
+        assert_eq!(apic.vector_state(0x52), (true, false));
+        // The lower request is now blocked by the in-service class.
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xaa)));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x52)));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xaa)));
+
+        // Software disable withholds the request but keeps it in IRR.
+        apic.request_fixed_edge(0x52).unwrap();
+        write(&mut bus, 0xf0, 0xaa).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xaa)));
+        assert_eq!(apic.vector_state(0x52), (true, false));
+        write(&mut bus, 0xf0, 0x1f3).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x52)));
+        write(&mut bus, 0xb0, 0).unwrap();
+
+        // A spurious cycle never enters ISR, so an in-service vector and PPR
+        // stay as they were.
+        apic.request_fixed_edge(0x41).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x41)));
+        apic.request_fixed_edge(0x42).unwrap(); // same class: blocked
+        let before = snapshot(&apic);
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xf3)));
+        assert_eq!(snapshot(&apic), before);
+        assert_eq!(isr_vectors(&mut bus), vec![0x41]);
+        assert_eq!(read(&mut bus, 0xa0), Ok(0x40));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Fixed(0x42)));
+        write(&mut bus, 0xb0, 0).unwrap();
+
+        // Reset withdraws a pending request; the vector reverts to 0xff.
+        apic.request_fixed_edge(0x52).unwrap();
+        apic.reset().unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), Some(Spurious(0xff)));
+        assert_eq!(apic.pending(), None);
+
+        // Global disable closes the cycle altogether.
+        apic.set_global_enabled(false).unwrap();
+        assert_eq!(apic.acknowledge_or_spurious(), None);
+        assert_eq!(apic.spurious_vector(), None);
+        assert_eq!(apic.acknowledge(), None);
+    }
+
+    #[test]
+    fn masked_timer_lvt_drops_expiry_without_touching_requests_or_replaying() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        apic.request_fixed_edge(0x40).unwrap();
+        apic.request_fixed_edge(0x70).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x70));
+        let before = apic.with_state(|s| s.clone());
+
+        // Masked expiry: consumed, no IRR/ISR/TMR change.
+        write(&mut bus, 0x320, u64::from(MASK | 0x44)).unwrap();
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.with_state(|s| s.clone()), before);
+        assert_eq!(read(&mut bus, 0x390), Ok(0));
+        // Unmasking does not replay the dropped event.
+        write(&mut bus, 0x320, 0x44).unwrap();
+        assert_eq!(apic.with_state(|s| s.clone()), before);
+        apic.advance_timer_ns(1000).unwrap();
+        assert!(!apic.dispatch_timer().unwrap());
+        assert_eq!(apic.with_state(|s| s.clone()), before);
+
+        // Unmasked expiry sets exactly the LVT vector.
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        let after = apic.with_state(|s| s.clone());
+        assert_eq!(after.irr[2], before.irr[2] | 1 << 4);
+        assert_eq!((after.isr, after.tmr), (before.isr, before.tmr));
+
+        // The mask bit is sampled at expiry, not at arming time.
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x320, 0x44).unwrap();
+        write(&mut bus, 0x380, 4).unwrap();
+        write(&mut bus, 0x320, u64::from(MASK | 0x44)).unwrap();
+        apic.advance_timer_ns(4).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0x320, u64::from(MASK | 0x44)).unwrap();
+        write(&mut bus, 0x380, 4).unwrap();
+        write(&mut bus, 0x320, 0x44).unwrap();
+        apic.advance_timer_ns(4).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x44));
+
+        // Periodic: a masked occurrence re-arms and is dropped; the next
+        // unmasked one is delivered.
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        write(&mut bus, 0x3e0, 0xb).unwrap();
+        write(&mut bus, 0x320, u64::from(PERIODIC | MASK | 0x44)).unwrap();
+        write(&mut bus, 0x380, 2).unwrap();
+        apic.advance_timer_ns(2).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, 0x320, u64::from(PERIODIC | 0x44)).unwrap();
+        assert_eq!(apic.pending(), None);
+        apic.advance_timer_ns(2).unwrap();
+        assert!(apic.dispatch_timer().unwrap());
+        assert_eq!(apic.pending(), Some(0x44));
+    }
+
+    #[test]
+    fn lvt_entries_other_than_timer_and_version_are_unsupported_without_effect() {
+        let lvts = [0x2f0, 0x330, 0x340, 0x350, 0x360, 0x370, 0x30, 0x280];
+        let (mut bus, timer) = timer_setup(1_000_000_000);
+        let (mut plain_bus, plain) = setup();
+        for (bus, apic) in [(&mut bus, &timer), (&mut plain_bus, &plain)] {
+            let before = snapshot(apic);
+            for offset in lvts {
+                let unknown = || error(DeviceError::UnknownOffset);
+                assert_eq!(read(bus, offset), Err(unknown()));
+                for value in [0, u64::from(MASK | 0x40), u64::MAX] {
+                    assert_eq!(write(bus, offset, value), Err(unknown()));
+                }
+            }
+            assert_eq!(snapshot(apic), before);
+        }
+        // Without the opt-in timer even its registers do not exist.
+        let before = snapshot(&plain);
+        for offset in [0x320, 0x380, 0x390, 0x3e0] {
+            let unknown = || error(DeviceError::UnknownOffset);
+            assert_eq!(read(&mut plain_bus, offset), Err(unknown()));
+            assert_eq!(write(&mut plain_bus, offset, 0), Err(unknown()));
+        }
+        assert_eq!(snapshot(&plain), before);
+    }
+
+    #[test]
+    fn eligibility_requires_class_strictly_above_tpr_and_service_class() {
+        let (mut bus, apic) = setup();
+        // (TPR, ISR vectors, IRR vectors, expected PPR, expected eligible)
+        let cases: &[(u8, &[u8], &[u8], u8, Option<u8>)] = &[
+            (0x4f, &[], &[0x50], 0x4f, Some(0x50)),
+            (0x50, &[], &[0x5f], 0x50, None), // same class as TPR
+            (0x50, &[], &[0x60], 0x50, Some(0x60)),
+            (0xff, &[], &[0xff], 0xff, None),
+            (0xef, &[], &[0xff], 0xef, Some(0xff)),
+            (0xf0, &[], &[0xff], 0xf0, None),
+            (0x00, &[], &[0x10], 0x00, Some(0x10)),
+            (0x00, &[0x51], &[0x5f], 0x50, None), // same class as ISR
+            (0x00, &[0x51], &[0x60], 0x50, Some(0x60)),
+            (0x70, &[0x51], &[0x65], 0x70, None), // TPR wins over ISR
+            (0x30, &[0x80], &[0x7f], 0x80, None), // ISR wins over TPR
+            (0x3f, &[0x51], &[0x61], 0x50, Some(0x61)),
+            (0x00, &[0x30, 0x52, 0x5f], &[0x5e], 0x50, None), // highest ISR
+            (0x00, &[0x41, 0x30], &[0x35], 0x40, None),
+            (0x00, &[0x30], &[0x41, 0x35], 0x30, Some(0x41)),
+            (0x40, &[], &[0x5f, 0x41], 0x40, Some(0x5f)), // highest IRR vector
+            (0x5f, &[], &[0x52, 0x35], 0x5f, None),
+        ];
+        for (tpr, isr, irr, ppr, eligible) in cases {
+            write(&mut bus, 0xf0, 0x1ff).unwrap();
+            apic.with_state(|s| {
+                s.tpr = *tpr;
+                set_vectors(&mut s.isr, isr);
+                set_vectors(&mut s.irr, irr);
+            });
+            let label = format!("tpr {tpr:#x} isr {isr:x?} irr {irr:x?}");
+            assert_eq!(read(&mut bus, 0xa0), Ok(u64::from(*ppr)), "{label}");
+            assert_eq!(apic.eligible(), *eligible, "{label}");
+            assert_eq!(apic.acknowledge(), *eligible, "{label}");
+            if let Some(v) = eligible {
+                assert_eq!(apic.vector_state(*v), (false, true), "{label}");
+            }
+            // Software disable withholds everything but keeps the registers.
+            apic.with_state(|s| {
+                s.tpr = *tpr;
+                set_vectors(&mut s.isr, isr);
+                set_vectors(&mut s.irr, irr);
+            });
+            write(&mut bus, 0xf0, 0xff).unwrap();
+            assert_eq!(apic.eligible(), None, "{label} soft-disabled");
+            assert_eq!(apic.acknowledge(), None, "{label} soft-disabled");
+            assert_eq!(read(&mut bus, 0xa0), Ok(u64::from(*ppr)), "{label}");
+        }
+    }
+
+    #[test]
+    fn eoi_clears_only_the_highest_in_service_vector() {
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.with_state(|s| {
+            set_vectors(&mut s.isr, &[0x30, 0x41, 0x52, 0x5f]);
+            set_vectors(&mut s.irr, &[0x35]);
+            set_vectors(&mut s.tmr, &[0x52]);
+        });
+        let order = [0x5f, 0x52, 0x41, 0x30];
+        for (i, _) in order.iter().enumerate() {
+            write(&mut bus, 0xb0, 0).unwrap();
+            let mut remaining = order[i + 1..].to_vec();
+            remaining.sort_unstable();
+            assert_eq!(isr_vectors(&mut bus), remaining, "after EOI {i}");
+            assert_eq!(apic.vector_state(0x35), (true, false));
+            assert_eq!(read(&mut bus, 0x1a0), Ok(1 << 18)); // TMR untouched
+            assert_eq!(read(&mut bus, 0x80), Ok(0));
+        }
+        assert_eq!(apic.pending(), Some(0x35));
+        // EOI with an empty ISR is accepted and changes nothing.
+        let before = snapshot(&apic);
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(snapshot(&apic), before);
+
+        // Nested real flow: EOI releases the highest class first.
+        apic.reset().unwrap();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x41).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x41));
+        apic.request_fixed_edge(0x4f).unwrap();
+        assert_eq!(apic.eligible(), None); // same class as in-service 0x41
+        apic.request_fixed_edge(0x62).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x62));
+        assert_eq!(read(&mut bus, 0xa0), Ok(0x60));
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(isr_vectors(&mut bus), vec![0x41]);
+        assert_eq!(read(&mut bus, 0xa0), Ok(0x40));
+        assert_eq!(apic.eligible(), None);
+        write(&mut bus, 0xb0, 0).unwrap();
+        assert_eq!(isr_vectors(&mut bus), Vec::<u8>::new());
+        assert_eq!(apic.eligible(), Some(0x4f));
+    }
+
+    #[test]
+    fn erroneous_accesses_are_rejected_without_state_change() {
+        use AccessWidth::{Byte, Dword, Qword, Word};
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        dirty(&mut bus, &apic);
+        let before = snapshot(&apic);
+        let mut device = LocalApic(Arc::clone(&apic.0));
+
+        // Wrong space, width or alignment: every offset, read and write.
+        for offset in 0..0x1000u64 {
+            for width in [Byte, Word, Dword, Qword] {
+                for space in [IoSpace::Mmio, IoSpace::Pio] {
+                    let expected = if space != IoSpace::Mmio {
+                        DeviceError::UnsupportedSpace
+                    } else if width != Dword {
+                        DeviceError::UnsupportedWidth
+                    } else if offset % 16 != 0 {
+                        DeviceError::Misaligned
+                    } else {
+                        continue;
+                    };
+                    let access = DeviceAccess {
+                        space,
+                        offset,
+                        width,
+                    };
+                    assert_eq!(device.read(access), Err(expected.clone()));
+                    for value in [0, 0x60, u64::MAX] {
+                        assert_eq!(device.write(access, value), Err(expected.clone()));
+                    }
+                }
+            }
+            assert_eq!(snapshot(&apic), before, "offset {offset:#x}");
+        }
+
+        // Aligned dword offsets that are not implemented.
+        let supported = |o: u64| {
+            matches!(
+                o,
+                0x20 | 0x80 | 0xa0 | 0xb0 | 0xf0 | 0x300 | 0x310 | 0x320 | 0x380 | 0x390 | 0x3e0
+            ) || (0x100..0x280).contains(&o)
+        };
+        let unknown = DeviceError::UnknownOffset;
+        for offset in (0..0x1000u64).step_by(16).filter(|o| !supported(*o)) {
+            assert_eq!(read(&mut bus, offset), Err(error(unknown.clone())));
+            for value in [0, 0x60, u64::MAX] {
+                assert_eq!(write(&mut bus, offset, value), Err(error(unknown.clone())));
+            }
+        }
+        assert_eq!(snapshot(&apic), before);
+
+        // Reserved bits and read-only registers.
+        let ro = DeviceError::ReadOnly;
+        let mut rejected: Vec<(u64, u64, DeviceError)> = vec![
+            (0x80, 0x100, UC),
+            (0x80, 0x1_0000_0040, UC),
+            (0x80, u64::MAX, UC),
+            (0xf0, 0x200, UC),
+            (0xf0, 0x400, UC),
+            (0xf0, 0x1000, UC),
+            (0xf0, 0x8000_0000, UC),
+            (0xf0, 0x1_0000_00ff, UC),
+            (0xb0, 1, UC),
+            (0xb0, 0x8000_0000, UC),
+            (0xb0, 0x1_0000_0000, UC),
+            (0x300, 0, UC),
+            (0x300, SELF_ASSERT | 0x20_0000 | 0x60, UC),
+            (0x300, 0x1_0004_4060, UC),
+            (0x310, 1, UC),
+            (0x310, 0x0100_0001, UC),
+            (0x310, 0x1_0000_0000, UC),
+            (0x320, 0x0f, UC),
+            (0x320, u64::from(MASK | 0x0f), UC),
+            (0x320, u64::from(1u32 << 18 | 0x40), UC),
+            (0x320, 0x1040, UC), // delivery status is read-only, reserved here
+            (0x320, 0x2040, UC),
+            (0x320, 0x8040, UC),
+            (0x320, 0x1_0000_0040, UC),
+            (0x380, 0x1_0000_0000, UC),
+            (0x3e0, 0x4, UC),
+            (0x3e0, 0x10, UC),
+            (0x3e0, 0x1_0000_000b, UC),
+            (0x20, 0, ro.clone()),
+            (0xa0, 0, ro.clone()),
+            (0x390, 0, ro.clone()),
+        ];
+        for bank in [0x100u64, 0x180, 0x200] {
+            for word in 0..8 {
+                rejected.push((bank + word * 16, 0, ro.clone()));
+            }
+        }
+        for (offset, value, expected) in rejected {
+            // Directly on the device: the bus already truncates to the width.
+            let access = DeviceAccess {
+                space: IoSpace::Mmio,
+                offset,
+                width: Dword,
+            };
+            assert_eq!(
+                device.write(access, value),
+                Err(expected),
+                "{offset:#x} <- {value:#x}"
+            );
+            assert_eq!(snapshot(&apic), before, "{offset:#x} <- {value:#x}");
+        }
+        assert_eq!(read(&mut bus, 0xb0), Err(error(DeviceError::WriteOnly)));
+        assert_eq!(snapshot(&apic), before);
+
+        // Reads of every implemented register are side-effect free.
+        for offset in (0..0x1000u64).step_by(16).filter(|o| supported(*o)) {
+            let _ = read(&mut bus, offset);
+        }
+        assert_eq!(snapshot(&apic), before);
+
+        // A global-disabled APIC refuses every implemented register.
+        apic.0.lock().unwrap().local.global_enabled = false;
+        let disabled = snapshot(&apic);
+        for offset in (0..0x1000u64).step_by(16).filter(|o| supported(*o)) {
+            assert_eq!(read(&mut bus, offset), Err(error(UC)), "{offset:#x}");
+            assert_eq!(write(&mut bus, offset, 0), Err(error(UC)), "{offset:#x}");
+        }
+        assert_eq!(snapshot(&apic), disabled);
+        apic.0.lock().unwrap().local.global_enabled = true;
+
+        // The rejected traffic did not wedge the device.
+        write(&mut bus, 0x80, 0x20).unwrap();
+        assert_eq!(read(&mut bus, 0x80), Ok(0x20));
     }
 }

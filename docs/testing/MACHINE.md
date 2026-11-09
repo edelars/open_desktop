@@ -573,6 +573,33 @@ acceptance. The profile does not test general CR8 decoding, CPU handler
 delivery, `PagedVcpuSession`, JIT, default board wiring or guest boot. See the
 [slice report](../reports/STAGE_4_S4-25D_2026-11-07.md).
 
+## S4-25e Local APIC закрытие
+
+Запуск: `cargo test -p od-machine --lib local_apic --offline -- --test-threads=1`
+(30 тестов, из них 8 новых; прежние 22 прошли без изменения ожиданий). Новые
+тесты: матрица reset (свежее устройство и пути `reset`, `reset_checked`,
+`reset_pair`, global disable/enable читают одинаковые значения всех регистров,
+включая 3 банка ISR/TMR/IRR по 8 слов и LVT Timer = mask), veto `reset` при
+Remote IRR и очистка TMR/route через `reset_pair`, spurious (`SVR[7:0]` при
+поднятом TPR, пришедшем выше векторе, software disable, reset и global disable;
+spurious не меняет IRR/ISR/TMR/PPR), masked LVT Timer (expiry не меняет
+IRR/ISR/TMR и не воспроизводится после снятия маски; маска читается в момент
+expiry, а не при arm; periodic), неподдерживаемые LVT/Version/ESR-смещения без
+эффекта, таблица eligibility (17 строк TPR/ISR/IRR: класс строго выше PPR,
+самый старший вектор IRR, software disable) и EOI самого старшего ISR, а также
+перебор всех смещений `0..0x1000` по всем ширинам и пространствам, таблица
+reserved-бит/read-only регистров и отказ при global disable: любое отклонение
+оставляет `PairState` равным снимку до обращения.
+
+Инъекции регрессий проверяют, что тесты ловят поломку (после каждой код
+возвращался): EOI без снятия ISR — 8 падений; EOI снимает наименьший вектор —
+2; игнор маски в `dispatch_timer` — 4; сравнение класса `>=` вместо `>` — 6;
+фиксированный spurious-вектор — 1. Затем точечно: `--lib diagnostic_vcpu` (34),
+`--lib uart` (13), `--lib io_apic` (11), `--test stage4_uart_irq_probe` (10),
+`cargo fmt --all -- --check`. Это проверяет только регистровую модель одного
+Local APIC; не проверяются x2APIC, NMI/ExtINT, прочие LVT, CPU delivery и Linux.
+См. [отчёт](../reports/STAGE_4_S4-25E_2026-11-08.md).
+
 ## S4-26a: fixed-edge IOAPIC route
 
 Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`

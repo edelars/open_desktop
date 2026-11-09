@@ -1422,12 +1422,21 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-25e. Local APIC: spurious, LVT masks, reset matrix, приоритет и EOI (ограниченный срез закрытия)
 
-- [ ] Принято после ревью.
+- [x] Ограниченный срез принят после независимого ревью (Claude Opus, high) с условием: родитель S4-25 не закрыт, открыт S4-25f.
 - **Где:** `od-machine` (`local_apic.rs`), контракт в `MACHINE_CONTRACT.md`.
 - **Сделать:** spurious-путь: вектор из SVR при удалении из IRR до принятия; маска LVT (bit 16) для всех LVT-записей, влияющая на доставку; матрица значений после reset (SVR, LVT, TPR, IRR/ISR/TMR); приоритет по ISR/TPR и EOI, снимающий наивысший ISR; ошибочные обращения (reserved bits, неподдержанные смещения, ширина) по принятой спецификации xAPIC.
 - **Проверка:** reset-матрица по регистрам; masked LVT не доставляет и не теряет по контракту; spurious при гонке удаления из IRR; EOI снимает наивысший ISR; ошибочные обращения не меняют состояние. Тесты в `--lib local_apic`.
-- **Граница:** x2APIC, multi-CPU startup, NMI-источники сверх manifest — не входят; S4-25 родитель закрывается после этого среза.
+- **Граница:** x2APIC, multi-CPU startup, NMI-источники сверх manifest — не входят. Срез не закрывает родителя S4-25: LINT0/LINT1/Error LVT, Version и ESR выносятся в S4-25f.
 - **Готово:** APIC state влияет на pending/deliverable interrupt; reset-матрица и spurious зафиксированы тестами.
+
+#### S4-25f. Local APIC для Linux probe: Version, LINT0/LINT1, Error LVT и ESR (ограниченный срез)
+
+- [ ] Принято после ревью.
+- **Где:** `od-machine` (`local_apic.rs`), контракт в `MACHINE_CONTRACT.md`.
+- **Сделать:** APIC Version (0x30): integrated, Max LVT = 3 (Timer, LINT0, LINT1, Error); LINT0 и LINT1 LVT — хранение, маска (bit 16), reset-значение masked; Error LVT и ESR — write-then-read по принятой спецификации xAPIC, ESR очищается записью. Perf, Thermal и CMCI не добавлять, если CPUID не объявляет PMU, TM и CMCI; записать это условие. Проверить, нужны ли DFR/LDR для выбранного ядра.
+- **Проверка:** чтение Version при reset; LINT0/LINT1/Error reset-матрица с masked; запись в Error LVT и ESR (write-then-read); запись в ESR не меняет IRR/ISR; обращения к Perf/Thermal/CMCI дают UnknownOffset и закреплены тестом. Тесты в `--lib local_apic`.
+- **Граница:** доставка с LINT-пинов, NMI, x2APIC, multi-CPU не входят. Linux probe APIC на полном пути — S4-38.
+- **Готово:** Linux-подобный probe APIC (чтение Version, запись LVT/ESR) не получает DeviceError; родитель S4-25 закрывается после этого среза.
 
 ### S4-26. IOAPIC и маршруты внешних IRQ
 

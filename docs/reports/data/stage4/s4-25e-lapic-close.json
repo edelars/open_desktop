@@ -1,0 +1,35 @@
+{
+  "slice": "S4-25e",
+  "date": "2026-11-08",
+  "status": "pending-review",
+  "scope": "Local APIC closing slice: spurious acknowledge path, LVT Timer mask semantics, reset matrix, priority/EOI and erroneous-access atomicity",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A Chapter 13 (§13.9 spurious interrupt, LVT, PPR/EOI)",
+  "review": "pending",
+  "api_added": ["LocalApicHandle::spurious_vector", "LocalApicHandle::acknowledge_or_spurious", "InterruptAcknowledge"],
+  "tests": {
+    "local_apic_total": 30,
+    "local_apic_new": 8,
+    "local_apic_existing": 22,
+    "existing_expectations_changed": 0
+  },
+  "checks": {
+    "local_apic": "cargo test -p od-machine --lib local_apic --offline -- --test-threads=1: 30 passed",
+    "diagnostic_vcpu": "cargo test -p od-machine --lib diagnostic_vcpu: 34 passed",
+    "uart": "cargo test -p od-machine --lib uart: 13 passed",
+    "io_apic": "cargo test -p od-machine --lib io_apic: 11 passed",
+    "uart_irq_probe": "cargo test -p od-machine --test stage4_uart_irq_probe: 10 passed",
+    "fmt": "cargo fmt --all -- --check: passed"
+  },
+  "injected_regressions": {
+    "eoi_does_not_clear_isr": "8 of 30 failed",
+    "eoi_clears_lowest_isr": "2 of 30 failed",
+    "lvt_mask_ignored_at_expiry": "4 of 30 failed",
+    "class_compare_ge_instead_of_gt": "6 of 30 failed",
+    "spurious_vector_fixed_0xff": "1 of 30 failed"
+  },
+  "limitations": [
+    "only the Timer LVT exists; CMCI, Thermal, Perf, LINT0/1, Error, Version and ESR are unsupported (UnknownOffset)",
+    "spurious acknowledge is a device-state operation; CPU delivery still ends a changed selection with InterruptSelectionChanged",
+    "x2APIC, multi-CPU startup, NMI sources, IOAPIC S4-26c, IDT/IF, HLT wakeup, JIT and Linux acceptance are out of scope"
+  ]
+}

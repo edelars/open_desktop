@@ -1873,6 +1873,67 @@ follows Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getCon
 MOV to/from control registers. See the [S4-25d report](../reports/STAGE_4_S4-25D_2026-11-07.md)
 and [verification method](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
 
+## Local APIC: spurious, LVT masks, reset matrix, приоритет и EOI (S4-25e)
+
+Срез не закрывает родителя S4-25 (открыт до S4-25f) и не добавляет регистров, кроме двух публичных
+операций на `LocalApicHandle`. Модель остаётся одним xAPIC с полем ID 0.
+
+**Spurious.** `spurious_vector()` возвращает `SVR[7:0]` (или `None` при global
+disable). `acknowledge_or_spurious()` решает на момент acknowledge, а не по
+прежнему выбору: если есть eligible запрос, самый старший вектор IRR переходит
+в ISR (`InterruptAcknowledge::Fixed`); иначе возвращается
+`InterruptAcknowledge::Spurious(SVR[7:0])` без изменения IRR, ISR, TMR, TPR и
+PPR (запрос снят reset, скрыт повышенным TPR/ISR или software disable). Spurious
+вектор не попадает в ISR, поэтому гость не должен посылать за него EOI. При
+гонке «после выбора пришёл более старший вектор» acknowledge вернёт новый
+старший вектор, а `acknowledge_vector(выбранный)` откажет без изменений: CPU
+путь (S4-27) по-прежнему заканчивает такой случай `InterruptSelectionChanged`.
+Spurious разрешён при global enable независимо от SVR bit 8, потому что
+software disable может снять запрос между выбором и acknowledge; биты 3:0
+вектора не фиксируются. Источник: Intel SDM 093, Vol. 3A §13.9.
+
+**LVT mask.** Реализован один LVT-элемент, Timer (`0x320`, только при opt-in
+таймере). Bit 16 проверяется в момент expiry: masked expiry снимает deadline
+(periodic перезаряжается), не изменяет IRR/ISR/TMR и не воспроизводится при
+снятии маски; событие теряется по контракту, а не откладывается. Остальные LVT
+(CMCI `0x2f0`, Thermal `0x330`, Perf `0x340`, LINT0/1 `0x350`/`0x360`, Error
+`0x370`), Version (`0x30`) и ESR (`0x280`) не реализованы: чтение и запись дают
+`UnknownOffset` без изменения состояния. Без таймера отсутствуют и `0x320`,
+`0x380`, `0x390`, `0x3e0`.
+
+**Reset-матрица** (свежее устройство и `reset`, `reset_checked`, `reset_pair`,
+global disable→enable; `reset` при Remote IRR отклоняется без изменений):
+
+| Регистр | Значение после reset |
+|---|---|
+| ID `0x20`, TPR `0x80`, PPR `0xa0` | `0` |
+| SVR `0xf0` | `0xff` (software disabled, spurious vector `0xff`) |
+| ICR low/high `0x300`/`0x310` | `0` |
+| ISR, TMR, IRR (`0x100..0x270`, 24 слова) | `0` |
+| LVT Timer `0x320` | mask (`0x10000`) |
+| Initial/Current/Divide `0x380`/`0x390`/`0x3e0` | `0`, deadline отменён |
+| Version `0x30` | недоступен (`UnknownOffset`) |
+
+**Приоритет и EOI.** Eligible только самый старший вектор IRR и только если его
+класс (bits 7:4) строго выше класса PPR; PPR берёт TPR, если класс TPR не ниже
+класса самого старшего ISR, иначе класс ISR. Равный класс блокирует. EOI снимает
+самый старший ISR, не трогая IRR, TMR и TPR; EOI при пустом ISR принимается без
+изменений.
+
+**Ошибочные обращения** (прежний контракт S4-25a–d, теперь проверенный
+перебором): неверное пространство, ширина не Dword, смещение не кратно 16,
+неподдержанное смещение, reserved-биты записываемых регистров (TPR >`0xff`, SVR
+>`0x1ff`, EOI ≠ 0, ICR/ICR high, Timer LVT/Initial/Divide), запись в read-only
+регистры и обращения при global disable возвращают `DeviceError` без изменения
+состояния. Значения шире 32 бит усекает шина по ширине обращения; само
+устройство отклоняет их.
+
+Не входят: x2APIC, multi-CPU startup, NMI и другие LVT-источники, IOAPIC
+(S4-26c), CPU delivery, IDT/IF, HLT wakeup, JIT, Linux. Behavior: Intel
+[SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+Chapter 13. См. [отчёт S4-25e](../reports/STAGE_4_S4-25E_2026-11-08.md) и
+[методику](../testing/MACHINE.md#s4-25e-local-apic-закрытие).
+
 ## Fixed-edge IOAPIC route (S4-26a)
 
 The opt-in `IoApic` model occupies MMIO base `0xFEC00000` and supports one
