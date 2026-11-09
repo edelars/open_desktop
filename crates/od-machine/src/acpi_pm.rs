@@ -11,6 +11,12 @@
 //! [`MachineStopReason`] on the device. The run loop polls
 //! [`AcpiPmHandle::stop_request`] after every instruction and stops the machine
 //! with that reason. The reset itself is S7-26; this device only reports it.
+//!
+//! Port tick (S4-37a2, ISSUE-067): every successful read of the PM timer register
+//! queues `ACPI_PM_TMR_READ_TICK_NS` (1 us) of virtual time; the value returned
+//! is sampled before the tick. The device never moves the clock: the clock owner
+//! (the board's `run_boot`) takes the queued time with
+//! `AcpiPmHandle::take_timer_tick_ns`.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, VirtualClockHandle};
 use std::sync::{Arc, Mutex};
@@ -38,6 +44,9 @@ pub const ACPI_RESET_VALUE: u8 = 0x06;
 pub const ACPI_SMI_CMD: u16 = 0;
 /// PM timer frequency fixed by the ACPI specification.
 pub const ACPI_PM_TIMER_HZ: u64 = 3_579_545;
+/// Virtual time queued by one guest read of the PM timer (the port tick), in
+/// nanoseconds (ISSUE-067).
+pub(crate) const ACPI_PM_TMR_READ_TICK_NS: u64 = 1_000;
 /// `SLP_TYP` the board's `\_S5` package will carry (S4-31 DSDT).
 pub const ACPI_SLP_TYP_S5: u8 = 5;
 
@@ -153,6 +162,10 @@ struct PmState {
     /// Stored `PM1_CNT` bits (`BM_RLD`, `SLP_TYP`); `SCI_EN` is constant.
     cnt: u16,
     stop: Option<MachineStopReason>,
+    /// Guest reads of the PM timer register seen by the device (any width).
+    timer_reads: u64,
+    /// Virtual time queued by those reads, not yet taken by the clock owner.
+    timer_tick_pending_ns: u64,
 }
 
 /// Cloneable observer of the PM device, held by the board's run loop.
@@ -162,6 +175,36 @@ pub struct AcpiPmHandle {
 }
 
 impl AcpiPmHandle {
+    /// Successful reads of the PM timer register (any width) since construction.
+    pub fn timer_reads(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .timer_reads
+    }
+
+    /// Whether a PM timer read has queued time that nobody has taken yet.
+    pub(crate) fn timer_tick_pending(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .timer_tick_pending_ns
+            != 0
+    }
+
+    /// Takes the virtual time queued by PM timer reads (the port tick,
+    /// ISSUE-067), leaving zero. The clock owner advances its clock by the
+    /// returned amount; the device never moves the clock itself.
+    pub(crate) fn take_timer_tick_ns(&self) -> u64 {
+        std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timer_tick_pending_ns,
+        )
+    }
+
     /// The first stop the guest asked for, if any. It stays latched: the reset
     /// operation (S7-26) is the only thing that will clear it.
     pub fn stop_request(&self) -> Option<MachineStopReason> {
@@ -256,6 +299,12 @@ impl BusDevice for AcpiPm {
             // `GBL_RLS` and `SLP_EN` are write-only and read as zero.
             Register::Cnt => u32::from(ACPI_PM1_CNT_SCI_EN | state.cnt),
             Register::Timer => {
+                // The value is sampled before the tick; the tick is only queued.
+                let mut state = state;
+                state.timer_reads = state.timer_reads.saturating_add(1);
+                state.timer_tick_pending_ns = state
+                    .timer_tick_pending_ns
+                    .saturating_add(ACPI_PM_TMR_READ_TICK_NS);
                 drop(state);
                 self.timer_value()
             }
@@ -513,6 +562,33 @@ mod tests {
         advance(&clock, 5_000_000_000);
         assert_eq!(pm.read(acc(8, DWORD)), Ok(17_897_725 - (1 << 24)));
         assert!(pm.read(acc(8, DWORD)).unwrap() <= u64::from(PM_TIMER_MASK));
+    }
+
+    #[test]
+    fn a_timer_read_only_queues_a_tick_and_never_moves_the_clock() {
+        let (mut pm, handle, clock) = device();
+        advance(&clock, 1_000_000_000);
+        let before = clock.snapshot().now_ns();
+        assert!(!handle.timer_tick_pending());
+        // Other registers, failed accesses and writes queue nothing.
+        pm.read(acc(4, WORD)).unwrap();
+        assert!(pm.read(acc(8, AccessWidth::Qword)).is_err());
+        assert!(pm.write(acc(8, DWORD), 1).is_err());
+        assert!(!handle.timer_tick_pending());
+        // Reads of any width queue 1 us each, and the value is sampled before the tick.
+        assert_eq!(pm.read(acc(8, DWORD)), Ok(3_579_545));
+        pm.read(acc(9, BYTE)).unwrap();
+        assert_eq!(handle.timer_reads(), 2);
+        assert!(handle.timer_tick_pending());
+        assert_eq!(
+            clock.snapshot().now_ns(),
+            before,
+            "the device never advances"
+        );
+        assert_eq!(handle.take_timer_tick_ns(), 2 * ACPI_PM_TMR_READ_TICK_NS);
+        assert!(!handle.timer_tick_pending());
+        assert_eq!(handle.take_timer_tick_ns(), 0);
+        assert_eq!(handle.timer_reads(), 2, "the read count is kept");
     }
 
     #[test]
