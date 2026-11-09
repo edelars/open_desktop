@@ -2551,6 +2551,53 @@ them as `--inject-kernel-no-write` and `--inject-sysret-cpl0`. This profile
 does not execute OUT/HLT, UART, timers, IRQ, exception delivery, TLB or JIT and
 does not close S4-33. See the [S4-33b report](../reports/STAGE_4_S4-33B_2026-11-09.md).
 
+## S4-33c: CR0.WP #PF repair/retry probe
+
+`Stage4PfRepairProbeV1` is a strict raw-image profile (image GPA `0x1000`, size
+`0xd000`, 128 KiB RAM, no devices). The loader compares the whole image with the
+single accepted layout: page-table entries (reported per entry), exact main and
+handler code with zero tails, the IDT gate for vector 14 (CS `0x08`, IST 0,
+interrupt gate, target GVA `0x402000`), GDT (null, 64-bit CPL0 code, CPL0 data),
+zero stack pages and the data page; initial, canary and store qwords must be
+pairwise different. The data page (GPA `0xd000`, GVA `0x800000`) is supervisor
+read-only (PTE `0xd001`, A clear); its page table (GPA `0x6000`) is also mapped
+RW at GVA `0x403000`. The loader supplies the CPL0 entry state: RIP `0x401000`,
+CR0 `0x80010033` (WP=1), CR3 `0x1000`, CR4 `0x20`, EFER `0xd00`, CS `0x08`, SS
+`0x10`, GDTR/IDTR, RBX = data GVA, RCX = store qword, RDI = alias GVA, RSI =
+`0xd023`, RSP `0x702027`. No guest LIDT/LGDT is executed.
+
+`LoadedStage4PfRepairProbe::run(budget, ..)` runs the accepted primitives
+unchanged: `step_paged_cr0_wp_mov` (faulting store), `deliver_paged_page_fault`,
+`step_paged_cr0_wp_page_table_repair_mov`, `step_paged_invlpg`,
+`step_paged_exception_stack_discard`, `step_paged_iretq`, then the retried store
+and the load. It counts sequencer steps against the budget, stops at the first
+step that does not behave as required (a page fault after the first one, a store
+that retires without a fault, a failed delivery, a non-retiring step) and records
+per step RIP, RSP, RFLAGS, CR2, PTE, data and canary qwords, the #PF record, A/D
+updates and committed writes. The success path ends at RIP `0x401006` with PTE
+`0xd063`, RSP `0x702027`, RF clear. Инъекции `pte_stays_readonly` и `pte_writable_at_load` меняют только
+регистры fixture или PTE data. Инъекция `skip_lea` перезаписывает байты LEA в
+handler и меняет план sequencer (`plan()` убирает шаг `Discard`: fault, delivery,
+repair, INVLPG, IRETQ, retry, load). При `skip_lea` IRETQ стоит на `0x402006` и
+читает кадр, сдвинутый на один слот: вершина стека (`iretq_frame_rip` = 3) -
+это код ошибки, который IRETQ трактует как RIP. Примитив IRETQ возвращает
+`Unsupported` (исход `unsupported`, 5 шагов, 2 retired); архитектурный
+#GP(0x1000) (в слоте CS лежит `0x401000`) не моделируется. Uncached walker
+означает, что TLB-on и необходимость INVLPG не проверяются. Права покрыты только
+для записи в supervisor RO при CPL0 и WP=1 (#PF с P|W); в кейсе нет контрольного
+прогона с CR0.WP=0 (что #PF вызван именно WP, подтверждают тесты примитивов
+`paged_probe_quantum.rs` `cr0_wp_clear_*` и `page_walk.rs`), не покрыты U/S,
+SMEP/SMAP, NX и CPL3. Исключён cross-page доступ к данным кейса; кадр доставки
+исключения `0x701ff0..0x702020` сам пересекает две страницы стека (D ставится на
+обоих PTE стека, `0x5810` и `0x5808`). IST/TSS, другие пары исключений и JIT вне
+кейса. Открытые пункты: нет четвёртой инъекции для кода выхода 7 (loader кладёт
+в RCX не store-qword, например canary; проверки после успешного sequencer
+`retry_store_committed`, `load_observed_stored_value`, `canary_intact`,
+`pte_accessed_dirty`, `final_rip`, `rsp_preserved` в текущих прогонах не падают;
+не блокер); вопрос A-бита на PTE при отказе по правам унаследован от S4-19b (SDM
+это допускает, но поведение не единственно возможное; помнить для S4-34).
+It does not close S4-33. See the [S4-33c report](../reports/STAGE_4_S4-33C_2026-11-09.md).
+
 ## Paged `LIDT` adapter (S4-18a)
 
 `step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the

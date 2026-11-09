@@ -29,6 +29,7 @@ mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
 mod stage4_flat_probe;
+mod stage4_pf_repair_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
@@ -174,6 +175,17 @@ pub use stage4_flat_probe::{
     STAGE4_FLAT_PROBE_IMAGE_GPA, STAGE4_FLAT_PROBE_RAM_BYTES, STAGE4_FLAT_PROBE_STACK_TOP_GVA,
     STAGE4_FLAT_PROBE_UART_BASE, Stage4FlatProbeLayoutError, Stage4FlatProbeLoadError,
     load_stage4_flat_probe, load_stage4_uart_echo_probe,
+};
+pub use stage4_pf_repair_probe::{
+    LoadedStage4PfRepairProbe, STAGE4_PF_REPAIR_CANARY_OFFSET, STAGE4_PF_REPAIR_DATA_GPA,
+    STAGE4_PF_REPAIR_DATA_GVA, STAGE4_PF_REPAIR_FINAL_RIP, STAGE4_PF_REPAIR_HANDLER_GVA,
+    STAGE4_PF_REPAIR_IMAGE_BYTES, STAGE4_PF_REPAIR_INITIAL_OFFSET, STAGE4_PF_REPAIR_INITIAL_RSP,
+    STAGE4_PF_REPAIR_INSTRUCTIONS, STAGE4_PF_REPAIR_MAIN_GVA, STAGE4_PF_REPAIR_PTE_ALIAS_GVA,
+    STAGE4_PF_REPAIR_PTE_GPA, STAGE4_PF_REPAIR_PTE_RO, STAGE4_PF_REPAIR_PTE_RO_ACCESSED,
+    STAGE4_PF_REPAIR_PTE_RW, STAGE4_PF_REPAIR_PTE_RW_DIRTY, STAGE4_PF_REPAIR_STEPS,
+    STAGE4_PF_REPAIR_STORE_OFFSET, Stage4PfRepairEvent, Stage4PfRepairFault,
+    Stage4PfRepairInjection, Stage4PfRepairReport, Stage4PfRepairStep, Stage4PfRepairStop,
+    load_stage4_pf_repair_probe,
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;

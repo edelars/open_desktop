@@ -1013,6 +1013,69 @@ python3 -m unittest tools.build.test_build_stage4_cpl3_syscall_probe
 UART, timer, IRQ, HLT wakeup, self-modifying code, huge pages, TLB-on/JIT,
 exception delivery из CPL3 и Linux не проверяются; родитель S4-33 не закрыт.
 
+## S4-33c Права (запись в supervisor RO, CPL0, WP=1) и #PF repair/retry кейс
+
+Кейс `Stage4PfRepairProbeV1` проверяет системный случай собственного ядра
+«права и #PF repair/retry» поверх принятых S4-19b–e2 (их семантика не менялась).
+Builder `tools/build/build_stage4_pf_repair_probe.py` собирает fixture
+`tests/fixtures/guest/stage4/pf_repair/` (`entry.S`, `layout.ld`) в raw image
+0xd000 байт с явными `--initial-value` / `--store-value` / `--canary-value`.
+Образ: main-код `MOV [RBX],RCX; MOV RAX,[RBX]` (GVA `0x401000`), handler
+`MOV [RDI],RSI; INVLPG [RBX]; LEA RSP,[RSP+8]; IRETQ` (GVA `0x402000`, шлюз IDT
+вектор 14), IDT/GDT, две страницы стека и data-страница GPA `0xd000`,
+отображённая как supervisor RO (PTE `0xd001`, GVA `0x800000`). Таблица страниц
+data доступна через RW-alias GVA `0x403000` (RDI). Гостевых LIDT/LGDT нет:
+GDTR/IDTR, CR0 (WP=1), CR3, CR4, EFER, RBX/RCX/RDI/RSI/RSP задаёт loader
+(явный handoff, как в S4-32b), RSI = `0xd023` (PTE после repair).
+
+Sequencer из 8 шагов: fault -> delivery -> repair -> INVLPG -> discard -> IRETQ ->
+retry -> load. На каждом шаге фиксируются RIP, RSP, RFLAGS (RF), CR2, PTE, data и
+canary qword, #PF-запись, A/D-обновления и committed writes. Runner
+`od-runner --stage4-pf-repair-probe IMAGE [--budget N] [--inject-pte-readonly |
+--inject-skip-lea | --inject-pte-writable]` печатает один JSON; бюджет считается в
+шагах sequencer (по умолчанию 16, максимум 1024). Коды выхода: 0 принято, 7
+завершено, но oracle не принят, 5 остановка до конца, 3/4 ошибки
+аргументов/образа. Принятие требует: #PF (вектор 14, код 3, CR2 `0x800000`) на
+первой записи, доставки в handler с кодом 3 на стеке, PTE `0xd021 -> 0xd023`,
+IRETQ с RIP = fault RIP (не код ошибки) и RF=1, повтор записи (RF сброшен, PTE
+`0xd063`), load = store qword, canary цел, RSP и итоговый RIP `0x401006`.
+
+Injected regressions (каждая со своим исходом, все код 5): `pte_stays_readonly`
+(handler пишет RO PTE) — `second_page_fault` на шаге retry, steps 7, retired 4;
+`skip_lea` (в handler перезаписаны байты LEA, шаг Discard убран из плана) — IRETQ
+стоит на `0x402006` и читает кадр, сдвинутый на один слот; вершина стека
+(`iretq_frame_rip` = 3) - это код ошибки, который IRETQ трактует как RIP.
+Примитив IRETQ возвращает `Unsupported` (исход `unsupported`, steps 5, retired 2);
+архитектурный #GP(0x1000) (в слоте CS лежит `0x401000`) не моделируется;
+`pte_writable_at_load` — первая запись
+выполняется без #PF, `no_page_fault`, steps 1. Покрытие: 7 machine-тестов,
+4 теста builder, 1 builder->runner CLI-тест.
+
+Границы кейса. Права: только запись в supervisor RO при CPL0 и WP=1 (#PF с P|W);
+контрольного прогона с CR0.WP=0 в кейсе нет (что #PF вызван именно WP,
+подтверждают тесты примитивов `paged_probe_quantum.rs` `cr0_wp_clear_*` и
+`page_walk.rs`); не покрыты U/S, SMEP/SMAP, NX, CPL3. Исключён cross-page доступ
+к данным кейса; кадр доставки исключения `0x701ff0..0x702020` пересекает две
+страницы стека (D ставится на обоих PTE стека, `0x5810` и `0x5808`). Открыто:
+четвёртая инъекция для кода выхода 7 (loader кладёт в RCX не store-qword,
+например canary) не сделана; проверки после успешного sequencer
+(`retry_store_committed`, `load_observed_stored_value`, `canary_intact`,
+`pte_accessed_dirty`, `final_rip`, `rsp_preserved`) в текущих прогонах не падают,
+это не блокер; вопрос A-бита на PTE при отказе по правам унаследован от S4-19b
+(SDM это допускает, но поведение не единственно возможное; помнить для S4-34).
+
+Команды:
+
+```sh
+cargo test -p od-machine --test stage4_pf_repair_probe --offline
+cargo test -p od-runner --test stage4_pf_repair_build_cli --offline
+python3 -m unittest tools.build.test_build_stage4_pf_repair_probe
+```
+
+Граница: uncached tracked walker; TLB-on не проверяется, необходимость INVLPG не
+заявляется. U/S, NX, #PF из CPL3, IST/TSS, другие пары исключений, cross-page,
+JIT, IRQ не проверяются; родитель S4-33 не закрыт.
+
 ## S4-17a: paged MOV differential harness
 
 Run the cross-component harness with:
