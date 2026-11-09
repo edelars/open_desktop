@@ -24,6 +24,7 @@ mod pci_ecam;
 mod physical_memory;
 mod pic_8259;
 mod pio_step;
+mod pit_8254;
 mod stage4_alias_probe;
 mod stage4_cr3_mixed_probe;
 mod stage4_flat_probe;
@@ -66,6 +67,12 @@ pub use pic_8259::{
     ISA_IRQ_VECTOR_BASE, PIC_ICW1_ACCEPTED, PIC_ICW4_ACCEPTED, PIC_MASTER_BASE_PORT,
     PIC_MASTER_ICW3, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIC_SLAVE_ICW3, Pic8259, Pic8259Handle,
     Pic8259InitPhase, Pic8259Pair, Pic8259Role, Pic8259Snapshot, isa_irq_vector,
+};
+
+pub use pit_8254::{
+    PIT_BASE_PORT, PIT_INPUT_HZ, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
+    PIT_REFRESH_TOGGLE_TICKS, Pit8254, Pit8254Devices, Pit8254Handle, PitAccess, PitChannel,
+    PitChannelSnapshot, PitLatch, PitMode, PitNextReload, PitPortB, PitRun, PitSnapshot, pit_ticks,
 };
 
 pub use display_device::{
