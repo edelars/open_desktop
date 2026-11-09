@@ -19,6 +19,7 @@
 
 use crate::interrupt_pump::{
     PumpEntrySource, PumpExit, PumpHost, PumpHostEvent, PumpHostStep, PumpRejection, PumpTraceKind,
+    PumpTraceMode, PumpTraceModeError,
 };
 use crate::stage4_interrupt_probe_common::{flat_access_context, flat_entry_state};
 use crate::{
@@ -357,8 +358,11 @@ pub struct Stage4UartIrqProbe {
     pump: InterruptPump,
     uart: Uart16550Handle,
     trace: Vec<UartIrqTraceEvent>,
-    /// Number of pump trace events already mapped into `trace`.
-    converted: usize,
+    /// `seq` of the first pump trace event not yet mapped into `trace`
+    /// (S4-37a5: a seq cursor, so a `Ring` pump trace cannot shift it).
+    next_pump_seq: u64,
+    /// Pump events dropped by a `Ring` trace before they were mapped.
+    lost_pump_events: u64,
 }
 
 fn trace_kind(kind: &PumpTraceKind) -> Option<UartIrqTraceKind> {
@@ -515,7 +519,8 @@ pub fn load_stage4_uart_irq_probe(
         pump,
         uart,
         trace: Vec::new(),
-        converted: 0,
+        next_pump_seq: 0,
+        lost_pump_events: 0,
     })
 }
 
@@ -542,6 +547,19 @@ impl Stage4UartIrqProbe {
 
     pub fn trace(&self) -> &[UartIrqTraceEvent] {
         &self.trace
+    }
+
+    /// Choose the trace mode of the underlying pump (S4-37a5); only before the
+    /// first run. The probe's own `trace` keeps every mapped event either way.
+    pub fn set_pump_trace_mode(&mut self, mode: PumpTraceMode) -> Result<(), PumpTraceModeError> {
+        self.pump.set_trace_mode(mode)
+    }
+
+    /// Pump events a `Ring` trace dropped before `run` mapped them (S4-37a5);
+    /// always 0 in `Bounded`, and in `Ring` when a run records at most `n`
+    /// events.
+    pub fn lost_pump_events(&self) -> u64 {
+        self.lost_pump_events
     }
 
     /// Bytes the guest wrote to THR; transmission completes instantly (no baud timing).
@@ -601,8 +619,11 @@ impl Stage4UartIrqProbe {
 
     /// Map pump trace events recorded since the last call into the S4-24e trace.
     fn sync_trace(&mut self) {
-        let events = &self.pump.trace()[self.converted..];
-        for event in events {
+        let first = self.pump.trace_first_seq();
+        if self.next_pump_seq < first {
+            self.lost_pump_events += first - self.next_pump_seq;
+        }
+        for event in self.pump.trace_since(self.next_pump_seq) {
             if let Some(kind) = trace_kind(&event.kind) {
                 self.trace.push(UartIrqTraceEvent {
                     seq: self.trace.len() as u64,
@@ -612,7 +633,7 @@ impl Stage4UartIrqProbe {
                 });
             }
         }
-        self.converted = self.pump.trace().len();
+        self.next_pump_seq = self.pump.trace_next_seq();
     }
 
     /// Run until idle halt, budget, STOP, a terminal result or an integration error.

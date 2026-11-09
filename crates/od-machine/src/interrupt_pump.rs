@@ -79,8 +79,34 @@ use od_isa::interrupt::InterruptOutsideProfile;
 use std::any::Any;
 use std::collections::BTreeMap;
 
-/// Tracing bound; exceeding it ends the run instead of growing without limit.
+/// Tracing bound of the `Bounded` trace mode; exceeding it ends the run instead
+/// of growing without limit.
 pub const INTERRUPT_PUMP_TRACE_LIMIT: usize = 512;
+
+/// How the pump keeps its trace (S4-37a5, ISSUE-072).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PumpTraceMode {
+    /// The first `INTERRUPT_PUMP_TRACE_LIMIT` events; the next one ends the run
+    /// with `Rejected(TraceLimit)`. The default and the behaviour of S4-27i1..i5.
+    #[default]
+    Bounded,
+    /// The last `n` events (`n >= 1`; `Ring(0)` is rejected by `set_trace_mode`).
+    /// The oldest event is dropped on overflow and counted in `trace_dropped`;
+    /// there is no `TraceLimit`.
+    Ring(usize),
+}
+
+/// Why `set_trace_mode` refused a mode; the pump state is left unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PumpTraceModeError {
+    /// The trace mode can only be chosen before the first event is recorded.
+    Recorded {
+        /// Events recorded so far (`trace_next_seq`).
+        recorded: u64,
+    },
+    /// `Ring(0)` has no capacity; it is rejected, not rounded up.
+    ZeroCapacity,
+}
 
 /// Capacity of the pump's IRQ event queue (S4-27i3).
 pub const INTERRUPT_PUMP_QUEUE_CAPACITY: usize = 16;
@@ -105,6 +131,12 @@ pub enum PumpInjection {
     /// S4-27i3: the queued event is removed before `request_fixed_edge`, so a
     /// failed request loses the event instead of keeping it for a retry.
     PopBeforeRequest,
+    /// S4-37a5: the `Ring` trace keeps the `Bounded` rule, so `Ring(n)` still
+    /// rejects with `TraceLimit` at `n` instead of dropping the oldest event.
+    RingKeepsLimit,
+    /// S4-37a5: the `Ring` trace restarts `seq` at 0 whenever it drops an event
+    /// (dropping still happens), so `seq` stops being a continuous running index.
+    RingResetsSeq,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -742,7 +774,15 @@ pub struct InterruptPump<B: PumpBackend = FlatBackend> {
     backend: B,
     apic: LocalApicHandle,
     watched: Vec<(u8, (bool, bool))>,
+    /// Recorded events; the visible trace is `trace[trace_start..]` (S4-37a5:
+    /// `Ring` drops from the front by moving `trace_start`, compacting lazily).
     trace: Vec<PumpTraceEvent>,
+    trace_start: usize,
+    trace_mode: PumpTraceMode,
+    /// `seq` of the next event; counts every event ever recorded (S4-37a5).
+    next_seq: u64,
+    /// Events dropped by the `Ring` trace (S4-37a5).
+    trace_dropped: u64,
     retired_total: u64,
     injection: Option<PumpInjection>,
     finished: Option<PumpExit>,
@@ -795,6 +835,10 @@ impl<B: PumpBackend> InterruptPump<B> {
             apic,
             watched: Vec::new(),
             trace: Vec::new(),
+            trace_start: 0,
+            trace_mode: PumpTraceMode::Bounded,
+            next_seq: 0,
+            trace_dropped: 0,
             retired_total: 0,
             injection: None,
             finished: None,
@@ -843,6 +887,32 @@ impl<B: PumpBackend> InterruptPump<B> {
         self
     }
 
+    /// Set or clear the fault injection of an existing pump (S4-37a5; owners
+    /// that build the pump themselves expose it through `pump_mut`).
+    pub fn set_injection(&mut self, injection: Option<PumpInjection>) {
+        self.injection = injection;
+    }
+
+    /// Choose the trace mode (S4-37a5). Only before the first event: the trace
+    /// of a running pump never changes its rules. `Ring(n)` needs `n >= 1`;
+    /// `Ring(0)` is rejected with `ZeroCapacity` and the mode is left unchanged.
+    pub fn set_trace_mode(&mut self, mode: PumpTraceMode) -> Result<(), PumpTraceModeError> {
+        if mode == PumpTraceMode::Ring(0) {
+            return Err(PumpTraceModeError::ZeroCapacity);
+        }
+        if self.next_seq != 0 {
+            return Err(PumpTraceModeError::Recorded {
+                recorded: self.next_seq,
+            });
+        }
+        self.trace_mode = mode;
+        Ok(())
+    }
+
+    pub fn trace_mode(&self) -> PumpTraceMode {
+        self.trace_mode
+    }
+
     pub fn state(&self) -> &od_isa::LongModeState {
         self.backend.state()
     }
@@ -856,8 +926,35 @@ impl<B: PumpBackend> InterruptPump<B> {
         &self.apic
     }
 
+    /// The retained events in `seq` order: all events in `Bounded`, the last
+    /// `n` in `Ring(n)` (the slice is always contiguous).
     pub fn trace(&self) -> &[PumpTraceEvent] {
-        &self.trace
+        &self.trace[self.trace_start..]
+    }
+
+    /// Retained events with `seq >= seq` (S4-37a5). Events older than the
+    /// oldest retained one are not included; compare `seq` with
+    /// `trace_first_seq` to detect that loss.
+    pub fn trace_since(&self, seq: u64) -> &[PumpTraceEvent] {
+        let events = self.trace();
+        let skip = seq.saturating_sub(self.trace_first_seq());
+        &events[(skip.min(events.len() as u64)) as usize..]
+    }
+
+    /// `seq` of the oldest retained event (equals `trace_next_seq` when empty).
+    pub fn trace_first_seq(&self) -> u64 {
+        self.next_seq.saturating_sub(self.trace().len() as u64)
+    }
+
+    /// `seq` the next recorded event gets: the number of events ever recorded.
+    /// Never reset (S4-37a5).
+    pub fn trace_next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// Events dropped by the `Ring` trace; always 0 in `Bounded`.
+    pub fn trace_dropped(&self) -> u64 {
+        self.trace_dropped
     }
 
     pub fn retired_total(&self) -> u64 {
@@ -981,17 +1078,34 @@ impl<B: PumpBackend> InterruptPump<B> {
     }
 
     fn push(&mut self, kind: PumpTraceKind) -> Result<(), PumpExit> {
-        if self.trace.len() >= INTERRUPT_PUMP_TRACE_LIMIT {
-            return Err(PumpExit::Rejected(PumpRejection::TraceLimit));
+        let (capacity, ring) = match self.trace_mode {
+            PumpTraceMode::Bounded => (INTERRUPT_PUMP_TRACE_LIMIT, false),
+            PumpTraceMode::Ring(n) => (n, self.injection != Some(PumpInjection::RingKeepsLimit)),
+        };
+        if self.trace().len() >= capacity {
+            if !ring {
+                return Err(PumpExit::Rejected(PumpRejection::TraceLimit));
+            }
+            self.trace_start += 1;
+            self.trace_dropped += 1;
+            if self.injection == Some(PumpInjection::RingResetsSeq) {
+                self.next_seq = 0;
+            }
+            // Compact once the dead prefix reaches the capacity (amortised O(1)).
+            if self.trace_start >= capacity {
+                self.trace.drain(..self.trace_start);
+                self.trace_start = 0;
+            }
         }
         let rip = self.state().rip;
         let clock_ns = self.virtual_time_ns();
         self.trace.push(PumpTraceEvent {
-            seq: self.trace.len() as u64,
+            seq: self.next_seq,
             rip,
             clock_ns,
             kind,
         });
+        self.next_seq += 1;
         Ok(())
     }
 

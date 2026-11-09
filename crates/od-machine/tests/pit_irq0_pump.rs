@@ -22,9 +22,10 @@
 use od_isa::Register;
 use od_machine::{
     EventGeneration, Pic8259InitPhase, PitChannel, PumpEntrySource, PumpExit, PumpHostEvent,
-    PumpRejection, PumpTraceKind as K, STAGE4_PIT_IRQ0_PROBE_IMAGE_BYTES,
-    STAGE4_PIT_IRQ0_PROBE_VECTOR as VECTOR, Stage4PitIrq0Injection, Stage4PitIrq0Probe,
-    Stage4PitIrq0ProbeLoadError, isa_irq_vector, load_stage4_pit_irq0_probe,
+    PumpInjection, PumpRejection, PumpTraceEvent, PumpTraceKind as K, PumpTraceMode,
+    PumpTraceModeError, STAGE4_PIT_IRQ0_PROBE_IMAGE_BYTES, STAGE4_PIT_IRQ0_PROBE_VECTOR as VECTOR,
+    Stage4PitIrq0Injection, Stage4PitIrq0Probe, Stage4PitIrq0ProbeLoadError, isa_irq_vector,
+    load_stage4_pit_irq0_probe,
 };
 
 const BASE: usize = 0x1000;
@@ -601,4 +602,139 @@ fn loader_refuses_wrong_images_and_missing_injection_sites() {
         load_stage4_pit_irq0_probe(&moved, Some(Stage4PitIrq0Injection::NoEoi)),
         Err(Stage4PitIrq0ProbeLoadError::Layout(_))
     ));
+}
+
+// ---- S4-37a5 (ISSUE-072): Bounded and Ring pump trace on a periodic PIT ----
+//
+// Choice of the stream: the real PIT image with the handler's stop disabled
+// (`stop_after: 0`, the counter never equals 0 within the run), so channel 0
+// delivers one IRQ0 per period forever and the guest needs no 1000 HLTs in the
+// image. About 7 trace events per period make the 512-event bound end the run
+// after ~170 periods; the budget below covers well over 1000 periods.
+
+const FOREVER: Program = Program {
+    stop_after: 0,
+    ..MODE2
+};
+/// Pump steps of the long runs (every period costs about 20).
+const LONG_BUDGET: u64 = 30_000;
+const RING: usize = 256;
+
+fn periodic(mode: PumpTraceMode, injection: Option<PumpInjection>) -> Stage4PitIrq0Probe {
+    let mut probe = load(&build(FOREVER), None);
+    probe.pump_mut().set_trace_mode(mode).unwrap();
+    probe.pump_mut().set_injection(injection);
+    probe
+}
+
+/// `seq` of the retained events runs without gaps or repeats.
+fn seq_continuous(trace: &[PumpTraceEvent]) -> bool {
+    trace.windows(2).all(|pair| pair[1].seq == pair[0].seq + 1)
+}
+
+#[test]
+fn bounded_trace_ends_a_periodic_pit_run_with_trace_limit() {
+    let mut probe = periodic(PumpTraceMode::Bounded, None);
+    assert_eq!(probe.pump().trace_mode(), PumpTraceMode::Bounded);
+    let result = probe.run(LONG_BUDGET, || false);
+    assert_eq!(result.exit, PumpExit::Rejected(PumpRejection::TraceLimit));
+    let pump = probe.pump();
+    assert_eq!(pump.trace().len(), od_machine::INTERRUPT_PUMP_TRACE_LIMIT);
+    assert_eq!(pump.trace_dropped(), 0);
+    assert_eq!(pump.trace_first_seq(), 0);
+    assert_eq!(pump.trace_next_seq(), pump.trace().len() as u64);
+    assert!(seq_continuous(pump.trace()));
+    // The limit is hit far below 1000 periods.
+    assert!(probe.counter() < 250, "counter {}", probe.counter());
+}
+
+#[test]
+fn ring_trace_runs_a_periodic_pit_past_1000_periods_and_keeps_the_last_events() {
+    let mut probe = periodic(PumpTraceMode::Ring(RING), None);
+    let result = probe.run(LONG_BUDGET, || false);
+    assert_eq!(result.exit, PumpExit::Budget);
+    assert_eq!(result.quanta, LONG_BUDGET);
+    assert!(probe.counter() >= 1000, "counter {}", probe.counter());
+
+    // The reference run keeps everything (no event is dropped).
+    let mut full = periodic(PumpTraceMode::Ring(1 << 20), None);
+    assert_eq!(full.run(LONG_BUDGET, || false).exit, PumpExit::Budget);
+    assert_eq!(full.pump().trace_dropped(), 0);
+    let all = full.pump().trace();
+    let total = all.len() as u64;
+    assert!(total > RING as u64 * 10);
+
+    let pump = probe.pump();
+    assert_eq!(pump.trace_next_seq(), total);
+    assert_eq!(pump.trace().len(), RING);
+    assert_eq!(pump.trace_dropped(), total - RING as u64);
+    assert_eq!(pump.trace_first_seq(), total - RING as u64);
+    assert!(seq_continuous(pump.trace()));
+    assert_eq!(pump.trace().first().unwrap().seq, total - RING as u64);
+    assert_eq!(pump.trace().last().unwrap().seq, total - 1);
+    // The retained events are exactly the last RING events of the full run.
+    assert_eq!(pump.trace(), &all[all.len() - RING..]);
+
+    // `trace_since` cuts by seq; older seq values return everything retained.
+    let first = pump.trace_first_seq();
+    assert_eq!(pump.trace_since(0), pump.trace());
+    assert_eq!(pump.trace_since(first), pump.trace());
+    assert_eq!(pump.trace_since(first + 3), &pump.trace()[3..]);
+    assert!(pump.trace_since(total).is_empty());
+    assert!(pump.trace_since(total + 5).is_empty());
+}
+
+#[test]
+fn the_trace_mode_is_chosen_before_the_first_event_only() {
+    let mut probe = periodic(PumpTraceMode::Bounded, None);
+    probe.run(STEPS_TO_HLT, || false);
+    let recorded = probe.pump().trace_next_seq();
+    assert!(recorded > 0);
+    let error = probe
+        .pump_mut()
+        .set_trace_mode(PumpTraceMode::Ring(8))
+        .unwrap_err();
+    assert_eq!(error, PumpTraceModeError::Recorded { recorded });
+    assert_eq!(probe.pump().trace_mode(), PumpTraceMode::Bounded);
+}
+
+#[test]
+fn ring_zero_is_rejected_and_leaves_the_trace_mode_unchanged() {
+    let mut probe = periodic(PumpTraceMode::Bounded, None);
+    let error = probe
+        .pump_mut()
+        .set_trace_mode(PumpTraceMode::Ring(0))
+        .unwrap_err();
+    assert_eq!(error, PumpTraceModeError::ZeroCapacity);
+    assert_eq!(probe.pump().trace_mode(), PumpTraceMode::Bounded);
+    assert!(
+        probe
+            .pump_mut()
+            .set_trace_mode(PumpTraceMode::Ring(1))
+            .is_ok()
+    );
+}
+
+#[test]
+fn ring_with_the_limit_left_in_place_ends_with_trace_limit() {
+    let mut probe = periodic(
+        PumpTraceMode::Ring(RING),
+        Some(PumpInjection::RingKeepsLimit),
+    );
+    let result = probe.run(LONG_BUDGET, || false);
+    assert_eq!(result.exit, PumpExit::Rejected(PumpRejection::TraceLimit));
+    assert_eq!(probe.pump().trace().len(), RING);
+    assert_eq!(probe.pump().trace_dropped(), 0);
+}
+
+#[test]
+fn ring_that_resets_seq_when_it_drops_fails_the_continuity_check() {
+    let mut probe = periodic(
+        PumpTraceMode::Ring(RING),
+        Some(PumpInjection::RingResetsSeq),
+    );
+    let result = probe.run(LONG_BUDGET, || false);
+    assert_eq!(result.exit, PumpExit::Budget);
+    assert!(probe.pump().trace_dropped() > 0);
+    assert!(!seq_continuous(probe.pump().trace()));
 }

@@ -6,7 +6,7 @@
 
 use od_isa::Register;
 use od_machine::{
-    STAGE4_UART_IRQ_PROBE_IMAGE_BYTES, Stage4UartIrqProbe, Stage4UartIrqProbeExit,
+    PumpTraceMode, STAGE4_UART_IRQ_PROBE_IMAGE_BYTES, Stage4UartIrqProbe, Stage4UartIrqProbeExit,
     Stage4UartIrqProbeLoadError, UartIrqTraceKind as K, load_stage4_uart_irq_probe,
 };
 
@@ -445,4 +445,60 @@ fn loader_rejects_images_outside_the_fixed_profile() {
             "{what} must be rejected"
         );
     }
+}
+
+// ---- S4-37a5: the probe's cursor into the pump trace is a seq ----
+
+#[test]
+fn the_cursor_follows_seq_in_bounded_and_in_a_ring_that_is_synced_in_time() {
+    let rx = [(1000, 0x41), (2000, 0x42)];
+    let mut bounded = session(NORMAL, &rx);
+    bounded.run(1000, || false);
+    assert_eq!(bounded.lost_pump_events(), 0);
+
+    // Step by step: the Ring(8) of the pump overflows many times over the
+    // whole run, but never between two syncs, so no event is lost or repeated.
+    let mut ring = session(NORMAL, &rx);
+    ring.set_pump_trace_mode(PumpTraceMode::Ring(8)).unwrap();
+    loop {
+        let report = ring.run(1, || false);
+        if report.exit != Stage4UartIrqProbeExit::BudgetExhausted {
+            assert_eq!(report.exit, Stage4UartIrqProbeExit::IdleHalt);
+            break;
+        }
+    }
+    assert_eq!(ring.lost_pump_events(), 0);
+    assert_eq!(bounded.trace(), ring.trace());
+    assert_eq!(bounded.state(), ring.state());
+    // seq of the mapped trace is its own running index (S4-24e contract).
+    assert!(
+        ring.trace()
+            .iter()
+            .enumerate()
+            .all(|(i, e)| e.seq == i as u64)
+    );
+}
+
+#[test]
+fn a_ring_that_overflows_between_syncs_reports_the_lost_events() {
+    let rx = [(1000, 0x41), (2000, 0x42)];
+    let mut bounded = session(NORMAL, &rx);
+    bounded.run(1000, || false);
+
+    let mut ring = session(NORMAL, &rx);
+    ring.set_pump_trace_mode(PumpTraceMode::Ring(4)).unwrap();
+    let report = ring.run(1000, || false);
+    assert_eq!(report.exit, Stage4UartIrqProbeExit::IdleHalt);
+    // Everything older than the last four pump events was dropped before the
+    // single sync of the run; the cursor counts it and repeats nothing.
+    assert!(ring.lost_pump_events() > 0);
+    assert!(ring.trace().len() < bounded.trace().len());
+    assert!(ring.trace().len() as u64 + ring.lost_pump_events() >= bounded.trace().len() as u64);
+    let tail = &bounded.trace()[bounded.trace().len() - ring.trace().len()..];
+    let kinds =
+        |t: &[od_machine::UartIrqTraceEvent]| t.iter().map(|e| e.kind.clone()).collect::<Vec<_>>();
+    assert_eq!(kinds(ring.trace()), kinds(tail));
+
+    // The mode is fixed once the pump has recorded events.
+    assert!(ring.set_pump_trace_mode(PumpTraceMode::Bounded).is_err());
 }
