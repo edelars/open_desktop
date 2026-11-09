@@ -600,6 +600,32 @@ reserved-бит/read-only регистров и отказ при global disable
 Local APIC; не проверяются x2APIC, NMI/ExtINT, прочие LVT, CPU delivery и Linux.
 См. [отчёт](../reports/STAGE_4_S4-25E_2026-11-08.md).
 
+## S4-25f Local APIC для Linux probe
+
+Запуск: `cargo test -p od-machine --lib local_apic --offline -- --test-threads=1`
+(39 тестов: 30 прежних и 9 новых). Новые тесты: Version `0x00030014` читается
+и read-only (запись `ReadOnly`, состояние не меняется), reset-матрица
+LINT0/LINT1/Error LVT = mask `0x10000`, хранение и маска (значения Linux:
+LINT0 ExtINT `0x700`, LINT1 NMI `0x400`, Error `0xfe`; все допустимые delivery
+mode; Delivery Status и Remote IRR при записи отбрасываются; зарезервированные
+биты и delivery mode `001/011/110` — `UnsupportedConfiguration`), отсутствие
+влияния на IRR/ISR/TMR, software disable маскирует три LVT, а снятие маски при
+software disable отклоняется без изменений, ESR write-then-read (запись
+защёлкивает накопленный лог и очищает его; чтение не очищает; записанное
+значение игнорируется; запись не меняет IRR/ISR/TMR и прочие регистры), DFR/LDR
+(хранение без routing), Perf `0x340`/Thermal `0x330`/CMCI `0x2f0` дают
+`UnknownOffset` и не меняют состояние, неверное пространство/ширина/выравнивание
+новых регистров не меняют состояние. Источника ошибок ESR в модели нет, поэтому
+лог в тестах заполняется прямой записью в `State`; это проверка механизма, а не
+реальной ошибки. Прежние тесты расширены только перечнем регистров: ожидания
+`UnknownOffset` для `0x30`, `0x280`, `0x350`, `0x360`, `0x370` заменены (см.
+[отчёт](../reports/STAGE_4_S4-25F_2026-11-09.md)). Инъекции: LINT0 теряет mask
+при записи — 1 падение, Version `0x10` — 1, ESR не очищает лог — 2, software
+disable не маскирует LINT0 — 1, reset LINT0 = 0 — 2. Затем `--lib
+diagnostic_vcpu` (34), `--lib uart` (13), `--lib io_apic` (11), `--test
+stage4_uart_irq_probe` (10), `cargo fmt --all -- --check`. Тесты не проверяют
+доставку с LINT-пинов, NMI, Error LVT delivery, CPUID, x2APIC и Linux (S4-38).
+
 ## S4-26a: fixed-edge IOAPIC route
 
 Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`

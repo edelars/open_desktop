@@ -1385,7 +1385,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-25. Local APIC одного CPU
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (закрыт срезами S4-25a–f; Claude Opus high). Не закрыто и вынесено: доставка с LINT/NMI/ExtINT; ESR-источники; logical destination в IOAPIC/ICR при logical mode ядра (риск S4-26/S4-38); сверка CPUID с отсутствием PMU/TM/CMCI (S4-38); проверка на настоящем Linux (S4-38); x2APIC и multi-CPU.
 - **Где:** `od-machine`, CPU APIC base/MSR effects в `od-isa`.
 - **Сделать:** выбранный xAPIC register model, enable/base, APIC ID, masks/priority, IRR/ISR/TMR, EOI и требуемые LVT. x2APIC и multi-CPU startup не заявлять. Необходимые self-directed IPI/NMI пути определить по manifest.
 - **Проверка:** reset, masked vector, priority, pending/in-service transitions, spurious path, EOI. Ошибочные register accesses и reserved bits следуют принятой спецификации.
@@ -1431,7 +1431,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-25f. Local APIC для Linux probe: Version, LINT0/LINT1, Error LVT и ESR (ограниченный срез)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). DFR/LDR не сверены с Linux 7.0 — см. отчёт.
 - **Где:** `od-machine` (`local_apic.rs`), контракт в `MACHINE_CONTRACT.md`.
 - **Сделать:** APIC Version (0x30): integrated, Max LVT = 3 (Timer, LINT0, LINT1, Error); LINT0 и LINT1 LVT — хранение, маска (bit 16), reset-значение masked; Error LVT и ESR — write-then-read по принятой спецификации xAPIC, ESR очищается записью. Perf, Thermal и CMCI не добавлять, если CPUID не объявляет PMU, TM и CMCI; записать это условие. Проверить, нужны ли DFR/LDR для выбранного ядра.
 - **Проверка:** чтение Version при reset; LINT0/LINT1/Error reset-матрица с masked; запись в Error LVT и ESR (write-then-read); запись в ESR не меняет IRR/ISR; обращения к Perf/Thermal/CMCI дают UnknownOffset и закреплены тестом. Тесты в `--lib local_apic`.
