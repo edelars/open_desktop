@@ -207,6 +207,11 @@ impl DiagnosticHaltWait {
         &self.session.state
     }
 
+    /// Snapshot of the session's virtual clock (S4-27i2), if it owns one.
+    pub fn virtual_clock(&self) -> Option<VirtualClock> {
+        self.session.virtual_clock()
+    }
+
     /// Advance only this halted session's clock while it remains in Waiting.
     pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), DiagnosticHaltWaitError> {
         if !matches!(self.state, HaltWaitState::Waiting) {
@@ -807,9 +812,8 @@ impl DiagnosticVcpuSession {
             || self.state.cr3.is_some()
             || self.state.cr4.is_some()
             || self.rflags_defined != INTEGER_FLAGS
-            || self.clock.is_some()
-            || self.rdtsc_controls.is_some()
             || !self.completed_boundary
+            || self.next_is_rdtsc()
         {
             return DiagnosticStiApicQuantumResult::ProfileRejected;
         }
@@ -857,6 +861,20 @@ impl DiagnosticVcpuSession {
         } else {
             DiagnosticStiApicQuantumResult::Ordinary(result)
         }
+    }
+
+    /// S4-27i2: the STI quantum has no TSC source, so a session may own a clock
+    /// (the clock gate of S4-27c is relaxed) but an RDTSC (`0F 31`, optionally
+    /// after one REX prefix) at RIP is still refused before anything changes.
+    fn next_is_rdtsc(&mut self) -> bool {
+        if self.clock.is_none() && self.rdtsc_controls.is_none() {
+            return false;
+        }
+        let code = self.peek_code(3);
+        matches!(
+            code.as_slice(),
+            [0x0f, 0x31, ..] | [0x40..=0x4f, 0x0f, 0x31]
+        )
     }
 
     fn run_sti_quantum(&mut self) -> DiagnosticRunResult {
@@ -2638,11 +2656,17 @@ mod tests {
                 0 => cpu.rflags_defined = 0,
                 1 => cpu.state.sti_shadow = None,
                 2 => {
+                    // S4-27i2: ослаблен clock gate. Сессия с clock больше не
+                    // отвергается сама по себе (см.
+                    // `sti_quantum_accepts_a_session_clock`); отвергается RDTSC
+                    // внутри STI-кванта (у STI-профиля нет источника TSC).
                     cpu.clock = Some(
                         VirtualClockHandle::from(VirtualClock::new(1).unwrap())
                             .claim_advancer()
                             .unwrap(),
-                    )
+                    );
+                    cpu.rdtsc_controls = Some(RdtscControls { cr4_tsd: false });
+                    put(&mut cpu, 0x4100, &[0x0f, 0x31, 0x90]);
                 }
                 3 => cpu.state.activity = None,
                 4 => cpu.access_context.privilege = PrivilegeLevel::Ring3,

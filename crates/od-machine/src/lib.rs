@@ -33,6 +33,7 @@ mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_huge_pages_probe;
 mod stage4_interrupt_pump_probe;
+mod stage4_interrupt_timer_probe;
 mod stage4_paged_irq_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
@@ -222,6 +223,14 @@ pub use stage4_interrupt_pump_probe::{
     STAGE4_INTERRUPT_PUMP_PROBE_STACK_TOP, STAGE4_INTERRUPT_PUMP_PROBE_VECTOR_A,
     STAGE4_INTERRUPT_PUMP_PROBE_VECTOR_B, Stage4InterruptPumpProbeLoadError,
     load_stage4_interrupt_pump_probe,
+};
+pub use stage4_interrupt_timer_probe::{
+    STAGE4_INTERRUPT_TIMER_PROBE_COUNTER_GPA, STAGE4_INTERRUPT_TIMER_PROBE_ENTRY,
+    STAGE4_INTERRUPT_TIMER_PROBE_IMAGE_BYTES, STAGE4_INTERRUPT_TIMER_PROBE_IMAGE_GPA,
+    STAGE4_INTERRUPT_TIMER_PROBE_RAM_BYTES, STAGE4_INTERRUPT_TIMER_PROBE_STACK_TOP,
+    STAGE4_INTERRUPT_TIMER_PROBE_TIMER_HZ, STAGE4_INTERRUPT_TIMER_PROBE_TSC_HZ,
+    STAGE4_INTERRUPT_TIMER_PROBE_VECTOR, Stage4InterruptTimerProbeLoadError,
+    load_stage4_interrupt_timer_probe,
 };
 pub use stage4_paged_irq_probe::{
     LoadedStage4PagedIrqProbe, STAGE4_PAGED_IRQ_EOI_GVA, STAGE4_PAGED_IRQ_FINAL_RIP,
