@@ -663,6 +663,38 @@ the changed slice passed repeat review. Graphify and layout results are in the
 establish guest CPU interrupt/handler delivery, board registration or Linux
 discovery.
 
+## S4-26c IOAPIC ID/Version и окно
+
+Запуск: `cargo test -p od-machine --lib io_apic --offline -- --test-threads=1`
+(19 тестов: 11 прежних и 8 новых). Новые тесты: чтение ID (`0x01000000`),
+Version (`0x00170020`: версия `0x20`, MRE 23) и Arbitration ID (`0x01000000`) через
+IOREGSEL/IOWIN; ID пишется только в битах 27:24 (Arbitration ID следует за ним,
+reset возвращает 1), запись reserved-битов ID и любая запись в Version/Arbitration
+ID — `UnsupportedConfiguration` без изменения снимка `PairState`; чтение и запись
+всех 24 redirection entries (low/high), независимость входов, запись high только
+0, отсутствие входа 24; записи через окно меняют маску, vector и trigger INTIN4 и
+реально меняют доставку, а остальные входы никогда не доставляют и не имеют
+Remote IRR; неизвестные селекторы (`0x03..=0x0F`, `0x40`, `0x41`, `0x80`, `0xFE`,
+`0xFF`) дают `UnknownOffset` на чтение и запись без изменения снимка; недопустимые
+vector (0, 1, 15, 0xFF при unmasked), все семь не-Fixed delivery mode (в том числе
+зарезервированные `011`/`110`; masked и unmasked), logical destination mode
+(бит 11), polarity, reserved-биты и ненулевой high dword отклоняются для входов 0,
+4 и 23 без изменения снимка; политика: masked entry допускает любой vector; на входах без линии под маской
+хранится active-low (бит 13, pin 9), без маски — отказ без изменения снимка,
+INTIN4 по-прежнему отказывает active-low.
+Согласование с MADT: тест `model_agrees_with_the_firmware_madt` читает ID из байтов
+MADT в реальном blob-фикстуре S4-31d/g, число входов из константы прошивки
+`IOAPIC_PIN_COUNT` (в MADT его нет) и сверяет с ID/MRE модели.
+Ожидание одного прежнего теста изменено (см.
+[отчёт](../reports/STAGE_4_S4-26C_2026-11-09.md)): `reset_registers_and_rejected_accesses_are_atomic`
+использовал селектор 1 как «неизвестный», теперь это Version, и тест берёт
+селектор 3 (и ожидает его при чтении IOREGSEL). Инъекции: MRE 22 — 3 падения,
+reset-ID 2 — 3, Version `0x17_0011` — 3, vector < 16 допущен — 2, delivery mode
+допущен — 2, Version стал записываемым — 1, `IOAPIC_PIN_COUNT` 16 в прошивке — 1. Затем `--lib apic_pair`, `--lib local_apic`, `--lib uart`,
+`--test stage4_uart_irq_probe`, `cargo fmt --all -- --check`. Тесты не
+проверяют logical destination routing, несколько IOAPIC, MSI, доставку с входов
+кроме INTIN4 и приём Linux (S4-38).
+
 ## S4-27a: caller-driven APIC interrupt entry
 
 Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,

@@ -5,6 +5,10 @@ pub(crate) const MASK: u32 = 1 << 16;
 pub(crate) const PERIODIC: u32 = 1 << 17;
 pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
+/// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
+pub(crate) const IO_APIC_PINS: usize = 24;
+/// IOAPIC ID loaded at reset: the value the firmware MADT declares (S4-31f).
+pub(crate) const IO_APIC_RESET_ID: u8 = 1;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct Route {
@@ -12,6 +16,10 @@ pub(crate) struct Route {
     pub low: u32,
     pub high_line: bool,
     pub remote_irr: bool,
+    /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
+    pub id: u8,
+    /// Stored low dwords of entries other than INTIN4 (no input line, never delivers).
+    pub pins: [u32; IO_APIC_PINS],
 }
 impl Default for Route {
     fn default() -> Self {
@@ -20,6 +28,8 @@ impl Default for Route {
             low: MASK,
             high_line: false,
             remote_irr: false,
+            id: IO_APIC_RESET_ID,
+            pins: [MASK; IO_APIC_PINS],
         }
     }
 }

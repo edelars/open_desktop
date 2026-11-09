@@ -2076,6 +2076,81 @@ preliminary release, §3.2.4](https://intel-vintage-developer.eu5.org/DESIGN/PCI
 See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
 [verification method](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
 
+## IOAPIC ID/Version, окно регистров и недопустимые записи (S4-26c)
+
+Окно `IoApic` (`0xFEC00000`, dword): IOREGSEL на смещении `0x00` (8 бит, значение
+больше `0xFF` — `UnsupportedConfiguration` без изменений), IOWIN на `0x10`.
+Селекторы IOREGSEL принимают любое значение 0..=0xFF; доступ через IOWIN к
+неизвестному селектору (`0x03..=0x0F`, `0x40..=0xFF`) — `UnknownOffset` без
+изменения состояния (на запись и чтение), как и в S4-26a/b. Селектор после
+неизвестного значения сохраняется (он не часть конфигурации маршрутов).
+
+- **ID (`0x00`).** Читается `(ID << 24)`, reset-значение ID = 1: это ID, который
+  MADT (S4-31f, `IOAPIC_ID`) объявляет прошивкой; у модели нет стадии прошивки,
+  поэтому значение MADT является reset-значением. Биты 27:24 — RW (ID — 4 бита, по
+  документу 82093AA, как его принимает S4-26a); запись с ненулевыми reserved-битами
+  (31:28, 23:0) — `UnsupportedConfiguration` без изменений. ID на маршрутизацию
+  не влияет. Независимый `IoApicHandle::reset` и `reset_pair` возвращают ID = 1.
+- **Version (`0x01`).** `0x00170020`: версия `0x20`, MRE (23:16) = 23, то есть
+  24 входа. Read-only: запись — `UnsupportedConfiguration` без изменений.
+- **Arbitration ID (`0x02`).** Читается как `ID << 24` (82093AA загружает его из
+  ID при записи ID; шины APIC в модели нет, арбитража тоже). Read-only: запись —
+  `UnsupportedConfiguration`.
+- **Redirection entries.** Селекторы `0x10..=0x3F`: вход `n = (select - 0x10) / 2`,
+  чётный селектор — low dword, нечётный — high; `n = 0..=23`. Вход 4 — прежний
+  маршрут S4-26a/b (все проверки конфликтов и Remote IRR сохранены; Remote IRR
+  читается в бите 14). Остальные 23 входа хранят low dword (после reset
+  `0x00010000`, masked), у них нет входной линии (`set_intin4` относится только к
+  INTIN4), поэтому они никогда ничего не доставляют, Remote IRR всегда 0.
+  Запись low принимается при Fixed delivery (биты 10:8 = 0), physical destination
+  mode (бит 11 = 0), active-high (бит 13 = 0), нулевых битах 31:17; исключение —
+  входы без линии (все, кроме INTIN4): под маской разрешён бит 13 = 1 (active-low;
+  MADT объявляет SCI на GSI 9 как level/active-low, flags `0x000F`), запись без маски
+  с бит 13 = 1 — `UnsupportedConfiguration` без изменений; INTIN4 остаётся только
+  active-high даже под маской; биты 12 и 14
+  (read-only) отбрасываются. Vector: для unmasked записи `0x10..=0xFE`; для masked
+  записи допустим любой байт (reset-состояние уже masked с vector 0, а Linux
+  маскирует входы с vector 0). Расширения относительно S4-26a: любой vector под маской и active-low под маской на входах без линии (SCI GSI 9):
+  прежние отказы (vector 0/15/0xFF без маски) сохранены. High dword: принимается
+  только 0 (physical destination 0, то есть Local APIC ID 0; reserved 23:0 = 0);
+  любое другое значение — `UnsupportedConfiguration` без изменений.
+
+**Недопустимые записи** (vector < 16 при unmasked, `0xFF` при unmasked, любой
+delivery mode кроме Fixed — lowest priority, SMI, NMI, INIT, ExtINT и зарезервированные
+`011`/`110`, polarity (кроме masked на входах без линии), reserved-биты, ненулевой high dword) всегда
+`UnsupportedConfiguration` и не меняют ни один вход, ID, Remote IRR, IRR/ISR/TMR.
+Тесты сравнивают полный снимок `PairState` до и после.
+
+**Ограничения S4-26c.** (а) SCI GSI 9 (level/active-low) принимается только
+маскированным; разблокировка такого входа — отказ, потому что active-low не
+моделируется: риск для S4-29/S4-38 (включение SCI). (б) EOI-регистра IOAPIC по
+смещению `0x40` нет (тот же `UnknownOffset` по общим
+правилам окна), регистр `0x03` не моделируется (`UnknownOffset`); Version `0x20`
+выбрана как у ICH/QEMU-style IOAPIC, не 82093AA. (в) Polarity в «Сделать» S4-26
+покрыта только для active-high на INTIN4 и для маскированных входов без линии.
+Родитель S4-26 закрывается только с этой оговоркой.
+
+**Граница: logical destination.** Бит 11 = 1 и любой destination, кроме physical 0,
+отклоняются; logical flat/cluster routing, lowest-priority и multiple IOAPIC не
+моделируются. Риск: ядро Linux при logical flat mode (S4-25f «Открыто») запишет такие
+записи в redirection entries — они будут отказаны, пока не появится logical routing
+(S4-38 покажет, нужен ли он для одного CPU; physical mode с destination 0 принимается).
+PCI MSI и дополнительные IOAPIC вне контракта.
+
+**Согласование с MADT.** MADT прошивки (`firmware/uefi/src/acpi/madt.rs`, константы
+`IOAPIC_ID = 1`, `IOAPIC_PIN_COUNT = 24`, блоб-фикстура
+`tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`) и модель связаны
+тестом `io_apic::tests::model_agrees_with_the_firmware_madt`: ID читается из байтов
+MADT фикстуры, число входов (не поле MADT) — из константы прошивки; модель обязана
+отдавать тот же ID и MRE = `IOAPIC_PIN_COUNT - 1`. Изменение любой из сторон ломает тест.
+
+Источники: Intel [82093AA I/O APIC document 290566-001](https://intel-vintage-developer.eu5.org/DESIGN/PCISETS/DATASHTS/29056601.PDF),
+preliminary release, §§3.1–3.2.4 (регистры и redirection table). В этом срезе
+текст документа и SDM заново не перечитывался: поля ID (RW 27:24), Version (RO,
+MRE 23:16), Arbitration ID (RO, загружается из ID) и раскладка redirection entry
+взяты из принятых S4-26a/b и памяти исполнителя; это НЕ ПРОВЕРЕНО по тексту. См. [отчёт S4-26c](../reports/STAGE_4_S4-26C_2026-11-09.md) и
+[методику проверки](../testing/MACHINE.md#s4-26c-ioapic-idversion-и-окно).
+
 ## Caller-driven APIC interrupt entry (S4-27a)
 
 `DiagnosticVcpuSession::deliver_interrupt_and_step` is a synchronous

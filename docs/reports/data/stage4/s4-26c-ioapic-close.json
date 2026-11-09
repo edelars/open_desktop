@@ -1,0 +1,49 @@
+{
+  "slice": "S4-26c",
+  "date": "2026-11-09",
+  "status": "awaiting_review",
+  "scope": "IOAPIC ID/Version/Arbitration ID registers, 24-entry redirection window, atomic refusal of unknown selects and invalid vector/delivery/destination writes, consistency with the firmware MADT (ID 1, 24 inputs)",
+  "registers": {
+    "id": "0x00: reset 0x01000000, bits 27:24 RW, reserved bits refused",
+    "version": "0x01: 0x00170020 read-only (version 0x20, MRE 23)",
+    "arbitration_id": "0x02: ID << 24, read-only",
+    "redirection": "0x10..=0x3F: entries 0..=23 low/high; only entry 4 routes"
+  },
+  "decisions": {
+    "unknown_select": "IOREGSEL stores any byte; IOWIN read/write on unknown select -> UnknownOffset, no state change",
+    "invalid_writes": "UnsupportedConfiguration, no state change (vector < 16 or 0xFF unmasked, any non-Fixed delivery mode, logical destination, polarity except masked active-low on pins without a line, reserved bits, nonzero high dword)",
+    "masked_vector": "masked entries accept any vector byte (reset is masked with vector 0)",
+    "logical_destination": "refused; logical routing not modeled"
+  },
+  "checks": {
+    "io_apic": "cargo test -p od-machine --lib io_apic --offline -- --test-threads=1: 19 passed (11 old + 8 new)",
+    "local_apic": "39 passed",
+    "uart": "13 passed",
+    "stage4_uart_irq_probe": "10 passed",
+    "full_od_machine": "cargo test -p od-machine --offline -- --test-threads=4: 634 passed, 0 failed (before review fixes, which added 2 tests)",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed"
+  },
+  "injections": {
+    "mre_22": "3 failures",
+    "reset_id_2": "3 failures",
+    "version_0x20_to_0x11": "3 failures",
+    "vector_below_16_allowed": "2 failures",
+    "delivery_modes_allowed": "2 failures",
+    "version_writable": "1 failure",
+    "madt_pin_count_16 (firmware constant)": "1 failure"
+  },
+  "changed_old_expectations": [
+    "io_apic::tests::reset_registers_and_rejected_accesses_are_atomic: selector 1 (was unknown, now Version) replaced by 3; IOREGSEL readback 1 -> 3"
+  ],
+  "limitations": [
+    "logical destination, lowest priority and other delivery modes are refused, not routed",
+    "entries other than INTIN4 store configuration only and have no input line",
+    "single IOAPIC, no PCI MSI",
+    "ID RW/Arbitration RO and register layout are from accepted S4-26a/b policy and are not re-verified against the datasheet text",
+    "SCI GSI 9 level/active-low is accepted only masked; unmasking is refused (risk for S4-29/S4-38)",
+    "no IOAPIC EOI register (0x40); register 0x03 is UnknownOffset; Version 0x20 as ICH/QEMU-style",
+    "polarity from S4-26 is covered only for active-high on INTIN4 and masked entries without a line; close parent S4-26 with this caveat",
+    "no Linux acceptance (S4-38)"
+  ]
+}
