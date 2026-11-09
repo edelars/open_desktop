@@ -38,6 +38,19 @@
 //! `run_same_cpl0_iretq`. The effects of a step are seen by the next boundary
 //! check; there is no separate check after an instruction.
 //!
+//! S4-27i5 (owner hook): an owner can attach a [`PumpHost`] (the S4-24e UART
+//! probe does). The host runs owner-side work at the start of every step
+//! (`dispatch`, for example a device event queue and the device-to-IOAPIC line),
+//! executes instructions the ordinary interpreter does not (`step`, for example
+//! port I/O) and may add a deadline source for the idle advance (`next_deadline`;
+//! it is waited for even with IF=0, because the host's work may itself raise an
+//! IRR bit). Host events appear in the pump trace as [`PumpTraceKind::Host`].
+//! With [`InterruptPump::with_entry_only_delivery`] a boundary delivery only
+//! enters the handler (`deliver_pending_irq`): the first handler instruction is
+//! a separate step, so the handler entry state is observable and the first
+//! handler instruction is not limited to ordinary instructions. Without a host
+//! and without that flag the pump behaves exactly as in S4-27i1..i3.
+//!
 //! Accepted APIs are used as they are. Consequences recorded as limits:
 //! the first handler instruction runs inside `run_apic_quantum` and must be an
 //! instruction the ordinary interpreter executes (not STI, CLI, HLT, IRETQ); a
@@ -45,7 +58,7 @@
 //! the pump finishes the instruction before the next APIC check (interrupt
 //! latency deviates from hardware, which may deliver between iterations).
 
-use crate::diagnostic_vcpu::{DiagnosticHaltWait, DiagnosticHaltWaitError};
+use crate::diagnostic_vcpu::{DiagnosticHaltWait, DiagnosticHaltWaitError, DiagnosticIrqEntry};
 use crate::{
     DeviceError, DiagnosticApicQuantumResult, DiagnosticExit, DiagnosticHaltEnterReason,
     DiagnosticHaltWakeResult, DiagnosticIretqResult, DiagnosticRunResult,
@@ -55,6 +68,7 @@ use crate::{
 };
 use od_isa::StiShadow;
 use od_isa::interrupt::InterruptOutsideProfile;
+use std::any::Any;
 use std::collections::BTreeMap;
 
 /// Tracing bound; exceeding it ends the run instead of growing without limit.
@@ -93,6 +107,40 @@ pub enum PumpEntrySource {
     HaltWake,
 }
 
+/// One owner event recorded in the pump trace (S4-27i5). The pump does not
+/// interpret `name`, `a` and `b`; the owner defines them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PumpHostEvent {
+    pub name: &'static str,
+    pub a: u64,
+    pub b: u64,
+}
+
+/// Result of one instruction executed by the host (S4-27i5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PumpHostStep {
+    pub result: DiagnosticRunResult,
+    /// Recorded after the instruction was accounted (not when it was terminal).
+    pub events: Vec<PumpHostEvent>,
+}
+
+/// Owner hook of the pump (S4-27i5). Implemented by an owner that has devices
+/// or instructions beyond the pump's interrupt model.
+pub trait PumpHost: Any {
+    /// Owner-side work at the start of every step, before the IRR is observed.
+    /// `now_ns` is the session clock (0 without a clock).
+    fn dispatch(&mut self, now_ns: u64) -> Result<Vec<PumpHostEvent>, String>;
+    /// Earliest owner deadline strictly after `now_ns` that can change the IRR.
+    fn next_deadline(&self, now_ns: u64) -> Option<u64>;
+    /// Execute the instruction at RIP if the host owns it; `None` otherwise.
+    fn step(
+        &mut self,
+        session: &mut DiagnosticVcpuSession,
+    ) -> Option<Result<PumpHostStep, PumpRejection>>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PumpTraceKind {
     /// A watched vector appeared in the Local APIC IRR (observed at a boundary).
@@ -118,6 +166,8 @@ pub enum PumpTraceKind {
     Coalesced {
         vector: u8,
     },
+    /// S4-27i5: an event recorded by the owner hook.
+    Host(PumpHostEvent),
 }
 
 impl PumpTraceKind {
@@ -131,6 +181,7 @@ impl PumpTraceKind {
             Self::Hlt => "hlt",
             Self::Iretq => "iretq",
             Self::Coalesced { .. } => "coalesced",
+            Self::Host(event) => event.name,
         }
     }
 }
@@ -140,6 +191,9 @@ pub struct PumpTraceEvent {
     pub seq: u64,
     /// RIP of the CPU when the event was observed.
     pub rip: u64,
+    /// Virtual time (session clock) when the event was recorded (S4-27i5);
+    /// `None` without a clock.
+    pub clock_ns: Option<u64>,
     pub kind: PumpTraceKind,
 }
 
@@ -177,6 +231,8 @@ pub enum PumpRejection {
     QueueState(EventQueueError),
     /// A queued key has no vector route (S4-27i3; an internal inconsistency).
     QueueRoute(u64),
+    /// The owner hook refused a dispatch or an instruction (S4-27i5).
+    Host(String),
 }
 
 /// Refusal of a caller operation on the pump's IRQ event queue (S4-27i3).
@@ -233,6 +289,18 @@ pub struct InterruptPump {
     queue: EventQueue,
     routes: BTreeMap<u64, (u8, u64)>,
     coalesced: u64,
+    /// S4-27i5: optional owner hook and the entry-only delivery mode.
+    host: Option<Box<dyn PumpHost>>,
+    entry_only: bool,
+}
+
+/// Outcome of a halted step that tried to advance the clock (S4-27i5).
+enum IdleOutcome {
+    Halt,
+    Advanced {
+        /// Set when the clock stopped at an owner deadline.
+        host_to: Option<u64>,
+    },
 }
 
 impl InterruptPump {
@@ -253,6 +321,43 @@ impl InterruptPump {
             queue: EventQueue::new(INTERRUPT_PUMP_QUEUE_CAPACITY),
             routes: BTreeMap::new(),
             coalesced: 0,
+            host: None,
+            entry_only: false,
+        }
+    }
+
+    /// Attach the owner hook (S4-27i5).
+    pub fn with_host(mut self, host: Box<dyn PumpHost>) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    /// A boundary delivery only enters the handler; its first instruction is a
+    /// separate step (S4-27i5).
+    pub fn with_entry_only_delivery(mut self) -> Self {
+        self.entry_only = true;
+        self
+    }
+
+    /// The owner hook, if it has type `T` (S4-27i5).
+    pub fn host<T: PumpHost>(&self) -> Option<&T> {
+        self.host.as_ref()?.as_any().downcast_ref::<T>()
+    }
+
+    pub fn host_mut<T: PumpHost>(&mut self) -> Option<&mut T> {
+        self.host.as_mut()?.as_any_mut().downcast_mut::<T>()
+    }
+
+    /// Advance the session clock between steps (S4-27i5). Only while the CPU is
+    /// runnable or waiting.
+    pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), PumpRejection> {
+        match self.cpu.as_mut().expect("cpu is always restored") {
+            Cpu::Running(session) => session
+                .advance_time_ns(delta_ns)
+                .map_err(PumpRejection::Control),
+            Cpu::Waiting(wait) => wait
+                .advance_time_ns(delta_ns)
+                .map_err(PumpRejection::TimerAdvance),
         }
     }
 
@@ -429,9 +534,11 @@ impl InterruptPump {
             return Err(PumpExit::Rejected(PumpRejection::TraceLimit));
         }
         let rip = self.state().rip;
+        let clock_ns = self.virtual_time_ns();
         self.trace.push(PumpTraceEvent {
             seq: self.trace.len() as u64,
             rip,
+            clock_ns,
             kind,
         });
         Ok(())
@@ -531,7 +638,23 @@ impl InterruptPump {
         Ok(())
     }
 
+    /// Owner-side work before the IRR is observed (S4-27i5).
+    fn dispatch_host(&mut self) -> Result<(), PumpExit> {
+        let now = self.virtual_time_ns().unwrap_or(0);
+        let Some(host) = self.host.as_mut() else {
+            return Ok(());
+        };
+        let events = host
+            .dispatch(now)
+            .map_err(|detail| PumpExit::Rejected(PumpRejection::Host(detail)))?;
+        for event in events {
+            self.push(PumpTraceKind::Host(event))?;
+        }
+        Ok(())
+    }
+
     fn step_inner(&mut self) -> Result<Flow, PumpExit> {
+        self.dispatch_host()?;
         self.observe()?;
         self.dispatch_due_timer()?;
         self.dispatch_due_queue()?;
@@ -575,8 +698,17 @@ impl InterruptPump {
                 let advanced = self.idle_advance(&mut wait);
                 self.cpu = Some(Cpu::Waiting(wait));
                 match advanced {
-                    Ok(true) => Ok(Flow::Continue),
-                    Ok(false) => Ok(Flow::Exit(PumpExit::IdleHalt)),
+                    Ok(IdleOutcome::Advanced { host_to }) => {
+                        if let Some(to_ns) = host_to {
+                            self.push(PumpTraceKind::Host(PumpHostEvent {
+                                name: "idle_advance",
+                                a: to_ns,
+                                b: 0,
+                            }))?;
+                        }
+                        Ok(Flow::Continue)
+                    }
+                    Ok(IdleOutcome::Halt) => Ok(Flow::Exit(PumpExit::IdleHalt)),
                     Err(rejection) => Ok(Self::reject(rejection)),
                 }
             }
@@ -621,26 +753,33 @@ impl InterruptPump {
 
     /// Waiting with no eligible vector (S4-27i2, S4-27i3): advance the clock to
     /// the earlier of the next timer deadline and the next queue deadline that
-    /// can still change the IRR, and dispatch the timer. `Ok(false)` means
+    /// can still change the IRR, and dispatch the timer. `Halt` means
     /// nothing can wake the CPU (IF=0, no such deadline, or the only sources
-    /// are blocked in the IRR: ISSUE-070).
-    fn idle_advance(&mut self, wait: &mut DiagnosticHaltWait) -> Result<bool, PumpRejection> {
-        if wait.state().rflags & RFLAGS_IF == 0 {
-            return Ok(false);
-        }
-        let Some(deadline) = [self.useful_timer_deadline(), self.useful_queue_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
-        else {
-            return Ok(false);
+    /// are blocked in the IRR: ISSUE-070). S4-27i5: an owner deadline
+    /// (`PumpHost::next_deadline`) is waited for regardless of IF.
+    fn idle_advance(
+        &mut self,
+        wait: &mut DiagnosticHaltWait,
+    ) -> Result<IdleOutcome, PumpRejection> {
+        let now = wait.virtual_clock().map(|clock| clock.now_ns());
+        let maskable = if wait.state().rflags & RFLAGS_IF == 0 {
+            None
+        } else {
+            [self.useful_timer_deadline(), self.useful_queue_deadline()]
+                .into_iter()
+                .flatten()
+                .min()
         };
-        let now = wait
-            .virtual_clock()
-            .ok_or(PumpRejection::TimerAdvance(DiagnosticHaltWaitError::Clock(
-                crate::VirtualClockError::ClockNotConfigured,
-            )))?
-            .now_ns();
+        let host_deadline = match (&self.host, now) {
+            (Some(host), Some(now)) => host.next_deadline(now),
+            _ => None,
+        };
+        let Some(deadline) = [maskable, host_deadline].into_iter().flatten().min() else {
+            return Ok(IdleOutcome::Halt);
+        };
+        let now = now.ok_or(PumpRejection::TimerAdvance(DiagnosticHaltWaitError::Clock(
+            crate::VirtualClockError::ClockNotConfigured,
+        )))?;
         if deadline <= now {
             return Err(PumpRejection::TimerNoProgress);
         }
@@ -651,7 +790,9 @@ impl InterruptPump {
                 .dispatch_timer()
                 .map_err(PumpRejection::TimerDispatch)?;
         }
-        Ok(true)
+        Ok(IdleOutcome::Advanced {
+            host_to: (host_deadline == Some(deadline)).then_some(deadline),
+        })
     }
 
     /// Account one run result; `Some` ends the call.
@@ -693,8 +834,37 @@ impl InterruptPump {
             return self.finish_plain(session, outcome);
         }
         if self.boundary_allows_delivery(&session) {
-            let outcome = session.run_apic_quantum(&self.apic, || false);
-            return self.finish_apic_quantum(session, outcome);
+            if !self.entry_only {
+                let outcome = session.run_apic_quantum(&self.apic, || false);
+                return self.finish_apic_quantum(session, outcome);
+            }
+            // S4-27i5: enter the handler without executing its first instruction.
+            match session.deliver_pending_irq(&self.apic) {
+                Ok(Some(DiagnosticIrqEntry::Entered { vector })) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    self.push(PumpTraceKind::Entry {
+                        vector,
+                        source: PumpEntrySource::Boundary,
+                    })?;
+                    return Ok(Flow::Continue);
+                }
+                Ok(Some(DiagnosticIrqEntry::OutsideProfile(reason))) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Ok(Self::reject(PumpRejection::InterruptEntry(reason)));
+                }
+                Ok(Some(DiagnosticIrqEntry::Terminal(cause))) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Ok(Self::terminal(cause));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Ok(Self::reject(PumpRejection::Control(error)));
+                }
+            }
+        }
+        if let Some(outcome) = self.host.as_mut().and_then(|host| host.step(&mut session)) {
+            return self.finish_host(session, outcome);
         }
         let code = session.peek_code(2);
         let in_sti_shadow = session.state().sti_shadow == Some(StiShadow::Blocking);
@@ -729,6 +899,26 @@ impl InterruptPump {
                 let outcome = session.run_apic_quantum(&self.apic, || false);
                 self.finish_apic_quantum(session, outcome)
             }
+        }
+    }
+
+    fn finish_host(
+        &mut self,
+        session: DiagnosticVcpuSession,
+        outcome: Result<PumpHostStep, PumpRejection>,
+    ) -> Result<Flow, PumpExit> {
+        self.cpu = Some(Cpu::Running(session));
+        match outcome {
+            Ok(step) => {
+                if let Some(flow) = self.account(&step.result) {
+                    return Ok(flow);
+                }
+                for event in step.events {
+                    self.push(PumpTraceKind::Host(event))?;
+                }
+                Ok(Flow::Continue)
+            }
+            Err(rejection) => Ok(Self::reject(rejection)),
         }
     }
 
