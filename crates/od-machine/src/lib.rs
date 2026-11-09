@@ -21,6 +21,7 @@ mod paged_probe;
 mod paged_vcpu_session;
 mod pci_ecam;
 mod physical_memory;
+mod pic_8259;
 mod pio_step;
 mod stage4_alias_probe;
 mod stage4_cr3_mixed_probe;
@@ -54,6 +55,11 @@ pub use bus::{
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError,
+};
+pub use pic_8259::{
+    ISA_IRQ_VECTOR_BASE, PIC_ICW1_ACCEPTED, PIC_ICW4_ACCEPTED, PIC_MASTER_BASE_PORT,
+    PIC_MASTER_ICW3, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIC_SLAVE_ICW3, Pic8259, Pic8259Handle,
+    Pic8259InitPhase, Pic8259Pair, Pic8259Role, Pic8259Snapshot, isa_irq_vector,
 };
 
 pub use display_device::{
