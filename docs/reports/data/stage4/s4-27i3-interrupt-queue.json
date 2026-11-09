@@ -1,0 +1,354 @@
+{
+  "base_revision": "6b8449fa6d0a399ed66fdf7e4ecd065a55051228",
+  "build": {
+    "artifacts": {
+      "probe.bin": {
+        "sha256": "7d465f07f76560911c2d9b22ae6cf9785e159ffe52024390744d31ea49863ba9",
+        "size": 16384
+      },
+      "probe.elf": {
+        "sha256": "f62c134849c95ee516d83510f63ed78a0002fdf573d69663fadaef86dbc31e25",
+        "size": 13088
+      }
+    },
+    "image_bytes": 16384,
+    "layout": {
+      "code_end_gpa": "0x4032",
+      "counter_gpa": "0x5000",
+      "entry_gpa": "0x4000",
+      "gdt_gpa": "0x2000",
+      "handler_gpa": "0x4014",
+      "idt_gpa": "0x3000",
+      "image_size": "0x4000",
+      "load_gpa": "0x1000",
+      "segments": [
+        {
+          "filesz": "0x18",
+          "flags": "0x6",
+          "paddr": "0x2000"
+        },
+        {
+          "filesz": "0x1000",
+          "flags": "0x6",
+          "paddr": "0x3000"
+        },
+        {
+          "filesz": "0x34",
+          "flags": "0x5",
+          "paddr": "0x4000"
+        }
+      ],
+      "stack_top": "0x6ff0",
+      "vector": "0x62"
+    },
+    "reproducibility": "two builds byte-identical (stage4_interrupt_queue_build_cli, test_build_stage4_interrupt_queue_probe)",
+    "sources": {
+      "entry.S": "d1968e338f7d6e33b88fc229d32d5b0eca05e2b1cf03bce8c6c36f0ad67789e2",
+      "layout.ld": "2e14680ad5d45dc010bae356ae4dd25acd24c5d613217e60a7da3bd3051493ab"
+    },
+    "toolchain": {
+      "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "host": "aarch64-apple-darwin",
+      "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)",
+      "rust-objcopy": "llvm-objcopy, compatible with GNU objcopy",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    }
+  },
+  "date": "2026-11-09",
+  "deviations": [
+    "Rejected(QueueRequest) is the only resumable rejection (exception to the finality rule in run)",
+    "failed request is produced by the caller disabling the APIC on a fresh state; no other transparent request failure exists",
+    "a source whose vector is already in the IRR is not waited for; its event stays queued",
+    "queue reset is not tied to APIC/CPU reset (S4-37a)",
+    "instructions take 0 ns: a future event is observable only through idle advance; a due event is observable from Running",
+    "queue probe loader duplicates part of the timer probe loader (DRY debt)",
+    "PumpTraceKind gained Coalesced; two runner matches updated, behaviour unchanged"
+  ],
+  "expected_rules_and_sdm": {
+    "coalesced": 1,
+    "counter": 3,
+    "counter_gpa": "0x5000",
+    "events": [
+      {
+        "event": "irr",
+        "vector": 98
+      },
+      {
+        "event": "sti"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 98
+      },
+      {
+        "event": "eoi",
+        "vector": 98
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 98
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 98
+      },
+      {
+        "event": "eoi",
+        "vector": 98
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 98
+      },
+      {
+        "event": "coalesced",
+        "vector": 98
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 98
+      },
+      {
+        "event": "eoi",
+        "vector": 98
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      }
+    ],
+    "final": {
+      "exit": "idle_halt",
+      "rflags": "0x202",
+      "rip": "0x4012",
+      "rsp": "0x6ff0",
+      "vector": {
+        "0x62": [
+          false,
+          false
+        ]
+      }
+    },
+    "frame": {
+      "address": "0x6fc8",
+      "cs": "0x8",
+      "rflags": "0x202",
+      "rip": "0x4012",
+      "rsp": "0x6ff0",
+      "ss": "0x10"
+    },
+    "handler": "0x4014",
+    "handler_rflags": "0x2",
+    "hlt": "0x4011",
+    "injection_pop_before_request": {
+      "coalesced": 1,
+      "counter": 2,
+      "phase1_queue_len": 1,
+      "time_ns": 250000,
+      "wakeups": 2
+    },
+    "phase1": {
+      "error": "QueueRequest",
+      "exit": "rejected",
+      "queue_len": 2,
+      "retired": 0,
+      "rip": "0x4000"
+    },
+    "queue_len": 0,
+    "schedule": {
+      "phase1_apic_disabled": [
+        {
+          "due_ns": 0,
+          "key": 1
+        },
+        {
+          "due_ns": 250000,
+          "key": 2
+        }
+      ],
+      "phase3_after_idle": [
+        {
+          "due_ns": 250000,
+          "key": 3
+        },
+        {
+          "due_ns": 250000,
+          "key": 4
+        }
+      ],
+      "vector": "0x62"
+    },
+    "sources": [
+      "Event queue rules: due at the next boundary, future at the deadline via idle advance, removal only after a successful request, one IRR bit for one vector",
+      "Intel SDM Vol. 3A 6.14.2-6.14.3 (64-bit interrupt frame)",
+      "Intel SDM Vol. 3A 10.8.3.1 (EOI)",
+      "Intel SDM Vol. 3A 10.5.4 (APIC timer period, ISSUE-070 scenario)"
+    ],
+    "time_ns": 250000,
+    "wake_times_ns": [
+      0,
+      250000,
+      250000
+    ],
+    "wakeups": 3
+  },
+  "injection_distinguishability": {
+    "fields": [
+      "stop",
+      "wakeups",
+      "counter",
+      "time_ns"
+    ],
+    "machine_scenario_accepted": [
+      "idle_halt",
+      2,
+      2,
+      250000
+    ],
+    "machine_scenario_pop_before_request": [
+      "idle_halt",
+      1,
+      1,
+      250000
+    ],
+    "queue_len_after_failed_request": {
+      "accepted": 2,
+      "pop_before_request": 1
+    },
+    "runner_accepted": [
+      "idle_halt",
+      3,
+      3,
+      250000
+    ],
+    "runner_pop_before_request": [
+      "idle_halt",
+      2,
+      2,
+      250000
+    ]
+  },
+  "issue_070": {
+    "mutation_check": "without the IRR check the test returns Budget instead of IdleHalt",
+    "period_ns": 100000,
+    "result": {
+      "budgets": [
+        100,
+        10000
+      ],
+      "counter": 1,
+      "exit": "idle_halt",
+      "irr_isr": [
+        true,
+        true
+      ],
+      "next_timer_deadline_ns": 300000,
+      "time_ns": 200000,
+      "wakeups": 1
+    },
+    "status_in_code": "fixed by idle_advance (useful deadlines only); not closed in KNOWN_ISSUES.md",
+    "test": "interrupt_queue_pump::timer_vector_blocked_in_service_is_idle_halt_not_budget"
+  },
+  "observed_runner": {
+    "accepted": {
+      "coalesced": 1,
+      "counter": 3,
+      "entry_rips": [
+        "0x0000000000004014"
+      ],
+      "entry_times_ns": [
+        0,
+        250000,
+        250000
+      ],
+      "exit": "idle_halt",
+      "frame_low_to_high_first_entry": [
+        "0x4012",
+        "0x8",
+        "0x202",
+        "0x6ff0",
+        "0x10"
+      ],
+      "injection": null,
+      "phase1": {
+        "error": "QueueRequest(UnsupportedConfiguration)",
+        "exit": "rejected",
+        "queue_len": 2,
+        "retired": 0,
+        "rip": "0x0000000000004000"
+      },
+      "quanta": 39,
+      "queue_len": 0,
+      "retired": 35,
+      "time_ns": 250000,
+      "wakeups": 3
+    },
+    "inject_pop_before_request": {
+      "coalesced": 1,
+      "counter": 2,
+      "entry_rips": [
+        "0x0000000000004014"
+      ],
+      "entry_times_ns": [
+        250000,
+        250000
+      ],
+      "exit": "idle_halt",
+      "frame_low_to_high_first_entry": [
+        "0x4012",
+        "0x8",
+        "0x202",
+        "0x6ff0",
+        "0x10"
+      ],
+      "injection": "PopBeforeRequest",
+      "phase1": {
+        "error": "QueueRequest(UnsupportedConfiguration)",
+        "exit": "rejected",
+        "queue_len": 1,
+        "retired": 0,
+        "rip": "0x0000000000004000"
+      },
+      "quanta": 28,
+      "queue_len": 0,
+      "retired": 25,
+      "time_ns": 250000,
+      "wakeups": 2
+    }
+  },
+  "profile": "Stage4InterruptQueueProbeV1",
+  "slice": "S4-27i3",
+  "tests": {
+    "interrupt_queue_pump": 8,
+    "regressions": {
+      "diagnostic_vcpu_api": 8,
+      "interrupt_pump_flat": 12,
+      "interrupt_timer_pump": 7,
+      "lib diagnostic_vcpu": 46,
+      "stage4_paged_irq_probe": 9,
+      "stage4_uart_irq_probe": 10
+    },
+    "stage4_interrupt_queue_build_cli": 3,
+    "test_build_stage4_interrupt_queue_probe": 4
+  }
+}
