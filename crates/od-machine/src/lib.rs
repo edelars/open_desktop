@@ -13,6 +13,7 @@ mod identity_memory_adapter;
 mod interrupt_pump;
 mod io_apic;
 mod linux_boot;
+mod linux_placement;
 mod local_apic;
 mod nvme;
 mod page_walk;
