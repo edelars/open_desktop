@@ -1,0 +1,382 @@
+{
+  "base_revision": "9814eacda6c620bec087d40a4f8dae4d29e1ac9e",
+  "bridge": {
+    "path": "PIT ch0 snapshot -> EventQueue with generations (owner hook of InterruptPump) -> IoApicHandle::set_intin2 pulse -> Local APIC fixed edge",
+    "pic_ir0": "not delivered: the 8259 pair has no input lines (S4-29a)",
+    "why_not_the_pump_queue": "the pump queue requests a LAPIC vector directly and bypasses the IOAPIC entry/mask"
+  },
+  "build": {
+    "artifacts": {
+      "probe.bin": {
+        "sha256": "1e3cb0a46b476c1fbd099ead5c095f12624793f561e45967bb7db342590079f3",
+        "size": 16384
+      },
+      "probe.elf": {
+        "sha256": "349319ffd3294828ee182dcb45de7e79dce5e7bdddc59cb047b91480492e7588",
+        "size": 13224
+      }
+    },
+    "image_bytes": 16384,
+    "layout": {
+      "code_end_gpa": "0x40b9",
+      "counter_gpa": "0x5000",
+      "entry_gpa": "0x4000",
+      "eoi_store_gpa": "0x40b1",
+      "gdt_gpa": "0x2000",
+      "handler_gpa": "0x4080",
+      "idt_gpa": "0x3000",
+      "image_size": "0x4000",
+      "load_gpa": "0x1000",
+      "segments": [
+        {
+          "filesz": "0x18",
+          "flags": "0x6",
+          "paddr": "0x2000"
+        },
+        {
+          "filesz": "0x1000",
+          "flags": "0x6",
+          "paddr": "0x3000"
+        },
+        {
+          "filesz": "0xbc",
+          "flags": "0x5",
+          "paddr": "0x4000"
+        }
+      ],
+      "stack_top": "0x6ff0",
+      "unmask_value_gpa": "0x4044",
+      "vector": "0x60"
+    },
+    "reproducibility": "two builds byte-identical (test_build_stage4_pit_irq0_probe, stage4_pit_irq0_cli)",
+    "sources": {
+      "entry.S": "049cbee714798dcaaf293d807155948807542dfb1765e35cb8f5dce1f80b5085",
+      "layout.ld": "2e14680ad5d45dc010bae356ae4dd25acd24c5d613217e60a7da3bd3051493ab"
+    },
+    "toolchain": {
+      "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "host": "aarch64-apple-darwin",
+      "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)",
+      "rust-objcopy": "llvm-objcopy, compatible with GNU objcopy",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    }
+  },
+  "expected_from_builder": {
+    "bridge": {
+      "cancelled": 2,
+      "edges": 3,
+      "generation_changes": 5,
+      "scheduled": 5
+    },
+    "counter": 3,
+    "counter_gpa": "0x5000",
+    "events": [
+      {
+        "event": "sti"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 96
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 96
+      },
+      {
+        "event": "eoi",
+        "vector": 96
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 96
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 96
+      },
+      {
+        "event": "eoi",
+        "vector": 96
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 96
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 96
+      },
+      {
+        "event": "eoi",
+        "vector": 96
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      }
+    ],
+    "final": {
+      "exit": "idle_halt",
+      "rflags": "0x202",
+      "rip": "0x407e",
+      "rsp": "0x6ff0",
+      "vector": {
+        "0x60": [
+          false,
+          false
+        ]
+      }
+    },
+    "frame": {
+      "address": "0x6fc8",
+      "cs": "0x8",
+      "rflags": "0x202",
+      "rip": "0x407e",
+      "rsp": "0x6ff0",
+      "ss": "0x10"
+    },
+    "handler": "0x4080",
+    "handler_rflags": "0x2",
+    "hlt": "0x407d",
+    "interrupts_before_shutdown": 3,
+    "ioapic": {
+      "entry": 2,
+      "masked": false,
+      "trigger": "edge",
+      "vector": "0x60"
+    },
+    "period_ns": 999848,
+    "pic": {
+      "master_imr": "0xff",
+      "pic_irr_read": 0,
+      "pic_vector": "0x30",
+      "pic_vector_state": [
+        false,
+        false
+      ]
+    },
+    "pit": {
+      "control_word": "0x34",
+      "count": 1193,
+      "count_first_program": 1790,
+      "edge_ticks": [
+        1193,
+        2386,
+        3579
+      ],
+      "first_program_would_be_due_ns": 1500191,
+      "formula": "edge at tick E is due at ceil(E * 1e9 / 1193182) ns",
+      "input_hz": 1193182,
+      "mode": 2
+    },
+    "time_ns": 2999543,
+    "wake_times_ns": [
+      999848,
+      1999695,
+      2999543
+    ],
+    "wakeups": 3
+  },
+  "formula": {
+    "edge_deadline_ns": "ceil(E * 1e9 / 1193182) for the OUT0 rising edge at tick E",
+    "mode0": "one edge at N",
+    "mode2": "edges at k*N, k>=1 (load at tick 0)",
+    "pit_ticks": "T(t) = floor(t_ns * 1193182 / 1e9)"
+  },
+  "injections_budget_200": {
+    "masked_entry2": {
+      "bridge_edges": 156,
+      "counter": 0,
+      "entry_times_ns": [],
+      "expected_from_builder": {
+        "counter": 0,
+        "edges": 156,
+        "stop": "budget",
+        "time_ns": 156976053,
+        "wakeups": 0
+      },
+      "runner_exit_code": 5,
+      "stop": "budget_exhausted",
+      "time_ns": 156976053,
+      "vector_irr_isr": [
+        false,
+        false
+      ],
+      "wakeups": 0
+    },
+    "no_eoi": {
+      "bridge_edges": 143,
+      "counter": 1,
+      "entry_times_ns": [
+        999848
+      ],
+      "expected_from_builder": {
+        "counter": 1,
+        "edges": 143,
+        "stop": "budget",
+        "time_ns": 143978036,
+        "vector_state": [
+          true,
+          true
+        ],
+        "wakeups": 1
+      },
+      "runner_exit_code": 5,
+      "stop": "budget_exhausted",
+      "time_ns": 143978036,
+      "vector_irr_isr": [
+        true,
+        true
+      ],
+      "wakeups": 1
+    },
+    "no_generation": {
+      "bridge_edges": 4,
+      "counter": 4,
+      "entry_times_ns": [
+        999848,
+        1500191,
+        1999695,
+        2999543
+      ],
+      "expected_from_builder": {
+        "counter": 4,
+        "generation_changes": 0,
+        "stop": "idle_halt",
+        "time_ns": 2999543,
+        "wake_times_ns": [
+          999848,
+          1500191,
+          1999695,
+          2999543
+        ],
+        "wakeups": 4
+      },
+      "runner_exit_code": 0,
+      "stop": "idle_halt",
+      "time_ns": 2999543,
+      "vector_irr_isr": [
+        false,
+        false
+      ],
+      "wakeups": 4
+    }
+  },
+  "runner_accepted": {
+    "activity": "Halted",
+    "apic": {
+      "irr": false,
+      "isr": false,
+      "vector": 96
+    },
+    "bridge": {
+      "cancelled": 2,
+      "edges": 3,
+      "generation_changes": 5,
+      "next_deadline_ns": null,
+      "pending_events": 0,
+      "scheduled": 5
+    },
+    "budget": 4096,
+    "clock_ns": 2999543,
+    "counter": 3,
+    "counts": {
+      "eoi": 3,
+      "iretq": 3,
+      "irq_entry": 3,
+      "irr": 3
+    },
+    "entry_times_ns": [
+      999848,
+      1999695,
+      2999543
+    ],
+    "error": null,
+    "exit": "idle_halt",
+    "exit_code": 0,
+    "injection": null,
+    "pic": {
+      "events": 0,
+      "irr": false,
+      "irr_reads": [
+        0
+      ],
+      "isr": false,
+      "master_icw2": 48,
+      "master_imr": 255,
+      "master_phase": "Initialized",
+      "vector": 48
+    },
+    "pit": {
+      "channel0_count": null,
+      "channel0_out": false
+    },
+    "profile": "Stage4PitIrq0ProbeV1",
+    "quanta": 93,
+    "rax": "0x0000000000000000",
+    "rdx": "0x0000000000000043",
+    "retired": 87,
+    "retired_total": 87,
+    "rflags": "0x0000000000000202",
+    "rip": "0x000000000000407e",
+    "rsp": "0x0000000000006ff0",
+    "schema_version": 1,
+    "status": "guest_idle",
+    "wakeups": 3
+  },
+  "runner_mode0": {
+    "expected_from_builder": {
+      "bridge": {
+        "cancelled": 1,
+        "edges": 1,
+        "generation_changes": 5,
+        "scheduled": 2
+      },
+      "counter": 1,
+      "time_ns": 999848,
+      "wake_times_ns": [
+        999848
+      ],
+      "wakeups": 1
+    },
+    "observed": {
+      "bridge": {
+        "cancelled": 1,
+        "edges": 1,
+        "generation_changes": 5,
+        "next_deadline_ns": null,
+        "pending_events": 0,
+        "scheduled": 2
+      },
+      "clock_ns": 999848,
+      "counter": 1,
+      "entry_times_ns": [
+        999848
+      ],
+      "exit": "idle_halt",
+      "wakeups": 1
+    }
+  },
+  "slice": "S4-29f",
+  "title": "PIT channel 0 -> OUT0 -> IOAPIC INTIN2 (GSI 2)"
+}

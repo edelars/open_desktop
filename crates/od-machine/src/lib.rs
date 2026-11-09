@@ -43,6 +43,7 @@ mod stage4_paged_irq_probe;
 mod stage4_paged_sti_hlt_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
+mod stage4_pit_irq0_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
@@ -299,6 +300,15 @@ pub use stage4_pit_calibrate_probe::{
     STAGE4_PIT_CALIBRATE_RECORD_BYTES, Stage4PitCalibrateExit, Stage4PitCalibrateInjection,
     Stage4PitCalibrateProbe, Stage4PitCalibrateProbeLoadError, Stage4PitCalibrateRecord,
     Stage4PitCalibrateReport, load_stage4_pit_calibrate_probe,
+};
+pub use stage4_pit_irq0_probe::{
+    PitIrq0Stats, STAGE4_PIT_IRQ0_PROBE_COUNTER_GPA, STAGE4_PIT_IRQ0_PROBE_ENTRY,
+    STAGE4_PIT_IRQ0_PROBE_EOI_GPA, STAGE4_PIT_IRQ0_PROBE_IMAGE_BYTES,
+    STAGE4_PIT_IRQ0_PROBE_IMAGE_GPA, STAGE4_PIT_IRQ0_PROBE_RAM_BYTES,
+    STAGE4_PIT_IRQ0_PROBE_STACK_TOP, STAGE4_PIT_IRQ0_PROBE_TSC_HZ,
+    STAGE4_PIT_IRQ0_PROBE_UNMASK_GPA, STAGE4_PIT_IRQ0_PROBE_VECTOR, Stage4PitIrq0Injection,
+    Stage4PitIrq0Probe, Stage4PitIrq0ProbeLoadError, load_stage4_pit_irq0_probe,
+    next_out0_rising_tick, pit_tick_deadline_ns,
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;

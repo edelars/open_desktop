@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-072-s4-29f-pump-trace-limit-periodic-pit"></a>
+
+### ISSUE-072 — S4-29f: предел трассы насоса ограничивает прогон с периодическим источником
+
+- **Дата обнаружения:** 2026-11-09, при реализации и ревью S4-29f.
+- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`INTERRUPT_PUMP_TRACE_LIMIT = 512`), мост `PitIrq0Owner` (`stage4_pit_irq0_probe.rs`).
+- **Статус:** открыта; ограничение, не дефект среза.
+- **Суть и последствия:** каждый период PIT добавляет в трассу несколько событий (idle_advance, фронт OUT0, planning, вход/EOI), поэтому бесконечная цепочка заканчивается `Rejected(TraceLimit)` примерно через 170 периодов (инъекции MaskedEntry2/NoEoi — при бюджете выше примерно 208 и 219 шагов). Для загрузки Linux это остановит run_boot. Срок хоста тоже ждётся при векторе, заблокированном в ISR (аналог ISSUE-070 для хоста); на железе время идёт, меняется только классификация исхода.
+- **Основание:** контракт S4-29f («Модельные отказы и ограничения»), отчёт S4-29f.
+- **Следующий шаг:** в S4-37a сделать трассу кольцевой или отключаемой для run_boot; решить классификацию простоя при заблокированном векторе хоста.
+
 <a id="issue-071-s4-34a-kvm-method-single-run"></a>
 
 ### ISSUE-071 — S4-34a: KVM-метод подтверждён одним прогоном одного образа
