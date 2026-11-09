@@ -46,6 +46,27 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-068-s4-27i1-partial-rep-interrupt-latency"></a>
+
+### ISSUE-068 — S4-27i1: прерывание не принимается внутри частичного REP
+
+- **Дата обнаружения:** 2026-11-09, при реализации S4-27i1.
+- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`InterruptPump::step_running`, `mid_rep`), `crates/od-machine/src/diagnostic_vcpu.rs` (`completed_boundary`, `run_apic_quantum`).
+- **Статус:** открыта; отклонение среза от плана, не дефект логики.
+- **Суть и последствия:** после `WorkLimit(RepIterationBudget)` (1024 итерации) граница не завершена, принятые примитивы доставки её отвергают, и pump довершает REP через `run(1)` без проверки APIC. Прерывание принимается только после REP (RIP кадра — следующая инструкция), тогда как железо может принять его между итерациями. Состояние гостя корректно, растёт только задержка, пропорциональная длине REP.
+- **Основание:** тест `partial_rep_delays_the_interrupt_until_the_instruction_completes` (`crates/od-machine/tests/interrupt_pump_flat.rs`), отчёт [S4-27i1](reports/STAGE_4_S4-27I1_2026-11-09.md).
+- **Следующий шаг:** определить владельца приёма IRQ между итерациями REP (кандидаты — S4-27i2 с таймером или S4-38). До этого не заявлять приём «на каждой границе» для REP.
+
+<a id="issue-069-s4-27i1-pump-inherits-narrow-sti-language"></a>
+
+### ISSUE-069 — S4-27i1: pump наследует узкий язык STI из S4-27c
+
+- **Дата обнаружения:** 2026-11-09, при ревью S4-27i1.
+- **Компонент:** `crates/od-isa/src/execute.rs` (`StartIfSet`, около 2272–2281), `crates/od-machine/src/interrupt_pump.rs`.
+- **Статус:** открыта; владельца в плане нет.
+- **Суть и последствия:** принятый путь S4-27c допускает после `sti` только NOP, STI, CLI и HLT. `cli` при IF=1 вне STI-shadow и любая другая инструкция в shadow дают terminal `Unsupported`, и pump на таком образе завершается. Linux `local_irq_enable/disable` на это наткнётся. Подсрезы S4-27i1–i5 этот профиль не расширяют.
+- **Следующий шаг:** назначить владельца (вопрос к консультации Opus) и решить, расширять ли профиль STI до S4-37a или оставить узким до Linux-профиля.
+
 <a id="issue-067-s7-14a-pm-timer-frozen-inside-a-quantum"></a>
 
 ### ISSUE-067 — S7-14a: PM-таймер стоит внутри кванта

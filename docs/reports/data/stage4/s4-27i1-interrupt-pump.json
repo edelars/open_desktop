@@ -1,0 +1,577 @@
+{
+  "base_revision": "bd485cd3aebc7771b8670cf4014d3e0ea3e3ba99",
+  "build": {
+    "image_bytes": 16384,
+    "layout": {
+      "code_end_gpa": "0x4044",
+      "entry_gpa": "0x4000",
+      "gdt_gpa": "0x2000",
+      "handler_a_gpa": "0x4015",
+      "handler_b_gpa": "0x4032",
+      "idt_gpa": "0x3000",
+      "image_size": "0x4000",
+      "load_gpa": "0x1000",
+      "segments": [
+        {
+          "filesz": "0x18",
+          "flags": "0x6",
+          "paddr": "0x2000"
+        },
+        {
+          "filesz": "0x1000",
+          "flags": "0x6",
+          "paddr": "0x3000"
+        },
+        {
+          "filesz": "0x44",
+          "flags": "0x5",
+          "paddr": "0x4000"
+        }
+      ],
+      "stack_top": "0x6ff0",
+      "vector_a": "0x51",
+      "vector_b": "0x41"
+    },
+    "load_gpa": "0x1000",
+    "reproducibility": "two builds byte-identical (stage4_interrupt_pump_build_cli, test_build_stage4_interrupt_pump_probe)",
+    "sources": {
+      "entry.S": "fabd5608df943f8eb96ce0cfef9f259f69f37e01e8131cf4d44332ca4ae7a01d",
+      "layout.ld": "2e14680ad5d45dc010bae356ae4dd25acd24c5d613217e60a7da3bd3051493ab"
+    },
+    "toolchain": {
+      "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "host": "aarch64-apple-darwin",
+      "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)",
+      "rust-objcopy": "llvm-objcopy, compatible with GNU objcopy",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    }
+  },
+  "date": "2026-11-09",
+  "expected_sdm": {
+    "frame_low_to_high_if1_hlt_boundary": [
+      "0x4012",
+      "0x8",
+      "0x202",
+      "0x6ff0",
+      "0x10"
+    ],
+    "frame_low_to_high_sti_hlt_wake": [
+      "0x4012",
+      "0x8",
+      "0x202",
+      "0x6ff0",
+      "0x10"
+    ],
+    "handler_rflags": "0x2",
+    "new_rsp": "0x6fc8",
+    "note": "if1_hlt: RIP in the frame equals the HLT address (0x4012); sti_hlt: RIP after HLT (0x4012, HLT at 0x4011)",
+    "sources": [
+      "Intel SDM Vol. 3A 6.14.2-6.14.3 (64-bit interrupt frame, IF cleared by interrupt gate)",
+      "Intel SDM Vol. 3A 10.8.3.1 (priority classes, EOI)",
+      "Intel SDM Vol. 2 STI/CLI/HLT"
+    ]
+  },
+  "model_notes": [
+    "partial REP: after WorkLimit(RepIterationBudget) (1024 iterations) the pump finishes the instruction without an APIC check; hardware may accept the interrupt between iterations (RIP at the REP, partial RCX)",
+    "first handler instruction of a boundary entry runs inside run_apic_quantum and cannot be STI/CLI/HLT/IRETQ; wake from HLT does not run a handler instruction",
+    "STI profile (S4-27c) admits only NOP/STI/CLI inside the STI shadow",
+    "CLI at IF=1 outside the STI shadow is unsupported (StartIfSet admits only sti): terminal Unsupported; the cli_hlt scenario runs at initial IF=0 and does not cover it",
+    "SkipShadowCheck injection is shown by the accepted primitive refusing (ProfileRejected), not by a wrong frame",
+    "plain run(1) on HLT is Unsupported, not Halted; Halted only for run on an already halted CPU, unreachable via the pump API",
+    "DRY debt: Stage4UartIrqProbe (S4-24e) keeps its own run/step_waiting/step_running loop until S4-27i5"
+  ],
+  "observed": {
+    "builder_tests": {
+      "file": "tools/build/test_build_stage4_interrupt_pump_probe.py",
+      "passed": 7
+    },
+    "injections": {
+      "hlt_as_ordinary": {
+        "detail": "Unsupported",
+        "entries": 0,
+        "exit_code": 5,
+        "status": "guest_terminal",
+        "waiting": false
+      },
+      "omit_eoi_nested": {
+        "eligible": null,
+        "entries": 1,
+        "irr_0x41": true,
+        "isr_0x51": true
+      },
+      "skip_shadow_check": {
+        "detail": "ApicQuantumProfile",
+        "entries": 0,
+        "exit_code": 5,
+        "irr_0x41": true,
+        "isr_0x41": false,
+        "status": "rejected",
+        "waiting": false
+      }
+    },
+    "machine_tests": {
+      "file": "crates/od-machine/tests/interrupt_pump_flat.rs",
+      "passed": 12
+    },
+    "runner_cli_tests": {
+      "file": "tools/runner/tests/stage4_interrupt_pump_build_cli.rs",
+      "passed": 4
+    },
+    "runner_nested_request_0x51_at_3": {
+      "final_rflags": "0x202",
+      "final_rip": "0x4013",
+      "final_rsp": "0x6ff0",
+      "quanta": 17,
+      "retired": 16
+    }
+  },
+  "profile": "Stage4InterruptPumpProbeV1",
+  "scenarios": {
+    "cli_hlt": {
+      "request_b": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "cli"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x2",
+          "rip": "0x4012",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              true,
+              false
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [],
+        "handler_a": "0x4014",
+        "handler_b": "0x4031",
+        "handler_rflags": "0x2",
+        "hlt": "0x4011",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x41"
+        },
+        "spin": "0x4012"
+      }
+    },
+    "if1_hlt": {
+      "request_b": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "sti"
+          },
+          {
+            "event": "entry",
+            "vector": 65
+          },
+          {
+            "event": "eoi",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x4013",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              false,
+              false
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4015",
+        "handler_b": "0x4032",
+        "handler_rflags": "0x2",
+        "hlt": "0x4012",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x41"
+        },
+        "spin": "0x4013"
+      }
+    },
+    "rep": {
+      "request_b": {
+        "events": [
+          {
+            "event": "sti"
+          },
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "entry",
+            "vector": 65
+          },
+          {
+            "event": "eoi",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x401f",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              false,
+              false
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x401e",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4021",
+        "handler_b": "0x403e",
+        "handler_rflags": "0x2",
+        "hlt": "0x401e",
+        "request": {
+          "after_quanta": 8,
+          "vector": "0x41"
+        },
+        "spin": "0x401f"
+      }
+    },
+    "sti_hlt": {
+      "request_a_nested": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 81
+          },
+          {
+            "event": "sti"
+          },
+          {
+            "event": "hlt"
+          },
+          {
+            "event": "entry",
+            "vector": 81
+          },
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "eoi",
+            "vector": 81
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "entry",
+            "vector": 65
+          },
+          {
+            "event": "eoi",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x4013",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              false,
+              false
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          },
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4015",
+        "handler_b": "0x4032",
+        "handler_rflags": "0x2",
+        "hlt": "0x4011",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x51"
+        },
+        "spin": "0x4013"
+      },
+      "request_b": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "sti"
+          },
+          {
+            "event": "hlt"
+          },
+          {
+            "event": "entry",
+            "vector": 65
+          },
+          {
+            "event": "eoi",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x4013",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              false,
+              false
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4015",
+        "handler_b": "0x4032",
+        "handler_rflags": "0x2",
+        "hlt": "0x4011",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x41"
+        },
+        "spin": "0x4013"
+      }
+    },
+    "sti_hlt_noeoi": {
+      "request_a_nested": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 81
+          },
+          {
+            "event": "sti"
+          },
+          {
+            "event": "hlt"
+          },
+          {
+            "event": "entry",
+            "vector": 81
+          },
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x4013",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              true,
+              false
+            ],
+            "0x51": [
+              false,
+              true
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4015",
+        "handler_b": "0x4027",
+        "handler_rflags": "0x2",
+        "hlt": "0x4011",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x51"
+        },
+        "spin": "0x4013"
+      },
+      "request_b": {
+        "events": [
+          {
+            "event": "irr",
+            "vector": 65
+          },
+          {
+            "event": "sti"
+          },
+          {
+            "event": "hlt"
+          },
+          {
+            "event": "entry",
+            "vector": 65
+          },
+          {
+            "event": "iretq"
+          },
+          {
+            "event": "hlt"
+          }
+        ],
+        "final": {
+          "exit": "idle_halt",
+          "rflags": "0x202",
+          "rip": "0x4013",
+          "rsp": "0x6ff0",
+          "vectors": {
+            "0x41": [
+              false,
+              true
+            ],
+            "0x51": [
+              false,
+              false
+            ]
+          }
+        },
+        "frames": [
+          {
+            "address": "0x6fc8",
+            "cs": "0x8",
+            "rflags": "0x202",
+            "rip": "0x4012",
+            "rsp": "0x6ff0",
+            "ss": "0x10"
+          }
+        ],
+        "handler_a": "0x4015",
+        "handler_b": "0x4027",
+        "handler_rflags": "0x2",
+        "hlt": "0x4011",
+        "request": {
+          "after_quanta": 3,
+          "vector": "0x41"
+        },
+        "spin": "0x4013"
+      }
+    }
+  },
+  "slice": "S4-27i1",
+  "vectors": {
+    "a": "0x51 (class 5, handler A: self-IPI 0x41, EOI, IRETQ)",
+    "b": "0x41 (class 4, handler B: EOI, IRETQ)"
+  }
+}
