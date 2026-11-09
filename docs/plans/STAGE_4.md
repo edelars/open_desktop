@@ -1439,6 +1439,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 11 IOAPIC tests (включая level retrigger, priority/EOI, edge compatibility, reserved vector, software-enable failure и независимые/парный reset), 10 Local APIC regression tests, `cargo check -p od-machine --all-targets --offline`, fmt/diff и повторное Sol/high review прошли. Результаты Graphify и layout check записаны в [отчёте](../reports/STAGE_4_S4-26B_2026-11-07.md) и [manifest](../reports/data/stage4/s4-26b-ioapic-level.json); методика — [S4-26b](../testing/MACHINE.md#s4-26b-fixed-level-ioapic-route).
 - **Граница:** только одна physical route, Fixed delivery, active-high и выбранные Dword registers; нет guest CPU handler/IDT/IF delivery, APIC bus, board wiring, Linux discovery, прочих IOAPIC entries, level-полярности, logical destinations или полного interrupt-controller reset semantics.
 
+- **Требование из ревью S4-31f:** MADT объявляет IOAPIC с ID = 1 и 24 входами (константы прошивки). Будущий регистр ID модели должен отдавать 1, Version — MRE = 23; иначе `mp_register_ioapic` в Linux получит другой диапазон GSI или ошибку шины. Проверить в S4-38.
 ### S4-27. Соединить pending IRQ с CPU delivery
 
 - [ ] Принято после ревью.

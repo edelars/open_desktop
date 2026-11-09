@@ -1,0 +1,55 @@
+{
+  "slice": "S4-31f",
+  "date": "2026-11-08",
+  "source": [
+    "firmware/uefi/src/acpi/madt.rs",
+    "firmware/uefi/src/acpi/madt/tests.rs",
+    "firmware/uefi/src/acpi/mod.rs",
+    "docs/specs/MACHINE_CONTRACT.md",
+    "docs/specs/FIRMWARE_BOOT.md"
+  ],
+  "madt": {
+    "signature": "APIC",
+    "revision": 5,
+    "revision_basis": "ACPI 6.4 Table 5.19 (read through Context7); 6.5 revision 6 not read",
+    "length": 84,
+    "checksum": "0x4D",
+    "checksum_other_bytes_sum": "0xAB3",
+    "oem_id": "OPNDSK",
+    "oem_table_id": "ODFWAPIC",
+    "local_apic_address": "0xFEE00000",
+    "flags": 1,
+    "flags_set": ["PCAT_COMPAT (0)"],
+    "structures": [
+      {"offset": 44, "type": 0, "name": "Processor Local APIC", "length": 8, "acpi_processor_uid": 0, "apic_id": 0, "flags": 1},
+      {"offset": 52, "type": 1, "name": "I/O APIC", "length": 12, "io_apic_id": 1, "io_apic_id_source": "firmware decision, not in the manifest", "address": "0xFEC00000", "gsi_base": 0},
+      {"offset": 64, "type": 2, "name": "Interrupt Source Override", "length": 10, "bus": 0, "source_irq": 0, "gsi": 2, "flags": "0x0000", "meaning": "conforms to ISA: edge, active high"},
+      {"offset": 74, "type": 2, "name": "Interrupt Source Override", "length": 10, "bus": 0, "source_irq": 9, "gsi": 9, "flags": "0x000F", "meaning": "level (bits 2-3 = 0b11), active low (bits 0-1 = 0b11)"}
+    ],
+    "absent": ["NMI sources", "Local APIC NMI", "x2APIC", "Local APIC Address Override"],
+    "inti_flags_encoding": {
+      "table": "ACPI 6.4 Table 5.26 = MPS 1.4 Table 4-10",
+      "polarity_bits_0_1": {"00": "bus default", "01": "active high", "10": "reserved", "11": "active low"},
+      "trigger_bits_2_3": {"00": "bus default", "01": "edge", "10": "reserved", "11": "level"},
+      "sci_level_active_low": "0x000F",
+      "task_text_value": "0x000D",
+      "task_text_value_decodes_as": "level, active HIGH (not taken)"
+    },
+    "ioapic_input_count_assumed": 24
+  },
+  "tests": {
+    "firmware_total": 143,
+    "firmware_before": 129,
+    "new_madt": 14,
+    "failed": 0,
+    "fmt_check": "clean",
+    "check_x86_64_unknown_none": "clean",
+    "od_machine_run": false
+  },
+  "unverified": [
+    "ACPI 6.6 text (only 6.4 read through Context7)",
+    "layout of Processor Local APIC (type 0) and I/O APIC (type 1) structures: not returned by the lookups, pinned only by the hand-assembled reference",
+    "IOAPIC ID 1 and 24 inputs: firmware decisions, the manifest and the IoApic model do not carry them"
+  ],
+  "not_done": ["MADT in the blob, RSDP/XSDT (S4-31g)", "E820 (S4-37)", "SCI/IRQ0 routes in the IoApic model", "Linux acceptance (S4-38)"]
+}

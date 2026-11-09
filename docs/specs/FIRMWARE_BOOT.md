@@ -210,7 +210,7 @@ UUID и серийный номер задаёт конфигурация VM н�
 |---|---|---|
 | 1 | COM1, UART 16550 polling profile | `PRESENT\|PIO`, `base = 0x3F8`, `length = 8`, `gsi = 4`, edge/high (IRQ4 по `VIRTUAL_BOARD.md`; доставки IRQ4 нет, прошивка опрашивает), `param0 = 1` (номер COM) |
 | 2 | Local APIC | `PRESENT`, `0xFEE0_0000`, `0x1000`, `param0` = APIC ID (`0`) |
-| 3 | IOAPIC | `PRESENT`, `0xFEC0_0000`, `0x1000`, `param0` = GSI base (`0`); ID и число входов читаются из регистров устройства |
+| 3 | IOAPIC | `PRESENT`, `0xFEC0_0000`, `0x1000`, `param0` = GSI base (`0`); ID и число входов в MADT — константы прошивки (ID = 1, входов 24); будущий регистр модели должен отдавать ID = 1 и Version с MRE = 23, иначе Linux получит другой диапазон GSI или ошибку шины (требование S4-26 и S4-38) |
 | 4 | Дисплей | `PRESENT`, регистры `0xFC00_0000`, `0x1000`; framebuffer-регионы — в таблице регионов с `owner_device` = индекс этой записи |
 | 5 | NVRAM | `PRESENT = 0` до S7-10; затем `0xFF00_0000`, `0x0004_1000`; раскладку регистров задаёт `NVRAM_DEVICE.md` (S7-10) |
 | 6 | TPM CRB | `PRESENT = 0` до S7-22; затем `0xFED4_0000`, `0x5000` |
