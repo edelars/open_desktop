@@ -19,6 +19,7 @@ An opt-in local Rust `od-host::session::Session` owns a copied S0-09 fragment, b
 1. Прочитать [правила проекта](AGENTS.md) и [карту каталогов](docs/PROJECT_LAYOUT.md).
 2. Ознакомиться с [архитектурой](docs/ARCHITECTURE.md) и [roadmap](docs/ROADMAP.md).
 3. Выполнять [план этапа 0](docs/plans/STAGE_0.md) в пределах текущего поручения.
+4. External contributors: read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Проверки каркаса из корня проекта:
 

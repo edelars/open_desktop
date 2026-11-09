@@ -237,6 +237,7 @@ iso
 ```text
 AGENTS.md
 CLAUDE.md
+CONTRIBUTING.md
 README.md
 Cargo.toml
 Cargo.lock
