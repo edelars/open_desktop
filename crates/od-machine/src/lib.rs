@@ -15,6 +15,7 @@ mod io_apic;
 mod local_apic;
 mod nvme;
 mod page_walk;
+mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
 mod paged_memory_adapter;
@@ -36,6 +37,7 @@ mod stage4_interrupt_pump_probe;
 mod stage4_interrupt_queue_probe;
 mod stage4_interrupt_timer_probe;
 mod stage4_paged_irq_probe;
+mod stage4_paged_sti_hlt_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
 mod stage4_stack_probe;
@@ -138,6 +140,7 @@ pub use page_walk::{
     access_long64_4k_ram, probe_instruction_access, probe_long64_4k,
 };
 
+pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
     PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,
     PagedLtrRejection, PagedLtrReport, PagedSegmentMovError, PagedSegmentMovReport,
@@ -156,9 +159,10 @@ pub use paged_exception_delivery::{
 };
 pub use paged_memory_adapter::{
     PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope,
-    PagedMovStepError, PagedMovStepReport, step_paged_invlpg, step_paged_mov,
-    step_paged_mov_2m_ram, step_paged_mov_dword_read, step_paged_mov_dword_store,
-    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, with_paged_mov_memory,
+    PagedMovStepError, PagedMovStepReport, PagedStateOpStepReport, step_paged_hlt,
+    step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram, step_paged_mov_dword_read,
+    step_paged_mov_dword_store, step_paged_mov_word_read,
+    step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_mov_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
@@ -251,6 +255,16 @@ pub use stage4_paged_irq_probe::{
     STAGE4_PAGED_IRQ_STACK_GVA, STAGE4_PAGED_IRQ_STEPS, STAGE4_PAGED_IRQ_VECTOR,
     Stage4PagedIrqEvent, Stage4PagedIrqFault, Stage4PagedIrqInjection, Stage4PagedIrqPtes,
     Stage4PagedIrqReport, Stage4PagedIrqStep, Stage4PagedIrqStop, load_stage4_paged_irq_probe,
+};
+pub use stage4_paged_sti_hlt_probe::{
+    LoadedStage4PagedStiHltProbe, STAGE4_PAGED_STI_HLT_BOUNDARY_INSTRUCTIONS,
+    STAGE4_PAGED_STI_HLT_BOUNDARY_STEPS, STAGE4_PAGED_STI_HLT_FIRST_HLT_RIP,
+    STAGE4_PAGED_STI_HLT_IMAGE_BYTES, STAGE4_PAGED_STI_HLT_MAIN_CODE,
+    STAGE4_PAGED_STI_HLT_SECOND_HLT_RIP, STAGE4_PAGED_STI_HLT_WAKE_FINAL_RIP,
+    STAGE4_PAGED_STI_HLT_WAKE_INSTRUCTIONS, STAGE4_PAGED_STI_HLT_WAKE_STEPS,
+    Stage4PagedStiHltEvent, Stage4PagedStiHltInjection, Stage4PagedStiHltReport,
+    Stage4PagedStiHltScenario, Stage4PagedStiHltStep, Stage4PagedStiHltStop,
+    expected_stage4_paged_sti_hlt_image, load_stage4_paged_sti_hlt_probe,
 };
 pub use stage4_pf_repair_probe::{
     LoadedStage4PfRepairProbe, STAGE4_PF_REPAIR_CANARY_OFFSET, STAGE4_PF_REPAIR_DATA_GPA,

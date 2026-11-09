@@ -1,0 +1,320 @@
+{
+  "profile": "Stage4PagedStiHltProbeV1",
+  "date": "2026-11-09",
+  "vector": "0x41",
+  "slice": "S4-27i4a",
+  "build": {
+    "base_revision": "8a3e758c95df80223063096545688b1975da127a",
+    "image_bytes": 40960,
+    "raw_sha256": "5b6e48fcc0f7d901d6641f6f4454cac2817c4e33ecb403560aed6f060c9ea33a",
+    "elf_sha256": "795acec05f12157da97bc1f3da13bdd865b7d65560bb3e723bb4ba14b12d6fe3"
+  },
+  "expected_sdm": {
+    "sources": [
+      "Intel SDM Vol. 2B STI (IF:=1; inhibition until after the next instruction when IF was 0)",
+      "Intel SDM Vol. 2A HLT and Vol. 3A 6.8 (HLT retires; the shadow ends with it; the waking interrupt saves the RIP after HLT)",
+      "Intel SDM Vol. 3A 6.14.2/6.14.3 (64-bit frame: RSP aligned down to 16, SS,RSP,RFLAGS,CS,RIP; interrupt gate clears IF)",
+      "Intel SDM Vol. 3A 13.8.4/13.9 (IRR->ISR, EOI)",
+      "Intel SDM Vol. 3A 4.8 (A on use, D on first write; WP #PF P|W)"
+    ],
+    "wake_from_hlt": {
+      "steps": 7,
+      "retired": 5,
+      "frame_low_to_high": [
+        "0x401002",
+        "0x8",
+        "0x202",
+        "0x700ff8",
+        "0x10"
+      ],
+      "new_rsp": "0x700fc8",
+      "handler_rflags": "0x2",
+      "final_rip": "0x401003"
+    },
+    "boundary_before_hlt": {
+      "steps": 6,
+      "retired": 4,
+      "frame_low_to_high": [
+        "0x401001",
+        "0x8",
+        "0x202",
+        "0x700ff8",
+        "0x10"
+      ],
+      "new_rsp": "0x700fc8",
+      "final_rip": "0x401002",
+      "covered_by": "crates/od-machine/tests/paged_sti_hlt_wake.rs (not in the runner)"
+    },
+    "ptes_final": {
+      "main": "0x6023",
+      "handler": "0x7023",
+      "idt": "0x8023",
+      "gdt": "0x9023",
+      "lapic": "0xfee00063",
+      "stack": "0xa063"
+    }
+  },
+  "observed": {
+    "success": {
+      "status": "completed",
+      "stop_reason": "case_complete",
+      "stop_detail": null,
+      "steps": 7,
+      "retired": 5,
+      "rip": "0x0000000000401003",
+      "rsp": "0x0000000000700ff8",
+      "rflags": "0x202",
+      "halted": true,
+      "irr": false,
+      "isr": false,
+      "cr2": null,
+      "ptes": {
+        "gdt": "0x9023",
+        "handler": "0x7023",
+        "idt": "0x8023",
+        "lapic": "0xfee00063",
+        "main": "0x6023",
+        "stack": "0xa063"
+      },
+      "failed_checks": [],
+      "cli_exit_code": 0,
+      "frame_low_to_high": [
+        "0x401002",
+        "0x8",
+        "0x202",
+        "0x700ff8",
+        "0x10"
+      ],
+      "event_trace": [
+        {
+          "name": "sti: STI",
+          "retired": true,
+          "exit": "retired",
+          "rip_after": "0x0000000000401001",
+          "rsp_after": "0x0000000000700ff8",
+          "rflags_after": "0x202",
+          "halted_after": false,
+          "shadow_after": true,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          }
+        },
+        {
+          "name": "hlt: HLT",
+          "retired": true,
+          "exit": "halted",
+          "rip_after": "0x0000000000401002",
+          "rsp_after": "0x0000000000700ff8",
+          "rflags_after": "0x202",
+          "halted_after": true,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          }
+        },
+        {
+          "name": "idle poll: nothing requested",
+          "retired": false,
+          "exit": "idle",
+          "rip_after": "0x0000000000401002",
+          "rsp_after": "0x0000000000700ff8",
+          "rflags_after": "0x202",
+          "halted_after": true,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          }
+        },
+        {
+          "name": "wake: vector 0x41 through the paged IDT",
+          "retired": false,
+          "exit": "entered",
+          "rip_after": "0x0000000000402000",
+          "rsp_after": "0x0000000000700fc8",
+          "rflags_after": "0x2",
+          "halted_after": false,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": true,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7003",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          }
+        },
+        {
+          "name": "eoi: MOV [RBX],EAX",
+          "retired": true,
+          "exit": "retired",
+          "rip_after": "0x0000000000402002",
+          "rsp_after": "0x0000000000700fc8",
+          "rflags_after": "0x2",
+          "halted_after": false,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          }
+        },
+        {
+          "name": "IRETQ",
+          "retired": true,
+          "exit": "retired",
+          "rip_after": "0x0000000000401002",
+          "rsp_after": "0x0000000000700ff8",
+          "rflags_after": "0x202",
+          "halted_after": false,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          }
+        },
+        {
+          "name": "resume: HLT",
+          "retired": true,
+          "exit": "halted",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8",
+          "rflags_after": "0x202",
+          "halted_after": true,
+          "shadow_after": false,
+          "irr_after": false,
+          "isr_after": false,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          }
+        }
+      ]
+    },
+    "idt_not_present": {
+      "status": "error",
+      "stop_reason": "delivery_outside_profile",
+      "stop_detail": "InvalidGate",
+      "steps": 4,
+      "retired": 2,
+      "rip": "0x0000000000401002",
+      "rsp": "0x0000000000700ff8",
+      "rflags": "0x202",
+      "halted": true,
+      "irr": true,
+      "isr": false,
+      "cr2": null,
+      "ptes": {
+        "gdt": "0x9003",
+        "handler": "0x7003",
+        "idt": "0x8023",
+        "lapic": "0xfee00003",
+        "main": "0x6023",
+        "stack": "0xa003"
+      },
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "wake_entered_handler",
+        "frame_exact",
+        "vector_in_service_during_handler",
+        "eoi_cleared_isr",
+        "iretq_returned_after_hlt",
+        "final_state_halted",
+        "irq_state_clear",
+        "ptes_accessed_dirty"
+      ],
+      "cli_exit_code": 5
+    },
+    "stack_read_only": {
+      "status": "error",
+      "stop_reason": "delivery_aborted",
+      "stop_detail": "StackWrite { slot: OldSs }: Architectural(ArchitecturalFault { vector: 14, error_code: Some(3), linear_address: Some(7344104) })",
+      "steps": 4,
+      "retired": 2,
+      "rip": "0x0000000000401002",
+      "rsp": "0x0000000000700ff8",
+      "rflags": "0x202",
+      "halted": true,
+      "irr": true,
+      "isr": false,
+      "cr2": null,
+      "ptes": {
+        "gdt": "0x9023",
+        "handler": "0x7003",
+        "idt": "0x8023",
+        "lapic": "0xfee00003",
+        "main": "0x6023",
+        "stack": "0xa021"
+      },
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "wake_entered_handler",
+        "frame_exact",
+        "vector_in_service_during_handler",
+        "eoi_cleared_isr",
+        "iretq_returned_after_hlt",
+        "final_state_halted",
+        "irq_state_clear",
+        "ptes_accessed_dirty"
+      ],
+      "cli_exit_code": 5
+    }
+  },
+  "distinguishing_tuple": "(stop, steps, irr/isr, rsp, rip, ptes) differs for all three outcomes",
+  "model_notes": [
+    "delivery refusal and abort are terminal; hardware outcome is sequential #NP/#PF delivery (nested delivery is S4-33)",
+    "memory type of the APIC page (PCD/PWT/PAT) is not modelled",
+    "the stack write origin of the paged entry is ImplicitStack (flat uses Explicit), as accepted in S4-27h"
+  ],
+  "machine_tests": {
+    "paged_sti_hlt_wake": 9,
+    "regressions": {
+      "stage4_paged_irq_probe": 9,
+      "interrupt_queue_pump": 8,
+      "interrupt_timer_pump": 7,
+      "interrupt_pump_flat": 12,
+      "stage4_uart_irq_probe": 10,
+      "diagnostic_vcpu_api": 8,
+      "lib diagnostic_vcpu": 46
+    }
+  }
+}

@@ -2117,6 +2117,14 @@ pub struct PagedLidtLong64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedMovDwordStoreLong64V1;
 
+/// Exact opt-in CPU profile for one bare `STI` (`FB`) on the paged profile (S4-27i4a).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedStiLong64V1;
+
+/// Exact opt-in CPU profile for one bare `HLT` (`F4`) on the paged profile (S4-27i4a).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedHltLong64V1;
+
 /// Exact opt-in CPU profile for flat (CR0/CR3/CR4 absent) `LIDT [RSP+sign_extend(disp8)]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FlatLidtLong64V1;
@@ -16275,6 +16283,122 @@ pub fn step_paged_mov_dword_store(
         }
         Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
         Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
+}
+
+/// Execute exactly one bare `STI` (`FB`) under the fixed paged Long64/CPL0 profile
+/// (S4-27i4a): CR0 and CR4 equal the BASE profile, EFER is 0xD00 and CR3 is below
+/// 2^36. The step fetches one byte and touches no data. Per Intel SDM Vol. 2B (STI)
+/// IF becomes 1 and, when IF was 0 before, maskable interrupts stay inhibited until
+/// after the next instruction (`StiShadow::Blocking`); when IF was already 1 there is
+/// no inhibition. CPL0 is always at most IOPL, so no #GP applies. Any other byte
+/// (including prefixed forms) is `Unsupported`, not decoded.
+pub fn step_paged_sti(
+    _profile: PagedStiLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    step_paged_one_byte_state_op(0xfb, state, memory, context, efer, initial_rflags_defined)
+}
+
+/// Execute exactly one bare `HLT` (`F4`) under the fixed paged Long64/CPL0 profile
+/// (S4-27i4a), with the same admission as [`step_paged_sti`]. The step fetches one
+/// byte and touches no data. HLT retires (RIP advances past it) and the CPU becomes
+/// `Halted`; the STI interrupt shadow, if any, ends with the retired instruction, so
+/// a wake delivers a frame whose RIP is the instruction after HLT (SDM Vol. 3A
+/// 6.8.1/6.8.3 and Vol. 2A HLT). `HLT` is accepted in the shadow only with IF=1
+/// (the `STI; HLT` idiom); a shadow with IF=0 is rejected.
+pub fn step_paged_hlt(
+    _profile: PagedHltLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    step_paged_one_byte_state_op(0xf4, state, memory, context, efer, initial_rflags_defined)
+}
+
+fn step_paged_one_byte_state_op(
+    opcode: u8,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    const IF: u64 = 1 << 9;
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    let Some(shadow) = state.sti_shadow else {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    };
+    // STI never runs in a shadow; HLT may follow an STI that set IF.
+    let shadow_admitted = shadow == crate::StiShadow::Clear
+        || (opcode == 0xf4 && shadow == crate::StiShadow::Blocking && state.rflags & IF != 0);
+    if !shadow_admitted {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let byte = match memory.fetch(state.rip, context) {
+        Ok(byte) => byte,
+        Err(MemoryError::Architectural(fault)) => return result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+    };
+    if byte != opcode {
+        return result(PagedProbeExit::Unsupported { opcode: byte }, 0);
+    }
+    state.rip = state.rip.wrapping_add(1);
+    if opcode == 0xfb {
+        let was_enabled = state.rflags & IF != 0;
+        state.rflags |= IF;
+        state.sti_shadow = Some(if was_enabled {
+            crate::StiShadow::Clear
+        } else {
+            crate::StiShadow::Blocking
+        });
+        result(PagedProbeExit::Retired, 1)
+    } else {
+        state.activity = Some(crate::CpuActivity::Halted);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        result(PagedProbeExit::Halted, 1)
     }
 }
 
