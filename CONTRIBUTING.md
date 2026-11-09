@@ -9,7 +9,7 @@ The binding project rules live in [AGENTS.md](AGENTS.md). This document describe
 1. Open an issue for any non-trivial change and wait until the scope is agreed.
 2. Do not copy or port code, tables or algorithms from other emulators, hypervisors, firmware or JITs (see [Code provenance](#code-provenance-clean-room)).
 3. One change is one verifiable vertical slice, with tests and updated documentation.
-4. Every commit carries a `Signed-off-by` line ([DCO](#license-and-dco)).
+4. Sign the [Contributor License Agreement](#license-and-cla) on your first pull request.
 5. Run the [required checks](#checks-before-opening-a-pr) and state in the PR what was verified and what was not.
 
 ## Project status
@@ -23,17 +23,23 @@ The project is at an early stage and progresses through the stages defined in th
 
 Large architectural changes, new top-level components and new subsystems are discussed in an issue first and recorded as an ADR in [docs/decisions/](docs/decisions/).
 
-## License and DCO
+## License and CLA
 
-> **Open maintainer decision:** the repository has no `LICENSE` file yet. External pull requests cannot be accepted until one is added. The recommended choice is `Apache-2.0` (its explicit patent grant matters for CPU/JIT-adjacent code) or `MIT OR Apache-2.0`, as is common in the Rust ecosystem.
+Open Desktop is licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). The Project Owner also offers the project under separate commercial licenses, together with paid services for businesses; see [Licensing](README.md#licensing).
 
-The project uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/) instead of a CLA. By signing off a commit you certify that you have the right to submit the code under the project license. Every commit must contain:
+To make this dual licensing possible, every contributor must accept the [Contributor License Agreement](CLA.md) before a pull request can be merged. You keep the copyright in your contribution and grant the Project Owner a license that includes the right to distribute it under the AGPL and under commercial terms. To sign, comment on your first pull request:
 
 ```text
-Signed-off-by: Full Name <email@example.com>
+I have read the Open Desktop CLA (version 1.0) and I agree to its terms.
 ```
 
-`git commit -s` adds it. Unsigned commits are not accepted.
+If you contribute on behalf of an employer, name it in the comment and confirm that you are authorized to sign for it. Pull requests without an accepted CLA are not merged.
+
+New source files start with an SPDX header in the comment syntax of the language:
+
+```rust
+// SPDX-License-Identifier: AGPL-3.0-only
+```
 
 ## Code provenance (clean room)
 
@@ -61,7 +67,9 @@ If you have previously worked in depth with the source of one of the projects ab
 
 ## Dependencies
 
-General-purpose libraries (logging, CLI, serialization, collections, testing, etc.) are allowed under the [dependency policy](docs/policies/DEPENDENCIES.md). A PR that adds a dependency must state its purpose, version, source, license, enabled features and significant transitive dependencies. Do not add packages "for later". `Cargo.toml` and `Cargo.lock` change together. A dependency's license must be compatible with the project license.
+General-purpose libraries (logging, CLI, serialization, collections, testing, etc.) are allowed under the [dependency policy](docs/policies/DEPENDENCIES.md). A PR that adds a dependency must state its purpose, version, source, license, enabled features and significant transitive dependencies. Do not add packages "for later". `Cargo.toml` and `Cargo.lock` change together.
+
+Because the project is distributed both under the AGPL and under commercial licenses, a dependency must use a permissive license that allows both: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unlicense, Unicode-3.0 or an equivalent. Copyleft dependencies (GPL, LGPL, AGPL, MPL, EUPL and similar) require prior approval from the maintainer.
 
 ## Workflow
 
@@ -152,7 +160,7 @@ Bulk generated PRs without a prior issue are closed without review.
 - [ ] not verified / limitations: <what and why>
 
 ## Provenance
-<specifications used (document, version, section); new dependencies; AI assistance>
+<specifications used (document, version, section); new dependencies and their licenses; AI assistance; CLA accepted: yes/no>
 
 ## Documentation
 <updated specs/reports/KNOWN_ISSUES>

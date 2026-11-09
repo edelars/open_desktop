@@ -4,6 +4,7 @@
 name = "od-firmware"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
 publish = false
 description = "Open Desktop own UEFI firmware (S7-01: build skeleton, not a firmware implementation)"
 

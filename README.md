@@ -168,3 +168,13 @@ exception; other operand forms, JIT/native execution and physical acceptance
 remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37bg--canonical-long64-cvtpi2ps-memory-only-rax),
 [Stage 2 plan](docs/plans/STAGE_2.md#s2-37bg--canonical-long64-cvtpi2ps-memory-only-rax)
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37bg--cvtpi2ps-memory-interpreter-profile).
+
+## Licensing
+
+Copyright © 2026 Arseni Edel.
+
+Open Desktop is free software licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). If you modify it and distribute it, or let users interact with it over a network, you must make the corresponding source available under the same license.
+
+Commercial licenses that do not carry the AGPL obligations, as well as paid support, integration and other services for businesses, are available from the copyright holder. To ask about them, open an issue titled `Commercial licensing` or contact the repository owner through GitHub.
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md). The name "Open Desktop" and project logos are not licensed under the AGPL.
