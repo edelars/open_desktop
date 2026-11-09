@@ -28,6 +28,7 @@ mod pit_8254;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
+mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_pf_repair_probe;
 mod stage4_stack_probe;
@@ -168,6 +169,18 @@ pub use stage4_cr3_mixed_probe::{
     LoadedStage4Cr3MixedProbe, STAGE4_CR3_MIXED_PROBE_IMAGE_BYTES,
     STAGE4_CR3_MIXED_PROBE_IMAGE_GPA, STAGE4_CR3_MIXED_PROBE_ROOT_A, STAGE4_CR3_MIXED_PROBE_ROOT_B,
     Stage4Cr3MixedProbeLoadError, load_stage4_cr3_mixed_probe,
+};
+pub use stage4_cross_page_probe::{
+    LoadedStage4CrossPageProbe, STAGE4_CROSS_PAGE_CODE0_GPA, STAGE4_CROSS_PAGE_CODE0_GVA,
+    STAGE4_CROSS_PAGE_CODE1_GPA, STAGE4_CROSS_PAGE_CODE1_GVA, STAGE4_CROSS_PAGE_CONTROL_GVA,
+    STAGE4_CROSS_PAGE_DATA0_GPA, STAGE4_CROSS_PAGE_DATA0_GVA, STAGE4_CROSS_PAGE_DATA1_GPA,
+    STAGE4_CROSS_PAGE_DATA1_GVA, STAGE4_CROSS_PAGE_ENTRY_GVA, STAGE4_CROSS_PAGE_FINAL_RIP,
+    STAGE4_CROSS_PAGE_FIRST_OFFSET, STAGE4_CROSS_PAGE_IMAGE_BYTES, STAGE4_CROSS_PAGE_INITIAL_RAX,
+    STAGE4_CROSS_PAGE_INSTRUCTIONS, STAGE4_CROSS_PAGE_OPERAND_GVA, STAGE4_CROSS_PAGE_PTE_GPAS,
+    STAGE4_CROSS_PAGE_PTES, STAGE4_CROSS_PAGE_SECOND_OFFSET, STAGE4_CROSS_PAGE_STEP_RIPS,
+    STAGE4_CROSS_PAGE_STEPS, Stage4CrossPageEvent, Stage4CrossPageFault, Stage4CrossPageInjection,
+    Stage4CrossPageOperand, Stage4CrossPageReport, Stage4CrossPageStep, Stage4CrossPageStop,
+    load_stage4_cross_page_probe,
 };
 pub use stage4_flat_probe::{
     LoadedStage4FlatProbe, STAGE4_FLAT_PROBE_CR3, STAGE4_FLAT_PROBE_DATA_GVA,

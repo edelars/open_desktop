@@ -1076,6 +1076,58 @@ python3 -m unittest tools.build.test_build_stage4_pf_repair_probe
 заявляется. U/S, NX, #PF из CPL3, IST/TSS, другие пары исключений, cross-page,
 JIT, IRQ не проверяются; родитель S4-33 не закрыт.
 
+## S4-33d Cross-page read и fetch на собственном ядре
+
+Кейс `Stage4CrossPageProbeV1` проверяет системный случай «cross-page effects»
+(только чтение и fetch) поверх принятых S4-11b/c/d/e/f (семантика не менялась).
+Builder `tools/build/build_stage4_cross_page_probe.py` собирает fixture
+`tests/fixtures/guest/stage4/cross_page/` (`entry.S`, `layout.ld`) в raw image
+0xd000 байт с явным `--value`. Данные: qword разрезан — байты 0..2 в конце
+data-страницы 0 (GVA `0x800ffd`, кадр `0xb000`), байты 3..7 в начале data-страницы
+1 (GVA `0x801000`, кадр `0xd000`); кадры несмежные. Код: `66 8B 03` стоит на стыке
+двух несмежных кодовых кадров (`0x7000`, `0x9000`; GVA `0x400ffe`), далее
+`48 8B 03`, `8B 03`, `66 8B 03`, `EE`, `F4`. Handoff задаёт loader: CPL0, AC=0,
+NXE=1 (EFER `0xd00`), RAX = sentinel, RBX `0x800ffd`, RDX `0x3f8`.
+
+Sequencer из 6 шагов: word fetch-cross (S4-11f) -> qword (S4-11b) -> dword
+(S4-11c) -> word (S4-11e) -> OUT (`step_paged_pio_u8`) -> HLT (quantum). Runner
+`od-runner --stage4-cross-page-probe IMAGE [--budget N] [--same-page-control |
+--inject-data-pte-not-present | --inject-code-pte-nx | --inject-swap-data-frames
+| --inject-data-hole]` печатает один JSON (guest state, `event_trace` с RIP, RAX,
+CPL, CR2, #PF-записью, A/D всех четырёх leaf PTE и committed writes по шагам,
+`stop_reason`, `checks`). Бюджет считается в шагах (по умолчанию 16, максимум
+1024). Коды выхода: 0 принято, 7 завершено без принятия, 5 остановка до конца,
+3/4 ошибки аргументов/образа. Принятие: RAX по шагам `(sentinel & ~0xffff) | word`,
+qword, dword, dword, dword, dword; UART-байт = младший байт значения; A на code1
+после шага 1, на data1 с шага 2, D нигде; итоговый RIP `0x40100b`, CPU halted.
+
+Предусловие среза: путь S4-11b (`48 8B 03`) при NXE=1 уже покрыт существующими
+тестами (`paged_mov_step.rs` использует EFER с NXE, включая все смещения
+cross-page qword; профиль S4-32 использует EFER `0xd00`); в этом кейсе добавлен
+явный тест `qword_read_keeps_its_behaviour_when_nxe_is_set_in_efer` (NXE=0 и NXE=1
+дают одинаковый результат, при NXE=0 PTE без NX).
+
+Injected regressions (каждая со своим исходом): `second_data_pte_not_present` —
+#PF на шаге 2 (qword), PFEC `0x00`, CR2 `0x801000`, steps 2, retired 1, код 5;
+`second_code_pte_nx` — #PF на шаге 1 (fetch), PFEC `0x11`, CR2 `0x401000`, steps
+1, retired 0, data-страницы не тронуты, код 5; `data_frames_swapped` — все 6
+шагов выполнены, RAX неверный, код 7; `second_data_page_hole` — отказ backend на
+шаге 2 без #PF и без retirement, код 5. Покрытие: 12 machine-тестов, 5 тестов
+builder, 1 builder->runner CLI-тест.
+
+Команды:
+
+```sh
+cargo test -p od-machine --test stage4_cross_page_probe --offline
+cargo test -p od-runner --test stage4_cross_page_build_cli --offline
+python3 -m unittest tools/build/test_build_stage4_cross_page_probe.py
+```
+
+Граница: uncached tracked walker; TLB-on не проверяется. Cross-page store, RMW,
+stack, REP и RAM/MMIO split, fetch-cross для `8B 03` (S4-11d) и word-операнд на
+смещении `0xfff` вместе с fetch-cross (примитив S4-11f его отвергает) не входят;
+CPL3, доставка #PF, huge pages и JIT не входят; родитель S4-33 не закрыт.
+
 ## S4-17a: paged MOV differential harness
 
 Run the cross-component harness with:

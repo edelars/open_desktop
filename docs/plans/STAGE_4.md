@@ -1771,7 +1771,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 - [ ] Принято после ревью.
 - **Где:** kernel fixtures, `tests/system/`, report/data stage4.
-- **Сделать:** cases для RAM alias, права и `#PF` repair/retry, huge pages заявленного профиля, cross-page effects, CPL3 syscall/return, timer, UART IRQ, IOAPIC mask/EOI, HLT wakeup и self-modifying code. У каждого case отдельный идентификатор и ожидаемый результат.
+- **Сделать:** cases для RAM alias, права и `#PF` repair/retry, huge pages заявленного профиля, cross-page effects, CPL3 syscall/return, timer, UART IRQ, IOAPIC mask/EOI, HLT wakeup и self-modifying code. У каждого case отдельный идентификатор и ожидаемый результат. Fetch через границу для dword на собственном ядре остаётся открытым.
 - **Проверка:** interpreter с TLB off/on и JIT только для реально поддержанных частей; injected regression обязан ломать соответствующую проверку. Сохранять guest state и event trace, а не одну строку PASS.
 - **Готово:** все обязательные cases имеют факт выполнения. Общая CPU/MMU семантика ещё требует независимого evidence S4-34; локальная приёмка не выдаётся за physical.
 
@@ -1800,7 +1800,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-33d. Cross-page read и fetch на собственном ядре (системный кейс S4-33)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Родитель S4-33 открыт. Оговорки: fetch через границу только word (см. «Готово»); нет контрольного прогона с отдельным NXE=0 на всём кейсе; CR2 при cross-page = выбор контракта модели (см. отчёт).
 - **Контракт:** кейс собственного ядра из S4-33 «cross-page effects», только чтение и fetch. Опирается на принятые S4-11b (qword `48 8B 03`), S4-11c/d (`8B 03` с fetch через границу), S4-11e/f (`66 8B 03`, fetch на `0xffe`/`0xfff`) и профиль S4-32. Профиль `Stage4CrossPageProbeV1`: соседние GVA-страницы данных отображены на несмежные RAM-фреймы probe-карты (128 KiB); инструкция с fetch через границу стоит на стыке двух несмежных кодовых фреймов; в handoff явно заданы CPL0, AC=0, NXE=1; результат проходит через `OUT DX,AL; HLT`. Исполнение — sequencer из принятых `step_paged_mov`, `step_paged_mov_dword_read`, `step_paged_mov_word_read`, `step_paged_mov_word_read_cross_page_fetch` (экспорт `od-machine/src/lib.rs`), хвост через `step_paged_pio_u8` и quantum. Allowlist `PagedCpl0ProbeV1` не расширять (S4-32c проверяет отказ quantum на cross-page).
 - **Предусловие (первый шаг реализации):** qword-путь S4-11b при NXE=1 сохраняет поведение; если нет — срез останавливается и сообщает об этом.
 - **Проверка:** builder → runner. Для каждого шага фиксируются guest state (RIP, RAX, CPL), A по страницам, отсутствие D, CR2 и PFEC. Бюджеты и STOP-причина; same-page контроль; два различных значения на второй странице.
@@ -1810,7 +1810,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   - loader меняет фреймы местами → неверный RAX, кейс падает;
   - вторая страница в RAM hole → отказ без retirement.
 - **Граница:** cross-page store, RMW, stack, REP и RAM/MMIO split не входят (S4-11 открыт; cross-page store — отдельное архитектурное решение атомарного commit, `not_supported` в матрице); TLB-on не проверяется (S4-14 не принят); в JIT-матрице кейс `not_supported`; CPL3 и delivery #PF не входят; это не закрывает родителя S4-33. Huge pages — отдельно (после S4-10c).
-- **Готово:** кейс выполняется как guest fact; успех, fault на второй странице и инъекции различимы в evidence.
+- **Готово:** кейс выполняется как guest fact; успех, fault на второй странице и инъекции различимы в evidence. Оговорка: в кейсе исполняется только word fetch-cross (`66 8B 03`, S4-11f); `8B 03` с fetch через границу (S4-11d) не исполняется, так как при единственном RBX=0x800ffd любой dword пересекает границу данных, а контракт S4-11d такого операнда не покрывает; покрыто unit-тестами S4-11d.
 
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
