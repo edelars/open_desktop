@@ -1940,7 +1940,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-36. Собрать минимальный initramfs с настоящим `/init`
 
-- [ ] Принято после ревью.
+- [x] Принято с ограничениями после ревью (Claude Opus). Отчёт: `docs/reports/STAGE_4_S4-36_2026-11-09.md`. Оговорки: Linux не загружался, исполнение `/init` в ядре, передача nonce через cmdline и `mount proc` не подтверждены (S4-37/S4-38); логика разбора nonce в `/init` тестами репозитория не покрыта; nonce длиннее 128 символов обрезается без ошибки, разделитель токенов только пробел, ошибки openat/read/mkdir/mount сводятся к `OD_NONCE=MISSING` rc 1 без отдельного кода (до S4-38); `exit(0)` PID 1 приводит к панике ядра; `vmlinuz_sha256` взят из манифеста S4-35 без сверки, подлинность ядра/config не подтверждена; syscall-номера сверены по таблице исходников, не исполнением.
 - **Где:** собственный source/recipe в `tests/fixtures/guest/stage4/`, сборка `tools/build/`, image в ignored work.
 - **Сделать:** маленький статический CPL3 program без лишних ISA требований; нужный формат initramfs, права/mode и entry. `/init` выводит переданный run nonce, делает проверяемые syscalls и возвращается к user instructions; задать завершение/ожидание для получения timer evidence.
 - **Проверка:** содержимое archive, executable ABI, отсутствие host paths/secrets, repeatable build; негативные варианты отсутствующего/неисполняемого `/init` и неверного nonce.
