@@ -273,10 +273,14 @@ fn fadt_validation_accepts_the_result_and_reports_each_defect() {
     let mut short = good[..244].to_vec();
     short[4..8].copy_from_slice(&244u32.to_le_bytes());
     fix_checksum(&mut short);
-    assert!(matches!(
+    // `declared` is the value read from the table (244), not the 276 the rule demands.
+    assert_eq!(
         validate_fadt(&short),
-        Err(FadtError::Table(TableError::LengthMismatch { .. }))
-    ));
+        Err(FadtError::Table(TableError::LengthMismatch {
+            declared: 244,
+            actual: 244
+        }))
+    );
 
     // Rules of this board, each with a repaired checksum so only the rule fails.
     let mutate = |at: usize, value: u8| {

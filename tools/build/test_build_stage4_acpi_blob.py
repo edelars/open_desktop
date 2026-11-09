@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of the Stage 4 ACPI blob packaging (S4-31d).
+"""Tests of the Stage 4 ACPI blob packaging (S4-31d/g).
 
 The extraction is exercised on real freestanding builds: two clean builds into different cargo
 target directories must give the same bytes, and those bytes must equal the committed fixture
@@ -57,12 +57,16 @@ class Stage4AcpiBlobPackagingTest(unittest.TestCase):
 
     def test_metadata_reports_version_hash_range_and_rsdp(self) -> None:
         meta = self.metadata[0]
-        self.assertEqual(meta["version"], 1)
+        self.assertEqual(meta["version"], 2)
         self.assertEqual(len(meta["manifest_hash"]), 64)
         self.assertEqual(meta["load_range"]["start"], 0xE0000)
         self.assertLessEqual(meta["load_range"]["end"], 0xEF000)
-        self.assertEqual(meta["rsdp_address"], 0)
-        self.assertEqual([t["signature"] for t in meta["tables"]], ["DSDT", "MCFG"])
+        self.assertEqual(meta["rsdp_address"], 0xE0000)
+        self.assertEqual([t["signature"] for t in meta["tables"]], ["DSDT", "APIC", "FACP", "MCFG", "XSDT"])
+        self.assertEqual(meta["facs"]["address"], 0xEF000)
+        self.assertEqual(meta["facs"]["load_range"], {"start": 0xEF000, "end": 0xEF040})
+        by_sig = {t["signature"]: t["address"] for t in meta["tables"]}
+        self.assertEqual(meta["xsdt_entries"], [by_sig["FACP"], by_sig["APIC"], by_sig["MCFG"]])
 
     def test_corrupted_blob_is_refused(self) -> None:
         good = self.blob("a")
@@ -73,7 +77,7 @@ class Stage4AcpiBlobPackagingTest(unittest.TestCase):
         broken[payload + table["payload_offset"] + 0x20] ^= 1  # checksum
         with self.assertRaises(BUILDER.BuildError):
             BUILDER.parse_blob(bytes(broken))
-        for offset, value in ((0, ord("X")), (8, 2), (0x4C, 0)):
+        for offset, value in ((0, ord("X")), (8, 3), (0x4C, 0), (0x40, 1), (0x58, 1), (payload + 8, 0)):
             bad = bytearray(good)
             bad[offset] = value
             with self.assertRaises(BUILDER.BuildError):
