@@ -1374,6 +1374,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Контракт:** отдельный `Stage4UartEchoProbeV1` raw image содержит только `IN AL,DX → OUT DX,AL → HLT` (`EC EE F4`) и использует прежний board/page-table handoff. Runner через RX event queue подаёт независимый byte; expected byte применяется только в host completion predicate. Success требует HLT, ровно 3 retirement, RIP `0x400003`, RAX равный ожиданию и реальный UART TX из одного совпадающего byte. Пустой RBR проходит штатным PIO error.
 - **Проверки и границы:** 13 `PagedVcpuSession` tests, 9 runner CLI tests, 2 builder→CLI tests, runner all-targets check, fmt и diff прошли. `check_layout.py` сообщает уже известный root `smoke/` (`ISSUE-056`). См. [отчёт](../reports/STAGE_4_S4-24D_2026-11-07.md), [manifest](../reports/data/stage4/s4-24d-uart-echo.json), [методику](../testing/MACHINE.md#s4-24d-guest-uart-rxinout-echo). Гостевой LSR polling loop, IRQ/APIC, HLT wakeup, baud timing и общий scheduler не реализованы.
 
+#### S4-24e. UART IRQ4 → IOAPIC → LAPIC → гостевой обработчик (ограниченный срез)
+
+- [ ] Принято после ревью.
+- **Где:** `od-machine` (UART, связь с IOAPIC/LAPIC-владельцем сессии), kernel fixture `tests/fixtures/guest/stage4/`, runner, `MACHINE_CONTRACT.md`.
+- **Сделать:** UART: IER (RDA и THRE), IIR/снятие прерывания (чтение RBR, IIR или запись THR); OUT2 в MCR — гейт обосновать по драйверу 8250 Linux или исключить с записью причины. Выход UART соединяется edge-сигналом с IOAPIC INTIN4 (`set_intin4`) внутри владельца сессии, детерминированно, без фонового scheduler. Гостевой профиль `Stage4UartIrqProbeV1`: LIDT, снятие маски IOAPIC записью в MMIO, STI;HLT. RX-событие из очереди → IRQ → обработчик читает IIR и RBR, пишет OUT, делает LAPIC EOI, IRETQ, HLT.
+- **Проверка:** негативные кейсы: IER=0 (нет IRQ); маска IOAPIC (edge при маске теряется, снятие маски не доставляет); повторный IRQ без EOI; injected regression, которая обязана ломать проверку. Builder → runner: guest state и trace событий (IRR/ISR/EOI), бюджеты и STOP.
+- **Граница:** не входит FIFO, baud timing, прерывания от LSR-ошибок и modem status, level route, JIT, совместимость с Linux 8250, production scheduler, IRQ из CPL3.
+- **Готово:** guest обрабатывает RX-IRQ через IOAPIC и LAPIC; вся цепочка проверена трейсом; ограниченный срез не выдаётся за полный S4-24.
+
 ### S4-25. Local APIC одного CPU
 
 - [ ] Принято после ревью.
