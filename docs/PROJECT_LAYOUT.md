@@ -66,6 +66,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | Необходимые Linux kernel drivers | `guest/linux/drivers/src/` |
 | Host headless runner | `tools/runner/src/` |
 | Физический x86 oracle runner | `tools/x86-runner/src/` |
+| Host-side KVM-раннер (S4-34a, Linux, C) | `tools/kvm-runner/` |
 | Работа с дисковыми образами как инструмент | `tools/image-tool/src/` |
 | Сборочная orchestration и генерация | `tools/build/` |
 | Запуск и обработка benchmarks | `tools/bench/` |
@@ -194,6 +195,7 @@ guest/linux/drivers/src
 guest/linux/tests
 tools/runner/src
 tools/x86-runner/src
+tools/kvm-runner
 tools/image-tool/src
 tools/build
 tools/bench
