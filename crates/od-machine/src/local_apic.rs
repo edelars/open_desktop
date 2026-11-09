@@ -257,6 +257,13 @@ impl LocalApicHandle {
         }
         timer.queue.next_deadline()
     }
+    /// Vector of the LVT Timer when a timer exists and is unmasked (S4-27i3).
+    /// Read-only; `None` when the timer is absent or masked.
+    pub fn timer_vector(&self) -> Option<u8> {
+        let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let timer = pair.timer.as_ref()?;
+        (timer.lvt & MASK == 0).then_some(timer.lvt as u8)
+    }
     /// Disable is rejected while a level request awaits EOI.
     pub fn set_global_enabled(&self, enabled: bool) -> Result<(), DeviceError> {
         self.0

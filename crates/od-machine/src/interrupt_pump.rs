@@ -15,7 +15,20 @@
 //! Time per instruction is 0 ns: the clock moves only by that idle advance
 //! (or, outside the pump, by the owner of the session).
 //!
-//! Boundary order: STOP, then the budget, then timer dispatch, then (Running only) the APIC check
+//! S4-27i3 (IRQ event queue): the pump owns one [`EventQueue`] of fixed-vector
+//! IRQ events. The caller schedules `(key, vector, due_ns)`; the owner takes due
+//! events on every boundary: `peek_due`, `request_fixed_edge`, and `remove_due`
+//! only after the request succeeded, so a failed request keeps the event
+//! (`PumpRejection::QueueRequest`, resumable). A due event whose vector is
+//! already in the IRR merges into that edge (trace `Coalesced`). `reset_irq_queue`
+//! starts a new generation: tokens of the old generation are refused. In Waiting
+//! the idle advance goes to the earlier of the timer deadline and the queue
+//! deadline, but only for sources that can still change the IRR: a source whose
+//! vector is already in the IRR while nothing is eligible (blocked by ISR/TPR)
+//! cannot wake the CPU, so it is not waited for (ISSUE-070: `IdleHalt` instead of
+//! burning the budget).
+//!
+//! Boundary order: STOP, then the budget, then timer and queue dispatch, then (Running only) the APIC check
 //! (IF=1, STI shadow Clear, completed boundary, `eligible()`), then either IRQ
 //! delivery through `run_apic_quantum` or one instruction. HLT never goes
 //! through `run(1)` (the ordinary interpreter has no HLT: terminal): it enters the halt wait,
@@ -37,13 +50,18 @@ use crate::{
     DeviceError, DiagnosticApicQuantumResult, DiagnosticExit, DiagnosticHaltEnterReason,
     DiagnosticHaltWakeResult, DiagnosticIretqResult, DiagnosticRunResult,
     DiagnosticStiApicQuantumResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
-    DiagnosticVcpuSession, LocalApicHandle, WorkLimitReason,
+    DiagnosticVcpuSession, EventGeneration, EventQueue, EventQueueError, LocalApicHandle,
+    WorkLimitReason,
 };
 use od_isa::StiShadow;
 use od_isa::interrupt::InterruptOutsideProfile;
+use std::collections::BTreeMap;
 
 /// Tracing bound; exceeding it ends the run instead of growing without limit.
 pub const INTERRUPT_PUMP_TRACE_LIMIT: usize = 512;
+
+/// Capacity of the pump's IRQ event queue (S4-27i3).
+pub const INTERRUPT_PUMP_QUEUE_CAPACITY: usize = 16;
 
 const RFLAGS_IF: u64 = 1 << 9;
 
@@ -62,6 +80,9 @@ pub enum PumpInjection {
     /// S4-27i2: the pump does not own the timer: no `dispatch_timer` and no
     /// idle advance, so a halted guest waiting for its timer stays idle.
     NoTimerDispatch,
+    /// S4-27i3: the queued event is removed before `request_fixed_edge`, so a
+    /// failed request loses the event instead of keeping it for a retry.
+    PopBeforeRequest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +113,11 @@ pub enum PumpTraceKind {
     /// HLT retired and the CPU entered the halt wait.
     Hlt,
     Iretq,
+    /// S4-27i3: a due queue event merged into an IRR bit that was already set
+    /// (no new edge; the IRR rise is the `Irr` event).
+    Coalesced {
+        vector: u8,
+    },
 }
 
 impl PumpTraceKind {
@@ -104,6 +130,7 @@ impl PumpTraceKind {
             Self::Cli => "cli",
             Self::Hlt => "hlt",
             Self::Iretq => "iretq",
+            Self::Coalesced { .. } => "coalesced",
         }
     }
 }
@@ -136,9 +163,30 @@ pub enum PumpRejection {
     TimerDispatch(DeviceError),
     /// The idle clock advance failed (S4-27i2).
     TimerAdvance(DiagnosticHaltWaitError),
-    /// The next timer deadline is not in the future after dispatch, so idle
-    /// advance cannot make progress (S4-27i2).
+    /// The next timer or queue deadline is not in the future after dispatch, so
+    /// idle advance cannot make progress (S4-27i2, S4-27i3).
     TimerNoProgress,
+    /// S4-27i3: `request_fixed_edge` failed for a due queue event. The event is
+    /// kept in the queue (unless the `PopBeforeRequest` injection removed it
+    /// first); guest state is unchanged and the run is resumable.
+    QueueRequest {
+        vector: u8,
+        error: DeviceError,
+    },
+    /// The IRQ event queue refused an inspection or removal (S4-27i3).
+    QueueState(EventQueueError),
+    /// A queued key has no vector route (S4-27i3; an internal inconsistency).
+    QueueRoute(u64),
+}
+
+/// Refusal of a caller operation on the pump's IRQ event queue (S4-27i3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PumpQueueError {
+    Queue(EventQueueError),
+    /// Vectors below 16 cannot be requested through the Local APIC.
+    InvalidVector(u8),
+    /// The session has no virtual clock, so events cannot be due.
+    NoClock,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,6 +229,10 @@ pub struct InterruptPump {
     mid_rep: bool,
     injection: Option<PumpInjection>,
     finished: Option<PumpExit>,
+    /// S4-27i3: IRQ events (key -> fixed vector and deadline).
+    queue: EventQueue,
+    routes: BTreeMap<u64, (u8, u64)>,
+    coalesced: u64,
 }
 
 impl InterruptPump {
@@ -198,6 +250,9 @@ impl InterruptPump {
             mid_rep: false,
             injection: None,
             finished: None,
+            queue: EventQueue::new(INTERRUPT_PUMP_QUEUE_CAPACITY),
+            routes: BTreeMap::new(),
+            coalesced: 0,
         }
     }
 
@@ -249,6 +304,73 @@ impl InterruptPump {
         .map(|clock| clock.now_ns())
     }
 
+    /// Token of the current generation of the IRQ event queue (S4-27i3).
+    pub fn irq_generation(&self) -> EventGeneration {
+        self.queue.generation()
+    }
+
+    /// Schedule one fixed-vector IRQ event at an absolute virtual time
+    /// (S4-27i3). A deadline at or before the current time is due at the next
+    /// boundary. The producer is the caller: the pump never creates events.
+    pub fn schedule_irq(
+        &mut self,
+        generation: EventGeneration,
+        key: u64,
+        vector: u8,
+        due_ns: u64,
+    ) -> Result<(), PumpQueueError> {
+        if vector < 16 {
+            return Err(PumpQueueError::InvalidVector(vector));
+        }
+        if self.virtual_time_ns().is_none() {
+            return Err(PumpQueueError::NoClock);
+        }
+        self.queue
+            .schedule(generation, key, due_ns)
+            .map_err(PumpQueueError::Queue)?;
+        self.routes.insert(key, (vector, due_ns));
+        Ok(())
+    }
+
+    /// Cancel a pending IRQ event (S4-27i3).
+    pub fn cancel_irq(
+        &mut self,
+        generation: EventGeneration,
+        key: u64,
+    ) -> Result<(), PumpQueueError> {
+        self.queue
+            .cancel(generation, key)
+            .map_err(PumpQueueError::Queue)?;
+        self.routes.remove(&key);
+        Ok(())
+    }
+
+    /// Drop every pending IRQ event and start a new generation; tokens and
+    /// events of the old generation are refused afterwards (S4-27i3).
+    pub fn reset_irq_queue(&mut self) -> Result<EventGeneration, PumpQueueError> {
+        let next = self
+            .queue
+            .reset(self.queue.generation())
+            .map_err(PumpQueueError::Queue)?;
+        self.routes.clear();
+        Ok(next)
+    }
+
+    /// Number of pending IRQ events.
+    pub fn irq_queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Earliest deadline among pending IRQ events, due or not.
+    pub fn irq_queue_next_deadline(&self) -> Option<u64> {
+        self.queue.next_deadline()
+    }
+
+    /// Due events that merged into an already pending IRR bit (S4-27i3).
+    pub fn coalesced_irqs(&self) -> u64 {
+        self.coalesced
+    }
+
     /// Read one qword of guest RAM without side effects (evidence only).
     pub fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
         match self.cpu.as_mut().expect("cpu is always restored") {
@@ -277,7 +399,11 @@ impl InterruptPump {
             match self.step() {
                 Flow::Continue => quanta += 1,
                 Flow::Exit(exit) => {
-                    if !matches!(exit, PumpExit::IdleHalt) {
+                    // IdleHalt and a failed queue request (the event is kept) resume.
+                    if !matches!(
+                        exit,
+                        PumpExit::IdleHalt | PumpExit::Rejected(PumpRejection::QueueRequest { .. })
+                    ) {
                         self.finished = Some(exit.clone());
                     }
                     break exit;
@@ -351,9 +477,64 @@ impl InterruptPump {
         Ok(())
     }
 
+    /// Take every due IRQ event (S4-27i3): `peek_due`, `request_fixed_edge`,
+    /// then `remove_due` only after the request succeeded.
+    fn dispatch_due_queue(&mut self) -> Result<(), PumpExit> {
+        if self.routes.is_empty() {
+            return Ok(());
+        }
+        let Some(now) = self.virtual_time_ns() else {
+            return Ok(());
+        };
+        let generation = self.queue.generation();
+        let pop_first = self.injection == Some(PumpInjection::PopBeforeRequest);
+        let reject = |rejection| PumpExit::Rejected(rejection);
+        for _ in 0..INTERRUPT_PUMP_QUEUE_CAPACITY {
+            let Some(event) = self
+                .queue
+                .peek_due(generation, now)
+                .map_err(|error| reject(PumpRejection::QueueState(error)))?
+            else {
+                break;
+            };
+            let (vector, _) = *self
+                .routes
+                .get(&event.key)
+                .ok_or_else(|| reject(PumpRejection::QueueRoute(event.key)))?;
+            let merges = self.apic.vector_state(vector).0;
+            if pop_first {
+                self.remove_due_event(generation, now)?;
+            }
+            self.apic
+                .request_fixed_edge(vector)
+                .map_err(|error| reject(PumpRejection::QueueRequest { vector, error }))?;
+            if !pop_first {
+                self.remove_due_event(generation, now)?;
+            }
+            self.observe()?;
+            if merges {
+                self.coalesced += 1;
+                self.push(PumpTraceKind::Coalesced { vector })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_due_event(&mut self, generation: EventGeneration, now: u64) -> Result<(), PumpExit> {
+        let removed = self
+            .queue
+            .remove_due(generation, now)
+            .map_err(|error| PumpExit::Rejected(PumpRejection::QueueState(error)))?;
+        if let Some(event) = removed {
+            self.routes.remove(&event.key);
+        }
+        Ok(())
+    }
+
     fn step_inner(&mut self) -> Result<Flow, PumpExit> {
         self.observe()?;
         self.dispatch_due_timer()?;
+        self.dispatch_due_queue()?;
         self.observe()?;
         let cpu = self.cpu.take().expect("cpu is always restored");
         let flow = match cpu {
@@ -414,14 +595,44 @@ impl InterruptPump {
         }
     }
 
-    /// Waiting with no eligible vector (S4-27i2): advance the clock to the
-    /// next timer deadline and dispatch. `Ok(false)` means nothing can wake the
-    /// CPU through the timer (no owned timer, IF=0, or no deadline).
+    /// Timer deadline that can still wake the CPU: not when its vector already
+    /// waits in the IRR behind an in-service vector or the TPR (ISSUE-070).
+    fn useful_timer_deadline(&self) -> Option<u64> {
+        if !self.owns_timer() {
+            return None;
+        }
+        let deadline = self.apic.next_timer_deadline()?;
+        let blocked = self
+            .apic
+            .timer_vector()
+            .is_some_and(|vector| self.apic.vector_state(vector).0)
+            && self.apic.eligible().is_none();
+        (!blocked).then_some(deadline)
+    }
+
+    /// Earliest queue deadline whose vector is not already pending in the IRR.
+    fn useful_queue_deadline(&self) -> Option<u64> {
+        self.routes
+            .values()
+            .filter(|(vector, _)| !self.apic.vector_state(*vector).0)
+            .map(|(_, deadline)| *deadline)
+            .min()
+    }
+
+    /// Waiting with no eligible vector (S4-27i2, S4-27i3): advance the clock to
+    /// the earlier of the next timer deadline and the next queue deadline that
+    /// can still change the IRR, and dispatch the timer. `Ok(false)` means
+    /// nothing can wake the CPU (IF=0, no such deadline, or the only sources
+    /// are blocked in the IRR: ISSUE-070).
     fn idle_advance(&mut self, wait: &mut DiagnosticHaltWait) -> Result<bool, PumpRejection> {
-        if !self.owns_timer() || wait.state().rflags & RFLAGS_IF == 0 {
+        if wait.state().rflags & RFLAGS_IF == 0 {
             return Ok(false);
         }
-        let Some(deadline) = self.apic.next_timer_deadline() else {
+        let Some(deadline) = [self.useful_timer_deadline(), self.useful_queue_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             return Ok(false);
         };
         let now = wait
@@ -435,9 +646,11 @@ impl InterruptPump {
         }
         wait.advance_time_ns(deadline - now)
             .map_err(PumpRejection::TimerAdvance)?;
-        self.apic
-            .dispatch_timer()
-            .map_err(PumpRejection::TimerDispatch)?;
+        if self.owns_timer() {
+            self.apic
+                .dispatch_timer()
+                .map_err(PumpRejection::TimerDispatch)?;
+        }
         Ok(true)
     }
 

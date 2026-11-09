@@ -117,7 +117,9 @@ fn trace_json(event: &od_machine::PumpTraceEvent) -> Value {
         "event": event.kind.name(),
     });
     match &event.kind {
-        PumpTraceKind::Irr { vector } | PumpTraceKind::Eoi { vector } => {
+        PumpTraceKind::Irr { vector }
+        | PumpTraceKind::Eoi { vector }
+        | PumpTraceKind::Coalesced { vector } => {
             value["vector"] = json!(vector);
         }
         PumpTraceKind::Entry { vector, source } => {
