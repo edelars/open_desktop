@@ -36,8 +36,24 @@
 //! (parity/IOCHK) read 0; a write to them, and to the read-only bits 4 and 5,
 //! is ignored, so the usual read-modify-write of Linux works.
 //!
-//! The gate input does not stop or restart channel 2 in this slice (it is
-//! stored and visible only in port B), and channel 0 has no gate input at all.
+//! The gate input never stops or restarts channel 2: the count keeps running
+//! regardless of gate 2 (S4-29d, consultation decision 6). What is refused
+//! instead, with [`DeviceError::UnsupportedConfiguration`] and no state change:
+//! a data-port write to channel 2 (loading it) while gate 2 is low; a counter
+//! read, a counter latch, or a read of port B (which exposes `OUT2`) while
+//! channel 2 holds a count and gate 2 is low; and a write to port B that
+//! drops gate 2 while channel 2 holds a count. A read of port B while channel 2
+//! holds no count is allowed at any gate level. Channel 0 has no gate input.
+//!
+//! # Port tick (S4-29d, consultation decision 5; ISSUE-067)
+//!
+//! Every successful read of port B is a "time port" read: the device counts it
+//! and queues [`PIT_PORT_B_READ_TICK_NS`] (1 us) of virtual time. The value
+//! returned by the read is sampled before the tick. The device does not move
+//! the clock itself (the clock has one advancer, the vCPU session); the clock
+//! owner takes the queued time with [`Pit8254Handle::take_port_tick_ns`] after
+//! the instruction and advances the clock by it. Counter-port reads (`0x42`) and
+//! the PM timer are not time ports in this slice.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, VirtualClockHandle};
 use std::sync::{Arc, Mutex};
@@ -52,6 +68,8 @@ pub const PIT_PORT_B: u16 = 0x61;
 pub const PIT_PORT_B_BYTES: u32 = 1;
 /// PIT input clock in Hz (the project value, rounded from 1 193 181.8).
 pub const PIT_INPUT_HZ: u64 = 1_193_182;
+/// Virtual time added by one read of port B (the port tick), in nanoseconds.
+pub const PIT_PORT_B_READ_TICK_NS: u64 = 1_000;
 /// Input ticks between two toggles of port B bit 4.
 pub const PIT_REFRESH_TOGGLE_TICKS: u64 = 18;
 
@@ -319,6 +337,9 @@ impl PitSnapshot {
         let access = match (word >> 4) & 3 {
             0 => {
                 // Counter latch; the low nibble is ignored by the chip.
+                if channel == PitChannel::Channel2 && self.channel2_ungated_with_count() {
+                    return Err(DeviceError::UnsupportedConfiguration);
+                }
                 let ch = self.channel_mut(channel);
                 if ch.latch.is_some() {
                     // A second latch before the first is read has no effect.
@@ -354,6 +375,12 @@ impl PitSnapshot {
         Ok(())
     }
 
+    /// Channel 2 holds a count while gate 2 is low: its counter and `OUT2` are
+    /// not observable and a port B write may not drop the gate (decision 6).
+    fn channel2_ungated_with_count(&self) -> bool {
+        !self.gate2 && self.channel2.run.is_some()
+    }
+
     fn port_b(&self, tick: u64) -> u8 {
         let mut value = 0;
         if self.gate2 {
@@ -372,9 +399,17 @@ impl PitSnapshot {
     }
 }
 
+/// Port B reads seen by the device and the virtual time queued by them.
+#[derive(Clone, Copy, Debug, Default)]
+struct PortTick {
+    reads: u64,
+    pending_ns: u64,
+}
+
 #[derive(Debug)]
 struct Shared {
     state: Mutex<PitSnapshot>,
+    port_tick: Mutex<PortTick>,
     clock: VirtualClockHandle,
 }
 
@@ -385,6 +420,10 @@ impl Shared {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PitSnapshot> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_port_tick(&self) -> std::sync::MutexGuard<'_, PortTick> {
+        self.port_tick.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -412,10 +451,23 @@ impl Pit8254Handle {
         self.shared.lock().channel(channel).count(tick)
     }
 
+    /// Successful reads of port B since construction or reset.
+    pub fn port_b_reads(&self) -> u64 {
+        self.shared.lock_port_tick().reads
+    }
+
+    /// Takes the virtual time queued by port B reads (the port tick), leaving
+    /// zero. The clock owner advances its clock by the returned amount.
+    pub fn take_port_tick_ns(&self) -> u64 {
+        std::mem::take(&mut self.shared.lock_port_tick().pending_ns)
+    }
+
     /// Machine reset: counters uninitialised, `OUT` low (mode 0) or high
-    /// (mode 2) only after a control word, gate 2 and speaker data cleared.
+    /// (mode 2) only after a control word, gate 2 and speaker data cleared,
+    /// the port B read count and the queued port tick dropped.
     pub fn reset(&self) {
         *self.shared.lock() = PitSnapshot::default();
+        *self.shared.lock_port_tick() = PortTick::default();
     }
 }
 
@@ -441,6 +493,7 @@ impl Pit8254Devices {
     pub fn new(clock: VirtualClockHandle) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(PitSnapshot::default()),
+            port_tick: Mutex::new(PortTick::default()),
             clock,
         });
         Self {
@@ -479,6 +532,9 @@ impl BusDevice for Pit8254 {
         };
         let tick = self.shared.tick();
         let mut state = self.shared.lock();
+        if channel == PitChannel::Channel2 && state.channel2_ungated_with_count() {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         let mut next = *state;
         let byte = next.channel_mut(channel).read_data(tick)?;
         *state = next;
@@ -496,9 +552,14 @@ impl BusDevice for Pit8254 {
             0 => next
                 .channel_mut(PitChannel::Channel0)
                 .write_data(byte, tick)?,
-            2 => next
-                .channel_mut(PitChannel::Channel2)
-                .write_data(byte, tick)?,
+            2 => {
+                // Loading channel 2 needs gate 2 high (decision 6).
+                if !next.gate2 {
+                    return Err(DeviceError::UnsupportedConfiguration);
+                }
+                next.channel_mut(PitChannel::Channel2)
+                    .write_data(byte, tick)?
+            }
             1 => return Err(DeviceError::UnsupportedConfiguration),
             _ => next.write_control(byte, tick)?,
         }
@@ -511,14 +572,30 @@ impl BusDevice for PitPortB {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
         check_byte_pio(access, PIT_PORT_B_BYTES)?;
         let tick = self.shared.tick();
-        Ok(u64::from(self.shared.lock().port_b(tick)))
+        let value = {
+            let state = self.shared.lock();
+            if state.channel2_ungated_with_count() {
+                return Err(DeviceError::UnsupportedConfiguration);
+            }
+            state.port_b(tick)
+        };
+        // The value is sampled; the read then costs one port tick.
+        let mut port_tick = self.shared.lock_port_tick();
+        port_tick.reads += 1;
+        port_tick.pending_ns += PIT_PORT_B_READ_TICK_NS;
+        Ok(u64::from(value))
     }
 
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         check_byte_pio(access, PIT_PORT_B_BYTES)?;
         let byte = value as u8;
         let mut state = self.shared.lock();
-        state.gate2 = byte & PORT_B_GATE2 != 0;
+        let gate2 = byte & PORT_B_GATE2 != 0;
+        // Dropping gate 2 while channel 2 counts is refused (decision 6).
+        if !gate2 && state.channel2.run.is_some() {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        state.gate2 = gate2;
         state.speaker_data = byte & PORT_B_SPEAKER != 0;
         Ok(())
     }

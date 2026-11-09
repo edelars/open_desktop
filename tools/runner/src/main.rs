@@ -12,6 +12,7 @@ mod stage4_cpl3_syscall_probe;
 mod stage4_cross_page_probe;
 mod stage4_huge_pages_probe;
 mod stage4_pf_repair_probe;
+mod stage4_pit_calibrate_probe;
 mod stage4_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
@@ -79,6 +80,7 @@ fn main() -> ExitCode {
         Some("--stage4-cross-page-probe") => return stage4_cross_page_probe::run(&args),
         Some("--stage4-huge-pages-probe") => return stage4_huge_pages_probe::run(&args),
         Some("--stage4-pf-repair-probe") => return stage4_pf_repair_probe::run(&args),
+        Some("--stage4-pit-calibrate-probe") => return stage4_pit_calibrate_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),

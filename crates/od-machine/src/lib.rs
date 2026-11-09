@@ -32,6 +32,7 @@ mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_huge_pages_probe;
 mod stage4_pf_repair_probe;
+mod stage4_pit_calibrate_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
@@ -74,9 +75,10 @@ pub use pic_8259::{
 };
 
 pub use pit_8254::{
-    PIT_BASE_PORT, PIT_INPUT_HZ, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
-    PIT_REFRESH_TOGGLE_TICKS, Pit8254, Pit8254Devices, Pit8254Handle, PitAccess, PitChannel,
-    PitChannelSnapshot, PitLatch, PitMode, PitNextReload, PitPortB, PitRun, PitSnapshot, pit_ticks,
+    PIT_BASE_PORT, PIT_INPUT_HZ, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_B_READ_TICK_NS,
+    PIT_PORT_BYTES, PIT_REFRESH_TOGGLE_TICKS, Pit8254, Pit8254Devices, Pit8254Handle, PitAccess,
+    PitChannel, PitChannelSnapshot, PitLatch, PitMode, PitNextReload, PitPortB, PitRun,
+    PitSnapshot, pit_ticks,
 };
 
 pub use display_device::{
@@ -216,6 +218,15 @@ pub use stage4_pf_repair_probe::{
     STAGE4_PF_REPAIR_STORE_OFFSET, Stage4PfRepairEvent, Stage4PfRepairFault,
     Stage4PfRepairInjection, Stage4PfRepairReport, Stage4PfRepairStep, Stage4PfRepairStop,
     load_stage4_pf_repair_probe,
+};
+pub use stage4_pit_calibrate_probe::{
+    STAGE4_PIT_CALIBRATE_FAILED_FREQUENCY, STAGE4_PIT_CALIBRATE_PROBE_COM1,
+    STAGE4_PIT_CALIBRATE_PROBE_ENTRY, STAGE4_PIT_CALIBRATE_PROBE_IMAGE_BYTES,
+    STAGE4_PIT_CALIBRATE_PROBE_IMAGE_GPA, STAGE4_PIT_CALIBRATE_PROBE_RAM_BYTES,
+    STAGE4_PIT_CALIBRATE_PROBE_STACK_TOP, STAGE4_PIT_CALIBRATE_PROBE_TSC_HZ,
+    STAGE4_PIT_CALIBRATE_RECORD_BYTES, Stage4PitCalibrateExit, Stage4PitCalibrateInjection,
+    Stage4PitCalibrateProbe, Stage4PitCalibrateProbeLoadError, Stage4PitCalibrateRecord,
+    Stage4PitCalibrateReport, load_stage4_pit_calibrate_probe,
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;
