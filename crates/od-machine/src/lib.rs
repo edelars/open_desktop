@@ -21,6 +21,7 @@ mod paged_exception_delivery;
 mod paged_memory_adapter;
 mod paged_pio_step;
 mod paged_probe;
+mod paged_pump_backend;
 mod paged_vcpu_session;
 mod pci_ecam;
 mod physical_memory;
@@ -34,6 +35,7 @@ mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_huge_pages_probe;
 mod stage4_interrupt_probe_common;
+mod stage4_interrupt_pump_paged_probe;
 mod stage4_interrupt_pump_probe;
 mod stage4_interrupt_queue_probe;
 mod stage4_interrupt_timer_probe;
@@ -109,9 +111,20 @@ pub use diagnostic_vcpu::{
 };
 
 pub use interrupt_pump::{
-    INTERRUPT_PUMP_QUEUE_CAPACITY, INTERRUPT_PUMP_TRACE_LIMIT, InterruptPump, PumpEntrySource,
-    PumpExit, PumpHost, PumpHostEvent, PumpHostStep, PumpInjection, PumpQueueError, PumpRejection,
-    PumpResult, PumpTraceEvent, PumpTraceKind,
+    BackendEnv, BackendFlow, BackendStep, FlatBackend, INTERRUPT_PUMP_QUEUE_CAPACITY,
+    INTERRUPT_PUMP_TRACE_LIMIT, InterruptPump, PumpBackend, PumpEntrySource, PumpExit, PumpHost,
+    PumpHostEvent, PumpHostStep, PumpInjection, PumpQueueError, PumpRejection, PumpResult,
+    PumpTraceEvent, PumpTraceKind,
+};
+pub use paged_pump_backend::PagedBackend;
+pub use stage4_interrupt_pump_paged_probe::{
+    STAGE4_INTERRUPT_PUMP_PAGED_HANDLER_RIP, STAGE4_INTERRUPT_PUMP_PAGED_HLT_RIPS,
+    STAGE4_INTERRUPT_PUMP_PAGED_IMAGE_BYTES, STAGE4_INTERRUPT_PUMP_PAGED_MAIN_CODE,
+    STAGE4_INTERRUPT_PUMP_PAGED_STACK_GPA, STAGE4_INTERRUPT_PUMP_PAGED_STACK_GVA,
+    STAGE4_INTERRUPT_PUMP_PAGED_STI_RIP, STAGE4_INTERRUPT_PUMP_PAGED_TSC_HZ,
+    STAGE4_INTERRUPT_PUMP_PAGED_VECTOR, Stage4InterruptPumpPagedStart,
+    enable_stage4_interrupt_pump_paged_apic, expected_stage4_interrupt_pump_paged_image,
+    load_stage4_interrupt_pump_paged_probe,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

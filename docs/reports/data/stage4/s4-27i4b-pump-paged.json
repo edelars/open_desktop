@@ -1,0 +1,181 @@
+{
+  "slice": "S4-27i4b",
+  "title": "Pump over the paged backend (PumpBackend trait)",
+  "date": "2026-11-09",
+  "status": "implemented; accepted after independent review (Claude Opus, high); paged timer owned by S4-37a",
+  "profile": "Stage4InterruptPumpPagedProbeV1",
+  "image": {
+    "layout": "S4-27h/S4-27i4a (4 KiB, CR0/CR4=BASE, EFER=0xD00, SVR=0x1FF)",
+    "main_code": "FB F4 F4 F4",
+    "handler": "89 03 48 CF",
+    "vector": "0x41",
+    "bytes": 40960,
+    "builder": "none (runner test assembles the image from the S4-27i4a builder constants)"
+  },
+  "trait": {
+    "name": "PumpBackend",
+    "methods": [
+      "state",
+      "is_waiting",
+      "virtual_time_ns",
+      "advance_time_ns",
+      "stop",
+      "peek_ram_qword",
+      "step"
+    ],
+    "step_result": "BackendStep{retired, events, flow: Continue|Idle|Exit}",
+    "implementations": [
+      "FlatBackend (S4-27i1..i3, i5, behaviour unchanged)",
+      "PagedBackend (S4-27h, S4-27i4a primitives)"
+    ],
+    "default": "InterruptPump<B = FlatBackend>"
+  },
+  "paged_backend": {
+    "wake_and_boundary_entry": "poll_paged_apic_entry (deliver_paged_external_interrupt)",
+    "steps": [
+      "step_paged_sti (FB)",
+      "step_paged_hlt (F4)",
+      "step_paged_iretq (48 CF)",
+      "step_paged_mov_dword_store (89 03)"
+    ],
+    "other_opcode": "terminal Unsupported",
+    "clock": "own VirtualClock, 1 GHz, 0 ns at start",
+    "apic_timer": false
+  },
+  "scenarios": {
+    "due_and_future": {
+      "entries": 2,
+      "entry_times_ns": [
+        0,
+        250000
+      ],
+      "handler_returns": 2,
+      "time_ns": 250000,
+      "frame_rip_after_hlt": [
+        1,
+        1
+      ],
+      "final_rip": "0x401004",
+      "final_ptes": [
+        "0x6023",
+        "0x7023",
+        "0x8023",
+        "0x9023",
+        "0xfee00063",
+        "0xa063"
+      ]
+    },
+    "boundary_before_hlt": {
+      "entries": 1,
+      "source": "boundary",
+      "frame_rip": "0x401001",
+      "handler_returns": 1,
+      "time_ns": 0
+    },
+    "coalesce_two_due": {
+      "entries": 1,
+      "irr_rises": 1,
+      "coalesced": 1,
+      "handler_returns": 1
+    },
+    "failed_request_accepted": {
+      "queue_after_failure": 2,
+      "exit": "IdleHalt",
+      "entries": 2,
+      "handler_returns": 2,
+      "time_ns": 250000
+    },
+    "failed_request_pop_before_request": {
+      "queue_after_failure": 1,
+      "exit": "IdleHalt",
+      "entries": 1,
+      "handler_returns": 1,
+      "time_ns": 250000
+    }
+  },
+  "flat_vs_paged": {
+    "compared": [
+      "trace event names, entry sources and clock",
+      "entry source and time",
+      "frame RIP relative to HLT",
+      "frame CS, RFLAGS, SS",
+      "pushed RSP is stack top",
+      "new RSP is aligned top minus 40",
+      "IRR/ISR after entry and at the end",
+      "IF clear in handler",
+      "handler returns and EOI count",
+      "queue length and coalesced count",
+      "final IF and RSP"
+    ],
+    "scenarios_equal": [
+      "due_and_future",
+      "boundary_before_hlt",
+      "coalesce_two_due",
+      "failed_request_accepted",
+      "failed_request_pop_before_request"
+    ],
+    "differs_by_construction": [
+      "vector (0x62 vs 0x41)",
+      "addresses",
+      "counter (flat RAM counter vs handler returns)"
+    ]
+  },
+  "runner": {
+    "flag": "--stage4-interrupt-pump-paged-probe IMAGE [--budget N] [--request VECTOR@AFTER_QUANTA] [--inject-pop-before-request]",
+    "queue_schedule": {
+      "quanta": 11,
+      "retired": 8,
+      "final_rip": "0x401004",
+      "wakeups": 2,
+      "time_ns": 250000
+    },
+    "queue_schedule_pop_before_request": {
+      "quanta": 7,
+      "retired": 5,
+      "final_rip": "0x401003",
+      "wakeups": 1,
+      "time_ns": 250000
+    }
+  },
+  "tests": {
+    "interrupt_pump_paged": {
+      "passed": 14
+    },
+    "regressions": {
+      "interrupt_pump_flat": 12,
+      "interrupt_timer_pump": 7,
+      "interrupt_queue_pump": 8,
+      "paged_sti_hlt_wake": 9,
+      "stage4_paged_irq_probe": 9,
+      "stage4_uart_irq_probe": 10,
+      "diagnostic_vcpu_api": 8,
+      "lib_diagnostic_vcpu": 46
+    },
+    "runner": {
+      "stage4_interrupt_pump_paged_cli": 4
+    },
+    "cargo_fmt_check": "ok",
+    "git_diff_check": "ok",
+    "cargo_check_all_targets_od_machine": "no new warnings (od-jit one_instruction only)"
+  },
+  "deviations": [
+    "no Python builder for the image",
+    "comparison with flat in with_entry_only_delivery mode",
+    "SkipShadowCheck and HltAsOrdinary injections have no paged counterpart",
+    "global APIC disable resets SVR: owner repeats the loader SVR write on paged",
+    "trace-limit ordering inside one step changed slightly (unreachable in tests)",
+    "flat counter replaced by the handler-return count on paged (both values are equal on flat)",
+    "paged advance_time_ns error in Running is TimerAdvance, flat gives Control (different error variants for the same situation)",
+    "runner regressions: stage4_interrupt_queue_build_cli 3, stage4_uart_irq_cli 6, stage4_paged_sti_hlt_build_cli 1"
+  ],
+  "not_included": [
+    "nested events (S4-33)",
+    "run_boot (S4-37a)",
+    "paged timer",
+    "JIT (not_supported, S4-33)",
+    "multiple vectors",
+    "CLI on paged",
+    "CPL3",
+    "IST != 0"
+  ]
+}

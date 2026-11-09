@@ -51,6 +51,14 @@
 //! handler instruction is not limited to ordinary instructions. Without a host
 //! and without that flag the pump behaves exactly as in S4-27i1..i3.
 //!
+//! S4-27i4b (backend trait): the CPU side of the pump is the [`PumpBackend`]
+//! trait. The pump keeps the owner loop (STOP, budget, timer and queue
+//! dispatch, idle advance, trace); a backend runs one step at a boundary or in
+//! the halt wait. [`FlatBackend`] holds the S4-27i1..i3 flat session logic
+//! unchanged; `PagedBackend` (`paged_pump_backend`) runs the same pump over the
+//! S4-27h/S4-27i4a paged primitives. `InterruptPump` defaults to the flat
+//! backend, so existing callers and tests are unchanged.
+//!
 //! Accepted APIs are used as they are. Consequences recorded as limits:
 //! the first handler instruction runs inside `run_apic_quantum` and must be an
 //! instruction the ordinary interpreter executes (not STI, CLI, HLT, IRETQ); a
@@ -265,9 +273,462 @@ pub struct PumpResult {
     pub retired: u64,
 }
 
+/// What a backend step asks the pump to do next (S4-27i4b).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackendFlow {
+    Continue,
+    /// The CPU is halted and nothing is eligible: the pump may advance the clock
+    /// (idle advance) or report `IdleHalt`.
+    Idle,
+    Exit(PumpExit),
+}
+
+/// Result of one backend step (S4-27i4b): the instructions it retired, the trace
+/// events it produced (recorded by the pump in order, with the state after the
+/// step) and the next action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackendStep {
+    pub retired: u64,
+    pub events: Vec<PumpTraceKind>,
+    pub flow: BackendFlow,
+}
+
+impl BackendStep {
+    pub fn new(flow: BackendFlow) -> Self {
+        Self {
+            retired: 0,
+            events: Vec::new(),
+            flow,
+        }
+    }
+
+    pub fn exit(exit: PumpExit) -> Self {
+        Self::new(BackendFlow::Exit(exit))
+    }
+}
+
+/// What the pump lends a backend for one step (S4-27i4b).
+pub struct BackendEnv<'a> {
+    pub apic: &'a LocalApicHandle,
+    pub injection: Option<PumpInjection>,
+    /// The owner hook (S4-27i5). Only the flat backend uses it (the hook's `step`
+    /// takes a flat session); the paged backend ignores it.
+    pub host: Option<&'a mut (dyn PumpHost + 'static)>,
+}
+
+/// The CPU side of the pump (S4-27i4b): one vCPU on some memory model that can
+/// run one pump step at a boundary. The pump owns everything else (APIC polling
+/// order, timer and queue dispatch, idle advance, trace, budget, STOP); a
+/// backend decides what one step does: wake from the halt wait, enter the
+/// handler at a boundary, or execute the instruction at RIP (`STI`, `HLT`,
+/// `IRETQ`, ...). The flat implementation is [`FlatBackend`] (S4-27i1..i3, i5);
+/// the paged one is `PagedBackend` (S4-27i4b).
+pub trait PumpBackend {
+    fn state(&self) -> &od_isa::LongModeState;
+    /// The CPU is in the halt wait (a step wakes it or reports `Idle`).
+    fn is_waiting(&self) -> bool;
+    /// Virtual time of the backend's clock; `None` without a clock.
+    fn virtual_time_ns(&self) -> Option<u64>;
+    fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), PumpRejection>;
+    fn stop(&mut self);
+    /// Read one qword of guest RAM without side effects (evidence only).
+    fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64>;
+    /// One step at an instruction boundary (or in the halt wait).
+    fn step(&mut self, env: BackendEnv<'_>) -> BackendStep;
+}
+
 enum Cpu {
     Running(DiagnosticVcpuSession),
     Waiting(DiagnosticHaltWait),
+}
+
+/// The flat Long64/CPL0 backend: a [`DiagnosticVcpuSession`] (or its
+/// [`DiagnosticHaltWait`] after HLT) driven through the accepted
+/// `run_apic_quantum`, `run_sti_apic_quantum`, `run_same_cpl0_iretq` and
+/// `poll_apic` primitives (S4-27i1..i3).
+pub struct FlatBackend {
+    cpu: Option<Cpu>,
+    /// The last instruction stopped inside a REP: the boundary is incomplete.
+    mid_rep: bool,
+    /// S4-27i5: a boundary delivery only enters the handler.
+    entry_only: bool,
+}
+
+impl FlatBackend {
+    pub fn new(session: DiagnosticVcpuSession) -> Self {
+        Self {
+            cpu: Some(Cpu::Running(session)),
+            mid_rep: false,
+            entry_only: false,
+        }
+    }
+
+    /// Account one run result; `Some` ends the call.
+    fn account(
+        &mut self,
+        result: &DiagnosticRunResult,
+        out: &mut BackendStep,
+    ) -> Option<BackendFlow> {
+        out.retired += result.instructions_executed;
+        match &result.exit {
+            DiagnosticExit::Terminal(cause) => {
+                Some(BackendFlow::Exit(PumpExit::Terminal(cause.clone())))
+            }
+            DiagnosticExit::Stopped => Some(BackendFlow::Exit(PumpExit::Stopped)),
+            DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget) => {
+                self.mid_rep = true;
+                None
+            }
+            DiagnosticExit::WorkLimit(_) if result.instructions_executed == 1 => {
+                self.mid_rep = false;
+                None
+            }
+            DiagnosticExit::WorkLimit(reason) => Some(BackendFlow::Exit(PumpExit::Rejected(
+                PumpRejection::NoRetirement(*reason),
+            ))),
+        }
+    }
+
+    fn reject(rejection: PumpRejection) -> BackendStep {
+        BackendStep::exit(PumpExit::Rejected(rejection))
+    }
+
+    fn terminal(cause: DiagnosticTerminalExit) -> BackendStep {
+        BackendStep::exit(PumpExit::Terminal(cause))
+    }
+
+    fn step_waiting(&mut self, mut wait: DiagnosticHaltWait, env: &BackendEnv<'_>) -> BackendStep {
+        match wait.poll_apic(env.apic) {
+            DiagnosticHaltWakeResult::Entered { vector } => match wait.into_running() {
+                Ok(session) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    let mut out = BackendStep::new(BackendFlow::Continue);
+                    out.events.push(PumpTraceKind::Entry {
+                        vector,
+                        source: PumpEntrySource::HaltWake,
+                    });
+                    out
+                }
+                Err(wait) => {
+                    self.cpu = Some(Cpu::Waiting(wait));
+                    Self::reject(PumpRejection::HaltEntry(
+                        DiagnosticHaltEnterReason::ProfileRejected,
+                    ))
+                }
+            },
+            DiagnosticHaltWakeResult::Waiting => {
+                self.cpu = Some(Cpu::Waiting(wait));
+                BackendStep::new(BackendFlow::Idle)
+            }
+            DiagnosticHaltWakeResult::OutsideProfile(reason) => {
+                self.cpu = Some(Cpu::Waiting(wait));
+                Self::reject(PumpRejection::HaltWake(reason))
+            }
+            DiagnosticHaltWakeResult::Stopped => {
+                self.cpu = Some(Cpu::Waiting(wait));
+                BackendStep::exit(PumpExit::Stopped)
+            }
+            DiagnosticHaltWakeResult::Terminal(cause) => {
+                self.cpu = Some(Cpu::Waiting(wait));
+                Self::terminal(cause)
+            }
+        }
+    }
+
+    fn boundary_allows_delivery(
+        &self,
+        session: &DiagnosticVcpuSession,
+        env: &BackendEnv<'_>,
+    ) -> bool {
+        let state = session.state();
+        let shadow_clear = state.sti_shadow == Some(StiShadow::Clear)
+            || (env.injection == Some(PumpInjection::SkipShadowCheck)
+                && state.sti_shadow == Some(StiShadow::Blocking));
+        !self.mid_rep
+            && state.rflags & RFLAGS_IF != 0
+            && shadow_clear
+            && env.apic.eligible().is_some()
+    }
+
+    fn step_running(
+        &mut self,
+        mut session: DiagnosticVcpuSession,
+        env: BackendEnv<'_>,
+    ) -> BackendStep {
+        // A partial REP leaves an incomplete boundary: finish the instruction
+        // without an APIC check (documented latency deviation).
+        if self.mid_rep {
+            let outcome = session.run(1, || false);
+            return self.finish_plain(session, outcome);
+        }
+        if self.boundary_allows_delivery(&session, &env) {
+            if !self.entry_only {
+                let outcome = session.run_apic_quantum(env.apic, || false);
+                return self.finish_apic_quantum(session, outcome);
+            }
+            // S4-27i5: enter the handler without executing its first instruction.
+            match session.deliver_pending_irq(env.apic) {
+                Ok(Some(DiagnosticIrqEntry::Entered { vector })) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    let mut out = BackendStep::new(BackendFlow::Continue);
+                    out.events.push(PumpTraceKind::Entry {
+                        vector,
+                        source: PumpEntrySource::Boundary,
+                    });
+                    return out;
+                }
+                Ok(Some(DiagnosticIrqEntry::OutsideProfile(reason))) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Self::reject(PumpRejection::InterruptEntry(reason));
+                }
+                Ok(Some(DiagnosticIrqEntry::Terminal(cause))) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Self::terminal(cause);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    return Self::reject(PumpRejection::Control(error));
+                }
+            }
+        }
+        if let Some(outcome) = env.host.and_then(|host| host.step(&mut session)) {
+            return self.finish_host(session, outcome);
+        }
+        let code = session.peek_code(2);
+        let in_sti_shadow = session.state().sti_shadow == Some(StiShadow::Blocking);
+        match code.as_slice() {
+            [0xf4, ..] => self.enter_halt(session, env.injection),
+            [0xfa | 0xfb, ..] => {
+                let kind = if code[0] == 0xfb {
+                    PumpTraceKind::Sti
+                } else {
+                    PumpTraceKind::Cli
+                };
+                self.step_sti_quantum(session, env.apic, Some(kind))
+            }
+            [0x48, 0xcf, ..] => match session.run_same_cpl0_iretq() {
+                Ok(DiagnosticIretqResult::Retired) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    let mut out = BackendStep::new(BackendFlow::Continue);
+                    out.retired = 1;
+                    out.events.push(PumpTraceKind::Iretq);
+                    out
+                }
+                Ok(DiagnosticIretqResult::Terminal(cause)) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    Self::terminal(cause)
+                }
+                Err(error) => {
+                    self.cpu = Some(Cpu::Running(session));
+                    Self::reject(PumpRejection::Control(error))
+                }
+            },
+            _ if in_sti_shadow => self.step_sti_quantum(session, env.apic, None),
+            _ => {
+                let outcome = session.run_apic_quantum(env.apic, || false);
+                self.finish_apic_quantum(session, outcome)
+            }
+        }
+    }
+
+    fn finish_host(
+        &mut self,
+        session: DiagnosticVcpuSession,
+        outcome: Result<PumpHostStep, PumpRejection>,
+    ) -> BackendStep {
+        self.cpu = Some(Cpu::Running(session));
+        match outcome {
+            Ok(step) => {
+                let mut out = BackendStep::new(BackendFlow::Continue);
+                if let Some(flow) = self.account(&step.result, &mut out) {
+                    out.flow = flow;
+                    return out;
+                }
+                out.events
+                    .extend(step.events.into_iter().map(PumpTraceKind::Host));
+                out
+            }
+            Err(rejection) => Self::reject(rejection),
+        }
+    }
+
+    fn finish_plain(
+        &mut self,
+        session: DiagnosticVcpuSession,
+        outcome: Result<DiagnosticRunResult, DiagnosticVcpuControlError>,
+    ) -> BackendStep {
+        self.cpu = Some(Cpu::Running(session));
+        match outcome {
+            Ok(result) => {
+                let mut out = BackendStep::new(BackendFlow::Continue);
+                if let Some(flow) = self.account(&result, &mut out) {
+                    out.flow = flow;
+                }
+                out
+            }
+            Err(error) => Self::reject(PumpRejection::Control(error)),
+        }
+    }
+
+    fn finish_apic_quantum(
+        &mut self,
+        session: DiagnosticVcpuSession,
+        outcome: Result<DiagnosticApicQuantumResult, DiagnosticVcpuControlError>,
+    ) -> BackendStep {
+        self.cpu = Some(Cpu::Running(session));
+        let mut out = BackendStep::new(BackendFlow::Continue);
+        match outcome {
+            Ok(DiagnosticApicQuantumResult::Ordinary(result)) => {
+                if let Some(flow) = self.account(&result, &mut out) {
+                    out.flow = flow;
+                }
+                out
+            }
+            Ok(DiagnosticApicQuantumResult::Delivered { vector, handler }) => {
+                out.events.push(PumpTraceKind::Entry {
+                    vector,
+                    source: PumpEntrySource::Boundary,
+                });
+                if let Some(flow) = self.account(&handler, &mut out) {
+                    out.flow = flow;
+                }
+                out
+            }
+            Ok(DiagnosticApicQuantumResult::ProfileRejected) => {
+                Self::reject(PumpRejection::ApicQuantumProfile)
+            }
+            Ok(DiagnosticApicQuantumResult::OutsideProfile(reason)) => {
+                Self::reject(PumpRejection::InterruptEntry(reason))
+            }
+            Ok(DiagnosticApicQuantumResult::Stopped) => BackendStep::exit(PumpExit::Stopped),
+            Ok(DiagnosticApicQuantumResult::Terminal(cause)) => Self::terminal(cause),
+            Err(error) => Self::reject(PumpRejection::Control(error)),
+        }
+    }
+
+    fn step_sti_quantum(
+        &mut self,
+        mut session: DiagnosticVcpuSession,
+        apic: &LocalApicHandle,
+        event: Option<PumpTraceKind>,
+    ) -> BackendStep {
+        let outcome = session.run_sti_apic_quantum(apic);
+        self.cpu = Some(Cpu::Running(session));
+        let mut out = BackendStep::new(BackendFlow::Continue);
+        match outcome {
+            DiagnosticStiApicQuantumResult::Ordinary(result) => {
+                if let Some(flow) = self.account(&result, &mut out) {
+                    out.flow = flow;
+                    return out;
+                }
+                if let Some(kind) = event {
+                    out.events.push(kind);
+                }
+                out
+            }
+            DiagnosticStiApicQuantumResult::TerminalExecution(result) => {
+                if let Some(flow) = self.account(&result, &mut out) {
+                    out.flow = flow;
+                }
+                out
+            }
+            DiagnosticStiApicQuantumResult::Delivered { vector, handler } => {
+                out.events.push(PumpTraceKind::Entry {
+                    vector,
+                    source: PumpEntrySource::Boundary,
+                });
+                if let Some(flow) = self.account(&handler, &mut out) {
+                    out.flow = flow;
+                }
+                out
+            }
+            DiagnosticStiApicQuantumResult::ProfileRejected => {
+                Self::reject(PumpRejection::StiQuantumProfile)
+            }
+            DiagnosticStiApicQuantumResult::OutsideProfile(reason) => {
+                Self::reject(PumpRejection::InterruptEntry(reason))
+            }
+            DiagnosticStiApicQuantumResult::Terminal(cause) => Self::terminal(cause),
+        }
+    }
+
+    fn enter_halt(
+        &mut self,
+        mut session: DiagnosticVcpuSession,
+        injection: Option<PumpInjection>,
+    ) -> BackendStep {
+        if injection == Some(PumpInjection::HltAsOrdinary) {
+            let outcome = session.run(1, || false);
+            return self.finish_plain(session, outcome);
+        }
+        match session.into_halt_wait() {
+            Ok(wait) => {
+                self.cpu = Some(Cpu::Waiting(wait));
+                let mut out = BackendStep::new(BackendFlow::Continue);
+                out.retired = 1;
+                out.events.push(PumpTraceKind::Hlt);
+                out
+            }
+            Err(failure) => {
+                self.cpu = Some(Cpu::Running(failure.session));
+                Self::reject(PumpRejection::HaltEntry(failure.reason))
+            }
+        }
+    }
+}
+
+impl PumpBackend for FlatBackend {
+    fn state(&self) -> &od_isa::LongModeState {
+        match self.cpu.as_ref().expect("cpu is always restored") {
+            Cpu::Running(session) => session.state(),
+            Cpu::Waiting(wait) => wait.state(),
+        }
+    }
+
+    fn is_waiting(&self) -> bool {
+        matches!(self.cpu, Some(Cpu::Waiting(_)))
+    }
+
+    fn virtual_time_ns(&self) -> Option<u64> {
+        match self.cpu.as_ref().expect("cpu is always restored") {
+            Cpu::Running(session) => session.virtual_clock(),
+            Cpu::Waiting(wait) => wait.virtual_clock(),
+        }
+        .map(|clock| clock.now_ns())
+    }
+
+    fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), PumpRejection> {
+        match self.cpu.as_mut().expect("cpu is always restored") {
+            Cpu::Running(session) => session
+                .advance_time_ns(delta_ns)
+                .map_err(PumpRejection::Control),
+            Cpu::Waiting(wait) => wait
+                .advance_time_ns(delta_ns)
+                .map_err(PumpRejection::TimerAdvance),
+        }
+    }
+
+    fn stop(&mut self) {
+        match self.cpu.as_mut().expect("cpu is always restored") {
+            Cpu::Running(session) => session.stop(),
+            Cpu::Waiting(wait) => wait.stop(),
+        }
+    }
+
+    fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
+        match self.cpu.as_mut().expect("cpu is always restored") {
+            Cpu::Running(session) => session.peek_ram_qword(gpa),
+            Cpu::Waiting(wait) => wait.peek_ram_qword(gpa),
+        }
+    }
+
+    fn step(&mut self, env: BackendEnv<'_>) -> BackendStep {
+        match self.cpu.take().expect("cpu is always restored") {
+            Cpu::Waiting(wait) => self.step_waiting(wait, &env),
+            Cpu::Running(session) => self.step_running(session, env),
+        }
+    }
 }
 
 enum Flow {
@@ -275,23 +736,22 @@ enum Flow {
     Exit(PumpExit),
 }
 
-pub struct InterruptPump {
-    cpu: Option<Cpu>,
+/// The event pump over a CPU backend (S4-27i4b). The default backend is the
+/// flat one, so `InterruptPump` without a parameter is the S4-27i1..i3 pump.
+pub struct InterruptPump<B: PumpBackend = FlatBackend> {
+    backend: B,
     apic: LocalApicHandle,
     watched: Vec<(u8, (bool, bool))>,
     trace: Vec<PumpTraceEvent>,
     retired_total: u64,
-    /// The last instruction stopped inside a REP: the boundary is incomplete.
-    mid_rep: bool,
     injection: Option<PumpInjection>,
     finished: Option<PumpExit>,
     /// S4-27i3: IRQ events (key -> fixed vector and deadline).
     queue: EventQueue,
     routes: BTreeMap<u64, (u8, u64)>,
     coalesced: u64,
-    /// S4-27i5: optional owner hook and the entry-only delivery mode.
+    /// S4-27i5: optional owner hook (flat backend only).
     host: Option<Box<dyn PumpHost>>,
-    entry_only: bool,
 }
 
 /// Outcome of a halted step that tried to advance the clock (S4-27i5).
@@ -303,27 +763,13 @@ enum IdleOutcome {
     },
 }
 
-impl InterruptPump {
+impl InterruptPump<FlatBackend> {
     /// Take ownership of a runnable session at a completed instruction
     /// boundary and the APIC it is polled against. The caller certifies the
     /// prerequisites of the accepted primitives (one vCPU, private synchronous
     /// RAM, flat Long64/CPL0, no pending synchronous/debug/NMI events).
     pub fn new(session: DiagnosticVcpuSession, apic: LocalApicHandle) -> Self {
-        Self {
-            cpu: Some(Cpu::Running(session)),
-            apic,
-            watched: Vec::new(),
-            trace: Vec::new(),
-            retired_total: 0,
-            mid_rep: false,
-            injection: None,
-            finished: None,
-            queue: EventQueue::new(INTERRUPT_PUMP_QUEUE_CAPACITY),
-            routes: BTreeMap::new(),
-            coalesced: 0,
-            host: None,
-            entry_only: false,
-        }
+        Self::with_backend(FlatBackend::new(session), apic)
     }
 
     /// Attach the owner hook (S4-27i5).
@@ -335,8 +781,37 @@ impl InterruptPump {
     /// A boundary delivery only enters the handler; its first instruction is a
     /// separate step (S4-27i5).
     pub fn with_entry_only_delivery(mut self) -> Self {
-        self.entry_only = true;
+        self.backend.entry_only = true;
         self
+    }
+}
+
+impl<B: PumpBackend> InterruptPump<B> {
+    /// Build a pump over any backend (S4-27i4b). The caller certifies the
+    /// backend's prerequisites.
+    pub fn with_backend(backend: B, apic: LocalApicHandle) -> Self {
+        Self {
+            backend,
+            apic,
+            watched: Vec::new(),
+            trace: Vec::new(),
+            retired_total: 0,
+            injection: None,
+            finished: None,
+            queue: EventQueue::new(INTERRUPT_PUMP_QUEUE_CAPACITY),
+            routes: BTreeMap::new(),
+            coalesced: 0,
+            host: None,
+        }
+    }
+
+    /// The backend (evidence access).
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
     }
 
     /// The owner hook, if it has type `T` (S4-27i5).
@@ -351,14 +826,7 @@ impl InterruptPump {
     /// Advance the session clock between steps (S4-27i5). Only while the CPU is
     /// runnable or waiting.
     pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), PumpRejection> {
-        match self.cpu.as_mut().expect("cpu is always restored") {
-            Cpu::Running(session) => session
-                .advance_time_ns(delta_ns)
-                .map_err(PumpRejection::Control),
-            Cpu::Waiting(wait) => wait
-                .advance_time_ns(delta_ns)
-                .map_err(PumpRejection::TimerAdvance),
-        }
+        self.backend.advance_time_ns(delta_ns)
     }
 
     /// Vectors whose IRR/ISR transitions are recorded in the trace.
@@ -376,14 +844,11 @@ impl InterruptPump {
     }
 
     pub fn state(&self) -> &od_isa::LongModeState {
-        match self.cpu.as_ref().expect("cpu is always restored") {
-            Cpu::Running(session) => session.state(),
-            Cpu::Waiting(wait) => wait.state(),
-        }
+        self.backend.state()
     }
 
     pub fn is_waiting(&self) -> bool {
-        matches!(self.cpu, Some(Cpu::Waiting(_)))
+        self.backend.is_waiting()
     }
 
     /// The Local APIC the pump polls. Callers raise requests through it.
@@ -402,11 +867,7 @@ impl InterruptPump {
     /// Virtual time in nanoseconds of the session clock (S4-27i2); `None`
     /// when the session has no clock.
     pub fn virtual_time_ns(&self) -> Option<u64> {
-        match self.cpu.as_ref().expect("cpu is always restored") {
-            Cpu::Running(session) => session.virtual_clock(),
-            Cpu::Waiting(wait) => wait.virtual_clock(),
-        }
-        .map(|clock| clock.now_ns())
+        self.backend.virtual_time_ns()
     }
 
     /// Token of the current generation of the IRQ event queue (S4-27i3).
@@ -478,10 +939,7 @@ impl InterruptPump {
 
     /// Read one qword of guest RAM without side effects (evidence only).
     pub fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
-        match self.cpu.as_mut().expect("cpu is always restored") {
-            Cpu::Running(session) => session.peek_ram_qword(gpa),
-            Cpu::Waiting(wait) => wait.peek_ram_qword(gpa),
-        }
+        self.backend.peek_ram_qword(gpa)
     }
 
     /// Run until idle halt, budget, STOP, a terminal result or a rejection.
@@ -494,7 +952,7 @@ impl InterruptPump {
                 break exit.clone();
             }
             if stop() {
-                self.stop_cpu();
+                self.backend.stop();
                 self.finished = Some(PumpExit::Stopped);
                 break PumpExit::Stopped;
             }
@@ -519,13 +977,6 @@ impl InterruptPump {
             exit,
             quanta,
             retired: self.retired_total - retired_before,
-        }
-    }
-
-    fn stop_cpu(&mut self) {
-        match self.cpu.as_mut().expect("cpu is always restored") {
-            Cpu::Running(session) => session.stop(),
-            Cpu::Waiting(wait) => wait.stop(),
         }
     }
 
@@ -659,71 +1110,42 @@ impl InterruptPump {
         self.dispatch_due_timer()?;
         self.dispatch_due_queue()?;
         self.observe()?;
-        let cpu = self.cpu.take().expect("cpu is always restored");
-        let flow = match cpu {
-            Cpu::Waiting(wait) => self.step_waiting(wait)?,
-            Cpu::Running(session) => self.step_running(session)?,
+        let step = {
+            let env = BackendEnv {
+                apic: &self.apic,
+                injection: self.injection,
+                host: self.host.as_deref_mut(),
+            };
+            self.backend.step(env)
+        };
+        self.retired_total += step.retired;
+        for kind in step.events {
+            self.push(kind)?;
+        }
+        let flow = match step.flow {
+            BackendFlow::Continue => Flow::Continue,
+            BackendFlow::Exit(exit) => Flow::Exit(exit),
+            BackendFlow::Idle => self.idle_flow()?,
         };
         self.observe()?;
         Ok(flow)
     }
 
-    fn terminal(cause: DiagnosticTerminalExit) -> Flow {
-        Flow::Exit(PumpExit::Terminal(cause))
-    }
-
-    fn reject(rejection: PumpRejection) -> Flow {
-        Flow::Exit(PumpExit::Rejected(rejection))
-    }
-
-    fn step_waiting(&mut self, mut wait: DiagnosticHaltWait) -> Result<Flow, PumpExit> {
-        match wait.poll_apic(&self.apic) {
-            DiagnosticHaltWakeResult::Entered { vector } => match wait.into_running() {
-                Ok(session) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    self.push(PumpTraceKind::Entry {
-                        vector,
-                        source: PumpEntrySource::HaltWake,
-                    })?;
-                    Ok(Flow::Continue)
+    /// The halted CPU has nothing eligible: advance the clock or go idle.
+    fn idle_flow(&mut self) -> Result<Flow, PumpExit> {
+        match self.idle_advance() {
+            Ok(IdleOutcome::Advanced { host_to }) => {
+                if let Some(to_ns) = host_to {
+                    self.push(PumpTraceKind::Host(PumpHostEvent {
+                        name: "idle_advance",
+                        a: to_ns,
+                        b: 0,
+                    }))?;
                 }
-                Err(wait) => {
-                    self.cpu = Some(Cpu::Waiting(wait));
-                    Ok(Self::reject(PumpRejection::HaltEntry(
-                        DiagnosticHaltEnterReason::ProfileRejected,
-                    )))
-                }
-            },
-            DiagnosticHaltWakeResult::Waiting => {
-                let advanced = self.idle_advance(&mut wait);
-                self.cpu = Some(Cpu::Waiting(wait));
-                match advanced {
-                    Ok(IdleOutcome::Advanced { host_to }) => {
-                        if let Some(to_ns) = host_to {
-                            self.push(PumpTraceKind::Host(PumpHostEvent {
-                                name: "idle_advance",
-                                a: to_ns,
-                                b: 0,
-                            }))?;
-                        }
-                        Ok(Flow::Continue)
-                    }
-                    Ok(IdleOutcome::Halt) => Ok(Flow::Exit(PumpExit::IdleHalt)),
-                    Err(rejection) => Ok(Self::reject(rejection)),
-                }
+                Ok(Flow::Continue)
             }
-            DiagnosticHaltWakeResult::OutsideProfile(reason) => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Self::reject(PumpRejection::HaltWake(reason)))
-            }
-            DiagnosticHaltWakeResult::Stopped => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Flow::Exit(PumpExit::Stopped))
-            }
-            DiagnosticHaltWakeResult::Terminal(cause) => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Self::terminal(cause))
-            }
+            Ok(IdleOutcome::Halt) => Ok(Flow::Exit(PumpExit::IdleHalt)),
+            Err(rejection) => Ok(Flow::Exit(PumpExit::Rejected(rejection))),
         }
     }
 
@@ -757,12 +1179,9 @@ impl InterruptPump {
     /// nothing can wake the CPU (IF=0, no such deadline, or the only sources
     /// are blocked in the IRR: ISSUE-070). S4-27i5: an owner deadline
     /// (`PumpHost::next_deadline`) is waited for regardless of IF.
-    fn idle_advance(
-        &mut self,
-        wait: &mut DiagnosticHaltWait,
-    ) -> Result<IdleOutcome, PumpRejection> {
-        let now = wait.virtual_clock().map(|clock| clock.now_ns());
-        let maskable = if wait.state().rflags & RFLAGS_IF == 0 {
+    fn idle_advance(&mut self) -> Result<IdleOutcome, PumpRejection> {
+        let now = self.backend.virtual_time_ns();
+        let maskable = if self.backend.state().rflags & RFLAGS_IF == 0 {
             None
         } else {
             [self.useful_timer_deadline(), self.useful_queue_deadline()]
@@ -783,8 +1202,7 @@ impl InterruptPump {
         if deadline <= now {
             return Err(PumpRejection::TimerNoProgress);
         }
-        wait.advance_time_ns(deadline - now)
-            .map_err(PumpRejection::TimerAdvance)?;
+        self.backend.advance_time_ns(deadline - now)?;
         if self.owns_timer() {
             self.apic
                 .dispatch_timer()
@@ -793,229 +1211,5 @@ impl InterruptPump {
         Ok(IdleOutcome::Advanced {
             host_to: (host_deadline == Some(deadline)).then_some(deadline),
         })
-    }
-
-    /// Account one run result; `Some` ends the call.
-    fn account(&mut self, result: &DiagnosticRunResult) -> Option<Flow> {
-        self.retired_total += result.instructions_executed;
-        match &result.exit {
-            DiagnosticExit::Terminal(cause) => Some(Self::terminal(cause.clone())),
-            DiagnosticExit::Stopped => Some(Flow::Exit(PumpExit::Stopped)),
-            DiagnosticExit::WorkLimit(WorkLimitReason::RepIterationBudget) => {
-                self.mid_rep = true;
-                None
-            }
-            DiagnosticExit::WorkLimit(_) if result.instructions_executed == 1 => {
-                self.mid_rep = false;
-                None
-            }
-            DiagnosticExit::WorkLimit(reason) => {
-                Some(Self::reject(PumpRejection::NoRetirement(*reason)))
-            }
-        }
-    }
-
-    fn boundary_allows_delivery(&self, session: &DiagnosticVcpuSession) -> bool {
-        let state = session.state();
-        let shadow_clear = state.sti_shadow == Some(StiShadow::Clear)
-            || (self.injection == Some(PumpInjection::SkipShadowCheck)
-                && state.sti_shadow == Some(StiShadow::Blocking));
-        !self.mid_rep
-            && state.rflags & RFLAGS_IF != 0
-            && shadow_clear
-            && self.apic.eligible().is_some()
-    }
-
-    fn step_running(&mut self, mut session: DiagnosticVcpuSession) -> Result<Flow, PumpExit> {
-        // A partial REP leaves an incomplete boundary: finish the instruction
-        // without an APIC check (documented latency deviation).
-        if self.mid_rep {
-            let outcome = session.run(1, || false);
-            return self.finish_plain(session, outcome);
-        }
-        if self.boundary_allows_delivery(&session) {
-            if !self.entry_only {
-                let outcome = session.run_apic_quantum(&self.apic, || false);
-                return self.finish_apic_quantum(session, outcome);
-            }
-            // S4-27i5: enter the handler without executing its first instruction.
-            match session.deliver_pending_irq(&self.apic) {
-                Ok(Some(DiagnosticIrqEntry::Entered { vector })) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    self.push(PumpTraceKind::Entry {
-                        vector,
-                        source: PumpEntrySource::Boundary,
-                    })?;
-                    return Ok(Flow::Continue);
-                }
-                Ok(Some(DiagnosticIrqEntry::OutsideProfile(reason))) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    return Ok(Self::reject(PumpRejection::InterruptEntry(reason)));
-                }
-                Ok(Some(DiagnosticIrqEntry::Terminal(cause))) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    return Ok(Self::terminal(cause));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    return Ok(Self::reject(PumpRejection::Control(error)));
-                }
-            }
-        }
-        if let Some(outcome) = self.host.as_mut().and_then(|host| host.step(&mut session)) {
-            return self.finish_host(session, outcome);
-        }
-        let code = session.peek_code(2);
-        let in_sti_shadow = session.state().sti_shadow == Some(StiShadow::Blocking);
-        match code.as_slice() {
-            [0xf4, ..] => self.enter_halt(session),
-            [0xfa | 0xfb, ..] => {
-                let kind = if code[0] == 0xfb {
-                    PumpTraceKind::Sti
-                } else {
-                    PumpTraceKind::Cli
-                };
-                self.step_sti_quantum(session, Some(kind))
-            }
-            [0x48, 0xcf, ..] => match session.run_same_cpl0_iretq() {
-                Ok(DiagnosticIretqResult::Retired) => {
-                    self.retired_total += 1;
-                    self.cpu = Some(Cpu::Running(session));
-                    self.push(PumpTraceKind::Iretq)?;
-                    Ok(Flow::Continue)
-                }
-                Ok(DiagnosticIretqResult::Terminal(cause)) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    Ok(Self::terminal(cause))
-                }
-                Err(error) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    Ok(Self::reject(PumpRejection::Control(error)))
-                }
-            },
-            _ if in_sti_shadow => self.step_sti_quantum(session, None),
-            _ => {
-                let outcome = session.run_apic_quantum(&self.apic, || false);
-                self.finish_apic_quantum(session, outcome)
-            }
-        }
-    }
-
-    fn finish_host(
-        &mut self,
-        session: DiagnosticVcpuSession,
-        outcome: Result<PumpHostStep, PumpRejection>,
-    ) -> Result<Flow, PumpExit> {
-        self.cpu = Some(Cpu::Running(session));
-        match outcome {
-            Ok(step) => {
-                if let Some(flow) = self.account(&step.result) {
-                    return Ok(flow);
-                }
-                for event in step.events {
-                    self.push(PumpTraceKind::Host(event))?;
-                }
-                Ok(Flow::Continue)
-            }
-            Err(rejection) => Ok(Self::reject(rejection)),
-        }
-    }
-
-    fn finish_plain(
-        &mut self,
-        session: DiagnosticVcpuSession,
-        outcome: Result<DiagnosticRunResult, DiagnosticVcpuControlError>,
-    ) -> Result<Flow, PumpExit> {
-        self.cpu = Some(Cpu::Running(session));
-        match outcome {
-            Ok(result) => Ok(self.account(&result).unwrap_or(Flow::Continue)),
-            Err(error) => Ok(Self::reject(PumpRejection::Control(error))),
-        }
-    }
-
-    fn finish_apic_quantum(
-        &mut self,
-        session: DiagnosticVcpuSession,
-        outcome: Result<DiagnosticApicQuantumResult, DiagnosticVcpuControlError>,
-    ) -> Result<Flow, PumpExit> {
-        self.cpu = Some(Cpu::Running(session));
-        match outcome {
-            Ok(DiagnosticApicQuantumResult::Ordinary(result)) => {
-                Ok(self.account(&result).unwrap_or(Flow::Continue))
-            }
-            Ok(DiagnosticApicQuantumResult::Delivered { vector, handler }) => {
-                self.push(PumpTraceKind::Entry {
-                    vector,
-                    source: PumpEntrySource::Boundary,
-                })?;
-                Ok(self.account(&handler).unwrap_or(Flow::Continue))
-            }
-            Ok(DiagnosticApicQuantumResult::ProfileRejected) => {
-                Ok(Self::reject(PumpRejection::ApicQuantumProfile))
-            }
-            Ok(DiagnosticApicQuantumResult::OutsideProfile(reason)) => {
-                Ok(Self::reject(PumpRejection::InterruptEntry(reason)))
-            }
-            Ok(DiagnosticApicQuantumResult::Stopped) => Ok(Flow::Exit(PumpExit::Stopped)),
-            Ok(DiagnosticApicQuantumResult::Terminal(cause)) => Ok(Self::terminal(cause)),
-            Err(error) => Ok(Self::reject(PumpRejection::Control(error))),
-        }
-    }
-
-    fn step_sti_quantum(
-        &mut self,
-        mut session: DiagnosticVcpuSession,
-        event: Option<PumpTraceKind>,
-    ) -> Result<Flow, PumpExit> {
-        let outcome = session.run_sti_apic_quantum(&self.apic);
-        self.cpu = Some(Cpu::Running(session));
-        match outcome {
-            DiagnosticStiApicQuantumResult::Ordinary(result) => {
-                if let Some(flow) = self.account(&result) {
-                    return Ok(flow);
-                }
-                if let Some(kind) = event {
-                    self.push(kind)?;
-                }
-                Ok(Flow::Continue)
-            }
-            DiagnosticStiApicQuantumResult::TerminalExecution(result) => {
-                Ok(self.account(&result).unwrap_or(Flow::Continue))
-            }
-            DiagnosticStiApicQuantumResult::Delivered { vector, handler } => {
-                self.push(PumpTraceKind::Entry {
-                    vector,
-                    source: PumpEntrySource::Boundary,
-                })?;
-                Ok(self.account(&handler).unwrap_or(Flow::Continue))
-            }
-            DiagnosticStiApicQuantumResult::ProfileRejected => {
-                Ok(Self::reject(PumpRejection::StiQuantumProfile))
-            }
-            DiagnosticStiApicQuantumResult::OutsideProfile(reason) => {
-                Ok(Self::reject(PumpRejection::InterruptEntry(reason)))
-            }
-            DiagnosticStiApicQuantumResult::Terminal(cause) => Ok(Self::terminal(cause)),
-        }
-    }
-
-    fn enter_halt(&mut self, mut session: DiagnosticVcpuSession) -> Result<Flow, PumpExit> {
-        if self.injection == Some(PumpInjection::HltAsOrdinary) {
-            let outcome = session.run(1, || false);
-            return self.finish_plain(session, outcome);
-        }
-        match session.into_halt_wait() {
-            Ok(wait) => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                self.retired_total += 1;
-                self.push(PumpTraceKind::Hlt)?;
-                Ok(Flow::Continue)
-            }
-            Err(failure) => {
-                self.cpu = Some(Cpu::Running(failure.session));
-                Ok(Self::reject(PumpRejection::HaltEntry(failure.reason)))
-            }
-        }
     }
 }

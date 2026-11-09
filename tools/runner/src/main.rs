@@ -11,6 +11,7 @@ mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cross_page_probe;
 mod stage4_huge_pages_probe;
+mod stage4_interrupt_pump_paged_probe;
 mod stage4_interrupt_pump_probe;
 mod stage4_interrupt_queue_probe;
 mod stage4_interrupt_timer_probe;
@@ -84,6 +85,9 @@ fn main() -> ExitCode {
         Some("--stage4-cpl3-syscall-probe") => return stage4_cpl3_syscall_probe::run(&args),
         Some("--stage4-cross-page-probe") => return stage4_cross_page_probe::run(&args),
         Some("--stage4-huge-pages-probe") => return stage4_huge_pages_probe::run(&args),
+        Some("--stage4-interrupt-pump-paged-probe") => {
+            return stage4_interrupt_pump_paged_probe::run(&args);
+        }
         Some("--stage4-interrupt-pump-probe") => return stage4_interrupt_pump_probe::run(&args),
         Some("--stage4-interrupt-queue-probe") => return stage4_interrupt_queue_probe::run(&args),
         Some("--stage4-interrupt-timer-probe") => return stage4_interrupt_timer_probe::run(&args),
