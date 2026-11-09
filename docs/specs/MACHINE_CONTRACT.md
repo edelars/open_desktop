@@ -3307,3 +3307,17 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 
 **Отклонение от datasheet (одинаковое для всех режимов).** Модель видит счётный регистр в момент записи (e = 0 даёт N). Настоящий 8254 загружает счёт на следующем фронте CLK. Поэтому в режиме 0 OUT поднимается на N+1 такт позже у чипа, чем в модели. Ошибка — один такт (~84 ppm для калибровки на 11931), на Linux не влияет. Записано как отклонение, а не как выравнивание по сетке.
+
+## Вход IOAPIC INTIN2, только edge (S4-29e)
+
+Реализация: `crates/od-machine/src/apic_pair.rs` (`Route::intin2_high`, `PairState::set_line2`, `PairState::set_low2`), `crates/od-machine/src/io_apic.rs` (`IoApicHandle::set_intin2`, `valid_low`). Зеркалит S4-26a для входа 2; INTIN4 не менялся (кроме одного симметричного отказа ниже). К плате, manifest, handoff, MADT/FADT и firmware не подключено; PIT к входу не привязан (S4-29f).
+
+**Вход.** `set_intin2(level)` хранит уровень линии в `intin2_high`. Рост 0 -> 1 при `entry 2` без маски запрашивает вектор из `pins[2]` у Local APIC как fixed edge (тем же путём `PairState::edge`, что и INTIN4). Под маской фронт теряется, unmask событие не доставляет; high-to-high — не фронт. Если Local APIC отказал (выключен), фронт не потребляется и `intin2_high` не меняется. Вызывающий сериализует операции обоих контроллеров.
+
+**Entry 2.** Low dword: вектор `0x10..=0xFE`, Fixed, physical destination, active-high, edge. Масочный entry может хранить любой вектор и (как остальные пины без INTIN4) active-low/LEVEL, но unmask с LEVEL, active-low, вектором `0x00..=0x0F`/`0xFF`, non-Fixed delivery или logical destination — `UnsupportedConfiguration` без изменения снимка. High dword (селектор `0x15`): по политике S4-26c принимается только 0 (physical APIC ID 0), читается 0; отдельного хранения нет. Remote IRR на entry 2 не существует: бит 14 читается 0, `route.remote_irr` принадлежит только INTIN4.
+
+**Конфликт с INTIN4 (политика S4-26b).** Level-маршрут INTIN4 резервирует свой вектор против edge-запросов, в том числе под маской. Поэтому: (1) unmask entry 2 с вектором, равным вектору level INTIN4, — отказ; (2) запись INTIN4 с LEVEL (с маской или без) на вектор unmasked entry 2 — отказ (новый симметричный отказ в `PairState::set_low`, затрагивает только случай unmasked entry 2). Edge INTIN4 на тот же вектор допустим, запросы сливаются в IRR. Совпадение вектора с Timer LVT и PIC не проверяется.
+
+**Reset.** `IoApicHandle::reset` и `reset_pair`: entry 2 masked, линия низкая, IRR не затрагивается IOAPIC-сбросом, Remote IRR 0.
+
+**Не входит.** Level и Remote IRR для INTIN2, другие пины (кроме INTIN2 и INTIN4), PIT и IRQ0 (S4-29f), насос событий, EOI-регистр `0x40`, подключение к плате, MADT/FADT. Отчёт: [S4-29e](../reports/STAGE_4_S4-29E_2026-11-09.md).
