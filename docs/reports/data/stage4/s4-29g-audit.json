@@ -1,0 +1,1310 @@
+{
+  "slice": "S4-29g",
+  "kind": "source_config_audit_and_cmdline",
+  "report": "docs/reports/STAGE_4_S4-29G_2026-11-09.md",
+  "kernel": {
+    "package_version": "7.0.0-38.38",
+    "source_tree": "linux-source-7.0.0",
+    "note_paths": "file paths in evidence are relative to the root of the linux-source-7.0.0 tree unless prefixed by crates/, firmware/ or docs/; 'config' is work/vms/s2-00-ubuntu-26.04.1/source/extracted/config",
+    "provenance_note": "S4-35 verifies content hashes only; linkage of source/config to the staged vmlinuz binary is not established"
+  },
+  "inputs": {
+    "source_tree_archive": {
+      "path": "work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0.tar.bz2",
+      "sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222",
+      "matches_s4_35": true
+    },
+    "config": {
+      "path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/config",
+      "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d",
+      "matches_s4_35": true
+    },
+    "s4_35_record": "docs/reports/data/stage4/s4-35-linux-artifact.json"
+  },
+  "config_values": {
+    "line_numbers_refer_to": "config",
+    "absent_symbols": [
+      "CONFIG_DEFAULT_IO_DELAY_TYPE",
+      "CONFIG_X86_PIT",
+      "CONFIG_CLKSRC_I8253",
+      "CONFIG_I8042",
+      "CONFIG_8250_*"
+    ],
+    "entries": [
+      {
+        "name": "CONFIG_IO_DELAY_0X80",
+        "value": "not set",
+        "line": 13255
+      },
+      {
+        "name": "CONFIG_IO_DELAY_0XED",
+        "value": "y",
+        "line": 13256
+      },
+      {
+        "name": "CONFIG_IO_DELAY_UDELAY",
+        "value": "not set",
+        "line": 13257
+      },
+      {
+        "name": "CONFIG_IO_DELAY_NONE",
+        "value": "not set",
+        "line": 13258
+      },
+      {
+        "name": "CONFIG_CLKEVT_I8253",
+        "value": "y",
+        "line": 10605
+      },
+      {
+        "name": "CONFIG_I8253_LOCK",
+        "value": "y",
+        "line": 10606
+      },
+      {
+        "name": "CONFIG_CLKBLD_I8253",
+        "value": "y",
+        "line": 10607
+      },
+      {
+        "name": "CONFIG_X86_64",
+        "value": "y",
+        "line": 366
+      },
+      {
+        "name": "CONFIG_SMP",
+        "value": "y",
+        "line": 395
+      },
+      {
+        "name": "CONFIG_X86_X2APIC",
+        "value": "y",
+        "line": 396
+      },
+      {
+        "name": "CONFIG_X86_MPPARSE",
+        "value": "y",
+        "line": 399
+      },
+      {
+        "name": "CONFIG_HYPERVISOR_GUEST",
+        "value": "y",
+        "line": 414
+      },
+      {
+        "name": "CONFIG_PARAVIRT",
+        "value": "y",
+        "line": 415
+      },
+      {
+        "name": "CONFIG_KVM_GUEST",
+        "value": "y",
+        "line": 431
+      },
+      {
+        "name": "CONFIG_X86_TSC",
+        "value": "y",
+        "line": 444
+      },
+      {
+        "name": "CONFIG_HPET_TIMER",
+        "value": "y",
+        "line": 459
+      },
+      {
+        "name": "CONFIG_HPET_EMULATE_RTC",
+        "value": "y",
+        "line": 460
+      },
+      {
+        "name": "CONFIG_MAXSMP",
+        "value": "y",
+        "line": 464
+      },
+      {
+        "name": "CONFIG_NR_CPUS",
+        "value": "8192",
+        "line": 468
+      },
+      {
+        "name": "CONFIG_X86_LOCAL_APIC",
+        "value": "y",
+        "line": 470
+      },
+      {
+        "name": "CONFIG_X86_IO_APIC",
+        "value": "y",
+        "line": 472
+      },
+      {
+        "name": "CONFIG_RANDOMIZE_BASE",
+        "value": "y",
+        "line": 561
+      },
+      {
+        "name": "CONFIG_CMDLINE_BOOL",
+        "value": "not set",
+        "line": 570
+      },
+      {
+        "name": "CONFIG_HZ_1000",
+        "value": "y",
+        "line": 543
+      },
+      {
+        "name": "CONFIG_HZ",
+        "value": "1000",
+        "line": 544
+      },
+      {
+        "name": "CONFIG_HZ_PERIODIC",
+        "value": "not set",
+        "line": 114
+      },
+      {
+        "name": "CONFIG_NO_HZ_IDLE",
+        "value": "not set",
+        "line": 115
+      },
+      {
+        "name": "CONFIG_NO_HZ_FULL",
+        "value": "y",
+        "line": 116
+      },
+      {
+        "name": "CONFIG_NO_HZ",
+        "value": "y",
+        "line": 119
+      },
+      {
+        "name": "CONFIG_HIGH_RES_TIMERS",
+        "value": "y",
+        "line": 120
+      },
+      {
+        "name": "CONFIG_TICK_ONESHOT",
+        "value": "y",
+        "line": 112
+      },
+      {
+        "name": "CONFIG_GENERIC_CLOCKEVENTS_BROADCAST",
+        "value": "y",
+        "line": 100
+      },
+      {
+        "name": "CONFIG_CLOCKSOURCE_WATCHDOG",
+        "value": "y",
+        "line": 96
+      },
+      {
+        "name": "CONFIG_GENERIC_CMOS_UPDATE",
+        "value": "y",
+        "line": 103
+      },
+      {
+        "name": "CONFIG_ACPI",
+        "value": "y",
+        "line": 656
+      },
+      {
+        "name": "CONFIG_X86_PM_TIMER",
+        "value": "y",
+        "line": 735
+      },
+      {
+        "name": "CONFIG_CPU_IDLE",
+        "value": "y",
+        "line": 780
+      },
+      {
+        "name": "CONFIG_PM_TRACE_RTC",
+        "value": "y",
+        "line": 649
+      },
+      {
+        "name": "CONFIG_PCI",
+        "value": "y",
+        "line": 2338
+      },
+      {
+        "name": "CONFIG_PCI_DIRECT",
+        "value": "y",
+        "line": 794
+      },
+      {
+        "name": "CONFIG_PCI_MMCONFIG",
+        "value": "y",
+        "line": 795
+      },
+      {
+        "name": "CONFIG_PCI_MSI",
+        "value": "y",
+        "line": 2354
+      },
+      {
+        "name": "CONFIG_PNP",
+        "value": "y",
+        "line": 2829
+      },
+      {
+        "name": "CONFIG_PNPACPI",
+        "value": "y",
+        "line": 2835
+      },
+      {
+        "name": "CONFIG_HPET",
+        "value": "y",
+        "line": 5020
+      },
+      {
+        "name": "CONFIG_RTC_LIB",
+        "value": "y",
+        "line": 9719
+      },
+      {
+        "name": "CONFIG_RTC_CLASS",
+        "value": "y",
+        "line": 9721
+      },
+      {
+        "name": "CONFIG_RTC_HCTOSYS",
+        "value": "y",
+        "line": 9722
+      },
+      {
+        "name": "CONFIG_RTC_HCTOSYS_DEVICE",
+        "value": "rtc0",
+        "line": 9723
+      },
+      {
+        "name": "CONFIG_RTC_SYSTOHC",
+        "value": "y",
+        "line": 9724
+      },
+      {
+        "name": "CONFIG_RTC_DRV_CMOS",
+        "value": "y",
+        "line": 9821
+      },
+      {
+        "name": "CONFIG_NVRAM",
+        "value": "m",
+        "line": 5018
+      },
+      {
+        "name": "CONFIG_SERIAL_EARLYCON",
+        "value": "y",
+        "line": 4913
+      },
+      {
+        "name": "CONFIG_SERIAL_8250",
+        "value": "y",
+        "line": 4914
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_PNP",
+        "value": "y",
+        "line": 4915
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_16550A_VARIANTS",
+        "value": "y",
+        "line": 4916
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_CONSOLE",
+        "value": "y",
+        "line": 4918
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_NR_UARTS",
+        "value": "48",
+        "line": 4925
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_RUNTIME_UARTS",
+        "value": "32",
+        "line": 4926
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_SHARE_IRQ",
+        "value": "y",
+        "line": 4928
+      },
+      {
+        "name": "CONFIG_SERIAL_8250_DETECT_IRQ",
+        "value": "not set",
+        "line": 4929
+      },
+      {
+        "name": "CONFIG_SERIAL_CORE_CONSOLE",
+        "value": "y",
+        "line": 4951
+      },
+      {
+        "name": "CONFIG_SERIO_I8042",
+        "value": "y",
+        "line": 4877
+      },
+      {
+        "name": "CONFIG_KEYBOARD_ATKBD",
+        "value": "y",
+        "line": 4575
+      },
+      {
+        "name": "CONFIG_VT_CONSOLE",
+        "value": "y",
+        "line": 4902
+      },
+      {
+        "name": "CONFIG_VGA_CONSOLE",
+        "value": "y",
+        "line": 7842
+      },
+      {
+        "name": "CONFIG_EARLY_PRINTK",
+        "value": "y",
+        "line": 13247
+      },
+      {
+        "name": "CONFIG_X86_VERBOSE_BOOTUP",
+        "value": "not set",
+        "line": 13246
+      },
+      {
+        "name": "CONFIG_PRINTK_TIME",
+        "value": "y",
+        "line": 12859
+      },
+      {
+        "name": "CONFIG_CONSOLE_LOGLEVEL_DEFAULT",
+        "value": "7",
+        "line": 12863
+      },
+      {
+        "name": "CONFIG_BLK_DEV_INITRD",
+        "value": "y",
+        "line": 256
+      },
+      {
+        "name": "CONFIG_DEVTMPFS",
+        "value": "y",
+        "line": 2506
+      },
+      {
+        "name": "CONFIG_LOCKUP_DETECTOR",
+        "value": "y",
+        "line": 13017
+      },
+      {
+        "name": "CONFIG_HARDLOCKUP_DETECTOR_PERF",
+        "value": "y",
+        "line": 13023
+      }
+    ]
+  },
+  "questions": [
+    {
+      "id": "io_delay_default_type",
+      "question": "Which io_delay type does the selected config use by default, and is port 0x80 touched on the boot path?",
+      "decision": "Default is 0xED (CONFIG_IO_DELAY_0XED=y), not 0x80. outb_p/inb_p delays go to port 0xED (explicit absent device, read 0xFF, write ignored). Do not pass io_delay= in the cmdline. The 0x80 sink stays as a safety net for real-mode setup code (arch/x86/boot) or an explicit io_delay=0x80.",
+      "plan_discrepancy": "STAGE_4.md decision 7 and the S4-29b report expect the default to be 0x80; the selected config says 0xED.",
+      "evidence": [
+        {
+          "file": "config",
+          "line": 13256,
+          "excerpt_short": "CONFIG_IO_DELAY_0XED=y"
+        },
+        {
+          "file": "config",
+          "line": 13255,
+          "excerpt_short": "# CONFIG_IO_DELAY_0X80 is not set"
+        },
+        {
+          "file": "arch/x86/kernel/io_delay.c",
+          "line": 23,
+          "excerpt_short": "#elif defined(CONFIG_IO_DELAY_0XED)"
+        },
+        {
+          "file": "arch/x86/kernel/io_delay.c",
+          "line": 45,
+          "excerpt_short": "case IO_DELAY_TYPE_0XED: outb %al, $0xed"
+        },
+        {
+          "file": "arch/x86/Kconfig.debug",
+          "line": 125,
+          "excerpt_short": "default IO_DELAY_0X80 (overridden by the distro config)"
+        },
+        {
+          "file": "arch/x86/include/asm/io.h",
+          "line": 261,
+          "excerpt_short": "outb_p calls slow_down_io()"
+        },
+        {
+          "file": "arch/x86/include/asm/paravirt.h",
+          "line": 23,
+          "excerpt_short": "slow_down_io -> pv_ops.cpu.io_delay"
+        },
+        {
+          "file": "arch/x86/kernel/paravirt.c",
+          "line": 104,
+          "excerpt_short": ".cpu.io_delay = native_io_delay"
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 159,
+          "excerpt_short": "outb_p(0x34, PIT_MODE) in pit_set_periodic"
+        },
+        {
+          "file": "arch/x86/boot/boot.h",
+          "line": 41,
+          "excerpt_short": "DELAY_PORT = 0x80 (real-mode setup code only)"
+        },
+        {
+          "file": "crates/od-machine/src/absent_ports.rs",
+          "line": 35,
+          "excerpt_short": "IO_DELAY_PORT: u16 = 0xED"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "whether the S4-37 loader enters through the real-mode setup code (then 0x80 is hit)"
+      ]
+    },
+    {
+      "id": "no_timer_check_path",
+      "question": "Without no_timer_check, does check_timer go through IOAPIC pin 2 (ISO 0->2), and is that path implemented?",
+      "decision": "Do not set no_timer_check. check_timer runs only if global_clock_event != NULL (PIT or HPET). HPET is absent, so PIT is global_clock_event unless apic_needs_pit() is false (needs ARAT plus a known LAPIC period, not the case unless CPUID 0x15/ARAT are exposed). pin1 comes from the ISO (IRQ0->GSI2), pin2 is -1 (no ExtINT). Success needs jiffies > t1+4, i.e. at least 5 PIT ticks at HZ=1000. delay_with_tsc gives up after 40000000000/HZ = 40M TSC cycles (io_apic.c:1484-1491), so TSC frequency relative to the board clock must not exceed about 8 GHz (40M cycles / 5 ms), otherwise the failure branch is taken.",
+      "evidence": [
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2060,
+          "excerpt_short": "if (!global_clock_event) return;"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2087,
+          "excerpt_short": "..TIMER: vector=0x%02X apic1=%d pin1=%d apic2=%d pin2=%d"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2124,
+          "excerpt_short": "if (timer_irq_works()) { ... goto out; }"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1523,
+          "excerpt_short": "if (no_timer_check) return 1;"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1543,
+          "excerpt_short": "return time_after(jiffies, t1 + 4);"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2188,
+          "excerpt_short": "panic(\"IO-APIC + timer doesn't work!"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2294,
+          "excerpt_short": "if (nr_legacy_irqs()) check_timer();"
+        },
+        {
+          "file": "arch/x86/kernel/i8253.c",
+          "line": 54,
+          "excerpt_short": "global_clock_event = &i8253_clockevent;"
+        },
+        {
+          "file": "arch/x86/kernel/i8253.c",
+          "line": 32,
+          "excerpt_short": "use_pit() -> apic_needs_pit()"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 776,
+          "excerpt_short": "if (!boot_cpu_has(X86_FEATURE_ARAT)) return true;"
+        },
+        {
+          "file": "arch/x86/kernel/hpet.c",
+          "line": 129,
+          "excerpt_short": "is_hpet_capable: !boot_hpet_disable && hpet_address"
+        },
+        {
+          "file": "arch/x86/kernel/time.c",
+          "line": 57,
+          "excerpt_short": "hpet_time_init: hpet_enable() else pit_timer_init()"
+        },
+        {
+          "file": "firmware/uefi/src/acpi/madt.rs",
+          "line": 23,
+          "excerpt_short": "override of ISA IRQ 0 to GSI 2"
+        },
+        {
+          "file": "docs/reports/STAGE_4_S4-29F_2026-11-09.md",
+          "line": 5,
+          "excerpt_short": "PIT ch0 -> INTIN2 bridge (flat probe only)"
+        },
+        {
+          "file": "firmware/uefi/src/acpi/mod.rs",
+          "line": 7,
+          "excerpt_short": "table modules 7-16: aml, blob, dsdt, fadt, madt, manifest, mcfg, rsdp, sha256, table; no hpet module in firmware/uefi/src/acpi/"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1491,
+          "excerpt_short": "while ((now - start) < 40000000000ULL / HZ && time_before_eq(jiffies, end))"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "CPUID of the model (ARAT, leaf 0x15) may make Linux skip the PIT and check_timer",
+        "wiring to the board and paged path (S4-37a)",
+        "that 5 ticks are delivered end to end",
+        "TSC frequency of the model relative to the board clock must stay at or below about 8 GHz (delay_with_tsc cap of 40M cycles vs 5 ms for 5 ticks)"
+      ]
+    },
+    {
+      "id": "aeoi_in_check_timer",
+      "question": "Does check_timer write ICW4 with AEOI, and does that interfere when global_clock_event != NULL?",
+      "decision": "check_timer calls init_8259A(1): master ICW4 = 0x03, slave ICW4 = 0x01 (so slave AEOI rejection is never hit). It does not interfere: LVT0 is masked and the pair has no INTR. BUT at HEAD cc70151 (committed code) the model rejects master ICW4 with AEOI; the S4-29a2 slice named in decision 9 does not exist in the plan or in the committed code at HEAD cc70151; the uncommitted S4-29a2 change in the working tree is out of scope of this audit and not used as a source. This is a blocker for S4-38.",
+      "evidence": [
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2080,
+          "excerpt_short": "legacy_pic->init(1);"
+        },
+        {
+          "file": "arch/x86/kernel/i8259.c",
+          "line": 371,
+          "excerpt_short": "outb_pic(MASTER_ICW4_DEFAULT | PIC_ICW4_AEOI, PIC_MASTER_IMR)"
+        },
+        {
+          "file": "arch/x86/kernel/i8259.c",
+          "line": 382,
+          "excerpt_short": "outb_pic(SLAVE_ICW4_DEFAULT, PIC_SLAVE_IMR)"
+        },
+        {
+          "file": "arch/x86/include/asm/i8259.h",
+          "line": 27,
+          "excerpt_short": "MASTER_ICW4_DEFAULT 0x01; PIC_ICW4_AEOI 2"
+        },
+        {
+          "file": "arch/x86/kernel/irqinit.c",
+          "line": 67,
+          "excerpt_short": "legacy_pic->init(0) in init_ISA_irqs"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2079,
+          "excerpt_short": "apic_write(APIC_LVT0, APIC_LVT_MASKED | APIC_DM_EXTINT);"
+        },
+        {
+          "file": "arch/x86/kernel/i8259.c",
+          "line": 327,
+          "excerpt_short": "if (pcat_compat) return nr_legacy_irqs(); (no probe)"
+        },
+        {
+          "file": "firmware/uefi/src/acpi/madt.rs",
+          "line": 41,
+          "excerpt_short": "MADT_FLAG_PCAT_COMPAT: u32 = 1"
+        },
+        {
+          "file": "crates/od-machine/src/pic_8259.rs",
+          "line": 278,
+          "excerpt_short": "at HEAD cc70151: if value & (ICW4_AEOI | ICW4_BUF | ...) != 0 -> UnsupportedConfiguration",
+          "state": "HEAD cc70151"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "model acceptance of ICW4 = 0x03 (rejected at HEAD cc70151; working-tree change not assessed)"
+      ],
+      "head_commit": "cc70151"
+    },
+    {
+      "id": "cmos_rtc_requirements",
+      "question": "Which Linux code reads CMOS on the boot path, and does the selected config require an RTC to boot?",
+      "decision": "The RTC is not required to boot (rtc_cmos is not probed: FADT NO_CMOS_RTC -> legacy.rtc=0, no PNP0B00 in the DSDT). One mandatory CMOS read remains: timekeeping_init -> mach_get_cmos_time -> mc146818_get_time(timeout 1000 ms) is unconditional. With reg A = 0xFF (UIP=1) it loops up to about 10000 iterations of udelay(100), about 1 s of virtual time, then logs 'Unable to read current time from RTC' and continues with time 0. No hang, no panic, provided RDTSC/udelay advance.",
+      "evidence": [
+        {
+          "file": "init/main.c",
+          "line": 1076,
+          "excerpt_short": "timekeeping_init();"
+        },
+        {
+          "file": "kernel/time/timekeeping.c",
+          "line": 1810,
+          "excerpt_short": "read_persistent_wall_and_boot_offset(&wall_time, &boot_offset);"
+        },
+        {
+          "file": "arch/x86/kernel/rtc.c",
+          "line": 69,
+          "excerpt_short": "if (mc146818_get_time(&tm, 1000)) {"
+        },
+        {
+          "file": "arch/x86/kernel/rtc.c",
+          "line": 70,
+          "excerpt_short": "pr_err(\"Unable to read current time from RTC\\n\");"
+        },
+        {
+          "file": "arch/x86/kernel/x86_init.c",
+          "line": 149,
+          "excerpt_short": ".get_wallclock = mach_get_cmos_time"
+        },
+        {
+          "file": "drivers/rtc/rtc-mc146818-lib.c",
+          "line": 29,
+          "excerpt_short": "for (i = 0; UIP_RECHECK_LOOPS_MS(i) < timeout; i++)"
+        },
+        {
+          "file": "drivers/rtc/rtc-mc146818-lib.c",
+          "line": 43,
+          "excerpt_short": "if (CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP) { udelay(100)"
+        },
+        {
+          "file": "arch/x86/kernel/acpi/boot.c",
+          "line": 988,
+          "excerpt_short": "if (boot_flags & ACPI_FADT_NO_CMOS_RTC) legacy.rtc = 0"
+        },
+        {
+          "file": "arch/x86/kernel/rtc.c",
+          "line": 149,
+          "excerpt_short": "if (!x86_platform.legacy.rtc) return -ENODEV;"
+        },
+        {
+          "file": "drivers/rtc/rtc-cmos.c",
+          "line": 1038,
+          "excerpt_short": "mc146818_does_rtc_work() (probe only, not reached)"
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1980,
+          "excerpt_short": "unlock_ExtINT_logic reads CMOS (failure path of check_timer only)"
+        },
+        {
+          "file": "arch/x86/kernel/bootflag.c",
+          "line": 46,
+          "excerpt_short": "sbf_port == -1 -> no CMOS access (no ACPI BOOT table)"
+        },
+        {
+          "file": "include/linux/pm-trace.h",
+          "line": 12,
+          "excerpt_short": "pm_trace_rtc_valid() = !pm_trace_rtc_abused (no CMOS access)"
+        },
+        {
+          "file": "firmware/uefi/src/acpi/dsdt.rs",
+          "line": 4,
+          "excerpt_short": "DSDT devices: PCI0, ECAM, COM1 (no PNP0B00)"
+        },
+        {
+          "file": "docs/reports/STAGE_4_S4-29B_2026-11-09.md",
+          "line": 15,
+          "excerpt_short": "CMOS 0x70/0x71 read 0xFF, write ignored"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "that RDTSC and udelay advance in the board so the 10000-iteration loop ends",
+        "actual virtual duration (~1 s) and instruction cost",
+        "hctosys behaviour without rtc0"
+      ]
+    },
+    {
+      "id": "tsc_calibration_path",
+      "question": "Which TSC calibration path does the config select, and are HPET/PM-timer fallbacks available?",
+      "decision": "Early path in setup_arch: CPUID 0x16 (Intel), then MSR table, then quick_pit_calibrate (PIT ch2, ports 0x61/0x43/0x42). If it returns 0, tsc_init falls back to pit_hpet_ptimer_calibrate_cpu (PIT ch2 10 ms loops, reference HPET if enabled else PM timer). HPET is unavailable (no HPET table). PM timer is available if FADT gives PM_TMR_BLK. Mandatory for S4-38: PIT ch2 mode 0 with gate, 0x42 reads with a per-read tick, bit 5 of 0x61, and a monotonic 24-bit PM timer.",
+      "evidence": [
+        {
+          "file": "arch/x86/kernel/setup.c",
+          "line": 1017,
+          "excerpt_short": "tsc_early_init();"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 919,
+          "excerpt_short": "native_calibrate_cpu_early: cpuid, msr, quick_pit_calibrate"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 577,
+          "excerpt_short": "static unsigned long quick_pit_calibrate(void)"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 583,
+          "excerpt_short": "if (!has_legacy_pic()) return 0;"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 664,
+          "excerpt_short": "Fast TSC calibration using PIT"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 439,
+          "excerpt_short": "pit_calibrate_tsc(latch, ms, loopmin)"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 767,
+          "excerpt_short": "pit_hpet_ptimer_calibrate_cpu"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 848,
+          "excerpt_short": "within 10%: use HPET/PMTIMER reference"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 876,
+          "excerpt_short": "No reference (HPET/PMTIMER) available -> return 0"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 1548,
+          "excerpt_short": "if (!tsc_khz) determine_cpu_tsc_frequencies(false)"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 740,
+          "excerpt_short": "lapic_timer_period = crystal_khz * 1000 / HZ (CPUID 0x15)"
+        },
+        {
+          "file": "arch/x86/kernel/acpi/boot.c",
+          "line": 998,
+          "excerpt_short": "pmtmr_ioport from FADT xpm_timer_block"
+        },
+        {
+          "file": "kernel/irq/irqdesc.c",
+          "line": 558,
+          "excerpt_short": "arch_probe_nr_irqs() -> probe_8259A, after tsc_early_init"
+        },
+        {
+          "file": "docs/reports/STAGE_4_S4-29D_2026-11-09.md",
+          "line": 1,
+          "excerpt_short": "S4-29d: PIT ch2 calibration primitives, tick only on 0x61"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "CPUID leaves 0x15/0x16 of the model",
+        "port tick on 0x42 and PM_TMR (S4-37a)",
+        "FADT PM_TMR_BLK and PM timer on the shared clock",
+        "TSC consistent with the port tick (500 ppm window)"
+      ]
+    },
+    {
+      "id": "lapic_timer_and_clock_selection",
+      "question": "How is the LAPIC timer calibrated, which clockevent ticks, which clocksource is selected, and does Linux need PIT modes the model lacks?",
+      "decision": "LAPIC period is calibrated over 100 ticks (HZ/10) polled by TSC, cross-checked with the PM timer (1% window; without PM timer it falls back to PIT-tick verification). The LAPIC (rating 100) replaces the PIT (rating 0) as tick device; the PIT is shut down with control word 0x30 and zero counts through outb_p (0xED). The PIT model supports only modes 0 and 2, while Linux writes 0x38 (mode 4) only when the PIT is used in oneshot, which is reachable only if the LAPIC timer calibration fails. Clocksource: tsc-early (299), acpi_pm (200), tsc (300 after refine); no HPET.",
+      "evidence": [
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 793,
+          "excerpt_short": "static int __init calibrate_APIC_clock(void)"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 646,
+          "excerpt_short": "#define LAPIC_CAL_LOOPS (HZ/10)"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 661,
+          "excerpt_short": "u32 pm = acpi_pm_read_early();"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 705,
+          "excerpt_short": "calibrate_by_pmtimer window pm_100ms +- 1%"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 926,
+          "excerpt_short": "if (!pm_referenced && global_clock_event) verify via PIT ticks"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 913,
+          "excerpt_short": "APIC frequency too slow, disabling apic timer"
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 509,
+          "excerpt_short": "lapic_clockevent .rating = 100"
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 186,
+          "excerpt_short": "i8253_clockevent has no .rating (0)"
+        },
+        {
+          "file": "kernel/time/tick-common.c",
+          "line": 305,
+          "excerpt_short": "newdev->rating > curdev->rating"
+        },
+        {
+          "file": "kernel/time/clockevents.c",
+          "line": 100,
+          "excerpt_short": "detached device is shut down"
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 130,
+          "excerpt_short": "outb_p(0x30, PIT_MODE) in clockevent_i8253_disable"
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 149,
+          "excerpt_short": "outb_p(0x38, PIT_MODE) in pit_set_oneshot"
+        },
+        {
+          "file": "crates/od-machine/src/pit_8254.rs",
+          "line": 364,
+          "excerpt_short": "mode match: 0 and 2 only, others UnsupportedConfiguration"
+        },
+        {
+          "file": "drivers/clocksource/acpi_pm.c",
+          "line": 208,
+          "excerpt_short": "init_acpi_pm_clocksource: 10 monotonicity checks"
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 1177,
+          "excerpt_short": "clocksource_tsc_early .rating = 299"
+        },
+        {
+          "file": "kernel/time/clocksource.c",
+          "line": 1070,
+          "excerpt_short": "Switched to clocksource %s"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "which clockevent actually ticks at runtime",
+        "PM timer behaviour on the shared clock",
+        "LAPIC timer calibration result is not visible in dmesg without apic=verbose"
+      ]
+    },
+    {
+      "id": "other_legacy_ports",
+      "question": "Does Linux touch other legacy ports on the boot path (8042, ELCR, extra UARTs)?",
+      "decision": "i8042: FADT rev 6 without the 8042 flag and no PNP device -> -ENODEV without port access (0x60/0x64 trap is safe). ELCR 0x4D0/0x4D1: only in non-IOAPIC mode. Extra UARTs: the legacy ttyS1..3 at 0x2F8/0x3E8/0x2E8 are probed by default and would hit UnmappedPort; limit with 8250.nr_uarts=1.",
+      "evidence": [
+        {
+          "file": "arch/x86/kernel/acpi/boot.c",
+          "line": 981,
+          "excerpt_short": "!(boot_flags & ACPI_FADT_8042) -> FIRMWARE_ABSENT"
+        },
+        {
+          "file": "drivers/input/serio/i8042-acpipnpio.h",
+          "line": 1636,
+          "excerpt_short": "legacy.i8042 != EXPECTED_PRESENT -> return -ENODEV"
+        },
+        {
+          "file": "drivers/acpi/bus.c",
+          "line": 1394,
+          "excerpt_short": "if (!acpi_ioapic) acpi_pic_sci_set_trigger(...) (ELCR)"
+        },
+        {
+          "file": "arch/x86/include/asm/serial.h",
+          "line": 25,
+          "excerpt_short": "legacy ports 0x3F8, 0x2F8, 0x3E8, 0x2E8"
+        },
+        {
+          "file": "drivers/tty/serial/8250/8250_core.c",
+          "line": 368,
+          "excerpt_short": "serial8250_register_ports registers nr_uarts ports"
+        },
+        {
+          "file": "drivers/tty/serial/8250/8250_platform.c",
+          "line": 35,
+          "excerpt_short": "nr_uarts = CONFIG_SERIAL_8250_RUNTIME_UARTS"
+        },
+        {
+          "file": "drivers/tty/serial/8250/8250_platform.c",
+          "line": 383,
+          "excerpt_short": "module_param(nr_uarts, uint, 0644)"
+        },
+        {
+          "file": "drivers/tty/serial/8250/Makefile",
+          "line": 7,
+          "excerpt_short": "8250-y := 8250_core.o (parameter prefix 8250.)"
+        },
+        {
+          "file": "firmware/uefi/src/acpi/dsdt.rs",
+          "line": 4,
+          "excerpt_short": "only COM1 is described in the DSDT"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "PCI conf1/ECAM, PM block and SMI_CMD accesses (S4-30/S4-31 scope)",
+        "UART autoconfig result on a model without FIFO/loopback"
+      ]
+    },
+    {
+      "id": "cmdline_choice",
+      "question": "Which cmdline does S4-38 use, and does it conflict with the S4-36 nonce mechanism?",
+      "decision": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=<nonce>. od.nonce contains a dot, so the kernel treats it as an unused module parameter and ignores it silently (not passed to init); /init reads it from /proc/cmdline. The token must not follow '--'.",
+      "evidence": [
+        {
+          "file": "init/main.c",
+          "line": 529,
+          "excerpt_short": "if (strnchr(param, len, '.')) return 0; (unused module parameter)"
+        },
+        {
+          "file": "arch/x86/include/asm/setup.h",
+          "line": 7,
+          "excerpt_short": "COMMAND_LINE_SIZE 2048"
+        },
+        {
+          "file": "drivers/tty/serial/8250/8250_early.c",
+          "line": 159,
+          "excerpt_short": "if (!device->baud) only masks IER, no divisor programming"
+        },
+        {
+          "file": "kernel/printk/printk.c",
+          "line": 4209,
+          "excerpt_short": "register_console (4209-4216) unregisters CON_BOOT consoles when a real console registers; printk_late_init is at 4427; line 3986 is get_init_console_seq"
+        },
+        {
+          "file": "init/main.c",
+          "line": 1101,
+          "excerpt_short": "console_init() runs after timekeeping_init (1076)"
+        },
+        {
+          "file": "docs/reports/STAGE_4_S4-36_2026-11-09.md",
+          "line": 21,
+          "excerpt_short": "/init reads od.nonce= from /proc/cmdline"
+        }
+      ],
+      "status": "confirmed_by_source",
+      "not_confirmed_parts": [
+        "the nonce path end to end (needs a Linux run)",
+        "whether nokaslr is wanted (depends on the S4-37 entry method)"
+      ]
+    }
+  ],
+  "cmdline": {
+    "template": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=<nonce>",
+    "tokens": [
+      {
+        "token": "console=ttyS0,115200",
+        "why": "the S4-36 /init writes OD_NONCE to fd 1; without console= the console is tty0 and the earlycon boot console is removed when a real console registers or at printk_late_init"
+      },
+      {
+        "token": "earlycon=uart8250,io,0x3f8",
+        "why": "new risk points (tsc_early_init, the 1 s CMOS UIP loop in timekeeping_init) run before console_init; no baud, so no divisor/LCR programming, only IER and THR/LSR"
+      },
+      {
+        "token": "8250.nr_uarts=1",
+        "why": "keeps only ttyS0; ttyS1..3 probes at 0x2F8/0x3E8/0x2E8 would hit UnmappedPort"
+      },
+      {
+        "token": "od.nonce=<nonce>",
+        "why": "S4-36 mechanism; ignored by the kernel because of the dot, readable from /proc/cmdline"
+      }
+    ],
+    "not_selected": [
+      {
+        "token": "io_delay=",
+        "why": "default is already 0xED, which is an explicit device"
+      },
+      {
+        "token": "no_timer_check",
+        "why": "would hide a broken PIT -> INTIN2 route"
+      },
+      {
+        "token": "apic=verbose",
+        "why": "print_ICs at late_initcall reads all LAPIC/IOAPIC/PIC registers (unaudited surface); use in a separate run"
+      },
+      {
+        "token": "earlyprintk=",
+        "why": "duplicates earlycon and programs the divisor"
+      },
+      {
+        "token": "nosmp / maxcpus=",
+        "why": "MADT has one LAPIC"
+      },
+      {
+        "token": "noapic / nolapic / acpi=",
+        "why": "would bypass the path under test"
+      },
+      {
+        "token": "notsc / clocksource=",
+        "why": "would hide the calibration under test"
+      },
+      {
+        "token": "panic=",
+        "why": "reboot goes through unsupported ports"
+      },
+      {
+        "token": "nokaslr",
+        "why": "open question, depends on the S4-37 entry method; not required by any device"
+      }
+    ]
+  },
+  "s4_38_checks": [
+    {
+      "id": "one_cpu",
+      "title": "Exactly one CPU",
+      "signal": "dmesg: 'Allowing 1 present CPUs plus 0 hotplug CPUs' and 'Brought up 1 node, 1 CPU'; trace: no INIT/SIPI/IPI ICR writes",
+      "code": [
+        {
+          "file": "arch/x86/kernel/cpu/topology.c",
+          "line": 527
+        },
+        {
+          "file": "kernel/smp.c",
+          "line": 1005
+        }
+      ]
+    },
+    {
+      "id": "apic_ioapic_ecam_routes",
+      "title": "APIC, IOAPIC, ECAM and routes",
+      "signal": "dmesg: 'IOAPIC[0]: apic_id 1 ... GSI 0-23', 'APIC: Switch to symmetric I/O mode setup', 'ECAM ... for domain 0000', '..TIMER: ... apic1=0 pin1=2'",
+      "code": [
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2759
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 1375
+        },
+        {
+          "file": "arch/x86/pci/mmconfig-shared.c",
+          "line": 113
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2087
+        }
+      ]
+    },
+    {
+      "id": "check_timer_pin2",
+      "title": "check_timer passes through IOAPIC pin 2",
+      "signal": "dmesg: no 'MP-BIOS bug', 'trying to set up timer', '..... failed', no panic after the '..TIMER:' line; trace: RTE 2 write (edge, unmasked), PIT ch0 control 0x34 and count 1193, at least 5 IRQ0 edges delivered; quantitative condition: delay_with_tsc stops at 40000000000/HZ = 40M TSC cycles, 5 ticks need about 5 ms of board time, so TSC frequency relative to the board clock must not exceed about 8 GHz, otherwise the failure branch is taken",
+      "code": [
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2124
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1543
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2188
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 1491
+        }
+      ]
+    },
+    {
+      "id": "pic_icw4_aeoi",
+      "title": "PIC init with master ICW4 = 0x03 accepted",
+      "signal": "trace: write 0x03 to 0x21 during init_8259A(1) without UnsupportedConfiguration (requires the S4-29a2 change) (the rejection is the state at HEAD cc70151)",
+      "code": [
+        {
+          "file": "arch/x86/kernel/i8259.c",
+          "line": 371
+        },
+        {
+          "file": "arch/x86/kernel/apic/io_apic.c",
+          "line": 2080
+        }
+      ]
+    },
+    {
+      "id": "tsc_early_calibration",
+      "title": "Early TSC calibration without hang",
+      "signal": "dmesg: 'Fast TSC calibration using PIT' and 'Detected N MHz processor'; failure markers: 'Fast TSC calibration failed', 'Unable to calibrate against PIT', 'No reference (HPET/PMTIMER) available', 'Marking TSC unstable'; trace: reads of 0x42 in pairs, RMW of 0x61",
+      "code": [
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 664
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 1488
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 645
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 872
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 876
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 1223
+        }
+      ]
+    },
+    {
+      "id": "lapic_timer_calibration",
+      "title": "LAPIC timer calibration without disable",
+      "signal": "dmesg: none of 'APIC timer disabled due to verification failure', 'APIC frequency too slow', 'APIC calibration not consistent with PM-Timer'; trace: about 100 TMCCT and PM-timer reads, then 0x30 on 0x43 (PIT shut down) and no 0x38 write; the calibration result itself needs apic=verbose and is not visible by default",
+      "code": [
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 959
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 915
+        },
+        {
+          "file": "arch/x86/kernel/apic/apic.c",
+          "line": 713
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 130
+        }
+      ]
+    },
+    {
+      "id": "io_delay_ports",
+      "title": "io_delay hits 0xED, not 0x80",
+      "signal": "trace: writes to 0xED present (PIT outb_p); writes to 0x80 depend on the S4-37 entry method: zero for a direct 64-bit entry, expected (covered by the 0x80 sink) when entering through the bzImage real-mode setup code; no 'using 0xed I/O delay port' message",
+      "code": [
+        {
+          "file": "arch/x86/kernel/io_delay.c",
+          "line": 45
+        },
+        {
+          "file": "arch/x86/kernel/io_delay.c",
+          "line": 67
+        },
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 159
+        },
+        {
+          "file": "arch/x86/boot/boot.h",
+          "line": 41
+        }
+      ]
+    },
+    {
+      "id": "cmos_uip_bounded",
+      "title": "CMOS UIP wait is bounded",
+      "signal": "dmesg: exactly one 'Unable to read current time from RTC' before the console is up; trace: about 20000 outb(0x70)/inb(0x71) pairs and about 1 s of virtual time (udelay), then boot continues; no 'registered platform RTC device' and no 'broken or not accessible'",
+      "code": [
+        {
+          "file": "arch/x86/kernel/rtc.c",
+          "line": 70
+        },
+        {
+          "file": "drivers/rtc/rtc-mc146818-lib.c",
+          "line": 29
+        },
+        {
+          "file": "arch/x86/kernel/rtc.c",
+          "line": 153
+        },
+        {
+          "file": "drivers/rtc/rtc-cmos.c",
+          "line": 1039
+        }
+      ]
+    },
+    {
+      "id": "clocksource_selection",
+      "title": "Clocksource selection",
+      "signal": "dmesg: 'Switched to clocksource tsc-early' then 'tsc'; acpi_pm registered without 'PM-Timer had inconsistent results' or 'failed consistency check'; no 'Marking TSC unstable due to clocksource watchdog'",
+      "code": [
+        {
+          "file": "kernel/time/clocksource.c",
+          "line": 1070
+        },
+        {
+          "file": "drivers/clocksource/acpi_pm.c",
+          "line": 228
+        },
+        {
+          "file": "drivers/clocksource/acpi_pm.c",
+          "line": 234
+        },
+        {
+          "file": "arch/x86/kernel/tsc.c",
+          "line": 1154
+        }
+      ]
+    },
+    {
+      "id": "no_unsupported_ports",
+      "title": "No unsupported port accesses",
+      "signal": "trace: zero UnmappedPort, UnsupportedConfiguration, UnsupportedWidth, CrossesRegion; no accesses to 0x60/0x64, 0x80, 0x2F8/0x3E8/0x2E8, 0x4D0/0x4D1, 0xCF9, 0x92",
+      "code": [
+        {
+          "file": "drivers/input/serio/i8042-acpipnpio.h",
+          "line": 1636
+        },
+        {
+          "file": "drivers/acpi/bus.c",
+          "line": 1394
+        },
+        {
+          "file": "drivers/tty/serial/8250/8250_core.c",
+          "line": 368
+        }
+      ]
+    },
+    {
+      "id": "serial_and_nonce",
+      "title": "Serial console and nonce output",
+      "signal": "dmesg: 'Serial: 8250/16550 driver, 1 ports', ttyS0 at I/O 0x3f8 irq 4; 'Run /init as init process'; console line 'OD_NONCE=<nonce>'",
+      "code": [
+        {
+          "file": "drivers/tty/serial/8250/8250_platform.c",
+          "line": 305
+        },
+        {
+          "file": "init/main.c",
+          "line": 1450
+        }
+      ]
+    },
+    {
+      "id": "tick_runs",
+      "title": "Timer interrupts keep running",
+      "signal": "trace: periodic LAPIC timer interrupts with EOI after the PIT is shut down; no 0x38 control word on 0x43; jiffies advance",
+      "code": [
+        {
+          "file": "drivers/clocksource/i8253.c",
+          "line": 149
+        },
+        {
+          "file": "kernel/time/tick-common.c",
+          "line": 305
+        }
+      ]
+    }
+  ],
+  "not_confirmed_summary": [
+    "CPUID of the model (ARAT, leaves 0x15/0x16, hypervisor bit) decides whether the PIT and check_timer run at all",
+    "RDTSC/udelay advance in step with the board clock (CMOS UIP loop, delay_with_tsc, quick_pit_calibrate)",
+    "TSC frequency relative to the board clock: delay_with_tsc cap of 40M cycles vs about 5 ms for 5 PIT ticks, so the TSC must not exceed about 8 GHz of board time",
+    "port tick on 0x42 and PM_TMR, PM timer on the shared clock (S4-37a)",
+    "model acceptance of master ICW4 = 0x03 (rejected at HEAD cc70151; S4-29a2 absent from plan and committed code)",
+    "PIT mode 4 (control word 0x38) rejected by the model; reachable only if the LAPIC timer fails",
+    "UART autoconfig type on a model without FIFO/loopback; hctosys without rtc0; perf NMI watchdog without PMU",
+    "link between source/config and the staged vmlinuz binary (S4-35 verifies hashes only)"
+  ]
+}
