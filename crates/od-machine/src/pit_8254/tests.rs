@@ -17,9 +17,18 @@ fn acc(offset: u64, width: AccessWidth) -> DeviceAccess {
     }
 }
 
-fn setup() -> (Pit8254Devices, VirtualClockHandle) {
+/// Devices in the reset state: gate 2 low.
+fn setup_ungated() -> (Pit8254Devices, VirtualClockHandle) {
     let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
     (Pit8254Devices::new(clock.clone()), clock)
+}
+
+/// Devices with gate 2 raised, as the guest does before loading channel 2
+/// (S4-29d: loading channel 2 with gate 2 low is refused).
+fn setup() -> (Pit8254Devices, VirtualClockHandle) {
+    let (mut dev, clock) = setup_ungated();
+    dev.port_b.write(acc(0, BYTE), 0x01).unwrap();
+    (dev, clock)
 }
 
 /// Smallest virtual time (ns) at which the tick index reaches `tick`.
@@ -84,7 +93,7 @@ fn constants_and_tick_formula() {
 
 #[test]
 fn reset_matrix() {
-    let (mut dev, _clock) = setup();
+    let (mut dev, _clock) = setup_ungated();
     assert_eq!(dev.handle.snapshot(), PitSnapshot::default());
     let s = dev.handle.snapshot();
     assert_eq!(s.channel0.mode, None);
@@ -543,7 +552,7 @@ fn live_lsb_msb_reads_alternate_and_a_control_word_resets_the_flip_flop() {
 
 #[test]
 fn port_access_policy() {
-    let (mut dev, _clock) = setup();
+    let (mut dev, _clock) = setup_ungated();
     let mmio = DeviceAccess {
         space: IoSpace::Mmio,
         offset: 0,
@@ -633,7 +642,11 @@ fn port_b_bit5_is_out2_and_only_out2() {
     assert_eq!(port_b(&mut dev) & PORT_B_OUT2, 0);
     goto_tick(&clock, 100);
     assert_eq!(port_b(&mut dev) & PORT_B_OUT2, PORT_B_OUT2);
-    dev.port_b.write(acc(0, BYTE), 0x00).unwrap();
+    assert_eq!(
+        dev.port_b.write(acc(0, BYTE), 0x00),
+        Err(DeviceError::UnsupportedConfiguration),
+        "dropping gate 2 while channel 2 counts is refused (S4-29d)"
+    );
     assert_eq!(
         port_b(&mut dev) & PORT_B_OUT2,
         PORT_B_OUT2,
@@ -654,7 +667,7 @@ fn port_b_bit5_is_out2_and_only_out2() {
 
 #[test]
 fn port_b_bit4_toggles_every_18_ticks() {
-    let (mut dev, clock) = setup();
+    let (mut dev, clock) = setup_ungated();
     for (tick, bit) in [
         (0u64, 0u8),
         (17, 0),
@@ -874,5 +887,152 @@ fn linux_pit_calibrate_tsc_sequence_through_the_bus() {
     assert!(
         elapsed_past_zero < 2,
         "counter wrapped past zero by <= 1 tick"
+    );
+}
+
+// --- S4-29d: gate 2 refusals (consultation decision 6) ---------------------
+
+#[test]
+fn loading_channel2_with_gate2_low_is_refused_without_state_change() {
+    let (mut dev, _clock) = setup_ungated();
+    out(&mut dev.pit, 3, 0xB0).unwrap();
+    let before = dev.handle.snapshot();
+    for byte in [0x9Bu8, 0x2E] {
+        assert_eq!(
+            dev.pit.write(acc(2, BYTE), u64::from(byte)),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+    }
+    assert_eq!(dev.handle.snapshot(), before);
+    // Channel 0 has no gate input and loads regardless.
+    program(&mut dev.pit, 0x34, 10, Some(0));
+    assert!(dev.handle.snapshot().channel0.run.is_some());
+    // With gate 2 raised the same load is accepted.
+    dev.port_b.write(acc(0, BYTE), 0x01).unwrap();
+    out(&mut dev.pit, 2, 0x9B).unwrap();
+    out(&mut dev.pit, 2, 0x2E).unwrap();
+    assert_eq!(dev.handle.snapshot().channel2.run.unwrap().reload, 0x2E9B);
+}
+
+#[test]
+fn dropping_gate2_while_channel2_counts_is_refused_and_the_count_keeps_running() {
+    let (mut dev, clock) = setup();
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    let before = dev.handle.snapshot();
+    assert_eq!(
+        dev.port_b.write(acc(0, BYTE), 0x00),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(
+        dev.port_b.write(acc(0, BYTE), 0x02),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.snapshot(), before);
+    // The gate never stops the count; the count is unaffected by the refusals.
+    goto_tick(&clock, 100);
+    assert_eq!(port_b(&mut dev) & PORT_B_OUT2, PORT_B_OUT2);
+    // Terminal count does not unload mode 0, so the gate stays pinned.
+    assert_eq!(
+        dev.port_b.write(acc(0, BYTE), 0x00),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    // Writing gate high (speaker data changes) is accepted.
+    dev.port_b.write(acc(0, BYTE), 0x03).unwrap();
+    // A new control word unloads the channel; then the gate may drop.
+    out(&mut dev.pit, 3, 0xB0).unwrap();
+    dev.port_b.write(acc(0, BYTE), 0x00).unwrap();
+    assert!(!dev.handle.snapshot().gate2);
+}
+
+#[test]
+fn channel2_observation_with_gate2_low_and_a_count_is_refused() {
+    // The state is unreachable through the ports (loading needs gate 2 high and
+    // dropping it is refused); it is forced to pin the defensive rule.
+    let (mut dev, _clock) = setup();
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    out(&mut dev.pit, 3, 0x80).unwrap(); // a latch while gate 2 is high is fine
+    assert_eq!(inb(&mut dev.pit, 2), 100);
+    dev.pit.shared.lock().gate2 = false;
+    let before = dev.handle.snapshot();
+    assert_eq!(
+        dev.pit.read(acc(2, BYTE)),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(
+        dev.pit.write(acc(3, BYTE), 0x80),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(
+        dev.port_b.read(acc(0, BYTE)),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.snapshot(), before);
+    assert_eq!(dev.handle.port_b_reads(), 0, "a refused read is not a tick");
+    // Channel 0 is not gated.
+    program(&mut dev.pit, 0x34, 10, Some(0));
+    out(&mut dev.pit, 3, 0x00).unwrap();
+    // Without a count on channel 2, port B is readable at any gate level.
+    out(&mut dev.pit, 3, 0xB0).unwrap();
+    assert_eq!(port_b(&mut dev) & (PORT_B_GATE2 | PORT_B_OUT2), 0);
+}
+
+// --- S4-29d: the port tick (consultation decision 5, ISSUE-067) ------------
+
+#[test]
+fn every_port_b_read_queues_one_microsecond_and_the_device_does_not_move_the_clock() {
+    let (mut dev, clock) = setup_ungated();
+    assert_eq!(PIT_PORT_B_READ_TICK_NS, 1_000);
+    assert_eq!(
+        (dev.handle.port_b_reads(), dev.handle.take_port_tick_ns()),
+        (0, 0)
+    );
+    for n in 1..=3u64 {
+        port_b(&mut dev);
+        assert_eq!(dev.handle.port_b_reads(), n);
+    }
+    assert_eq!(
+        clock.snapshot().now_ns(),
+        0,
+        "the owner, not the device, advances"
+    );
+    assert_eq!(dev.handle.take_port_tick_ns(), 3_000);
+    assert_eq!(dev.handle.take_port_tick_ns(), 0, "taking drains the queue");
+    assert_eq!(dev.handle.port_b_reads(), 3, "the read count is cumulative");
+    // Writes to port B, counter-port reads and control words are not time ports.
+    dev.port_b.write(acc(0, BYTE), 0x01).unwrap();
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    out(&mut dev.pit, 3, 0x80).unwrap();
+    inb(&mut dev.pit, 2);
+    inb(&mut dev.pit, 2);
+    assert_eq!(
+        (dev.handle.port_b_reads(), dev.handle.take_port_tick_ns()),
+        (3, 0)
+    );
+}
+
+#[test]
+fn the_value_is_sampled_before_the_tick_and_reset_drops_the_queue() {
+    let (mut dev, clock) = setup();
+    program(&mut dev.pit, 0xB0, 4, Some(0)); // OUT2 high at elapsed >= 4 ticks
+    let start = pit_ticks(clock.snapshot().now_ns());
+    // Owner loop: read, then apply the queued tick to the clock.
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        seen.push(port_b(&mut dev) & PORT_B_OUT2 != 0);
+        let ns = dev.handle.take_port_tick_ns();
+        advance(&clock, ns);
+    }
+    // 1000 ns steps are 1.193 ticks: elapsed ticks at the reads are 0,1,2,3,4,5
+    // (floor of k * 1.193182 minus the start tick at k = 0).
+    let expected: Vec<bool> = (0..6u64)
+        .map(|k| pit_ticks(k * 1_000) - start >= 4)
+        .collect();
+    assert_eq!(seen, expected);
+    assert_eq!(seen, [false, false, false, false, true, true]);
+    port_b(&mut dev);
+    dev.handle.reset();
+    assert_eq!(
+        (dev.handle.port_b_reads(), dev.handle.take_port_tick_ns()),
+        (0, 0)
     );
 }
