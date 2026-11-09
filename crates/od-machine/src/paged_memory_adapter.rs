@@ -99,6 +99,127 @@ pub fn step_paged_invlpg(
     Ok(report)
 }
 
+/// Report of one exact paged one-byte state step (`STI` or `HLT`, S4-27i4a).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedStateOpStepReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+/// Execute exactly one `STI` (`FB`) through tracked physical RAM fetches (S4-27i4a).
+/// Like [`step_paged_invlpg`] the CPU profile owns decode and retirement and the
+/// adapter supplies the paging snapshot and forwards committed walker A/D writes.
+pub fn step_paged_sti(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedStateOpStepReport, crate::ProbeConfigError> {
+    step_paged_state_op(
+        StateOp::Sti,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        rflags_defined,
+        committed_write,
+    )
+}
+
+/// Execute exactly one `HLT` (`F4`) through tracked physical RAM fetches (S4-27i4a).
+/// See [`step_paged_sti`]; the halted CPU is woken by the caller through the paged
+/// interrupt entry.
+pub fn step_paged_hlt(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedStateOpStepReport, crate::ProbeConfigError> {
+    step_paged_state_op(
+        StateOp::Hlt,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        rflags_defined,
+        committed_write,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum StateOp {
+    Sti,
+    Hlt,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_paged_state_op(
+    op: StateOp,
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedStateOpStepReport, crate::ProbeConfigError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: false,
+        dword_write_profile: false,
+    };
+    let cpu = match op {
+        StateOp::Sti => od_isa::step_paged_sti(
+            od_isa::PagedStiLong64V1,
+            state,
+            &mut memory,
+            context,
+            efer,
+            rflags_defined,
+        ),
+        StateOp::Hlt => od_isa::step_paged_hlt(
+            od_isa::PagedHltLong64V1,
+            state,
+            &mut memory,
+            context,
+            efer,
+            rflags_defined,
+        ),
+    };
+    Ok(PagedStateOpStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    })
+}
+
 /// Result of one synchronous JIT invocation against the tracked paged adapter.
 /// The memory borrow ends before this value is returned and is never retained.
 #[derive(Clone, Debug, Eq, PartialEq)]

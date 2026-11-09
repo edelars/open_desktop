@@ -64,7 +64,7 @@ const CR0: u64 = 0x8001_0033;
 const CR4: u64 = 0x20;
 const MAIN_GPA: u64 = 0x6000;
 const HANDLER_GPA: u64 = 0x7000;
-const IDT_GPA: u64 = 0x8000;
+pub(crate) const IDT_GPA: u64 = 0x8000;
 const GDT_GPA: u64 = 0x9000;
 const MAIN_CODE: [u8; 6] = [0x0f, 0x01, 0x3b, 0x0f, 0x01, 0x3b];
 const HANDLER_CODE: [u8; 4] = [
@@ -73,7 +73,7 @@ const HANDLER_CODE: [u8; 4] = [
 ];
 const HANDLER_NO_EOI: [u8; 4] = [0x48, 0xcf, 0, 0];
 const GATE_OFFSET: usize = STAGE4_PAGED_IRQ_VECTOR as usize * 16;
-const GATE_PRESENT_TYPE: usize = GATE_OFFSET + 5;
+pub(crate) const GATE_PRESENT_TYPE: usize = GATE_OFFSET + 5;
 const GATE: [u8; 16] = [
     0x00, 0x20, 0x08, 0x00, 0x00, 0x8e, 0x40, 0x00, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
@@ -210,7 +210,7 @@ pub struct LoadedStage4PagedIrqProbe {
     injection: Stage4PagedIrqInjection,
 }
 
-fn context() -> AccessContext {
+pub(crate) fn context() -> AccessContext {
     AccessContext {
         mode: InstructionMode::Long64,
         privilege: PrivilegeLevel::Ring0,
@@ -599,8 +599,9 @@ fn qword_at(image: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(image[offset..offset + 8].try_into().expect("fixed qword"))
 }
 
-/// The one image this profile accepts.
-fn expected_image() -> Vec<u8> {
+/// The one image this profile accepts. `main_code` is the only part a sibling profile
+/// (S4-27i4a) replaces.
+pub(crate) fn expected_image(main_code: &[u8]) -> Vec<u8> {
     let mut image = vec![0u8; STAGE4_PAGED_IRQ_IMAGE_BYTES];
     let base = STAGE4_FLAT_PROBE_IMAGE_GPA;
     let mut put = |gpa: u64, bytes: &[u8]| {
@@ -610,15 +611,15 @@ fn expected_image() -> Vec<u8> {
     for (gpa, value) in ENTRIES {
         put(gpa, &value.to_le_bytes());
     }
-    put(MAIN_GPA, &MAIN_CODE);
+    put(MAIN_GPA, main_code);
     put(HANDLER_GPA, &HANDLER_CODE);
     put(IDT_GPA + GATE_OFFSET as u64, &GATE);
     put(GDT_GPA, &GDT);
     image
 }
 
-fn validate(image: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
-    let expected = expected_image();
+pub(crate) fn validate(image: &[u8], main_code: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
+    let expected = expected_image(main_code);
     // Page tables are reported per entry; every other page is reported by its page base.
     let table_end = 0x6000 - STAGE4_FLAT_PROBE_IMAGE_GPA as usize;
     for o in (0..table_end).step_by(8) {
@@ -653,7 +654,21 @@ pub fn load_stage4_paged_irq_probe(
             actual: image.len(),
         });
     }
-    validate(image)?;
+    validate(image, &MAIN_CODE)?;
+    let (bus, apic) = build_bus(image)?;
+    let state = handoff_state(0x202);
+    Ok(LoadedStage4PagedIrqProbe {
+        bus,
+        state,
+        apic,
+        injection: Stage4PagedIrqInjection::None,
+    })
+}
+
+/// Bus with the fixed memory map, the image and a software-enabled Local APIC.
+pub(crate) fn build_bus(
+    image: &[u8],
+) -> Result<(MachineBus, LocalApicHandle), Stage4FlatProbeLoadError> {
     let region = |base: u64, len: u64, kind| {
         GuestPhysicalRange::new(GuestPhysicalAddress::new(base), len)
             .map(|range| MemoryRegionSpec::new(range, kind))
@@ -702,9 +717,14 @@ pub fn load_stage4_paged_irq_probe(
         |_| {},
     )
     .map_err(Stage4FlatProbeLoadError::UartConfiguration)?;
+    Ok((bus, apic))
+}
+
+/// Loader CPU handoff. `rflags` is 0x202 (IF=1) for S4-27h.
+pub(crate) fn handoff_state(rflags: u64) -> LongModeState {
     let mut state = LongModeState {
         rip: STAGE4_PAGED_IRQ_MAIN_GVA,
-        rflags: 0x202,
+        rflags,
         cr0: Some(CR0),
         cr3: Some(STAGE4_FLAT_PROBE_CR3),
         cr4: Some(CR4),
@@ -737,10 +757,5 @@ pub fn load_stage4_paged_irq_probe(
     state.gpr[Register::Rax as usize] = 0;
     state.gpr[Register::Rbx as usize] = STAGE4_PAGED_IRQ_EOI_GVA;
     state.gpr[Register::Rsp as usize] = STAGE4_PAGED_IRQ_INITIAL_RSP;
-    Ok(LoadedStage4PagedIrqProbe {
-        bus,
-        state,
-        apic,
-        injection: Stage4PagedIrqInjection::None,
-    })
+    state
 }

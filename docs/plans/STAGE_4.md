@@ -1611,7 +1611,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-27i4a. Paged STI/HLT-шаги и paged wake из HaltWait
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Оговорки: boundary-сценарий покрыт только machine-тестом (runner запускает wake); имена флагов инъекций отличаются от S4-27h (`--inject-idt-not-present`, `--inject-stack-read-only`); отказы входа терминальны (модель; на железе — последовательный #PF/#NP, вложенная доставка — S4-33); тип памяти LAPIC не моделируется; общий интерфейс бэкенда — в S4-27i4b.
 - **Контракт:** на paged Long64/CPL0 профиле (4 KiB, CR0/CR4=BASE, EFER=0xd00) появляются шаги STI и HLT, нужные pump, и paged wake из HaltWait через `deliver_paged_external_interrupt` (S4-27h). Один вектор, caller-driven: запрос ставит caller, пробуждение и вход выполняет принятый путь S4-27h, возврат — `step_paged_iretq`. Образ — тот же, что у S4-27h, но с `STI; HLT`. Допуски (как у S4-27h) и граница по CR — из принятых предусловий S4-19/S4-27h.
 - **Проверка:** образ S4-27h с `STI; HLT`; A/D страниц (main, handler, IDT, GDT, стек, LAPIC); wake из HLT и вход на границе, RIP кадра, IRR/ISR, RSP/RFLAGS; инъекция «IDT P=0» даёт `OutsideProfile(InvalidGate)` до коммита и HaltWait остаётся (IRR сохранён, ISR пуст); инъекция «страница стека RO» даёт архитектурный отказ доставки (как в S4-27h). Все исходы различимы по (stop, steps, IRR/ISR, RSP, RIP, A/D).
 - **Граница:** один вектор; только CR0/CR4=BASE; без paged-таймера (i4b, см. ниже); без pump поверх paged-бэкенда (i4b); без вложенных событий (S4-33); CPL3 и IST≠0 не входят; тип памяти LAPIC не моделируется.

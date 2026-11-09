@@ -15,6 +15,7 @@ mod stage4_interrupt_pump_probe;
 mod stage4_interrupt_queue_probe;
 mod stage4_interrupt_timer_probe;
 mod stage4_paged_irq_probe;
+mod stage4_paged_sti_hlt_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
 mod stage4_probe;
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
         Some("--stage4-interrupt-queue-probe") => return stage4_interrupt_queue_probe::run(&args),
         Some("--stage4-interrupt-timer-probe") => return stage4_interrupt_timer_probe::run(&args),
         Some("--stage4-paged-irq-probe") => return stage4_paged_irq_probe::run(&args),
+        Some("--stage4-paged-sti-hlt-probe") => return stage4_paged_sti_hlt_probe::run(&args),
         Some("--stage4-pf-repair-probe") => return stage4_pf_repair_probe::run(&args),
         Some("--stage4-pit-calibrate-probe") => return stage4_pit_calibrate_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
