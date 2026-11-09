@@ -1036,3 +1036,121 @@ fn the_value_is_sampled_before_the_tick_and_reset_drops_the_queue() {
         (0, 0)
     );
 }
+
+// --- S4-37a3: the counter-port tick on 0x42 (ISSUE-067) --------------------
+
+fn setup_counter_tick() -> (Pit8254Devices, VirtualClockHandle) {
+    let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+    let mut dev = Pit8254Devices::new_with_counter_tick(clock.clone());
+    dev.port_b.write(acc(0, BYTE), 0x01).unwrap();
+    (dev, clock)
+}
+
+#[test]
+fn counter_tick_is_off_by_default_and_on_for_the_board_constructor() {
+    // `new` keeps the S4-29d accounting: 0x42 reads queue nothing.
+    let (mut off, _) = setup();
+    program(&mut off.pit, 0xB0, 100, Some(0));
+    inb(&mut off.pit, 2);
+    assert_eq!(off.handle.counter_port_reads(), 0);
+    assert_eq!(off.handle.take_port_tick_ns(), 0);
+    // The board constructor queues 1 us per channel 2 read.
+    let (mut on, _) = setup_counter_tick();
+    program(&mut on.pit, 0xB0, 100, Some(0));
+    inb(&mut on.pit, 2);
+    assert_eq!(on.handle.counter_port_reads(), 1);
+    assert!(on.handle.port_tick_pending());
+    assert_eq!(on.handle.take_port_tick_ns(), PIT_PORT_B_READ_TICK_NS);
+    assert!(!on.handle.port_tick_pending());
+}
+
+#[test]
+fn every_counter_read_of_channel_2_queues_one_microsecond_and_shares_the_queue_with_port_b() {
+    let (mut dev, clock) = setup_counter_tick();
+    program(&mut dev.pit, 0xB0, 0xFF, Some(0xFF));
+    // Live bytes, then a latched pair: all four are counter reads.
+    for _ in 0..2 {
+        inb(&mut dev.pit, 2);
+    }
+    out(&mut dev.pit, 3, 0x80).unwrap();
+    for _ in 0..2 {
+        inb(&mut dev.pit, 2);
+    }
+    assert_eq!(dev.handle.counter_port_reads(), 4);
+    assert_eq!(dev.handle.port_b_reads(), 0);
+    port_b(&mut dev);
+    assert_eq!(dev.handle.port_b_reads(), 1);
+    assert_eq!(
+        clock.snapshot().now_ns(),
+        0,
+        "the device never moves the clock"
+    );
+    assert_eq!(dev.handle.take_port_tick_ns(), 5_000, "4 x 0x42 + 1 x 0x61");
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+}
+
+#[test]
+fn the_counter_value_is_sampled_before_the_tick() {
+    let (mut dev, clock) = setup_counter_tick();
+    program(&mut dev.pit, 0xA0, 0x10, None); // MSB only, mode 0, reload 0x1000
+    let first = inb(&mut dev.pit, 2);
+    let second = inb(&mut dev.pit, 2);
+    assert_eq!((first, second), (0x10, 0x10), "no clock move, no new value");
+    advance(&clock, dev.handle.take_port_tick_ns());
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+    // Two queued reads are 2 us = 2 PIT ticks: the counter is 0x0FFE, MSB 0x0F.
+    advance(&clock, 2 * PIT_PORT_B_READ_TICK_NS);
+    let third = inb(&mut dev.pit, 2);
+    assert_eq!(third, 0x0F);
+}
+
+#[test]
+fn a_refused_counter_read_without_a_loaded_count_does_not_tick() {
+    let (mut dev, _) = setup_counter_tick();
+    out(&mut dev.pit, 3, 0xA0).unwrap(); // control word only, no count loaded
+    assert_eq!(
+        dev.pit.read(acc(2, BYTE)),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.counter_port_reads(), 0);
+    assert!(!dev.handle.port_tick_pending());
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+}
+
+#[test]
+fn channel_0_reads_writes_control_words_and_refused_reads_do_not_tick() {
+    let (mut dev, _) = setup_counter_tick();
+    program(&mut dev.pit, 0x30, 10, Some(0));
+    inb(&mut dev.pit, 0);
+    inb(&mut dev.pit, 0);
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    out(&mut dev.pit, 3, 0x80).unwrap();
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+    // A refused read (channel 1, the write-only control port) is not a tick.
+    assert!(dev.pit.read(acc(1, BYTE)).is_err());
+    assert!(dev.pit.read(acc(3, BYTE)).is_err());
+    assert_eq!(dev.handle.counter_port_reads(), 0);
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+    // Channel 2 holding a count with gate 2 low refuses the read (forced state).
+    dev.handle.shared.lock().gate2 = false;
+    assert_eq!(
+        dev.pit.read(acc(2, BYTE)),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.counter_port_reads(), 0);
+    assert_eq!(dev.handle.take_port_tick_ns(), 0);
+}
+
+#[test]
+fn reset_drops_the_counter_reads_and_the_queue_but_keeps_the_mode() {
+    let (mut dev, _) = setup_counter_tick();
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    inb(&mut dev.pit, 2);
+    dev.handle.reset();
+    assert_eq!(dev.handle.counter_port_reads(), 0);
+    assert!(!dev.handle.port_tick_pending());
+    dev.port_b.write(acc(0, BYTE), 0x01).unwrap();
+    program(&mut dev.pit, 0xB0, 100, Some(0));
+    inb(&mut dev.pit, 2);
+    assert_eq!(dev.handle.take_port_tick_ns(), PIT_PORT_B_READ_TICK_NS);
+}

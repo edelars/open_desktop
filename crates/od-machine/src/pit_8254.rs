@@ -52,10 +52,21 @@
 //! returned by the read is sampled before the tick. The device does not move
 //! the clock itself (the clock has one advancer, the vCPU session); the clock
 //! owner takes the queued time with [`Pit8254Handle::take_port_tick_ns`] after
-//! the instruction and advances the clock by it. Counter-port reads (`0x42`) and
-//! the PM timer are not time ports in this slice.
+//! the instruction and advances the clock by it. The PM timer is a separate
+//! device (S4-37a2).
+//!
+//! # Counter-port tick (S4-37a3; ISSUE-067)
+//!
+//! The same applies to every successful read of the channel 2 counter (`0x42`,
+//! a live byte or a latched byte): [`PIT_PORT_B_READ_TICK_NS`] is queued in the
+//! same queue, after the value is sampled, and the device still does not move the
+//! clock. It is opt-in: [`Pit8254Devices::new`] leaves it off (the S4-29d probe
+//! profile keeps its own `0x61`-only accounting); the Linux profile of the
+//! firmware board builds the devices with [`Pit8254Devices::new_with_counter_tick`].
+//! Channel 0 reads, writes and control words never tick; a refused read does not.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, VirtualClockHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// First port of the counters (`0x40` channel 0, `0x42` channel 2, `0x43` control).
@@ -399,10 +410,13 @@ impl PitSnapshot {
     }
 }
 
-/// Port B reads seen by the device and the virtual time queued by them.
+/// Time-port reads seen by the device and the virtual time queued by them.
 #[derive(Clone, Copy, Debug, Default)]
 struct PortTick {
+    /// Successful port B reads.
     reads: u64,
+    /// Successful channel 2 counter reads that queued a tick (S4-37a3).
+    counter_reads: u64,
     pending_ns: u64,
 }
 
@@ -410,6 +424,8 @@ struct PortTick {
 struct Shared {
     state: Mutex<PitSnapshot>,
     port_tick: Mutex<PortTick>,
+    /// Whether a channel 2 counter read queues a port tick (S4-37a3).
+    counter_tick: AtomicBool,
     clock: VirtualClockHandle,
 }
 
@@ -456,15 +472,35 @@ impl Pit8254Handle {
         self.shared.lock_port_tick().reads
     }
 
-    /// Takes the virtual time queued by port B reads (the port tick), leaving
-    /// zero. The clock owner advances its clock by the returned amount.
+    /// Successful channel 2 counter reads (`0x42`) that queued a tick since
+    /// construction or reset (S4-37a3).
+    pub fn counter_port_reads(&self) -> u64 {
+        self.shared.lock_port_tick().counter_reads
+    }
+
+    /// Whether a time-port read has queued time that nobody has taken yet.
+    pub fn port_tick_pending(&self) -> bool {
+        self.shared.lock_port_tick().pending_ns != 0
+    }
+
+    /// Test injection (S4-37a3): switches the `0x42` tick on or off. Never
+    /// called in production code.
+    #[cfg(test)]
+    pub(crate) fn set_counter_port_tick(&self, enabled: bool) {
+        self.shared.counter_tick.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Takes the virtual time queued by port B reads and, when enabled, by
+    /// channel 2 counter reads (the port tick), leaving zero. The clock owner
+    /// advances its clock by the returned amount.
     pub fn take_port_tick_ns(&self) -> u64 {
         std::mem::take(&mut self.shared.lock_port_tick().pending_ns)
     }
 
     /// Machine reset: counters uninitialised, `OUT` low (mode 0) or high
     /// (mode 2) only after a control word, gate 2 and speaker data cleared,
-    /// the port B read count and the queued port tick dropped.
+    /// the port B read count, the counter-port read count and the queued port
+    /// tick dropped.
     pub fn reset(&self) {
         *self.shared.lock() = PitSnapshot::default();
         *self.shared.lock_port_tick() = PortTick::default();
@@ -490,10 +526,22 @@ pub struct Pit8254Devices {
 }
 
 impl Pit8254Devices {
+    /// The devices with the port tick on `0x61` only.
     pub fn new(clock: VirtualClockHandle) -> Self {
+        Self::build(clock, false)
+    }
+
+    /// As [`Self::new`], plus the port tick on channel 2 counter reads `0x42`
+    /// (S4-37a3, the Linux profile of the firmware board).
+    pub fn new_with_counter_tick(clock: VirtualClockHandle) -> Self {
+        Self::build(clock, true)
+    }
+
+    fn build(clock: VirtualClockHandle, counter_tick: bool) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(PitSnapshot::default()),
             port_tick: Mutex::new(PortTick::default()),
+            counter_tick: AtomicBool::new(counter_tick),
             clock,
         });
         Self {
@@ -538,6 +586,13 @@ impl BusDevice for Pit8254 {
         let mut next = *state;
         let byte = next.channel_mut(channel).read_data(tick)?;
         *state = next;
+        drop(state);
+        // The byte is sampled; a channel 2 read then costs one port tick (S4-37a3).
+        if channel == PitChannel::Channel2 && self.shared.counter_tick.load(Ordering::Relaxed) {
+            let mut port_tick = self.shared.lock_port_tick();
+            port_tick.counter_reads += 1;
+            port_tick.pending_ns += PIT_PORT_B_READ_TICK_NS;
+        }
         Ok(u64::from(byte))
     }
 

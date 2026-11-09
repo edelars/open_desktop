@@ -17,8 +17,8 @@ use crate::{
     NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT,
     PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
     PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
-    PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices, PortAddress,
-    PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
+    PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices, Pit8254Handle,
+    PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
     Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
 };
 use od_isa::memory::{
@@ -796,6 +796,8 @@ pub struct LoadedFirmwareBoard {
     display: DisplayHandle,
     nvme: Option<NvmeHandle>,
     acpi_pm: Option<AcpiPmHandle>,
+    /// The PIT observer of the Linux profile (S4-37a3); `None` without the flag.
+    pit: Option<Pit8254Handle>,
     /// Shared with the PM timer; this board is the only advancer.
     clock: VirtualClockHandle,
     handoff: Vec<u8>,
@@ -910,6 +912,10 @@ impl LoadedFirmwareBoard {
     /// cleared at the start (host reads through `bus_mut` never move the clock).
     /// A guest read of the PM timer ends the quantum after its instruction, and
     /// the queued 1 us is applied to the clock before the next instruction.
+    /// The same holds for the PIT port tick of the Linux profile (S4-37a3):
+    /// guest reads of port B `0x61` and of the channel 2 counter `0x42` queue
+    /// 1 us each; the queue is cleared at the start and applied after each
+    /// quantum together with the PM timer ticks.
     pub fn run_boot(
         &mut self,
         instruction_budget: u64,
@@ -920,9 +926,13 @@ impl LoadedFirmwareBoard {
         self.com1_log.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
+        let pit = self.pit.clone();
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
+        }
+        if let Some(pit) = &pit {
+            pit.take_port_tick_ns();
         }
         // Doorbells the host rang before the run are executed before the guest starts.
         if let Some(nvme) = &nvme {
@@ -941,6 +951,8 @@ impl LoadedFirmwareBoard {
                         // A guest PM timer read ends the quantum so that its tick
                         // reaches the clock before the next instruction.
                         || acpi_pm.as_ref().is_some_and(AcpiPmHandle::timer_tick_pending)
+                        // The same for a guest read of port B or of the PIT counter.
+                        || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
                 },
                 |_| {},
             );
@@ -963,6 +975,9 @@ impl LoadedFirmwareBoard {
                 #[cfg(test)]
                 let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
                 self.advance_time_ns(tick_ns)?;
+            }
+            if let Some(pit) = &pit {
+                self.advance_time_ns(pit.take_port_tick_ns())?;
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             let exit = match report.exit {
@@ -1105,6 +1120,7 @@ fn load_firmware_image_inner(
     // The PM timer reads the board's clock; the board stays its only advancer.
     let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
     let mut acpi_pm = None;
+    let mut pit_handle = None;
     if config.acpi_pm {
         let (device, handle) = AcpiPm::new_with_handle(clock.clone());
         ports.push(PortRegionBinding {
@@ -1129,7 +1145,9 @@ fn load_firmware_image_inner(
             Ok::<(), FirmwareBoardError>(())
         };
         // The PIT and port B read the same clock as the PM timer.
-        let pit = Pit8254Devices::new(pit_clock.unwrap_or_else(|| clock.clone()));
+        // Counter reads (0x42) tick like port B reads (S4-37a3).
+        let pit = Pit8254Devices::new_with_counter_tick(pit_clock.unwrap_or_else(|| clock.clone()));
+        pit_handle = Some(pit.handle.clone());
         bind(PIT_BASE_PORT, PIT_PORT_BYTES, Box::new(pit.pit))?;
         bind(PIT_PORT_B, PIT_PORT_B_BYTES, Box::new(pit.port_b))?;
         let pair = Pic8259Pair::new();
@@ -1212,6 +1230,7 @@ fn load_firmware_image_inner(
         display,
         nvme,
         acpi_pm,
+        pit: pit_handle,
         clock,
         handoff,
         page_table_bytes,
@@ -3173,6 +3192,131 @@ mod tests {
                 .bus_mut()
                 .read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
             Ok(u32::from(ACPI_PM1_CNT_SCI_EN))
+        );
+    }
+
+    // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----
+
+    /// `MOV DX,port; IN AL,DX x count` for each step, then `HLT`. The paged probe
+    /// has no compare and no jump (FIRMWARE_BOOT.md 7), so a wait on the PIT is a
+    /// straight run of byte reads; a counter wait loop cannot run on the board.
+    fn pit_reads_image(steps: &[(u16, usize)]) -> Vec<u8> {
+        let mut code = Vec::new();
+        for &(port, count) in steps {
+            let [lo, hi] = port.to_le_bytes();
+            code.extend([0x66, 0xba, lo, hi]);
+            code.extend(std::iter::repeat_n(0xec, count));
+        }
+        code.push(0xf4);
+        minor2_image(&code)
+    }
+
+    /// Host programming of channel 2: gate high, MSB-only mode 0, reload `0x1000`.
+    /// Host writes never tick.
+    fn program_channel_2(board: &mut LoadedFirmwareBoard) {
+        outb(board, 0x61, 0x01).unwrap();
+        outb(board, 0x43, 0xA0).unwrap();
+        outb(board, 0x42, 0x10).unwrap();
+    }
+
+    #[test]
+    fn n_guest_reads_of_pit_counter_0x42_move_the_clock_by_n_microseconds() {
+        let mut board =
+            load_firmware_image(&pit_reads_image(&[(0x42, 3)]), &linux_config()).unwrap();
+        program_channel_2(&mut board);
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 5, "MOV, 3 x IN, HLT");
+        assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
+        assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 0);
+        assert_eq!(report.virtual_ns, 5 + 3 * 1_000);
+        assert_eq!(board.clock().now_ns(), report.virtual_ns);
+    }
+
+    #[test]
+    fn guest_reads_of_0x61_and_0x42_both_tick_the_clock_in_run_boot() {
+        let mut board =
+            load_firmware_image(&pit_reads_image(&[(0x61, 2), (0x42, 3)]), &linux_config())
+                .unwrap();
+        program_channel_2(&mut board);
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 8, "2 x MOV, 5 x IN, HLT");
+        assert_eq!(board.pit.as_ref().unwrap().port_b_reads(), 2);
+        assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 3);
+        assert_eq!(report.virtual_ns, 8 + 5 * 1_000);
+    }
+
+    #[test]
+    fn a_guest_sees_the_pit_counter_move_because_each_0x42_read_ticks_the_clock() {
+        // Reload 0x1000, MSB only. 300 reads: the last one is sampled at
+        // 300 ns + 299 us = 299 300 ns = 357 PIT ticks, count 4096 - 357 = 0x0E9B.
+        let image = pit_reads_image(&[(0x42, 300)]);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        program_channel_2(&mut board);
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.virtual_ns, report.retired + 300 * 1_000);
+        assert_eq!(board.state().gpr[0] & 0xff, 0x0E, "AL: the counter moved");
+    }
+
+    #[test]
+    fn without_the_0x42_tick_the_same_guest_sees_a_frozen_counter() {
+        // Injection (test only): the tick on 0x42 is off, the one on 0x61 stays.
+        let image = pit_reads_image(&[(0x42, 300)]);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        board.pit.as_ref().unwrap().set_counter_port_tick(false);
+        program_channel_2(&mut board);
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(board.pit.as_ref().unwrap().counter_port_reads(), 0);
+        assert_eq!(
+            report.virtual_ns, report.retired,
+            "only instructions moved time"
+        );
+        assert_eq!(
+            board.state().gpr[0] & 0xff,
+            0x10,
+            "AL: the counter stood still"
+        );
+        // The tick on 0x61 is independent of the injection.
+        let mut board =
+            load_firmware_image(&pit_reads_image(&[(0x61, 4)]), &linux_config()).unwrap();
+        board.pit.as_ref().unwrap().set_counter_port_tick(false);
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.virtual_ns, report.retired + 4 * 1_000);
+    }
+
+    #[test]
+    fn host_pit_reads_through_bus_mut_do_not_move_the_clock_or_leak_into_a_run() {
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap();
+        program_channel_2(&mut board);
+        for _ in 0..2 {
+            inb(&mut board, 0x42).unwrap();
+            inb(&mut board, 0x61).unwrap();
+        }
+        assert_eq!(board.clock().now_ns(), 0, "host reads never move the clock");
+        // The queued host ticks are dropped when the run starts: only the HLT counts.
+        let report = board.run_boot(10).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.virtual_ns, 1);
+        assert_eq!(board.clock().now_ns(), 1);
+    }
+
+    #[test]
+    fn pit_ports_stay_unmapped_without_the_profile_and_a_guest_0x42_read_is_a_bus_error() {
+        let image = pit_reads_image(&[(0x42, 1)]);
+        let mut board = load_firmware_image(&image, &tables_config()).unwrap();
+        assert!(board.pit.is_none());
+        let report = board.run_boot(100).unwrap();
+        assert!(
+            matches!(report.exit, PagedProbeExit::PortIo(_)),
+            "{:?}",
+            report.exit
+        );
+        assert_eq!(
+            report.virtual_ns, report.retired,
+            "no tick without the profile"
         );
     }
 }
