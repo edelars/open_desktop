@@ -1440,7 +1440,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (закрыт срезами S4-26a, S4-26b, S4-26c; Claude Opus high). Оговорки и риски для S4-29/S4-38: active-low не моделируется (SCI GSI 9 — только под маской, unmask отказывает); нет EOI-регистра 0x40 и регистра 0x03; logical destination, lowest priority и маршрутизация на входах кроме INTIN4 не поддерживаются; раскладка регистров не сверена с текстом 82093AA.
 - **Где:** `od-machine`, board manifest.
 - **Сделать:** register select/window, redirection table, mask, vector, destination, polarity/trigger mode и remote-IRR для используемых level routes. Поддержанные routes имеют один источник описания.
 - **Проверка:** masked edge, unmask, level assert/deassert, повторный level после EOI, недопустимый destination/vector; гостевые config writes меняют поведение.
@@ -1467,6 +1467,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** только одна physical route, Fixed delivery, active-high и выбранные Dword registers; нет guest CPU handler/IDT/IF delivery, APIC bus, board wiring, Linux discovery, прочих IOAPIC entries, level-полярности, logical destinations или полного interrupt-controller reset semantics.
 
 - **Требование из ревью S4-31f:** MADT объявляет IOAPIC с ID = 1 и 24 входами (константы прошивки). Будущий регистр ID модели должен отдавать 1, Version — MRE = 23; иначе `mp_register_ioapic` в Linux получит другой диапазон GSI или ошибку шины. Проверить в S4-38.
+#### S4-26c. IOAPIC ID/Version, окно регистров и недопустимые dest/vector (ограниченный срез закрытия)
+
+- [x] Принято после ревью (Claude Opus, high; два раунда). Оговорки: active-low SCI на GSI 9 принимается только под маской (риск S4-29/S4-38); EOI 0x40 и регистр 0x03 не моделируются; logical destination и маршрутизация на входах кроме INTIN4 не поддерживаются; раскладка не сверена с текстом 82093AA.
+- **Где:** `od-machine` (`io_apic.rs`, `apic_pair.rs`), контракт в `MACHINE_CONTRACT.md`.
+- **Сделать:** IOAPIC ID (регистр 0x00) = 1, как объявляет MADT (S4-31f); Version (0x01) = 0x00170020 — версия 0x20, MRE = 23 (24 входа), по принятой спецификации IOAPIC; Arbitration ID (0x02) — хранение по принятой политике. Окно IOREGSEL/IOWIN (`0xFEC00000`): неизвестный select — отказ без изменения состояния. Недопустимые dest/vector (vector < 16 для fixed, зарезервированные delivery mode) — отказ без изменения. Guest config writes через окно меняют поведение (маска, vector, trigger).
+- **Проверка:** чтение ID/Version через окно; MRE = 23 совпадает с MADT (тест на согласованность); запись в IOREGSEL/IOWIN меняет redirection entry; неизвестный select и недопустимые dest/vector не меняют состояние; injected regression (ломаешь MRE или ID) — тест падает. Тесты в `--lib io_apic`.
+- **Граница:** logical destination routing не входит — записать как риск при logical flat mode ядра (см. S4-25f «Открыто»); multiple IOAPIC, PCI MSI не входят. Родитель S4-26 закрывается после этого среза при условии, что S4-26a–b и этот срез покрывают «Сделать».
+- **Готово:** IOAPIC отвечает ID/Version, согласованными с MADT; окно регистров — единственный путь конфигурации из гостя; ошибочные обращения не меняют состояние.
+
 ### S4-27. Соединить pending IRQ с CPU delivery
 
 - [ ] Принято после ревью.
