@@ -1668,8 +1668,9 @@ highest vector in ISR, preserving TPR's low nibble when its class wins or ties.
 eligible vector from IRR to ISR; it is a device-state operation and does not
 deliver a CPU interrupt or execute a handler. EOI clears the highest ISR bit.
 
-The xAPIC version register (`0x030`) is unsupported; no Version value is
-advertised because this slice has no implemented LVT entries. LVT, APIC-base
+The xAPIC version register (`0x030`) is unsupported in this slice (superseded
+by S4-25f below); no Version value is advertised because this slice has no
+implemented LVT entries. LVT, APIC-base
 MSR/relocation, x2APIC, IOAPIC/level routing, APIC timer, CPU interrupt
 delivery, IDT/IF/shadow interaction, HLT wakeup, and default board wiring are
 outside S4-25a. Non-supported offsets, widths, alignment and reserved writes
@@ -1897,7 +1898,8 @@ software disable может снять запрос между выбором и
 (periodic перезаряжается), не изменяет IRR/ISR/TMR и не воспроизводится при
 снятии маски; событие теряется по контракту, а не откладывается. Остальные LVT
 (CMCI `0x2f0`, Thermal `0x330`, Perf `0x340`, LINT0/1 `0x350`/`0x360`, Error
-`0x370`), Version (`0x30`) и ESR (`0x280`) не реализованы: чтение и запись дают
+`0x370`), Version (`0x30`) и ESR (`0x280`) не были реализованы (LINT0/1, Error,
+Version и ESR добавлены в S4-25f; CMCI, Thermal, Perf остаются так): чтение и запись дают
 `UnknownOffset` без изменения состояния. Без таймера отсутствуют и `0x320`,
 `0x380`, `0x390`, `0x3e0`.
 
@@ -1912,7 +1914,7 @@ global disable→enable; `reset` при Remote IRR отклоняется без
 | ISR, TMR, IRR (`0x100..0x270`, 24 слова) | `0` |
 | LVT Timer `0x320` | mask (`0x10000`) |
 | Initial/Current/Divide `0x380`/`0x390`/`0x3e0` | `0`, deadline отменён |
-| Version `0x30` | недоступен (`UnknownOffset`) |
+| Version `0x30` | `0x00030014` (с S4-25f; до него `UnknownOffset`) |
 
 **Приоритет и EOI.** Eligible только самый старший вектор IRR и только если его
 класс (bits 7:4) строго выше класса PPR; PPR берёт TPR, если класс TPR не ниже
@@ -1933,6 +1935,71 @@ global disable→enable; `reset` при Remote IRR отклоняется без
 [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
 Chapter 13. См. [отчёт S4-25e](../reports/STAGE_4_S4-25E_2026-11-08.md) и
 [методику](../testing/MACHINE.md#s4-25e-local-apic-закрытие).
+
+## Local APIC для Linux probe: Version, LINT0/LINT1, Error LVT, ESR, DFR/LDR (S4-25f)
+
+Срез снимает `DeviceError` с регистров, которые читает и пишет Linux-подобный
+probe APIC. Все новые регистры только хранят состояние: источников LINT-пинов
+и ошибок нет, доставка с них не реализована. Остальные правила (Dword, шаг 16,
+отказ при global disable, отсутствие мутации при отказе) прежние.
+
+**Version `0x30`.** Значение `0x00030014`: версия `0x14` (integrated APIC,
+`0x10..0xff`), Max LVT Entry = 3, то есть четыре LVT (Timer, LINT0, LINT1,
+Error), bit 24 (EOI-broadcast suppression) = 0. Значение согласуется с SDM
+Vol. 3A §13.4.8: Max LVT = число LVT минус 1 (Pentium: 4 LVT → 3). Версия `0x14`
+типична для P6/P4; других расхождений с SDM нет. Запись возвращает `ReadOnly`.
+Version доступен и без opt-in таймера, хотя Timer LVT без него отсутствует:
+Version описывает профиль APIC, а таймер остаётся opt-in моделью (Linux читает
+Max LVT до таймера и не сверяет его с наличием `0x320`).
+
+**LINT0 `0x350`, LINT1 `0x360`.** Reset `0x10000` (masked). Записываются vector
+(7:0), delivery mode (10:8), polarity (13), trigger (15) и mask (16); допустимые
+delivery mode: Fixed, SMI, NMI, INIT, ExtINT (`000/010/100/101/111`).
+Delivery Status (12) и Remote IRR (14) read-only: при записи отбрасываются и
+читаются нулём (как Delivery Status в ICR S4-25c; Timer LVT S4-28a отклоняет
+запись этих битов, это различие осознанное: Linux записывает значения,
+прочитанные из регистра). Bit 11, bits 31:17 и delivery mode `001/011/110`
+вызывают `UnsupportedConfiguration` без изменения. Vector не валидируется (в
+том числе < 16): LVT ничего не доставляет, проверка вектора принадлежит срезу с
+доставкой.
+
+**Error LVT `0x370`.** Reset `0x10000`. Записываются vector (7:0) и mask (16);
+bit 12 отбрасывается; bits 10:8, 11, 13..15 и 31:17 зарезервированы.
+
+**Mask и software disable.** Mask хранится и читается. Software disable SVR bit 8
+= 0 устанавливает mask во всех трёх LVT (SDM §13.4.7.2); снятие mask при
+software disable отклоняется (`UnsupportedConfiguration`, без изменений), как
+для Timer LVT. Запись masked значения разрешена. Mask не влияет на IRR/ISR/TMR:
+ни одна запись в LINT/Error LVT не создаёт запрос.
+
+**ESR `0x280`.** SDM §13.5.3: запись защёлкивает в ESR ошибки, накопленные с
+прошлой записи, и очищает лог; записанное значение игнорируется (принимается
+любой 32-битный; шире — `UnsupportedConfiguration`). Чтение возвращает
+защёлкнутое значение и ничего не очищает. Reset обнуляет оба. Источников ошибок
+в модели нет, поэтому лог всегда пуст, и ESR читается как 0. Выставление
+ошибок (illegal vector, send/receive accept, redundant vector) относится к
+срезу с доставкой. Запись ESR не меняет IRR, ISR, TMR и остальные регистры.
+
+**DFR `0xe0` и LDR `0xd0`.** Не сверено с исходником Linux 7.0 (ссылка по памяти). Нужны: `setup_local_APIC` в Linux вызывает
+`init_apic_ldr` (flat/cluster driver пишет DFR и LDR и читает LDR), поэтому без
+них probe получит `DeviceError`. Хранение без logical destination routing.
+DFR reset `0xffffffff` (flat, SDM §13.6.2.2): записывается только model
+(31:28), допустимы `0xf` (flat) и `0x0` (cluster); bits 27:0 читаются единицами
+и при записи игнорируются; другой model отклоняется. LDR reset `0`: записывается
+только logical ID (31:24); ненулевые bits 23:0 отклоняются. Logical destination
+по этим регистрам не вычисляется, ICR принимает прежний набор (Self shorthand).
+
+**Perf `0x340`, Thermal `0x330`, CMCI `0x2f0`.** Не реализованы: чтение и запись
+дают `UnknownOffset` без мутации. Условие: CPUID гостя не объявляет PMU
+(architectural performance monitoring), thermal monitoring (TM) и CMCI
+(MCG_CAP.CMCI), а Version отдаёт Max LVT = 3, поэтому Linux не обращается к
+`LVTPC`, `LVTTHMR` и `LVTCMCI`. При изменении CPUID эти LVT обязаны быть
+добавлены вместе с Max LVT.
+
+Не входят: доставка с LINT-пинов, NMI/SMI/INIT/ExtINT, доставка Error LVT,
+выставление ESR, x2APIC, multi-CPU, IOAPIC (S4-26c), CPU delivery, CPUID,
+Linux acceptance (S4-38). См. [отчёт S4-25f](../reports/STAGE_4_S4-25F_2026-11-09.md)
+и [методику](../testing/MACHINE.md#s4-25f-local-apic-для-linux-probe).
 
 ## Fixed-edge IOAPIC route (S4-26a)
 

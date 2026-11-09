@@ -1,7 +1,9 @@
 //! A deliberately incomplete one-CPU xAPIC register and fixed interrupt model.
 //!
-//! The version register is unavailable: its Max LVT field cannot represent
-//! zero implemented LVT entries. No CPU interrupt delivery is performed.
+//! The Version register (S4-25f) advertises an integrated APIC with four LVT
+//! entries (Timer, LINT0, LINT1, Error). LINT0/LINT1/Error LVT, DFR, LDR and
+//! ESR only store state: there is no LINT pin or error source, and no CPU
+//! interrupt delivery is performed.
 use crate::apic_pair::{LEVEL, MASK, PERIODIC, PairState, Timer};
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -26,7 +28,31 @@ pub(crate) struct State {
     pub(crate) irr: [u32; 8],
     pub(crate) isr: [u32; 8],
     pub(crate) tmr: [u32; 8],
+    /// LINT0/LINT1/Error LVT (S4-25f): storage and mask only, no source.
+    pub(crate) lint0: u32,
+    pub(crate) lint1: u32,
+    pub(crate) error_lvt: u32,
+    /// Destination Format and Logical Destination registers: storage only.
+    pub(crate) dfr: u32,
+    pub(crate) ldr: u32,
+    /// Latched Error Status Register and errors accumulated since the last
+    /// ESR write. Nothing sets `esr_pending` in this model.
+    pub(crate) esr: u32,
+    pub(crate) esr_pending: u32,
 }
+
+/// Version register: version 0x14 (integrated APIC), Max LVT entry 3 (four
+/// LVT entries: Timer, LINT0, LINT1, Error), no EOI-broadcast suppression.
+pub(crate) const VERSION: u32 = 0x0003_0014;
+const LVT_RESET: u32 = MASK;
+const DFR_RESET: u32 = 0xffff_ffff;
+/// Writable bits of LINT0/LINT1: vector, delivery mode, polarity, trigger,
+/// mask, plus the read-only Delivery Status (12) and Remote IRR (14), which
+/// are accepted and dropped.
+const LINT_BITS: u32 = 0x1_f7ff;
+/// Error LVT: vector, mask and the read-only Delivery Status (12).
+const ERROR_LVT_BITS: u32 = 0x1_10ff;
+const LVT_READ_ONLY_BITS: u32 = 0x5000;
 
 impl Default for State {
     fn default() -> Self {
@@ -39,6 +65,13 @@ impl Default for State {
             irr: [0; 8],
             isr: [0; 8],
             tmr: [0; 8],
+            lint0: LVT_RESET,
+            lint1: LVT_RESET,
+            error_lvt: LVT_RESET,
+            dfr: DFR_RESET,
+            ldr: 0,
+            esr: 0,
+            esr_pending: 0,
         }
     }
 }
@@ -386,6 +419,13 @@ impl BusDevice for LocalApic {
             }
             let value = match offset {
                 0x20 => 0, // fixed APIC ID
+                0x30 => VERSION,
+                0xd0 => s.ldr,
+                0xe0 => s.dfr,
+                0x280 => s.esr,
+                0x350 => s.lint0,
+                0x360 => s.lint1,
+                0x370 => s.error_lvt,
                 0x80 => u32::from(s.tpr),
                 0xa0 => u32::from(s.ppr()),
                 0xb0 => return Err(DeviceError::WriteOnly),
@@ -458,6 +498,10 @@ impl BusDevice for LocalApic {
                         if let Some(timer) = pair.timer.as_mut() {
                             timer.lvt |= MASK;
                         }
+                        // Software disable masks every LVT entry (SDM 13.4.7.2).
+                        pair.local.lint0 |= MASK;
+                        pair.local.lint1 |= MASK;
+                        pair.local.error_lvt |= MASK;
                     }
                     pair.local.svr = value as u16;
                     Ok(())
@@ -481,8 +525,46 @@ impl BusDevice for LocalApic {
                     pair.local.icr_high = value as u32;
                     Ok(())
                 }
-                0x80 | 0xb0 | 0xf0 | 0x300 | 0x310 => Err(DeviceError::UnsupportedConfiguration),
-                0x20 | 0xa0 => Err(DeviceError::ReadOnly),
+                // LINT0/LINT1/Error LVT: storage and mask only. Unmasking is
+                // refused while software disabled, like the Timer LVT.
+                0x350 | 0x360 | 0x370
+                    if value
+                        & !u64::from(if offset == 0x370 {
+                            ERROR_LVT_BITS
+                        } else {
+                            LINT_BITS
+                        })
+                        == 0
+                        && (offset == 0x370 || !matches!((value >> 8) & 7, 1 | 3 | 6))
+                        && (value & u64::from(MASK) != 0 || pair.local.svr & 0x100 != 0) =>
+                {
+                    let stored = value as u32 & !LVT_READ_ONLY_BITS;
+                    match offset {
+                        0x350 => pair.local.lint0 = stored,
+                        0x360 => pair.local.lint1 = stored,
+                        _ => pair.local.error_lvt = stored,
+                    }
+                    Ok(())
+                }
+                // Logical destination routing is not modelled. DFR keeps only
+                // the model nibble (flat 0xf, cluster 0x0); bits 27:0 read 1.
+                0xe0 if value <= u64::from(u32::MAX) && matches!(value >> 28, 0 | 0xf) => {
+                    pair.local.dfr = value as u32 | 0x0fff_ffff;
+                    Ok(())
+                }
+                0xd0 if value & !0xff00_0000 == 0 => {
+                    pair.local.ldr = value as u32;
+                    Ok(())
+                }
+                // The written value is ignored: the write latches the errors
+                // accumulated since the last write and clears the log.
+                0x280 if value <= u64::from(u32::MAX) => {
+                    pair.local.esr = std::mem::take(&mut pair.local.esr_pending);
+                    Ok(())
+                }
+                0x80 | 0xb0 | 0xf0 | 0x300 | 0x310 | 0x350 | 0x360 | 0x370 | 0xd0 | 0xe0
+                | 0x280 => Err(DeviceError::UnsupportedConfiguration),
+                0x20 | 0x30 | 0xa0 => Err(DeviceError::ReadOnly),
                 _ if bank(offset, 0x100).is_some()
                     || bank(offset, 0x180).is_some()
                     || bank(offset, 0x200).is_some() =>
@@ -1405,7 +1487,7 @@ mod tests {
             (0x120, 0, DeviceError::ReadOnly),
             (0x1a0, 0, DeviceError::ReadOnly),
             (0x230, 0, DeviceError::ReadOnly),
-            (0x30, 0, DeviceError::UnknownOffset),
+            (0x30, 0, DeviceError::ReadOnly), // S4-25f: Version is now read-only
             (0x300, 0, DeviceError::UnsupportedConfiguration),
             (0x84, 0, DeviceError::Misaligned),
         ] {
@@ -1473,6 +1555,16 @@ mod tests {
         write(bus, 0x310, 0xab00_0000).unwrap();
         write(bus, 0x80, 0x3f).unwrap();
         write(bus, 0x320, 0x40).unwrap();
+        // S4-25f registers.
+        write(bus, 0x350, 0x731).unwrap();
+        write(bus, 0x360, 0x8400).unwrap();
+        write(bus, 0x370, 0xfe).unwrap();
+        write(bus, 0xe0, 0x0fff_ffff).unwrap();
+        write(bus, 0xd0, 0x0100_0000).unwrap();
+        apic.0.lock().unwrap().local.esr_pending = 0x40;
+        write(bus, 0x280, 0).unwrap();
+        apic.0.lock().unwrap().local.esr_pending = 0x80;
+        assert_eq!(read(bus, 0x280), Ok(0x40));
         assert_eq!(read(bus, 0x1b0), Ok(1 << 17)); // TMR 0x71
         assert_eq!(read(bus, 0x120), Ok(1 << 17)); // ISR 0x51
         assert_eq!(read(bus, 0x230), Ok(1 << 1)); // IRR 0x61
@@ -1496,6 +1588,13 @@ mod tests {
             (0x380, 0),
             (0x390, 0),
             (0x3e0, 0),
+            (0x30, u64::from(VERSION)),
+            (0x350, u64::from(MASK)),
+            (0x360, u64::from(MASK)),
+            (0x370, u64::from(MASK)),
+            (0x280, 0),
+            (0xd0, 0),
+            (0xe0, 0xffff_ffff),
         ] {
             assert_eq!(read(bus, offset), Ok(expected), "{label} {offset:#x}");
         }
@@ -1508,8 +1607,8 @@ mod tests {
                 );
             }
         }
-        assert_eq!(read(bus, 0x30), Err(error(DeviceError::UnknownOffset)));
         assert_eq!(read(bus, 0xb0), Err(error(DeviceError::WriteOnly)));
+        assert_eq!(snapshot(apic).local.esr_pending, 0, "{label} esr log");
         assert_eq!(apic.pending(), None, "{label}");
         assert_eq!(apic.eligible(), None, "{label}");
         assert_eq!(apic.spurious_vector(), Some(0xff), "{label}");
@@ -1708,8 +1807,9 @@ mod tests {
     }
 
     #[test]
-    fn lvt_entries_other_than_timer_and_version_are_unsupported_without_effect() {
-        let lvts = [0x2f0, 0x330, 0x340, 0x350, 0x360, 0x370, 0x30, 0x280];
+    fn lvt_entries_other_than_timer_and_s4_25f_set_are_unsupported_without_effect() {
+        // S4-25f: Version, LINT0/1, Error and ESR were removed from this list.
+        let lvts = [0x2f0, 0x330, 0x340];
         let (mut bus, timer) = timer_setup(1_000_000_000);
         let (mut plain_bus, plain) = setup();
         for (bus, apic) in [(&mut bus, &timer), (&mut plain_bus, &plain)] {
@@ -1866,7 +1966,23 @@ mod tests {
         let supported = |o: u64| {
             matches!(
                 o,
-                0x20 | 0x80 | 0xa0 | 0xb0 | 0xf0 | 0x300 | 0x310 | 0x320 | 0x380 | 0x390 | 0x3e0
+                0x20 | 0x30
+                    | 0x80
+                    | 0xa0
+                    | 0xb0
+                    | 0xd0
+                    | 0xe0
+                    | 0xf0
+                    | 0x280
+                    | 0x300
+                    | 0x310
+                    | 0x320
+                    | 0x350
+                    | 0x360
+                    | 0x370
+                    | 0x380
+                    | 0x390
+                    | 0x3e0
             ) || (0x100..0x280).contains(&o)
         };
         let unknown = DeviceError::UnknownOffset;
@@ -1909,7 +2025,24 @@ mod tests {
             (0x3e0, 0x4, UC),
             (0x3e0, 0x10, UC),
             (0x3e0, 0x1_0000_000b, UC),
+            (0x350, 0x800, UC), // reserved bit 11
+            (0x350, 0x20_0000, UC),
+            (0x350, 0x1_0000_0000, UC),
+            (0x350, 0x100, UC), // reserved delivery mode 001
+            (0x360, 0x300, UC), // reserved delivery mode 011
+            (0x360, 0x600, UC), // reserved delivery mode 110
+            (0x370, 0x100, UC), // Error LVT has no delivery mode
+            (0x370, 0x2000, UC),
+            (0x370, 0x8000, UC),
+            (0x370, 0x1_0000_00fe, UC),
+            (0xd0, 0x01, UC),
+            (0xd0, 0x00ff_ffff, UC),
+            (0xd0, 0x1_0000_0000, UC),
+            (0xe0, 0x1fff_ffff, UC), // undefined model
+            (0xe0, 0x1_ffff_ffff, UC),
+            (0x280, 0x1_0000_0000, UC),
             (0x20, 0, ro.clone()),
+            (0x30, 0, ro.clone()),
             (0xa0, 0, ro.clone()),
             (0x390, 0, ro.clone()),
         ];
@@ -1954,5 +2087,231 @@ mod tests {
         // The rejected traffic did not wedge the device.
         write(&mut bus, 0x80, 0x20).unwrap();
         assert_eq!(read(&mut bus, 0x80), Ok(0x20));
+    }
+
+    // ---- S4-25f: Linux probe registers ------------------------------------
+
+    const LVT_REGS: [u64; 3] = [0x350, 0x360, 0x370];
+
+    #[test]
+    fn version_reads_integrated_four_lvt_and_is_read_only() {
+        let (mut bus, apic) = setup();
+        assert_eq!(read(&mut bus, 0x30), Ok(0x0003_0014));
+        let before = snapshot(&apic);
+        for value in [0, 0x0003_0014, u64::from(u32::MAX)] {
+            assert_eq!(
+                write(&mut bus, 0x30, value),
+                Err(error(DeviceError::ReadOnly))
+            );
+        }
+        assert_eq!(snapshot(&apic), before);
+        assert_eq!(read(&mut bus, 0x30), Ok(0x0003_0014));
+        // Version bits: 7:0 version, 23:16 Max LVT entry, 24 EOI-broadcast.
+        assert_eq!(VERSION & 0xff, 0x14);
+        assert_eq!((VERSION >> 16) & 0xff, 3);
+        assert_eq!(VERSION >> 24, 0);
+        // Readable with or without an opt-in timer.
+        let (mut timer_bus, _) = timer_setup(1_000_000_000);
+        assert_eq!(read(&mut timer_bus, 0x30), Ok(0x0003_0014));
+    }
+
+    #[test]
+    fn lint_and_error_lvt_reset_masked_and_store_mask_and_vector() {
+        let (mut bus, apic) = setup();
+        for offset in LVT_REGS {
+            assert_eq!(read(&mut bus, offset), Ok(0x1_0000), "{offset:#x}");
+        }
+        // Software disabled after reset: masked writes work, unmask is refused.
+        for offset in LVT_REGS {
+            write(&mut bus, offset, 0x1_00fe).unwrap();
+            assert_eq!(read(&mut bus, offset), Ok(0x1_00fe));
+            let before = snapshot(&apic);
+            assert_eq!(write(&mut bus, offset, 0xfe), Err(error(UC)), "{offset:#x}");
+            assert_eq!(snapshot(&apic), before);
+        }
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        // Linux values: LINT0 ExtINT, LINT1 NMI, Error vector 0xfe; each also
+        // masked and then restored unmasked.
+        for (offset, value) in [(0x350, 0x700), (0x360, 0x400), (0x370, 0xfe)] {
+            write(&mut bus, offset, value).unwrap();
+            assert_eq!(read(&mut bus, offset), Ok(value));
+            write(&mut bus, offset, value | 0x1_0000).unwrap();
+            assert_eq!(read(&mut bus, offset), Ok(value | 0x1_0000));
+            write(&mut bus, offset, value).unwrap();
+            assert_eq!(read(&mut bus, offset), Ok(value));
+        }
+        // LINT entries keep polarity, trigger and every valid delivery mode;
+        // Delivery Status (12) and Remote IRR (14) are dropped on write.
+        for mode in [0u64, 2, 4, 5, 7] {
+            let value = 0xa000 | (mode << 8) | 0x33;
+            write(&mut bus, 0x350, value | 0x5000).unwrap();
+            assert_eq!(read(&mut bus, 0x350), Ok(value));
+        }
+        write(&mut bus, 0x370, 0x10fe).unwrap();
+        assert_eq!(read(&mut bus, 0x370), Ok(0xfe));
+        // Vector 0 and < 16 are stored: nothing is delivered from these LVTs.
+        write(&mut bus, 0x360, 0x1_0005).unwrap();
+        assert_eq!(read(&mut bus, 0x360), Ok(0x1_0005));
+    }
+
+    #[test]
+    fn lint_and_error_lvt_have_no_effect_on_requests() {
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x41).unwrap();
+        let irr = |a: &LocalApicHandle| {
+            let s = snapshot(a).local;
+            (s.irr, s.isr, s.tmr)
+        };
+        let before = irr(&apic);
+        for offset in LVT_REGS {
+            for value in [0xfe, 0x1_00fe] {
+                write(&mut bus, offset, value).unwrap();
+                assert_eq!(irr(&apic), before);
+            }
+        }
+        assert_eq!(apic.pending(), Some(0x41));
+    }
+
+    #[test]
+    fn software_disable_masks_new_lvts_and_unmask_is_refused_until_enable() {
+        let (mut bus, apic) = setup();
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        for offset in LVT_REGS {
+            write(&mut bus, offset, 0x31).unwrap();
+        }
+        write(&mut bus, 0xf0, 0xff).unwrap();
+        for offset in LVT_REGS {
+            assert_eq!(read(&mut bus, offset), Ok(0x1_0031), "{offset:#x}");
+        }
+        let before = snapshot(&apic);
+        for offset in LVT_REGS {
+            assert_eq!(write(&mut bus, offset, 0x31), Err(error(UC)));
+        }
+        assert_eq!(snapshot(&apic), before);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        write(&mut bus, 0x350, 0x31).unwrap();
+        assert_eq!(read(&mut bus, 0x350), Ok(0x31));
+    }
+
+    #[test]
+    fn esr_write_latches_accumulated_errors_and_zero_state_is_stable() {
+        let (mut bus, apic) = setup();
+        // No source: the log is empty, so read-after-write is always 0.
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        // The mechanism with an injected error log.
+        apic.0.lock().unwrap().local.esr_pending = 0x20;
+        assert_eq!(read(&mut bus, 0x280), Ok(0), "read alone does not latch");
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0x20));
+        assert_eq!(read(&mut bus, 0x280), Ok(0x20), "read does not clear");
+        assert_eq!(snapshot(&apic).local.esr_pending, 0);
+        // The value written is ignored; the next write clears the latch.
+        write(&mut bus, 0x280, 0xdead_beef).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        // A nonzero value does not inject errors or retain the latch.
+        apic.0.lock().unwrap().local.esr_pending = 0x08;
+        write(&mut bus, 0x280, 0xffff_ffff).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0x08));
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+    }
+
+    #[test]
+    fn esr_write_does_not_touch_irr_isr_tmr_or_other_registers() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        dirty(&mut bus, &apic);
+        apic.0.lock().unwrap().local.esr_pending = 0;
+        let mut before = snapshot(&apic);
+        write(&mut bus, 0x280, 0).unwrap();
+        before.local.esr = 0;
+        assert_eq!(snapshot(&apic), before);
+        // Only the latch moves when a log exists.
+        apic.0.lock().unwrap().local.esr_pending = 4;
+        write(&mut bus, 0x280, 0).unwrap();
+        let after = snapshot(&apic);
+        assert_eq!(after.local.irr, before.local.irr);
+        assert_eq!(after.local.isr, before.local.isr);
+        assert_eq!(after.local.tmr, before.local.tmr);
+        assert_eq!((after.local.esr, after.local.esr_pending), (4, 0));
+    }
+
+    #[test]
+    fn dfr_and_ldr_store_without_routing() {
+        let (mut bus, apic) = setup();
+        assert_eq!(read(&mut bus, 0xe0), Ok(0xffff_ffff));
+        assert_eq!(read(&mut bus, 0xd0), Ok(0));
+        write(&mut bus, 0xe0, 0x0fff_ffff).unwrap(); // cluster model
+        assert_eq!(read(&mut bus, 0xe0), Ok(0x0fff_ffff));
+        write(&mut bus, 0xe0, 0xffff_ffff).unwrap(); // flat model
+        assert_eq!(read(&mut bus, 0xe0), Ok(0xffff_ffff));
+        write(&mut bus, 0xe0, 0x0000_0000).unwrap(); // reserved bits read as 1
+        assert_eq!(read(&mut bus, 0xe0), Ok(0x0fff_ffff));
+        write(&mut bus, 0xd0, 0x0100_0000).unwrap();
+        assert_eq!(read(&mut bus, 0xd0), Ok(0x0100_0000));
+        // Logical ID does not affect requests or pending vectors.
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        apic.request_fixed_edge(0x41).unwrap();
+        assert_eq!(apic.eligible(), Some(0x41));
+        let before = snapshot(&apic);
+        for (offset, value) in [(0xe0, 0x1fff_ffff), (0xd0, 1)] {
+            assert_eq!(write(&mut bus, offset, value), Err(error(UC)));
+        }
+        assert_eq!(snapshot(&apic), before);
+    }
+
+    #[test]
+    fn perf_thermal_cmci_stay_unknown_offset() {
+        // CPUID must not advertise PMU, thermal monitoring or CMCI while these
+        // registers are absent; Version reports Max LVT = 3.
+        let (mut bus, timer) = timer_setup(1_000_000_000);
+        let (mut plain_bus, plain) = setup();
+        for (bus, apic) in [(&mut bus, &timer), (&mut plain_bus, &plain)] {
+            let before = snapshot(apic);
+            for offset in [0x2f0, 0x330, 0x340] {
+                assert_eq!(
+                    read(bus, offset),
+                    Err(error(DeviceError::UnknownOffset)),
+                    "{offset:#x}"
+                );
+                for value in [0, 0x1_0000, u64::MAX] {
+                    assert_eq!(
+                        write(bus, offset, value),
+                        Err(error(DeviceError::UnknownOffset))
+                    );
+                }
+            }
+            assert_eq!(snapshot(apic), before);
+        }
+    }
+
+    #[test]
+    fn new_registers_reject_bad_width_space_and_alignment_without_change() {
+        use AccessWidth::{Byte, Dword, Qword, Word};
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        dirty(&mut bus, &apic);
+        let before = snapshot(&apic);
+        let mut device = LocalApic(Arc::clone(&apic.0));
+        for offset in [0x30u64, 0x280, 0x350, 0x360, 0x370, 0xd0, 0xe0] {
+            for (space, width, delta, expected) in [
+                (IoSpace::Pio, Dword, 0, DeviceError::UnsupportedSpace),
+                (IoSpace::Mmio, Byte, 0, DeviceError::UnsupportedWidth),
+                (IoSpace::Mmio, Word, 0, DeviceError::UnsupportedWidth),
+                (IoSpace::Mmio, Qword, 0, DeviceError::UnsupportedWidth),
+                (IoSpace::Mmio, Dword, 4, DeviceError::Misaligned),
+                (IoSpace::Mmio, Dword, 1, DeviceError::Misaligned),
+            ] {
+                let access = DeviceAccess {
+                    space,
+                    offset: offset + delta,
+                    width,
+                };
+                assert_eq!(device.read(access), Err(expected.clone()));
+                assert_eq!(device.write(access, 0), Err(expected));
+            }
+        }
+        assert_eq!(snapshot(&apic), before);
     }
 }

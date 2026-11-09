@@ -1,0 +1,46 @@
+{
+  "slice": "S4-25f",
+  "date": "2026-11-09",
+  "status": "pending-review",
+  "scope": "Local APIC registers for a Linux-like probe: Version, LINT0/LINT1, Error LVT, ESR, DFR/LDR (storage only, no delivery sources)",
+  "source": "Intel 64 and IA-32 SDM release 093, Volume 3A Chapter 13",
+  "review": "pending",
+  "registers": {
+    "version_0x30": "0x00030014 read-only",
+    "lint0_0x350": "reset 0x10000, stored, no delivery",
+    "lint1_0x360": "reset 0x10000, stored, no delivery",
+    "error_lvt_0x370": "reset 0x10000, stored, no delivery",
+    "esr_0x280": "write latches accumulated log and clears it, read returns latch, no error source",
+    "dfr_0xe0": "reset 0xffffffff, model nibble 0xf/0x0 stored, no routing",
+    "ldr_0xd0": "reset 0, logical ID stored, no routing",
+    "perf_thermal_cmci": "not added: 0x340/0x330/0x2f0 stay UnknownOffset; CPUID must not advertise PMU, TM, CMCI"
+  },
+  "tests": {
+    "local_apic_total": 39,
+    "local_apic_new": 9,
+    "local_apic_existing": 30,
+    "existing_tests_with_changed_expectations": 4
+  },
+  "checks": {
+    "local_apic": "cargo test -p od-machine --lib local_apic --offline -- --test-threads=1: 39 passed",
+    "diagnostic_vcpu": "34 passed",
+    "uart": "13 passed",
+    "io_apic": "11 passed",
+    "uart_irq_probe": "10 passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "full": "cargo test -p od-machine --offline: 19 test result lines, all ok, 0 failed"
+  },
+  "injected_regressions": {
+    "lint0_mask_dropped_on_write": "1 of 39 failed",
+    "version_0x10": "1 of 39 failed",
+    "esr_write_does_not_clear_log": "2 of 39 failed",
+    "software_disable_does_not_mask_lint0": "1 of 39 failed",
+    "lint0_reset_zero": "2 of 39 failed"
+  },
+  "limitations": [
+    "no LINT pin delivery, NMI/SMI/INIT/ExtINT, Error LVT delivery or ESR error sources",
+    "Fixed LINT vector below 16 is not validated: nothing is delivered",
+    "DFR/LDR are storage only, no logical destination routing",
+    "CPUID consistency, x2APIC, multi-CPU, IOAPIC S4-26c, CPU delivery and Linux acceptance (S4-38) are out of scope"
+  ]
+}
