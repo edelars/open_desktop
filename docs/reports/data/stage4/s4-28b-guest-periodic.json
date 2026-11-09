@@ -1,0 +1,42 @@
+{
+  "slice": "S4-28b",
+  "date": "2026-11-09",
+  "status": "review_pending",
+  "scope": "Guest-visible periodic Local APIC timer on a shared virtual clock: handler+EOI loop, HLT wakes, ISR coalescing, a3 gate paths, pause/resume, TSC-deadline decision",
+  "guest_profile": "CPU-state built flat identity profile in diagnostic_vcpu/periodic_timer_tests.rs; no kernel fixture",
+  "checks": {
+    "periodic_timer_tests": "cargo test -p od-machine --lib diagnostic_vcpu::periodic_timer_tests --offline: 12 passed",
+    "od_machine_tests": "cargo test -p od-machine --lib --offline: 484 passed, 0 failed",
+    "od_isa_cpuid": "cargo test -p od-isa --lib cpuid --offline: 5 passed",
+    "package_check": "cargo check -p od-machine --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed"
+  },
+  "measured": {
+    "period_ns": 100,
+    "loop_interrupts": 8,
+    "halt_wakes": 3,
+    "in_service_dispatches": 3,
+    "in_service_dispatches_while_vector_in_service_delivered": 2,
+    "in_service_deliveries": 2,
+    "large_jump_periods": 10.5,
+    "large_jump_deliveries": 1
+  },
+  "injected_regressions": {
+    "eoi_noop": "5 of 12 tests fail",
+    "periodic_rearm_to_now_burst": "6 of 12 tests fail",
+    "no_gate_reopen_on_if_clear": "1 of 12 tests fails"
+  },
+  "a3_debt": {
+    "closed": ["IF=0", "TPR-blocked", "masked LVT", "STOP in Waiting", "OutsideProfile then wake", "gate reopen", "lock order pair->clock (test plus code reading)"],
+    "not_closed": ["clock->pair order is excluded by code reading only"]
+  },
+  "tsc_deadline": "not implemented, not advertised in CPUID, LVT bit 18 rejected, MSR 0x6E0 unhandled",
+  "limitations": [
+    "No automatic event pump or scheduler",
+    "No PIT/PIC/RTC, firmware board wiring, JIT async, MOV SS/NMI, paged delivery or Linux timer profile",
+    "Handler runs with IF=0; IF=1 handler is modelled by setting CPU state; nested IRETQ not exercised",
+    "Parent S4-28, S4-27 and Stage 4 remain open"
+  ],
+  "review": "pending"
+}

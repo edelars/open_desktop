@@ -62,6 +62,15 @@ impl CpuidProfile {
 mod tests {
     use super::*;
 
+    /// S4-28b: the APIC timer has no TSC-deadline mode, so the profile must
+    /// not declare it (CPUID.01H:ECX[24]) nor the APIC/TSC feature bits.
+    #[test]
+    fn diagnostic_v1_does_not_declare_tsc_deadline() {
+        let leaf1 = CpuidProfile::DiagnosticV1.query(1, 0);
+        assert_eq!(leaf1.ecx & (1 << 24), 0);
+        assert_eq!(leaf1.edx & ((1 << 4) | (1 << 9)), 0);
+    }
+
     #[test]
     fn diagnostic_v1_returns_fixed_identity_and_zero_feature_masks() {
         let profile = CpuidProfile::DiagnosticV1;

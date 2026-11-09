@@ -1093,6 +1093,9 @@ impl DiagnosticVcpuSession {
 }
 
 #[cfg(test)]
+mod periodic_timer_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
