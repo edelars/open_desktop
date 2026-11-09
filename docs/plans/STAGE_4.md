@@ -1768,6 +1768,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** только CPL3 syscall/return; timer, IRQ, HLT wakeup, self-modifying code, huge pages, TLB-on — отдельные кейсы S4-33; это не закрывает родителя S4-33.
 - **Готово:** кейс выполняется как guest fact; обе ветки (успех и инъекция) различимы в evidence.
 
+#### S4-33c. Права (CR0.WP) и #PF repair/retry на собственном ядре (системный кейс S4-33)
+
+- [ ] Принято после ревью.
+- **Контракт:** кейс собственного ядра из S4-33 «права и #PF repair/retry». Использует принятые срезы S4-19b (delivery), S4-19c (#DF), S4-19d (repair и INVLPG), S4-19e1 (LEA и IRETQ), S4-19e2 (retry) и профиль S4-32; CR0.WP=1 записи в супервизорскую RO-страницу — отказ, затем repair PTE, INVLPG, IRETQ, повтор записи и загрузка.
+- **Проверка:** builder → runner: sequencer из шагов fault → delivery → repair → INVLPG → discard → IRETQ → retry → load; guest state (RIP, RSP, RFLAGS.RF, CR2, PTE), A/D и committed writes по шагам; бюджеты и STOP. Injected regression: handler оставляет PTE RO (второй #PF); пропущен LEA (error code становится RIP); loader ставит RW сразу (нет delivery, кейс падает).
+- **Граница:** TLB-on не проверяется (S4-14 не принят); INVLPG не заявляется как необходимый (его пропуск ничего не ломает в этом профиле); U/S, NX и #PF из CPL3 — не входят; IST/TSS, другие пары исключений, cross-page, JIT — не входят; это не закрывает родителя S4-33.
+- **Готово:** кейс выполняется как guest fact; отказ, repair и повтор различимы в evidence; инъекции различимы.
+
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
 - [ ] Методика/harness приняты; физический запуск принят отдельно.
