@@ -62,7 +62,7 @@
 ### ISSUE-070 — S4-27i2: idle advance сжигает бюджет, когда вектор таймера заблокирован
 
 - **Дата обнаружения:** 2026-11-09, при реализации и ревью S4-27i2.
-- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`InterruptPump::idle_advance`, `step_waiting`).
+- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`InterruptPump::idle_advance`, `FlatBackend::step_waiting`, `idle_flow`).
 - **Статус:** открыта; не покрыта тестом.
 - **Суть и последствия:** если CPU в HLT при IF=1, а вектор периодического таймера не может стать eligible (он в ISR без EOI, например handler выполнил STI и HLT до EOI, либо его блокирует TPR), pump на каждом шаге продвигает часы на период, а повторный expiry схлопывается в уже взведённый IRR. Выход — `Budget`, а не `IdleHalt`; виртуальное время уходит на budget·P. Состояние гостя корректно (на железе время тоже идёт), неверна только классификация простоя.
 - **Основание:** отчёт [S4-27i2](reports/STAGE_4_S4-27I2_2026-11-09.md), разделы «Отклонения» и «Ограничения».
@@ -73,7 +73,7 @@
 ### ISSUE-068 — S4-27i1: прерывание не принимается внутри частичного REP
 
 - **Дата обнаружения:** 2026-11-09, при реализации S4-27i1.
-- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`InterruptPump::step_running`, `mid_rep`), `crates/od-machine/src/diagnostic_vcpu.rs` (`completed_boundary`, `run_apic_quantum`).
+- **Компонент:** `crates/od-machine/src/interrupt_pump.rs` (`FlatBackend::step_running`, `mid_rep` теперь в бэкенде), `crates/od-machine/src/diagnostic_vcpu.rs` (`completed_boundary`, `run_apic_quantum`).
 - **Статус:** открыта; отклонение среза от плана, не дефект логики.
 - **Суть и последствия:** после `WorkLimit(RepIterationBudget)` (1024 итерации) граница не завершена, принятые примитивы доставки её отвергают, и pump довершает REP через `run(1)` без проверки APIC. Прерывание принимается только после REP (RIP кадра — следующая инструкция), тогда как железо может принять его между итерациями. Состояние гостя корректно, растёт только задержка, пропорциональная длине REP.
 - **Основание:** тест `partial_rep_delays_the_interrupt_until_the_instruction_completes` (`crates/od-machine/tests/interrupt_pump_flat.rs`), отчёт [S4-27i1](reports/STAGE_4_S4-27I1_2026-11-09.md).
