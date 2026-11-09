@@ -1,0 +1,82 @@
+{
+  "slice": "S4-29c",
+  "date": "2026-11-09",
+  "source": [
+    "crates/od-machine/src/pit_8254.rs",
+    "crates/od-machine/src/pit_8254/tests.rs",
+    "crates/od-machine/src/lib.rs"
+  ],
+  "architecture": "two BusDevices sharing one state and one VirtualClockHandle: Pit8254 (binding 0x40..0x43, 4 ports) and PitPortB (binding 0x61, 1 port); counters are computed from the clock at access time; no IRQ lines, no events; not wired into the firmware board",
+  "ports": {
+    "pit": "0x40 channel 0, 0x41 channel 1 (UnsupportedConfiguration), 0x42 channel 2, 0x43 control (read = WriteOnly)",
+    "port_b": "0x61"
+  },
+  "formula": {
+    "input_hz": 1193182,
+    "tick": "T(t) = floor(t_ns * 1193182 / 1e9), one u128 division of absolute time",
+    "elapsed": "e = T(now) - T(t_write) (free-running tick grid, load aligned to it)",
+    "reload": "written 16-bit value, 0 = 65536",
+    "mode0": "count = (N - e) mod 65536; OUT low until e >= N, then high",
+    "mode2": "p = e mod N; count = N - p; OUT low only when p = N - 1; N = 1 refused; new count written while running applies at the next period boundary",
+    "examples": {
+      "three_steps_333333ns": "999999 ns -> 1193 ticks (per-step floor sum would be 1191)",
+      "load_0.9ms_read_1.1ms": "239 edges (1073 -> 1312), not floor(0.2 ms * f) = 238"
+    }
+  },
+  "control_word": {
+    "accepted": "channels 0 and 2, access LSB/MSB/LSB+MSB/latch, modes 0 and 2, binary",
+    "refused_unsupported_configuration": "BCD, modes 1/3/4/5/6/7, channel 1 (all accesses and latch), read-back (0xC0..0xFF); snapshot unchanged"
+  },
+  "port_b": {
+    "bit0_gate2": "stored (does not affect counting in this slice)",
+    "bit1_speaker": "stored",
+    "bit4_refresh": "not stored; (T(now) / 18) & 1, toggles every 18 ticks = 15.085 us (output of refresh channel 1 mode 2 count 18); writes ignored",
+    "bit5_out2": "current OUT of channel 2; writes ignored",
+    "bits_2_3_6_7": "read 0, writes ignored"
+  },
+  "reset": "PitSnapshot::default(): no mode, no count, OUT low, gate2 = 0, speaker = 0",
+  "tests": {
+    "pit_8254_added": 26,
+    "pit_8254_passed": 26
+  },
+  "injections": [
+    {
+      "change": "pit_ticks rounds up (div_ceil) instead of floor",
+      "failed_tests": 18
+    },
+    {
+      "change": "port 0x61 bit 5 reports OUT of channel 0 instead of channel 2",
+      "failed_tests": 3
+    },
+    {
+      "change": "mode 2 low tick shifted to p = N - 2",
+      "failed_tests": 4
+    }
+  ],
+  "port_map_check": {
+    "checked_against": [
+      "PIC 0x20/0x21, 0xA0/0xA1",
+      "CMOS 0x70/0x71, 0xED",
+      "COM1 0x3F8..0x3FF",
+      "PM block 0x600..0x610",
+      "conf1 0xCF8..0xCFF"
+    ],
+    "unmapped_neighbours": [
+      "0x3F",
+      "0x44",
+      "0x60",
+      "0x62"
+    ]
+  },
+  "not_implemented": [
+    "IRQ lines and events (S4-29f)",
+    "channel 1",
+    "BCD",
+    "read-back",
+    "modes 1/3/4/5",
+    "gate effect on counting",
+    "board wiring, manifest, handoff, MADT, FADT, firmware",
+    "guest calibration and time advance on PIO polling (S4-29d, ISSUE-067)"
+  ],
+  "review": "pending"
+}
