@@ -1420,6 +1420,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверки:** 5 focused `od-isa` tests, 3 focused `od-machine` tests, package all-targets check, fmt/diff и Graphify прошли. Sol/high подтвердил закрытие P2 canonical48 и P3 ISR-bank замечаний. См. [отчёт](../reports/STAGE_4_S4-25D_2026-11-07.md), [manifest](../reports/data/stage4/s4-25d-cr8-tpr.json) и [методику](../testing/MACHINE.md#s4-25d-bounded-cr8--xapic-tpr).
 - **Граница:** общее исполнение MOV CR8, CPU interrupt delivery, IDT/IF, HLT wakeup, JIT и Linux acceptance остаются вне среза. S4-25 и этап 4 открыты.
 
+#### S4-25e. Local APIC: spurious, LVT masks, reset matrix, приоритет и EOI (ограниченный срез закрытия)
+
+- [ ] Принято после ревью.
+- **Где:** `od-machine` (`local_apic.rs`), контракт в `MACHINE_CONTRACT.md`.
+- **Сделать:** spurious-путь: вектор из SVR при удалении из IRR до принятия; маска LVT (bit 16) для всех LVT-записей, влияющая на доставку; матрица значений после reset (SVR, LVT, TPR, IRR/ISR/TMR); приоритет по ISR/TPR и EOI, снимающий наивысший ISR; ошибочные обращения (reserved bits, неподдержанные смещения, ширина) по принятой спецификации xAPIC.
+- **Проверка:** reset-матрица по регистрам; masked LVT не доставляет и не теряет по контракту; spurious при гонке удаления из IRR; EOI снимает наивысший ISR; ошибочные обращения не меняют состояние. Тесты в `--lib local_apic`.
+- **Граница:** x2APIC, multi-CPU startup, NMI-источники сверх manifest — не входят; S4-25 родитель закрывается после этого среза.
+- **Готово:** APIC state влияет на pending/deliverable interrupt; reset-матрица и spurious зафиксированы тестами.
+
 ### S4-26. IOAPIC и маршруты внешних IRQ
 
 - [ ] Принято после ревью.
