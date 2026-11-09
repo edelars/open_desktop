@@ -1889,7 +1889,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-34a. Метод: реальное CPL0 исполнение через KVM на Mac mini
 
-- [ ] Принято после ревью.
+- [x] Метод принят после ревью (Claude Opus, high); статус S4-34 — не принят. Оговорки: один образ, по одному запуску на случай; повторяемость между запусками и перезагрузками хоста не измерена; guest CPUID = KVM_GET_SUPPORTED_CPUID хоста; irqchip/APIC/таймер отсутствуют; модель CPU из /proc/cpuinfo (план говорил lscpu). Открыто: ISSUE-071.
 - **Контракт:** хост-раннер `tools/kvm-runner/` (C, один файл, gcc на хосте) создаёт VM через `/dev/kvm`, загружает собственный freestanding-образ в guest RAM, задаёт entry state (Long64/CPL0, GDT и собственные page tables гостя, EFER.LME/LMA, CR0.PG/PE, CR4.PAE), запускает `KVM_RUN` и собирает UART-байты через I/O-exit на порт `0x3f8`. Исполнение — только VT-x гостя; наш MMU не участвует.
 - **Где:** Mac собирает образ (clang/lld, как фикстуры), хост на mini собирает раннер gcc'ом в `/home/senya/od-kvm/` (новый каталог; ничего вне него, boot и системные файлы не трогаются). Обмен: scp образа и раннера, результат — JSON evidence.
 - **Проверка:** гость пишет `OK\n` в COM1 и `HLT`; раннер фиксирует: hardware identity (`hostname`, `uname -a`, `lscpu` model, KVM API version), SHA-256 образа и раннера, entry state (RIP, RSP, CR0/CR3/CR4/EFER, CS), последовательность exit'ов (I/O, HLT, shutdown), вывод UART, число шагов. Инъекция: образ с другой строкой или без `HLT` (шатдаун/таймаут) даёт различимый результат.

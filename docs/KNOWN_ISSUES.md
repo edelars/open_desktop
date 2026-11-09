@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-071-s4-34a-kvm-method-single-run"></a>
+
+### ISSUE-071 — S4-34a: KVM-метод подтверждён одним прогоном одного образа
+
+- **Дата обнаружения:** 2026-11-09, при реализации S4-34a.
+- **Компонент:** `tools/kvm-runner/kvm_runner.c`, `tools/build/build_stage4_kvm_method.py`, `docs/reports/data/stage4/s4-34a-kvm-method.json`.
+- **Статус:** открыта; граница метода, не дефект.
+- **Суть и последствия:** один образ, по одному запуску на случай; повторяемость между запусками и перезагрузками хоста не измерена; guest CPUID равен `KVM_GET_SUPPORTED_CPUID` хоста; irqchip/APIC/таймер отсутствуют; исполнение — VT-x под KVM, не bare-metal; identity и вывод получены по ssh без подписи. `method_status: accepted` нельзя трактовать как физическую приёмку S4-34.
+- **Основание:** отчёт [S4-34a](reports/STAGE_4_S4-34A_2026-11-09.md), раздел «Что не проверено и граница».
+- **Следующий шаг:** в S4-34b — N повторов каждого кейса, фиксировать CPUID и microcode. EINTR считается отдельно от exit'ов (`intr_count`), а CS.L/DPL, CR0 и строгая последовательность exit'ов проверяются в приёмке (уже сделано в S4-34a).
+
 <a id="issue-070-s4-27i2-idle-advance-burns-budget-when-timer-vector-blocked"></a>
 
 ### ISSUE-070 — S4-27i2: idle advance сжигает бюджет, когда вектор таймера заблокирован
