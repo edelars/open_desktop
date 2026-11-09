@@ -177,10 +177,10 @@ impl BoardManifest {
 
 /// Length of `PM1a_EVT_BLK` (PM1_STS + PM1_EN), `PM1a_CNT_BLK`, `PM_TMR_BLK` and `RESET_REG`
 /// in bytes. They are constants of the board's PM block (`ACPI_PM_DESCRIPTOR`), not handoff fields.
-const PM1_EVT_LEN: u32 = 4;
-const PM1_CNT_LEN: u32 = 2;
-const PM_TMR_LEN: u32 = 4;
-const RESET_REG_LEN: u32 = 1;
+pub(super) const PM1_EVT_LEN: u32 = 4;
+pub(super) const PM1_CNT_LEN: u32 = 2;
+pub(super) const PM_TMR_LEN: u32 = 4;
+pub(super) const RESET_REG_LEN: u32 = 1;
 
 /// The ACPI fixed hardware entry (device code 9, handoff v1.2): the PM block ports and the SCI
 /// route. Decoded from `param0` (four `u16` lanes: `PM1a_EVT_BLK`, `PM1a_CNT_BLK`, `PM_TMR_BLK`,

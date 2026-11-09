@@ -1,0 +1,75 @@
+{
+  "slice": "S4-31e",
+  "date": "2026-11-08",
+  "source": [
+    "firmware/uefi/src/acpi/fadt.rs",
+    "firmware/uefi/src/acpi/fadt/tests.rs",
+    "firmware/uefi/src/acpi/dsdt.rs",
+    "firmware/uefi/src/acpi/dsdt/tests.rs",
+    "firmware/uefi/src/acpi/manifest.rs",
+    "docs/specs/MACHINE_CONTRACT.md"
+  ],
+  "fadt": {
+    "signature": "FACP",
+    "revision": 6,
+    "minor_version": 4,
+    "length": 276,
+    "checksum": "0x6B",
+    "oem_id": "OPNDSK",
+    "oem_table_id": "ODFWFACP",
+    "firmware_ctrl": "0xE_F000",
+    "dsdt": "0xE_0040",
+    "dsdt_source": "directory of the S4-31d blob (RSDP slot 0x40 first), a parameter of build_fadt",
+    "preferred_pm_profile": 1,
+    "preferred_pm_profile_name": "Desktop",
+    "sci_int": 9,
+    "pm1a_evt_blk": "0x600",
+    "pm1a_cnt_blk": "0x604",
+    "pm_tmr_blk": "0x608",
+    "pm1_evt_len": 4,
+    "pm1_cnt_len": 2,
+    "pm_tmr_len": 4,
+    "reset_reg": {"space": "SystemIO", "bit_width": 8, "bit_offset": 0, "access_size": "byte", "address": "0x60C"},
+    "reset_value": "0x06",
+    "p_lvl2_lat": "0x0FFF",
+    "p_lvl3_lat": "0x0FFF",
+    "iapc_boot_arch": "0x0024",
+    "iapc_bits_set": ["VGA_NOT_PRESENT (2)", "CMOS_RTC_NOT_PRESENT (5)"],
+    "flags": "0x470",
+    "flags_set": ["PWR_BUTTON (4)", "SLP_BUTTON (5)", "FIX_RTC (6)", "RESET_REG_SUP (10)"],
+    "flags_clear": ["TMR_VAL_EXT (8)", "HW_REDUCED_ACPI (20)"],
+    "zero": ["SMI_CMD", "ACPI_ENABLE", "ACPI_DISABLE", "PM1b_*", "PM2_CNT_BLK", "GPE0", "GPE1", "SLEEP_*_REG", "hypervisor vendor id"]
+  },
+  "facs": {
+    "signature": "FACS",
+    "length": 64,
+    "version": 2,
+    "address": "0xE_F000",
+    "checksum": "none",
+    "nonzero_fields": ["signature", "length", "version"]
+  },
+  "s5": {
+    "aml": "08 5C 5F 53 35 5F 12 08 04 0A 05 0A 05 00 00",
+    "slp_typ": 5,
+    "variant": "build_dsdt_with_s5 (separate build variant)",
+    "golden_dsdt_changed": false,
+    "ecam_only_dsdt_with_s5": {"length": "0xC2", "checksum": "0xE4", "plain_length": "0xB3", "plain_checksum": "0xD9"}
+  },
+  "tests": {
+    "firmware_total": 129,
+    "firmware_before": 114,
+    "new_fadt_facs": 10,
+    "new_dsdt_s5": 5,
+    "failed": 0,
+    "fmt_check": "clean",
+    "check_x86_64_unknown_none": "clean",
+    "od_machine_run": false
+  },
+  "unverified": [
+    "ACPI 6.6 text (only 6.4 read through Context7)",
+    "FADT offsets other than 109, 112, 132, 140, 268",
+    "flag bits SLP_BUTTON, RESET_REG_SUP, HW_REDUCED_ACPI",
+    "FADT minor version, P_LVL2/3_LAT values, _Sx package layout"
+  ],
+  "not_done": ["MADT (S4-31f)", "RSDP/XSDT and blob layout of FADT/FACS (S4-31g)", "E820 (S4-37)", "Linux acceptance (S4-38)"]
+}
