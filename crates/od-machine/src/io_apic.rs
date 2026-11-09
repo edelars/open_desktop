@@ -10,7 +10,7 @@ const POLARITY_LOW: u32 = 1 << 13;
 /// MADT. The EOI register at offset 0x40 is not modeled, nor is register 0x03 (UnknownOffset).
 const IO_APIC_VERSION: u32 = 0x0017_0020;
 
-/// IOAPIC register window; only INTIN4 (entry 4) routes to physical APIC ID 0.
+/// IOAPIC register window; INTIN4 (edge/level) and INTIN2 (edge only) route to APIC ID 0.
 pub struct IoApic(Arc<Mutex<PairState>>);
 #[derive(Clone)]
 pub struct IoApicHandle(Arc<Mutex<PairState>>);
@@ -34,6 +34,13 @@ impl IoApicHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_line(high)
+    }
+    /// INTIN2 (GSI 2), edge only (S4-29e). Caller serializes complete device operations.
+    pub fn set_intin2(&self, high: bool) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_line2(high)
     }
 }
 
@@ -136,6 +143,8 @@ impl BusDevice for IoApic {
                 let low = value as u32 & !READ_ONLY_STATUS;
                 if pin == 4 {
                     state.set_low(low)
+                } else if pin == 2 {
+                    state.set_low2(low)
                 } else {
                     state.route.pins[pin] = low;
                     Ok(())
@@ -881,5 +890,207 @@ mod tests {
         );
         assert_eq!(snapshot(&io), before);
         assert_eq!(apic.pending(), None);
+    }
+
+    // ---- S4-29e: INTIN2 (GSI 2), edge only -----------------------------------------------
+
+    const ENTRY2: u64 = 0x14;
+    const ENTRY2_HIGH: u64 = 0x15;
+    fn refused() -> Result<(), BusAccessError> {
+        Err(device_error(DeviceError::UnsupportedConfiguration))
+    }
+
+    #[test]
+    fn intin2_masked_edge_is_lost_and_unmask_does_not_deliver() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        // Reset state: masked, line low.
+        assert_eq!(window(&mut bus, ENTRY2), Ok(u64::from(MASK)));
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        io.set_intin2(false).unwrap();
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | 0x52).unwrap();
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        // Unmask with the line high: the lost edge is not replayed.
+        window_write(&mut bus, ENTRY2, 0x52).unwrap();
+        assert_eq!(apic.pending(), None);
+        // High-to-high is no edge.
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        // A new rising edge delivers.
+        io.set_intin2(false).unwrap();
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x52));
+        assert_eq!(apic.acknowledge(), Some(0x52));
+        // Remote IRR is never set for entry 2; INTIN4 is not involved.
+        assert_eq!(window(&mut bus, ENTRY2), Ok(0x52));
+        assert!(!snapshot(&io).route.remote_irr);
+        assert_eq!(window(&mut bus, 0x18), Ok(u64::from(MASK)));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        // Masking again loses further edges.
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | 0x52).unwrap();
+        io.set_intin2(false).unwrap();
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn intin2_refused_configurations_leave_the_snapshot_unchanged() {
+        let (mut bus, io, _apic) = setup();
+        window_write(&mut bus, ENTRY2, 0x52).unwrap();
+        select(&mut bus, ENTRY2);
+        let before = snapshot(&io);
+        let mut invalid: Vec<u64> = vec![
+            u64::from(LEVEL) | 0x52, // level unmasked
+            0x0f,
+            0xff,
+            0,
+            0x100 | 0x52,       // non-Fixed delivery
+            0x800 | 0x52,       // logical destination
+            0x2000 | 0x52,      // active-low unmasked
+            0x2000 | 0x800 | 1, // several at once
+        ];
+        for mode in 1..8u64 {
+            invalid.push(mode << 8 | 0x52);
+        }
+        for value in invalid {
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
+                refused(),
+                "value {value:#x}"
+            );
+            assert_eq!(snapshot(&io), before);
+        }
+        // Masked level (as the SCI entry) is stored; unmasking it stays refused.
+        window_write(&mut bus, ENTRY2, u64::from(MASK | LEVEL) | 0x52).unwrap();
+        assert_eq!(window(&mut bus, ENTRY2), Ok(u64::from(MASK | LEVEL) | 0x52));
+        select(&mut bus, ENTRY2);
+        let before = snapshot(&io);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x52),
+            refused()
+        );
+        assert_eq!(snapshot(&io), before);
+        // High dword: only 0 (physical APIC ID 0) is accepted, as for every entry.
+        window_write(&mut bus, ENTRY2_HIGH, 0).unwrap();
+        for dest in [1u64 << 24, 0xff << 24, 1, u64::MAX] {
+            let before = snapshot(&io);
+            assert_eq!(window_write(&mut bus, ENTRY2_HIGH, dest), refused());
+            assert_eq!(snapshot(&io), before);
+        }
+        assert_eq!(window(&mut bus, ENTRY2_HIGH), Ok(0));
+    }
+
+    #[test]
+    fn intin2_vector_boundaries_unmasked() {
+        let (mut bus, _io, _apic) = setup();
+        for vector in [0x10u64, 0x11, 0xfd, 0xfe] {
+            window_write(&mut bus, ENTRY2, vector).unwrap();
+            assert_eq!(window(&mut bus, ENTRY2), Ok(vector));
+        }
+        for vector in [0x0fu64, 0xff] {
+            assert_eq!(window_write(&mut bus, ENTRY2, vector), refused());
+            assert_eq!(window(&mut bus, ENTRY2), Ok(0xfe));
+        }
+    }
+
+    #[test]
+    fn intin2_conflicts_with_a_level_intin4_vector() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        window_write(&mut bus, 0x18, u64::from(LEVEL) | 0x61).unwrap();
+        // Same vector as the level route: unmasking entry 2 is refused (S4-26b policy).
+        select(&mut bus, ENTRY2);
+        let before = snapshot(&io);
+        assert_eq!(write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x61), refused());
+        assert_eq!(snapshot(&io), before);
+        // Masked entry 2 may hold the vector; a different vector is accepted.
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | 0x61).unwrap();
+        window_write(&mut bus, ENTRY2, 0x62).unwrap();
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x62));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        // Reverse direction: INTIN4 level onto entry 2's unmasked vector is refused.
+        window_write(&mut bus, 0x18, u64::from(MASK)).unwrap();
+        select(&mut bus, 0x18);
+        let before = snapshot(&io);
+        for value in [u64::from(LEVEL) | 0x62, u64::from(LEVEL | MASK) | 0x62] {
+            assert_eq!(write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value), refused());
+            assert_eq!(snapshot(&io), before);
+        }
+        // Edge INTIN4 on the same vector is not a conflict (edges coalesce).
+        window_write(&mut bus, 0x18, 0x62).unwrap();
+    }
+
+    #[test]
+    fn intin2_delivery_refused_without_enabled_destination_and_not_consumed() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        window_write(&mut bus, ENTRY2, 0x62).unwrap();
+        window_write(&mut bus, 0x18, u64::from(MASK | LEVEL)).unwrap();
+        // INTIN4 is masked/level with vector 0; unrelated, so entry 2 delivers.
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x62));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        io.set_intin2(false).unwrap();
+        // Disabled destination: the edge is refused and not consumed.
+        apic.set_global_enabled(false).unwrap();
+        assert_eq!(
+            io.set_intin2(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert!(!snapshot(&io).route.intin2_high);
+        apic.set_global_enabled(true).unwrap();
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x62));
+    }
+
+    #[test]
+    fn intin2_reset_masks_entry_and_drops_the_line() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        window_write(&mut bus, ENTRY2, 0x52).unwrap();
+        io.set_intin2(true).unwrap();
+        assert!(snapshot(&io).route.intin2_high);
+        apic.acknowledge();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        io.reset().unwrap();
+        assert_eq!(window(&mut bus, ENTRY2), Ok(u64::from(MASK)));
+        assert_eq!(window(&mut bus, ENTRY2_HIGH), Ok(0));
+        let route = snapshot(&io).route;
+        assert!(!route.intin2_high && !route.remote_irr);
+        let expected = crate::apic_pair::Route {
+            selector: route.selector,
+            ..crate::apic_pair::Route::default()
+        };
+        assert_eq!(route, expected);
+        // After reset a rising edge on the masked entry is lost.
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        // Pair reset does the same.
+        window_write(&mut bus, ENTRY2, 0x52).unwrap();
+        apic.reset_pair().unwrap();
+        assert_eq!(window(&mut bus, ENTRY2), Ok(u64::from(MASK)));
+        assert!(!snapshot(&io).route.intin2_high);
+    }
+
+    #[test]
+    fn intin2_does_not_disturb_intin4() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        window_write(&mut bus, ENTRY2, 0x92).unwrap();
+        window_write(&mut bus, 0x18, u64::from(LEVEL) | 0x71).unwrap();
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x71));
+        assert_ne!(window(&mut bus, 0x18).unwrap() & u64::from(REMOTE_IRR), 0);
+        // Entry 2 edge while INTIN4 level awaits EOI: independent vectors, no Remote IRR on 2.
+        io.set_intin2(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x92));
+        assert_eq!(window(&mut bus, ENTRY2).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert!(snapshot(&io).route.intin2_high);
+        // INTIN2 line state is untouched by INTIN4 transitions and vice versa.
+        io.set_intin4(false).unwrap();
+        assert!(snapshot(&io).route.intin2_high && !snapshot(&io).route.high_line);
     }
 }

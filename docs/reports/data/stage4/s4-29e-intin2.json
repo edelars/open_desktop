@@ -1,0 +1,73 @@
+{
+  "slice": "S4-29e",
+  "date": "2026-11-09",
+  "source": [
+    "crates/od-machine/src/apic_pair.rs",
+    "crates/od-machine/src/io_apic.rs"
+  ],
+  "architecture": "IOAPIC input INTIN2 (GSI 2) edge only; line level kept in Route::intin2_high; entry 2 low dword in Route::pins[2]; delivery through the existing PairState::edge into the Local APIC; not wired into the board",
+  "api": {
+    "set_intin2": "IoApicHandle::set_intin2(high: bool) -> Result<(), DeviceError>",
+    "registers": "selector 0x14 (low), 0x15 (high)"
+  },
+  "entry2": {
+    "accepted_unmasked": "vector 0x10..=0xFE, Fixed, physical, active-high, edge, high dword 0",
+    "masked": "any vector; LEVEL and active-low may be stored (as other pins without a line)",
+    "refused_unsupported_configuration": "LEVEL unmasked, active-low unmasked, vector 0x00..=0x0F or 0xFF unmasked, non-Fixed delivery, logical destination, high dword != 0; snapshot unchanged",
+    "remote_irr": "never set for entry 2"
+  },
+  "edge": {
+    "masked": "lost; unmask does not replay",
+    "high_to_high": "no edge",
+    "rejected_by_local_apic": "edge not consumed, intin2_high unchanged"
+  },
+  "intin4_conflict": {
+    "policy": "S4-26b: level INTIN4 reserves its vector against edges, even masked",
+    "unmask_entry2_same_vector_as_level_intin4": "refused",
+    "intin4_level_onto_vector_of_unmasked_entry2": "refused (symmetric check added in PairState::set_low)",
+    "intin4_edge_same_vector": "allowed (coalesces in IRR)"
+  },
+  "reset": "entry 2 masked, line low, Remote IRR 0 (Route::default())",
+  "tests": {
+    "io_apic_total": 26,
+    "io_apic_added": 7,
+    "io_apic_passed": 26,
+    "old_expectations_changed": 0
+  },
+  "injections": [
+    {
+      "change": "vector 0x0F accepted for entry 2 when unmasked",
+      "failed_tests": 2
+    },
+    {
+      "change": "edge request without mask check (masked edge delivered)",
+      "failed_tests": 2
+    },
+    {
+      "change": "edge without !intin2_high (high-to-high)",
+      "failed_tests": 1
+    },
+    {
+      "change": "LEVEL on unmasked entry 2 accepted (valid_low and set_low2)",
+      "failed_tests": 1
+    },
+    {
+      "change": "no vector conflict check on unmask of entry 2 against level INTIN4",
+      "failed_tests": 1
+    },
+    {
+      "change": "no check of INTIN4 level against vector of unmasked entry 2",
+      "failed_tests": 1
+    }
+  ],
+  "not_implemented": [
+    "level and Remote IRR on INTIN2",
+    "other pins (besides INTIN2 and INTIN4)",
+    "PIT -> INTIN2 (S4-29f)",
+    "event pump",
+    "board wiring, manifest, handoff, MADT, FADT, firmware"
+  ],
+  "review": "pending",
+  "old_expectations_changed": 0,
+  "guest_visible_change": "Entry 2 unmasked with LEVEL is now refused (was accepted and stored while it had no line). Tests unchanged; the guest-visible behaviour changed by contract."
+}

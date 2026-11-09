@@ -15,6 +15,8 @@ pub(crate) struct Route {
     pub selector: u8,
     pub low: u32,
     pub high_line: bool,
+    /// Input level of INTIN2 (S4-29e); edge only, no Remote IRR.
+    pub intin2_high: bool,
     pub remote_irr: bool,
     /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
     pub id: u8,
@@ -27,6 +29,7 @@ impl Default for Route {
             selector: 0,
             low: MASK,
             high_line: false,
+            intin2_high: false,
             remote_irr: false,
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
@@ -226,7 +229,36 @@ impl PairState {
         self.route.high_line = high;
         Ok(())
     }
+    /// INTIN2 (S4-29e): rising level with an unmasked entry requests the entry-2 vector as an
+    /// edge; a masked edge is lost and unmasking never replays it. A refused delivery does not
+    /// consume the transition.
+    pub fn set_line2(&mut self, high: bool) -> Result<(), DeviceError> {
+        let low = self.route.pins[2];
+        if high && !self.route.intin2_high && low & MASK == 0 {
+            self.edge(low as u8)?;
+        }
+        self.route.intin2_high = high;
+        Ok(())
+    }
+    /// Entry-2 low dword. An unmasked entry must not share its vector with a level INTIN4
+    /// route (S4-26b: level reserves its vector against edges, even while masked).
+    pub fn set_low2(&mut self, value: u32) -> Result<(), DeviceError> {
+        if value & MASK == 0
+            && (value & LEVEL != 0
+                || (self.route.low & LEVEL != 0 && self.route.low as u8 == value as u8))
+        {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        self.route.pins[2] = value;
+        Ok(())
+    }
     pub fn set_low(&mut self, value: u32) -> Result<(), DeviceError> {
+        if value & LEVEL != 0
+            && self.route.pins[2] & MASK == 0
+            && self.route.pins[2] as u8 == value as u8
+        {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         if value & LEVEL != 0
             && self
                 .timer
