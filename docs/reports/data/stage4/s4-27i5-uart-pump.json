@@ -1,0 +1,190 @@
+{
+  "slice": "S4-27i5",
+  "date": "2026-11-09",
+  "profile": "Stage4UartIrqProbeV1",
+  "base_revision": "36c133821b450d477b9ab972e754374990e0dad7",
+  "status": "implemented, not reviewed; plan not marked [x]",
+  "translated": [
+    "run loop (STOP, budget, finality)",
+    "boundary delivery",
+    "STI/HLT/IRETQ steps",
+    "halt wake",
+    "idle advance",
+    "IRR/entry/EOI trace"
+  ],
+  "adapter": {
+    "type": "UartOwner (PumpHost)",
+    "parts": [
+      "RX event queue and deadline",
+      "UART line to INTIN4 sampling",
+      "instant transmit",
+      "LIDT [RSP+0]",
+      "IN AL,DX / OUT DX,AL",
+      "mapping of pump exit and trace to S4-24e types"
+    ]
+  },
+  "pump_extension": [
+    "PumpHost",
+    "PumpHostEvent",
+    "PumpHostStep",
+    "PumpTraceKind::Host",
+    "PumpRejection::Host",
+    "PumpTraceEvent.clock_ns",
+    "with_host",
+    "with_entry_only_delivery",
+    "host/host_mut",
+    "advance_time_ns"
+  ],
+  "common_loader": {
+    "module": "crates/od-machine/src/stage4_interrupt_probe_common.rs",
+    "wrappers": [
+      "stage4_interrupt_pump_probe.rs",
+      "stage4_interrupt_timer_probe.rs",
+      "stage4_interrupt_queue_probe.rs"
+    ],
+    "shared": [
+      "FlatProbeSpec",
+      "validate_flat_image",
+      "build_flat_pump",
+      "flat_entry_state",
+      "flat_access_context"
+    ],
+    "loader_lines_before": {
+      "pump": 191,
+      "timer": 206,
+      "queue": 204
+    },
+    "public_api_changed": false
+  },
+  "equivalence": {
+    "method": "7 scenarios, budget 1000, old HEAD vs new code, full trace compared",
+    "identical": true,
+    "scenarios": {
+      "normal": {
+        "exit": "IdleHalt",
+        "quanta": 42,
+        "retired": 40,
+        "clock_ns": 1000,
+        "irr_isr": [
+          false,
+          false
+        ]
+      },
+      "rx_before_ier": {
+        "exit": "IdleHalt",
+        "quanta": 41,
+        "retired": 40,
+        "clock_ns": 0,
+        "irr_isr": [
+          false,
+          false
+        ]
+      },
+      "two_bytes": {
+        "exit": "IdleHalt",
+        "quanta": 55,
+        "retired": 51,
+        "clock_ns": 2000,
+        "irr_isr": [
+          false,
+          false
+        ]
+      },
+      "ier_zero": {
+        "exit": "IdleHalt",
+        "quanta": 30,
+        "retired": 29,
+        "clock_ns": 1000,
+        "irr_isr": [
+          false,
+          false
+        ]
+      },
+      "late_unmask": {
+        "exit": "IdleHalt",
+        "quanta": 29,
+        "retired": 29,
+        "clock_ns": 0,
+        "irr_isr": [
+          false,
+          false
+        ]
+      },
+      "omit_eoi": {
+        "exit": "IdleHalt",
+        "quanta": 40,
+        "retired": 37,
+        "clock_ns": 2000,
+        "irr_isr": [
+          true,
+          true
+        ]
+      },
+      "omit_rbr_read": {
+        "exit": "IdleHalt",
+        "quanta": 42,
+        "retired": 39,
+        "clock_ns": 2000,
+        "irr_isr": [
+          false,
+          false
+        ]
+      }
+    },
+    "final_rip": "0x405b",
+    "final_rflags": "0x202"
+  },
+  "tests": {
+    "od-machine": {
+      "stage4_uart_irq_probe": 10,
+      "interrupt_pump_flat": 12,
+      "interrupt_timer_pump": 7,
+      "interrupt_queue_pump": 8,
+      "paged_sti_hlt_wake": 9,
+      "stage4_paged_irq_probe": 9,
+      "diagnostic_vcpu_api": 8,
+      "lib diagnostic_vcpu": 46
+    },
+    "od-runner": {
+      "stage4_uart_irq_cli": 6,
+      "stage4_interrupt_pump_build_cli": 4,
+      "stage4_interrupt_timer_build_cli": 3,
+      "stage4_interrupt_queue_build_cli": 3
+    },
+    "python": {
+      "test_build_stage4_interrupt_pump_probe": 7,
+      "test_build_stage4_interrupt_timer_probe": 9,
+      "test_build_stage4_interrupt_queue_probe": 4,
+      "test_build_stage4_uart_irq_probe": 5
+    }
+  },
+  "deviations": [
+    "Rejected/IntegrationError texts derive from pump rejections",
+    "CLI and partial REP are now executed by the pump (not present in S4-24e images)",
+    "Cli and Coalesced are not mapped into the UART trace",
+    "Stage4UartIrqProbeError::ClockState added; session owns the clock",
+    "host extension tested only through the UART probe"
+  ],
+  "s4_27_caveats": {
+    "before": [
+      "delivery only flat identity Long64/CPL0 without paged entry and IRETQ",
+      "no automatic event pump or scheduler"
+    ],
+    "closed": {
+      "paged_single_vector": "S4-27h",
+      "paged_sti_hlt_wake": "S4-27i4a",
+      "flat_pump": "S4-27i1",
+      "timer": "S4-27i2",
+      "irq_queue_and_idle_arbitration": "S4-27i3",
+      "uart_probe_on_pump": "S4-27i5"
+    },
+    "remaining": {
+      "S4-27i4b": "pump over paged backend",
+      "S4-37a": "run_boot, board, time per instruction, PIT/PIC/INTIN2, ISSUE-067",
+      "S4-38": "general paged interpreter, Linux EOI movl disp32",
+      "S4-33": "nested #PF/#NP/#DF, CPL3, IST!=0, TLB, JIT in pump (not_supported)",
+      "stage2": "MOV SS and its shadow"
+    }
+  },
+  "plan_marked_done": false
+}

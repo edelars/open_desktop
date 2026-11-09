@@ -138,6 +138,8 @@ fn trace_json(event: &od_machine::PumpTraceEvent) -> Value {
             });
         }
         PumpTraceKind::Sti | PumpTraceKind::Cli | PumpTraceKind::Hlt | PumpTraceKind::Iretq => {}
+        // Owner events (S4-27i5): this probe attaches no owner hook.
+        PumpTraceKind::Host(_) => {}
     }
     value
 }

@@ -33,6 +33,7 @@ mod stage4_cr3_mixed_probe;
 mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_huge_pages_probe;
+mod stage4_interrupt_probe_common;
 mod stage4_interrupt_pump_probe;
 mod stage4_interrupt_queue_probe;
 mod stage4_interrupt_timer_probe;
@@ -109,8 +110,8 @@ pub use diagnostic_vcpu::{
 
 pub use interrupt_pump::{
     INTERRUPT_PUMP_QUEUE_CAPACITY, INTERRUPT_PUMP_TRACE_LIMIT, InterruptPump, PumpEntrySource,
-    PumpExit, PumpInjection, PumpQueueError, PumpRejection, PumpResult, PumpTraceEvent,
-    PumpTraceKind,
+    PumpExit, PumpHost, PumpHostEvent, PumpHostStep, PumpInjection, PumpQueueError, PumpRejection,
+    PumpResult, PumpTraceEvent, PumpTraceKind,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

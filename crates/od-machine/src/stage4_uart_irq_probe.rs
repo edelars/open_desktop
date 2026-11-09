@@ -8,24 +8,33 @@
 //! the IOAPIC through `set_intin4`. There is no scheduler and no thread: the
 //! caller supplies a step budget and a STOP predicate, and virtual time moves
 //! only when the guest is halted and the next RX deadline is in the future.
+//!
+//! S4-27i5: the run loop (STOP, budget, boundary delivery, STI/HLT/IRETQ steps,
+//! halt wake, idle advance, trace of IRR/entry/EOI) is the [`InterruptPump`].
+//! What remains here is the UART owner adapter ([`UartOwner`], a [`PumpHost`]):
+//! the RX event queue, the UART-to-INTIN4 line sampling, instant transmit, the
+//! two instructions the ordinary interpreter does not execute (`LIDT [RSP+0]`
+//! and bare `IN`/`OUT`) and the mapping of pump results to the S4-24e trace and
+//! exit types.
 
-use crate::diagnostic_vcpu::DiagnosticIrqEntry;
+use crate::interrupt_pump::{
+    PumpEntrySource, PumpExit, PumpHost, PumpHostEvent, PumpHostStep, PumpRejection, PumpTraceKind,
+};
+use crate::stage4_interrupt_probe_common::{flat_access_context, flat_entry_state};
 use crate::{
-    BusBuildError, DiagnosticExit, DiagnosticHaltWait, DiagnosticHaltWakeResult,
-    DiagnosticIretqResult, DiagnosticRunResult, DiagnosticStiApicQuantumResult,
-    DiagnosticTerminalExit, DiagnosticVcpuSession, EventGeneration, EventQueueError,
-    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
-    IoApicHandle, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle,
-    MachineBus, MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec,
-    MmioBinding, PortAddress, PortRange, PortRegionBinding, RamLimits, Uart16550Handle,
-    Uart16550PollingTx, UartRxEventPump, VirtualClock, VirtualClockError,
+    BusBuildError, DiagnosticExit, DiagnosticHaltWaitError, DiagnosticRunResult,
+    DiagnosticTerminalExit, DiagnosticVcpuControlError, DiagnosticVcpuSession, EventGeneration,
+    EventQueueError, GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE,
+    IO_APIC_MMIO_SIZE, InterruptPump, IoApic, IoApicHandle, LOCAL_APIC_MMIO_BASE,
+    LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MemoryAccessError,
+    MemoryRegionKind, MemoryRegionSpec, MmioBinding, PortAddress, PortRange, PortRegionBinding,
+    RamLimits, Uart16550Handle, Uart16550PollingTx, UartRxEventPump, VirtualClockError,
+    VirtualClockHandle,
 };
-use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
-use od_isa::state::{Gdtr, Idtr};
-use od_isa::{
-    CodeSegmentDescriptorCache, CpuActivity, INTEGER_FLAGS, LongModeState, Register,
-    StackSegmentDescriptorCache, StiShadow,
-};
+use od_isa::execute::RdtscControls;
+use od_isa::state::Idtr;
+use od_isa::{INTEGER_FLAGS, LongModeState, Register};
+use std::any::Any;
 
 pub const STAGE4_UART_IRQ_PROBE_IMAGE_GPA: u64 = 0x1000;
 pub const STAGE4_UART_IRQ_PROBE_IMAGE_BYTES: usize = 0x6000;
@@ -57,6 +66,9 @@ pub enum Stage4UartIrqProbeLoadError {
 pub enum Stage4UartIrqProbeError {
     Queue(EventQueueError),
     Clock(VirtualClockError),
+    /// The session clock cannot be advanced now (the CPU is stopped or
+    /// terminal; S4-27i5: the clock is owned by the session).
+    ClockState(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,26 +159,6 @@ pub struct Stage4UartIrqProbeReport {
     pub retired: u64,
 }
 
-enum Cpu {
-    Running(DiagnosticVcpuSession),
-    Waiting(DiagnosticHaltWait),
-}
-
-pub struct Stage4UartIrqProbe {
-    cpu: Option<Cpu>,
-    uart: Uart16550Handle,
-    io_apic: IoApicHandle,
-    apic: LocalApicHandle,
-    rx: UartRxEventPump,
-    clock: VirtualClock,
-    line: bool,
-    vector_state: (bool, bool),
-    tx: Vec<u8>,
-    trace: Vec<UartIrqTraceEvent>,
-    retired_total: u64,
-    finished: Option<Stage4UartIrqProbeExit>,
-}
-
 fn layout(reason: &'static str) -> Stage4UartIrqProbeLoadError {
     Stage4UartIrqProbeLoadError::Layout(reason)
 }
@@ -240,6 +232,200 @@ fn validate_image(image: &[u8]) -> Result<(), Stage4UartIrqProbeLoadError> {
     Ok(())
 }
 
+const LIDT_PATTERN: [u8; 4] = [0x0f, 0x01, 0x5c, 0x24];
+
+/// UART-side owner of the pump (S4-27i5): RX queue, INTIN4 line, transmit.
+struct UartOwner {
+    uart: Uart16550Handle,
+    io_apic: IoApicHandle,
+    rx: UartRxEventPump,
+    line: bool,
+    tx: Vec<u8>,
+}
+
+impl UartOwner {
+    fn event(name: &'static str, a: u64, b: u64) -> PumpHostEvent {
+        PumpHostEvent { name, a, b }
+    }
+
+    /// Present level changes of the gated UART output to INTIN4. This is the
+    /// only UART-to-IOAPIC connection and runs inside the session owner.
+    fn sync_line(&mut self, events: &mut Vec<PumpHostEvent>) -> Result<(), PumpRejection> {
+        let line = self.uart.interrupt_line();
+        if line == self.line {
+            return Ok(());
+        }
+        self.line = line;
+        events.push(Self::event("uart_line", u64::from(line), 0));
+        self.io_apic
+            .set_intin4(line)
+            .map_err(|error| PumpRejection::Host(format!("set_intin4({line}): {error:?}")))
+    }
+
+    /// Instant transmit: no baud timing, so a THR write completes at once.
+    fn drain_tx(&mut self) {
+        while self.uart.transfer_holding_to_shift() {
+            if let Some(byte) = self.uart.complete_transmission() {
+                self.tx.push(byte);
+            }
+        }
+    }
+}
+
+impl PumpHost for UartOwner {
+    fn dispatch(&mut self, now_ns: u64) -> Result<Vec<PumpHostEvent>, String> {
+        let report = self
+            .rx
+            .dispatch_due(self.rx.generation(), now_ns, 8, || false)
+            .map_err(|error| format!("{error:?}"))?;
+        let mut events = Vec::new();
+        if report.delivered > 0 {
+            let byte = self.uart.received_byte().unwrap_or(0);
+            events.push(Self::event("rx_delivered", u64::from(byte), 0));
+            self.sync_line(&mut events).map_err(|error| match error {
+                PumpRejection::Host(detail) => detail,
+                other => format!("{other:?}"),
+            })?;
+        }
+        Ok(events)
+    }
+
+    /// Only a future deadline can wake the guest: a due byte that is stuck
+    /// behind an unread receive register does not count.
+    fn next_deadline(&self, now_ns: u64) -> Option<u64> {
+        self.rx
+            .next_deadline()
+            .filter(|deadline| *deadline > now_ns)
+    }
+
+    fn step(
+        &mut self,
+        session: &mut DiagnosticVcpuSession,
+    ) -> Option<Result<PumpHostStep, PumpRejection>> {
+        let code = session.peek_code(5);
+        let rdx = session.state().gpr[Register::Rdx as usize] as u16;
+        let rax = session.state().gpr[Register::Rax as usize] as u8;
+        let is_lidt = code.len() == 5 && code[..4] == LIDT_PATTERN;
+        let is_pio = matches!(code.first(), Some(0xec | 0xee));
+        if !is_lidt && !is_pio {
+            return None;
+        }
+        let outcome = if is_lidt {
+            session.step_flat_lidt()
+        } else {
+            session.step_pio_u8()
+        };
+        let result: DiagnosticRunResult = match outcome {
+            Ok(result) => result,
+            Err(error) => return Some(Err(PumpRejection::Control(error))),
+        };
+        let mut events = Vec::new();
+        let retired = matches!(result.exit, DiagnosticExit::WorkLimit(_))
+            && result.instructions_executed == 1;
+        if retired {
+            if is_lidt {
+                events.push(Self::event("lidt", 0, 0));
+            } else {
+                let is_in = code.first() == Some(&0xec);
+                if (STAGE4_UART_IRQ_PROBE_COM1..STAGE4_UART_IRQ_PROBE_COM1 + 8).contains(&rdx) {
+                    events.push(if is_in {
+                        let al_after = session.state().gpr[Register::Rax as usize] as u8;
+                        Self::event("port_in", u64::from(rdx), u64::from(al_after))
+                    } else {
+                        Self::event("port_out", u64::from(rdx), u64::from(rax))
+                    });
+                }
+                self.drain_tx();
+                if let Err(error) = self.sync_line(&mut events) {
+                    return Some(Err(error));
+                }
+            }
+        }
+        Some(Ok(PumpHostStep { result, events }))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+pub struct Stage4UartIrqProbe {
+    pump: InterruptPump,
+    uart: Uart16550Handle,
+    trace: Vec<UartIrqTraceEvent>,
+    /// Number of pump trace events already mapped into `trace`.
+    converted: usize,
+}
+
+fn trace_kind(kind: &PumpTraceKind) -> Option<UartIrqTraceKind> {
+    Some(match kind {
+        PumpTraceKind::Irr { vector } => UartIrqTraceKind::Irr { vector: *vector },
+        PumpTraceKind::Entry { vector, source } => {
+            let _: &PumpEntrySource = source;
+            UartIrqTraceKind::IrqEntry { vector: *vector }
+        }
+        PumpTraceKind::Eoi { vector } => UartIrqTraceKind::Eoi { vector: *vector },
+        PumpTraceKind::Sti => UartIrqTraceKind::Sti,
+        PumpTraceKind::Hlt => UartIrqTraceKind::Hlt,
+        PumpTraceKind::Iretq => UartIrqTraceKind::Iretq,
+        PumpTraceKind::Host(event) => match event.name {
+            "rx_delivered" => UartIrqTraceKind::RxDelivered {
+                byte: event.a as u8,
+            },
+            "uart_line" => UartIrqTraceKind::UartLine { high: event.a != 0 },
+            "port_in" => UartIrqTraceKind::PortIn {
+                port: event.a as u16,
+                value: event.b as u8,
+            },
+            "port_out" => UartIrqTraceKind::PortOut {
+                port: event.a as u16,
+                value: event.b as u8,
+            },
+            "lidt" => UartIrqTraceKind::Lidt,
+            "idle_advance" => UartIrqTraceKind::IdleAdvance { to_ns: event.a },
+            _ => return None,
+        },
+        // The UART probe has no CLI step and no IRQ event queue; the pump
+        // records them for other owners.
+        PumpTraceKind::Cli | PumpTraceKind::Coalesced { .. } => return None,
+    })
+}
+
+fn map_exit(exit: PumpExit) -> Stage4UartIrqProbeExit {
+    match exit {
+        PumpExit::IdleHalt => Stage4UartIrqProbeExit::IdleHalt,
+        PumpExit::Budget => Stage4UartIrqProbeExit::BudgetExhausted,
+        PumpExit::Stopped => Stage4UartIrqProbeExit::Stopped,
+        PumpExit::Terminal(cause) => Stage4UartIrqProbeExit::Terminal(cause),
+        PumpExit::Rejected(rejection) => match rejection {
+            PumpRejection::HaltEntry(reason) => {
+                Stage4UartIrqProbeExit::Rejected(format!("HLT entry: {reason:?}"))
+            }
+            PumpRejection::HaltWake(reason) | PumpRejection::InterruptEntry(reason) => {
+                Stage4UartIrqProbeExit::Rejected(format!("{reason:?}"))
+            }
+            PumpRejection::StiQuantumProfile => {
+                Stage4UartIrqProbeExit::Rejected("STI quantum: ProfileRejected".into())
+            }
+            PumpRejection::ApicQuantumProfile => {
+                Stage4UartIrqProbeExit::Rejected("APIC quantum: ProfileRejected".into())
+            }
+            PumpRejection::TraceLimit => {
+                Stage4UartIrqProbeExit::IntegrationError("trace limit exceeded".into())
+            }
+            PumpRejection::NoRetirement(reason) => {
+                Stage4UartIrqProbeExit::IntegrationError(format!("no retirement: {reason:?}"))
+            }
+            PumpRejection::Host(detail) => Stage4UartIrqProbeExit::IntegrationError(detail),
+            other => Stage4UartIrqProbeExit::IntegrationError(format!("{other:?}")),
+        },
+    }
+}
+
 /// Validate a `Stage4UartIrqProbeV1` raw image, place it at GPA `0x1000` and
 /// return the fixed Long64/CPL0 entry state with the interrupt-route owner.
 pub fn load_stage4_uart_irq_probe(
@@ -297,73 +483,61 @@ pub fn load_stage4_uart_irq_probe(
     )
     .map_err(Stage4UartIrqProbeLoadError::Memory)?;
 
-    let mut state = LongModeState {
-        rip: STAGE4_UART_IRQ_PROBE_ENTRY,
-        rflags: 2,
-        cs_selector: Some(8),
-        cs_cache: Some(CodeSegmentDescriptorCache {
-            base: 0,
-            limit: u32::MAX,
-            access: 0x9b,
-            flags: 2,
-        }),
-        ss_selector: Some(0x10),
-        ss_cache: Some(StackSegmentDescriptorCache {
-            base: 0,
-            limit: u32::MAX,
-            access: 0x93,
-            flags: 0,
-        }),
-        gdtr: Some(Gdtr {
-            base: GDT_GPA,
-            limit: 0x17,
-        }),
-        idtr: Some(Idtr { base: 0, limit: 0 }),
-        activity: Some(CpuActivity::Running),
-        sti_shadow: Some(StiShadow::Clear),
-        ..LongModeState::default()
-    };
-    state.gpr[Register::Rsp as usize] = STAGE4_UART_IRQ_PROBE_STACK_TOP;
-    let context = AccessContext {
-        mode: InstructionMode::Long64,
-        privilege: PrivilegeLevel::Ring0,
-        origin: AccessOrigin::Explicit,
-    };
-    let session = DiagnosticVcpuSession::new(state, bus, context, INTEGER_FLAGS)
+    // IDTR is loaded by the guest's own `LIDT [RSP+0]`, executed by the owner.
+    let state = flat_entry_state(
+        STAGE4_UART_IRQ_PROBE_ENTRY,
+        STAGE4_UART_IRQ_PROBE_STACK_TOP,
+        Idtr { base: 0, limit: 0 },
+    );
+    let clock = VirtualClockHandle::new(DIAGNOSTIC_TSC_HZ)
         .map_err(|error| Stage4UartIrqProbeLoadError::Session(format!("{error:?}")))?;
-    let clock = VirtualClock::new(DIAGNOSTIC_TSC_HZ)
-        .map_err(|error| Stage4UartIrqProbeLoadError::Session(format!("{error:?}")))?;
-    Ok(Stage4UartIrqProbe {
-        cpu: Some(Cpu::Running(session)),
-        rx: UartRxEventPump::new(8, uart.clone()),
-        uart,
-        io_apic,
-        apic,
+    let session = DiagnosticVcpuSession::new_with_clock_handle(
+        state,
+        bus,
+        flat_access_context(),
+        INTEGER_FLAGS,
         clock,
+        RdtscControls { cr4_tsd: false },
+    )
+    .map_err(|error| Stage4UartIrqProbeLoadError::Session(format!("{error:?}")))?;
+    let owner = UartOwner {
+        rx: UartRxEventPump::new(8, uart.clone()),
+        uart: uart.clone(),
+        io_apic,
         line: false,
-        vector_state: (false, false),
         tx: Vec::new(),
+    };
+    let pump = InterruptPump::new(session, apic)
+        .with_watched_vectors(&[STAGE4_UART_IRQ_PROBE_VECTOR])
+        .with_host(Box::new(owner))
+        .with_entry_only_delivery();
+    Ok(Stage4UartIrqProbe {
+        pump,
+        uart,
         trace: Vec::new(),
-        retired_total: 0,
-        finished: None,
+        converted: 0,
     })
 }
 
-enum Flow {
-    Continue,
-    Exit(Stage4UartIrqProbeExit),
-}
-
 impl Stage4UartIrqProbe {
+    fn owner(&self) -> &UartOwner {
+        self.pump
+            .host::<UartOwner>()
+            .expect("the UART probe always has its owner")
+    }
+
+    fn owner_mut(&mut self) -> &mut UartOwner {
+        self.pump
+            .host_mut::<UartOwner>()
+            .expect("the UART probe always has its owner")
+    }
+
     pub fn state(&self) -> &LongModeState {
-        match self.cpu.as_ref().expect("cpu is always restored") {
-            Cpu::Running(session) => session.state(),
-            Cpu::Waiting(wait) => wait.state(),
-        }
+        self.pump.state()
     }
 
     pub fn clock_ns(&self) -> u64 {
-        self.clock.now_ns()
+        self.pump.virtual_time_ns().unwrap_or(0)
     }
 
     pub fn trace(&self) -> &[UartIrqTraceEvent] {
@@ -372,7 +546,7 @@ impl Stage4UartIrqProbe {
 
     /// Bytes the guest wrote to THR; transmission completes instantly (no baud timing).
     pub fn serial_bytes(&self) -> &[u8] {
-        &self.tx
+        &self.owner().tx
     }
 
     pub fn uart(&self) -> &Uart16550Handle {
@@ -380,20 +554,20 @@ impl Stage4UartIrqProbe {
     }
 
     pub fn retired_total(&self) -> u64 {
-        self.retired_total
+        self.pump.retired_total()
     }
 
     pub fn pending_rx(&self) -> usize {
-        self.rx.len()
+        self.owner().rx.len()
     }
 
     pub fn rx_generation(&self) -> EventGeneration {
-        self.rx.generation()
+        self.owner().rx.generation()
     }
 
     /// `(IRR, ISR)` of the INTIN4 vector.
     pub fn vector_state(&self) -> (bool, bool) {
-        self.apic.vector_state(STAGE4_UART_IRQ_PROBE_VECTOR)
+        self.pump.apic().vector_state(STAGE4_UART_IRQ_PROBE_VECTOR)
     }
 
     pub fn count(&self, probe: impl Fn(&UartIrqTraceKind) -> bool) -> usize {
@@ -407,326 +581,48 @@ impl Stage4UartIrqProbe {
         deadline_ns: u64,
         value: u8,
     ) -> Result<(), Stage4UartIrqProbeError> {
-        self.rx
-            .schedule(self.rx.generation(), key, deadline_ns, value)
+        let rx = &mut self.owner_mut().rx;
+        rx.schedule(rx.generation(), key, deadline_ns, value)
             .map_err(Stage4UartIrqProbeError::Queue)
     }
 
     /// Advance virtual time explicitly (only meaningful with RX deadlines).
     pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), Stage4UartIrqProbeError> {
-        self.clock
+        self.pump
             .advance_time_ns(delta_ns)
-            .map_err(Stage4UartIrqProbeError::Clock)
+            .map_err(|rejection| match rejection {
+                PumpRejection::Control(DiagnosticVcpuControlError::Clock(error))
+                | PumpRejection::TimerAdvance(DiagnosticHaltWaitError::Clock(error)) => {
+                    Stage4UartIrqProbeError::Clock(error)
+                }
+                other => Stage4UartIrqProbeError::ClockState(format!("{other:?}")),
+            })
     }
 
-    fn push(&mut self, kind: UartIrqTraceKind) -> Result<(), Stage4UartIrqProbeExit> {
-        if self.trace.len() >= STAGE4_UART_IRQ_PROBE_TRACE_LIMIT {
-            return Err(Stage4UartIrqProbeExit::IntegrationError(
-                "trace limit exceeded".into(),
-            ));
-        }
-        let rip = self.state().rip;
-        self.trace.push(UartIrqTraceEvent {
-            seq: self.trace.len() as u64,
-            clock_ns: self.clock.now_ns(),
-            rip,
-            kind,
-        });
-        Ok(())
-    }
-
-    /// Present level changes of the gated UART output to INTIN4. This is the
-    /// only UART-to-IOAPIC connection and runs inside the session owner.
-    fn sync_line(&mut self) -> Result<(), Stage4UartIrqProbeExit> {
-        let line = self.uart.interrupt_line();
-        if line == self.line {
-            return Ok(());
-        }
-        self.line = line;
-        self.push(UartIrqTraceKind::UartLine { high: line })?;
-        self.io_apic.set_intin4(line).map_err(|error| {
-            Stage4UartIrqProbeExit::IntegrationError(format!("set_intin4({line}): {error:?}"))
-        })
-    }
-
-    /// Emit LAPIC IRR/ISR transitions for the vector observed since the last call.
-    fn observe(&mut self) -> Result<(), Stage4UartIrqProbeExit> {
-        let (prev_irr, prev_isr) = self.vector_state;
-        let (irr, isr) = self.vector_state();
-        self.vector_state = (irr, isr);
-        let vector = STAGE4_UART_IRQ_PROBE_VECTOR;
-        if prev_isr && !isr {
-            self.push(UartIrqTraceKind::Eoi { vector })?;
-        }
-        if !prev_irr && irr {
-            self.push(UartIrqTraceKind::Irr { vector })?;
-        }
-        if prev_irr && !irr && isr && !prev_isr {
-            self.push(UartIrqTraceKind::IrqEntry { vector })?;
-        }
-        Ok(())
-    }
-
-    fn dispatch_due_rx(&mut self) -> Result<(), Stage4UartIrqProbeExit> {
-        let report = self
-            .rx
-            .dispatch_due(self.rx.generation(), self.clock.now_ns(), 8, || false)
-            .map_err(|error| Stage4UartIrqProbeExit::IntegrationError(format!("{error:?}")))?;
-        if report.delivered > 0 {
-            let byte = self.uart.received_byte().unwrap_or(0);
-            self.push(UartIrqTraceKind::RxDelivered { byte })?;
-            self.sync_line()?;
-            self.observe()?;
-        }
-        Ok(())
-    }
-
-    /// Instant transmit: no baud timing, so a THR write completes at once.
-    fn drain_tx(&mut self) {
-        while self.uart.transfer_holding_to_shift() {
-            if let Some(byte) = self.uart.complete_transmission() {
-                self.tx.push(byte);
+    /// Map pump trace events recorded since the last call into the S4-24e trace.
+    fn sync_trace(&mut self) {
+        let events = &self.pump.trace()[self.converted..];
+        for event in events {
+            if let Some(kind) = trace_kind(&event.kind) {
+                self.trace.push(UartIrqTraceEvent {
+                    seq: self.trace.len() as u64,
+                    clock_ns: event.clock_ns.unwrap_or(0),
+                    rip: event.rip,
+                    kind,
+                });
             }
         }
+        self.converted = self.pump.trace().len();
     }
 
     /// Run until idle halt, budget, STOP, a terminal result or an integration error.
-    pub fn run(&mut self, budget: u64, mut stop: impl FnMut() -> bool) -> Stage4UartIrqProbeReport {
-        let retired_before = self.retired_total;
-        let mut quanta = 0;
-        let exit = loop {
-            if let Some(exit) = &self.finished {
-                break exit.clone();
-            }
-            if stop() {
-                break Stage4UartIrqProbeExit::Stopped;
-            }
-            if quanta >= budget {
-                break Stage4UartIrqProbeExit::BudgetExhausted;
-            }
-            match self.step() {
-                Ok(Flow::Continue) => quanta += 1,
-                Ok(Flow::Exit(exit)) => {
-                    if !matches!(exit, Stage4UartIrqProbeExit::IdleHalt) {
-                        self.finished = Some(exit.clone());
-                    }
-                    break exit;
-                }
-                Err(exit) => {
-                    self.finished = Some(exit.clone());
-                    break exit;
-                }
-            }
-        };
+    pub fn run(&mut self, budget: u64, stop: impl FnMut() -> bool) -> Stage4UartIrqProbeReport {
+        let result = self.pump.run(budget, stop);
+        self.sync_trace();
         Stage4UartIrqProbeReport {
-            exit,
-            quanta,
-            retired: self.retired_total - retired_before,
+            exit: map_exit(result.exit),
+            quanta: result.quanta,
+            retired: result.retired,
         }
-    }
-
-    fn terminal(exit: DiagnosticTerminalExit) -> Flow {
-        Flow::Exit(Stage4UartIrqProbeExit::Terminal(exit))
-    }
-
-    fn account(
-        &mut self,
-        result: DiagnosticRunResult,
-    ) -> Result<Option<Flow>, Stage4UartIrqProbeExit> {
-        self.retired_total += result.instructions_executed;
-        match result.exit {
-            DiagnosticExit::Terminal(cause) => Ok(Some(Self::terminal(cause))),
-            DiagnosticExit::Stopped => Ok(Some(Flow::Exit(Stage4UartIrqProbeExit::Stopped))),
-            DiagnosticExit::WorkLimit(_) if result.instructions_executed == 1 => Ok(None),
-            DiagnosticExit::WorkLimit(reason) => Ok(Some(Flow::Exit(
-                Stage4UartIrqProbeExit::IntegrationError(format!("no retirement: {reason:?}")),
-            ))),
-        }
-    }
-
-    fn step(&mut self) -> Result<Flow, Stage4UartIrqProbeExit> {
-        self.dispatch_due_rx()?;
-        let cpu = self.cpu.take().expect("cpu is always restored");
-        match cpu {
-            Cpu::Waiting(wait) => self.step_waiting(wait),
-            Cpu::Running(session) => self.step_running(session),
-        }
-    }
-
-    fn step_waiting(
-        &mut self,
-        mut wait: DiagnosticHaltWait,
-    ) -> Result<Flow, Stage4UartIrqProbeExit> {
-        let polled = wait.poll_apic(&self.apic);
-        match polled {
-            DiagnosticHaltWakeResult::Entered { .. } => match wait.into_running() {
-                Ok(session) => {
-                    self.cpu = Some(Cpu::Running(session));
-                    self.observe()?;
-                    Ok(Flow::Continue)
-                }
-                Err(wait) => {
-                    self.cpu = Some(Cpu::Waiting(wait));
-                    Ok(Flow::Exit(Stage4UartIrqProbeExit::IntegrationError(
-                        "halt wake did not return a running session".into(),
-                    )))
-                }
-            },
-            DiagnosticHaltWakeResult::Waiting => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                let now = self.clock.now_ns();
-                match self.rx.next_deadline() {
-                    Some(deadline) if deadline > now => {
-                        self.clock
-                            .advance_time_ns(deadline - now)
-                            .map_err(|error| {
-                                Stage4UartIrqProbeExit::IntegrationError(format!("{error:?}"))
-                            })?;
-                        self.push(UartIrqTraceKind::IdleAdvance { to_ns: deadline })?;
-                        Ok(Flow::Continue)
-                    }
-                    // Nothing can wake the guest: a future event is absent, or
-                    // a due byte is stuck behind an unread receive register.
-                    _ => Ok(Flow::Exit(Stage4UartIrqProbeExit::IdleHalt)),
-                }
-            }
-            DiagnosticHaltWakeResult::OutsideProfile(reason) => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Flow::Exit(Stage4UartIrqProbeExit::Rejected(format!(
-                    "{reason:?}"
-                ))))
-            }
-            DiagnosticHaltWakeResult::Stopped => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Flow::Exit(Stage4UartIrqProbeExit::Stopped))
-            }
-            DiagnosticHaltWakeResult::Terminal(cause) => {
-                self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Self::terminal(cause))
-            }
-        }
-    }
-
-    fn step_running(
-        &mut self,
-        mut session: DiagnosticVcpuSession,
-    ) -> Result<Flow, Stage4UartIrqProbeExit> {
-        let control = |error| Stage4UartIrqProbeExit::IntegrationError(format!("{error:?}"));
-        match session.deliver_pending_irq(&self.apic) {
-            Ok(Some(DiagnosticIrqEntry::Entered { .. })) => {
-                self.cpu = Some(Cpu::Running(session));
-                self.observe()?;
-                return Ok(Flow::Continue);
-            }
-            Ok(Some(DiagnosticIrqEntry::OutsideProfile(reason))) => {
-                self.cpu = Some(Cpu::Running(session));
-                return Ok(Flow::Exit(Stage4UartIrqProbeExit::Rejected(format!(
-                    "{reason:?}"
-                ))));
-            }
-            Ok(Some(DiagnosticIrqEntry::Terminal(cause))) => {
-                self.cpu = Some(Cpu::Running(session));
-                return Ok(Self::terminal(cause));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.cpu = Some(Cpu::Running(session));
-                return Err(control(error));
-            }
-        }
-        let code = session.peek_code(5);
-        let rdx = session.state().gpr[Register::Rdx as usize] as u16;
-        let rax = session.state().gpr[Register::Rax as usize] as u8;
-        let mut event = None;
-        let outcome = match code.as_slice() {
-            [0xf4, ..] => {
-                return match session.into_halt_wait() {
-                    Ok(wait) => {
-                        self.cpu = Some(Cpu::Waiting(wait));
-                        self.push(UartIrqTraceKind::Hlt)?;
-                        self.retired_total += 1;
-                        Ok(Flow::Continue)
-                    }
-                    Err(failure) => {
-                        self.cpu = Some(Cpu::Running(failure.session));
-                        Ok(Flow::Exit(Stage4UartIrqProbeExit::Rejected(format!(
-                            "HLT entry: {:?}",
-                            failure.reason
-                        ))))
-                    }
-                };
-            }
-            [0xfb, ..] => {
-                event = Some(UartIrqTraceKind::Sti);
-                match session.run_sti_apic_quantum(&self.apic) {
-                    DiagnosticStiApicQuantumResult::Ordinary(result)
-                    | DiagnosticStiApicQuantumResult::TerminalExecution(result) => Ok(result),
-                    other => {
-                        self.cpu = Some(Cpu::Running(session));
-                        return Ok(Flow::Exit(Stage4UartIrqProbeExit::Rejected(format!(
-                            "STI quantum: {other:?}"
-                        ))));
-                    }
-                }
-            }
-            [0x0f, 0x01, 0x5c, 0x24, _] => {
-                event = Some(UartIrqTraceKind::Lidt);
-                session.step_flat_lidt()
-            }
-            [0xec | 0xee, ..] => session.step_pio_u8(),
-            [0x48, 0xcf, ..] => {
-                event = Some(UartIrqTraceKind::Iretq);
-                match session.run_same_cpl0_iretq() {
-                    Ok(DiagnosticIretqResult::Retired) => Ok(DiagnosticRunResult {
-                        exit: DiagnosticExit::WorkLimit(crate::WorkLimitReason::InstructionBudget),
-                        instructions_executed: 1,
-                        rflags_defined: session.rflags_defined(),
-                    }),
-                    Ok(DiagnosticIretqResult::Terminal(cause)) => Ok(DiagnosticRunResult {
-                        exit: DiagnosticExit::Terminal(cause),
-                        instructions_executed: 0,
-                        rflags_defined: session.rflags_defined(),
-                    }),
-                    Err(error) => Err(error),
-                }
-            }
-            _ => session.run(1, || false),
-        };
-        let is_pio = matches!(code.first(), Some(0xec | 0xee));
-        let result = match outcome {
-            Ok(result) => result,
-            Err(error) => {
-                self.cpu = Some(Cpu::Running(session));
-                return Err(control(error));
-            }
-        };
-        let al_after = session.state().gpr[Register::Rax as usize] as u8;
-        self.cpu = Some(Cpu::Running(session));
-        if let Some(flow) = self.account(result.clone())? {
-            return Ok(flow);
-        }
-        if is_pio {
-            let is_in = code.first() == Some(&0xec);
-            if (STAGE4_UART_IRQ_PROBE_COM1..STAGE4_UART_IRQ_PROBE_COM1 + 8).contains(&rdx) {
-                self.push(if is_in {
-                    UartIrqTraceKind::PortIn {
-                        port: rdx,
-                        value: al_after,
-                    }
-                } else {
-                    UartIrqTraceKind::PortOut {
-                        port: rdx,
-                        value: rax,
-                    }
-                })?;
-            }
-            self.drain_tx();
-            self.sync_line()?;
-        }
-        if let Some(kind) = event {
-            self.push(kind)?;
-        }
-        self.observe()?;
-        Ok(Flow::Continue)
     }
 }
