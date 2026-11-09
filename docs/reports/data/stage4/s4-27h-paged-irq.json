@@ -1,0 +1,497 @@
+{
+  "build": {
+    "base_revision": "2180612aa2077ccf0a2207327b060c546071d160",
+    "elf_sha256": "be43ffa991c633f8688d7b9dec3a8ae6628b87faf7bcdd78d2af1524b797d429",
+    "image_bytes": 40960,
+    "raw_sha256": "65fe8a774818ab5db819e44f8837181d2db82c6ce8ba9e31e1365f2f094d6277"
+  },
+  "date": "2026-11-09",
+  "expected_sdm": {
+    "final_rip": "0x401006",
+    "frame_low_to_high": [
+      "0x401003",
+      "0x8",
+      "0x202",
+      "0x700ff8",
+      "0x10"
+    ],
+    "handler_rflags": "0x2",
+    "new_rsp": "0x700fc8",
+    "ptes_final": {
+      "gdt": "0x9023",
+      "handler": "0x7023",
+      "idt": "0x8023",
+      "lapic": "0xfee00063",
+      "main": "0x6023",
+      "stack": "0xa063"
+    },
+    "retired": 4,
+    "return_rip": "0x401003",
+    "sources": [
+      "Intel SDM Vol. 3A 6.14.2 (64-bit mode interrupt stack frame, RSP alignment, IF cleared by interrupt gate)",
+      "Intel SDM Vol. 3A 4.8 (A/D flags)",
+      "Intel SDM Vol. 3A 13.8-13.9 (IRR/ISR/EOI/PPR)",
+      "accepted S4-33c (supervisor write to RO page with CR0.WP=1: #PF error code 3, A set, D clear)"
+    ],
+    "steps": 5
+  },
+  "model_notes": [
+    "delivery refusal and abort are terminal; hardware outcome is sequential #NP/#PF delivery (S4-33)",
+    "IRR->ISR acknowledge after entry differs from INTA on hardware (S4-33)",
+    "memory type (PCD/PWT/PAT) of the APIC page is not modelled",
+    "stack read-only injection is model-only and not comparable with KVM (S4-34): hardware would shut down"
+  ],
+  "observed": {
+    "handler_without_eoi": {
+      "accepted": false,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "eoi_cleared_isr",
+        "irq_state_clear",
+        "ptes_accessed_dirty"
+      ],
+      "guest_state": {
+        "cr2": null,
+        "cr3": "0x1000",
+        "cs": "0x8",
+        "eligible": null,
+        "irr": true,
+        "isr": true,
+        "rflags": "0x202",
+        "rip": "0x0000000000401006",
+        "rsp": "0x0000000000700ff8"
+      },
+      "ptes": {
+        "gdt": "0x9023",
+        "handler": "0x7023",
+        "idt": "0x8023",
+        "lapic": "0xfee00003",
+        "main": "0x6023",
+        "stack": "0xa063"
+      },
+      "retired": 3,
+      "runner_exit_code": 5,
+      "status": "error",
+      "steps": 5,
+      "steps_trace": [
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "main: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "delivered",
+          "frame_low_to_high": [
+            "0x401003",
+            "0x8",
+            "0x202",
+            "0x700ff8",
+            "0x10"
+          ],
+          "irr_after": false,
+          "isr_after": true,
+          "name": "delivery: vector 0x41 through the paged IDT",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7003",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": false,
+          "rflags_after": "0x2",
+          "rip_after": "0x0000000000402000",
+          "rsp_after": "0x0000000000700fc8"
+        },
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": true,
+          "name": "IRETQ",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": true,
+          "name": "resume: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401006",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "blocked",
+          "frame_low_to_high": null,
+          "irr_after": true,
+          "isr_after": true,
+          "name": "redelivery: same vector requested again",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": false,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401006",
+          "rsp_after": "0x0000000000700ff8"
+        }
+      ],
+      "stop_detail": null,
+      "stop_reason": "second_delivery_blocked"
+    },
+    "idt_gate_not_present": {
+      "accepted": false,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "vector_delivered_to_handler",
+        "frame_exact",
+        "vector_in_service_during_handler",
+        "eoi_cleared_isr",
+        "iretq_returned_to_main",
+        "final_rip",
+        "irq_state_clear",
+        "ptes_accessed_dirty"
+      ],
+      "guest_state": {
+        "cr2": null,
+        "cr3": "0x1000",
+        "cs": "0x8",
+        "eligible": "0x41",
+        "irr": true,
+        "isr": false,
+        "rflags": "0x202",
+        "rip": "0x0000000000401003",
+        "rsp": "0x0000000000700ff8"
+      },
+      "ptes": {
+        "gdt": "0x9003",
+        "handler": "0x7003",
+        "idt": "0x8023",
+        "lapic": "0xfee00003",
+        "main": "0x6023",
+        "stack": "0xa003"
+      },
+      "retired": 1,
+      "runner_exit_code": 5,
+      "status": "error",
+      "steps": 2,
+      "steps_trace": [
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "main: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "outside_profile",
+          "frame_low_to_high": null,
+          "irr_after": true,
+          "isr_after": false,
+          "name": "delivery: vector 0x41 through the paged IDT",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          },
+          "retired": false,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        }
+      ],
+      "stop_detail": "InvalidGate",
+      "stop_reason": "delivery_outside_profile"
+    },
+    "stack_readonly": {
+      "accepted": false,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "vector_delivered_to_handler",
+        "frame_exact",
+        "vector_in_service_during_handler",
+        "eoi_cleared_isr",
+        "iretq_returned_to_main",
+        "final_rip",
+        "irq_state_clear",
+        "ptes_accessed_dirty"
+      ],
+      "guest_state": {
+        "cr2": null,
+        "cr3": "0x1000",
+        "cs": "0x8",
+        "eligible": "0x41",
+        "irr": true,
+        "isr": false,
+        "rflags": "0x202",
+        "rip": "0x0000000000401003",
+        "rsp": "0x0000000000700ff8"
+      },
+      "ptes": {
+        "gdt": "0x9023",
+        "handler": "0x7003",
+        "idt": "0x8023",
+        "lapic": "0xfee00003",
+        "main": "0x6023",
+        "stack": "0xa021"
+      },
+      "retired": 1,
+      "runner_exit_code": 5,
+      "status": "error",
+      "steps": 2,
+      "steps_trace": [
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "main: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa001"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "delivery_aborted",
+          "frame_low_to_high": null,
+          "irr_after": true,
+          "isr_after": false,
+          "name": "delivery: vector 0x41 through the paged IDT",
+          "page_fault": {
+            "cr2": "0x700fe8",
+            "error_code": 3,
+            "linear_address": "0x700fe8",
+            "vector": 14
+          },
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7003",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa021"
+          },
+          "retired": false,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        }
+      ],
+      "stop_detail": "StackWrite { slot: OldSs }: Architectural(ArchitecturalFault { vector: 14, error_code: Some(3), linear_address: Some(7344104) })",
+      "stop_reason": "delivery_aborted"
+    },
+    "success": {
+      "accepted": true,
+      "failed_checks": [],
+      "guest_state": {
+        "cr2": null,
+        "cr3": "0x1000",
+        "cs": "0x8",
+        "eligible": null,
+        "irr": false,
+        "isr": false,
+        "rflags": "0x202",
+        "rip": "0x0000000000401006",
+        "rsp": "0x0000000000700ff8"
+      },
+      "ptes": {
+        "gdt": "0x9023",
+        "handler": "0x7023",
+        "idt": "0x8023",
+        "lapic": "0xfee00063",
+        "main": "0x6023",
+        "stack": "0xa063"
+      },
+      "retired": 4,
+      "runner_exit_code": 0,
+      "status": "completed",
+      "steps": 5,
+      "steps_trace": [
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "main: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9003",
+            "handler": "0x7003",
+            "idt": "0x8003",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa003"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "delivered",
+          "frame_low_to_high": [
+            "0x401003",
+            "0x8",
+            "0x202",
+            "0x700ff8",
+            "0x10"
+          ],
+          "irr_after": false,
+          "isr_after": true,
+          "name": "delivery: vector 0x41 through the paged IDT",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7003",
+            "idt": "0x8023",
+            "lapic": "0xfee00003",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": false,
+          "rflags_after": "0x2",
+          "rip_after": "0x0000000000402000",
+          "rsp_after": "0x0000000000700fc8"
+        },
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "eoi: MOV [RBX],EAX",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": true,
+          "rflags_after": "0x2",
+          "rip_after": "0x0000000000402002",
+          "rsp_after": "0x0000000000700fc8"
+        },
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "IRETQ",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401003",
+          "rsp_after": "0x0000000000700ff8"
+        },
+        {
+          "exit": "retired",
+          "frame_low_to_high": null,
+          "irr_after": false,
+          "isr_after": false,
+          "name": "resume: INVLPG [RBX]",
+          "page_fault": null,
+          "ptes_after": {
+            "gdt": "0x9023",
+            "handler": "0x7023",
+            "idt": "0x8023",
+            "lapic": "0xfee00063",
+            "main": "0x6023",
+            "stack": "0xa063"
+          },
+          "retired": true,
+          "rflags_after": "0x202",
+          "rip_after": "0x0000000000401006",
+          "rsp_after": "0x0000000000700ff8"
+        }
+      ],
+      "stop_detail": null,
+      "stop_reason": "case_complete"
+    }
+  },
+  "profile": "Stage4PagedIrqProbeV1",
+  "vector": "0x41"
+}

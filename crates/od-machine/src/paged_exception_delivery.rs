@@ -7,8 +7,9 @@ use crate::{
 };
 use od_isa::execute::step_paged_exception_stack_discard as cpu_step_paged_exception_stack_discard;
 use od_isa::{
-    CpuActivity, LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1,
-    PagedCpl0PageTableRepairMovV1, PagedProbeResult, deliver_page_fault,
+    CpuActivity, InterruptDeliveryResult, LongModeState, OperandSize, PageFaultDeliveryResult,
+    PagedCpl0Cr0WpMovV1, PagedCpl0PageTableRepairMovV1, PagedProbeResult, deliver_page_fault,
+    deliver_paged_maskable_interrupt,
     execute::PagedCpl0ExceptionStackDiscardV1,
     interrupt::deliver_double_fault,
     iretq::IretqResult,
@@ -212,6 +213,59 @@ pub fn step_paged_exception_stack_discard(
     Ok(PagedExceptionStackDiscardReport {
         cpu,
         page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
+/// One external maskable interrupt delivery on the paged Long64 CPL0 profile
+/// (S4-27h). A failed delivery is terminal: no #PF/#NP/#DF is delivered for a
+/// fault on a table or stack access (model; hardware would run sequential
+/// exception delivery, which is S4-33). The report carries the architectural
+/// cause of an abort in `secondary_page_fault`; CR2 is not changed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedExternalInterruptDeliveryReport {
+    pub delivery: InterruptDeliveryResult,
+    pub secondary_page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub ad_updates: Vec<AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+/// Deliver `vector` through the IDT at the paged CPU state. The caller passes a
+/// candidate copy of the CPU state and publishes it only after the APIC
+/// acknowledge succeeds; CPU state is committed here only on `Delivered`.
+/// Table and stack accesses use the tracked RAM walker (no MMIO, no descriptor
+/// A-bit write: the target descriptor must already have A set).
+pub fn deliver_paged_external_interrupt(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    vector: u8,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedExternalInterruptDeliveryReport, PagedExceptionDeliveryError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let delivery =
+        deliver_paged_maskable_interrupt(state, &mut memory, vector, context, rflags_defined, efer);
+    Ok(PagedExternalInterruptDeliveryReport {
+        delivery,
+        secondary_page_fault: memory.secondary_page_fault,
         access_error: memory.access_error,
         ad_updates: memory.ad_updates,
         committed_writes: memory.committed_writes,
