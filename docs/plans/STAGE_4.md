@@ -1590,7 +1590,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-28b. Гостевой periodic timer: N прерываний в virtual time (закрывающий срез S4-28, без Linux-профиля)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Отчёт: docs/reports/STAGE_4_S4-28B_2026-11-09.md. Родитель S4-28 открыт: условие «Linux-профиль имеет источник времени» — решение пользователя.
 - **Где:** `od-machine` (`diagnostic_vcpu.rs`, `local_apic.rs`, `apic_pair.rs`), контракт в `MACHINE_CONTRACT.md`.
 - **Сделать:** integration-тест с shared clock и periodic LVT: цикл advance → `dispatch_timer` → `run_apic_quantum` → гостевой handler (счётчик в RAM, EOI записью в MMIO) → IRETQ → resume; N прерываний, счётчик = N, RIP/RAX основного потока верны. Тот же сценарий из HLT: periodic re-arm, минимум два wake подряд. Повторный expiry, пока vector в ISR: один IRR edge, доставка только после EOI; coalescing большого скачка — одно прерывание. Долг S4-28a3: пути gate (IF=0, masked LVT, STOP в Waiting, OutsideProfile) и lock-order. Pause → due → resume: прерывание ровно один раз. Решение про TSC-deadline — записать явно: не реализуется, не объявляется в CPUID.
 - **Проверка:** `cargo test -p od-machine --lib --offline`, all-targets check, fmt/diff, независимое ревью (Opus, high).
