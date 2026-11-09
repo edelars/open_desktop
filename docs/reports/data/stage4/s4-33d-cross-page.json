@@ -1,0 +1,2824 @@
+{
+  "budgets_value_a": [
+    {
+      "accepted": false,
+      "budget": 0,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0xdeadbeefcafebabe",
+      "retired": 0,
+      "rip": "0x0000000000400ffe",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 0,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": false,
+      "budget": 1,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0xdeadbeefcafe2211",
+      "retired": 1,
+      "rip": "0x0000000000401001",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 1,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": false,
+      "budget": 2,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0x8877665544332211",
+      "retired": 2,
+      "rip": "0x0000000000401004",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 2,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": false,
+      "budget": 3,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "uart_byte_is_low_byte_of_value",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0x0000000044332211",
+      "retired": 3,
+      "rip": "0x0000000000401006",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 3,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": false,
+      "budget": 4,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "uart_byte_is_low_byte_of_value",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0x0000000044332211",
+      "retired": 4,
+      "rip": "0x0000000000401009",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 4,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": false,
+      "budget": 5,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0x0000000044332211",
+      "retired": 5,
+      "rip": "0x000000000040100a",
+      "serial_bytes": [
+        17
+      ],
+      "status": "error",
+      "steps": 5,
+      "stop_detail": null,
+      "stop_reason": "budget_exhausted"
+    },
+    {
+      "accepted": true,
+      "budget": 6,
+      "exit_code": 0,
+      "failed_checks": [],
+      "injection": "none",
+      "operand": "cross_page",
+      "rax": "0x0000000044332211",
+      "retired": 6,
+      "rip": "0x000000000040100b",
+      "serial_bytes": [
+        17
+      ],
+      "status": "completed",
+      "steps": 6,
+      "stop_detail": null,
+      "stop_reason": "case_complete"
+    }
+  ],
+  "images": {
+    "value_a": {
+      "raw_sha256": "56042573ab4b02f34d17ecb7b90eeb49d14b038cbd59ccd91cba9570acbf170d",
+      "value": "0x8877665544332211"
+    },
+    "value_b": {
+      "raw_sha256": "dc97092d33c94f0f40dc4090dbbe9e51e25169f2553667899069adb44e77b9ab",
+      "value": "0xa1b2c3d4e5332211"
+    }
+  },
+  "injection_summary": {
+    "data_frames_swapped": {
+      "accepted": false,
+      "budget": 16,
+      "exit_code": 7,
+      "failed_checks": [
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax"
+      ],
+      "injection": "data_frames_swapped",
+      "operand": "cross_page",
+      "rax": "0x00000000a55a5a5a",
+      "retired": 6,
+      "rip": "0x000000000040100b",
+      "serial_bytes": [
+        90
+      ],
+      "status": "rejected",
+      "steps": 6,
+      "stop_detail": null,
+      "stop_reason": "case_complete"
+    },
+    "second_code_pte_nx": {
+      "accepted": false,
+      "budget": 16,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "second_code_pte_nx",
+      "operand": "cross_page",
+      "rax": "0xdeadbeefcafebabe",
+      "retired": 0,
+      "rip": "0x0000000000400ffe",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 1,
+      "stop_detail": "word read with fetch across code frames: 66 8B 03",
+      "stop_reason": "page_fault"
+    },
+    "second_data_page_hole": {
+      "accepted": false,
+      "budget": 16,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "second_data_page_hole",
+      "operand": "cross_page",
+      "rax": "0xdeadbeefcafe2211",
+      "retired": 1,
+      "rip": "0x0000000000401001",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 2,
+      "stop_detail": "qword read: 48 8B 03",
+      "stop_reason": "backend_rejected"
+    },
+    "second_data_pte_not_present": {
+      "accepted": false,
+      "budget": 16,
+      "exit_code": 5,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "injection": "second_data_pte_not_present",
+      "operand": "cross_page",
+      "rax": "0xdeadbeefcafe2211",
+      "retired": 1,
+      "rip": "0x0000000000401001",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 2,
+      "stop_detail": "qword read: 48 8B 03",
+      "stop_reason": "page_fault"
+    }
+  },
+  "injections_value_a": {
+    "data_frames_swapped": {
+      "accepted": false,
+      "budget": 16,
+      "checks": {
+        "all_steps_executed": true,
+        "case_complete": true,
+        "final_rax": false,
+        "final_rip": true,
+        "halted": true,
+        "handoff_cpl0_ac_clear_nxe_set": true,
+        "no_dirty_bits": true,
+        "no_page_fault_or_backend_error": true,
+        "per_step_rip_rax_and_accessed_bits": false,
+        "rax_follows_architecture_per_step": false,
+        "second_data_page_walked_only_when_crossing": true,
+        "uart_byte_is_low_byte_of_value": false
+      },
+      "committed_write_trace": [
+        {
+          "gpa": "0x1000",
+          "length": 8
+        },
+        {
+          "gpa": "0x2000",
+          "length": 8
+        },
+        {
+          "gpa": "0x3010",
+          "length": 8
+        },
+        {
+          "gpa": "0x4000",
+          "length": 8
+        },
+        {
+          "gpa": "0x4008",
+          "length": 8
+        },
+        {
+          "gpa": "0x3020",
+          "length": 8
+        },
+        {
+          "gpa": "0x5000",
+          "length": 8
+        },
+        {
+          "gpa": "0x5008",
+          "length": 8
+        }
+      ],
+      "error": {
+        "failed_checks": [
+          "per_step_rip_rax_and_accessed_bits",
+          "rax_follows_architecture_per_step",
+          "uart_byte_is_low_byte_of_value",
+          "final_rax"
+        ],
+        "kind": "cross_page_result_mismatch"
+      },
+      "event_trace": [
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x1000",
+              "length": 8
+            },
+            {
+              "gpa": "0x2000",
+              "length": 8
+            },
+            {
+              "gpa": "0x3010",
+              "length": 8
+            },
+            {
+              "gpa": "0x4000",
+              "length": 8
+            },
+            {
+              "gpa": "0x4008",
+              "length": 8
+            },
+            {
+              "gpa": "0x3020",
+              "length": 8
+            },
+            {
+              "gpa": "0x5000",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "word read with fetch across code frames: 66 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": false,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b003"
+            }
+          },
+          "rax_after": "0xdeadbeefcafe5a5a",
+          "retired": true,
+          "rip_after": "0x0000000000401001",
+          "step": 1
+        },
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x5008",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "qword read: 48 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            }
+          },
+          "rax_after": "0xa5a5a5a5a55a5a5a",
+          "retired": true,
+          "rip_after": "0x0000000000401004",
+          "step": 2
+        },
+        {
+          "committed_writes": [],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "dword read: 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            }
+          },
+          "rax_after": "0x00000000a55a5a5a",
+          "retired": true,
+          "rip_after": "0x0000000000401006",
+          "step": 3
+        },
+        {
+          "committed_writes": [],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "word read: 66 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            }
+          },
+          "rax_after": "0x00000000a55a5a5a",
+          "retired": true,
+          "rip_after": "0x0000000000401009",
+          "step": 4
+        },
+        {
+          "committed_writes": [],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "OUT DX,AL",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            }
+          },
+          "rax_after": "0x00000000a55a5a5a",
+          "retired": true,
+          "rip_after": "0x000000000040100a",
+          "step": 5
+        },
+        {
+          "committed_writes": [],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "halted",
+          "memory_error": null,
+          "name": "HLT",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            }
+          },
+          "rax_after": "0x00000000a55a5a5a",
+          "retired": true,
+          "rip_after": "0x000000000040100b",
+          "step": 6
+        }
+      ],
+      "exit_code": 7,
+      "expected_instructions": 6,
+      "expected_rax_per_step": [
+        "0xdeadbeefcafe2211",
+        "0x8877665544332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211"
+      ],
+      "expected_step_rips": [
+        "0x400ffe",
+        "0x401001",
+        "0x401004",
+        "0x401006",
+        "0x401009",
+        "0x40100a"
+      ],
+      "expected_steps": 6,
+      "failed_checks": [
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax"
+      ],
+      "first_page_bytes": "112233",
+      "guest_state": {
+        "activity": "Halted",
+        "cpl": 0,
+        "cr2": null,
+        "cr3": null,
+        "rax": "0x00000000a55a5a5a",
+        "rbx": "0x0000000000800ffd",
+        "rdx": "0x00000000000003f8",
+        "rflags": "0x2",
+        "rip": "0x000000000040100b"
+      },
+      "handoff": {
+        "cpl": 0,
+        "efer": "0xd00",
+        "efer_nxe": true,
+        "initial_rax": "0xdeadbeefcafebabe",
+        "rflags_ac": false
+      },
+      "injection": "data_frames_swapped",
+      "observed_ptes": {
+        "code0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000007021"
+        },
+        "code1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000009021"
+        },
+        "data0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000d023"
+        },
+        "data1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000b023"
+        }
+      },
+      "operand": "cross_page",
+      "profile": "Stage4CrossPageProbeV1",
+      "retired": 6,
+      "schema_version": 1,
+      "second_page_bytes": "4455667788",
+      "serial_bytes": [
+        90
+      ],
+      "status": "rejected",
+      "steps": 6,
+      "stop_detail": null,
+      "stop_reason": "case_complete",
+      "value_qword": "0x8877665544332211"
+    },
+    "second_code_pte_nx": {
+      "accepted": false,
+      "budget": 16,
+      "checks": {
+        "all_steps_executed": false,
+        "case_complete": false,
+        "final_rax": false,
+        "final_rip": false,
+        "halted": false,
+        "handoff_cpl0_ac_clear_nxe_set": true,
+        "no_dirty_bits": true,
+        "no_page_fault_or_backend_error": false,
+        "per_step_rip_rax_and_accessed_bits": false,
+        "rax_follows_architecture_per_step": false,
+        "second_data_page_walked_only_when_crossing": false,
+        "uart_byte_is_low_byte_of_value": false
+      },
+      "committed_write_trace": [
+        {
+          "gpa": "0x1000",
+          "length": 8
+        },
+        {
+          "gpa": "0x2000",
+          "length": 8
+        },
+        {
+          "gpa": "0x3010",
+          "length": 8
+        },
+        {
+          "gpa": "0x4000",
+          "length": 8
+        },
+        {
+          "gpa": "0x4008",
+          "length": 8
+        }
+      ],
+      "error": {
+        "failed_checks": [
+          "case_complete",
+          "all_steps_executed",
+          "per_step_rip_rax_and_accessed_bits",
+          "rax_follows_architecture_per_step",
+          "second_data_page_walked_only_when_crossing",
+          "no_page_fault_or_backend_error",
+          "uart_byte_is_low_byte_of_value",
+          "final_rax",
+          "final_rip",
+          "halted"
+        ],
+        "kind": "page_fault"
+      },
+      "event_trace": [
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x1000",
+              "length": 8
+            },
+            {
+              "gpa": "0x2000",
+              "length": 8
+            },
+            {
+              "gpa": "0x3010",
+              "length": 8
+            },
+            {
+              "gpa": "0x4000",
+              "length": 8
+            },
+            {
+              "gpa": "0x4008",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": "Fault(ArchitecturalFault { vector: 14, error_code: Some(17), linear_address: Some(4198400) })",
+          "exit": "page_fault",
+          "memory_error": null,
+          "name": "word read with fetch across code frames: 66 8B 03",
+          "page_fault": {
+            "access": "Fetch",
+            "cr2": "0x401000",
+            "error_code": 17,
+            "error_code_hex": "0x11",
+            "saved_rip": "0x400ffe",
+            "vector": 14
+          },
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x8000000000009021"
+            },
+            "data0": {
+              "accessed": false,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b003"
+            },
+            "data1": {
+              "accessed": false,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000d003"
+            }
+          },
+          "rax_after": "0xdeadbeefcafebabe",
+          "retired": false,
+          "rip_after": "0x0000000000400ffe",
+          "step": 1
+        }
+      ],
+      "exit_code": 5,
+      "expected_instructions": 6,
+      "expected_rax_per_step": [
+        "0xdeadbeefcafe2211",
+        "0x8877665544332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211"
+      ],
+      "expected_step_rips": [
+        "0x400ffe",
+        "0x401001",
+        "0x401004",
+        "0x401006",
+        "0x401009",
+        "0x40100a"
+      ],
+      "expected_steps": 6,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "first_page_bytes": "112233",
+      "guest_state": {
+        "activity": "Running",
+        "cpl": 0,
+        "cr2": null,
+        "cr3": null,
+        "rax": "0xdeadbeefcafebabe",
+        "rbx": "0x0000000000800ffd",
+        "rdx": "0x00000000000003f8",
+        "rflags": "0x2",
+        "rip": "0x0000000000400ffe"
+      },
+      "handoff": {
+        "cpl": 0,
+        "efer": "0xd00",
+        "efer_nxe": true,
+        "initial_rax": "0xdeadbeefcafebabe",
+        "rflags_ac": false
+      },
+      "injection": "second_code_pte_nx",
+      "observed_ptes": {
+        "code0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000007021"
+        },
+        "code1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x8000000000009021"
+        },
+        "data0": {
+          "accessed": false,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000b003"
+        },
+        "data1": {
+          "accessed": false,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000d003"
+        }
+      },
+      "operand": "cross_page",
+      "profile": "Stage4CrossPageProbeV1",
+      "retired": 0,
+      "schema_version": 1,
+      "second_page_bytes": "4455667788",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 1,
+      "stop_detail": "word read with fetch across code frames: 66 8B 03",
+      "stop_reason": "page_fault",
+      "value_qword": "0x8877665544332211"
+    },
+    "second_data_page_hole": {
+      "accepted": false,
+      "budget": 16,
+      "checks": {
+        "all_steps_executed": false,
+        "case_complete": false,
+        "final_rax": false,
+        "final_rip": false,
+        "halted": false,
+        "handoff_cpl0_ac_clear_nxe_set": true,
+        "no_dirty_bits": true,
+        "no_page_fault_or_backend_error": false,
+        "per_step_rip_rax_and_accessed_bits": false,
+        "rax_follows_architecture_per_step": false,
+        "second_data_page_walked_only_when_crossing": true,
+        "uart_byte_is_low_byte_of_value": false
+      },
+      "committed_write_trace": [
+        {
+          "gpa": "0x1000",
+          "length": 8
+        },
+        {
+          "gpa": "0x2000",
+          "length": 8
+        },
+        {
+          "gpa": "0x3010",
+          "length": 8
+        },
+        {
+          "gpa": "0x4000",
+          "length": 8
+        },
+        {
+          "gpa": "0x4008",
+          "length": 8
+        },
+        {
+          "gpa": "0x3020",
+          "length": 8
+        },
+        {
+          "gpa": "0x5000",
+          "length": 8
+        },
+        {
+          "gpa": "0x5008",
+          "length": 8
+        }
+      ],
+      "error": {
+        "failed_checks": [
+          "case_complete",
+          "all_steps_executed",
+          "per_step_rip_rax_and_accessed_bits",
+          "rax_follows_architecture_per_step",
+          "no_page_fault_or_backend_error",
+          "uart_byte_is_low_byte_of_value",
+          "final_rax",
+          "final_rip",
+          "halted"
+        ],
+        "kind": "backend_rejected"
+      },
+      "event_trace": [
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x1000",
+              "length": 8
+            },
+            {
+              "gpa": "0x2000",
+              "length": 8
+            },
+            {
+              "gpa": "0x3010",
+              "length": 8
+            },
+            {
+              "gpa": "0x4000",
+              "length": 8
+            },
+            {
+              "gpa": "0x4008",
+              "length": 8
+            },
+            {
+              "gpa": "0x3020",
+              "length": 8
+            },
+            {
+              "gpa": "0x5000",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "word read with fetch across code frames: 66 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            },
+            "data1": {
+              "accessed": false,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x8000000000030003"
+            }
+          },
+          "rax_after": "0xdeadbeefcafe2211",
+          "retired": true,
+          "rip_after": "0x0000000000401001",
+          "step": 1
+        },
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x5008",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": "MemoryError(Backend(\"tracked Long64 RAM access failed: OperandPhysical { address: GuestPhysicalAddress(196608), source: Unmapped(GuestPhysicalAddress(196608)) }\"))",
+          "exit": "backend_rejected",
+          "memory_error": "OperandPhysical { address: GuestPhysicalAddress(196608), source: Unmapped(GuestPhysicalAddress(196608)) }",
+          "name": "qword read: 48 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            },
+            "data1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x8000000000030023"
+            }
+          },
+          "rax_after": "0xdeadbeefcafe2211",
+          "retired": false,
+          "rip_after": "0x0000000000401001",
+          "step": 2
+        }
+      ],
+      "exit_code": 5,
+      "expected_instructions": 6,
+      "expected_rax_per_step": [
+        "0xdeadbeefcafe2211",
+        "0x8877665544332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211"
+      ],
+      "expected_step_rips": [
+        "0x400ffe",
+        "0x401001",
+        "0x401004",
+        "0x401006",
+        "0x401009",
+        "0x40100a"
+      ],
+      "expected_steps": 6,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "first_page_bytes": "112233",
+      "guest_state": {
+        "activity": "Running",
+        "cpl": 0,
+        "cr2": null,
+        "cr3": null,
+        "rax": "0xdeadbeefcafe2211",
+        "rbx": "0x0000000000800ffd",
+        "rdx": "0x00000000000003f8",
+        "rflags": "0x2",
+        "rip": "0x0000000000401001"
+      },
+      "handoff": {
+        "cpl": 0,
+        "efer": "0xd00",
+        "efer_nxe": true,
+        "initial_rax": "0xdeadbeefcafebabe",
+        "rflags_ac": false
+      },
+      "injection": "second_data_page_hole",
+      "observed_ptes": {
+        "code0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000007021"
+        },
+        "code1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000009021"
+        },
+        "data0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000b023"
+        },
+        "data1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x8000000000030023"
+        }
+      },
+      "operand": "cross_page",
+      "profile": "Stage4CrossPageProbeV1",
+      "retired": 1,
+      "schema_version": 1,
+      "second_page_bytes": "4455667788",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 2,
+      "stop_detail": "qword read: 48 8B 03",
+      "stop_reason": "backend_rejected",
+      "value_qword": "0x8877665544332211"
+    },
+    "second_data_pte_not_present": {
+      "accepted": false,
+      "budget": 16,
+      "checks": {
+        "all_steps_executed": false,
+        "case_complete": false,
+        "final_rax": false,
+        "final_rip": false,
+        "halted": false,
+        "handoff_cpl0_ac_clear_nxe_set": true,
+        "no_dirty_bits": true,
+        "no_page_fault_or_backend_error": false,
+        "per_step_rip_rax_and_accessed_bits": false,
+        "rax_follows_architecture_per_step": false,
+        "second_data_page_walked_only_when_crossing": false,
+        "uart_byte_is_low_byte_of_value": false
+      },
+      "committed_write_trace": [
+        {
+          "gpa": "0x1000",
+          "length": 8
+        },
+        {
+          "gpa": "0x2000",
+          "length": 8
+        },
+        {
+          "gpa": "0x3010",
+          "length": 8
+        },
+        {
+          "gpa": "0x4000",
+          "length": 8
+        },
+        {
+          "gpa": "0x4008",
+          "length": 8
+        },
+        {
+          "gpa": "0x3020",
+          "length": 8
+        },
+        {
+          "gpa": "0x5000",
+          "length": 8
+        }
+      ],
+      "error": {
+        "failed_checks": [
+          "case_complete",
+          "all_steps_executed",
+          "per_step_rip_rax_and_accessed_bits",
+          "rax_follows_architecture_per_step",
+          "second_data_page_walked_only_when_crossing",
+          "no_page_fault_or_backend_error",
+          "uart_byte_is_low_byte_of_value",
+          "final_rax",
+          "final_rip",
+          "halted"
+        ],
+        "kind": "page_fault"
+      },
+      "event_trace": [
+        {
+          "committed_writes": [
+            {
+              "gpa": "0x1000",
+              "length": 8
+            },
+            {
+              "gpa": "0x2000",
+              "length": 8
+            },
+            {
+              "gpa": "0x3010",
+              "length": 8
+            },
+            {
+              "gpa": "0x4000",
+              "length": 8
+            },
+            {
+              "gpa": "0x4008",
+              "length": 8
+            },
+            {
+              "gpa": "0x3020",
+              "length": 8
+            },
+            {
+              "gpa": "0x5000",
+              "length": 8
+            }
+          ],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": null,
+          "exit": "retired",
+          "memory_error": null,
+          "name": "word read with fetch across code frames: 66 8B 03",
+          "page_fault": null,
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            },
+            "data1": {
+              "accessed": false,
+              "dirty": false,
+              "nx": false,
+              "present": false,
+              "pte": "0x0000000000000000"
+            }
+          },
+          "rax_after": "0xdeadbeefcafe2211",
+          "retired": true,
+          "rip_after": "0x0000000000401001",
+          "step": 1
+        },
+        {
+          "committed_writes": [],
+          "cpl": 0,
+          "cr2_after": null,
+          "detail": "Fault(ArchitecturalFault { vector: 14, error_code: Some(0), linear_address: Some(8392704) })",
+          "exit": "page_fault",
+          "memory_error": null,
+          "name": "qword read: 48 8B 03",
+          "page_fault": {
+            "access": "Read",
+            "cr2": "0x801000",
+            "error_code": 0,
+            "error_code_hex": "0x00",
+            "saved_rip": "0x401001",
+            "vector": 14
+          },
+          "pte_after": {
+            "code0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000007021"
+            },
+            "code1": {
+              "accessed": true,
+              "dirty": false,
+              "nx": false,
+              "present": true,
+              "pte": "0x0000000000009021"
+            },
+            "data0": {
+              "accessed": true,
+              "dirty": false,
+              "nx": true,
+              "present": true,
+              "pte": "0x800000000000b023"
+            },
+            "data1": {
+              "accessed": false,
+              "dirty": false,
+              "nx": false,
+              "present": false,
+              "pte": "0x0000000000000000"
+            }
+          },
+          "rax_after": "0xdeadbeefcafe2211",
+          "retired": false,
+          "rip_after": "0x0000000000401001",
+          "step": 2
+        }
+      ],
+      "exit_code": 5,
+      "expected_instructions": 6,
+      "expected_rax_per_step": [
+        "0xdeadbeefcafe2211",
+        "0x8877665544332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211",
+        "0x0000000044332211"
+      ],
+      "expected_step_rips": [
+        "0x400ffe",
+        "0x401001",
+        "0x401004",
+        "0x401006",
+        "0x401009",
+        "0x40100a"
+      ],
+      "expected_steps": 6,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "per_step_rip_rax_and_accessed_bits",
+        "rax_follows_architecture_per_step",
+        "second_data_page_walked_only_when_crossing",
+        "no_page_fault_or_backend_error",
+        "uart_byte_is_low_byte_of_value",
+        "final_rax",
+        "final_rip",
+        "halted"
+      ],
+      "first_page_bytes": "112233",
+      "guest_state": {
+        "activity": "Running",
+        "cpl": 0,
+        "cr2": null,
+        "cr3": null,
+        "rax": "0xdeadbeefcafe2211",
+        "rbx": "0x0000000000800ffd",
+        "rdx": "0x00000000000003f8",
+        "rflags": "0x2",
+        "rip": "0x0000000000401001"
+      },
+      "handoff": {
+        "cpl": 0,
+        "efer": "0xd00",
+        "efer_nxe": true,
+        "initial_rax": "0xdeadbeefcafebabe",
+        "rflags_ac": false
+      },
+      "injection": "second_data_pte_not_present",
+      "observed_ptes": {
+        "code0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000007021"
+        },
+        "code1": {
+          "accessed": true,
+          "dirty": false,
+          "nx": false,
+          "present": true,
+          "pte": "0x0000000000009021"
+        },
+        "data0": {
+          "accessed": true,
+          "dirty": false,
+          "nx": true,
+          "present": true,
+          "pte": "0x800000000000b023"
+        },
+        "data1": {
+          "accessed": false,
+          "dirty": false,
+          "nx": false,
+          "present": false,
+          "pte": "0x0000000000000000"
+        }
+      },
+      "operand": "cross_page",
+      "profile": "Stage4CrossPageProbeV1",
+      "retired": 1,
+      "schema_version": 1,
+      "second_page_bytes": "4455667788",
+      "serial_bytes": [],
+      "status": "error",
+      "steps": 2,
+      "stop_detail": "qword read: 48 8B 03",
+      "stop_reason": "page_fault",
+      "value_qword": "0x8877665544332211"
+    }
+  },
+  "note": "Evidence generated by od-runner --stage4-cross-page-probe from images built by tools/build/build_stage4_cross_page_probe.py; uncached tracked walker, no TLB, no JIT.",
+  "profile": "Stage4CrossPageProbeV1",
+  "same_page_control_value_a": {
+    "accepted": true,
+    "budget": 16,
+    "checks": {
+      "all_steps_executed": true,
+      "case_complete": true,
+      "final_rax": true,
+      "final_rip": true,
+      "halted": true,
+      "handoff_cpl0_ac_clear_nxe_set": true,
+      "no_dirty_bits": true,
+      "no_page_fault_or_backend_error": true,
+      "per_step_rip_rax_and_accessed_bits": true,
+      "rax_follows_architecture_per_step": true,
+      "second_data_page_walked_only_when_crossing": true,
+      "uart_byte_is_low_byte_of_value": true
+    },
+    "committed_write_trace": [
+      {
+        "gpa": "0x1000",
+        "length": 8
+      },
+      {
+        "gpa": "0x2000",
+        "length": 8
+      },
+      {
+        "gpa": "0x3010",
+        "length": 8
+      },
+      {
+        "gpa": "0x4000",
+        "length": 8
+      },
+      {
+        "gpa": "0x4008",
+        "length": 8
+      },
+      {
+        "gpa": "0x3020",
+        "length": 8
+      },
+      {
+        "gpa": "0x5000",
+        "length": 8
+      }
+    ],
+    "error": null,
+    "event_trace": [
+      {
+        "committed_writes": [
+          {
+            "gpa": "0x1000",
+            "length": 8
+          },
+          {
+            "gpa": "0x2000",
+            "length": 8
+          },
+          {
+            "gpa": "0x3010",
+            "length": 8
+          },
+          {
+            "gpa": "0x4000",
+            "length": 8
+          },
+          {
+            "gpa": "0x4008",
+            "length": 8
+          },
+          {
+            "gpa": "0x3020",
+            "length": 8
+          },
+          {
+            "gpa": "0x5000",
+            "length": 8
+          }
+        ],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read with fetch across code frames: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0xdeadbeefcafe2211",
+        "retired": true,
+        "rip_after": "0x0000000000401001",
+        "step": 1
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "qword read: 48 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0x8877665544332211",
+        "retired": true,
+        "rip_after": "0x0000000000401004",
+        "step": 2
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "dword read: 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x0000000000401006",
+        "step": 3
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x0000000000401009",
+        "step": 4
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "OUT DX,AL",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x000000000040100a",
+        "step": 5
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "halted",
+        "memory_error": null,
+        "name": "HLT",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x000000000040100b",
+        "step": 6
+      }
+    ],
+    "exit_code": 0,
+    "expected_instructions": 6,
+    "expected_rax_per_step": [
+      "0xdeadbeefcafe2211",
+      "0x8877665544332211",
+      "0x0000000044332211",
+      "0x0000000044332211",
+      "0x0000000044332211",
+      "0x0000000044332211"
+    ],
+    "expected_step_rips": [
+      "0x400ffe",
+      "0x401001",
+      "0x401004",
+      "0x401006",
+      "0x401009",
+      "0x40100a"
+    ],
+    "expected_steps": 6,
+    "failed_checks": [],
+    "first_page_bytes": "112233",
+    "guest_state": {
+      "activity": "Halted",
+      "cpl": 0,
+      "cr2": null,
+      "cr3": null,
+      "rax": "0x0000000044332211",
+      "rbx": "0x0000000000800800",
+      "rdx": "0x00000000000003f8",
+      "rflags": "0x2",
+      "rip": "0x000000000040100b"
+    },
+    "handoff": {
+      "cpl": 0,
+      "efer": "0xd00",
+      "efer_nxe": true,
+      "initial_rax": "0xdeadbeefcafebabe",
+      "rflags_ac": false
+    },
+    "injection": "none",
+    "observed_ptes": {
+      "code0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000007021"
+      },
+      "code1": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000009021"
+      },
+      "data0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000b023"
+      },
+      "data1": {
+        "accessed": false,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000d003"
+      }
+    },
+    "operand": "same_page_control",
+    "profile": "Stage4CrossPageProbeV1",
+    "retired": 6,
+    "schema_version": 1,
+    "second_page_bytes": "4455667788",
+    "serial_bytes": [
+      17
+    ],
+    "status": "completed",
+    "steps": 6,
+    "stop_detail": null,
+    "stop_reason": "case_complete",
+    "value_qword": "0x8877665544332211"
+  },
+  "schema_version": 1,
+  "slice": "S4-33d",
+  "success_value_a": {
+    "accepted": true,
+    "budget": 16,
+    "checks": {
+      "all_steps_executed": true,
+      "case_complete": true,
+      "final_rax": true,
+      "final_rip": true,
+      "halted": true,
+      "handoff_cpl0_ac_clear_nxe_set": true,
+      "no_dirty_bits": true,
+      "no_page_fault_or_backend_error": true,
+      "per_step_rip_rax_and_accessed_bits": true,
+      "rax_follows_architecture_per_step": true,
+      "second_data_page_walked_only_when_crossing": true,
+      "uart_byte_is_low_byte_of_value": true
+    },
+    "committed_write_trace": [
+      {
+        "gpa": "0x1000",
+        "length": 8
+      },
+      {
+        "gpa": "0x2000",
+        "length": 8
+      },
+      {
+        "gpa": "0x3010",
+        "length": 8
+      },
+      {
+        "gpa": "0x4000",
+        "length": 8
+      },
+      {
+        "gpa": "0x4008",
+        "length": 8
+      },
+      {
+        "gpa": "0x3020",
+        "length": 8
+      },
+      {
+        "gpa": "0x5000",
+        "length": 8
+      },
+      {
+        "gpa": "0x5008",
+        "length": 8
+      }
+    ],
+    "error": null,
+    "event_trace": [
+      {
+        "committed_writes": [
+          {
+            "gpa": "0x1000",
+            "length": 8
+          },
+          {
+            "gpa": "0x2000",
+            "length": 8
+          },
+          {
+            "gpa": "0x3010",
+            "length": 8
+          },
+          {
+            "gpa": "0x4000",
+            "length": 8
+          },
+          {
+            "gpa": "0x4008",
+            "length": 8
+          },
+          {
+            "gpa": "0x3020",
+            "length": 8
+          },
+          {
+            "gpa": "0x5000",
+            "length": 8
+          }
+        ],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read with fetch across code frames: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0xdeadbeefcafe2211",
+        "retired": true,
+        "rip_after": "0x0000000000401001",
+        "step": 1
+      },
+      {
+        "committed_writes": [
+          {
+            "gpa": "0x5008",
+            "length": 8
+          }
+        ],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "qword read: 48 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x8877665544332211",
+        "retired": true,
+        "rip_after": "0x0000000000401004",
+        "step": 2
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "dword read: 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x0000000000401006",
+        "step": 3
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x0000000000401009",
+        "step": 4
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "OUT DX,AL",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x000000000040100a",
+        "step": 5
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "halted",
+        "memory_error": null,
+        "name": "HLT",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x0000000044332211",
+        "retired": true,
+        "rip_after": "0x000000000040100b",
+        "step": 6
+      }
+    ],
+    "exit_code": 0,
+    "expected_instructions": 6,
+    "expected_rax_per_step": [
+      "0xdeadbeefcafe2211",
+      "0x8877665544332211",
+      "0x0000000044332211",
+      "0x0000000044332211",
+      "0x0000000044332211",
+      "0x0000000044332211"
+    ],
+    "expected_step_rips": [
+      "0x400ffe",
+      "0x401001",
+      "0x401004",
+      "0x401006",
+      "0x401009",
+      "0x40100a"
+    ],
+    "expected_steps": 6,
+    "failed_checks": [],
+    "first_page_bytes": "112233",
+    "guest_state": {
+      "activity": "Halted",
+      "cpl": 0,
+      "cr2": null,
+      "cr3": null,
+      "rax": "0x0000000044332211",
+      "rbx": "0x0000000000800ffd",
+      "rdx": "0x00000000000003f8",
+      "rflags": "0x2",
+      "rip": "0x000000000040100b"
+    },
+    "handoff": {
+      "cpl": 0,
+      "efer": "0xd00",
+      "efer_nxe": true,
+      "initial_rax": "0xdeadbeefcafebabe",
+      "rflags_ac": false
+    },
+    "injection": "none",
+    "observed_ptes": {
+      "code0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000007021"
+      },
+      "code1": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000009021"
+      },
+      "data0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000b023"
+      },
+      "data1": {
+        "accessed": true,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000d023"
+      }
+    },
+    "operand": "cross_page",
+    "profile": "Stage4CrossPageProbeV1",
+    "retired": 6,
+    "schema_version": 1,
+    "second_page_bytes": "4455667788",
+    "serial_bytes": [
+      17
+    ],
+    "status": "completed",
+    "steps": 6,
+    "stop_detail": null,
+    "stop_reason": "case_complete",
+    "value_qword": "0x8877665544332211"
+  },
+  "success_value_b": {
+    "accepted": true,
+    "budget": 16,
+    "checks": {
+      "all_steps_executed": true,
+      "case_complete": true,
+      "final_rax": true,
+      "final_rip": true,
+      "halted": true,
+      "handoff_cpl0_ac_clear_nxe_set": true,
+      "no_dirty_bits": true,
+      "no_page_fault_or_backend_error": true,
+      "per_step_rip_rax_and_accessed_bits": true,
+      "rax_follows_architecture_per_step": true,
+      "second_data_page_walked_only_when_crossing": true,
+      "uart_byte_is_low_byte_of_value": true
+    },
+    "committed_write_trace": [
+      {
+        "gpa": "0x1000",
+        "length": 8
+      },
+      {
+        "gpa": "0x2000",
+        "length": 8
+      },
+      {
+        "gpa": "0x3010",
+        "length": 8
+      },
+      {
+        "gpa": "0x4000",
+        "length": 8
+      },
+      {
+        "gpa": "0x4008",
+        "length": 8
+      },
+      {
+        "gpa": "0x3020",
+        "length": 8
+      },
+      {
+        "gpa": "0x5000",
+        "length": 8
+      },
+      {
+        "gpa": "0x5008",
+        "length": 8
+      }
+    ],
+    "error": null,
+    "event_trace": [
+      {
+        "committed_writes": [
+          {
+            "gpa": "0x1000",
+            "length": 8
+          },
+          {
+            "gpa": "0x2000",
+            "length": 8
+          },
+          {
+            "gpa": "0x3010",
+            "length": 8
+          },
+          {
+            "gpa": "0x4000",
+            "length": 8
+          },
+          {
+            "gpa": "0x4008",
+            "length": 8
+          },
+          {
+            "gpa": "0x3020",
+            "length": 8
+          },
+          {
+            "gpa": "0x5000",
+            "length": 8
+          }
+        ],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read with fetch across code frames: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": false,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d003"
+          }
+        },
+        "rax_after": "0xdeadbeefcafe2211",
+        "retired": true,
+        "rip_after": "0x0000000000401001",
+        "step": 1
+      },
+      {
+        "committed_writes": [
+          {
+            "gpa": "0x5008",
+            "length": 8
+          }
+        ],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "qword read: 48 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0xa1b2c3d4e5332211",
+        "retired": true,
+        "rip_after": "0x0000000000401004",
+        "step": 2
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "dword read: 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x00000000e5332211",
+        "retired": true,
+        "rip_after": "0x0000000000401006",
+        "step": 3
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "word read: 66 8B 03",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x00000000e5332211",
+        "retired": true,
+        "rip_after": "0x0000000000401009",
+        "step": 4
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "retired",
+        "memory_error": null,
+        "name": "OUT DX,AL",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x00000000e5332211",
+        "retired": true,
+        "rip_after": "0x000000000040100a",
+        "step": 5
+      },
+      {
+        "committed_writes": [],
+        "cpl": 0,
+        "cr2_after": null,
+        "detail": null,
+        "exit": "halted",
+        "memory_error": null,
+        "name": "HLT",
+        "page_fault": null,
+        "pte_after": {
+          "code0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000007021"
+          },
+          "code1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": false,
+            "present": true,
+            "pte": "0x0000000000009021"
+          },
+          "data0": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000b023"
+          },
+          "data1": {
+            "accessed": true,
+            "dirty": false,
+            "nx": true,
+            "present": true,
+            "pte": "0x800000000000d023"
+          }
+        },
+        "rax_after": "0x00000000e5332211",
+        "retired": true,
+        "rip_after": "0x000000000040100b",
+        "step": 6
+      }
+    ],
+    "exit_code": 0,
+    "expected_instructions": 6,
+    "expected_rax_per_step": [
+      "0xdeadbeefcafe2211",
+      "0xa1b2c3d4e5332211",
+      "0x00000000e5332211",
+      "0x00000000e5332211",
+      "0x00000000e5332211",
+      "0x00000000e5332211"
+    ],
+    "expected_step_rips": [
+      "0x400ffe",
+      "0x401001",
+      "0x401004",
+      "0x401006",
+      "0x401009",
+      "0x40100a"
+    ],
+    "expected_steps": 6,
+    "failed_checks": [],
+    "first_page_bytes": "112233",
+    "guest_state": {
+      "activity": "Halted",
+      "cpl": 0,
+      "cr2": null,
+      "cr3": null,
+      "rax": "0x00000000e5332211",
+      "rbx": "0x0000000000800ffd",
+      "rdx": "0x00000000000003f8",
+      "rflags": "0x2",
+      "rip": "0x000000000040100b"
+    },
+    "handoff": {
+      "cpl": 0,
+      "efer": "0xd00",
+      "efer_nxe": true,
+      "initial_rax": "0xdeadbeefcafebabe",
+      "rflags_ac": false
+    },
+    "injection": "none",
+    "observed_ptes": {
+      "code0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000007021"
+      },
+      "code1": {
+        "accessed": true,
+        "dirty": false,
+        "nx": false,
+        "present": true,
+        "pte": "0x0000000000009021"
+      },
+      "data0": {
+        "accessed": true,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000b023"
+      },
+      "data1": {
+        "accessed": true,
+        "dirty": false,
+        "nx": true,
+        "present": true,
+        "pte": "0x800000000000d023"
+      }
+    },
+    "operand": "cross_page",
+    "profile": "Stage4CrossPageProbeV1",
+    "retired": 6,
+    "schema_version": 1,
+    "second_page_bytes": "e5d4c3b2a1",
+    "serial_bytes": [
+      17
+    ],
+    "status": "completed",
+    "steps": 6,
+    "stop_detail": null,
+    "stop_reason": "case_complete",
+    "value_qword": "0xa1b2c3d4e5332211"
+  }
+}

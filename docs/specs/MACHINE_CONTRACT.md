@@ -2598,6 +2598,79 @@ SMEP/SMAP, NX и CPL3. Исключён cross-page доступ к данным 
 это допускает, но поведение не единственно возможное; помнить для S4-34).
 It does not close S4-33. See the [S4-33c report](../reports/STAGE_4_S4-33C_2026-11-09.md).
 
+## S4-33d: cross-page read and fetch probe
+
+`Stage4CrossPageProbeV1` is a strict raw-image profile (image GPA `0x1000`, size
+`0xd000`, 128 KiB RAM, polling UART at port `0x3f8`). The loader compares the
+whole image with the single accepted layout: five page-table pages (reported per
+entry), the instruction bytes, the data and the zero frames between them. All
+leaf entries are supervisor entries with A and D clear. Two code pages (GVA
+`0x400000` and `0x401000`) map the non-contiguous frames `0x7000` and `0x9000`
+(PTE `0x7001`, `0x9001`, executable). Two data pages (GVA `0x800000` and
+`0x801000`) map the non-contiguous frames `0xb000` and `0xd000` (PTE
+`0xb003 | NX` and `0xd003 | NX`). A little-endian qword is split: its bytes 0..2
+end data page 0 (GVA `0x800ffd..0x800fff`), its bytes 3..7 start data page 1 (GVA
+`0x801000..0x801004`). A same-page copy of the value (GVA `0x800800`) serves as
+the control; two decoy qwords (`0xa5` at the start of frame `0xb000`, `0x5a` at
+the end of frame `0xd000`) make a swapped-frame loader visible. The value must
+have a nonzero upper dword so that the qword and dword reads differ.
+
+The loader supplies the entry state: CPL0 (the access context), RFLAGS `2`
+(AC=0), CR0 `0x80010033`, CR3 `0x1000` (passed explicitly, `LongModeState.cr3`
+is `None` as in the S4-32 quantum), CR4 `0x20`, EFER `0xd00` (NXE=1), RIP
+`0x400ffe`, RAX `0xdeadbeefcafebabe`, RBX `0x800ffd`, RDX `0x3f8`.
+
+`LoadedStage4CrossPageProbe::run(budget, ..)` runs six steps with the accepted
+primitives unchanged: `step_paged_mov_word_read_cross_page_fetch` (`66 8B 03`
+at `0x400ffe`: bytes `66 8B` end the first code frame, `03` starts the second;
+its word operand stays on data page 0), `step_paged_mov` (`48 8B 03`, qword
+across the data pages), `step_paged_mov_dword_read` (`8B 03`, dword across the
+data pages), `step_paged_mov_word_read` (`66 8B 03`, word on data page 0),
+`step_paged_pio_u8` (`EE`) and the existing `PagedCpl0ProbeV1` quantum
+(`F4`, budget 1). The allowlist is not extended. With the single RBX the
+operand sits at `0xffd` (the word stays in page 0, the qword and dword cross).
+A word operand at page offset `0xfff` together with a crossing fetch is rejected
+by the S4-11f profile in code (`crates/od-isa/src/execute.rs`, condition
+`RBX & 0xfff > 0xffe`). For `8B 03` there is no such rejection in code: the
+S4-11d dword fetch crossing is not executed because its contract covers only a
+dword operand that "lies entirely in a separate RAM page", while any dword at RBX
+`0x800ffd` crosses the data page boundary. Per step the evidence
+holds RIP, RAX, CPL, CR2 of the CPU state, the page-fault record (vector, PFEC,
+CR2 value, saved RIP, access), the backend classification, all four leaf PTEs
+(A and D) and the committed writes. Expected success values: RAX after the
+steps `(RAX0 & ~0xffff) | word`, the qword, the zero-extended dword and the
+unchanged dword three times (steps 4-6); UART byte equals the low byte of the value; final RIP
+`0x40100b`, halted; A on code 1 after step 1, on data 1 from step 2; D never.
+
+Injections change only leaf PTEs: `second_data_pte_not_present` (PTE `0`),
+`second_code_pte_nx` (`0x9001 | NX`), `data_frames_swapped` (the two data PTEs
+exchange their frames), `second_data_page_hole` (`0x30003 | NX`, outside RAM).
+Each has a different outcome: `page_fault` at step 2 with PFEC `0x00`, CR2
+`0x801000`; `page_fault` at step 1 with PFEC `0x11`, CR2 `0x401000`, no data PTE
+touched; `case_complete` with six retired steps and wrong RAX (exit code 7);
+`backend_rejected` at step 2 without a page fault. `--same-page-control` moves
+RBX to `0x800800`: same values, data page 1 never walked. The A-bit effect of a
+rejected walk follows the accepted S4-11b/S4-11d contracts (the completed walk
+keeps its A, D stays clear). The `cpl` field of the per-step evidence is a
+constant, not CPU state; that NXE=1 takes effect is shown by other facts (S4-11f
+rejects NXE=0 before any fetch, the NX injection gives PFEC `0x11`). CR2
+`0x801000` for an access across the page boundary is a model contract choice that
+the SDM does not define uniquely (open for S4-34). Word step 4 leaves RAX
+unchanged and RAX cannot tell it apart from the preceding dword step; it is
+confirmed by retirement, the RIP move and the budget prefix. Open: the loader and
+builder do not reject values that make the injections invisible
+(`0xa5a5a5a5a55a5a5a`, equal to the decoy, hides a frame swap; values whose low 16
+bits are `0xbabe` make the step 1 RAX equal to the sentinel); a guard is left for a
+later slice.
+
+Not covered: cross-page store, RMW, stack, REP and RAM/MMIO splits (S4-11 stays
+open); the S4-11d dword fetch crossing (outside the S4-11d contract for a
+crossing data operand) and a word operand at offset `0xfff` together with a
+crossing fetch (rejected by the S4-11f profile); TLB-on (S4-14 is not
+accepted); JIT (the case is `not_supported` in the JIT matrix); CPL3, #PF
+delivery and CR2 commit; huge pages. It does not close S4-33. See the
+[S4-33d report](../reports/STAGE_4_S4-33D_2026-11-09.md).
+
 ## Paged `LIDT` adapter (S4-18a)
 
 `step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the
