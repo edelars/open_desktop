@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "profile": "Stage4PfRepairProbeV1",
+  "status": "implemented_awaiting_review",
+  "commit": null,
+  "contract": {
+    "main_code_bytes": "48890b488b03",
+    "handler_code_bytes": "4889370f013b488d64240848cf",
+    "main_gva": "0x401000",
+    "handler_gva": "0x402000",
+    "pte_alias_gva": "0x403000",
+    "data_gva": "0x800000",
+    "data_gpa": "0xd000",
+    "pte_gpa": "0x6000",
+    "pte_ro": "0xd001",
+    "pte_after_fault": "0xd021",
+    "pte_repaired": "0xd023",
+    "pte_final": "0xd063",
+    "initial_qword_raw_offset": "0xc000",
+    "canary_qword_raw_offset": "0xc008",
+    "store_qword_raw_offset": "0xc010",
+    "image_bytes": "0xd000",
+    "final_rip": "0x401006",
+    "initial_rsp": "0x702027",
+    "steps": 8,
+    "retired_instructions": 6,
+    "committed_writes": 14
+  },
+  "verification": [
+    {
+      "name": "machine case",
+      "status": "passed",
+      "result": "7 tests; exact per-step state, 14 committed writes, budgets 0..8, three injections, loader rejections"
+    },
+    {
+      "name": "builder-to-runner",
+      "status": "passed",
+      "result": "1 test; reproducible builds, payload swap, budgets 0..8, three injections (exit 5), argument and image errors"
+    },
+    {
+      "name": "builder validator",
+      "status": "passed",
+      "result": "4 tests in tools/build/test_build_stage4_pf_repair_probe.py"
+    },
+    {
+      "name": "mutation",
+      "status": "passed",
+      "result": "loader RSI = RO value fails 3 machine tests; loader PTE RW by default fails 5 machine tests"
+    }
+  ],
+  "injections": {
+    "pte_stays_readonly": {
+      "exit_code": 5,
+      "stop_reason": "second_page_fault",
+      "steps": 7,
+      "retired": 4,
+      "observed_pte": "0xd021",
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "pte_repaired_to_rw",
+        "retry_store_committed",
+        "load_observed_stored_value",
+        "pte_accessed_dirty",
+        "no_second_fault",
+        "final_rip"
+      ]
+    },
+    "skip_lea": {
+      "exit_code": 5,
+      "stop_reason": "unsupported",
+      "steps": 5,
+      "retired": 2,
+      "iretq_frame_rip": "0x3",
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "error_code_discarded_before_iretq",
+        "iretq_returned_to_fault_rip",
+        "retry_store_committed",
+        "load_observed_stored_value",
+        "pte_accessed_dirty",
+        "final_rip",
+        "rsp_preserved"
+      ]
+    },
+    "pte_writable_at_load": {
+      "exit_code": 5,
+      "stop_reason": "no_page_fault",
+      "steps": 1,
+      "retired": 1,
+      "failed_checks": [
+        "case_complete",
+        "all_steps_executed",
+        "fault_raised_on_readonly_store",
+        "delivered_to_handler",
+        "pte_repaired_to_rw",
+        "error_code_discarded_before_iretq",
+        "iretq_returned_to_fault_rip",
+        "retry_store_committed",
+        "load_observed_stored_value",
+        "final_rip"
+      ]
+    }
+  },
+  "independent_review": {
+    "status": "pending"
+  },
+  "not_claimed": [
+    "complete S4-33",
+    "TLB-on or JIT",
+    "necessity of INVLPG",
+    "guest-executed LIDT/LGDT",
+    "U/S, NX, #PF from CPL3",
+    "IST/TSS or other exception pairs",
+    "cross-page access",
+    "timer, IRQ, HLT wakeup",
+    "Linux boot or physical hardware acceptance"
+  ]
+}
