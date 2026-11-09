@@ -1647,7 +1647,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-29a. Минимальная пара 8259 (PIC) на портах 0x20/0x21 и 0xA0/0xA1 (ограниченный срез)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Открыто для S4-29f/g: Linux `check_timer()` пишет ICW4 с AEOI (0x03), текущая модель отвергает — решить: принимать AEOI на мастере или доказать по config, что `global_clock_event` = NULL.
 - **Где:** `od-machine` (новый PIO-модуль пары 8259), контракт в `MACHINE_CONTRACT.md`.
 - **Сделать:** автомат ICW1–ICW4: принимается только cascade, edge, 8086 и заданный ISA_IRQ_VECTOR; SNGL, LTIM, SFNM и buffered — DeviceError. OCW1: IMR читается обратно (на этом строит Linux `probe_8259A`: запись 0xFB, чтение). OCW2 (EOI) принимается без эффекта. OCW3 0x0A/0x0B: чтение IRR/ISR возвращает 0. У пары нет входных линий и выхода INTR.
 - **Проверка:** reset-матрица; последовательность ICW1–4 и OCW1 с обратным чтением IMR; отказы SNGL/LTIM/SFNM/buffered без изменения состояния; OCW2/OCW3 по таблице; обращения через `MachineBus::read_port`/`write_port` с реальными PortRegionBinding; проверка, что порты не пересекаются с COM1, conf1, PM-блоком и NVMe.

@@ -1,0 +1,31 @@
+{
+  "slice": "S4-29a",
+  "date": "2026-11-09",
+  "source": [
+    "crates/od-machine/src/pic_8259.rs",
+    "crates/od-machine/src/lib.rs"
+  ],
+  "architecture": "two Pic8259 bus devices (master, slave), each with one two-port PortRegionBinding; state in Arc<Mutex<Pic8259Snapshot>> with an observer handle; not wired into the firmware board",
+  "ports": { "master": "0x20/0x21", "slave": "0xA0/0xA1", "port_bytes_each": 2 },
+  "isa_irq_vector": { "irq0": "0x30", "master_icw2": "0x30", "slave_icw2": "0x38", "source": "Linux IRQ0_VECTOR = FIRST_EXTERNAL_VECTOR + 16; no constant existed in the project" },
+  "accepted": {
+    "icw1": "0x11 (bits 7:5 and 2 ignored)",
+    "icw3": { "master": "0x04", "slave": "0x02" },
+    "icw4": "0x01 (bit 2 ignored without BUF)",
+    "ocw2": "any value, no effect",
+    "ocw3": "RR/RIS select IRR (0x0A) or ISR (0x0B); both read 0"
+  },
+  "refused": ["SNGL", "LTIM", "IC4=0 (MCS-80)", "ICW2 other than ISA_IRQ_VECTOR", "ICW3 other than the cascade value", "AEOI", "BUF", "SFNM", "ICW4 reserved bits", "OCW3 poll/SMM/ESMM/bit7"],
+  "refusal_error": "DeviceError::UnsupportedConfiguration, state unchanged; OCW2/OCW3 inside init: DeviceError::Busy",
+  "reset": { "imr": "0xFF", "phase": "Uninitialized", "read_register": "IRR" },
+  "icw1_effect": "clears IMR to 0, selects IRR, clears ICW2/ICW3 (as the chip)",
+  "tests": { "pic_8259_added": 19, "pic_8259_passed": 19 },
+  "injections": [
+    { "change": "IMR read returns 0xFF", "failed_tests": 6 },
+    { "change": "SNGL refusal removed", "failed_tests": 3 },
+    { "change": "BUF refusal removed from ICW4", "failed_tests": 1 }
+  ],
+  "port_map_check": { "com1": "0x3F8..=0x3FF", "conf1": "0xCF8..=0xCFF", "pm_block": "0x600..0x610", "mmio_devices": "NVMe, ECAM, LAPIC, IOAPIC outside port space" },
+  "not_implemented": ["ELCR 0x4D0/0x4D1", "ExtINT/LINT0", "AEOI", "IRQ lines", "poll", "special mask mode", "board wiring", "PIT", "CMOS/0xED", "INTIN2"],
+  "review": "pending"
+}
