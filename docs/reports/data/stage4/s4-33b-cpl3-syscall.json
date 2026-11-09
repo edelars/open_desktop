@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "profile": "Stage4Cpl3SyscallProbeV1",
+  "status": "implemented_awaiting_review",
+  "commit": null,
+  "contract": {
+    "user_code_bytes": "0f05488b03",
+    "kernel_code_bytes": "4c8917480f07",
+    "user_code_gva": "0x400000",
+    "kernel_code_gva": "0x600000",
+    "kernel_data_gva": "0x800000",
+    "user_data_gva": "0x801000",
+    "data_gpa": "0x9000",
+    "initial_qword_raw_offset": "0x8000",
+    "store_qword_raw_offset": "0x8008",
+    "final_rip": "0x400005",
+    "initial_rsp": "0x702027"
+  },
+  "verification": [
+    {"name": "machine case", "status": "passed", "result": "5 tests; roundtrip with CPL 0/0/3/3, exact 11 committed writes, A/D, budgets 0..4, both injections, loader rejections"},
+    {"name": "builder-to-runner", "status": "passed", "result": "1 test; reproducible builds, payload swap, budgets 0..4, kernel_no_write (exit 7) and sysret_cpl0 (exit 5)"},
+    {"name": "builder validator", "status": "passed", "result": "3 tests in tools/build/test_build_stage4_cpl3_syscall_probe.py"},
+    {"name": "mutation", "status": "passed", "result": "loader RDI redirected to 0x9ff8 fails 3 machine tests; unconditional CPL0 after SYSRETQ fails 3 machine tests"}
+  ],
+  "injections": {
+    "kernel_no_write": {"exit_code": 7, "stop_reason": "roundtrip_complete", "cpl": 3, "failed_checks": ["kernel_qword_written", "user_load_observed_kernel_qword"]},
+    "sysret_cpl0": {"exit_code": 5, "stop_reason": "unsupported", "retired": 3, "cpl": 0, "failed_checks": ["roundtrip_complete", "retired_all_instructions", "user_load_observed_kernel_qword", "returned_to_cpl3", "final_rip"]}
+  },
+  "independent_review": {"status": "pending"},
+  "not_claimed": [
+    "complete S4-33",
+    "OUT/HLT or UART output from this case",
+    "timer, IRQ, HLT wakeup, self-modifying code, huge pages",
+    "TLB-on or JIT",
+    "exception delivery from CPL3, TSS or stack switch",
+    "Linux boot or physical hardware acceptance"
+  ]
+}

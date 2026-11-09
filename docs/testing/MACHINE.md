@@ -978,6 +978,41 @@ does not satisfy the alias-result oracle. The manifest's `mappings` and `stack`
 fields must agree. This is uncached interpreter evidence; TLB/JIT, Linux and
 physical hardware claims are outside the case.
 
+## S4-33b CPL3 SYSCALL/SYSRETQ кейс
+
+Кейс `Stage4Cpl3SyscallProbeV1` проверяет системный случай собственного ядра
+«CPL3 syscall/return» поверх принятого примитива S4-20c (его семантика не
+менялась). Builder `tools/build/build_stage4_cpl3_syscall_probe.py` собирает
+fixture `tests/fixtures/guest/stage4/cpl3_syscall/` (`entry.S`, `layout.ld`) в
+raw image 0x9000 байт с явными `--initial-value` / `--store-value`. Образ
+содержит user-код `SYSCALL; MOV RAX,[RBX]` (GVA `0x400000`), kernel-код
+`MOV [RDI],R10; SYSRETQ` (LSTAR GVA `0x600000`, supervisor) и одну data-страницу
+GPA `0x9000`, видимую как supervisor RW (GVA `0x800000`) и user RO (GVA
+`0x801000`). Runner `od-runner --stage4-cpl3-syscall-probe IMAGE [--budget N]
+[--inject-kernel-no-write | --inject-sysret-cpl0]` печатает один JSON: guest
+state (RIP, RSP, CPL, CS/SS, RAX, RCX, R11, RFLAGS, CR3), `event_trace` по
+шагам (инструкция, exit, RIP, CS, CPL после шага, committed writes),
+бюджет, `stop_reason`, `checks` и `failed_checks`. Принятие требует, чтобы
+все четыре инструкции завершились, qword ядра оказался в RAM и в user RAX,
+CPL после SYSRETQ был 3, RIP равнялся `0x400005`, а RSP не менялся.
+
+Injected regressions: `kernel_no_write` отправляет kernel store на другой qword
+той же страницы — кейс доходит до CPL3, но `observed_kernel_qword` и RAX равны
+initial, провалены `kernel_qword_written` и `user_load_observed_kernel_qword`,
+код выхода 7. `sysret_cpl0` оставляет гостя в CPL0 после SYSRETQ — примитив
+отказывает user load (`unsupported`), `retired` 3, CPL 0, код выхода 5.
+Покрытие: 5 machine-тестов, 3 теста builder, 1 builder→runner CLI-тест. Команды:
+
+```sh
+cargo test -p od-machine --test stage4_cpl3_syscall_probe --offline
+cargo test -p od-runner --test stage4_cpl3_syscall_build_cli --offline
+python3 -m unittest tools.build.test_build_stage4_cpl3_syscall_probe
+```
+
+Граница: uncached interpreter и только четыре инструкции S4-20c. OUT/HLT,
+UART, timer, IRQ, HLT wakeup, self-modifying code, huge pages, TLB-on/JIT,
+exception delivery из CPL3 и Linux не проверяются; родитель S4-33 не закрыт.
+
 ## S4-17a: paged MOV differential harness
 
 Run the cross-component harness with:

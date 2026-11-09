@@ -1760,6 +1760,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** builder manifest отражает обе mappings без противоречий; builder→runner проверяет два store values, budgets, UART, guest state и injected broken-alias outcome; machine case проверяет leaf A/D и точный порядок committed callbacks. Legacy profiles остаются строгими.
 - **Граница:** uncached interpreter evidence для RAM alias. Не подтверждает TLB-on/JIT alias invalidation, cross-page semantics, fault repair, Linux или physical hardware; S4-13/14/16 и S4-18/19 остаются отдельными prerequisites.
 
+#### S4-33b. CPL3 SYSCALL → kernel store → SYSRETQ → user load (системный кейс S4-33)
+
+- [x] Принято после ревью (Claude Opus, high). Родитель S4-33 открыт. Оговорка: FMASK-эффект на RFLAGS не проверяется (см. отчёт «Открыто»).
+- **Контракт:** кейс собственного ядра из S4-33 «CPL3 syscall/return». Использует принятый примитив S4-20c (bounded paged SYSCALL → kernel store → SYSRETQ → user load) и профиль S4-32; не требует PIT, насоса событий или IRQ.
+- **Проверка:** builder → runner: user-mode код делает SYSCALL, ядро пишет qword, SYSRETQ возвращает в CPL3, user читает значение; guest state (RIP, RSP, CPL, RAX) и event trace; бюджеты и STOP-причина; injected regression: ломаешь запись ядра или возврат CPL — кейс падает.
+- **Граница:** только CPL3 syscall/return; timer, IRQ, HLT wakeup, self-modifying code, huge pages, TLB-on — отдельные кейсы S4-33; это не закрывает родителя S4-33.
+- **Готово:** кейс выполняется как guest fact; обе ветки (успех и инъекция) различимы в evidence.
+
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
 - [ ] Методика/harness приняты; физический запуск принят отдельно.
