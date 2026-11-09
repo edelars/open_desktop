@@ -89,8 +89,8 @@ pub use firmware_board::{
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 pub use io_apic::{IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, IoApicHandle};
 pub use local_apic::{
-    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, step_apic_base_msr,
-    step_local_apic_cr8,
+    InterruptAcknowledge, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle,
+    step_apic_base_msr, step_local_apic_cr8,
 };
 
 pub use page_walk::{
