@@ -9,7 +9,7 @@ use od_isa::execute::{
     PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1,
     PagedProbeExit as CpuProbeExit, PagedProbeRejection as CpuProbeRejection,
     TranslationContextChange, step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_probe,
-    step_paged_stack_probe,
+    step_paged_probe_with_rdtsc, step_paged_stack_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -118,6 +118,40 @@ pub fn run_paged_probe(
         rflags_defined,
         stop,
         committed_write,
+        None,
+    )
+}
+
+/// Run the base quantum like [`run_paged_probe`], with an explicit time source
+/// for the exact bare `RDTSC` (`0F 31`, S4-37a6). The source is called once per
+/// retired `RDTSC`; the machine does not advance time itself. Base profile only.
+pub fn run_paged_probe_with_rdtsc(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    source: &mut dyn FnMut() -> u64,
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+        Some(source),
     )
 }
 
@@ -149,6 +183,7 @@ pub fn run_paged_stack_probe(
         rflags_defined,
         stop,
         committed_write,
+        None,
     )
 }
 
@@ -180,6 +215,7 @@ pub fn run_paged_cr3_probe(
         rflags_defined,
         stop,
         committed_write,
+        None,
     )
 }
 
@@ -215,6 +251,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         rflags_defined,
         stop,
         committed_write,
+        None,
     )
 }
 
@@ -245,6 +282,7 @@ pub fn run_paged_cr0_wp_probe(
         rflags_defined,
         stop,
         committed_write,
+        None,
     )
 }
 
@@ -262,6 +300,7 @@ fn run_paged_probe_inner(
     rflags_defined: u64,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    mut rdtsc: Option<&mut dyn FnMut() -> u64>,
 ) -> PagedProbeQuantumReport {
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
@@ -468,6 +507,19 @@ fn run_paged_probe_inner(
                     ..context
                 },
                 current_rflags_defined,
+            )
+        } else if let Some(source) = rdtsc.as_mut() {
+            step_paged_probe_with_rdtsc(
+                PagedCpl0ProbeV1,
+                state,
+                &mut memory,
+                &mut pio,
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                },
+                current_rflags_defined,
+                &mut **source,
             )
         } else {
             step_paged_probe(

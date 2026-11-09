@@ -20,7 +20,7 @@ use crate::{
     PIT_PORT_BYTES, PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices,
     Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
     Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
-    run_paged_probe,
+    run_paged_probe, run_paged_probe_with_rdtsc,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -28,6 +28,8 @@ use od_isa::memory::{
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register, StiShadow};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Image size, fixed by the contract (FIRMWARE_BOOT.md 3.2).
 pub const FIRMWARE_IMAGE_BYTES: usize = 0x0040_0000;
@@ -64,6 +66,9 @@ const PAGE: u64 = 0x1000;
 /// before the divide configuration. A board choice (as in S4-27i2), not declared
 /// in the handoff.
 const FIRMWARE_APIC_TIMER_HZ: u64 = 100_000_000;
+/// Virtual time one guest `RDTSC` costs on the board under `linux_profile`
+/// (S4-37a6b), like a port read of the PM timer or the PIT.
+const RDTSC_TICK_NS: u64 = 1_000;
 const NX: u64 = 1 << 63;
 const IMAGE_HEADER_BYTES: usize = 0x40;
 const IMAGE_MAGIC: &[u8; 8] = b"ODFWIMG1";
@@ -812,10 +817,17 @@ pub struct LoadedFirmwareBoard {
     page_table_bytes: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
+    /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
+    /// `linux_profile`, where `run` hands the CPU a time source. The source sets
+    /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
+    rdtsc_tick: Option<Arc<AtomicBool>>,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
     suppress_pm_tick: bool,
+    /// Test injection (S4-37a6b): `run_boot` drops the pending RDTSC tick.
+    #[cfg(test)]
+    suppress_rdtsc_tick: bool,
 }
 
 impl LoadedFirmwareBoard {
@@ -894,23 +906,50 @@ impl LoadedFirmwareBoard {
             .map_err(FirmwareBoardError::Clock)
     }
 
-    /// One quantum of the existing bounded paged interpreter path.
+    /// One quantum of the existing bounded paged interpreter path. Like the PM
+    /// timer and PIT port ticks, the RDTSC tick is not applied here: only
+    /// `run_boot` advances the clock between quanta.
+    ///
+    /// Under `linux_profile` a bare `RDTSC` is executed (S4-37a6b): it returns
+    /// the board `clock.tsc()` as of the quantum boundary (the clock does not move
+    /// inside a quantum, a known deviation) and queues a 1 us tick. Without the
+    /// profile `RDTSC` stays `Unsupported { opcode: 0x31 }`.
     pub fn run(
         &mut self,
         instruction_budget: u64,
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        if let Some(tick) = self.rdtsc_tick.clone() {
+            let clock = self.clock.clone();
+            let mut source = move || {
+                tick.store(true, Ordering::Relaxed);
+                clock.snapshot().tsc()
+            };
+            return run_paged_probe_with_rdtsc(
+                &mut self.state,
+                &mut self.bus,
+                FIRMWARE_BOOT_PAGE_TABLES_GPA,
+                FIRMWARE_EFER,
+                context,
+                instruction_budget,
+                INTEGER_FLAGS,
+                stop,
+                committed_write,
+                &mut source,
+            );
+        }
         run_paged_probe(
             &mut self.state,
             &mut self.bus,
             FIRMWARE_BOOT_PAGE_TABLES_GPA,
             FIRMWARE_EFER,
-            AccessContext {
-                mode: InstructionMode::Long64,
-                privilege: PrivilegeLevel::Ring0,
-                origin: AccessOrigin::Explicit,
-            },
+            context,
             instruction_budget,
             INTEGER_FLAGS,
             stop,
@@ -931,6 +970,9 @@ impl LoadedFirmwareBoard {
     /// guest reads of port B `0x61` and of the channel 2 counter `0x42` queue
     /// 1 us each; the queue is cleared at the start and applied after each
     /// quantum together with the PM timer ticks.
+    /// The same holds for a guest `RDTSC` under the Linux profile (S4-37a6b): it
+    /// ends the quantum, the flag is cleared at the start, and 1 us is applied
+    /// after the PIT tick (order: retired ns, PM, PIT, RDTSC).
     pub fn run_boot(
         &mut self,
         instruction_budget: u64,
@@ -942,12 +984,16 @@ impl LoadedFirmwareBoard {
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
+        let rdtsc_tick = self.rdtsc_tick.clone();
         // Ticks queued before this run came from the host, not from the guest.
         if let Some(pm) = &acpi_pm {
             pm.take_timer_tick_ns();
         }
         if let Some(pit) = &pit {
             pit.take_port_tick_ns();
+        }
+        if let Some(flag) = &rdtsc_tick {
+            flag.store(false, Ordering::Relaxed);
         }
         // Doorbells the host rang before the run are executed before the guest starts.
         if let Some(nvme) = &nvme {
@@ -968,6 +1014,10 @@ impl LoadedFirmwareBoard {
                         || acpi_pm.as_ref().is_some_and(AcpiPmHandle::timer_tick_pending)
                         // The same for a guest read of port B or of the PIT counter.
                         || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
+                        // A guest RDTSC (Linux profile) ends the quantum as well.
+                        || rdtsc_tick
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(Ordering::Relaxed))
                 },
                 |_| {},
             );
@@ -993,6 +1043,14 @@ impl LoadedFirmwareBoard {
             }
             if let Some(pit) = &pit {
                 self.advance_time_ns(pit.take_port_tick_ns())?;
+            }
+            if let Some(flag) = &rdtsc_tick
+                && flag.swap(false, Ordering::Relaxed)
+            {
+                let tick_ns = RDTSC_TICK_NS;
+                #[cfg(test)]
+                let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
+                self.advance_time_ns(tick_ns)?;
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             let exit = match report.exit {
@@ -1266,8 +1324,13 @@ fn load_firmware_image_inner(
         handoff,
         page_table_bytes,
         com1_log: Vec::new(),
+        rdtsc_tick: config
+            .linux_profile
+            .then(|| Arc::new(AtomicBool::new(false))),
         #[cfg(test)]
         suppress_pm_tick: false,
+        #[cfg(test)]
+        suppress_rdtsc_tick: false,
     })
 }
 
@@ -3350,6 +3413,94 @@ mod tests {
             report.virtual_ns, report.retired,
             "no tick without the profile"
         );
+    }
+
+    // ---- S4-37a6b: RDTSC as a time port on the board (Linux profile) ----
+
+    /// `n` bare `RDTSC` (`0F 31`), then `HLT`. The base probe has no compare and
+    /// no jump, so a `udelay`-style wait is a straight run of reads.
+    fn rdtsc_image(n: usize) -> Vec<u8> {
+        let mut code: Vec<u8> = std::iter::repeat_n([0x0f, 0x31], n).flatten().collect();
+        code.push(0xf4);
+        minor2_image(&code)
+    }
+
+    fn edx_eax(board: &LoadedFirmwareBoard) -> u64 {
+        let gpr = &board.state().gpr;
+        ((gpr[Register::Rdx as usize] & 0xffff_ffff) << 32) | (gpr[0] & 0xffff_ffff)
+    }
+
+    #[test]
+    fn rdtsc_returns_floor_now_times_tsc_hz_and_each_rdtsc_ticks_one_microsecond() {
+        // IN AL,imm8 (E4) is not decoded: port 0x42 is read through DX.
+        // RDTSC; MOV DX,0x42; IN AL,DX; RDTSC; HLT. The huge tsc_hz makes EDX
+        // non-zero; 2003 * hz mod 1e9 = 900_001_981 (fraction 0.9), so floor and
+        // round differ.
+        let hz = 10_000_000_000_449_327u64;
+        let config = FirmwareBoardConfig {
+            tsc_hz: hz,
+            ..linux_config()
+        };
+        let image = minor2_image(&[0x0f, 0x31, 0x66, 0xba, 0x42, 0x00, 0xec, 0x0f, 0x31, 0xf4]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        program_channel_2(&mut board);
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 5, "RDTSC, MOV, IN, RDTSC, HLT");
+        // Before the second RDTSC: 1 ns (RDTSC) + 1 us (its tick) + 2 ns (MOV, IN)
+        // + 1 us (PIT tick on 0x42).
+        let at_second_rdtsc = 1 + 1_000 + 2 + 1_000;
+        assert_eq!(at_second_rdtsc, 2_003);
+        // floor(2003 * 10_000_000_000_449_327 / 1e9) = 20_030_000_000 (round: ...001).
+        let expected = 20_030_000_000u64;
+        assert!(expected > u64::from(u32::MAX), "EDX is exercised");
+        assert_eq!(edx_eax(&board), expected);
+        // Then: the second RDTSC (1 ns + 1 us tick) and HLT (1 ns).
+        assert_eq!(report.virtual_ns, at_second_rdtsc + 1 + 1_000 + 1);
+        assert_eq!(report.virtual_ns, 5 + 2 * 1_000 + 1_000);
+        assert_eq!(board.clock().now_ns(), report.virtual_ns);
+    }
+
+    #[test]
+    fn a_hundred_rdtsc_take_about_a_hundred_microseconds_of_virtual_time() {
+        let mut board = load_firmware_image(&rdtsc_image(100), &linux_config()).unwrap();
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 101);
+        assert_eq!(report.virtual_ns, 100 * 1_000 + 101);
+        // The 100th RDTSC saw 99 earlier (1 ns + 1 us) steps; tsc_hz is 1 GHz.
+        assert_eq!(edx_eax(&board), 99 * 1_001);
+    }
+
+    #[test]
+    fn without_the_rdtsc_tick_the_same_guest_sees_time_only_from_instructions() {
+        let mut board = load_firmware_image(&rdtsc_image(100), &linux_config()).unwrap();
+        board.suppress_rdtsc_tick = true;
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.virtual_ns, 101, "100 us less than with the tick");
+        assert_eq!(edx_eax(&board), 99);
+    }
+
+    #[test]
+    fn rdtsc_without_the_linux_profile_stays_unsupported_without_a_tick() {
+        let mut board = load_firmware_image(&rdtsc_image(2), &tables_config()).unwrap();
+        assert!(board.rdtsc_tick.is_none());
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+        assert_eq!(report.retired, 0, "Unsupported on the first instruction");
+        assert_eq!(report.virtual_ns, 0, "no tick without the profile");
+    }
+
+    #[test]
+    fn a_single_run_quantum_does_not_apply_the_rdtsc_tick() {
+        let mut board = load_firmware_image(&rdtsc_image(2), &linux_config()).unwrap();
+        let report = board.run(10, || false, |_| {});
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.instructions_executed, 3);
+        assert_eq!(board.clock().now_ns(), 0, "only run_boot moves the clock");
+        // Both RDTSC read the clock as of the quantum boundary.
+        assert_eq!(edx_eax(&board), 0);
     }
 
     // ---- S4-37a4: LAPIC shared timer on the board clock (Linux profile) ----
