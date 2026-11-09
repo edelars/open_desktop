@@ -1,0 +1,82 @@
+{
+  "slice": "S4-24e",
+  "date": "2026-11-08",
+  "status": "implemented_pending_review",
+  "scope": "UART IER/IIR/OUT2 interrupt model, UART->IOAPIC INTIN4 edge route owned by the session, flat Stage4UartIrqProbeV1 guest kernel, runner --stage4-uart-irq-probe",
+  "review": "pending",
+  "decisions": {
+    "out2": "gate on the interrupt line only (line = IIR!=1 && MCR.OUT2); IIR independent of OUT2; rationale from knowledge of Linux 8250 (sources unavailable offline, Context7 returned nothing usable) - not machine verified",
+    "masked_edge": "edge while INTIN4 is masked is ignored and not replayed by unmasking (S4-26a/b)",
+    "eoi": "guest writes 0 to LAPIC EOI 0xFEE000B0 before IRETQ; a second edge stays in IRR until ISR is cleared",
+    "profile": "flat identity Long64/CPL0 (no paging): maskable-interrupt entry, STI, HLT, IRETQ exist only flat; flat step_flat_lidt added",
+    "tx": "transmit completes at the end of each OUT (no baud timing)"
+  },
+  "measured": {
+    "positive_one_byte": {
+      "args": "--rx 0x41@1000",
+      "quanta": 42,
+      "retired": 40,
+      "clock_ns": 1000,
+      "trace_events": 21
+    },
+    "positive_two_bytes": {
+      "args": "--rx 0x41@1000 --rx 0x42@2000",
+      "quanta": 55,
+      "retired": 51
+    },
+    "ier_zero": {
+      "quanta": 30,
+      "retired": 29,
+      "irr": 0,
+      "irq_entry": 0,
+      "rbr_pending": "0x41"
+    },
+    "late_unmask_masked_edge": {
+      "quanta": 29,
+      "retired": 29,
+      "irr": 0,
+      "irq_entry": 0,
+      "uart_line": true
+    },
+    "omit_eoi": {
+      "quanta": 40,
+      "retired": 37,
+      "irr": 2,
+      "irq_entry": 1,
+      "eoi": 0,
+      "isr": true
+    },
+    "omit_rbr_read": {
+      "quanta": 42,
+      "retired": 39,
+      "serial_bytes": [
+        4
+      ],
+      "pending_rx": 1
+    }
+  },
+  "checks": {
+    "isa_lidt": "cargo test -p od-isa --lib --offline lidt: 11 passed",
+    "machine_uart": "cargo test -p od-machine --lib --offline uart: 13 passed",
+    "machine_io_apic": "cargo test -p od-machine --lib --offline io_apic: 11 passed",
+    "machine_local_apic": "cargo test -p od-machine --lib --offline local_apic: 22 passed",
+    "machine_diagnostic_vcpu": "cargo test -p od-machine --lib --offline diagnostic_vcpu: 34 passed",
+    "machine_probe": "cargo test -p od-machine --test stage4_uart_irq_probe --offline: 10 passed",
+    "machine_uart_integration": "cargo test -p od-machine --test uart16550_polling --test uart_rx_events --offline: 2 + 7 passed",
+    "builder": "python3 -m unittest tools/build/test_build_stage4_uart_irq_probe.py: 5 passed",
+    "runner_cli": "cargo test -p od-runner --test stage4_uart_irq_cli --offline: 6 passed",
+    "machine_full": "cargo test -p od-machine --offline: --lib 447 passed plus every integration binary passed (run one binary at a time; background full runs stall in _dyld_start); od-runner firmware_boot_cli: 5 passed",
+    "runner_check": "cargo check -p od-runner --all-targets --offline: passed",
+    "fmt": "cargo fmt --all -- --check: passed"
+  },
+  "injected_regressions": {
+    "guest_omit_eoi": "runner exit 5, status completion_mismatch; machine accepts() false",
+    "guest_omit_rbr_read": "runner exit 5, status completion_mismatch; machine accepts() false",
+    "host_route_disconnected": "set_intin4 call removed from sync_line: 6 of 10 stage4_uart_irq_probe tests failed; reverted"
+  },
+  "limitations": [
+    "no FIFO, baud timing, line-status or modem-status interrupts, level route, JIT, Linux 8250 compatibility, production scheduler, IRQ from CPL3",
+    "flat profile only; no paged IRQ entry; no session reset",
+    "S4-24 remains open"
+  ]
+}

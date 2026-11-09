@@ -27,6 +27,7 @@ mod stage4_cr3_mixed_probe;
 mod stage4_flat_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
+mod stage4_uart_irq_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -147,6 +148,13 @@ pub use stage4_flat_probe::{
 };
 pub use stage4_stack_probe::load_stage4_stack_probe;
 pub use stage4_store_load_probe::load_stage4_store_load_probe;
+pub use stage4_uart_irq_probe::{
+    STAGE4_UART_IRQ_PROBE_COM1, STAGE4_UART_IRQ_PROBE_ENTRY, STAGE4_UART_IRQ_PROBE_IMAGE_BYTES,
+    STAGE4_UART_IRQ_PROBE_IMAGE_GPA, STAGE4_UART_IRQ_PROBE_STACK_TOP,
+    STAGE4_UART_IRQ_PROBE_TRACE_LIMIT, STAGE4_UART_IRQ_PROBE_VECTOR, Stage4UartIrqProbe,
+    Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
+    Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
+};
 
 pub use nvme::{
     BackendError, InMemoryBackend, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeAttachError, NvmeBackend,

@@ -3,6 +3,11 @@
 //! This model accepts byte-wide PIO accesses only. Transmission advances only
 //! when the caller explicitly invokes [`Uart16550PollingTx::transfer_holding_to_shift`]
 //! and [`Uart16550PollingTx::complete_transmission`].
+//!
+//! S4-24e adds a bounded interrupt model: IER bit 0 (received data available)
+//! and bit 1 (transmitter holding register empty), the IIR priority and clear
+//! rules, and an MCR OUT2 gate for the interrupt output ([`Uart16550Handle::interrupt_line`]).
+//! The line is a pure level; the session owner routes it to the IOAPIC.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -11,6 +16,11 @@ const UART_REGISTER_COUNT: u64 = 8;
 const LCR_DLAB: u8 = 0x80;
 const LCR_8N1: u8 = 0x03;
 const IIR_NO_INTERRUPT: u8 = 0x01;
+const IIR_THRE: u8 = 0x02;
+const IIR_RDA: u8 = 0x04;
+const IER_RDA: u8 = 0x01;
+const IER_THRE: u8 = 0x02;
+const MCR_OUT2: u8 = 0x08;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
@@ -41,6 +51,9 @@ struct UartState {
     holding: Option<u8>,
     shift: Option<u8>,
     received: Option<u8>,
+    ier: u8,
+    mcr: u8,
+    thre_pending: bool,
 }
 
 impl Uart16550PollingTx {
@@ -154,6 +167,22 @@ impl Uart16550Handle {
         self.with_state(UartState::reset);
     }
 
+    /// The UART interrupt output after the MCR OUT2 gate: a pending enabled
+    /// condition (RDA or THRE) and OUT2 set. It has no side effects.
+    pub fn interrupt_line(&self) -> bool {
+        self.with_state(|state| state.interrupt_line())
+    }
+
+    /// The IIR value a guest read would return now, without clearing anything.
+    pub fn peek_iir(&self) -> u8 {
+        self.with_state(|state| state.iir())
+    }
+
+    /// The byte waiting in the receive register, without consuming it.
+    pub fn received_byte(&self) -> Option<u8> {
+        self.with_state(|state| state.received)
+    }
+
     /// Supplies one byte to the receive register shared with the bus device.
     pub fn inject_received_byte(&self, value: u8) -> Result<(), DeviceError> {
         self.with_state(|state| state.inject_received_byte(value))
@@ -169,6 +198,9 @@ impl UartState {
             holding: None,
             shift: None,
             received: None,
+            ier: 0,
+            mcr: 0,
+            thre_pending: false,
         }
     }
 
@@ -177,7 +209,27 @@ impl UartState {
             return false;
         }
         self.shift = self.holding.take();
+        // The holding register became empty: a THRE condition arises only
+        // while the guest has it enabled.
+        if self.ier & IER_THRE != 0 {
+            self.thre_pending = true;
+        }
         true
+    }
+
+    /// Highest-priority enabled condition: RDA over THRE; independent of OUT2.
+    fn iir(&self) -> u8 {
+        if self.ier & IER_RDA != 0 && self.received.is_some() {
+            IIR_RDA
+        } else if self.ier & IER_THRE != 0 && self.thre_pending {
+            IIR_THRE
+        } else {
+            IIR_NO_INTERRUPT
+        }
+    }
+
+    fn interrupt_line(&self) -> bool {
+        self.mcr & MCR_OUT2 != 0 && self.iir() != IIR_NO_INTERRUPT
     }
 
     fn complete_transmission(&mut self) -> Option<u8> {
@@ -247,9 +299,18 @@ impl UartState {
                     .ok_or(DeviceError::WriteOnly);
             }
             1 if self.dlab() => (self.divisor >> 8) as u8,
-            1 => 0,
-            2 => IIR_NO_INTERRUPT,
+            1 => self.ier,
+            2 => {
+                let iir = self.iir();
+                // Reading IIR acknowledges a THRE interrupt only when THRE is
+                // the reported source; RDA is cleared only by reading RBR.
+                if iir == IIR_THRE {
+                    self.thre_pending = false;
+                }
+                iir
+            }
             3 => self.line_control,
+            4 => self.mcr,
             5 => self.line_status(),
             7 => self.scratch,
             _ => return Err(DeviceError::UnknownOffset),
@@ -273,16 +334,30 @@ impl UartState {
                     return Err(DeviceError::Busy);
                 }
                 self.holding = Some(value);
+                self.thre_pending = false;
             }
             1 if self.dlab() => {
                 self.divisor = (self.divisor & 0x00ff) | (u16::from(value) << 8);
             }
-            1 if value == 0 => {}
+            1 if value & !(IER_RDA | IER_THRE) == 0 => {
+                // Enabling THRE while the holding register is empty raises
+                // the condition; disabling it drops any pending condition.
+                if value & IER_THRE == 0 {
+                    self.thre_pending = false;
+                } else if self.ier & IER_THRE == 0 && self.holding.is_none() {
+                    self.thre_pending = true;
+                }
+                self.ier = value;
+            }
+            // Line-status and modem-status interrupts are not modelled.
             1 => return Err(DeviceError::UnsupportedConfiguration),
             2 if value == 0 => {}
             2 => return Err(DeviceError::UnsupportedConfiguration),
             3 if Self::line_configuration_supported(value) => self.line_control = value,
             3 => return Err(DeviceError::UnsupportedConfiguration),
+            4 if value & !MCR_OUT2 == 0 => self.mcr = value,
+            // DTR/RTS/OUT1/loopback are not modelled.
+            4 => return Err(DeviceError::UnsupportedConfiguration),
             5 => return Err(DeviceError::ReadOnly),
             7 => self.scratch = value,
             _ => return Err(DeviceError::UnknownOffset),
@@ -407,7 +482,7 @@ mod tests {
         assert_eq!(device.read(access(5)), Ok(0x60));
 
         assert_eq!(
-            device.write(access(1), 1),
+            device.write(access(1), 0x04),
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(
@@ -461,10 +536,141 @@ mod tests {
             Err(DeviceError::UnsupportedWidth)
         );
         assert_eq!(device.read(access(8)), Err(DeviceError::UnknownOffset));
-        assert_eq!(device.read(access(4)), Err(DeviceError::UnknownOffset));
+        assert_eq!(device.read(access(4)), Ok(0));
+        assert_eq!(
+            device.write(access(4), 0x01),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
         assert_eq!(device.write(access(5), 0x20), Err(DeviceError::ReadOnly));
         assert_eq!(device.read(access(0)), Err(DeviceError::WriteOnly));
         assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
         assert_eq!(device.read(access(5)), Ok(0x60));
+    }
+
+    fn read(device: &mut Uart16550PollingTx, offset: u64) -> u8 {
+        device.read(access(offset)).unwrap() as u8
+    }
+
+    #[test]
+    fn ier_accepts_only_rda_and_thre_and_mcr_only_out2() {
+        let mut device = Uart16550PollingTx::new();
+        for value in [0x00, 0x01, 0x02, 0x03] {
+            write(&mut device, 1, value);
+            assert_eq!(read(&mut device, 1), value);
+        }
+        for value in [0x04_u8, 0x08, 0x0f, 0x80] {
+            assert_eq!(
+                device.write(access(1), u64::from(value)),
+                Err(DeviceError::UnsupportedConfiguration)
+            );
+            assert_eq!(read(&mut device, 1), 0x03);
+        }
+        write(&mut device, 4, 0x08);
+        assert_eq!(read(&mut device, 4), 0x08);
+        for value in [0x01_u8, 0x02, 0x04, 0x10, 0x18] {
+            assert_eq!(
+                device.write(access(4), u64::from(value)),
+                Err(DeviceError::UnsupportedConfiguration)
+            );
+            assert_eq!(read(&mut device, 4), 0x08);
+        }
+        // With DLAB set offset 1 is DLM and does not touch IER.
+        write(&mut device, 3, 0x83);
+        write(&mut device, 1, 0x00);
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 1), 0x03);
+    }
+
+    #[test]
+    fn rda_interrupt_requires_ier_and_clears_only_by_rbr_read() {
+        let handle_owner = Uart16550PollingTx::new();
+        let handle = handle_owner.handle();
+        let mut device = handle_owner;
+        write(&mut device, 4, 0x08);
+        device.inject_received_byte(0x5a).unwrap();
+        // IER = 0: the condition exists but is not reported or signalled.
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert!(!handle.interrupt_line());
+        write(&mut device, 1, 0x01);
+        assert_eq!(handle.peek_iir(), 0x04);
+        assert!(handle.interrupt_line());
+        // Reading IIR is repeatable and does not clear RDA.
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 0), 0x5a);
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert!(!handle.interrupt_line());
+        // Disabling IER drops the line for a newly pending byte as well.
+        device.inject_received_byte(0x11).unwrap();
+        assert!(handle.interrupt_line());
+        write(&mut device, 1, 0x00);
+        assert!(!handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x01);
+    }
+
+    #[test]
+    fn out2_gates_only_the_line_not_the_iir() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        write(&mut device, 1, 0x01);
+        device.inject_received_byte(0x01).unwrap();
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert!(!handle.interrupt_line());
+        write(&mut device, 4, 0x08);
+        assert!(handle.interrupt_line());
+        write(&mut device, 4, 0x00);
+        assert!(!handle.interrupt_line());
+        assert_eq!(handle.peek_iir(), 0x04);
+    }
+
+    #[test]
+    fn thre_interrupt_raises_on_enable_and_after_transfer_and_clears_by_iir_or_thr() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        setup_8n1_divisor(&mut device);
+        write(&mut device, 4, 0x08);
+        assert!(!handle.interrupt_line());
+        // Enabling THRE with an empty holding register raises it.
+        write(&mut device, 1, 0x02);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x02);
+        // IIR read acknowledged the THRE source.
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert!(!handle.interrupt_line());
+        // THR write clears nothing pending but arms the next empty edge.
+        write(&mut device, 0, 0x41);
+        assert!(!handle.interrupt_line());
+        assert!(device.transfer_holding_to_shift());
+        assert!(handle.interrupt_line());
+        // A THR write also acknowledges a pending THRE condition.
+        write(&mut device, 0, 0x42);
+        assert!(!handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x01);
+        // Disabling THRE drops a pending condition.
+        assert_eq!(device.complete_transmission(), Some(0x41));
+        assert!(device.transfer_holding_to_shift());
+        assert!(handle.interrupt_line());
+        write(&mut device, 1, 0x00);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn rda_has_priority_over_thre_and_iir_read_keeps_rda() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        write(&mut device, 4, 0x08);
+        write(&mut device, 1, 0x03);
+        device.inject_received_byte(0x77).unwrap();
+        assert_eq!(read(&mut device, 2), 0x04);
+        // RDA reported, so the IIR read must not have acknowledged THRE.
+        assert_eq!(read(&mut device, 0), 0x77);
+        assert_eq!(read(&mut device, 2), 0x02);
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert!(!handle.interrupt_line());
+        device.reset();
+        assert_eq!(read(&mut device, 1), 0);
+        assert_eq!(read(&mut device, 4), 0);
+        assert!(!handle.interrupt_line());
     }
 }
