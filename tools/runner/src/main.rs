@@ -10,6 +10,7 @@ mod firmware_boot;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cross_page_probe;
+mod stage4_huge_pages_probe;
 mod stage4_pf_repair_probe;
 mod stage4_probe;
 mod stage4_stack_probe;
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
         Some("--stage4-alias-probe") => return stage4_alias_probe::run(&args),
         Some("--stage4-cpl3-syscall-probe") => return stage4_cpl3_syscall_probe::run(&args),
         Some("--stage4-cross-page-probe") => return stage4_cross_page_probe::run(&args),
+        Some("--stage4-huge-pages-probe") => return stage4_huge_pages_probe::run(&args),
         Some("--stage4-pf-repair-probe") => return stage4_pf_repair_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),

@@ -2709,6 +2709,82 @@ accepted); JIT (the case is `not_supported` in the JIT matrix); CPL3, #PF
 delivery and CR2 commit; huge pages. It does not close S4-33. See the
 [S4-33d report](../reports/STAGE_4_S4-33D_2026-11-09.md).
 
+## S4-33e: huge pages на собственном ядре (2 MiB позитив, 1 GiB негатив)
+
+`Stage4HugePagesProbeV1` — строгий raw-image профиль (GPA `0x1000`, размер
+`0x400000`, 6 MiB RAM, polling UART `0x3f8`). Loader сравнивает весь образ с
+единственным допустимым: шесть страниц таблиц (отчёт по записи), код, decoy-кадр,
+четыре qword 2 MiB-кадра, sentinel и нулевые страницы между ними (отчёт по базе
+страницы). Все записи supervisor, A и D сброшены. Код на одной 4 KiB-странице
+(GVA `0x400000` -> кадр `0x7000`, PTE `0x7001`). Данные — один 2 MiB leaf: PDE[4]
+(GPA `0x3020`) = `0x8000000000200083` (P, R/W, PS=1, NX; адрес кадра `0x200000`
+выровнен на 2 MiB, биты 20:13 и PAT нулевые), GVA `0x800000`. Значения: смещение 0
+(GPA `0x200000`), `0x100000` (GPA `0x300000`), `0x1ffff8` (последний qword,
+GPA `0x3ffff8`) — три разных qword; на смещении `0x1fff00` (GPA `0x3fff00`) лежит
+decoy `0x5a`x8, который case перезаписывает и читает обратно. PDE[5] (GVA `0xa00000`)
+отображает следующий 2 MiB-кадр `0x400000` с sentinel `0xfeedface0badf00d` — доступ
+на байт за первой страницей попадает на другой физический адрес. Негативный маршрут
+отдельный: PML4E[1] (`0x5003`) -> PDPT 1 (GPA `0x5000`), PDPTE[0] = `0x40000083`
+(P, R/W, PS=1), GVA `0x8000000000`. Отдельный PML4E нужен, чтобы A на PML4E
+негативного маршрута нельзя было получить от fetch (код идёт через PML4E[0]).
+
+Loader задаёт entry state: CPL0, RFLAGS `2` (AC=0), CR0 `0x80010033`, CR3 `0x1000`
+(явно; `LongModeState.cr3` = `None`, как в S4-32), CR4 `0x20`, EFER `0xd00` (NXE=1),
+RIP `0x400000`, RAX `0xdeadbeefcafebabe`, RCX `0xc0dec0de123456ab` (значение store),
+RDX `0x3f8`. RBX на каждом шаге ставит sequencer (в разрешённых allowlist нет
+инструкции, меняющей RBX); гостевая инструкция на всех шагах чтения одна и та же
+(`48 8B 03`), но три смещения выбирает sequencer, а не гость. Это ограничение
+кейса.
+
+`LoadedStage4HugePagesProbe::run(budget, ..)` без изменений использует принятые
+примитивы: `step_paged_mov_2m_ram` (S4-10b, `48 8B 03` и `48 89 0B`) на шагах 1-5,
+`step_paged_pio_u8` (`EE`) и существующий квант `PagedCpl0ProbeV1` (`F4`, budget 1).
+Негатив идёт через `step_paged_mov` (4 KiB-walker, S4-10c): один шаг. Allowlist не
+расширялся. Case `TwoMiB` (7 шагов): load смещение 0, load `0x100000`, load
+`0x1ffff8`, store RCX по `0x1fff00`, load обратно, OUT, HLT.
+
+Ожидаемые значения выведены из Intel SDM Vol. 3A гл. 4, не из вывода кода:
+PDE 2 MiB leaf — формат PDE, отображающей 2-MByte страницу, §4.5 (P=bit 0, R/W=bit 1, A=bit 5, D=bit 6, PS=bit 7=1,
+адрес бит 51:21, XD=bit 63); физический адрес = база кадра + биты 20:0 линейного
+адреса (§4.5); A ставится на каждой используемой записи, D — только в записи,
+которая отображает страницу, то есть в PDE (§4.8). После шага 1: PML4E `0x2023`,
+PDPTE `0x3023`, PD[2] `0x4023`, code PTE `0x7021`, PDE `0x80000000002000a3`; D нет.
+После store (шаг 4): PDE `0x80000000002000e3`; остальные записи без D. RAX по шагам:
+start, middle, end, end (store RAX не меняет), `0xc0dec0de123456ab` (чтение обратно),
+то же для OUT и HLT; UART-байт `0xab`; итоговый RIP `0x400011`, CPU halted.
+Committed writes: шаг 1 — `0x1000, 0x2000, 0x3010, 0x4000, 0x3020`; шаг 4 —
+`0x3020` (D на PDE) и `0x3fff00` (8 байт); остальные шаги без записей.
+
+Негатив (`GibNegative`): `48 8B 03` по `0x8000000000` -> гостевой #PF, вектор 14,
+PFEC `0x09` (SDM §4.7: P=1 — запись present, W/R=0 — чтение, U/S=0 — CPL0,
+RSVD=1 — зарезервированный бит, I/D=0; PS=1 в PDPTE при Page1GB=0 зарезервирован,
+контракт S4-10c), CR2-запись `0x8000000000`, saved RIP `0x400000`, steps 1, retired
+0, RIP и RAX не меняются, CR2 состояния CPU остаётся `None` (доставка #PF в кейс не
+входит). A: PML4E[1] `0x5023` (единственный committed write маршрута данных `0x1008`),
+PDPTE[0] остаётся `0x40000083` (ни A, ни D), PDE данных не тронут. Остальные литералы
+PFEC из S4-10c (CPL0 write `0x0b`, fetch NXE=1 `0x19`, CPL3 `0x0d/0x0f/0x1d`) этот
+кейс не исполняет, они покрыты тестами S4-10c.
+
+Инъекции меняют только записи страниц или RBX шага: `pde_ps_cleared` (PDE[4] ->
+4 KiB-таблица `0x6003|NX`, её запись 0 -> decoy-кадр `0x8000`): load смещения 0
+возвращает decoy `0xa5a5a5a5a5a5a5a5`, load `0x100000` — #PF PFEC `0x00`, CR2
+`0x900000` (steps 2, retired 1, код 5); `offset_past_page` (RBX третьего чтения =
+`0xa00000`): все 7 шагов, RAX шага 3 = sentinel, код 7; `pdpte_ps_host_error`
+(только `GibNegative`: PDPTE[0] -> PD, RBX = `0x8000800000`, то есть маршрут к PDE с
+PS=1 через 4 KiB-walker): host-ошибка `UnsupportedPageSize` без #PF (steps 1,
+retired 0, код 5). Последняя — подстановка класса исхода: код walker не откатывался,
+поэтому инъекция воспроизводит тот же исход (host-ошибка вместо #PF), который давал
+PDPTE.PS до S4-10c, а не саму регрессию walker. Саму регрессию ловят unit-тесты
+S4-10c (`s4_10c_*`). Различимы по (stop, steps, retired, PFEC, RAX по шагам).
+`--negative-1gib` выбирает негативный case; инъекции чужого case отвергаются (код 3).
+
+Не покрыто: 1 GiB позитивный путь (не объявлен, Page1GB=0); MMIO; TLB-on; JIT; CPL3;
+доставка #PF и коммит CR2; cross-page; PAT; PDE PS=1 в 4 KiB-API остаётся
+`UnsupportedPageSize` (инъекция `pdpte_ps_host_error` его и использует); три смещения
+выбирает sequencer, не гость; A на PML4E негативного маршрута отделён от fetch
+отдельным PML4E[1], на общем PML4E[0] разделить нельзя. Не закрывает S4-33 и S4-10.
+См. [отчёт S4-33e](../reports/STAGE_4_S4-33E_2026-11-09.md).
+
 ## Paged `LIDT` adapter (S4-18a)
 
 `step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the
