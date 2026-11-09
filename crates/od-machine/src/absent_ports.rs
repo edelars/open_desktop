@@ -19,9 +19,12 @@
 //! of a binding never reach the device (`BusAccessError::CrossesRegion`).
 //!
 //! Not part of this module: RTC clock, CMOS RAM, NMI-disable bit 7 of port
-//! `0x70` (S7-14), the 8042 (`0x60/0x64`) and the POST port `0x80`. The latter
-//! three stay **unbound** on purpose: that decision is still open (see the
-//! S4-29 decisions in the stage plan), so a guest touching them is a trap.
+//! `0x70` (S7-14) and the 8042 (`0x60/0x64`). The 8042 stays **unbound** on
+//! purpose: that decision is still open (see the S4-29 decisions in the stage
+//! plan), so a guest touching it is a trap. The POST port `0x80` has the same
+//! absent-device model ([`AbsentPortRegion::Post`], S4-37a1) but the board binds
+//! it only under `FirmwareBoardConfig::linux_profile`; without the flag it stays
+//! a trap.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 
@@ -35,6 +38,10 @@ pub const CMOS_PORT_BYTES: u32 = 2;
 pub const IO_DELAY_PORT: u16 = 0xED;
 /// Ports of the `0xED` binding.
 pub const IO_DELAY_PORT_BYTES: u32 = 1;
+/// The POST/delay port (`0x80`), bound only under the Linux profile (S4-37a1).
+pub const POST_PORT: u16 = 0x80;
+/// Ports of the `0x80` binding.
+pub const POST_PORT_BYTES: u32 = 1;
 /// What a read of an absent port returns.
 pub const ABSENT_PORT_READ_VALUE: u8 = 0xFF;
 
@@ -51,6 +58,8 @@ pub enum AbsentPortRegion {
     Cmos,
     /// `0xED`.
     IoDelay,
+    /// `0x80` (S4-37a1, Linux profile only).
+    Post,
 }
 
 impl AbsentPortRegion {
@@ -59,6 +68,7 @@ impl AbsentPortRegion {
         match self {
             Self::Cmos => CMOS_INDEX_PORT,
             Self::IoDelay => IO_DELAY_PORT,
+            Self::Post => POST_PORT,
         }
     }
 
@@ -67,6 +77,7 @@ impl AbsentPortRegion {
         match self {
             Self::Cmos => CMOS_PORT_BYTES,
             Self::IoDelay => IO_DELAY_PORT_BYTES,
+            Self::Post => POST_PORT_BYTES,
         }
     }
 }
@@ -127,6 +138,13 @@ mod tests {
     };
 
     const BYTE: AccessWidth = AccessWidth::Byte;
+    /// Every region, including `Post`, which the board binds only under the
+    /// Linux profile; these tests use the devices directly or on a private bus.
+    const ALL_REGIONS: [AbsentPortRegion; 3] = [
+        AbsentPortRegion::Cmos,
+        AbsentPortRegion::IoDelay,
+        AbsentPortRegion::Post,
+    ];
 
     fn acc(offset: u64, width: AccessWidth) -> DeviceAccess {
         DeviceAccess {
@@ -181,11 +199,15 @@ mod tests {
         assert_eq!(AbsentPortRegion::IoDelay.base_port(), 0xED);
         assert_eq!(AbsentPortRegion::IoDelay.port_bytes(), 1);
         assert_eq!(ABSENT_PORT_READ_VALUE, 0xFF);
+        assert_eq!(POST_PORT, 0x80);
+        assert_eq!(AbsentPortRegion::Post.base_port(), 0x80);
+        assert_eq!(AbsentPortRegion::Post.port_bytes(), POST_PORT_BYTES);
+        assert_eq!(POST_PORT_BYTES, 1);
     }
 
     #[test]
     fn reads_of_the_absent_ports_give_0xff() {
-        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+        for region in ALL_REGIONS {
             let mut dev = AbsentPorts::new(region);
             for offset in 0..u64::from(region.port_bytes()) {
                 assert_eq!(dev.read(acc(offset, BYTE)), Ok(0xFF), "{region:?} {offset}");
@@ -198,7 +220,7 @@ mod tests {
         // The device is stateless; the guest-visible "snapshot" is the read-back
         // of every port. Every byte value is written to every port and the
         // read-back is compared with the one taken before.
-        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+        for region in ALL_REGIONS {
             let mut dev = AbsentPorts::new(region);
             let ports = u64::from(region.port_bytes());
             let snapshot = |dev: &mut AbsentPorts| -> Vec<u64> {
@@ -244,7 +266,7 @@ mod tests {
     #[test]
     fn word_dword_and_qword_are_refused_by_the_device() {
         // Policy: byte only (see the module comment). Refused before any effect.
-        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+        for region in ALL_REGIONS {
             let mut dev = AbsentPorts::new(region);
             for width in [AccessWidth::Word, AccessWidth::Dword, AccessWidth::Qword] {
                 assert_eq!(dev.read(acc(0, width)), Err(DeviceError::UnsupportedWidth));
@@ -264,7 +286,7 @@ mod tests {
             offset: 0,
             width: BYTE,
         };
-        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+        for region in ALL_REGIONS {
             let mut dev = AbsentPorts::new(region);
             assert_eq!(dev.read(mmio), Err(DeviceError::UnsupportedSpace));
             assert_eq!(dev.write(mmio, 0), Err(DeviceError::UnsupportedSpace));
@@ -324,12 +346,15 @@ mod tests {
         assert_eq!(bus.read_port(p(0x71), BYTE), Ok(0xFF));
     }
 
-    /// The decision about the 8042 (`0x60/0x64`) and the POST port (`0x80`) is
-    /// still open (S4-29 decisions): they are deliberately **not** bound, so a
-    /// guest touching them stops the machine with `UnmappedPort` instead of
-    /// getting a made-up answer. This test is a trap: when the decision is made
-    /// and a device is added, it must be changed on purpose. Ports next to the
-    /// absent ones are unbound too (no accidental widening of the bindings).
+    /// The decision about the 8042 (`0x60/0x64`) is still open (S4-29
+    /// decisions): it is deliberately **not** bound, so a guest touching it stops
+    /// the machine with `UnmappedPort` instead of getting a made-up answer. The
+    /// POST port `0x80` is a sink only under the board's `linux_profile`
+    /// (S4-37a1); this test checks the private bus of this file, which has no
+    /// profile, so `0x80` is unbound here. This test is a trap: when the 8042
+    /// decision is made and a device is added, it must be changed on purpose.
+    /// Ports next to the absent ones are unbound too (no accidental widening of
+    /// the bindings).
     #[test]
     fn open_decision_ports_stay_unmapped() {
         let mut bus = bus();
@@ -365,10 +390,14 @@ mod tests {
             ("8042 status", 0x64, 1),
             ("POST", 0x80, 1),
         ];
-        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+        for region in ALL_REGIONS {
             let a =
                 u32::from(region.base_port())..u32::from(region.base_port()) + region.port_bytes();
             for &(name, start, len) in &others {
+                // The `Post` region is the "POST" entry itself.
+                if region == AbsentPortRegion::Post && name == "POST" {
+                    continue;
+                }
                 let b = u32::from(start)..u32::from(start) + len;
                 assert!(a.end <= b.start || b.end <= a.start, "{region:?} vs {name}");
             }
@@ -424,7 +453,7 @@ mod tests {
     /// blob (the FADT field at offset 109) and against the firmware constants,
     /// so the decision cannot drift in either place alone. The FADT also keeps
     /// `8042` (bit 1) and `LEGACY_DEVICES` (bit 0) at 0, which matches the
-    /// 8042 and `0x80` having no device here.
+    /// 8042 and `0x80` having no device without the flag and on this bus.
     #[test]
     fn model_agrees_with_the_fadt_iapc_boot_arch() {
         use crate::{FirmwareBoardConfig, validate_acpi_blob};
