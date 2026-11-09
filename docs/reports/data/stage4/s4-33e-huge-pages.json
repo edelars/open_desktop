@@ -1,0 +1,3698 @@
+{
+ "budgets_values_a": [
+  {
+   "accepted": false,
+   "budget": 0,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "ancestors_have_a_and_no_d",
+    "store_landed_in_the_2m_frame",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0xdeadbeefcafebabe",
+   "retired": 0,
+   "rip": "0x0000000000400000",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 0,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 1,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "store_landed_in_the_2m_frame",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0x1122334455667788",
+   "retired": 1,
+   "rip": "0x0000000000400003",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 1,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 2,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "store_landed_in_the_2m_frame",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0x99aabbccddeeff01",
+   "retired": 2,
+   "rip": "0x0000000000400006",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 2,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 3,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "store_landed_in_the_2m_frame",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0x0f1e2d3c4b5a6978",
+   "retired": 3,
+   "rip": "0x0000000000400009",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 3,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 4,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0x0f1e2d3c4b5a6978",
+   "retired": 4,
+   "rip": "0x000000000040000c",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 4,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 5,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0xc0dec0de123456ab",
+   "retired": 5,
+   "rip": "0x000000000040000f",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 5,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": false,
+   "budget": 6,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0xc0dec0de123456ab",
+   "retired": 6,
+   "rip": "0x0000000000400010",
+   "serial_bytes": [
+    171
+   ],
+   "status": "error",
+   "steps": 6,
+   "stop_detail": null,
+   "stop_reason": "budget_exhausted"
+  },
+  {
+   "accepted": true,
+   "budget": 7,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 0,
+   "failed_checks": [],
+   "injection": "none",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0xc0dec0de123456ab",
+   "retired": 7,
+   "rip": "0x0000000000400011",
+   "serial_bytes": [
+    171
+   ],
+   "status": "completed",
+   "steps": 7,
+   "stop_detail": null,
+   "stop_reason": "case_complete"
+  }
+ ],
+ "images": {
+  "values_a": {
+   "end": "0x0f1e2d3c4b5a6978",
+   "middle": "0x99aabbccddeeff01",
+   "raw_sha256": "dffd5bdfd952a17bdc9ab0cbf025d656bf941603478f16227b2717676dba35b4",
+   "start": "0x1122334455667788"
+  },
+  "values_b": {
+   "end": "0x2122232425262728",
+   "middle": "0x1112131415161718",
+   "raw_sha256": "5a27f5ad3d744f480493db861517fb88a1d0f8b9c54a2a7ab0f6ccff1bd2242c",
+   "start": "0x0102030405060708"
+  }
+ },
+ "injection_summary": {
+  "offset_past_page": {
+   "accepted": false,
+   "budget": 16,
+   "case": "two_mib",
+   "cr2": null,
+   "exit_code": 7,
+   "failed_checks": [
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "unused_entries_untouched"
+   ],
+   "injection": "offset_past_page",
+   "memory_error": null,
+   "pfec": null,
+   "rax": "0xc0dec0de123456ab",
+   "retired": 7,
+   "rip": "0x0000000000400011",
+   "serial_bytes": [
+    171
+   ],
+   "status": "rejected",
+   "steps": 7,
+   "stop_detail": null,
+   "stop_reason": "case_complete"
+  },
+  "pde_ps_cleared": {
+   "accepted": false,
+   "budget": 16,
+   "case": "two_mib",
+   "cr2": "0x900000",
+   "exit_code": 5,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "store_landed_in_the_2m_frame",
+    "no_page_fault_or_backend_error",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "injection": "pde_ps_cleared",
+   "memory_error": null,
+   "pfec": 0,
+   "rax": "0xa5a5a5a5a5a5a5a5",
+   "retired": 1,
+   "rip": "0x0000000000400003",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 2,
+   "stop_detail": "load at offset 0x100000: 48 8B 03",
+   "stop_reason": "page_fault"
+  },
+  "pdpte_ps_host_error": {
+   "accepted": false,
+   "budget": 16,
+   "case": "gib_negative",
+   "cr2": null,
+   "exit_code": 5,
+   "failed_checks": [
+    "page_fault_stop",
+    "vector_14_pfec_p_rsvd_read_cpl0",
+    "cr2_is_the_access_address",
+    "saved_rip_is_the_faulting_instruction",
+    "a_on_pml4e_only_ps_entry_untouched",
+    "data_walk_commits_only_pml4e_a",
+    "no_backend_error"
+   ],
+   "injection": "pdpte_ps_host_error",
+   "memory_error": "UnsupportedPageSize { level: Pd, entry_address: GuestPhysicalAddress(12320), entry_value: 9223372036856873091 }",
+   "pfec": null,
+   "rax": "0xdeadbeefcafebabe",
+   "retired": 0,
+   "rip": "0x0000000000400000",
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 1,
+   "stop_detail": "load through PDPTE.PS=1: 48 8B 03",
+   "stop_reason": "backend_rejected"
+  }
+ },
+ "injections_values_a": {
+  "offset_past_page": {
+   "accepted": false,
+   "budget": 16,
+   "case": "two_mib",
+   "checks": {
+    "all_steps_executed": true,
+    "ancestors_have_a_and_no_d": true,
+    "case_complete": true,
+    "d_on_pde_only_after_store": true,
+    "final_rax": true,
+    "final_rip": true,
+    "halted": true,
+    "handoff_cpl0_ac_clear_nxe_set": true,
+    "no_page_fault_or_backend_error": true,
+    "pde_is_a_2m_leaf_with_a_and_d": true,
+    "per_step_rip_rax_rbx_and_entries": false,
+    "rax_follows_architecture_per_step": false,
+    "store_landed_in_the_2m_frame": true,
+    "uart_byte_is_low_byte_of_stored_value": true,
+    "unused_entries_untouched": false,
+    "values_differ_per_offset": true
+   },
+   "committed_write_trace": [
+    {
+     "gpa": "0x1000",
+     "length": 8
+    },
+    {
+     "gpa": "0x2000",
+     "length": 8
+    },
+    {
+     "gpa": "0x3010",
+     "length": 8
+    },
+    {
+     "gpa": "0x4000",
+     "length": 8
+    },
+    {
+     "gpa": "0x3020",
+     "length": 8
+    },
+    {
+     "gpa": "0x3028",
+     "length": 8
+    },
+    {
+     "gpa": "0x3020",
+     "length": 8
+    },
+    {
+     "gpa": "0x3fff00",
+     "length": 8
+    }
+   ],
+   "error": {
+    "failed_checks": [
+     "per_step_rip_rax_rbx_and_entries",
+     "rax_follows_architecture_per_step",
+     "unused_entries_untouched"
+    ],
+    "kind": "huge_page_result_mismatch"
+   },
+   "event_trace": [
+    {
+     "committed_writes": [
+      {
+       "gpa": "0x1000",
+       "length": 8
+      },
+      {
+       "gpa": "0x2000",
+       "length": 8
+      },
+      {
+       "gpa": "0x3010",
+       "length": 8
+      },
+      {
+       "gpa": "0x4000",
+       "length": 8
+      },
+      {
+       "gpa": "0x3020",
+       "length": 8
+      }
+     ],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000002000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000400083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "load at offset 0 of the 2 MiB page: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0x1122334455667788",
+     "rbx": "0x0000000000800000",
+     "retired": true,
+     "rip_after": "0x0000000000400003",
+     "step": 1
+    },
+    {
+     "committed_writes": [],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000002000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000400083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "load at offset 0x100000: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0x99aabbccddeeff01",
+     "rbx": "0x0000000000900000",
+     "retired": true,
+     "rip_after": "0x0000000000400006",
+     "step": 2
+    },
+    {
+     "committed_writes": [
+      {
+       "gpa": "0x3028",
+       "length": 8
+      }
+     ],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000002000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000004000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "load at offset 0x1ffff8: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0xfeedface0badf00d",
+     "rbx": "0x0000000000a00000",
+     "retired": true,
+     "rip_after": "0x0000000000400009",
+     "step": 3
+    },
+    {
+     "committed_writes": [
+      {
+       "gpa": "0x3020",
+       "length": 8
+      },
+      {
+       "gpa": "0x3fff00",
+       "length": 8
+      }
+     ],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": true,
+       "entry": "0x80000000002000e3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000004000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "store at offset 0x1fff00: 48 89 0B",
+     "page_fault": null,
+     "rax_after": "0xfeedface0badf00d",
+     "rbx": "0x00000000009fff00",
+     "retired": true,
+     "rip_after": "0x000000000040000c",
+     "step": 4
+    },
+    {
+     "committed_writes": [],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": true,
+       "entry": "0x80000000002000e3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000004000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "load back at offset 0x1fff00: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0xc0dec0de123456ab",
+     "rbx": "0x00000000009fff00",
+     "retired": true,
+     "rip_after": "0x000000000040000f",
+     "step": 5
+    },
+    {
+     "committed_writes": [],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": true,
+       "entry": "0x80000000002000e3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000004000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "OUT DX,AL",
+     "page_fault": null,
+     "rax_after": "0xc0dec0de123456ab",
+     "rbx": "0x00000000009fff00",
+     "retired": true,
+     "rip_after": "0x0000000000400010",
+     "step": 6
+    },
+    {
+     "committed_writes": [],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": true,
+       "entry": "0x80000000002000e3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x80000000004000a3",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "halted",
+     "memory_error": null,
+     "name": "HLT",
+     "page_fault": null,
+     "rax_after": "0xc0dec0de123456ab",
+     "rbx": "0x00000000009fff00",
+     "retired": true,
+     "rip_after": "0x0000000000400011",
+     "step": 7
+    }
+   ],
+   "exit_code": 7,
+   "expected_instructions": 7,
+   "expected_pfec": null,
+   "expected_rax_per_step": [
+    "0x1122334455667788",
+    "0x99aabbccddeeff01",
+    "0x0f1e2d3c4b5a6978",
+    "0x0f1e2d3c4b5a6978",
+    "0xc0dec0de123456ab",
+    "0xc0dec0de123456ab",
+    "0xc0dec0de123456ab"
+   ],
+   "expected_step_rips": [
+    "0x400000",
+    "0x400003",
+    "0x400006",
+    "0x400009",
+    "0x40000c",
+    "0x40000f",
+    "0x400010"
+   ],
+   "expected_steps": 7,
+   "failed_checks": [
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "unused_entries_untouched"
+   ],
+   "guest_state": {
+    "activity": "Halted",
+    "cpl": 0,
+    "cr2": null,
+    "cr3": null,
+    "rax": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "rcx": "0xc0dec0de123456ab",
+    "rdx": "0x00000000000003f8",
+    "rflags": "0x2",
+    "rip": "0x0000000000400011"
+   },
+   "handoff": {
+    "cpl": 0,
+    "efer": "0xd00",
+    "efer_nxe": true,
+    "initial_rax": "0xdeadbeefcafebabe",
+    "rcx_store_value": "0xc0dec0de123456ab",
+    "rflags_ac": false
+   },
+   "injection": "offset_past_page",
+   "observed_entries": {
+    "code_pte": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000007021",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_2m": {
+     "accessed": true,
+     "dirty": true,
+     "entry": "0x80000000002000e3",
+     "nx": true,
+     "present": true,
+     "ps": true
+    },
+    "pde_code_table": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000004023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_next_2m": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x80000000004000a3",
+     "nx": true,
+     "present": true,
+     "ps": true
+    },
+    "pdpte0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000003023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pdpte1_ps": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x0000000040000083",
+     "nx": false,
+     "present": true,
+     "ps": true
+    },
+    "pml4e0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000002023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pml4e1": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x0000000000005003",
+     "nx": false,
+     "present": true,
+     "ps": false
+    }
+   },
+   "operands": {
+    "end_gva": "0x9ffff8",
+    "gib_gva": "0x8000000000",
+    "middle_gva": "0x900000",
+    "past_page_gva": "0xa00000",
+    "start_gva": "0x800000",
+    "store_gva": "0x9fff00"
+   },
+   "profile": "Stage4HugePagesProbeV1",
+   "retired": 7,
+   "schema_version": 1,
+   "serial_bytes": [
+    171
+   ],
+   "status": "rejected",
+   "steps": 7,
+   "stop_detail": null,
+   "stop_reason": "case_complete",
+   "store_target_qword": "0xc0dec0de123456ab",
+   "values": {
+    "end": "0x0f1e2d3c4b5a6978",
+    "middle": "0x99aabbccddeeff01",
+    "start": "0x1122334455667788",
+    "stored": "0xc0dec0de123456ab"
+   }
+  },
+  "pde_ps_cleared": {
+   "accepted": false,
+   "budget": 16,
+   "case": "two_mib",
+   "checks": {
+    "all_steps_executed": false,
+    "ancestors_have_a_and_no_d": true,
+    "case_complete": false,
+    "d_on_pde_only_after_store": true,
+    "final_rax": false,
+    "final_rip": false,
+    "halted": false,
+    "handoff_cpl0_ac_clear_nxe_set": true,
+    "no_page_fault_or_backend_error": false,
+    "pde_is_a_2m_leaf_with_a_and_d": false,
+    "per_step_rip_rax_rbx_and_entries": false,
+    "rax_follows_architecture_per_step": false,
+    "store_landed_in_the_2m_frame": false,
+    "uart_byte_is_low_byte_of_stored_value": false,
+    "unused_entries_untouched": true,
+    "values_differ_per_offset": true
+   },
+   "committed_write_trace": [
+    {
+     "gpa": "0x1000",
+     "length": 8
+    },
+    {
+     "gpa": "0x2000",
+     "length": 8
+    },
+    {
+     "gpa": "0x3010",
+     "length": 8
+    },
+    {
+     "gpa": "0x4000",
+     "length": 8
+    },
+    {
+     "gpa": "0x3020",
+     "length": 8
+    },
+    {
+     "gpa": "0x6000",
+     "length": 8
+    }
+   ],
+   "error": {
+    "failed_checks": [
+     "case_complete",
+     "all_steps_executed",
+     "per_step_rip_rax_rbx_and_entries",
+     "rax_follows_architecture_per_step",
+     "pde_is_a_2m_leaf_with_a_and_d",
+     "store_landed_in_the_2m_frame",
+     "no_page_fault_or_backend_error",
+     "uart_byte_is_low_byte_of_stored_value",
+     "final_rax",
+     "final_rip",
+     "halted"
+    ],
+    "kind": "page_fault"
+   },
+   "event_trace": [
+    {
+     "committed_writes": [
+      {
+       "gpa": "0x1000",
+       "length": 8
+      },
+      {
+       "gpa": "0x2000",
+       "length": 8
+      },
+      {
+       "gpa": "0x3010",
+       "length": 8
+      },
+      {
+       "gpa": "0x4000",
+       "length": 8
+      },
+      {
+       "gpa": "0x3020",
+       "length": 8
+      },
+      {
+       "gpa": "0x6000",
+       "length": 8
+      }
+     ],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": null,
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x8000000000006023",
+       "nx": true,
+       "present": true,
+       "ps": false
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000400083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "retired",
+     "memory_error": null,
+     "name": "load at offset 0 of the 2 MiB page: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0xa5a5a5a5a5a5a5a5",
+     "rbx": "0x0000000000800000",
+     "retired": true,
+     "rip_after": "0x0000000000400003",
+     "step": 1
+    },
+    {
+     "committed_writes": [],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": "Fault(ArchitecturalFault { vector: 14, error_code: Some(0), linear_address: Some(9437184) })",
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x8000000000006023",
+       "nx": true,
+       "present": true,
+       "ps": false
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000400083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000040000083",
+       "nx": false,
+       "present": true,
+       "ps": true
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x0000000000005003",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "page_fault",
+     "memory_error": null,
+     "name": "load at offset 0x100000: 48 8B 03",
+     "page_fault": {
+      "access": "Read",
+      "cr2": "0x900000",
+      "error_code": 0,
+      "error_code_hex": "0x00",
+      "saved_rip": "0x400003",
+      "vector": 14
+     },
+     "rax_after": "0xa5a5a5a5a5a5a5a5",
+     "rbx": "0x0000000000900000",
+     "retired": false,
+     "rip_after": "0x0000000000400003",
+     "step": 2
+    }
+   ],
+   "exit_code": 5,
+   "expected_instructions": 7,
+   "expected_pfec": null,
+   "expected_rax_per_step": [
+    "0x1122334455667788",
+    "0x99aabbccddeeff01",
+    "0x0f1e2d3c4b5a6978",
+    "0x0f1e2d3c4b5a6978",
+    "0xc0dec0de123456ab",
+    "0xc0dec0de123456ab",
+    "0xc0dec0de123456ab"
+   ],
+   "expected_step_rips": [
+    "0x400000",
+    "0x400003",
+    "0x400006",
+    "0x400009",
+    "0x40000c",
+    "0x40000f",
+    "0x400010"
+   ],
+   "expected_steps": 7,
+   "failed_checks": [
+    "case_complete",
+    "all_steps_executed",
+    "per_step_rip_rax_rbx_and_entries",
+    "rax_follows_architecture_per_step",
+    "pde_is_a_2m_leaf_with_a_and_d",
+    "store_landed_in_the_2m_frame",
+    "no_page_fault_or_backend_error",
+    "uart_byte_is_low_byte_of_stored_value",
+    "final_rax",
+    "final_rip",
+    "halted"
+   ],
+   "guest_state": {
+    "activity": "Running",
+    "cpl": 0,
+    "cr2": null,
+    "cr3": null,
+    "rax": "0xa5a5a5a5a5a5a5a5",
+    "rbx": "0x0000000000900000",
+    "rcx": "0xc0dec0de123456ab",
+    "rdx": "0x00000000000003f8",
+    "rflags": "0x2",
+    "rip": "0x0000000000400003"
+   },
+   "handoff": {
+    "cpl": 0,
+    "efer": "0xd00",
+    "efer_nxe": true,
+    "initial_rax": "0xdeadbeefcafebabe",
+    "rcx_store_value": "0xc0dec0de123456ab",
+    "rflags_ac": false
+   },
+   "injection": "pde_ps_cleared",
+   "observed_entries": {
+    "code_pte": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000007021",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_2m": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x8000000000006023",
+     "nx": true,
+     "present": true,
+     "ps": false
+    },
+    "pde_code_table": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000004023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_next_2m": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x8000000000400083",
+     "nx": true,
+     "present": true,
+     "ps": true
+    },
+    "pdpte0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000003023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pdpte1_ps": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x0000000040000083",
+     "nx": false,
+     "present": true,
+     "ps": true
+    },
+    "pml4e0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000002023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pml4e1": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x0000000000005003",
+     "nx": false,
+     "present": true,
+     "ps": false
+    }
+   },
+   "operands": {
+    "end_gva": "0x9ffff8",
+    "gib_gva": "0x8000000000",
+    "middle_gva": "0x900000",
+    "past_page_gva": "0xa00000",
+    "start_gva": "0x800000",
+    "store_gva": "0x9fff00"
+   },
+   "profile": "Stage4HugePagesProbeV1",
+   "retired": 1,
+   "schema_version": 1,
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 2,
+   "stop_detail": "load at offset 0x100000: 48 8B 03",
+   "stop_reason": "page_fault",
+   "store_target_qword": "0x5a5a5a5a5a5a5a5a",
+   "values": {
+    "end": "0x0f1e2d3c4b5a6978",
+    "middle": "0x99aabbccddeeff01",
+    "start": "0x1122334455667788",
+    "stored": "0xc0dec0de123456ab"
+   }
+  },
+  "pdpte_ps_host_error": {
+   "accepted": false,
+   "budget": 16,
+   "case": "gib_negative",
+   "checks": {
+    "a_on_pml4e_only_ps_entry_untouched": false,
+    "cr2_is_the_access_address": false,
+    "data_walk_commits_only_pml4e_a": false,
+    "handoff_cpl0_ac_clear_nxe_set": true,
+    "no_backend_error": false,
+    "no_uart_output": true,
+    "one_step_no_retirement": true,
+    "page_fault_stop": false,
+    "rip_rax_unchanged": true,
+    "saved_rip_is_the_faulting_instruction": false,
+    "vector_14_pfec_p_rsvd_read_cpl0": false
+   },
+   "committed_write_trace": [
+    {
+     "gpa": "0x1000",
+     "length": 8
+    },
+    {
+     "gpa": "0x2000",
+     "length": 8
+    },
+    {
+     "gpa": "0x3010",
+     "length": 8
+    },
+    {
+     "gpa": "0x4000",
+     "length": 8
+    },
+    {
+     "gpa": "0x1008",
+     "length": 8
+    },
+    {
+     "gpa": "0x5000",
+     "length": 8
+    }
+   ],
+   "error": {
+    "failed_checks": [
+     "page_fault_stop",
+     "vector_14_pfec_p_rsvd_read_cpl0",
+     "cr2_is_the_access_address",
+     "saved_rip_is_the_faulting_instruction",
+     "a_on_pml4e_only_ps_entry_untouched",
+     "data_walk_commits_only_pml4e_a",
+     "no_backend_error"
+    ],
+    "kind": "backend_rejected"
+   },
+   "event_trace": [
+    {
+     "committed_writes": [
+      {
+       "gpa": "0x1000",
+       "length": 8
+      },
+      {
+       "gpa": "0x2000",
+       "length": 8
+      },
+      {
+       "gpa": "0x3010",
+       "length": 8
+      },
+      {
+       "gpa": "0x4000",
+       "length": 8
+      },
+      {
+       "gpa": "0x1008",
+       "length": 8
+      },
+      {
+       "gpa": "0x5000",
+       "length": 8
+      }
+     ],
+     "cpl": 0,
+     "cr2_after": null,
+     "detail": "MemoryError(Backend(\"tracked Long64 RAM access failed: UnsupportedPageSize { level: Pd, entry_address: GuestPhysicalAddress(12320), entry_value: 9223372036856873091 }\"))",
+     "entries_after": {
+      "code_pte": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000007021",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000200083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pde_code_table": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000004023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pde_next_2m": {
+       "accessed": false,
+       "dirty": false,
+       "entry": "0x8000000000400083",
+       "nx": true,
+       "present": true,
+       "ps": true
+      },
+      "pdpte0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pdpte1_ps": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000003023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e0": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000002023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      },
+      "pml4e1": {
+       "accessed": true,
+       "dirty": false,
+       "entry": "0x0000000000005023",
+       "nx": false,
+       "present": true,
+       "ps": false
+      }
+     },
+     "exit": "backend_rejected",
+     "memory_error": "UnsupportedPageSize { level: Pd, entry_address: GuestPhysicalAddress(12320), entry_value: 9223372036856873091 }",
+     "name": "load through PDPTE.PS=1: 48 8B 03",
+     "page_fault": null,
+     "rax_after": "0xdeadbeefcafebabe",
+     "rbx": "0x0000008000800000",
+     "retired": false,
+     "rip_after": "0x0000000000400000",
+     "step": 1
+    }
+   ],
+   "exit_code": 5,
+   "expected_instructions": 0,
+   "expected_pfec": "0x09",
+   "expected_rax_per_step": [],
+   "expected_step_rips": [
+    "0x400000",
+    "0x400003",
+    "0x400006",
+    "0x400009",
+    "0x40000c",
+    "0x40000f",
+    "0x400010"
+   ],
+   "expected_steps": 1,
+   "failed_checks": [
+    "page_fault_stop",
+    "vector_14_pfec_p_rsvd_read_cpl0",
+    "cr2_is_the_access_address",
+    "saved_rip_is_the_faulting_instruction",
+    "a_on_pml4e_only_ps_entry_untouched",
+    "data_walk_commits_only_pml4e_a",
+    "no_backend_error"
+   ],
+   "guest_state": {
+    "activity": "Running",
+    "cpl": 0,
+    "cr2": null,
+    "cr3": null,
+    "rax": "0xdeadbeefcafebabe",
+    "rbx": "0x0000008000800000",
+    "rcx": "0xc0dec0de123456ab",
+    "rdx": "0x00000000000003f8",
+    "rflags": "0x2",
+    "rip": "0x0000000000400000"
+   },
+   "handoff": {
+    "cpl": 0,
+    "efer": "0xd00",
+    "efer_nxe": true,
+    "initial_rax": "0xdeadbeefcafebabe",
+    "rcx_store_value": "0xc0dec0de123456ab",
+    "rflags_ac": false
+   },
+   "injection": "pdpte_ps_host_error",
+   "observed_entries": {
+    "code_pte": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000007021",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_2m": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x8000000000200083",
+     "nx": true,
+     "present": true,
+     "ps": true
+    },
+    "pde_code_table": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000004023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pde_next_2m": {
+     "accessed": false,
+     "dirty": false,
+     "entry": "0x8000000000400083",
+     "nx": true,
+     "present": true,
+     "ps": true
+    },
+    "pdpte0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000003023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pdpte1_ps": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000003023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pml4e0": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000002023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    },
+    "pml4e1": {
+     "accessed": true,
+     "dirty": false,
+     "entry": "0x0000000000005023",
+     "nx": false,
+     "present": true,
+     "ps": false
+    }
+   },
+   "operands": {
+    "end_gva": "0x9ffff8",
+    "gib_gva": "0x8000000000",
+    "middle_gva": "0x900000",
+    "past_page_gva": "0xa00000",
+    "start_gva": "0x800000",
+    "store_gva": "0x9fff00"
+   },
+   "profile": "Stage4HugePagesProbeV1",
+   "retired": 0,
+   "schema_version": 1,
+   "serial_bytes": [],
+   "status": "error",
+   "steps": 1,
+   "stop_detail": "load through PDPTE.PS=1: 48 8B 03",
+   "stop_reason": "backend_rejected",
+   "store_target_qword": "0x5a5a5a5a5a5a5a5a",
+   "values": {
+    "end": "0x0f1e2d3c4b5a6978",
+    "middle": "0x99aabbccddeeff01",
+    "start": "0x1122334455667788",
+    "stored": "0xc0dec0de123456ab"
+   }
+  }
+ },
+ "negative_1gib_values_a": {
+  "accepted": true,
+  "budget": 16,
+  "case": "gib_negative",
+  "checks": {
+   "a_on_pml4e_only_ps_entry_untouched": true,
+   "cr2_is_the_access_address": true,
+   "data_walk_commits_only_pml4e_a": true,
+   "handoff_cpl0_ac_clear_nxe_set": true,
+   "no_backend_error": true,
+   "no_uart_output": true,
+   "one_step_no_retirement": true,
+   "page_fault_stop": true,
+   "rip_rax_unchanged": true,
+   "saved_rip_is_the_faulting_instruction": true,
+   "vector_14_pfec_p_rsvd_read_cpl0": true
+  },
+  "committed_write_trace": [
+   {
+    "gpa": "0x1000",
+    "length": 8
+   },
+   {
+    "gpa": "0x2000",
+    "length": 8
+   },
+   {
+    "gpa": "0x3010",
+    "length": 8
+   },
+   {
+    "gpa": "0x4000",
+    "length": 8
+   },
+   {
+    "gpa": "0x1008",
+    "length": 8
+   }
+  ],
+  "error": null,
+  "event_trace": [
+   {
+    "committed_writes": [
+     {
+      "gpa": "0x1000",
+      "length": 8
+     },
+     {
+      "gpa": "0x2000",
+      "length": 8
+     },
+     {
+      "gpa": "0x3010",
+      "length": 8
+     },
+     {
+      "gpa": "0x4000",
+      "length": 8
+     },
+     {
+      "gpa": "0x1008",
+      "length": 8
+     }
+    ],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": "Fault(ArchitecturalFault { vector: 14, error_code: Some(9), linear_address: Some(549755813888) })",
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000200083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000005023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "page_fault",
+    "memory_error": null,
+    "name": "load through PDPTE.PS=1: 48 8B 03",
+    "page_fault": {
+     "access": "Read",
+     "cr2": "0x8000000000",
+     "error_code": 9,
+     "error_code_hex": "0x09",
+     "saved_rip": "0x400000",
+     "vector": 14
+    },
+    "rax_after": "0xdeadbeefcafebabe",
+    "rbx": "0x0000008000000000",
+    "retired": false,
+    "rip_after": "0x0000000000400000",
+    "step": 1
+   }
+  ],
+  "exit_code": 0,
+  "expected_instructions": 0,
+  "expected_pfec": "0x09",
+  "expected_rax_per_step": [],
+  "expected_step_rips": [
+   "0x400000",
+   "0x400003",
+   "0x400006",
+   "0x400009",
+   "0x40000c",
+   "0x40000f",
+   "0x400010"
+  ],
+  "expected_steps": 1,
+  "failed_checks": [],
+  "guest_state": {
+   "activity": "Running",
+   "cpl": 0,
+   "cr2": null,
+   "cr3": null,
+   "rax": "0xdeadbeefcafebabe",
+   "rbx": "0x0000008000000000",
+   "rcx": "0xc0dec0de123456ab",
+   "rdx": "0x00000000000003f8",
+   "rflags": "0x2",
+   "rip": "0x0000000000400000"
+  },
+  "handoff": {
+   "cpl": 0,
+   "efer": "0xd00",
+   "efer_nxe": true,
+   "initial_rax": "0xdeadbeefcafebabe",
+   "rcx_store_value": "0xc0dec0de123456ab",
+   "rflags_ac": false
+  },
+  "injection": "none",
+  "observed_entries": {
+   "code_pte": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000007021",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_2m": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x8000000000200083",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pde_code_table": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000004023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_next_2m": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x8000000000400083",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pdpte0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000003023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pdpte1_ps": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x0000000040000083",
+    "nx": false,
+    "present": true,
+    "ps": true
+   },
+   "pml4e0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000002023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pml4e1": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000005023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   }
+  },
+  "operands": {
+   "end_gva": "0x9ffff8",
+   "gib_gva": "0x8000000000",
+   "middle_gva": "0x900000",
+   "past_page_gva": "0xa00000",
+   "start_gva": "0x800000",
+   "store_gva": "0x9fff00"
+  },
+  "profile": "Stage4HugePagesProbeV1",
+  "retired": 0,
+  "schema_version": 1,
+  "serial_bytes": [],
+  "status": "completed",
+  "steps": 1,
+  "stop_detail": "load through PDPTE.PS=1: 48 8B 03",
+  "stop_reason": "page_fault",
+  "store_target_qword": "0x5a5a5a5a5a5a5a5a",
+  "values": {
+   "end": "0x0f1e2d3c4b5a6978",
+   "middle": "0x99aabbccddeeff01",
+   "start": "0x1122334455667788",
+   "stored": "0xc0dec0de123456ab"
+  }
+ },
+ "note": "Evidence generated by od-runner --stage4-huge-pages-probe from images built by tools/build/build_stage4_huge_pages_probe.py; uncached tracked walker, no TLB, no JIT.",
+ "profile": "Stage4HugePagesProbeV1",
+ "schema_version": 1,
+ "slice": "S4-33e",
+ "success_values_a": {
+  "accepted": true,
+  "budget": 16,
+  "case": "two_mib",
+  "checks": {
+   "all_steps_executed": true,
+   "ancestors_have_a_and_no_d": true,
+   "case_complete": true,
+   "d_on_pde_only_after_store": true,
+   "final_rax": true,
+   "final_rip": true,
+   "halted": true,
+   "handoff_cpl0_ac_clear_nxe_set": true,
+   "no_page_fault_or_backend_error": true,
+   "pde_is_a_2m_leaf_with_a_and_d": true,
+   "per_step_rip_rax_rbx_and_entries": true,
+   "rax_follows_architecture_per_step": true,
+   "store_landed_in_the_2m_frame": true,
+   "uart_byte_is_low_byte_of_stored_value": true,
+   "unused_entries_untouched": true,
+   "values_differ_per_offset": true
+  },
+  "committed_write_trace": [
+   {
+    "gpa": "0x1000",
+    "length": 8
+   },
+   {
+    "gpa": "0x2000",
+    "length": 8
+   },
+   {
+    "gpa": "0x3010",
+    "length": 8
+   },
+   {
+    "gpa": "0x4000",
+    "length": 8
+   },
+   {
+    "gpa": "0x3020",
+    "length": 8
+   },
+   {
+    "gpa": "0x3020",
+    "length": 8
+   },
+   {
+    "gpa": "0x3fff00",
+    "length": 8
+   }
+  ],
+  "error": null,
+  "event_trace": [
+   {
+    "committed_writes": [
+     {
+      "gpa": "0x1000",
+      "length": 8
+     },
+     {
+      "gpa": "0x2000",
+      "length": 8
+     },
+     {
+      "gpa": "0x3010",
+      "length": 8
+     },
+     {
+      "gpa": "0x4000",
+      "length": 8
+     },
+     {
+      "gpa": "0x3020",
+      "length": 8
+     }
+    ],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0 of the 2 MiB page: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x1122334455667788",
+    "rbx": "0x0000000000800000",
+    "retired": true,
+    "rip_after": "0x0000000000400003",
+    "step": 1
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0x100000: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x99aabbccddeeff01",
+    "rbx": "0x0000000000900000",
+    "retired": true,
+    "rip_after": "0x0000000000400006",
+    "step": 2
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0x1ffff8: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x0f1e2d3c4b5a6978",
+    "rbx": "0x00000000009ffff8",
+    "retired": true,
+    "rip_after": "0x0000000000400009",
+    "step": 3
+   },
+   {
+    "committed_writes": [
+     {
+      "gpa": "0x3020",
+      "length": 8
+     },
+     {
+      "gpa": "0x3fff00",
+      "length": 8
+     }
+    ],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "store at offset 0x1fff00: 48 89 0B",
+    "page_fault": null,
+    "rax_after": "0x0f1e2d3c4b5a6978",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x000000000040000c",
+    "step": 4
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load back at offset 0x1fff00: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x000000000040000f",
+    "step": 5
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "OUT DX,AL",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x0000000000400010",
+    "step": 6
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "halted",
+    "memory_error": null,
+    "name": "HLT",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x0000000000400011",
+    "step": 7
+   }
+  ],
+  "exit_code": 0,
+  "expected_instructions": 7,
+  "expected_pfec": null,
+  "expected_rax_per_step": [
+   "0x1122334455667788",
+   "0x99aabbccddeeff01",
+   "0x0f1e2d3c4b5a6978",
+   "0x0f1e2d3c4b5a6978",
+   "0xc0dec0de123456ab",
+   "0xc0dec0de123456ab",
+   "0xc0dec0de123456ab"
+  ],
+  "expected_step_rips": [
+   "0x400000",
+   "0x400003",
+   "0x400006",
+   "0x400009",
+   "0x40000c",
+   "0x40000f",
+   "0x400010"
+  ],
+  "expected_steps": 7,
+  "failed_checks": [],
+  "guest_state": {
+   "activity": "Halted",
+   "cpl": 0,
+   "cr2": null,
+   "cr3": null,
+   "rax": "0xc0dec0de123456ab",
+   "rbx": "0x00000000009fff00",
+   "rcx": "0xc0dec0de123456ab",
+   "rdx": "0x00000000000003f8",
+   "rflags": "0x2",
+   "rip": "0x0000000000400011"
+  },
+  "handoff": {
+   "cpl": 0,
+   "efer": "0xd00",
+   "efer_nxe": true,
+   "initial_rax": "0xdeadbeefcafebabe",
+   "rcx_store_value": "0xc0dec0de123456ab",
+   "rflags_ac": false
+  },
+  "injection": "none",
+  "observed_entries": {
+   "code_pte": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000007021",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_2m": {
+    "accessed": true,
+    "dirty": true,
+    "entry": "0x80000000002000e3",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pde_code_table": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000004023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_next_2m": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x8000000000400083",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pdpte0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000003023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pdpte1_ps": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x0000000040000083",
+    "nx": false,
+    "present": true,
+    "ps": true
+   },
+   "pml4e0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000002023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pml4e1": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x0000000000005003",
+    "nx": false,
+    "present": true,
+    "ps": false
+   }
+  },
+  "operands": {
+   "end_gva": "0x9ffff8",
+   "gib_gva": "0x8000000000",
+   "middle_gva": "0x900000",
+   "past_page_gva": "0xa00000",
+   "start_gva": "0x800000",
+   "store_gva": "0x9fff00"
+  },
+  "profile": "Stage4HugePagesProbeV1",
+  "retired": 7,
+  "schema_version": 1,
+  "serial_bytes": [
+   171
+  ],
+  "status": "completed",
+  "steps": 7,
+  "stop_detail": null,
+  "stop_reason": "case_complete",
+  "store_target_qword": "0xc0dec0de123456ab",
+  "values": {
+   "end": "0x0f1e2d3c4b5a6978",
+   "middle": "0x99aabbccddeeff01",
+   "start": "0x1122334455667788",
+   "stored": "0xc0dec0de123456ab"
+  }
+ },
+ "success_values_b": {
+  "accepted": true,
+  "budget": 16,
+  "case": "two_mib",
+  "checks": {
+   "all_steps_executed": true,
+   "ancestors_have_a_and_no_d": true,
+   "case_complete": true,
+   "d_on_pde_only_after_store": true,
+   "final_rax": true,
+   "final_rip": true,
+   "halted": true,
+   "handoff_cpl0_ac_clear_nxe_set": true,
+   "no_page_fault_or_backend_error": true,
+   "pde_is_a_2m_leaf_with_a_and_d": true,
+   "per_step_rip_rax_rbx_and_entries": true,
+   "rax_follows_architecture_per_step": true,
+   "store_landed_in_the_2m_frame": true,
+   "uart_byte_is_low_byte_of_stored_value": true,
+   "unused_entries_untouched": true,
+   "values_differ_per_offset": true
+  },
+  "committed_write_trace": [
+   {
+    "gpa": "0x1000",
+    "length": 8
+   },
+   {
+    "gpa": "0x2000",
+    "length": 8
+   },
+   {
+    "gpa": "0x3010",
+    "length": 8
+   },
+   {
+    "gpa": "0x4000",
+    "length": 8
+   },
+   {
+    "gpa": "0x3020",
+    "length": 8
+   },
+   {
+    "gpa": "0x3020",
+    "length": 8
+   },
+   {
+    "gpa": "0x3fff00",
+    "length": 8
+   }
+  ],
+  "error": null,
+  "event_trace": [
+   {
+    "committed_writes": [
+     {
+      "gpa": "0x1000",
+      "length": 8
+     },
+     {
+      "gpa": "0x2000",
+      "length": 8
+     },
+     {
+      "gpa": "0x3010",
+      "length": 8
+     },
+     {
+      "gpa": "0x4000",
+      "length": 8
+     },
+     {
+      "gpa": "0x3020",
+      "length": 8
+     }
+    ],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0 of the 2 MiB page: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x0102030405060708",
+    "rbx": "0x0000000000800000",
+    "retired": true,
+    "rip_after": "0x0000000000400003",
+    "step": 1
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0x100000: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x1112131415161718",
+    "rbx": "0x0000000000900000",
+    "retired": true,
+    "rip_after": "0x0000000000400006",
+    "step": 2
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x80000000002000a3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load at offset 0x1ffff8: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0x2122232425262728",
+    "rbx": "0x00000000009ffff8",
+    "retired": true,
+    "rip_after": "0x0000000000400009",
+    "step": 3
+   },
+   {
+    "committed_writes": [
+     {
+      "gpa": "0x3020",
+      "length": 8
+     },
+     {
+      "gpa": "0x3fff00",
+      "length": 8
+     }
+    ],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "store at offset 0x1fff00: 48 89 0B",
+    "page_fault": null,
+    "rax_after": "0x2122232425262728",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x000000000040000c",
+    "step": 4
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "load back at offset 0x1fff00: 48 8B 03",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x000000000040000f",
+    "step": 5
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "retired",
+    "memory_error": null,
+    "name": "OUT DX,AL",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x0000000000400010",
+    "step": 6
+   },
+   {
+    "committed_writes": [],
+    "cpl": 0,
+    "cr2_after": null,
+    "detail": null,
+    "entries_after": {
+     "code_pte": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000007021",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_2m": {
+      "accessed": true,
+      "dirty": true,
+      "entry": "0x80000000002000e3",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pde_code_table": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000004023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pde_next_2m": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x8000000000400083",
+      "nx": true,
+      "present": true,
+      "ps": true
+     },
+     "pdpte0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000003023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pdpte1_ps": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000040000083",
+      "nx": false,
+      "present": true,
+      "ps": true
+     },
+     "pml4e0": {
+      "accessed": true,
+      "dirty": false,
+      "entry": "0x0000000000002023",
+      "nx": false,
+      "present": true,
+      "ps": false
+     },
+     "pml4e1": {
+      "accessed": false,
+      "dirty": false,
+      "entry": "0x0000000000005003",
+      "nx": false,
+      "present": true,
+      "ps": false
+     }
+    },
+    "exit": "halted",
+    "memory_error": null,
+    "name": "HLT",
+    "page_fault": null,
+    "rax_after": "0xc0dec0de123456ab",
+    "rbx": "0x00000000009fff00",
+    "retired": true,
+    "rip_after": "0x0000000000400011",
+    "step": 7
+   }
+  ],
+  "exit_code": 0,
+  "expected_instructions": 7,
+  "expected_pfec": null,
+  "expected_rax_per_step": [
+   "0x0102030405060708",
+   "0x1112131415161718",
+   "0x2122232425262728",
+   "0x2122232425262728",
+   "0xc0dec0de123456ab",
+   "0xc0dec0de123456ab",
+   "0xc0dec0de123456ab"
+  ],
+  "expected_step_rips": [
+   "0x400000",
+   "0x400003",
+   "0x400006",
+   "0x400009",
+   "0x40000c",
+   "0x40000f",
+   "0x400010"
+  ],
+  "expected_steps": 7,
+  "failed_checks": [],
+  "guest_state": {
+   "activity": "Halted",
+   "cpl": 0,
+   "cr2": null,
+   "cr3": null,
+   "rax": "0xc0dec0de123456ab",
+   "rbx": "0x00000000009fff00",
+   "rcx": "0xc0dec0de123456ab",
+   "rdx": "0x00000000000003f8",
+   "rflags": "0x2",
+   "rip": "0x0000000000400011"
+  },
+  "handoff": {
+   "cpl": 0,
+   "efer": "0xd00",
+   "efer_nxe": true,
+   "initial_rax": "0xdeadbeefcafebabe",
+   "rcx_store_value": "0xc0dec0de123456ab",
+   "rflags_ac": false
+  },
+  "injection": "none",
+  "observed_entries": {
+   "code_pte": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000007021",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_2m": {
+    "accessed": true,
+    "dirty": true,
+    "entry": "0x80000000002000e3",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pde_code_table": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000004023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pde_next_2m": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x8000000000400083",
+    "nx": true,
+    "present": true,
+    "ps": true
+   },
+   "pdpte0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000003023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pdpte1_ps": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x0000000040000083",
+    "nx": false,
+    "present": true,
+    "ps": true
+   },
+   "pml4e0": {
+    "accessed": true,
+    "dirty": false,
+    "entry": "0x0000000000002023",
+    "nx": false,
+    "present": true,
+    "ps": false
+   },
+   "pml4e1": {
+    "accessed": false,
+    "dirty": false,
+    "entry": "0x0000000000005003",
+    "nx": false,
+    "present": true,
+    "ps": false
+   }
+  },
+  "operands": {
+   "end_gva": "0x9ffff8",
+   "gib_gva": "0x8000000000",
+   "middle_gva": "0x900000",
+   "past_page_gva": "0xa00000",
+   "start_gva": "0x800000",
+   "store_gva": "0x9fff00"
+  },
+  "profile": "Stage4HugePagesProbeV1",
+  "retired": 7,
+  "schema_version": 1,
+  "serial_bytes": [
+   171
+  ],
+  "status": "completed",
+  "steps": 7,
+  "stop_detail": null,
+  "stop_reason": "case_complete",
+  "store_target_qword": "0xc0dec0de123456ab",
+  "values": {
+   "end": "0x2122232425262728",
+   "middle": "0x1112131415161718",
+   "start": "0x0102030405060708",
+   "stored": "0xc0dec0de123456ab"
+  }
+ }
+}

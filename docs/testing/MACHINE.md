@@ -1128,6 +1128,60 @@ stack, REP и RAM/MMIO split, fetch-cross для `8B 03` (S4-11d) и word-опе
 смещении `0xfff` вместе с fetch-cross (примитив S4-11f его отвергает) не входят;
 CPL3, доставка #PF, huge pages и JIT не входят; родитель S4-33 не закрыт.
 
+## S4-33e Huge pages на собственном ядре: 2 MiB позитив и 1 GiB негатив
+
+Кейс `Stage4HugePagesProbeV1` проверяет системный случай «huge pages заявленного
+профиля» поверх принятых S4-10b (`step_paged_mov_2m_ram`), S4-10c (PDPTE.PS →
+гостевой #PF RSVD) и профиля S4-32 (семантика примитивов не менялась). Builder
+`tools/build/build_stage4_huge_pages_probe.py` собирает fixture
+`tests/fixtures/guest/stage4/huge_pages/` (`entry.S`, `layout.ld`) в raw image
+`0x400000` байт (RAM 6 MiB) с явными `--start-value`, `--middle-value`,
+`--end-value`. Код — на одной 4 KiB-странице (GVA `0x400000`); данные — один 2 MiB
+leaf (PDE PS=1, GVA `0x800000`, кадр `0x200000`, A/D сброшены) с тремя разными qword
+на смещениях `0`, `0x100000`, `0x1ffff8`; PDE[5] (GVA `0xa00000`) отображает соседний
+кадр `0x400000` с sentinel. Негатив идёт через отдельный PML4E[1] -> PDPT с PS=1
+(GVA `0x8000000000`). Handoff задаёт loader: CPL0, AC=0, NXE=1 (EFER `0xd00`),
+RAX = `0xdeadbeefcafebabe` (начальное значение), RCX = значение store, RDX `0x3f8`; RBX на шаге ставит sequencer. Sentinel `0xfeedface0badf00d` лежит в кадре `0x400000`.
+
+Sequencer `TwoMiB` из 7 шагов: load смещения 0 -> load `0x100000` -> load `0x1ffff8`
+-> store `0x1fff00` (D на PDE) -> load обратно -> OUT -> HLT. `GibNegative` — один
+шаг `step_paged_mov` через PDPTE.PS=1. Runner `od-runner --stage4-huge-pages-probe
+IMAGE [--budget N] [--negative-1gib] [--inject-pde-4k-table |
+--inject-pdpte-host-error | --inject-offset-past-page]` печатает один JSON (guest
+state, `event_trace` с RIP, RAX, RBX, CPL, CR2, #PF-записью, восемью наблюдаемыми
+записями страниц с A/D/PS и committed writes по шагам, `stop_reason`, `checks`).
+Бюджет считается в шагах (по умолчанию 16, максимум 1024). Коды выхода: 0 принято,
+7 завершено без принятия, 5 остановка до конца, 3/4 ошибки аргументов/образа.
+
+Принятие позитива: RAX по шагам = три значения, затем без изменений, затем значение
+store; A на PML4E, PDPTE, PD[2], code PTE и PDE с шага 1, D на PDE только с шага 4
+(`0x80000000002000a3` -> `0x80000000002000e3`); UART-байт `0xab`; итоговый RIP
+`0x400011`, CPU halted. Принятие негатива: #PF вектор 14, PFEC `0x09` (P|RSVD, чтение
+CPL0), CR2-запись `0x8000000000`, steps 1, retired 0, RIP и RAX не меняются, A только на
+PML4E[1] (`0x5023`), PDPTE `0x40000083` без A и D. Ожидаемые значения выведены из
+Intel SDM Vol. 3A гл. 4 (форматы записей §4.5, PFEC §4.7, A/D §4.8), источники — в
+[отчёте](../reports/STAGE_4_S4-33E_2026-11-09.md).
+
+Injected regressions (каждая со своим исходом): `pde_ps_cleared` — load смещения 0
+возвращает decoy, load `0x100000` даёт #PF PFEC `0x00`, steps 2, retired 1, код 5;
+`offset_past_page` — все 7 шагов, RAX шага 3 = sentinel, код 7; `pdpte_ps_host_error`
+(только с `--negative-1gib`) — host-ошибка `UnsupportedPageSize` без #PF, steps 1,
+retired 0, код 5 (подстановка класса исхода, не откат walker). Покрытие: 10
+machine-тестов, 4 теста builder, 1 builder->runner CLI-тест.
+
+Команды:
+
+```sh
+cargo test -p od-machine --test stage4_huge_pages_probe --offline
+cargo test -p od-runner --test stage4_huge_pages_build_cli --offline
+python3 -m unittest tools/build/test_build_stage4_huge_pages_probe.py
+```
+
+Граница: uncached tracked walker; TLB-on не проверяется. 1 GiB позитив (Page1GB=0),
+MMIO, JIT, CPL3, доставка #PF и коммит CR2, cross-page, PAT не входят; PDE PS=1 в
+4 KiB API остаётся `UnsupportedPageSize`; смещения выбирает sequencer, не гость;
+родитель S4-33 и S4-10 не закрыты.
+
 ## S4-10c PDPTE.PS → гостевой #PF RSVD
 
 Срез заменяет host-ошибку `UnsupportedPageSize` для PDPT PS (S4-10a) на гостевой
