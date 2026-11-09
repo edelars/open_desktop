@@ -80,7 +80,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | ADR с обоснованием решений | `docs/decisions/` |
 | Фактические результаты и необходимые сырые данные | `docs/reports/`, `docs/reports/data/` |
 | Временные прогоны этапа 0 | `work/stage-0/<run-id>/` |
-| Логи, scratch и локальные VM | `work/logs/`, `work/tmp/`, `work/vms/` |
+| Логи, scratch и локальные VM; `work/stage4/` (ignored; S4-35 - Linux-артефакт, другие срезы этапа 4 - свои каталоги) | `work/logs/`, `work/tmp/`, `work/vms/`, `work/stage4/` |
 | Готовые deliverables | `outputs/` |
 
 Ограниченный privileged LGDT oracle protocol S2-41a размещён в
