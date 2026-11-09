@@ -1552,6 +1552,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Доказательства:** проверены `EventPending` до NOP с точным RIP/budget/counters, единичный queue pop, IRR→ISR acknowledgement, сохранённый frame, ISR до/после guest EOI, IRETQ, сохранение notification и future event через pause/resume и одинаковые финальный `LongModeState`/observable order для JIT и interpreter.
 - **Граница:** EventQueue→APIC bridge существует только как caller orchestration в тестовом сценарии; production queue routing, HLT wake из очереди, general scheduler, async producers и MOV SS/NMI не добавлены. Parent S4-27 остаётся открытым. См. [отчёт](../reports/STAGE_4_S4-27G_2026-11-07.md), [manifest](../reports/data/stage4/s4-27g-queued-irq-jit-parity.json) и [методику](../testing/MACHINE.md#s4-27g-queued-irq-and-jitinterpreter-parity).
 
+#### S4-27h. Paged IRQ entry и IRETQ (разовый handler)
+
+- [ ] Принято после ревью.
+- **Контракт:** APIC vector доставляется на paged Long64/CPL0 профиле (4 KiB, S4-32): стек, IDT, GDT и handler лежат на отдельных paged-страницах. Используются принятые S4-27a (APIC entry и первая handler instruction), S4-27b (EOI, same-CPL IRETQ) и примитивы paged delivery и IRETQ из S4-19b/S4-19e1. Handler — одна инструкция EOI и IRETQ на paged коде. Это снимает оговорку «только плоская identity» в S4-27 (решение 2 консультации).
+- **Проверка:** builder → runner (или machine test): вектор при IF=1 доставляется, handler выполняется с paged кода, EOI, IRETQ возвращает в main. Guest state (RIP, RSP, RFLAGS, CS), IRR/ISR, EOI, A/D страниц стека, IDT и handler. Injected regression (каждая различима в evidence): IDT-вход not-present → отказ на delivery, handler не выполняется; страница стека read-only → отказ на delivery (host error, без вложенного #PF); handler без EOI → ISR не сбрасывается, второй доставки нет.
+- **Граница:** без вложенных исключений и #DF (S4-33); без MOV SS и NMI; без CPL3 delivery; без TLB-on; без event pump (S4-27i); без HLT wake из paged профиля; это не закрывает S4-27 и S4-33.
+- **Готово:** кейс выполняется как guest fact; вход, возврат и инъекции различимы в evidence; S4-27 остаётся открытым до S4-27i, если не решено иначе.
+
 ## Решения по консультации Opus (2026-11-09)
 
 Принято как решения этапа по рекомендациям архитектурного советника; каждое изменение плана ниже относится к этим решениям.
