@@ -12,14 +12,15 @@ use crate::{
     DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
     DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestPhysicalAddress,
     GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE,
-    LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MachineStopReason,
-    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE,
-    NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT,
-    PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
-    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
-    PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices, Pit8254Handle,
-    PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
-    Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
+    LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, MachineBus, MachineMemoryMap,
+    MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
+    NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle,
+    PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_MASTER_BASE_PORT,
+    PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES,
+    PIT_PORT_BYTES, PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices,
+    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
+    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
+    run_paged_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -59,6 +60,10 @@ const CR4: u64 = 0x20;
 const LOW_RAM_LIMIT: u64 = 0xF400_0000;
 const HIGH_RAM_BASE: u64 = 0x1_0000_0000;
 const PAGE: u64 = 0x1000;
+/// Count frequency of the LAPIC timer under `linux_profile` (S4-37a4): 100 MHz,
+/// before the divide configuration. A board choice (as in S4-27i2), not declared
+/// in the handoff.
+const FIRMWARE_APIC_TIMER_HZ: u64 = 100_000_000;
 const NX: u64 = 1 << 63;
 const IMAGE_HEADER_BYTES: usize = 0x40;
 const IMAGE_MAGIC: &[u8; 8] = b"ODFWIMG1";
@@ -798,6 +803,9 @@ pub struct LoadedFirmwareBoard {
     acpi_pm: Option<AcpiPmHandle>,
     /// The PIT observer of the Linux profile (S4-37a3); `None` without the flag.
     pit: Option<Pit8254Handle>,
+    /// Owner/host handle of the LAPIC (the S4-38 pump becomes its owner); it has
+    /// a timer on the board clock only under the Linux profile (S4-37a4).
+    lapic: LocalApicHandle,
     /// Shared with the PM timer; this board is the only advancer.
     clock: VirtualClockHandle,
     handoff: Vec<u8>,
@@ -817,6 +825,13 @@ impl LoadedFirmwareBoard {
 
     pub fn state_mut(&mut self) -> &mut LongModeState {
         &mut self.state
+    }
+
+    /// Owner/host handle of the board LAPIC (S4-38 pump becomes its owner); it can
+    /// write (reset, `set_global_enabled`, `request_fixed_edge`, `acknowledge`,
+    /// `dispatch_timer`). `has_timer()` is true only under `linux_profile`.
+    pub fn local_apic(&self) -> LocalApicHandle {
+        self.lapic.clone()
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
@@ -1020,17 +1035,19 @@ fn load_firmware_image_with_pci(
     config: &FirmwareBoardConfig,
     pci: PciEcam,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
-    load_firmware_image_inner(image, config, pci, None)
+    load_firmware_image_inner(image, config, pci, None, None)
 }
 
 /// `pit_clock` replaces the clock of the Linux-profile PIT. Production code always
 /// passes `None` (the PIT then reads the board clock); only a test injects another
 /// handle, to prove that the binding really follows the board clock (S4-37a1).
+/// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
 fn load_firmware_image_inner(
     image: &[u8],
     config: &FirmwareBoardConfig,
     pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
+    apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
     let entry_offset = validate_image(image, handoff_minor(&devices))?;
@@ -1055,7 +1072,21 @@ fn load_firmware_image_inner(
     let tables = build_boot_tables(&map, table_pages)?;
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
-    let lapic = LocalApic::new();
+    // One clock for the whole board: the PM timer, the PIT and (Linux profile) the
+    // LAPIC timer observe it; the board stays its only advancer.
+    let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
+    // Under `linux_profile` the LAPIC has a timer on the board clock (S4-37a4). The
+    // timer only reads the clock; delivery of its IRQ is S4-38.
+    let lapic = if config.linux_profile {
+        LocalApic::with_shared_timer(
+            apic_timer_clock.unwrap_or_else(|| clock.clone()),
+            FIRMWARE_APIC_TIMER_HZ,
+        )
+        .map_err(|_| FirmwareBoardError::Config("apic timer needs a nonzero frequency"))?
+    } else {
+        LocalApic::new()
+    };
+    let lapic_handle = lapic.handle();
     let ioapic = IoApic::new(lapic.handle());
     let (display_device, display) = if config.second_screen {
         DisplayDevice::new_two_screens_with_handle()
@@ -1118,7 +1149,6 @@ fn load_firmware_image_inner(
         });
     }
     // The PM timer reads the board's clock; the board stays its only advancer.
-    let clock = VirtualClockHandle::new(config.tsc_hz).map_err(FirmwareBoardError::Clock)?;
     let mut acpi_pm = None;
     let mut pit_handle = None;
     if config.acpi_pm {
@@ -1231,6 +1261,7 @@ fn load_firmware_image_inner(
         nvme,
         acpi_pm,
         pit: pit_handle,
+        lapic: lapic_handle,
         clock,
         handoff,
         page_table_bytes,
@@ -3130,6 +3161,7 @@ mod tests {
             &linux_config(),
             PciEcam::new(),
             Some(foreign),
+            None,
         )
         .unwrap();
         let first = pit_ch0_program_and_read(&mut board);
@@ -3317,6 +3349,308 @@ mod tests {
         assert_eq!(
             report.virtual_ns, report.retired,
             "no tick without the profile"
+        );
+    }
+
+    // ---- S4-37a4: LAPIC shared timer on the board clock (Linux profile) ----
+
+    const TMICT: u64 = 0x380;
+    const TMCCT: u64 = 0x390;
+    const TM_LVT: u64 = 0x320;
+    const TM_DIVIDE: u64 = 0x3e0;
+    /// Count of the LAPIC timer in the tests: 1 000 000, divided by one.
+    const TM_INITIAL: u64 = 1_000_000;
+
+    fn apic_read(board: &mut LoadedFirmwareBoard, offset: u64) -> Result<u64, BusAccessError> {
+        board.bus_mut().read_physical(
+            GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+            AccessWidth::Dword,
+        )
+    }
+
+    fn apic_write(
+        board: &mut LoadedFirmwareBoard,
+        offset: u64,
+        value: u64,
+    ) -> Result<(), BusAccessError> {
+        board.bus_mut().write_physical(
+            GuestPhysicalAddress::new(LOCAL_APIC_MMIO_BASE + offset),
+            AccessWidth::Dword,
+            value,
+            |_| {},
+        )
+    }
+
+    /// Divide by one, then arm the timer; the LVT stays masked (reset value).
+    fn arm_apic_timer(board: &mut LoadedFirmwareBoard) {
+        apic_write(board, TM_DIVIDE, 0xb).unwrap();
+        apic_write(board, TMICT, TM_INITIAL).unwrap();
+    }
+
+    fn pm_tmr_host_read(board: &mut LoadedFirmwareBoard) -> u32 {
+        board
+            .bus_mut()
+            .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+            .unwrap()
+    }
+
+    #[test]
+    fn linux_profile_lapic_has_a_timer_that_counts_with_the_board_clock() {
+        let mut board = linux_board();
+        assert!(board.local_apic().has_timer());
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(0), "not armed yet");
+        arm_apic_timer(&mut board);
+        assert_eq!(apic_read(&mut board, TMICT), Ok(TM_INITIAL));
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL));
+        // 100 MHz: 10 ns per count.
+        board.advance_time_ns(100_000).unwrap();
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL - 10_000));
+        board.advance_time_ns(900_000).unwrap();
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL - 100_000));
+        // The device never moves the clock itself.
+        assert_eq!(board.clock().now_ns(), 1_000_000);
+        for _ in 0..3 {
+            apic_read(&mut board, TMCCT).unwrap();
+        }
+        assert_eq!(board.clock().now_ns(), 1_000_000);
+    }
+
+    #[test]
+    fn linux_profile_tmcct_pm_tmr_and_pit_move_by_the_same_board_clock() {
+        let mut board = linux_board();
+        arm_apic_timer(&mut board);
+        let pit0 = pit_ch0_program_and_read(&mut board);
+        let (tm0, pm0) = (
+            apic_read(&mut board, TMCCT).unwrap(),
+            pm_tmr_host_read(&mut board),
+        );
+        assert_eq!((tm0, pm0), (TM_INITIAL, 0));
+        let mut previous = (pit0, tm0, pm0);
+        // Three steps, the reads interleaved; each step is read in a different order.
+        for (step, delta_ns) in [1_000_000u64, 2_000_000, 500_000].into_iter().enumerate() {
+            board.advance_time_ns(delta_ns).unwrap();
+            let (pit, tm, pm) = match step {
+                0 => {
+                    let tm = apic_read(&mut board, TMCCT).unwrap();
+                    let pm = pm_tmr_host_read(&mut board);
+                    (pit_ch0_read(&mut board), tm, pm)
+                }
+                1 => {
+                    let pm = pm_tmr_host_read(&mut board);
+                    let pit = pit_ch0_read(&mut board);
+                    (pit, apic_read(&mut board, TMCCT).unwrap(), pm)
+                }
+                _ => {
+                    let pit = pit_ch0_read(&mut board);
+                    let tm = apic_read(&mut board, TMCCT).unwrap();
+                    (pit, tm, pm_tmr_host_read(&mut board))
+                }
+            };
+            let total = board.clock().now_ns();
+            // Absolute values from the one clock: 100 MHz, 3.579545 MHz, 1.193182 MHz.
+            assert_eq!(u64::from(tm0) - u64::from(tm), total / 10, "TMCCT {step}");
+            assert_eq!(
+                u64::from(pm),
+                total * 3_579_545 / 1_000_000_000,
+                "PM_TMR {step}"
+            );
+            assert_eq!(
+                u64::from(pit0 - pit),
+                total * 1_193_182 / 1_000_000_000,
+                "PIT {step}"
+            );
+            // The Deltas of one step agree with the step length.
+            assert_eq!(u64::from(previous.1 - tm), delta_ns / 10);
+            assert!(u64::from(pm - previous.2).abs_diff(delta_ns * 3_579_545 / 1_000_000_000) <= 1);
+            assert!(
+                u64::from(previous.0 - pit).abs_diff(delta_ns * 1_193_182 / 1_000_000_000) <= 1
+            );
+            previous = (pit, tm, pm);
+        }
+    }
+
+    #[test]
+    fn linux_profile_tmcct_runs_with_a_masked_lvt_and_a_masked_expiry_raises_no_irq() {
+        let mut board = linux_board();
+        // The LVT Timer comes up masked (reset value) and stays so.
+        assert_eq!(apic_read(&mut board, TM_LVT), Ok(0x1_0000));
+        apic_write(&mut board, TM_LVT, 0x1_0040).unwrap();
+        arm_apic_timer(&mut board);
+        assert_eq!(
+            board.local_apic().next_timer_deadline(),
+            None,
+            "a masked LVT has no interrupt deadline"
+        );
+        board.advance_time_ns(500_000).unwrap();
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL - 50_000));
+        // Past the deadline (10 ms) the count is 0; nothing dispatched it yet.
+        board.advance_time_ns(20_000_000).unwrap();
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(0));
+        // Until the owner dispatches (S4-38) a due timer rejects register writes.
+        for offset in [TM_LVT, TMICT, TM_DIVIDE] {
+            assert!(
+                matches!(
+                    apic_write(&mut board, offset, 0xb),
+                    Err(BusAccessError::Device {
+                        source: DeviceError::Busy,
+                        ..
+                    })
+                ),
+                "write {offset:#x}"
+            );
+        }
+        // The owner (S4-38) will dispatch; a masked expiry only consumes the deadline.
+        assert_eq!(board.local_apic().dispatch_timer(), Ok(true));
+        for bank in 0..8 {
+            assert_eq!(
+                apic_read(&mut board, 0x200 + 0x10 * bank),
+                Ok(0),
+                "IRR {bank}"
+            );
+        }
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(0));
+        assert_eq!(board.local_apic().dispatch_timer(), Ok(false));
+    }
+
+    #[test]
+    fn without_the_linux_profile_the_lapic_has_no_timer_as_before() {
+        for config in [pm_config(), tables_config(), tables_config_with_ecam()] {
+            let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+            assert!(!board.local_apic().has_timer());
+            for offset in [TM_LVT, TMICT, TMCCT, TM_DIVIDE] {
+                assert!(
+                    matches!(
+                        apic_read(&mut board, offset),
+                        Err(BusAccessError::Device {
+                            device_index: DEV_LAPIC,
+                            source: DeviceError::UnknownOffset
+                        })
+                    ),
+                    "read {offset:#x}"
+                );
+            }
+            assert!(matches!(
+                apic_write(&mut board, TMICT, 1),
+                Err(BusAccessError::Device {
+                    source: DeviceError::UnknownOffset,
+                    ..
+                })
+            ));
+            // The rest of the LAPIC answers as before.
+            assert_eq!(apic_read(&mut board, 0x30), Ok(0x0003_0014));
+            assert_eq!(apic_read(&mut board, 0xf0), Ok(0xff));
+        }
+    }
+
+    #[test]
+    fn linux_profile_lapic_timer_on_a_foreign_clock_stands_still() {
+        // Injection (test only): the timer observes a clock the board never advances.
+        let foreign = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut board = load_firmware_image_inner(
+            &minor2_image(&[0xf4]),
+            &linux_config(),
+            PciEcam::new(),
+            None,
+            Some(foreign),
+        )
+        .unwrap();
+        assert!(board.local_apic().has_timer());
+        arm_apic_timer(&mut board);
+        board.advance_time_ns(1_000_000).unwrap();
+        assert_eq!(
+            apic_read(&mut board, TMCCT),
+            Ok(TM_INITIAL),
+            "the counter must not move"
+        );
+        // The same sequence on the board clock does move (first test).
+    }
+
+    /// `MOV DX,0x608` + `IN AL,DX` x `pm`; `MOV DX,0x61` + `IN` x `b`; `MOV DX,0x42`
+    /// + `IN` x `c`; `HLT`. The paged probe has no compare and no jump, and its
+    /// only memory read is the qword `MOV RAX,[RBX]`, which the dword-only LAPIC
+    /// registers reject; the guest therefore only ticks the clock and the host reads
+    /// TMCCT around the run.
+    fn tick_guest_image(pm: usize, b: usize, c: usize) -> Vec<u8> {
+        let mut code = Vec::new();
+        for (port, count) in [(ACPI_PM_TMR_BLK, pm), (0x61, b), (0x42, c)] {
+            let [lo, hi] = port.to_le_bytes();
+            code.extend([0x66, 0xba, lo, hi]);
+            code.extend(std::iter::repeat_n(0xec, count));
+        }
+        code.push(0xf4);
+        minor2_image(&code)
+    }
+
+    #[test]
+    fn run_boot_port_ticks_of_pm_tmr_and_the_pit_reach_tmcct() {
+        let mut board =
+            load_firmware_image(&tick_guest_image(40, 20, 20), &linux_config()).unwrap();
+        arm_apic_timer(&mut board);
+        program_channel_2(&mut board);
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL));
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        // 3 x MOV DX, 80 x IN, HLT.
+        assert_eq!(report.retired, 3 + 80 + 1);
+        assert_eq!(report.virtual_ns, report.retired + 80 * 1_000);
+        // 80 us of ticks plus the retired instructions, 100 MHz.
+        assert_eq!(
+            apic_read(&mut board, TMCCT),
+            Ok(TM_INITIAL - report.virtual_ns / 10)
+        );
+        assert!(report.virtual_ns / 10 >= 8_000);
+        // The timer did not move the clock itself.
+        assert_eq!(board.clock().now_ns(), report.virtual_ns);
+        // The same elapsed time shows on the PM timer.
+        assert_eq!(
+            u64::from(pm_tmr_host_read(&mut board)),
+            report.virtual_ns * 3_579_545 / 1_000_000_000
+        );
+    }
+
+    #[test]
+    fn run_boot_leaves_tmcct_frozen_when_the_timer_is_on_a_foreign_clock() {
+        let foreign = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut board = load_firmware_image_inner(
+            &tick_guest_image(40, 20, 20),
+            &linux_config(),
+            PciEcam::new(),
+            None,
+            Some(foreign),
+        )
+        .unwrap();
+        arm_apic_timer(&mut board);
+        program_channel_2(&mut board);
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert!(report.virtual_ns > 80_000, "the board clock moved");
+        assert_eq!(apic_read(&mut board, TMCCT), Ok(TM_INITIAL));
+    }
+
+    #[test]
+    fn a_guest_cannot_read_lapic_mmio_through_the_paged_probe_yet() {
+        // Observation: the memory path of the paged probe is RAM only (and only
+        // the qword MOV RAX,[RBX]); a guest read of TMCCT stops at the MMIO
+        // region before any device is touched. Guest MMIO is S4-38 / a6 work.
+        let image = minor2_image(&[0x48, 0x8b, 0x03, 0xf4]);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        arm_apic_timer(&mut board);
+        board.state_mut().gpr[Register::Rbx as usize] = LOCAL_APIC_MMIO_BASE + TMCCT;
+        let report = board.run_boot(10).unwrap();
+        assert!(
+            matches!(
+                report.memory_error,
+                Some(TrackedAccessError::OperandPhysical {
+                    source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
+                    ..
+                })
+            ),
+            "{:?}",
+            report.memory_error
+        );
+        assert_eq!(
+            apic_read(&mut board, TMCCT),
+            Ok(TM_INITIAL - report.virtual_ns / 10)
         );
     }
 }
