@@ -1128,6 +1128,37 @@ stack, REP и RAM/MMIO split, fetch-cross для `8B 03` (S4-11d) и word-опе
 смещении `0xfff` вместе с fetch-cross (примитив S4-11f его отвергает) не входят;
 CPL3, доставка #PF, huge pages и JIT не входят; родитель S4-33 не закрыт.
 
+## S4-10c PDPTE.PS → гостевой #PF RSVD
+
+Срез заменяет host-ошибку `UnsupportedPageSize` для PDPT PS (S4-10a) на гостевой
+`#PF` с PFEC P|RSVD (плюс W/R, U/S, I/D по доступу) в 4 KiB и 2 MiB RAM-профилях;
+PD PS=1 (S4-10b), PML4 bit 7 и PT bit 7 не меняются. Ожидаемые значения заданы
+литералами из Intel SDM (vol. 3, Page-Fault Error Code) и принятого S4-10a, а не
+выводом кода: CPL0 read/write/fetch(NXE=1)/fetch(NXE=0) = `0x09/0x0b/0x19/0x09`,
+CPL3 = `0x0d/0x0f/0x1d/0x0d`; CR2 = адрес доступа; A только на PML4E, не на PDPTE;
+D нигде; нет retirement и записей операнда.
+
+Тесты: `page_walk::tracked_access_tests::s4_10c_pdpte_ps_is_guest_rsvd_fault_with_a_only_on_pml4e`
+(матрица доступ × CPL × NXE × 4 KiB/2 MiB API) и переписанные тесты S4-10a
+(`present_ps_*`, `unsupported_ps_does_not_read_an_unmapped_descendant_or_operand`,
+`rejected_write_preserves_preset_accessed_and_dirty_bits`,
+`large_leaf_does_not_admit_pdpt_ps_and_rejects_mmio_operand`) с пометкой «S4-10c:
+заменяет host-ошибку S4-10a»; `tests/paged_mov_step.rs`
+`s4_10c_pdpte_ps_on_fetch_*` и `s4_10c_pdpte_ps_on_data_access_*` (CPU-уровень:
+saved RIP, CR2, PFEC, состояние CPU без изменений, порядок A-callbacks).
+Инъекция (возврат к `UnsupportedPageSize` для PDPT PS) валит 8 lib-тестов
+`page_walk` (включая новый) и оба `s4_10c_*` CPU-теста.
+
+```sh
+cargo test -p od-machine --lib --offline page_walk
+cargo test -p od-machine --test paged_mov_step --offline
+cargo test -p od-machine --test paged_probe_quantum --offline
+```
+
+Граница: без 1 GiB позитивного пути, MMIO, TLB-on, записи через такую PDPTE и
+cross-page; не закрывает S4-10 и S4-33. Отчёт:
+[S4-10c](../reports/STAGE_4_S4-10C_2026-11-09.md).
+
 ## S4-17a: paged MOV differential harness
 
 Run the cross-component harness with:

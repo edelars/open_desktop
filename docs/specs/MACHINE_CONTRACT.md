@@ -861,18 +861,20 @@ interrupts or full CPU paging integration. See the
 ## Huge-page и mode admission boundary
 
 Текущий machine contract принимает только canonical48, physical36, четыре уровня
-Long64 и страницы 4 KiB. Present PS в PDPT или PD не означает fallback или
+Long64 и страницы 4 KiB. Present PS в PD не означает fallback или
 частичную поддержку huge page: `probe_long64_4k` и `access_long64_4k_ram`
 возвращают `UnsupportedPageSize` с уровнем, адресом entry и исходным значением.
 Pure probe не меняет RAM; tracked path сохраняет уже committed A updates
 предков, но не меняет отвергнутую entry, не спускается к нижним таблицам и не
-трогает operand.
+трогает operand. Present PS в PDPT больше не даёт `UnsupportedPageSize`: с S4-10c
+это гостевой reserved-bit `#PF` (см. [S4-10c](#s4-10c-pdpteps--гостевой-pf-rsvd)).
 
 Проверка `Present` выполняется раньше размера страницы: nonpresent entry с PS
-остаётся `PageFault`. Для present PDPT/PD PS admission refusal предшествует
+остаётся `PageFault`. Для present PD PS admission refusal предшествует
 проверке остальной large-page формы в этом диагностическом контракте; это не
-заявление об архитектурном приоритете реального x86 fault. PML4 bit 7 остаётся
-reserved-bit outcome, а PT bit 7 не выбирает huge page и не мешает 4 KiB leaf.
+заявление об архитектурном приоритете реального x86 fault. PML4 bit 7 и (с S4-10c)
+PDPTE bit 7 остаются reserved-bit outcome, а PT bit 7 не выбирает huge page и не
+мешает 4 KiB leaf.
 
 В 4 KiB API (`probe_long64_4k`, `access_long64_4k_ram`) 2 MiB/1 GiB leaves по-прежнему
 не поддержаны; LA57, PCID и другие paging modes не реализованы и не объявлены
@@ -890,7 +892,8 @@ reserved (reserved-bit `#PF`: PFEC RSVD|P плюс W/I по типу досту�
 смещение `linear & 0x1fffff`. Права агрегируются по пройденным уровням, A commits
 предков сохраняются при последующем отказе, A и D leaf относятся к PDE
 (`PageTableLevel::Pd` в `AdUpdate` и `TableWrite`). Для 4 KiB leaf используется
-прежний путь; PS в PDPT остаётся `UnsupportedPageSize`.
+прежний путь; PS в PDPT — гостевой reserved-bit `#PF` (S4-10c заменяет прежнюю
+host-ошибку `UnsupportedPageSize` для PDPT PS).
 
 `step_paged_mov_2m_ram` — это `step_paged_mov` с явным `cr3` и теми же точными
 qword MOV; доступ только к RAM (MMIO не маршрутизируется), operand через
@@ -905,6 +908,41 @@ JIT. `step_paged_mov_2m_ram` принимает CR3 явным аргумент�
 4 KiB/2 MiB картами — отдельный quantum [S4-12e](#cpu-owned-cr3-quantum-with-mixed-ram-pages-s4-12e). Полная матрица U/S,
 R/W, WP, NX/NXE по уровням и физическая проверка остаются открытыми. См.
 [отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
+
+## S4-10c: PDPTE.PS → гостевой #PF RSVD
+
+1 GiB страницы не объявляются: диагностический CPUID (`DiagnosticV1`, лист
+0x8000_0001) возвращает нули, то есть `CPUID.80000001H:EDX.Page1GB = 0`. При
+Page1GB=0 PDPTE.PS по Intel SDM — reserved, и реальный CPU с таким CPUID дал бы
+тот же RSVD `#PF`. На CPU с Page1GB=1 тот же бит был бы валидной 1 GiB страницей;
+эта модель её не объявляет. В Long64/4 KiB профиле (`probe_long64_4k`,
+`access_long64_4k_ram`) и в 2 MiB RAM-профиле (`access_long64_2m_ram`,
+`step_paged_mov_2m_ram`) present PDPTE с PS (bit 7) = 1 трактуется так же, как
+PML4E bit 7 из S4-10a: bit 7 reserved, результат — гостевой `#PF`
+(`PageFaultReason::ReservedBits { level: Pdpt, offending_bits }`, `offending_bits`
+содержит bit 7 и любые другие reserved-биты той же entry), а не host-ошибка.
+Этот срез заменяет правило S4-10a «PDPT PS → `UnsupportedPageSize`».
+
+- **PFEC:** P=1 и RSVD=1 всегда; плюс W/R=1 для записи, U/S=1 для CPL3, I/D=1 для
+  fetch только при EFER.NXE=1. Литералы для CPL0: read `0x09`, write `0x0b`,
+  fetch (NXE=1) `0x19`, fetch (NXE=0) `0x09`; для CPL3: `0x0d`, `0x0f`, `0x1d`,
+  `0x0d`. Источник: Intel SDM vol. 3, «Page-Fault Error Code» (RSVD-бит ставится
+  при reserved-bit нарушении в paging-structure entry) и принятое правило
+  S4-10a для PML4 bit 7 (тот же вызов формирования PFEC для reserved-bit fault).
+- **CR2 / saved RIP:** CR2 — линейный адрес доступа; saved RIP — RIP инструкции;
+  без retirement и без записи данных операнда.
+- **A/D:** A ставится на предков, пройденных успешно (PML4E), и не ставится на
+  PDPTE; D не ставится нигде. Walk останавливается на PDPTE (trace из двух
+  entries), к PD не спускается, отвергнутая PDPTE не меняется.
+- **Не меняется:** PDE PS=1 — 2 MiB leaf в S4-10b и `UnsupportedPageSize` в 4 KiB
+  API; PML4 bit 7 — reserved-bit `#PF`; PT bit 7 (PAT) допустим в 4 KiB leaf;
+  nonpresent PDPTE с PS остаётся `#PF` без RSVD (PFEC P=0). Приоритет reserved-bit
+  проверки PDPTE.PS относительно остальных reserved-битов той же entry не
+  заявляется: все они попадают в один `offending_bits`.
+
+Не входит: 1 GiB позитивный путь, MMIO, TLB-on, запись через такую PDPTE,
+cross-page. Не закрывает S4-10 и S4-33. См.
+[отчёт](../reports/STAGE_4_S4-10C_2026-11-09.md).
 
 ## Cross-page admission и separate-call progress
 

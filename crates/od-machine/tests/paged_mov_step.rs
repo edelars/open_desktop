@@ -1906,3 +1906,121 @@ fn two_mib_ram_profile_rejects_decoder_lookahead_before_next_code_page_walk() {
     // The next-page PTE was never walked, so its accessed bit stays clear.
     assert_eq!(qword(&mut bus, 0x4008) & 0x20, 0);
 }
+
+/// S4-10c: PDPTE.PS=1 is a guest reserved-bit #PF (P|RSVD) in both profiles,
+/// replacing the S4-10a host error `UnsupportedPageSize` for PDPT PS.
+fn run_pdpte_ps(
+    two_mib_profile: bool,
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    privilege: PrivilegeLevel,
+    writes: &mut Vec<GuestPhysicalRange>,
+) -> PagedMovStepReport {
+    if two_mib_profile {
+        od_machine::step_paged_mov_2m_ram(
+            state,
+            bus,
+            ROOT,
+            EFER,
+            context(privilege),
+            INTEGER_FLAGS & !(1 << 7),
+            |range| writes.push(range),
+        )
+        .unwrap()
+    } else {
+        step(state, bus, ROOT, privilege, writes)
+    }
+}
+
+#[test]
+fn s4_10c_pdpte_ps_on_fetch_is_guest_rsvd_pf_with_a_only_on_pml4e() {
+    for two_mib_profile in [false, true] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x2000, 0x3000 | 0x87); // PDPT[0] with PS=1 (code linear page)
+        let mut cpu = state(CODE_LINEAR, &[0x48, 0x8b, 0x03], &mut bus);
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+        let report = run_pdpte_ps(
+            two_mib_profile,
+            &mut cpu,
+            &mut bus,
+            PrivilegeLevel::Ring0,
+            &mut writes,
+        );
+        // Literal PFEC: P|RSVD|I/D (NXE=1) = 0x19.
+        assert_eq!(
+            report.cpu.exit,
+            RunExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x19),
+                linear_address: Some(CODE_LINEAR),
+            }),
+            "2m={two_mib_profile}"
+        );
+        assert!(
+            report.memory_error.is_none(),
+            "no host error for PDPTE.PS, 2m={two_mib_profile}: {:?}",
+            report.memory_error
+        );
+        let fault = report.page_fault.as_ref().expect("guest #PF record");
+        assert_eq!(fault.saved_rip(), CODE_LINEAR);
+        assert_eq!(fault.cr2_value(), CODE_LINEAR);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        // A on the successful PML4E only; none on the PDPTE; no D anywhere.
+        assert_eq!(writes, [range(0x1000)], "2m={two_mib_profile}");
+        assert_eq!(qword(&mut bus, 0x1000), 0x2027);
+        assert_eq!(qword(&mut bus, 0x2000), 0x3000 | 0x87);
+        assert_eq!(qword(&mut bus, 0x3010), 0x4007);
+    }
+}
+
+#[test]
+fn s4_10c_pdpte_ps_on_data_access_is_guest_rsvd_pf_without_retirement_or_store() {
+    // PDPT[1] covers linear 0x4000_0000..0x8000_0000; code stays under PDPT[0].
+    const GIB_LINEAR: u64 = 0x4000_0000 + 0xabc;
+    for two_mib_profile in [false, true] {
+        for (privilege, bytes, expected_pfec) in [
+            (PrivilegeLevel::Ring0, [0x48u8, 0x8b, 0x03], 0x09u32),
+            (PrivilegeLevel::Ring0, [0x48, 0x89, 0x0b], 0x0b),
+            (PrivilegeLevel::Ring3, [0x48, 0x8b, 0x03], 0x0d),
+            (PrivilegeLevel::Ring3, [0x48, 0x89, 0x0b], 0x0f),
+        ] {
+            let mut bus = make_bus();
+            put(&mut bus, 0x2008, 0x5000 | 0x87); // PDPT[1] with PS=1
+            put_byte(&mut bus, 0x5abc, 0x5a);
+            let mut cpu = state(CODE_LINEAR, &bytes, &mut bus);
+            cpu.gpr[3] = GIB_LINEAR;
+            cpu.gpr[0] = 0xdead_beef;
+            cpu.gpr[1] = 0x1122_3344_5566_7788;
+            let before = cpu.clone();
+            let mut writes = Vec::new();
+            let report = run_pdpte_ps(two_mib_profile, &mut cpu, &mut bus, privilege, &mut writes);
+            let label = format!("2m={two_mib_profile} {privilege:?} {bytes:02x?}");
+            assert_eq!(
+                report.cpu.exit,
+                RunExit::Fault(od_isa::memory::ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(expected_pfec),
+                    linear_address: Some(GIB_LINEAR),
+                }),
+                "{label}"
+            );
+            assert!(report.memory_error.is_none(), "{label}");
+            let fault = report.page_fault.as_ref().expect("guest #PF record");
+            assert_eq!(fault.saved_rip(), CODE_LINEAR, "{label}");
+            assert_eq!(fault.cr2_value(), GIB_LINEAR, "{label}");
+            assert_eq!(report.cpu.instructions_executed, 0, "{label}");
+            assert_eq!(cpu, before, "{label}");
+            // Only the code walk committed A; the faulting PDPTE got no A/D.
+            assert_eq!(
+                writes,
+                [range(0x1000), range(0x2000), range(0x3010), range(0x4000)],
+                "{label}"
+            );
+            assert_eq!(qword(&mut bus, 0x2008), 0x5000 | 0x87, "{label}");
+            // Operand memory untouched: the store never happened.
+            assert_eq!(qword(&mut bus, 0x5ab8) >> 32 & 0xff, 0x5a, "{label}");
+        }
+    }
+}
