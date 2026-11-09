@@ -1,0 +1,242 @@
+{
+  "checks": {
+    "archive_contains_only_init_and_trailer": true,
+    "executable_abi": "ok",
+    "init_mode_0100755": true,
+    "kernel_config_compatible": true,
+    "no_host_paths_in_binary": true,
+    "nonce_not_baked": true,
+    "repeatable_build": {
+      "cpio_bytes_equal": true,
+      "runs": 2,
+      "sha256_equal": true
+    }
+  },
+  "cpio": {
+    "entries": [
+      {
+        "gid": 0,
+        "ino": 1,
+        "mode": "0100755",
+        "mtime": 0,
+        "name": "/init",
+        "nlink": 1,
+        "sha256": "6f467a05fa08dac5b2d9cc429c4d482bb69d181c5e86820070708d0ec80fbea3",
+        "size_bytes": 4448,
+        "uid": 0
+      }
+    ],
+    "format": "newc 070701, 4-byte aligned, no trailing padding, uncompressed",
+    "path": "work/stage4/initramfs/initramfs.cpio",
+    "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "size_bytes": 4688,
+    "trailer": "TRAILER!!!"
+  },
+  "init_elf": {
+    "class": "ELF64",
+    "data": "little-endian",
+    "e_machine": "EM_X86_64",
+    "e_type": "ET_EXEC",
+    "entry": "0x4000b0",
+    "has_pt_dynamic": false,
+    "has_pt_interp": false,
+    "host_path_markers_checked": [
+      "/Users",
+      "/home",
+      "/private",
+      "/opt",
+      "/var/folders",
+      "/Volumes",
+      "/nix"
+    ],
+    "load_segments": [
+      {
+        "filesz": 496,
+        "flags": "R-X",
+        "memsz": 496,
+        "vaddr": "0x4000b0"
+      },
+      {
+        "filesz": 0,
+        "flags": "RW-",
+        "memsz": 4240,
+        "vaddr": "0x401000"
+      }
+    ],
+    "secret_markers_checked": [
+      "PRIVATE KEY",
+      "password",
+      "passwd",
+      "secret",
+      "token",
+      "AKIA",
+      "ghp_",
+      "BEGIN "
+    ],
+    "sha256": "6f467a05fa08dac5b2d9cc429c4d482bb69d181c5e86820070708d0ec80fbea3",
+    "size_bytes": 4448,
+    "syscalls_used": {
+      "close": {
+        "number": 3,
+        "sites": 1
+      },
+      "exit": {
+        "number": 60,
+        "sites": 1
+      },
+      "getpid": {
+        "number": 39,
+        "sites": 1
+      },
+      "mkdir": {
+        "number": 83,
+        "sites": 1
+      },
+      "mount": {
+        "number": 165,
+        "sites": 1
+      },
+      "nanosleep": {
+        "number": 35,
+        "sites": 1
+      },
+      "openat": {
+        "number": 257,
+        "sites": 1
+      },
+      "read": {
+        "number": 0,
+        "sites": 1
+      },
+      "write": {
+        "number": 1,
+        "sites": 2
+      }
+    }
+  },
+  "init_source": {
+    "build": "compiled from tests/fixtures/guest/stage4/initramfs (two independent builds)",
+    "linker_script": "tests/fixtures/guest/stage4/initramfs/layout.ld",
+    "linker_script_sha256": "5411212aa808dd17d55c50bb6f7097feab96ff7ab57083663163fb1f5bc5eff1",
+    "path": "tests/fixtures/guest/stage4/initramfs/init.S",
+    "sha256": "6c7bb5bbaa84e9d0a1e27351c12c9f6a8d0efb6006b2eef982582ded9620f728",
+    "tools": {
+      "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)"
+    }
+  },
+  "kernel": {
+    "architecture": "amd64 generic",
+    "config_sha256_matches_s4_35": true,
+    "kernel_source_package_version": "7.0.0-38.38",
+    "s4_35_evidence": "docs/reports/data/stage4/s4-35-linux-artifact.json",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "vmlinuz_sha256_source": "s4-35 manifest, not verified in S4-36 (no kernel is used here)"
+  },
+  "kernel_config": {
+    "informational": {
+      "CONFIG_DEVTMPFS": "y",
+      "CONFIG_INITRAMFS_SOURCE": "\"\"",
+      "CONFIG_RD_GZIP": "y"
+    },
+    "initramfs_force": "not set",
+    "required": {
+      "CONFIG_BINFMT_ELF": "y",
+      "CONFIG_BLK_DEV_INITRD": "y",
+      "CONFIG_PROC_FS": "y",
+      "CONFIG_TMPFS": "y",
+      "CONFIG_X86_64": "y"
+    },
+    "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d"
+  },
+  "limitations": [
+    "Linux was not booted: execution of /init inside the kernel is not confirmed (S4-37/S4-38).",
+    "The nonce reaching /init through the kernel command line and /proc/cmdline is not confirmed without a kernel.",
+    "/init mounts proc itself (mkdir 83, mount 165): the kernel does not mount /proc in an initramfs.",
+    "stdout depends on /dev/console, which the kernel built-in default cpio list creates (CONFIG_INITRAMFS_SOURCE is empty, CONFIG_INITRAMFS_FORCE is not set); the archive itself carries no /dev.",
+    "Exit of PID 1 makes the kernel panic: that is the expected end of the run, not a fault of the archive.",
+    "Syscall numbers come from the kernel source tree table, not from executing /init.",
+    "The nonce parsing in /init is not covered by repository tests; it was only exercised outside the repository on a modified copy.",
+    "/init cuts a nonce value longer than 128 characters to 128 and prints it with exit 0; the host compares the whole value and validate_nonce rejects longer ones.",
+    "/init splits cmdline tokens by space (0x20) only; tabs and quotes are not handled (the host builds the command line).",
+    "Failures of openat/read/mkdir/mount all end as OD_NONCE=MISSING with exit 1, without a separate code (deferred to S4-38).",
+    "The kernel config is the one extracted from the Ubuntu buildinfo; provenance is not authenticated (see S4-35)."
+  ],
+  "negatives": [
+    {
+      "expected_fragment": "no /init entry",
+      "message": "archive has no /init entry",
+      "name": "missing_init",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "not executable",
+      "message": "/init is not executable (mode 100644)",
+      "name": "non_executable_init",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "unexpected entries",
+      "message": "archive has unexpected entries besides /init: ['etc']",
+      "name": "extra_entry",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "nonce is empty",
+      "message": "nonce is empty",
+      "name": "invalid_nonce_empty",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "too short",
+      "message": "nonce is too short: 6 characters, need at least 16",
+      "name": "invalid_nonce_too_short",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "[A-Za-z0-9]",
+      "message": "nonce must consist of [A-Za-z0-9] only (no spaces or other characters)",
+      "name": "invalid_nonce_with_space",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "[A-Za-z0-9]",
+      "message": "nonce must consist of [A-Za-z0-9] only (no spaces or other characters)",
+      "name": "invalid_nonce_non_alnum",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "the nonce is baked into the archive",
+      "message": "the nonce is baked into the archive",
+      "name": "nonce_baked_into_archive",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "baked nonce-like value",
+      "message": "archive contains a baked nonce-like value after od.nonce=/OD_NONCE=",
+      "name": "baked_od_nonce_value",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "host path string",
+      "message": "/init contains a host path string (/Users)",
+      "name": "host_path_in_binary",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "not an ELF",
+      "message": "/init is not an ELF file",
+      "name": "not_elf",
+      "rejected": true
+    },
+    {
+      "expected_fragment": "e_machine 183",
+      "message": "/init has e_machine 183, expected 62 (x86-64)",
+      "name": "wrong_e_machine",
+      "rejected": true
+    }
+  ],
+  "scope": "static build and structure checks; Linux was not booted",
+  "slice": "S4-36",
+  "status": "passed"
+}
