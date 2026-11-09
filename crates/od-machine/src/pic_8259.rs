@@ -11,9 +11,11 @@
 //! Accepted initialisation (what Linux writes in `init_8259A`, 8086 mode, normal
 //! EOI): ICW1 `0x11` (bits 7:5 and bit 2 are ignored in 8086 mode), ICW2 equal
 //! to [`isa_irq_vector`] of the chip (master `0x30`, slave `0x38`), ICW3 `0x04`
-//! on the master and `0x02` on the slave, ICW4 `0x01`. Single mode, level
-//! trigger, special fully nested mode, buffered mode, automatic EOI and the
-//! MCS-80 mode are refused. ELCR (`0x4D0/0x4D1`), ExtINT/LINT0 delivery, IRQ
+//! on the master and `0x02` on the slave, ICW4 `0x01`. The master also
+//! accepts ICW4 `0x03` (AEOI, S4-29a2; Linux `check_timer`): the flag is stored
+//! and has no effect, the slave refuses it. Single mode, level
+//! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
+//! refused. ELCR (`0x4D0/0x4D1`), ExtINT/LINT0 delivery, IRQ
 //! lines and the poll command are not part of this model.
 //!
 //! The chips are separate [`BusDevice`]s (each bound to its own two-port
@@ -46,8 +48,10 @@ pub const PIC_MASTER_ICW3: u8 = 1 << 2;
 pub const PIC_SLAVE_ICW3: u8 = 2;
 /// The only accepted ICW1: ICW4 needed (IC4), cascade, edge, bit 4 set.
 pub const PIC_ICW1_ACCEPTED: u8 = 0x11;
-/// The only accepted ICW4: 8086 mode, normal EOI, not buffered, not SFNM.
+/// The ICW4 accepted by both chips: 8086 mode, normal EOI, not buffered, not SFNM.
 pub const PIC_ICW4_ACCEPTED: u8 = 0x01;
+/// ICW4 with AEOI (S4-29a2): accepted by the master only, stored without effect.
+pub const PIC_ICW4_MASTER_AEOI: u8 = 0x03;
 
 const ICW1_IC4: u8 = 1 << 0;
 const ICW1_SNGL: u8 = 1 << 1;
@@ -125,6 +129,9 @@ pub struct Pic8259Snapshot {
     pub icw3: Option<u8>,
     /// OCW3 read-register select: `true` reads ISR, `false` reads IRR.
     pub read_isr: bool,
+    /// ICW4 AEOI bit (S4-29a2): accepted on the master only and stored as a
+    /// flag. It has no effect: the pair has no `INTR` output and no ISR.
+    pub aeoi: bool,
 }
 
 impl Pic8259Snapshot {
@@ -134,6 +141,7 @@ impl Pic8259Snapshot {
         icw2: None,
         icw3: None,
         read_isr: false,
+        aeoi: false,
     };
 }
 
@@ -234,6 +242,7 @@ impl Pic8259 {
                 icw2: None,
                 icw3: None,
                 read_isr: false,
+                aeoi: false,
             };
             return Ok(());
         }
@@ -275,11 +284,17 @@ impl Pic8259 {
             }
             Pic8259InitPhase::ExpectIcw4 => {
                 // Bit 2 (M/S) is a don't-care while BUF = 0, so it is ignored.
-                if value & (ICW4_AEOI | ICW4_BUF | ICW4_SFNM | ICW4_RESERVED) != 0
-                    || value & ICW4_UPM == 0
-                {
+                if value & (ICW4_BUF | ICW4_SFNM | ICW4_RESERVED) != 0 || value & ICW4_UPM == 0 {
                     return Err(DeviceError::UnsupportedConfiguration);
                 }
+                // S4-29a2: Linux `check_timer` runs `init_8259A(1)`, which writes
+                // ICW4 `0x03` (AEOI) to the master and `0x01` to the slave. AEOI
+                // is stored on the master and has no effect; the slave refuses it.
+                let aeoi = value & ICW4_AEOI != 0;
+                if aeoi && self.role != Pic8259Role::Master {
+                    return Err(DeviceError::UnsupportedConfiguration);
+                }
+                state.aeoi = aeoi;
                 state.phase = Pic8259InitPhase::Initialized;
             }
             // OCW1: the interrupt mask register.
@@ -374,6 +389,7 @@ mod tests {
                     icw2: None,
                     icw3: None,
                     read_isr: false,
+                    aeoi: false,
                 },
                 "{role:?}"
             );
@@ -544,9 +560,10 @@ mod tests {
 
     #[test]
     fn unsupported_icw4_is_refused_without_state_change() {
-        // AEOI, buffered (slave and master), SFNM, MCS-80 (bit 0 = 0), reserved.
+        // Buffered (slave and master), SFNM, MCS-80 (bit 0 = 0), reserved, and
+        // AEOI combined with any of those (AEOI alone is accepted on the master).
         for icw4 in [
-            0x03u8, 0x09, 0x0D, 0x11, 0x00, 0x02, 0x08, 0x10, 0x21, 0x41, 0x81,
+            0x09u8, 0x0B, 0x0D, 0x11, 0x13, 0x00, 0x02, 0x08, 0x10, 0x21, 0x23, 0x41, 0x81,
         ] {
             let (mut pic, handle) = chip(Pic8259Role::Master);
             out(&mut pic, 0, 0x11).unwrap();
@@ -563,6 +580,102 @@ mod tests {
             out(&mut pic, 1, 0x01).unwrap();
             assert_eq!(handle.snapshot().phase, Pic8259InitPhase::Initialized);
         }
+    }
+
+    #[test]
+    fn master_accepts_aeoi_icw4_and_stores_the_flag_without_effect() {
+        // Linux check_timer: init_8259A(1) writes ICW4 0x03 to the master.
+        // 0x07 is the same with the (ignored) M/S bit set.
+        for icw4 in [PIC_ICW4_MASTER_AEOI, 0x07] {
+            let (mut pic, handle) = chip(Pic8259Role::Master);
+            out(&mut pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+            out(&mut pic, 1, Pic8259Role::Master.icw2()).unwrap();
+            out(&mut pic, 1, Pic8259Role::Master.icw3()).unwrap();
+            assert!(!handle.snapshot().aeoi);
+            out(&mut pic, 1, icw4).unwrap();
+            let s = handle.snapshot();
+            assert_eq!(s.phase, Pic8259InitPhase::Initialized, "{icw4:#04x}");
+            assert!(s.aeoi, "{icw4:#04x}");
+            // The rest of the state is as after a plain ICW4 0x01.
+            let (mut plain, plain_handle) = chip(Pic8259Role::Master);
+            init_chip(&mut plain, 0x00);
+            out(&mut pic, 1, 0xFB).unwrap();
+            out(&mut plain, 1, 0xFB).unwrap();
+            let (with, without) = (handle.snapshot(), plain_handle.snapshot());
+            assert_eq!(
+                Pic8259Snapshot {
+                    aeoi: false,
+                    ..with
+                },
+                without
+            );
+            // IRR/ISR read zero, IMR reads back; OCW2 EOI still has no effect.
+            assert_eq!(inb(&mut pic, 1), 0xFB);
+            out(&mut pic, 0, 0x0B).unwrap();
+            assert_eq!(inb(&mut pic, 0), 0, "ISR");
+            out(&mut pic, 0, 0x0A).unwrap();
+            assert_eq!(inb(&mut pic, 0), 0, "IRR");
+            let before = handle.snapshot();
+            for value in [0x20u8, 0x60, 0x67, 0xA0, 0xE7, 0xC0, 0xE0, 0x40, 0x00, 0x07] {
+                out(&mut pic, 0, value).unwrap();
+                assert_eq!(handle.snapshot(), before, "{value:#04x}");
+            }
+            assert!(handle.snapshot().aeoi);
+        }
+    }
+
+    #[test]
+    fn slave_refuses_aeoi_icw4_without_state_change() {
+        // 0x03 and 0x07 (M/S bit ignored while BUF = 0).
+        for icw4 in [0x03u8, 0x07] {
+            let (mut pic, handle) = chip(Pic8259Role::Slave);
+            out(&mut pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+            out(&mut pic, 1, Pic8259Role::Slave.icw2()).unwrap();
+            out(&mut pic, 1, Pic8259Role::Slave.icw3()).unwrap();
+            let before = handle.snapshot();
+            assert_eq!(
+                out(&mut pic, 1, icw4),
+                Err(DeviceError::UnsupportedConfiguration),
+                "{icw4:#04x}"
+            );
+            assert_eq!(handle.snapshot(), before, "{icw4:#04x}");
+            assert!(!handle.snapshot().aeoi);
+            assert_eq!(handle.snapshot().phase, Pic8259InitPhase::ExpectIcw4);
+            // A legal ICW4 still completes the sequence.
+            out(&mut pic, 1, PIC_ICW4_ACCEPTED).unwrap();
+            assert_eq!(handle.snapshot().phase, Pic8259InitPhase::Initialized);
+            assert!(!handle.snapshot().aeoi);
+        }
+    }
+
+    #[test]
+    fn aeoi_flag_is_clear_from_reset_and_cleared_by_a_new_icw1() {
+        let (mut pic, handle) = chip(Pic8259Role::Master);
+        assert!(!handle.snapshot().aeoi, "reset");
+        out(&mut pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+        out(&mut pic, 1, Pic8259Role::Master.icw2()).unwrap();
+        out(&mut pic, 1, Pic8259Role::Master.icw3()).unwrap();
+        out(&mut pic, 1, PIC_ICW4_MASTER_AEOI).unwrap();
+        assert!(handle.snapshot().aeoi);
+        // A restart (ICW1) clears it, also in the middle of a sequence.
+        out(&mut pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+        assert!(!handle.snapshot().aeoi);
+        out(&mut pic, 1, Pic8259Role::Master.icw2()).unwrap();
+        out(&mut pic, 1, Pic8259Role::Master.icw3()).unwrap();
+        out(&mut pic, 1, PIC_ICW4_ACCEPTED).unwrap();
+        assert!(!handle.snapshot().aeoi, "ICW4 0x01 after AEOI init");
+        // Full Linux check_timer sequence on both chips of a fresh pair.
+        let pair = Pic8259Pair::new();
+        let (mut master, mut slave) = (pair.master, pair.slave);
+        for (pic, icw4) in [(&mut master, 0x03u8), (&mut slave, 0x01u8)] {
+            let role = pic.role();
+            out(pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+            out(pic, 1, role.icw2()).unwrap();
+            out(pic, 1, role.icw3()).unwrap();
+            out(pic, 1, icw4).unwrap();
+        }
+        assert!(pair.master_handle.snapshot().aeoi);
+        assert!(!pair.slave_handle.snapshot().aeoi);
     }
 
     #[test]
