@@ -1588,6 +1588,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Атомарность:** deadline следующего периода вычисляется от arm epoch с checked arithmetic и округлением вверх; dispatch выбирает ближайшую границу строго после текущего времени. Ошибки deadline/generation не меняют очередь или IRR. Сохраняются lock order APIC pair → shared clock, dispatch gate, caller-driven advance/dispatch и `Busy` для MMIO при необработанном due.
 - **Проверки:** тестами покрыты граница и дробный период, большой time jump без catch-up burst, masked expiry, cancel/reprogram/reset и overflow/generation failure; после более ранних timer deliveries также проверяется acknowledge/EOI. Повторный expiry с вектором, всё ещё находящимся в ISR, и отдельный periodic HLT-gate сценарий не проверены; общий shared gate остаётся покрыт one-shot integration test. Результаты и эти ограничения — в [отчёте](../reports/STAGE_4_S4-28A4_2026-11-07.md), [manifest](../reports/data/stage4/s4-28a4-apic-periodic.json), [контракте](../specs/MACHINE_CONTRACT.md#periodic-apic-timer-s4-28a4) и [методике](../testing/MACHINE.md#s4-28a4-caller-driven-periodic-apic-timer). TSC-deadline, automatic scheduler/event pump, Linux profile и родительские S4-28/S4-27 остаются открытыми.
 
+#### S4-28b. Гостевой periodic timer: N прерываний в virtual time (закрывающий срез S4-28, без Linux-профиля)
+
+- [ ] Принято после ревью.
+- **Где:** `od-machine` (`diagnostic_vcpu.rs`, `local_apic.rs`, `apic_pair.rs`), контракт в `MACHINE_CONTRACT.md`.
+- **Сделать:** integration-тест с shared clock и periodic LVT: цикл advance → `dispatch_timer` → `run_apic_quantum` → гостевой handler (счётчик в RAM, EOI записью в MMIO) → IRETQ → resume; N прерываний, счётчик = N, RIP/RAX основного потока верны. Тот же сценарий из HLT: periodic re-arm, минимум два wake подряд. Повторный expiry, пока vector в ISR: один IRR edge, доставка только после EOI; coalescing большого скачка — одно прерывание. Долг S4-28a3: пути gate (IF=0, masked LVT, STOP в Waiting, OutsideProfile) и lock-order. Pause → due → resume: прерывание ровно один раз. Решение про TSC-deadline — записать явно: не реализуется, не объявляется в CPUID.
+- **Проверка:** `cargo test -p od-machine --lib --offline`, all-targets check, fmt/diff, независимое ревью (Opus, high).
+- **Граница:** автоматический event pump и scheduler не входят (владелец предложен S4-33, решение пользователя); PIT/PIC/RTC и ISSUE-067 не входят (S4-29, S4-37/S4-38); подключение APIC timer к firmware board не входит; JIT async, MOV SS, NMI, paged delivery не входят.
+- **Готово:** guest получает ожидаемое число прерываний периодического таймера в virtual-time тесте с handler+EOI; долг a3 закрыт. Условие «Linux-профиль имеет источник времени» остаётся в S4-28 до решения пользователя.
+
 ### S4-29. Закрыть необходимые legacy зависимости
 
 - [ ] Локально принято после ревью либо scope исключён по source/config audit; Linux-проверка обязательна в S4-38.
