@@ -1,0 +1,470 @@
+//! Explicitly absent legacy ports (S4-29b): the CMOS/RTC index and data ports
+//! `0x70/0x71` and the `outb_p` delay sink `0xED`.
+//!
+//! A port without a binding stops the machine (`BusAccessError::UnmappedPort`),
+//! not a read of `0xFF`. The three ports below are touched by a stock Linux
+//! guest (`CMOS_READ`/`CMOS_WRITE`, `outb_p`/`io_delay`) although the board has
+//! no such hardware, so they are modelled as devices that are *definitely
+//! absent*: a read returns `0xFF` (a floating ISA data bus), a write is
+//! ignored. The devices hold no state at all; nothing the guest writes can be
+//! read back. That is the same decision the FADT states in `IAPC_BOOT_ARCH`
+//! (`CMOS_RTC_NOT_PRESENT`, bit 5); a test pins both places together.
+//!
+//! Width policy: byte accesses only. Linux uses only `inb`/`outb` on these
+//! ports, and the other port devices of the model (8259, UART, conf1) refuse an
+//! unsupported width with [`DeviceError::UnsupportedWidth`] instead of
+//! fabricating a value. A word or dword access therefore stops the machine
+//! rather than returning `0xFFFF`/`0xFFFF_FFFF`: it means the guest is doing
+//! something this model has not been audited for. Accesses that straddle the end
+//! of a binding never reach the device (`BusAccessError::CrossesRegion`).
+//!
+//! Not part of this module: RTC clock, CMOS RAM, NMI-disable bit 7 of port
+//! `0x70` (S7-14), the 8042 (`0x60/0x64`) and the POST port `0x80`. The latter
+//! three stay **unbound** on purpose: that decision is still open (see the
+//! S4-29 decisions in the stage plan), so a guest touching them is a trap.
+
+use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
+
+/// CMOS/RTC index port (`0x70`).
+pub const CMOS_INDEX_PORT: u16 = 0x70;
+/// CMOS/RTC data port (`0x71`).
+pub const CMOS_DATA_PORT: u16 = 0x71;
+/// Ports of the CMOS binding: `0x70` and `0x71`. `0x72/0x73` (second bank) are not bound.
+pub const CMOS_PORT_BYTES: u32 = 2;
+/// The `outb_p`/`io_delay` sink port.
+pub const IO_DELAY_PORT: u16 = 0xED;
+/// Ports of the `0xED` binding.
+pub const IO_DELAY_PORT_BYTES: u32 = 1;
+/// What a read of an absent port returns.
+pub const ABSENT_PORT_READ_VALUE: u8 = 0xFF;
+
+/// Whether the board has a CMOS RTC. It does not (S7-14 may change this); the
+/// FADT must say the opposite of this value in `IAPC_BOOT_ARCH` bit 5.
+pub const CMOS_RTC_PRESENT: bool = false;
+/// `IAPC_BOOT_ARCH` bit offset of `CMOS_RTC_NOT_PRESENT` (ACPI Table 5.11).
+pub const IAPC_CMOS_RTC_NOT_PRESENT_BIT: u32 = 5;
+
+/// Which group of absent ports a device stands for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbsentPortRegion {
+    /// `0x70/0x71`.
+    Cmos,
+    /// `0xED`.
+    IoDelay,
+}
+
+impl AbsentPortRegion {
+    /// First port of the binding.
+    pub const fn base_port(self) -> u16 {
+        match self {
+            Self::Cmos => CMOS_INDEX_PORT,
+            Self::IoDelay => IO_DELAY_PORT,
+        }
+    }
+
+    /// Length of the `PortRegionBinding`.
+    pub const fn port_bytes(self) -> u32 {
+        match self {
+            Self::Cmos => CMOS_PORT_BYTES,
+            Self::IoDelay => IO_DELAY_PORT_BYTES,
+        }
+    }
+}
+
+/// One stateless absent-port device. Bind it to
+/// `[region.base_port(), region.base_port() + region.port_bytes())`; the device
+/// sees offsets relative to its binding.
+#[derive(Debug)]
+pub struct AbsentPorts {
+    region: AbsentPortRegion,
+}
+
+impl AbsentPorts {
+    pub const fn new(region: AbsentPortRegion) -> Self {
+        Self { region }
+    }
+
+    pub const fn region(&self) -> AbsentPortRegion {
+        self.region
+    }
+
+    /// Space, width and offset checks, in the order of the other PIO devices.
+    fn check(&self, access: DeviceAccess) -> Result<(), DeviceError> {
+        if access.space != IoSpace::Pio {
+            return Err(DeviceError::UnsupportedSpace);
+        }
+        if access.width != AccessWidth::Byte {
+            return Err(DeviceError::UnsupportedWidth);
+        }
+        if access.offset >= u64::from(self.region.port_bytes()) {
+            return Err(DeviceError::UnknownOffset);
+        }
+        Ok(())
+    }
+}
+
+impl BusDevice for AbsentPorts {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.check(access)?;
+        Ok(u64::from(ABSENT_PORT_READ_VALUE))
+    }
+
+    fn write(&mut self, access: DeviceAccess, _value: u64) -> Result<(), DeviceError> {
+        self.check(access)?;
+        // Ignored: there is nothing to store and no side effect.
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ACPI_PM_BASE_PORT, ACPI_PM_PORT_BYTES, BusAccessError, FIRMWARE_COM1_PORT,
+        GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryRegionKind,
+        MemoryRegionSpec, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PortAddress,
+        PortRange, PortRegionBinding, RamLimits,
+    };
+
+    const BYTE: AccessWidth = AccessWidth::Byte;
+
+    fn acc(offset: u64, width: AccessWidth) -> DeviceAccess {
+        DeviceAccess {
+            space: IoSpace::Pio,
+            offset,
+            width,
+        }
+    }
+
+    fn p(port: u16) -> PortAddress {
+        PortAddress::new(port)
+    }
+
+    /// Both devices behind real `PortRegionBinding`s on a `MachineBus`.
+    fn bus() -> MachineBus {
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 1 << 20).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let ports = [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay]
+            .iter()
+            .enumerate()
+            .map(|(device_index, region)| PortRegionBinding {
+                range: PortRange::new(PortAddress::new(region.base_port()), region.port_bytes())
+                    .unwrap(),
+                device_index,
+            })
+            .collect();
+        MachineBus::new(
+            map,
+            RamLimits::new(1 << 20),
+            vec![
+                Box::new(AbsentPorts::new(AbsentPortRegion::Cmos)),
+                Box::new(AbsentPorts::new(AbsentPortRegion::IoDelay)),
+            ],
+            Vec::new(),
+            ports,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn constants_match_the_legacy_ports() {
+        assert_eq!((CMOS_INDEX_PORT, CMOS_DATA_PORT), (0x70, 0x71));
+        assert_eq!(IO_DELAY_PORT, 0xED);
+        assert_eq!(AbsentPortRegion::Cmos.base_port(), 0x70);
+        assert_eq!(AbsentPortRegion::Cmos.port_bytes(), 2);
+        assert_eq!(AbsentPortRegion::IoDelay.base_port(), 0xED);
+        assert_eq!(AbsentPortRegion::IoDelay.port_bytes(), 1);
+        assert_eq!(ABSENT_PORT_READ_VALUE, 0xFF);
+    }
+
+    #[test]
+    fn reads_of_the_absent_ports_give_0xff() {
+        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+            let mut dev = AbsentPorts::new(region);
+            for offset in 0..u64::from(region.port_bytes()) {
+                assert_eq!(dev.read(acc(offset, BYTE)), Ok(0xFF), "{region:?} {offset}");
+            }
+        }
+    }
+
+    #[test]
+    fn writes_are_ignored_and_nothing_can_be_read_back() {
+        // The device is stateless; the guest-visible "snapshot" is the read-back
+        // of every port. Every byte value is written to every port and the
+        // read-back is compared with the one taken before.
+        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+            let mut dev = AbsentPorts::new(region);
+            let ports = u64::from(region.port_bytes());
+            let snapshot = |dev: &mut AbsentPorts| -> Vec<u64> {
+                (0..ports)
+                    .map(|offset| dev.read(acc(offset, BYTE)).unwrap())
+                    .collect()
+            };
+            let before = snapshot(&mut dev);
+            assert_eq!(before, vec![0xFF; ports as usize]);
+            for offset in 0..ports {
+                for value in 0..=0xFFu64 {
+                    assert_eq!(dev.write(acc(offset, BYTE), value), Ok(()));
+                    assert_eq!(snapshot(&mut dev), before, "{region:?} {offset} {value:#x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cmos_index_then_data_is_still_absent() {
+        // The Linux `CMOS_READ`: `outb(addr, 0x70); inb(0x71)`, with and without
+        // the NMI-disable bit, and `CMOS_WRITE`.
+        let mut bus = bus();
+        for index in [0x00u32, 0x0A, 0x0B, 0x32, 0x7F, 0x80, 0x8F, 0xFF] {
+            bus.write_port(p(0x70), BYTE, index).unwrap();
+            assert_eq!(bus.read_port(p(0x71), BYTE), Ok(0xFF), "index {index:#x}");
+            assert_eq!(bus.read_port(p(0x70), BYTE), Ok(0xFF), "index {index:#x}");
+            bus.write_port(p(0x71), BYTE, 0x55).unwrap();
+            assert_eq!(bus.read_port(p(0x71), BYTE), Ok(0xFF));
+        }
+    }
+
+    #[test]
+    fn io_delay_sink_through_the_bus() {
+        let mut bus = bus();
+        assert_eq!(bus.read_port(p(0xED), BYTE), Ok(0xFF));
+        // `outb_p`/`io_delay` writes a junk byte (Linux uses 0).
+        bus.write_port(p(0xED), BYTE, 0).unwrap();
+        bus.write_port(p(0xED), BYTE, 0xAB).unwrap();
+        assert_eq!(bus.read_port(p(0xED), BYTE), Ok(0xFF));
+    }
+
+    #[test]
+    fn word_dword_and_qword_are_refused_by_the_device() {
+        // Policy: byte only (see the module comment). Refused before any effect.
+        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+            let mut dev = AbsentPorts::new(region);
+            for width in [AccessWidth::Word, AccessWidth::Dword, AccessWidth::Qword] {
+                assert_eq!(dev.read(acc(0, width)), Err(DeviceError::UnsupportedWidth));
+                assert_eq!(
+                    dev.write(acc(0, width), 0x1234),
+                    Err(DeviceError::UnsupportedWidth)
+                );
+            }
+            assert_eq!(dev.read(acc(0, BYTE)), Ok(0xFF));
+        }
+    }
+
+    #[test]
+    fn invalid_space_and_offset_are_refused() {
+        let mmio = DeviceAccess {
+            space: IoSpace::Mmio,
+            offset: 0,
+            width: BYTE,
+        };
+        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+            let mut dev = AbsentPorts::new(region);
+            assert_eq!(dev.read(mmio), Err(DeviceError::UnsupportedSpace));
+            assert_eq!(dev.write(mmio, 0), Err(DeviceError::UnsupportedSpace));
+            let past = u64::from(region.port_bytes());
+            assert_eq!(dev.read(acc(past, BYTE)), Err(DeviceError::UnknownOffset));
+            assert_eq!(
+                dev.write(acc(past, BYTE), 0),
+                Err(DeviceError::UnknownOffset)
+            );
+        }
+    }
+
+    #[test]
+    fn wide_accesses_through_the_bus() {
+        let mut bus = bus();
+        // A word at 0x70 is the only wide access that fits a binding (0x70..0x72):
+        // the device refuses the width.
+        assert!(matches!(
+            bus.read_port(p(0x70), AccessWidth::Word),
+            Err(BusAccessError::Device {
+                source: DeviceError::UnsupportedWidth,
+                ..
+            })
+        ));
+        assert!(matches!(
+            bus.write_port(p(0x70), AccessWidth::Word, 0xFFFF),
+            Err(BusAccessError::Device {
+                source: DeviceError::UnsupportedWidth,
+                ..
+            })
+        ));
+        // Everything else straddles the end of a binding: the bus refuses it
+        // before the device (a dword at 0x70, a word at 0x71, any wide access at 0xED).
+        for (port, width) in [
+            (0x70u16, AccessWidth::Dword),
+            (0x71, AccessWidth::Word),
+            (0x71, AccessWidth::Dword),
+            (0xED, AccessWidth::Word),
+            (0xED, AccessWidth::Dword),
+        ] {
+            assert_eq!(
+                bus.read_port(p(port), width),
+                Err(BusAccessError::CrossesRegion),
+                "read {width:?} @{port:#x}"
+            );
+            assert_eq!(
+                bus.write_port(p(port), width, 0),
+                Err(BusAccessError::CrossesRegion),
+                "write {width:?} @{port:#x}"
+            );
+        }
+        assert_eq!(
+            bus.read_port(p(0x70), AccessWidth::Qword),
+            Err(BusAccessError::UnsupportedWidth)
+        );
+        // Nothing changed.
+        assert_eq!(bus.read_port(p(0x71), BYTE), Ok(0xFF));
+    }
+
+    /// The decision about the 8042 (`0x60/0x64`) and the POST port (`0x80`) is
+    /// still open (S4-29 decisions): they are deliberately **not** bound, so a
+    /// guest touching them stops the machine with `UnmappedPort` instead of
+    /// getting a made-up answer. This test is a trap: when the decision is made
+    /// and a device is added, it must be changed on purpose. Ports next to the
+    /// absent ones are unbound too (no accidental widening of the bindings).
+    #[test]
+    fn open_decision_ports_stay_unmapped() {
+        let mut bus = bus();
+        for port in [0x60u16, 0x64, 0x80, 0x6F, 0x72, 0x73, 0xEC, 0xEE] {
+            assert_eq!(
+                bus.read_port(p(port), BYTE),
+                Err(BusAccessError::UnmappedPort(p(port))),
+                "read {port:#x}"
+            );
+            assert_eq!(
+                bus.write_port(p(port), BYTE, 0),
+                Err(BusAccessError::UnmappedPort(p(port))),
+                "write {port:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn ports_do_not_overlap_other_devices() {
+        // PIC pair, COM1, PM block and conf1 as `(start, len)`; the PIT ports
+        // `0x40..=0x43` and `0x61` are listed for S4-29c, `0x60/0x64/0x80`
+        // are the open-decision ports (they must stay outside the bindings).
+        use crate::pci_ecam::{PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES};
+        let others = [
+            ("PIC master", PIC_MASTER_BASE_PORT, PIC_PORT_BYTES),
+            ("PIC slave", PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES),
+            ("COM1", FIRMWARE_COM1_PORT, 8),
+            ("PM block", ACPI_PM_BASE_PORT, ACPI_PM_PORT_BYTES),
+            ("conf1", PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES),
+            ("PIT", 0x40, 4),
+            ("port 0x61", 0x61, 1),
+            ("8042 data", 0x60, 1),
+            ("8042 status", 0x64, 1),
+            ("POST", 0x80, 1),
+        ];
+        for region in [AbsentPortRegion::Cmos, AbsentPortRegion::IoDelay] {
+            let a =
+                u32::from(region.base_port())..u32::from(region.base_port()) + region.port_bytes();
+            for &(name, start, len) in &others {
+                let b = u32::from(start)..u32::from(start) + len;
+                assert!(a.end <= b.start || b.end <= a.start, "{region:?} vs {name}");
+            }
+        }
+        // One bus that holds the two absent devices, the PIC pair and the PM block
+        // accepts all bindings (`MachineBus::new` rejects overlapping ports).
+        let pair = crate::Pic8259Pair::new();
+        let clock = crate::VirtualClockHandle::new(1_000_000_000).unwrap();
+        let (pm, _) = crate::AcpiPm::new_with_handle(clock);
+        let range = |start: u16, len: u32| PortRange::new(PortAddress::new(start), len).unwrap();
+        let devices: Vec<Box<dyn BusDevice>> = vec![
+            Box::new(AbsentPorts::new(AbsentPortRegion::Cmos)),
+            Box::new(AbsentPorts::new(AbsentPortRegion::IoDelay)),
+            Box::new(pair.master),
+            Box::new(pair.slave),
+            Box::new(pm),
+        ];
+        let ports = vec![
+            PortRegionBinding {
+                range: range(CMOS_INDEX_PORT, CMOS_PORT_BYTES),
+                device_index: 0,
+            },
+            PortRegionBinding {
+                range: range(IO_DELAY_PORT, IO_DELAY_PORT_BYTES),
+                device_index: 1,
+            },
+            PortRegionBinding {
+                range: range(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES),
+                device_index: 2,
+            },
+            PortRegionBinding {
+                range: range(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES),
+                device_index: 3,
+            },
+            PortRegionBinding {
+                range: range(ACPI_PM_BASE_PORT, ACPI_PM_PORT_BYTES),
+                device_index: 4,
+            },
+        ];
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 1 << 20).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        MachineBus::new(map, RamLimits::new(1 << 20), devices, Vec::new(), ports).unwrap();
+    }
+
+    /// The model says "no CMOS RTC"; the firmware FADT must say the same in
+    /// `IAPC_BOOT_ARCH`. Checked against the real bytes of the committed ACPI
+    /// blob (the FADT field at offset 109) and against the firmware constants,
+    /// so the decision cannot drift in either place alone. The FADT also keeps
+    /// `8042` (bit 1) and `LEGACY_DEVICES` (bit 0) at 0, which matches the
+    /// 8042 and `0x80` having no device here.
+    #[test]
+    fn model_agrees_with_the_fadt_iapc_boot_arch() {
+        use crate::{FirmwareBoardConfig, validate_acpi_blob};
+        const BLOB: &[u8] =
+            include_bytes!("../../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin");
+        const FADT_SRC: &str = include_str!("../../../firmware/uefi/src/acpi/fadt.rs");
+        let board = FirmwareBoardConfig {
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            ..FirmwareBoardConfig::default()
+        };
+        let info = validate_acpi_blob(BLOB, &board.acpi_manifest_hash().unwrap()).unwrap();
+        let table = info
+            .tables
+            .iter()
+            .find(|t| &t.signature == b"FACP")
+            .expect("FADT in the blob");
+        let fadt = info.table_bytes(BLOB, table);
+        let iapc = u16::from_le_bytes(fadt[109..111].try_into().unwrap());
+        let not_present = iapc >> IAPC_CMOS_RTC_NOT_PRESENT_BIT & 1 == 1;
+        assert_eq!(not_present, !CMOS_RTC_PRESENT, "FADT vs model, blob bytes");
+        assert_eq!(iapc & 0b11, 0, "LEGACY_DEVICES and 8042 stay 0");
+
+        // The firmware constant, read from its source.
+        let src_bit: u32 = FADT_SRC
+            .lines()
+            .find_map(|l| l.strip_prefix("pub const IAPC_CMOS_RTC_NOT_PRESENT: u16 = 1 << "))
+            .and_then(|v| v.trim_end_matches(';').parse().ok())
+            .expect("IAPC_CMOS_RTC_NOT_PRESENT constant");
+        assert_eq!(src_bit, IAPC_CMOS_RTC_NOT_PRESENT_BIT);
+        let boot_arch_line = FADT_SRC
+            .lines()
+            .find(|l| l.starts_with("pub const IAPC_BOOT_ARCH: u16 = "))
+            .expect("IAPC_BOOT_ARCH constant");
+        assert!(boot_arch_line.contains("IAPC_CMOS_RTC_NOT_PRESENT"));
+
+        // The model side: the ports of the CMOS pair really are bound and absent.
+        let mut bus = bus();
+        assert_eq!(bus.read_port(p(CMOS_INDEX_PORT), BYTE), Ok(0xFF));
+        assert_eq!(bus.read_port(p(CMOS_DATA_PORT), BYTE), Ok(0xFF));
+    }
+}

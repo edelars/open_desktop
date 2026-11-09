@@ -1,0 +1,78 @@
+{
+  "slice": "S4-29b",
+  "date": "2026-11-09",
+  "source": [
+    "crates/od-machine/src/absent_ports.rs",
+    "crates/od-machine/src/lib.rs"
+  ],
+  "architecture": "stateless AbsentPorts BusDevice per region (Cmos: 2 ports, IoDelay: 1 port), each behind one PortRegionBinding; not wired into the firmware board",
+  "ports": {
+    "cmos": "0x70/0x71 (binding 2 ports)",
+    "io_delay": "0xED (binding 1 port)"
+  },
+  "behaviour": {
+    "read": "0xFF",
+    "write": "ignored, no state"
+  },
+  "width_policy": {
+    "device": "byte only; word/dword/qword = UnsupportedWidth; MMIO = UnsupportedSpace; offset past binding = UnknownOffset",
+    "bus": "word@0x70 reaches device (UnsupportedWidth); dword@0x70, word/dword@0x71, word/dword@0xED = CrossesRegion; qword = UnsupportedWidth",
+    "reason": "model-wide PIO policy (8259/UART/conf1 refuse, not invent); Linux uses only inb/outb here"
+  },
+  "fadt_link": {
+    "model": "CMOS_RTC_PRESENT = false",
+    "fadt": "IAPC_BOOT_ARCH bit 5 CMOS_RTC_NOT_PRESENT = 1 (blob offset 109, firmware/uefi/src/acpi/fadt.rs)",
+    "also_checked": "LEGACY_DEVICES (bit 0) = 0 and 8042 (bit 1) = 0",
+    "test": "model_agrees_with_the_fadt_iapc_boot_arch (committed ACPI blob bytes + firmware constant text)"
+  },
+  "unbound_traps": {
+    "ports": [
+      "0x60",
+      "0x64",
+      "0x80"
+    ],
+    "neighbours_checked": [
+      "0x6F",
+      "0x72",
+      "0x73",
+      "0xEC",
+      "0xEE"
+    ],
+    "result": "BusAccessError::UnmappedPort on read and write",
+    "decision": "open (S4-29 decisions)"
+  },
+  "tests": {
+    "absent_ports_added": 11,
+    "absent_ports_passed": 11
+  },
+  "injections": [
+    {
+      "change": "0x71 stores the written byte and reads it back",
+      "failed_tests": 2
+    },
+    {
+      "change": "CMOS_RTC_PRESENT = true",
+      "failed_tests": 1
+    }
+  ],
+  "port_map_check": {
+    "checked_against": [
+      "PIC 0x20/0x21, 0xA0/0xA1",
+      "COM1 0x3F8..0x3FF",
+      "PM block 0x600..0x610",
+      "conf1 0xCF8..0xCFF",
+      "PIT 0x40..0x43 and 0x61 (S4-29c)",
+      "0x60, 0x64, 0x80"
+    ]
+  },
+  "not_implemented": [
+    "RTC clock",
+    "CMOS RAM",
+    "NMI-disable bit",
+    "8042",
+    "port 0x80",
+    "board wiring",
+    "PIT"
+  ],
+  "review": "pending"
+}
