@@ -406,13 +406,14 @@ pub fn probe_long64_4k(
         if !paging.nxe() {
             offending |= entry_value & ENTRY_NX;
         }
-        if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
-            offending |= ENTRY_PS_OR_PAT;
-        }
-        if level != PageTableLevel::Pt
-            && level != PageTableLevel::Pml4
+        // S4-10c: PS=1 in a PDPTE is reserved in the declared profile (no
+        // 1 GiB pages), exactly like PML4E bit 7 from S4-10a.
+        if matches!(level, PageTableLevel::Pml4 | PageTableLevel::Pdpt)
             && entry_value & ENTRY_PS_OR_PAT != 0
         {
+            offending |= ENTRY_PS_OR_PAT;
+        }
+        if level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0 {
             return ProbeReport {
                 outcome: Err(ProbeError::UnsupportedPageSize {
                     level,
@@ -796,7 +797,11 @@ fn walk_long64_4k_with_writer(
         if !paging.nxe() {
             offending |= entry_value & ENTRY_NX;
         }
-        if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
+        // S4-10c: PS=1 in a PDPTE is reserved in the declared profile (no
+        // 1 GiB pages), exactly like PML4E bit 7 from S4-10a.
+        if matches!(level, PageTableLevel::Pml4 | PageTableLevel::Pdpt)
+            && entry_value & ENTRY_PS_OR_PAT != 0
+        {
             offending |= ENTRY_PS_OR_PAT;
         }
         let is_large_leaf =
@@ -805,11 +810,7 @@ fn walk_long64_4k_with_writer(
             // Bits 20:13 of a 2 MiB PDE are reserved (address bits below 2 MiB).
             offending |= entry_value & ENTRY_2M_RESERVED;
         }
-        if level != PageTableLevel::Pt
-            && level != PageTableLevel::Pml4
-            && entry_value & ENTRY_PS_OR_PAT != 0
-            && !is_large_leaf
-        {
+        if level == PageTableLevel::Pd && entry_value & ENTRY_PS_OR_PAT != 0 && !is_large_leaf {
             return fail(
                 TrackedAccessError::UnsupportedPageSize {
                     level,
@@ -1603,6 +1604,82 @@ mod tracked_access_tests {
         log.iter()
             .map(|range| (range.start().get(), range.len()))
             .collect()
+    }
+
+    /// S4-10c: literal supervisor PFEC of a reserved-bit fault (P|RSVD, plus W
+    /// for writes and I/D for fetches only when NXE=1), per Intel SDM vol. 3
+    /// "Page-Fault Error Code". Deliberately independent of the code under test.
+    fn rsvd_pfec(access: AccessKind, nxe: bool) -> u32 {
+        match (access, nxe) {
+            (AccessKind::Read, _) | (AccessKind::Fetch, false) => 0x09,
+            (AccessKind::Write, _) => 0x0b,
+            (AccessKind::Fetch, true) => 0x19,
+        }
+    }
+
+    /// Expected pure-probe outcome for a present PS=1 entry at `level`.
+    /// PDPTE.PS=1 is a guest reserved-bit #PF (S4-10c: replaces the S4-10a
+    /// host error); PDE.PS=1 stays `UnsupportedPageSize` in the 4 KiB profile.
+    /// `extra_offending` is the other reserved bits set in the entry.
+    fn ps_probe_expected(
+        level: PageTableLevel,
+        entry_address: u64,
+        entry_value: u64,
+        access: AccessKind,
+        nxe: bool,
+        extra_offending: u64,
+    ) -> Result<ProbeOutcome, ProbeError> {
+        if level == PageTableLevel::Pdpt {
+            Ok(ProbeOutcome::PageFault(PageFaultProbe {
+                linear: GuestLinearAddress::new(LINEAR),
+                access,
+                page_privilege: PrivilegeLevel::Ring0,
+                error_code: rsvd_pfec(access, nxe),
+                reason: PageFaultReason::ReservedBits {
+                    level,
+                    offending_bits: ENTRY_PS_OR_PAT | extra_offending,
+                },
+            }))
+        } else {
+            Err(ProbeError::UnsupportedPageSize {
+                level,
+                entry_address: GuestPhysicalAddress::new(entry_address),
+                entry_value,
+            })
+        }
+    }
+
+    /// Tracked counterpart of [`ps_probe_expected`]; CR2 value is `LINEAR`.
+    fn ps_tracked_expected(
+        level: PageTableLevel,
+        entry_address: u64,
+        entry_value: u64,
+        operation: RamAccessOperation,
+        nxe: bool,
+        extra_offending: u64,
+    ) -> Result<TrackedAccessOutcome, TrackedAccessError> {
+        if level == PageTableLevel::Pdpt {
+            let access = operation.access_kind();
+            Err(TrackedAccessError::PageFault {
+                record: PageFaultRecord::new(
+                    RIP,
+                    access,
+                    request(operation).context,
+                    rsvd_pfec(access, nxe),
+                    LINEAR,
+                ),
+                reason: PageFaultReason::ReservedBits {
+                    level,
+                    offending_bits: ENTRY_PS_OR_PAT | extra_offending,
+                },
+            })
+        } else {
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level,
+                entry_address: GuestPhysicalAddress::new(entry_address),
+                entry_value,
+            })
+        }
     }
 
     fn ram_snapshot(memory: &PhysicalMemory, start: u64, len: usize) -> Vec<u8> {
@@ -2451,7 +2528,9 @@ mod tracked_access_tests {
 
     #[test]
     fn large_leaf_does_not_admit_pdpt_ps_and_rejects_mmio_operand() {
-        // PS on a PDPT entry stays unsupported even in the 2 MiB profile.
+        // S4-10c: заменяет host-ошибку S4-10a. PS on a PDPT entry is not
+        // admitted even in the 2 MiB profile: guest #PF P|RSVD (PFEC 0x09), A set
+        // only on the PML4E, none on the PDPTE.
         let (mut memory, paging) = setup_entries([0x2007, 0x3087, 0x4007, 0], 0x400000);
         let report = access_long64_2m_ram(
             &mut memory,
@@ -2461,13 +2540,23 @@ mod tracked_access_tests {
             }),
             |_| {},
         );
-        assert!(matches!(
+        assert_eq!(
             report.outcome,
-            Err(TrackedAccessError::UnsupportedPageSize {
-                level: PageTableLevel::Pdpt,
-                ..
-            })
-        ));
+            ps_tracked_expected(
+                PageTableLevel::Pdpt,
+                0x2010,
+                0x3087,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                },
+                true,
+                0
+            )
+        );
+        assert_eq!(report.trace.len(), 2);
+        assert_eq!(report.ad_update_count, 1);
+        assert_eq!(entries(&memory)[0], 0x2027);
+        assert_eq!(entries(&memory)[1], 0x3087);
 
         // The profile is RAM-only: a 2 MiB leaf mapped beyond RAM is an
         // operand-physical error, never a device dispatch.
@@ -3666,13 +3755,11 @@ mod tracked_access_tests {
                 })
                 .context,
             );
+            // S4-10c: заменяет host-ошибку S4-10a для PDPTE.PS (теперь гостевой
+            // #PF P|RSVD); PDE.PS остаётся UnsupportedPageSize.
             assert_eq!(
                 pure.outcome,
-                Err(ProbeError::UnsupportedPageSize {
-                    level,
-                    entry_address: GuestPhysicalAddress::new(address),
-                    entry_value: value,
-                })
+                ps_probe_expected(level, address, value, AccessKind::Read, true, 0)
             );
             assert_eq!(pure.trace.len(), expected_trace.len());
             for (actual, (expected_level, expected_address, expected_value)) in pure
@@ -3715,11 +3802,17 @@ mod tracked_access_tests {
             );
             assert_eq!(
                 tracked.outcome,
-                Err(TrackedAccessError::UnsupportedPageSize {
+                ps_tracked_expected(
                     level,
-                    entry_address: GuestPhysicalAddress::new(address),
-                    entry_value: value,
-                })
+                    address,
+                    value,
+                    RamAccessOperation::Write {
+                        width: AccessWidth::Byte,
+                        value: 0xaa,
+                    },
+                    true,
+                    0
+                )
             );
             assert_eq!(tracked.trace.len(), expected_trace_len);
             for (actual, (expected_level, expected_address, expected_value)) in tracked
@@ -3832,13 +3925,10 @@ mod tracked_access_tests {
                     access,
                     request(operation).context,
                 );
+                // S4-10c: заменяет host-ошибку S4-10a для PDPTE.PS.
                 assert_eq!(
                     pure.outcome,
-                    Err(ProbeError::UnsupportedPageSize {
-                        level,
-                        entry_address: GuestPhysicalAddress::new(address),
-                        entry_value: value,
-                    })
+                    ps_probe_expected(level, address, value, access, true, 0)
                 );
                 assert_eq!(pure.trace.len(), trace.len());
                 for (actual, (expected_level, expected_address, expected_value)) in pure
@@ -3866,11 +3956,7 @@ mod tracked_access_tests {
                     });
                 assert_eq!(
                     tracked.outcome,
-                    Err(TrackedAccessError::UnsupportedPageSize {
-                        level,
-                        entry_address: GuestPhysicalAddress::new(address),
-                        entry_value: value,
-                    })
+                    ps_tracked_expected(level, address, value, operation, true, 0)
                 );
                 assert_eq!(tracked.trace.len(), trace.len());
                 for (actual, (expected_level, expected_address, expected_value)) in tracked
@@ -3976,13 +4062,19 @@ mod tracked_access_tests {
             }),
             |range| callbacks.push(range),
         );
+        // S4-10c: заменяет host-ошибку S4-10a: PDPTE.PS=1 -> гостевой #PF P|RSVD.
         assert_eq!(
             report.outcome,
-            Err(TrackedAccessError::UnsupportedPageSize {
-                level: PageTableLevel::Pdpt,
-                entry_address: GuestPhysicalAddress::new(0x2010),
-                entry_value: rejected_before,
-            })
+            ps_tracked_expected(
+                PageTableLevel::Pdpt,
+                0x2010,
+                rejected_before,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                },
+                true,
+                0
+            )
         );
         assert_eq!(report.trace.len(), 2);
         assert_eq!(report.ad_update_count, 0);
@@ -4018,13 +4110,12 @@ mod tracked_access_tests {
                     })
                     .context,
                 );
+                // S4-10c: заменяет host-ошибку S4-10a для PDPTE.PS. Теперь PDPTE.PS
+                // не «побеждает» reserved-биты, а входит в offending_bits вместе с
+                // ними; PDE.PS по-прежнему UnsupportedPageSize.
                 assert_eq!(
                     pure.outcome,
-                    Err(ProbeError::UnsupportedPageSize {
-                        level,
-                        entry_address: GuestPhysicalAddress::new(address),
-                        entry_value: value,
-                    })
+                    ps_probe_expected(level, address, value, AccessKind::Write, false, extra)
                 );
                 assert_eq!(
                     pure.trace
@@ -4051,11 +4142,17 @@ mod tracked_access_tests {
                 );
                 assert_eq!(
                     tracked.outcome,
-                    Err(TrackedAccessError::UnsupportedPageSize {
+                    ps_tracked_expected(
                         level,
-                        entry_address: GuestPhysicalAddress::new(address),
-                        entry_value: value,
-                    })
+                        address,
+                        value,
+                        RamAccessOperation::Write {
+                            width: AccessWidth::Byte,
+                            value: 0x77,
+                        },
+                        false,
+                        extra
+                    )
                 );
                 assert_eq!(
                     memory.read_u64(GuestPhysicalAddress::new(address)).unwrap(),
@@ -4128,13 +4225,10 @@ mod tracked_access_tests {
                 })
                 .context,
             );
+            // S4-10c: заменяет host-ошибку S4-10a для PDPTE.PS.
             assert_eq!(
                 pure.outcome,
-                Err(ProbeError::UnsupportedPageSize {
-                    level,
-                    entry_address: GuestPhysicalAddress::new(address),
-                    entry_value: value,
-                })
+                ps_probe_expected(level, address, value, AccessKind::Read, true, 0)
             );
 
             let mut callbacks = Vec::new();
@@ -4148,11 +4242,16 @@ mod tracked_access_tests {
             );
             assert_eq!(
                 tracked.outcome,
-                Err(TrackedAccessError::UnsupportedPageSize {
+                ps_tracked_expected(
                     level,
-                    entry_address: GuestPhysicalAddress::new(address),
-                    entry_value: value,
-                })
+                    address,
+                    value,
+                    RamAccessOperation::Read {
+                        width: AccessWidth::Byte,
+                    },
+                    true,
+                    0
+                )
             );
             assert_eq!(
                 tracked.trace.len(),
@@ -4189,13 +4288,20 @@ mod tracked_access_tests {
             }),
             |range| callbacks.push(range),
         );
+        // S4-10c: заменяет host-ошибку S4-10a: гостевой #PF P|RSVD|W (0x0b).
         assert_eq!(
             report.outcome,
-            Err(TrackedAccessError::UnsupportedPageSize {
-                level: PageTableLevel::Pdpt,
-                entry_address: GuestPhysicalAddress::new(0x2010),
-                entry_value: rejected_value,
-            })
+            ps_tracked_expected(
+                PageTableLevel::Pdpt,
+                0x2010,
+                rejected_value,
+                RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 0x11,
+                },
+                true,
+                0
+            )
         );
         assert_eq!(report.ad_update_count, 0);
         assert_eq!(report.ad_updates, [None; 5]);
@@ -4368,6 +4474,95 @@ mod tracked_access_tests {
         assert_eq!(pt_access.outcome, Ok(TrackedAccessOutcome::Read(0x5a)));
         assert_eq!(pt_access.trace.len(), 4);
         assert_eq!(pt_access.ad_update_count, 4);
+    }
+
+    #[test]
+    fn s4_10c_pdpte_ps_is_guest_rsvd_fault_with_a_only_on_pml4e() {
+        // Literal PFEC values (Intel SDM vol. 3, "Page-Fault Error Code"):
+        // P=bit0, W/R=bit1, U/S=bit2, RSVD=bit3, I/D=bit4 (only with NXE=1).
+        let cases = [
+            (PrivilegeLevel::Ring0, AccessKind::Read, true, 0x09u32),
+            (PrivilegeLevel::Ring0, AccessKind::Write, true, 0x0b),
+            (PrivilegeLevel::Ring0, AccessKind::Fetch, true, 0x19),
+            (PrivilegeLevel::Ring0, AccessKind::Fetch, false, 0x09),
+            (PrivilegeLevel::Ring3, AccessKind::Read, true, 0x0d),
+            (PrivilegeLevel::Ring3, AccessKind::Write, true, 0x0f),
+            (PrivilegeLevel::Ring3, AccessKind::Fetch, true, 0x1d),
+            (PrivilegeLevel::Ring3, AccessKind::Fetch, false, 0x0d),
+        ];
+        for allow_2m in [false, true] {
+            for (privilege_level, access, nxe, expected_pfec) in cases {
+                let (mut memory, _) =
+                    setup_entries([0x2007, 0x3007 | ENTRY_PS_OR_PAT, 0x4007, 0x5007], 0x6000);
+                let paging = paging_config(false, nxe);
+                let context = privilege(privilege_level);
+                let before = entries(&memory);
+                let mut callbacks = Vec::new();
+                let report = if allow_2m {
+                    access_long64_2m_ram(
+                        &mut memory,
+                        &paging,
+                        request_as(context, operation(access)),
+                        |range| callbacks.push(range),
+                    )
+                } else {
+                    access_long64_4k_ram(
+                        &mut memory,
+                        &paging,
+                        request_as(context, operation(access)),
+                        |range| callbacks.push(range),
+                    )
+                };
+                let label = format!("2m={allow_2m} {privilege_level:?} {access:?} nxe={nxe}");
+                // S4-10c: replaces the S4-10a host error; this must never come back.
+                assert!(
+                    !matches!(
+                        report.outcome,
+                        Err(TrackedAccessError::UnsupportedPageSize { .. })
+                    ),
+                    "{label}: PDPTE.PS returned the host error"
+                );
+                match &report.outcome {
+                    Err(TrackedAccessError::PageFault { record, reason }) => {
+                        assert_eq!(record.fault().vector, 14, "{label}");
+                        assert_eq!(record.fault().error_code, Some(expected_pfec), "{label}");
+                        assert_eq!(record.cr2_value(), LINEAR, "{label}");
+                        assert_eq!(record.saved_rip(), RIP, "{label}");
+                        assert_eq!(
+                            *reason,
+                            PageFaultReason::ReservedBits {
+                                level: PageTableLevel::Pdpt,
+                                offending_bits: ENTRY_PS_OR_PAT,
+                            },
+                            "{label}"
+                        );
+                    }
+                    other => panic!("{label}: expected guest #PF, got {other:?}"),
+                }
+                // Walk stops at the PDPTE; A only on the successful PML4E ancestor.
+                assert_eq!(report.trace.len(), 2, "{label}");
+                assert_eq!(report.ad_update_count, 1, "{label}");
+                assert_eq!(
+                    report.ad_updates[0],
+                    Some(AdUpdate {
+                        level: PageTableLevel::Pml4,
+                        address: GuestPhysicalAddress::new(0x1008),
+                        before: 0x2007,
+                        after: 0x2027,
+                        bit: AdBit::Accessed,
+                    }),
+                    "{label}"
+                );
+                assert_eq!(&report.ad_updates[1..], &[None; 4], "{label}");
+                assert_eq!(logged(&callbacks), [(0x1008, 8)], "{label}");
+                let after = entries(&memory);
+                assert_eq!(after[0], before[0] | 0x20, "{label}");
+                assert_eq!(after[1], before[1], "PDPTE got A/D: {label}");
+                assert_eq!(after[2..], before[2..], "{label}");
+                // No operand effect: the would-be target page stays zero.
+                assert_eq!(ram_snapshot(&memory, 0x5000, 0x1000), vec![0; 0x1000]);
+            }
+        }
     }
 }
 

@@ -91,7 +91,7 @@ Boot reservations в нижней RAM (архитектурные констан
 
 ## 4. Временные таблицы страниц машины
 
-- Формат: Long64, 4 уровня, **только страницы 4 KiB** (`MACHINE_CONTRACT.md` «Huge-page и mode admission boundary»: PS в PDPT/PD → `UnsupportedPageSize`).
+- Формат: Long64, 4 уровня, **только страницы 4 KiB** (`MACHINE_CONTRACT.md` «Huge-page и mode admission boundary»: PS в PD → `UnsupportedPageSize`; PS в PDPT → гостевой RSVD `#PF`, S4-10c).
 - Покрытие: identity (`VA = GPA`) для каждого региона карты — `Ram`, `Rom`, `Mmio`, `Framebuffer`. Дыры и неотображаемые резервы не отображаются.
 - Флаги листьев: RAM — `P|RW`; ROM — `P|NX`; `Mmio`/`Framebuffer` — `P|RW|NX`. Промежуточные уровни — `P|RW`. Биты A/D изначально нули, `U/S = 0`. NX на листьях ROM нормативен: из-за него гостевой fetch из ROM — `#PF` (раздел 3.1), а не backend-ошибка.
 - Расположение: PML4 — первая страница `BOOT_PAGE_TABLES` (`CR3 = 0x0060_0000`); порядок остальных страниц внутри региона — дело S7-03. Прошивка эти таблицы не разбирает и после переключения на собственные (S7-04) возвращает регион в `EfiConventionalMemory`.
