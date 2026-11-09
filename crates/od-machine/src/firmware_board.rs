@@ -802,6 +802,10 @@ pub struct LoadedFirmwareBoard {
     page_table_bytes: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
+    /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
+    /// instead of applying them. Never set in production code.
+    #[cfg(test)]
+    suppress_pm_tick: bool,
 }
 
 impl LoadedFirmwareBoard {
@@ -901,6 +905,11 @@ impl LoadedFirmwareBoard {
     /// spent. Each quantum ends on a COM1 THR write (FIRMWARE_BOOT.md 11); the
     /// byte is moved through the UART and recorded, then virtual time advances
     /// by `retired * 1 ns` before the next quantum (FIRMWARE_BOOT.md 8).
+    ///
+    /// PM timer port tick (S4-37a2, ISSUE-067): the queue of the PM device is
+    /// cleared at the start (host reads through `bus_mut` never move the clock).
+    /// A guest read of the PM timer ends the quantum after its instruction, and
+    /// the queued 1 us is applied to the clock before the next instruction.
     pub fn run_boot(
         &mut self,
         instruction_budget: u64,
@@ -911,6 +920,10 @@ impl LoadedFirmwareBoard {
         self.com1_log.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
+        // Ticks queued before this run came from the host, not from the guest.
+        if let Some(pm) = &acpi_pm {
+            pm.take_timer_tick_ns();
+        }
         // Doorbells the host rang before the run are executed before the guest starts.
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
@@ -925,6 +938,9 @@ impl LoadedFirmwareBoard {
                         || acpi_pm
                             .as_ref()
                             .is_some_and(|pm| pm.stop_request().is_some())
+                        // A guest PM timer read ends the quantum so that its tick
+                        // reaches the clock before the next instruction.
+                        || acpi_pm.as_ref().is_some_and(AcpiPmHandle::timer_tick_pending)
                 },
                 |_| {},
             );
@@ -942,6 +958,12 @@ impl LoadedFirmwareBoard {
                 }
             }
             self.advance_time_ns(report.instructions_executed)?;
+            if let Some(pm) = &acpi_pm {
+                let tick_ns = pm.take_timer_tick_ns();
+                #[cfg(test)]
+                let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
+                self.advance_time_ns(tick_ns)?;
+            }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             let exit = match report.exit {
                 // A requested machine stop is final: no further quantum, and it is
@@ -1194,6 +1216,8 @@ fn load_firmware_image_inner(
         handoff,
         page_table_bytes,
         com1_log: Vec::new(),
+        #[cfg(test)]
+        suppress_pm_tick: false,
     })
 }
 
@@ -2511,6 +2535,76 @@ mod tests {
             3_579_545,
             "the retired HLT moved the timer"
         );
+    }
+
+    // ---- S4-37a2: PM timer port tick (ISSUE-067) ----
+
+    /// `MOV DX,0x609; IN AL,DX x reads; HLT`. The base paged probe has no compare
+    /// and no jump, so a wait on the PM timer is a straight run of reads; the last
+    /// one leaves bits 8..16 of the timer in AL. Only the byte form of IN is decoded.
+    fn pm_tmr_reads_image(reads: usize) -> Vec<u8> {
+        let [lo, hi] = (ACPI_PM_TMR_BLK + 1).to_le_bytes();
+        let mut code = vec![0x66, 0xba, lo, hi];
+        code.extend(std::iter::repeat_n(0xec, reads));
+        code.push(0xf4);
+        test_image(&code, &[])
+    }
+
+    #[test]
+    fn a_guest_sees_the_pm_timer_advance_because_each_read_ticks_the_clock() {
+        // Bits 8..16 become non-zero after 256 timer ticks (~71.5 us): 72 reads of
+        // 1 us each are enough, 100 reads leave a safe margin.
+        let mut board = load_firmware_image(&pm_tmr_reads_image(100), &pm_config()).unwrap();
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(board.acpi_pm().unwrap().timer_reads(), 100);
+        assert_eq!(report.virtual_ns, report.retired + 100 * 1_000);
+        assert_eq!(board.clock().now_ns(), report.virtual_ns);
+        assert_eq!(board.state().gpr[0] & 0xff, 1, "AL: the timer moved");
+    }
+
+    #[test]
+    fn without_the_pm_tick_the_same_guest_sees_a_frozen_timer() {
+        let mut board = load_firmware_image(&pm_tmr_reads_image(100), &pm_config()).unwrap();
+        board.suppress_pm_tick = true;
+        let report = board.run_boot(1_000).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(board.acpi_pm().unwrap().timer_reads(), 100);
+        assert_eq!(
+            report.virtual_ns, report.retired,
+            "only instructions moved time"
+        );
+        assert_eq!(board.state().gpr[0] & 0xff, 0, "AL: the timer stood still");
+    }
+
+    #[test]
+    fn n_guest_reads_of_pm_tmr_move_the_clock_by_n_microseconds() {
+        // MOV DX,0x608; then three IN AL,DX; HLT.
+        let [lo, hi] = ACPI_PM_TMR_BLK.to_le_bytes();
+        let image = test_image(&[0x66, 0xba, lo, hi, 0xec, 0xec, 0xec, 0xf4], &[]);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.retired, 5);
+        assert_eq!(board.acpi_pm().unwrap().timer_reads(), 3);
+        assert_eq!(report.virtual_ns, 5 + 3 * 1_000);
+    }
+
+    #[test]
+    fn host_reads_through_bus_mut_do_not_move_the_clock_or_leak_into_a_run() {
+        let mut board = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        for _ in 0..2 {
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword)
+                .unwrap();
+        }
+        assert_eq!(board.clock().now_ns(), 0, "host reads never move the clock");
+        // The queued host ticks are dropped when the run starts: only the HLT counts.
+        let report = board.run_boot(10).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(report.virtual_ns, 1);
+        assert_eq!(board.clock().now_ns(), 1);
     }
 
     // ---- S4-31c: ACPI tables manifest (opt-in `acpi_tables`, handoff v1.2) ----
