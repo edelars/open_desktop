@@ -1932,7 +1932,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-35. Подготовить зафиксированный Linux artifact
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Оговорки: зафиксирован content hash 10 файлов по manifest S4-00a (версия 7.0.0-38.38); подлинность (provenance) НЕ подтверждена: подписанная цепочка APT, .dsc, Sources.xz и apt-provenance.json отсутствуют, PE/Authenticode не проверен; hardlink — staged-файлы разделяют inode с work/vms, потребитель обязан перехешировать по STAGED.json; zstd не распаковывается.
 - **Где:** `tools/build/` или runner staging, существующий Linux profile, ignored `work/stage4/`.
 - **Сделать:** взять точный Ubuntu package/image из S4-00 и существующего profile, проверить размер/hash, происхождение и доступную цепочку подписи; сопоставить source/config/build. Не заменять kernel текущим latest без пересмотра manifest.
 - **Проверка:** несовпадение hash, corrupted/truncated image, отсутствие source/config evidence; различать проверенный content hash и подтверждённую подлинность. Не переносить открытые provenance пункты в «подтверждено» без проверки.

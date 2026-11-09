@@ -1,0 +1,178 @@
+{
+  "slice": "S4-35",
+  "distribution": "Ubuntu",
+  "kernel_source_package_version": "7.0.0-38.38",
+  "architecture": "amd64 generic",
+  "status": "staged (content hash verified; provenance not authenticated)",
+  "manifest": {
+    "path": "docs/reports/data/stage4/s4-00a-source-audit-2026-11-05.json",
+    "sha256": "fffaa5e0f3e0e667c6baf409c4d178f060d72cdd3cafd80015f17cef5b0eeb52"
+  },
+  "input_dir": "work/vms/s2-00-ubuntu-26.04.1",
+  "stage_dir": "work/stage4/linux-7.0.0-38.38",
+  "file_count": 10,
+  "files": [
+    {
+      "role": "binary",
+      "name": "linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+      "path": "linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+      "expected_sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa",
+      "size_bytes": 17040232,
+      "sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "binary",
+      "name": "vmlinuz-7.0.0-38-generic",
+      "path": "vmlinuz-7.0.0-38-generic",
+      "expected_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "size_bytes": 17320328,
+      "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "binary",
+      "name": "vmlinux-7.0.0-38-generic",
+      "path": "vmlinux-7.0.0-38-generic",
+      "expected_sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f",
+      "size_bytes": 71005544,
+      "sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "binary",
+      "name": "vmlinux-debug-7.0.0-38-generic",
+      "path": "vmlinux-debug-7.0.0-38-generic",
+      "expected_sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f",
+      "size_bytes": 506419160,
+      "sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "source_package",
+      "name": "source_package",
+      "path": "source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+      "expected_sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+      "size_bytes": 192710546,
+      "sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "source_tree_archive",
+      "name": "source_tree_archive",
+      "path": "source/linux-source-7.0.0.tar.bz2",
+      "expected_sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222",
+      "size_bytes": 195204446,
+      "sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "source_file",
+      "name": "linux-source-7.0.0/arch/x86/boot/compressed/head_64.S",
+      "path": "source/extracted/compressed-head_64.S",
+      "expected_sha256": "418aa5f554ea94f62a6ea3bd7bb90e71c44d293e1e329ed4c1a94e76d8ef9641",
+      "size_bytes": 14141,
+      "sha256": "418aa5f554ea94f62a6ea3bd7bb90e71c44d293e1e329ed4c1a94e76d8ef9641",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "source_file",
+      "name": "linux-source-7.0.0/arch/x86/boot/compressed/pgtable_64.c",
+      "path": "source/extracted/compressed-pgtable_64.c",
+      "expected_sha256": "8a71665407094b651c96047aec2f11c9926320836afb109002bf80d72acc2319",
+      "size_bytes": 5847,
+      "sha256": "8a71665407094b651c96047aec2f11c9926320836afb109002bf80d72acc2319",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "source_file",
+      "name": "linux-source-7.0.0/arch/x86/kernel/head_64.S",
+      "path": "source/extracted/kernel-head_64.S",
+      "expected_sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10",
+      "size_bytes": 18461,
+      "sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    },
+    {
+      "role": "config",
+      "name": "config",
+      "path": "source/extracted/config",
+      "expected_sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d",
+      "size_bytes": 308501,
+      "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d",
+      "verdict": "ok",
+      "reason": null,
+      "stage_method": "hardlink"
+    }
+  ],
+  "provenance": {
+    "authenticated": false,
+    "missing": [
+      "signed_dsc_recovered",
+      "orig_tar_gz_recovered",
+      "diff_gz_recovered",
+      "signed_sources_xz_recovered",
+      "signed_inrelease_recovered",
+      "apt_provenance_json_recovered",
+      "authenticated_source_to_binary_mapping_established",
+      "full_source_provenance_passed"
+    ],
+    "signed_chain_files_found_unverified": [],
+    "note": "S4-35 verifies content hashes only; it does not verify signatures or the source-to-binary mapping."
+  },
+  "source_config_evidence": {
+    "manifest": "docs/reports/data/stage4/s4-00a-source-audit-2026-11-05.json",
+    "manifest_slice": "S4-00a",
+    "source_package_retrieval_url": "https://repo.huaweicloud.com/ubuntu/ubuntu/pool/main/l/linux/linux-source-7.0.0_7.0.0-38.38_all.deb",
+    "source_package_retrieval": "Downloaded from a Huawei Ubuntu mirror; signed repository provenance was not recovered.",
+    "config_extracted_from": "work/vms/s2-00-ubuntu-26.04.1/buildinfo-data.tar:./usr/lib/linux/7.0.0-38-generic/config",
+    "elf_comparison": {
+      "build_id_algorithm": "sha1",
+      "vmlinux_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+      "debug_elf_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+      "release_section_count": 42,
+      "debug_section_count": 57,
+      "common_allocated_file_backed_sections_compared": 38,
+      "comparison_fields": [
+        "name",
+        "type",
+        "flags",
+        "address",
+        "offset",
+        "size",
+        "sha256(bytes)"
+      ],
+      "common_allocated_file_backed_section_equality": true
+    },
+    "non_claims": [
+      "The source package is not authenticated by a recovered signed repository chain.",
+      "Matching Build IDs and 38 equal allocated file-backed sections do not establish that these source/config inputs produced the selected binaries.",
+      "No runtime alternative selection, Linux boot, or physical CPU behavior is established."
+    ]
+  },
+  "limitations": [
+    "Only content hashes are verified; no signature or repository chain is verified.",
+    "The S4-00a manifest pins no file sizes; sizes are measured and recorded here, truncation is caught by SHA-256 mismatch and by structural diagnosis (deb ar members, vmlinuz header, ELF section table, bz2 stream).",
+    "No zstd stream test is run (stdlib only); the data.tar.zst inside .deb files is not decompressed.",
+    "Matching hashes do not prove that the source package and config produced the staged binaries.",
+    "Linux boot, runtime behaviour and physical CPU behaviour are not established by staging."
+  ]
+}
