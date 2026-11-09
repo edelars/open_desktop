@@ -20154,3 +20154,23 @@ task switching or stack switching are modelled. See the
 `es_cache`, `fs_cache` and `gs_cache` must already be present; the selector, cache (and base for
 FS/GS) and RIP change only after the descriptor read and the optional accessed-bit write have
 succeeded. See the [machine contract](MACHINE_CONTRACT.md#paged-mov-dsesfsgs-ax-s4-18e).
+
+### Расширение S4-37a6a — RDTSC в paged-пробе через явный источник времени
+
+`od_isa::execute::step_paged_probe_with_rdtsc` расширяет `PagedCpl0ProbeV1` (Long64/CPL0) одной формой:
+голый `RDTSC` (`0F 31`, длина 2, без префиксов `66`/REX/`F2`/`F3`). Форма допускается только в базовом
+профиле `PagedCpl0ProbeV1` и только если вызывающий передал явный источник времени
+`&mut dyn FnMut() -> u64`.
+
+- Источник вызывается ровно один раз на выполненную (retired) инструкцию. Значение: `EAX` = младшие 32 бита,
+  `EDX` = старшие 32 бита; обе записи обнуляют старшие половины `RAX`/`RDX`. `RIP` += 2, `RFLAGS`
+  не меняются, `instructions_executed` = 1.
+- За TSC отвечает источник; инструкция сама время не продвигает и не читает часы напрямую.
+- Без источника (`step_paged_probe`, а также stack/CR3/CR0.WP-варианты, которые источник не
+  принимают) результат остаётся `Unsupported { opcode: 0x31 }`, состояние и источник не затронуты.
+  Формы `66 0F 31`, `REX.W 0F 31`, `F3 0F 31` и `F2 0F 31` тоже остаются `Unsupported` и источник не
+  вызывают. LOCK-форма `F0 0F 31` в базовом профиле даёт `#UD`, а не `Unsupported`.
+- CPL3-варианты (`step_paged_cpl3_load`/`step_paged_cpl3_mov`) сначала читают трёхбайтный предфильтр:
+  на Ring3 первый байт `0x0F` даёт `Unsupported { opcode: 0x0f }`, на Ring0 результат —
+  `Rejected(WrongPrivilege)`; до `0F 31` дело не доходит.
+- `CR4.TSD` и CPL>0 здесь не моделируются: профиль CPL0-only. `RDTSCP` и `LFENCE` не добавлены.

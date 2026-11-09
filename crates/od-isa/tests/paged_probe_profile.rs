@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use od_isa::execute::{
-    self, Cr0Profile, Cr4Profile, PagedCpl0ProbeV1, PagedProbeExit, PagedProbeRejection,
+    self, Cr0Profile, Cr4Profile, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1,
+    PagedCpl0StackProbeV1, PagedProbeExit, PagedProbeRejection,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CpuActivity, GuestMemory, InstructionMode,
@@ -929,4 +930,208 @@ fn other_paged_profiles_keep_mov_immediate_unsupported() {
             assert_eq!(cpu, before, "{profile} {bytes:02x?}");
         }
     }
+}
+
+fn rdtsc_ring0() -> AccessContext {
+    context(InstructionMode::Long64, PrivilegeLevel::Ring0)
+}
+
+#[test]
+fn paged_probe_rdtsc_with_source_splits_value_and_retires_once() {
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = 0xaaaa_bbbb_cccc_dddd;
+    cpu.gpr[Register::Rdx as usize] = 0x1111_2222_3333_4444;
+    let flags = cpu.rflags;
+    let mut pio = Pio::default();
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        0x1_2345_6789u64
+    };
+
+    let result = execute::step_paged_probe_with_rdtsc(
+        PagedCpl0ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+        &mut source,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, DEFINED);
+    assert_eq!(cpu.gpr[Register::Rax as usize], 0x2345_6789);
+    assert_eq!(cpu.gpr[Register::Rdx as usize], 0x1);
+    assert_eq!(cpu.rip, RIP + 2);
+    assert_eq!(cpu.rflags, flags);
+    assert_eq!(calls, 1);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn paged_probe_rdtsc_full_width_value_zero_extends_both_halves() {
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    cpu.gpr[Register::Rax as usize] = u64::MAX;
+    cpu.gpr[Register::Rdx as usize] = u64::MAX;
+    let mut pio = Pio::default();
+    let mut source = || 0xfedc_ba98_7654_3210u64;
+
+    let result = execute::step_paged_probe_with_rdtsc(
+        PagedCpl0ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+        &mut source,
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(cpu.gpr[Register::Rax as usize], 0x7654_3210);
+    assert_eq!(cpu.gpr[Register::Rdx as usize], 0xfedc_ba98);
+}
+
+#[test]
+fn paged_probe_rdtsc_without_source_is_unsupported_and_pure() {
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+
+    let result = step(&mut cpu, &mut memory, &mut pio, rdtsc_ring0());
+
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+}
+
+#[test]
+fn paged_probe_rdtsc_prefixed_forms_do_not_call_source() {
+    for code in [
+        &[0x66u8, 0x0f, 0x31][..],
+        &[0x48, 0x0f, 0x31][..],
+        &[0xf3, 0x0f, 0x31][..],
+        &[0xf2, 0x0f, 0x31][..],
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let mut calls = 0;
+        let mut source = || {
+            calls += 1;
+            0x1_2345_6789u64
+        };
+
+        let result = execute::step_paged_probe_with_rdtsc(
+            PagedCpl0ProbeV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            rdtsc_ring0(),
+            DEFINED,
+            &mut source,
+        );
+
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(calls, 0, "{code:02x?}");
+    }
+}
+
+#[test]
+fn paged_probe_rdtsc_entry_points_without_source_stay_unsupported() {
+    // These entry points take no time source and pass None, so RDTSC is
+    // unsupported by construction. This does not exercise the base_profile
+    // gate; that is covered by a unit test in execute.rs.
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_stack_probe(
+        PagedCpl0StackProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr3_probe(
+        PagedCpl0Cr3ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&[0x0f, 0x31]);
+    let mut cpu = state();
+    cpu.cr3 = Some(0x1000);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr0_wp_probe(
+        PagedCpl0Cr0WpProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+    assert_eq!(cpu, before);
+}
+
+#[test]
+fn paged_probe_rdtsc_lock_form_is_ud_in_base_profile() {
+    let mut memory = Memory::new(&[0xf0, 0x0f, 0x31]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        1u64
+    };
+    let result = execute::step_paged_probe_with_rdtsc(
+        PagedCpl0ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+        &mut source,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(cpu, before);
+    assert_eq!(calls, 0);
 }
