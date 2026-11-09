@@ -1,5 +1,6 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
+mod absent_ports;
 mod acpi_blob;
 mod acpi_pm;
 mod apic_pair;
@@ -42,6 +43,11 @@ pub use acpi_blob::{
     AcpiManifestHash, ValidatedAcpiBlob, acpi_manifest_hash, validate_acpi_blob,
 };
 
+pub use absent_ports::{
+    ABSENT_PORT_READ_VALUE, AbsentPortRegion, AbsentPorts, CMOS_DATA_PORT, CMOS_INDEX_PORT,
+    CMOS_PORT_BYTES, CMOS_RTC_PRESENT, IAPC_CMOS_RTC_NOT_PRESENT_BIT, IO_DELAY_PORT,
+    IO_DELAY_PORT_BYTES,
+};
 pub use acpi_pm::{
     ACPI_PM_BASE_PORT, ACPI_PM_DESCRIPTOR, ACPI_PM_PORT_BYTES, ACPI_PM_TIMER_HZ, ACPI_PM_TMR_BLK,
     ACPI_PM_TMR_LEN, ACPI_PM1_CNT_BM_RLD, ACPI_PM1_CNT_GBL_RLS, ACPI_PM1_CNT_LEN,
