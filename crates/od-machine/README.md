@@ -49,7 +49,7 @@ automatic timer dispatch, CPU delivery, HLT progression or scheduler.
 Bounded S4-28a3 carries that clock capability into `DiagnosticHaltWait`, where
 explicit Waiting-only time advancement can expire and dispatch a one-shot APIC
 timer to wake HLT through the existing caller-polled interrupt entry. Host-time
-integration, automatic event pumping and periodic timers remain unsupported.
+integration and automatic event pumping remain unsupported. Periodic APIC timer mode is implemented by S4-28a4 (review pending).
 Bounded S4-23a adds a fixed-capacity deterministic one-shot deadline queue.
 It uses absolute nanosecond deadlines, explicit extraction and stable ordering;
 it does not advance the virtual clock or dispatch CPU/device/IRQ work. Full
