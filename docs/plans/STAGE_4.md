@@ -1552,9 +1552,31 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Доказательства:** проверены `EventPending` до NOP с точным RIP/budget/counters, единичный queue pop, IRR→ISR acknowledgement, сохранённый frame, ISR до/после guest EOI, IRETQ, сохранение notification и future event через pause/resume и одинаковые финальный `LongModeState`/observable order для JIT и interpreter.
 - **Граница:** EventQueue→APIC bridge существует только как caller orchestration в тестовом сценарии; production queue routing, HLT wake из очереди, general scheduler, async producers и MOV SS/NMI не добавлены. Parent S4-27 остаётся открытым. См. [отчёт](../reports/STAGE_4_S4-27G_2026-11-07.md), [manifest](../reports/data/stage4/s4-27g-queued-irq-jit-parity.json) и [методику](../testing/MACHINE.md#s4-27g-queued-irq-and-jitinterpreter-parity).
 
+## Решения по консультации Opus (2026-11-09)
+
+Принято как решения этапа по рекомендациям архитектурного советника; каждое изменение плана ниже относится к этим решениям.
+
+1. **Event pump** — срез **S4-27h** (разовый handler с paged IRQ) и **S4-27i** (общий interpreter-цикл: проверка APIC на границе инструкции, HLT→wait, мост EventQueue→APIC, owner-driven dispatch таймеров) перед S4-33. Владелец event pump — S4-27i; S4-33 его не строит.
+2. **Paged IRQ entry и IRETQ** — срез S4-27h, не S4-38. Оговорка «только плоская identity» в S4-27 снимается ссылкой на S4-27h.
+3. **Linux time source** — условие «Linux-профиль имеет источник времени» переносится в S4-37a и S4-38; S4-28 закрывается по локальному критерию.
+4. **Подключение APIC timer к плате и Linux-профилю** — срез **S4-37a** (Linux-профиль платы под opt-in флагом: LAPIC с shared timer и единым clock, PIT, PIC, CMOS, 0xED, 0x80, INTIN2, PM-блок на том же clock и pump). S4-37 зависит от S4-37a.
+5. **Порт-тик** — каждое чтение временного порта (0x42, 0x61, PM_TMR) синхронизирует часы по выполненным инструкциям и продвигает их на Δ = 1 мкс (владелец clock — сессия). ISSUE-067 закрывается в S4-29d.
+6. **Gate2 PIT** — отвергать (DeviceError): загрузка канала 2 при gate2=0; чтение счётчика или OUT2 загруженного канала при gate2=0; падение gate2 1→0 во время счёта. Чтение 0x61 при незагруженном канале 2 допустимо.
+7. **Порты 0x80, 0x60, 0x64** — 0x80 явный sink (запись игнорируется, чтение 0xFF); 0x60 и 0x64 остаются ловушкой (UnmappedPort). `io_delay` в cmdline не задавать (тип по умолчанию 0x80 подтвердить в config в S4-29g). Блокер S4-38 по 0x80 снят при условии sink.
+8. **Путь IRQ0** — честный, без `no_timer_check`. В S4-38: `check_timer` проходит через IOAPIC pin 2 (ISO 0→2).
+9. **AEOI на мастере** — принимается (ICW4=0x03, флаг хранится без эффекта, у пары нет INTR); на slave AEOI отвергается. Открытый пункт S4-29a снимается правкой S4-29a2 до S4-29f.
+10. **NMI и MOV SS** — NMI неприменимо (на плате нет источника NMI). MOV SS и её тень — обязательны: задача этапа 2 и предусловие S4-37/S4-38 (Linux `startup_64` выполняет `mov %eax,%ss`).
+11. **TSC-deadline** — не реализуется и не объявляется (подтверждено).
+12. **TLB** — uncached-путь закрывает S4-33. S4-13 и S4-14 — минимальный TLB на трассе Linux после S4-38 (запасной вариант: если bounded boot превышает бюджет — S4-13 раньше). TLB-on переходит в S4-42/S4-44. S4-15 и S4-16 зависят от S4-12.
+13. **JIT в S4-33** — только принятые подмножества; матрица «кейс × interpreter/JIT: supported или not_supported». Модификация активного блока — `not_supported`. Новой JIT-функциональности в S4-33 нет.
+14. **Huge pages** — только 2 MiB, 1 GiB не объявляется. Срез S4-10c: PDPTE.PS → гостевой #PF RSVD. Кейс S4-33 = 2 MiB плюс негатив 1 GiB.
+15. **Mac mini и S4-34** — только KVM-путь (если есть VT-x): fixtures как KVM-гость, reboot, GRUB и модули ядра не трогаются; APIC, IOAPIC и таймер маркируются «kvm-emulated, не hardware». Bare-metal — только по отдельному разрешению. Доступ (проверка `vmx`, `/dev/kvm`, группа `kvm`) требует вашего разрешения; без него S4-34 — `blocked`.
+
+Решения, которые остаются за пользователем: доступ к Mac mini и SSH-проверка (п. 15); порядок TLB и бюджет bounded boot (п. 12) — по умолчанию как записано; согласие на пакет (п. 1–5) — по умолчанию принято.
+
 ### S4-28. APIC timer
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью по локальному критерию (решение Opus, п. 3): Linux time source → S4-37a/S4-38.
 - **Где:** `od-machine`, virtual clock/events, system tests.
 - **Сделать:** нужные count/divider/LVT registers, one-shot/periodic modes и cancel/reprogram. TSC-deadline добавлять только при обязательности и полном контракте.
 - **Проверка:** нулевой count, masked expiry, перепрограммирование до deadline, periodic handler+EOI, HLT wakeup, pause/resume, reset.
