@@ -1478,7 +1478,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-27. Соединить pending IRQ с CPU delivery
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (закрыт срезами S4-27a–g, включая f1 и f2; Claude Opus high). Оговорки: доставка только плоская identity Long64/CPL0 без paged-входа и IRETQ; автоматического event pump и scheduler нет (предлагаемый владелец — S4-33, решение пользователя); тень MOV SS и NMI не моделируются (MOV SS не реализован; риск для S4-37/S4-38); fault при доставке — только отказ host-адаптера, без вложенных исключений и #DF (S4-33). Оговорки «Граница» подсрезов сохраняются.
 - **Где:** `od-machine`, delivery/interruptibility `od-isa`, JIT exits `od-jit`.
 - **Сделать:** выбирать deliverable event на корректной границе instructions/blocks; учитывать IF, STI/MOV SS shadow и нужные NMI rules, frame и EOI. Согласовать HLT wakeup и очередь событий.
 - **Проверка:** IRQ перед/после CLI/STI, shadow, HLT при разных условиях, pending during handler, fault при delivery; interpreter и поддержанный JIT дают одинаковую архитектурную последовательность.
