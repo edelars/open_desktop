@@ -1797,6 +1797,60 @@ automatic scheduling or Linux timer-profile evidence. Register semantics are
 based on Intel [SDM release 090, Volume 3A §13.5.4](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf).
 See the [S4-28a4 report](../reports/STAGE_4_S4-28A4_2026-11-07.md).
 
+### Guest periodic timer scenario (S4-28b)
+
+S4-28b adds no device behavior; it fixes the observable contract of the
+S4-28a1–a4 pieces as a caller-driven scenario on one shared clock. One step is:
+the caller advances the session clock, calls `dispatch_timer`, then runs
+`run_apic_quantum` (Runnable) or `poll_apic` (HLT wait); the guest handler
+increments a RAM counter, writes the Local APIC EOI register (`0xFEE000B0`) and
+executes IRETQ, after which the caller resumes the interrupted thread. N steps
+yield exactly N handler runs and leave the interrupted thread's RIP, RAX, RSP
+and RFLAGS as if no interrupt had occurred. `dispatch_timer` consumes at most
+one due occurrence; a second call at the same virtual time returns `false`.
+
+**Coalescing and ISR.** An expiry that arrives while the vector is in service
+sets the (single) IRR bit and the timer keeps running; any number of expiries
+before EOI collapse into one pending edge. The edge is eligible only after the
+guest EOI clears the ISR bit (and only while IF and TPR permit). A large time
+jump yields one edge, never a burst; the next boundary is the first period
+boundary after the current time, counted from the original arm time.
+
+**HLT gate paths.** `poll_apic` closes the dispatch gate before inspecting
+IF/vector and reopens it on every non-committing result. IF=0, a vector blocked
+by TPR, or `OutsideProfile` return/keep `Waiting` with the IRR edge retained and
+the gate open (the next `advance_time_ns` and dispatch work, never `Busy`). A
+masked LVT occurrence is consumed (periodic: rearmed) without IRR and without
+wake; unmasking does not replay it. `DiagnosticHaltWait::stop` in `Waiting`
+closes the gate for good: a due event stays queued, `dispatch_timer` returns
+`Busy`, `poll_apic` returns `Stopped`, `advance_time_ns` returns `NotWaiting`.
+Entered keeps the gate closed until `into_running`.
+
+**Pause/resume.** A deadline that falls due before `pause` stays queued: while
+Paused, `dispatch_timer` returns `Busy` and `run_apic_quantum` returns
+`ProfileRejected` without changes; after `resume` the occurrence is dispatched
+and delivered exactly once, and the next boundary is unchanged.
+
+**Lock order.** `dispatch_timer` takes the APIC-pair lock, then the clock lock.
+No clock operation (advance, gate toggle, snapshot, advancer drop) acquires the
+pair lock, so the reverse order cannot occur; this is asserted by a test that
+holds the pair lock while another thread performs every clock operation, and by
+reading the code (the pair lock is never requested inside `with_dispatch_guard`
+beyond the one already held).
+
+**TSC-deadline decision.** TSC-deadline mode is not implemented and not
+advertised: LVT Timer bit 18 is rejected (as are other unsupported bits),
+`IA32_TSC_DEADLINE` (MSR `0x6E0`) has no handler, and the `DiagnosticV1` CPUID
+profile keeps CPUID.01H:ECX[24] clear. The decision is revisited only by the
+Linux timer-profile slices (S4-29, S4-37/S4-38) if the chosen kernel needs it.
+
+The scenario is not an event pump or scheduler (owner undecided, S4-33),
+does not connect the timer to the firmware board, and is not Linux
+timer-profile evidence. The handler runs with IF=0 (interrupt gate); a handler
+that re-enables interrupts is modelled in the tests by setting IF in CPU state,
+because the STI profile requires a session without a clock. See the
+[S4-28b report](../reports/STAGE_4_S4-28B_2026-11-09.md).
+
 ## CPU-owned IA32_APIC_BASE enable (S4-25b)
 
 The opt-in `od_isa::msr::ApicBaseCpu` profile accepts only bare `RDMSR` and
