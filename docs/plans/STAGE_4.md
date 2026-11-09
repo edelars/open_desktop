@@ -1568,6 +1568,29 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   - *Вне среза:* вложенные #PF/#NP/#DF и shutdown; IST≠0; CPL3 (TSS RSP0); запись A-бита дескриптора; paged STI и HLT; event pump; `run_apic_quantum` на paged; JIT; несколько векторов; 2 MiB, TLB, SMAP/SMEP, x2APIC; тип памяти; MOV SS и NMI.
   - *Риски:* Linux EOI через `movl` с disp32 и CR0=0x80050033 шире BASE — exact-профили не масштабируются, нужен S4-27i; модель «ack после входа» расходится с INTA на железе (решить в S4-33); S4-34 (KVM) — инъекция RO-стека даст shutdown/reset, пометить «model-only, не сравнимо».
 
+#### S4-27i. Event pump и общий interpreter-цикл (владелец — pump)
+
+- [ ] Принято после ревью по подсрезам i1–i5.
+- **Владелец (решение консультации Opus, S4-27i, 2026-11-09):** новый тип `InterruptPump` в `crates/od-machine/src/interrupt_pump.rs` поверх `DiagnosticVcpuSession` и `LocalApicHandle`; внутри `Cpu { Running(session) | Waiting(DiagnosticHaltWait) }`. Цикл не встраивается в session (она остаётся набором caller-driven шагов), в `run_boot` и в paged-профиль. Образец цикла — `Stage4UartIrqProbe::run/step_waiting/step_running` (S4-24e), который обобщается в pump.
+- **Порядок границы:** один раз на границу инструкции перед fetch: STOP → dispatch due-событий (таймер, очередь) → если Runnable, `completed_boundary`, IF=1, shadow Clear и есть `eligible()`, доставка через `run_apic_quantum` → иначе одна инструкция. HLT не идёт в `run(1)` (terminal `Unsupported`, см. отчёт S4-27i1: у обычного интерпретатора нет HLT, `Halted` возвращается только при запуске уже остановленного CPU): HLT → `into_halt_wait`; STI → `run_sti_apic_quantum`; IRETQ → `run_same_cpl0_iretq`. Эффекты шага видит проверка следующей границы; отдельной проверки после инструкции нет.
+- **Подсрезы:**
+  - **i1** — flat pump с проверкой на границе, STI/HLT/wake и IRQ от caller, без clock. Классы принятых примитивов S4-27c/d/e, новой ISA-семантики нет.
+  - **i2** — owner-driven таймер: dispatch на границе и в Waiting (время до ближайшего из срока таймера APIC и очереди), `LocalApicHandle::next_timer_deadline()` (read-only), ослабление gate `run_sti_apic_quantum` по clock (меняет принятый контракт S4-27c; RDTSC внутри STI-кванта не принимается). Решение консультации по умолчанию: да. Время на инструкцию 0 нс.
+  - **i3** — очередь IRQ-событий в pump: `peek_due` → `request_fixed_edge` → `pop_due` только после успеха; схлопывание due-событий с одним вектором в один IRR-фронт (явно в evidence); generation после reset; только фиксированный вектор; producer остаётся caller-driven.
+  - **i4a** — paged STI/HLT-шаги и paged wake из HaltWait через `deliver_paged_external_interrupt` (S4-27h), caller-driven; один вектор, CR0/CR4=BASE.
+  - **i4b** — pump поверх paged-бэкенда; трейт бэкенда вводится только здесь.
+  - **i5** — перевод `Stage4UartIrqProbe` (S4-24e) на pump (DRY; его тесты служат регрессией; решение по умолчанию: да, отдельным подсрезом) и закрытие оговорок S4-27 в документации.
+- **Граница всего S4-27i:** не входят run_boot и плата, Linux-профиль, PIT/PIC/INTIN2, порт-тик и синхронизация часов по инструкциям (S4-37a); вложенные #PF/#NP/#DF (S4-33); MOV SS и NMI; JIT внутри pump (`not_supported`, отмечается в S4-33); общий paged-интерпретатор и декод Linux EOI `movl` disp32 (S4-38); CPL3, IST≠0, TLB, 2 MiB, x2APIC, TSC-deadline; несколько vCPU и потоки.
+- **Готово:** каждый подсрез выполняется как guest fact с инъекцией; принятые S4-27a–h и S4-28 не меняются (кроме явно записанного gate в i2); S4-27 остаётся открытым до i5.
+
+#### S4-27i1. Flat event pump: граница инструкции, STI/HLT/wake и IRQ от caller
+
+- [x] Принято после ревью (Claude Opus, high). Оговорки: частичный REP задерживает прерывание до конца инструкции (ISSUE-068); CLI при IF=1 вне shadow не поддержан (terminal Unsupported, ISSUE-069); HLT через `run(1)` даёт terminal `Unsupported`, а не `Halted` (поправка формулировки плана); S4-27 и S4-27i остаются открытыми.
+- **Контракт:** `InterruptPump` (flat Long64/CPL0) владеет session или HaltWait и APIC. `run(budget, stop)` идёт по границам: STOP → проверка APIC (IF, shadow, completed boundary, `eligible`) → доставка или одна инструкция. HLT → `into_halt_wait`/`poll_apic`; STI → `run_sti_apic_quantum`; IRETQ → `run_same_cpl0_iretq`; остальное → `run_apic_quantum`. Выходы: `IdleHalt`, `Budget`, `Stopped`, `Terminal`, `Rejected`. Принятые API не меняются.
+- **Проверка:** builder → runner или machine test. Сценарии: pending до `STI; HLT` → доставка после HLT, RIP после HLT; pending при IF=1 перед HLT → RIP указывает на HLT; `CLI; HLT` → `IdleHalt`; self-IPI B во время обработчика A → B доставлен после EOI и IRETQ, в правильном порядке. Evidence: RIP/RSP/RFLAGS, IRR/ISR, трасса событий. Инъекции: пропуск проверки в shadow; HLT в `run(1)` даёт terminal; без EOI второй доставки нет.
+- **Граница:** без clock, таймера, очереди, paged и JIT; запросы только от caller или guest MMIO; S4-24e не мигрируется (это i5). Частичный REP: после незавершённого REP граница не завершена, задержка прерывания — записать как отклонение.
+- **Готово:** кейсы выполняются как guest fact, инъекции различимы, тесты S4-27a–h и S4-28 не изменены; DRY-долг перед UART-probe записан; S4-27 остаётся открытым.
+
 ## Решения по консультации Opus (2026-11-09)
 
 Принято как решения этапа по рекомендациям архитектурного советника; каждое изменение плана ниже относится к этим решениям.

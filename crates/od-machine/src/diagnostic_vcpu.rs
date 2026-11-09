@@ -277,6 +277,11 @@ impl DiagnosticHaltWait {
         }
     }
 
+    /// Read one qword from RAM without side effects (evidence only).
+    pub(crate) fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
+        self.session.peek_ram_qword(gpa)
+    }
+
     pub fn stop(&mut self) {
         if matches!(
             self.state,
@@ -939,6 +944,28 @@ impl DiagnosticVcpuSession {
             }
         }
         bytes
+    }
+
+    /// Read one little-endian qword from RAM without side effects, for
+    /// evidence (for example an interrupt frame). `None` when any of the eight
+    /// bytes is not readable RAM.
+    pub(crate) fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
+        let mut value = 0_u64;
+        for offset in 0..8_u64 {
+            let address = crate::GuestPhysicalAddress::new(gpa.checked_add(offset)?);
+            if !matches!(
+                self.bus.memory_kind(address, 1),
+                Ok(crate::MemoryRegionKind::Ram)
+            ) {
+                return None;
+            }
+            let byte = self
+                .bus
+                .read_physical(address, crate::AccessWidth::Byte)
+                .ok()?;
+            value |= (byte & 0xff) << (8 * offset);
+        }
+        Some(value)
     }
 
     /// Deliver one eligible IRQ at a completed boundary without executing any
