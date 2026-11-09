@@ -2,8 +2,8 @@
 //!
 //! The namespace is `\_SB` with one child per device that the manifest marks `PRESENT`:
 //! `PCI0` (PCIe root, from the PCIe ECAM entry, type 7), `ECAM` (`PNP0C02`, the same entry) and `COM1` (type 1). Devices that are
-//! not described here (RTC, HPET, TPM CRB, `_S5_`) belong to S7-14 and S7-22 and are not
-//! emitted; see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
+//! not described here (RTC, HPET, TPM CRB) belong to S7-14 and S7-22 and are not
+//! emitted; `_S5` is added only by `build_dsdt_with_s5` (S4-31e); see `docs/specs/ACPI_SMBIOS_TABLES.md`, section "AML and DSDT".
 //!
 //! The PCIe ECAM entry (S4-31b) is checked by the same rules as the MCFG serializer
 //! (`mcfg::EcamWindow::from_entry`, S4-31a: a memory window of `(end_bus - start_bus + 1) << 20`
@@ -43,6 +43,8 @@ pub enum DsdtError {
     /// reserved `param1` bits, segment, inverted or non-board bus range, length, base, above
     /// 4 GiB); the reason is the MCFG error.
     Ecam(McfgError),
+    /// `_S5` was asked for with a `SLP_TYP` above 7 (the field has 3 bits).
+    SlpTypOutOfRange(u8),
 }
 
 /// Conf1 address/data ports of `PCI0`: `0xCF8..=0xCFF` (MACHINE_CONTRACT.md, S4-30c).
@@ -73,6 +75,31 @@ impl From<TableError> for DsdtError {
 /// A `const fn` (S4-31b0): evaluated at compile time it gives the table as static bytes, called
 /// at run time it gives the same bytes.
 pub const fn build_dsdt(manifest: &BoardManifest, out: &mut [u8]) -> Result<usize, DsdtError> {
+    build_dsdt_inner(manifest, None, out)
+}
+
+/// [`build_dsdt`] plus the soft-off object `Name(\_S5, Package() { SLP_TYPa, SLP_TYPb, 0, 0 })`
+/// at the root, after the `\_SB` scope (S4-31e). `slp_typ_s5` is the `SLP_TYP` value of S5
+/// (`AcpiPmEntry::slp_typ_s5`, `ACPI_SLP_TYP_S5` = 5); it is written for both PM1a and PM1b, and
+/// the two reserved elements are zero. The bytes of the table without `_S5` (the golden tables of
+/// S4-31b) are produced by [`build_dsdt`] unchanged: `_S5` is a separate build variant, not a
+/// change of the old one. `slp_typ_s5` above 7 does not fit the 3-bit `SLP_TYP` field.
+pub const fn build_dsdt_with_s5(
+    manifest: &BoardManifest,
+    slp_typ_s5: u8,
+    out: &mut [u8],
+) -> Result<usize, DsdtError> {
+    if slp_typ_s5 > 7 {
+        return Err(DsdtError::SlpTypOutOfRange(slp_typ_s5));
+    }
+    build_dsdt_inner(manifest, Some(slp_typ_s5), out)
+}
+
+const fn build_dsdt_inner(
+    manifest: &BoardManifest,
+    s5: Option<u8>,
+    out: &mut [u8],
+) -> Result<usize, DsdtError> {
     if out.len() < SDT_HEADER_LEN {
         return Err(DsdtError::Table(TableError::TooShort));
     }
@@ -104,6 +131,9 @@ pub const fn build_dsdt(manifest: &BoardManifest, out: &mut [u8]) -> Result<usiz
             tri!(com.emit(&mut builder), DsdtError::Aml);
         }
         tri!(builder.end(scope), DsdtError::Aml);
+        if let Some(typ) = s5 {
+            tri!(emit_s5(&mut builder, typ), DsdtError::Aml);
+        }
         builder.len()
     };
     let total = SDT_HEADER_LEN + aml_len;
@@ -120,6 +150,22 @@ pub const fn build_dsdt(manifest: &BoardManifest, out: &mut [u8]) -> Result<usiz
     tri!(finish_checksum(head_mut(out, total)), DsdtError::Table);
     tri!(validate_dsdt(head_mut(out, total)));
     Ok(total)
+}
+
+/// `Name(\_S5, Package() { typ, typ, 0, 0 })`. With `typ` = 5 the bytes are
+/// `08 5C 5F 53 35 5F 12 08 04 0A 05 0A 05 00 00` (`typ` 0 and 1 would use the one-byte ZeroOp and
+/// OneOp, the shorter forms of the AML integer encoder). The package holds `SLP_TYPa`, `SLP_TYPb`
+/// and then two reserved values; the text of the ACPI `_Sx` section was NOT read for this slice
+/// (the layout is the one Linux/ACPICA read: `acpi_hw_get_sleep_type_data`), the bytes are fixed
+/// by hand in `dsdt/tests.rs`.
+const fn emit_s5(builder: &mut AmlBuilder<'_>, typ: u8) -> Result<(), AmlError> {
+    tri!(builder.begin_name("\\_S5"));
+    let package = tri!(builder.begin_package());
+    tri!(builder.integer(typ as u64));
+    tri!(builder.integer(typ as u64));
+    tri!(builder.integer(0));
+    tri!(builder.integer(0));
+    builder.end_package(package)
 }
 
 /// Validates a DSDT: header signature, `Length` field, checksum, then the AML structure

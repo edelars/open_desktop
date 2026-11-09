@@ -612,3 +612,134 @@ fn ecam_entries_that_mcfg_rejects_are_rejected_with_the_mcfg_reason() {
         DsdtError::Ecam(McfgError::ReservedParamBits(1 << 16))
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// S4-31e: `\_S5`. `build_dsdt` (and every golden above) is unchanged; `build_dsdt_with_s5` is a
+// separate variant. The reference below is `reference_ecam_only` with the 15 bytes of
+// `Name(\_S5, Package() { 5, 5, 0, 0 })` appended after the `\_SB` scope, assembled by hand:
+// NameOp 08, RootChar 5C + NameSeg `_S5_` (5F 53 35 5F), PackageOp 12, PkgLength 08 (1 + 1 + 2 + 2
+// + 1 + 1), NumElements 04, BytePrefix 0A 05 twice (SLP_TYPa, SLP_TYPb), ZeroOp 00 twice. The
+// table grows from 0xB3 to 0xC2 bytes, the checksum from 0xD9 to 0xE4 (the sum of the 15 new
+// bytes is 486 and the length byte grows by 15: 217 - 501 = 228 mod 256 = 0xE4, worked out by
+// hand and confirmed by a separate script).
+// ---------------------------------------------------------------------------------------------
+
+const S5_BYTES: [u8; 15] = [
+    0x08, 0x5C, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x08, 0x04, 0x0A, 0x05, 0x0A, 0x05, 0x00, 0x00,
+];
+
+fn reference_ecam_only_with_s5() -> Vec<u8> {
+    hex("44 53 44 54 C2 00 00 00 02 E4 4F 50 4E 44 53 4B \
+         4F 44 46 57 44 53 44 54 01 00 00 00 4F 44 46 57 \
+         01 00 00 00 10 4E 08 5C 5F 53 42 5F 5B 82 47 05 \
+         50 43 49 30 08 5F 48 49 44 0C 41 D0 0A 08 08 5F \
+         43 49 44 0C 41 D0 0A 03 08 5F 55 49 44 00 08 5F \
+         53 45 47 00 08 5F 42 42 4E 00 08 5F 43 52 53 11 \
+         1D 0A 1A 88 0D 00 02 0C 00 00 00 00 00 00 00 00 \
+         00 01 00 47 01 F8 0C F8 0C 01 08 79 00 08 5F 50 \
+         52 54 12 02 00 5B 82 2C 45 43 41 4D 08 5F 48 49 \
+         44 0C 41 D0 0C 02 08 5F 55 49 44 00 08 5F 43 52 \
+         53 11 11 0A 0E 86 09 00 01 00 00 10 FC 00 00 10 \
+         00 79 00 08 5C 5F 53 35 5F 12 08 04 0A 05 0A 05 \
+         00 00")
+}
+
+fn build_s5(m: &BoardManifest, typ: u8) -> Vec<u8> {
+    let mut out = [0u8; 1024];
+    let len = build_dsdt_with_s5(m, typ, &mut out).unwrap();
+    out[..len].to_vec()
+}
+
+#[test]
+fn dsdt_with_s5_matches_the_hand_assembled_reference() {
+    let table = build_s5(&manifest(absent(device_type::COM1), board_ecam()), 5);
+    assert_eq!(table, reference_ecam_only_with_s5());
+    assert_eq!(table.len(), 0xC2);
+    assert_eq!(table[9], 0xE4);
+    assert_eq!(&table[table.len() - 15..], &S5_BYTES);
+    validate_dsdt(&table).unwrap();
+}
+
+#[test]
+fn building_without_s5_still_gives_the_old_golden_bytes() {
+    // The `_S5`-less builder is untouched: both goldens of S4-31b still match, with and
+    // without COM1.
+    let no_com = manifest(absent(device_type::COM1), board_ecam());
+    assert_eq!(build(&no_com), reference_ecam_only());
+    let with_com = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
+    assert_eq!(build(&with_com), reference_both());
+}
+
+#[test]
+fn s5_follows_the_scope_and_leaves_the_rest_of_the_table_alone() {
+    // With COM1 too: the variant is the old table, three header bytes changed (Length, checksum)
+    // and the 15 `_S5` bytes appended.
+    let m = manifest(com1(0x3F8, 8, 4, 0, 1), board_ecam());
+    let plain = build(&m);
+    let with_s5 = build_s5(&m, 5);
+    assert_eq!(with_s5.len(), plain.len() + 15);
+    assert_eq!(&with_s5[36..plain.len()], &plain[36..]);
+    assert_eq!(&with_s5[plain.len()..], &S5_BYTES);
+    assert_eq!(&with_s5[..4], b"DSDT");
+    assert_eq!(&with_s5[4..8], &(with_s5.len() as u32).to_le_bytes());
+    assert_eq!(with_s5.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
+    validate_dsdt(&with_s5).unwrap();
+}
+
+#[test]
+fn s5_value_is_written_for_both_pm1a_and_pm1b_and_is_checked() {
+    let m = manifest(absent(device_type::COM1), board_ecam());
+    let table = build_s5(&m, 7);
+    assert_eq!(
+        &table[table.len() - 7..],
+        &[0x04, 0x0A, 0x07, 0x0A, 0x07, 0, 0][..]
+    );
+    let mut out = [0u8; 1024];
+    assert_eq!(
+        build_dsdt_with_s5(&m, 8, &mut out),
+        Err(DsdtError::SlpTypOutOfRange(8))
+    );
+    // An output buffer too small for the extra bytes is an error, not a truncated table.
+    let mut small = [0u8; 0xC1];
+    assert!(build_dsdt_with_s5(&m, 5, &mut small).is_err());
+}
+
+const fn const_entry(device_type: u32, flags: u32, base: u64, length: u64) -> DeviceEntry {
+    DeviceEntry {
+        device_type,
+        flags,
+        base,
+        length,
+        gsi: GSI_NONE,
+        irq_flags: 0,
+        param0: 0,
+        param1: 0,
+    }
+}
+
+#[test]
+fn const_dsdt_with_s5_equals_the_runtime_one() {
+    const BUILT: ([u8; 256], usize) = {
+        let manifest = match BoardManifest::from_entries([
+            const_entry(1, 0, 0, 0),
+            const_entry(2, 0, 0, 0),
+            const_entry(3, 0, 0, 0),
+            const_entry(4, 0, 0, 0),
+            const_entry(5, 0, 0, 0),
+            const_entry(6, 0, 0, 0),
+            const_entry(7, FLAG_PRESENT, 0xFC10_0000, 0x10_0000),
+        ]) {
+            Ok(m) => m,
+            Err(_) => panic!("manifest"),
+        };
+        let mut out = [0u8; 256];
+        match build_dsdt_with_s5(&manifest, 5, &mut out) {
+            Ok(len) => (out, len),
+            Err(_) => panic!("build_dsdt_with_s5 failed in a const context"),
+        }
+    };
+    assert_eq!(
+        &BUILT.0[..BUILT.1],
+        reference_ecam_only_with_s5().as_slice()
+    );
+}
