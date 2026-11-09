@@ -236,7 +236,10 @@ iso
 <!-- root-files:start -->
 ```text
 AGENTS.md
+CLA.md
 CLAUDE.md
+CONTRIBUTING.md
+LICENSE
 README.md
 Cargo.toml
 Cargo.lock
