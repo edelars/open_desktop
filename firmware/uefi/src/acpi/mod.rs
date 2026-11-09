@@ -11,5 +11,6 @@ pub mod fadt;
 pub mod madt;
 pub mod manifest;
 pub mod mcfg;
+pub mod rsdp;
 pub mod sha256;
 pub mod table;

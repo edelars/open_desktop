@@ -1,11 +1,14 @@
-//! S4-31d: the stage-4 blob. The header is read here by hard-coded offsets (not through
+//! S4-31d/g: the stage-4 blob. The header is read here by hard-coded offsets (not through
 //! constants of the builder), the tables are compared with the run-time builders, and the build
 //! is shown to depend on the device table only.
 
 use super::*;
-use crate::acpi::dsdt::validate_dsdt;
-use crate::acpi::manifest::{BoardManifest, DeviceEntry};
+use crate::acpi::dsdt::{build_dsdt, validate_dsdt};
+use crate::acpi::fadt::{build_facs, validate_facs, validate_fadt};
+use crate::acpi::madt::validate_madt;
+use crate::acpi::manifest::{AcpiPmEntry, BoardManifest, DeviceEntry};
 use crate::acpi::mcfg::validate_mcfg;
+use crate::acpi::rsdp::{validate_rsdp, validate_xsdt};
 use crate::acpi::table::byte_sum;
 
 fn le32(bytes: &[u8], at: usize) -> u32 {
@@ -34,77 +37,119 @@ fn const_blob_equals_the_runtime_blob_byte_for_byte() {
     assert_eq!(CONST_BLOB.as_slice(), build(&STAGE4_DEVICES, 0).as_slice());
 }
 
+/// Directory entry `i` as (signature, payload offset, length).
+fn dir_entry(blob: &[u8], i: usize) -> ([u8; 4], usize, usize) {
+    let at = 0x60 + i * 16;
+    (
+        blob[at..at + 4].try_into().unwrap(),
+        le32(blob, at + 4) as usize,
+        le32(blob, at + 8) as usize,
+    )
+}
+
+/// The bytes of the table with `signature` inside the payload.
+fn table<'a>(blob: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
+    let payload = le32(blob, 0x38) as usize;
+    for i in 0..le32(blob, 0x48) as usize {
+        let (sig, offset, len) = dir_entry(blob, i);
+        if &sig == signature {
+            return &blob[payload + offset..payload + offset + len];
+        }
+    }
+    panic!("no table {signature:?}");
+}
+
+fn table_address(blob: &[u8], signature: &[u8; 4]) -> u64 {
+    for i in 0..le32(blob, 0x48) as usize {
+        let (sig, offset, _) = dir_entry(blob, i);
+        if &sig == signature {
+            return le64(blob, 0x30) + offset as u64;
+        }
+    }
+    panic!("no table {signature:?}");
+}
+
 #[test]
-fn tables_in_the_blob_are_the_runtime_dsdt_and_mcfg() {
+fn tables_in_the_blob_are_the_runtime_ones() {
     let blob = build(&STAGE4_DEVICES, 0);
     let manifest = board_manifest();
+    let pm = AcpiPmEntry::from_entry(&STAGE4_DEVICES[7]).unwrap();
     let mut dsdt = [0u8; 512];
-    let dsdt_len = build_dsdt(&manifest, &mut dsdt).unwrap();
+    let dsdt_len = build_dsdt_with_s5(&manifest, pm.slp_typ_s5, &mut dsdt).unwrap();
+    let mut madt = [0u8; 128];
+    let madt_len = build_madt(&manifest, &pm, &mut madt).unwrap();
     let mut mcfg = [0u8; 128];
     let mcfg_len = build_mcfg(&manifest, &mut mcfg).unwrap();
 
-    let payload = le32(&blob, 0x38) as usize;
-    assert_eq!(le32(&blob, 0x48), 2);
-    let entry = |i: usize| {
-        let at = 0x60 + i * 16;
-        (
-            blob[at..at + 4].to_vec(),
-            le32(&blob, at + 4) as usize,
-            le32(&blob, at + 8) as usize,
-        )
-    };
-    let (sig0, off0, len0) = entry(0);
-    let (sig1, off1, len1) = entry(1);
-    assert_eq!((sig0.as_slice(), len0), (b"DSDT".as_slice(), dsdt_len));
-    assert_eq!((sig1.as_slice(), len1), (b"MCFG".as_slice(), mcfg_len));
+    assert_eq!(le32(&blob, 0x48), 5);
+    let order: Vec<[u8; 4]> = (0..5).map(|i| dir_entry(&blob, i).0).collect();
     assert_eq!(
-        &blob[payload + off0..payload + off0 + len0],
-        &dsdt[..dsdt_len]
+        order,
+        [*b"DSDT", *b"APIC", *b"FACP", *b"MCFG", *b"XSDT"],
+        "DSDT first, then MADT, FADT, MCFG; the XSDT, which needs every address, last"
     );
-    assert_eq!(
-        &blob[payload + off1..payload + off1 + len1],
-        &mcfg[..mcfg_len]
-    );
+    assert_eq!(table(&blob, b"DSDT"), &dsdt[..dsdt_len]);
+    assert_eq!(table(&blob, b"APIC"), &madt[..madt_len]);
+    assert_eq!(table(&blob, b"MCFG"), &mcfg[..mcfg_len]);
     assert_eq!(validate_dsdt(&dsdt[..dsdt_len]), Ok(()));
+    assert_eq!(validate_madt(&madt[..madt_len]), Ok(()));
     assert_eq!(validate_mcfg(&mcfg[..mcfg_len]), Ok(()));
+    // The DSDT of the blob is the variant with `\_S5` (15 bytes longer than build_dsdt's).
+    let mut plain = [0u8; 512];
+    assert_eq!(
+        build_dsdt(&manifest, &mut plain).unwrap() + 15,
+        dsdt_len,
+        "the blob carries the DSDT with the \\_S5 package"
+    );
+    // The FADT is the run-time FADT for the addresses the layout gives.
+    let addresses = FadtAddresses {
+        facs: 0xE_F000,
+        dsdt: table_address(&blob, b"DSDT"),
+    };
+    let mut fadt = [0u8; 300];
+    let fadt_len = build_fadt(&pm, &addresses, &mut fadt).unwrap();
+    assert_eq!(table(&blob, b"FACP"), &fadt[..fadt_len]);
+    assert_eq!(validate_fadt(table(&blob, b"FACP")), Ok(()));
 }
 
 #[test]
 fn header_layout_is_the_documented_one() {
     let blob = build(&STAGE4_DEVICES, 0);
     assert_eq!(&blob[..8], b"ODACPIB1");
-    assert_eq!(le32(&blob, 0x08), 1);
+    assert_eq!(le32(&blob, 0x08), 2);
     assert_eq!(le32(&blob, 0x0C), 0x60);
     assert_eq!(&blob[0x10..0x30], &manifest_hash(&STAGE4_DEVICES).unwrap());
     assert_eq!(le64(&blob, 0x30), 0xE_0000);
-    // Header 0x60 + two directory entries = 0x80, already 16-aligned.
-    assert_eq!(le32(&blob, 0x38), 0x80);
-    assert_eq!(le64(&blob, 0x40), 0, "RSDP is S4-31g");
+    // Header 0x60 + five directory entries = 0xB0, already 16-aligned.
+    assert_eq!(le32(&blob, 0x38), 0xB0);
+    assert_eq!(le64(&blob, 0x40), 0xE_0000, "RSDP is at payload offset 0");
     assert_eq!(le32(&blob, 0x4C) as usize, blob.len());
-    assert_eq!(
-        le32(&blob, 0x38) + le32(&blob, 0x3C),
-        blob.len() as u32,
-        "the payload ends at the end of the blob"
-    );
-    assert!(blob[0x50..0x60].iter().all(|&b| b == 0));
+    // The payload ends where the FACS segment starts; the FACS ends the blob.
+    assert_eq!(le32(&blob, 0x38) + le32(&blob, 0x3C), le32(&blob, 0x50));
+    assert_eq!(le32(&blob, 0x3C) % 16, 0);
+    assert_eq!(le32(&blob, 0x54), 64);
+    assert_eq!(le32(&blob, 0x50) + le32(&blob, 0x54), blob.len() as u32);
+    assert_eq!(le64(&blob, 0x58), 0xE_F000);
     // Directory reserved words are zero.
-    assert_eq!(le32(&blob, 0x60 + 12), 0);
-    assert_eq!(le32(&blob, 0x70 + 12), 0);
+    for i in 0..5 {
+        assert_eq!(le32(&blob, 0x60 + i * 16 + 12), 0);
+    }
 }
 
 #[test]
-fn payload_layout_has_an_empty_rsdp_slot_aligned_tables_and_zero_gaps() {
+fn payload_layout_has_the_rsdp_in_the_slot_aligned_tables_and_zero_gaps() {
     let blob = build(&STAGE4_DEVICES, 0xFF);
     let payload_start = le32(&blob, 0x38) as usize;
-    let payload = &blob[payload_start..];
-    assert!(payload[..RSDP_SLOT_LEN].iter().all(|&b| b == 0));
+    let payload = &blob[payload_start..payload_start + le32(&blob, 0x3C) as usize];
+    // The RSDP occupies 36 bytes of the 0x40-byte slot; the rest of the slot is zero.
+    assert_eq!(&payload[..8], b"RSD PTR ");
+    assert!(payload[36..RSDP_SLOT_LEN].iter().all(|&b| b == 0));
     let mut covered = vec![false; payload.len()];
-    for slot in covered.iter_mut().take(RSDP_SLOT_LEN) {
+    for slot in covered.iter_mut().take(36) {
         *slot = true;
     }
     for i in 0..le32(&blob, 0x48) as usize {
-        let at = 0x60 + i * 16;
-        let (offset, len) = (le32(&blob, at + 4) as usize, le32(&blob, at + 8) as usize);
+        let (_, offset, len) = dir_entry(&blob, i);
         assert_eq!(offset % 16, 0, "tables are 16-aligned");
         assert!(offset >= RSDP_SLOT_LEN);
         let table = &payload[offset..offset + len];
@@ -118,9 +163,47 @@ fn payload_layout_has_an_empty_rsdp_slot_aligned_tables_and_zero_gaps() {
     for (i, byte) in payload.iter().enumerate() {
         assert!(covered[i] || *byte == 0, "gap byte {i} is zero");
     }
-    // Everything the load covers lies in the ACPI table region (reclaim part).
+    // Zero between the directory and the payload, and between the payload and the FACS.
+    assert!(blob[0x60 + 5 * 16..payload_start].iter().all(|&b| b == 0));
+    // Everything the load covers lies in the reclaim part of the region.
     let end = 0xE_0000 + le32(&blob, 0x3C) as u64;
     assert!(end <= 0xE_F000);
+    // DSDT first, right after the slot: the address the FADT tests pin.
+    assert_eq!(table_address(&blob, b"DSDT"), 0xE_0040);
+}
+
+#[test]
+fn rsdp_xsdt_fadt_and_facs_point_at_the_real_offsets() {
+    let blob = build(&STAGE4_DEVICES, 0);
+    let base = le64(&blob, 0x30);
+    let payload = le32(&blob, 0x38) as usize;
+    // RSDP: at load_base, XsdtAddress = the XSDT in the payload, RsdtAddress 0.
+    assert_eq!(le64(&blob, 0x40), base);
+    let rsdp = &blob[payload..payload + 36];
+    assert_eq!(validate_rsdp(rsdp), Ok(()));
+    assert_eq!(le32(rsdp, 16), 0);
+    assert_eq!(le64(rsdp, 24), table_address(&blob, b"XSDT"));
+    // XSDT: FADT, MADT, MCFG, in this order; DSDT and FACS are not listed.
+    let xsdt = table(&blob, b"XSDT");
+    assert_eq!(validate_xsdt(xsdt), Ok(()));
+    assert_eq!(xsdt.len(), 36 + 3 * 8);
+    assert_eq!(le64(xsdt, 36), table_address(&blob, b"FACP"));
+    assert_eq!(le64(xsdt, 44), table_address(&blob, b"APIC"));
+    assert_eq!(le64(xsdt, 52), table_address(&blob, b"MCFG"));
+    // FADT: FIRMWARE_CTRL/X_FIRMWARE_CTRL at 0xE_F000, DSDT/X_DSDT at the DSDT of the payload.
+    let fadt = table(&blob, b"FACP");
+    assert_eq!(le32(fadt, 36), 0xE_F000);
+    assert_eq!(le64(fadt, 132), 0xE_F000);
+    assert_eq!(le32(fadt, 40) as u64, table_address(&blob, b"DSDT"));
+    assert_eq!(le64(fadt, 140), table_address(&blob, b"DSDT"));
+    // FACS: a separate segment after the payload, loaded at 0xE_F000.
+    let facs_at = le32(&blob, 0x50) as usize;
+    let facs = &blob[facs_at..facs_at + 64];
+    assert_eq!(validate_facs(facs), Ok(()));
+    assert_eq!(le64(&blob, 0x58), 0xE_F000);
+    let mut expected = [0u8; 64];
+    build_facs(&mut expected).unwrap();
+    assert_eq!(facs, expected.as_slice());
 }
 
 #[test]
@@ -221,15 +304,34 @@ fn bad_device_tables_are_rejected() {
 }
 
 #[test]
-fn without_an_ecam_window_the_blob_has_the_dsdt_only() {
+fn without_an_ecam_window_the_blob_has_no_mcfg_and_a_two_entry_xsdt() {
     let mut devices = STAGE4_DEVICES;
     devices[6] = absent(device_type::PCIE_ECAM);
     let blob = build(&devices, 0);
-    assert_eq!(le32(&blob, 0x48), 1);
-    assert_eq!(&blob[0x60..0x64], b"DSDT");
+    assert_eq!(le32(&blob, 0x48), 4);
+    let order: Vec<[u8; 4]> = (0..4).map(|i| dir_entry(&blob, i).0).collect();
+    assert_eq!(order, [*b"DSDT", *b"APIC", *b"FACP", *b"XSDT"]);
     assert_eq!(le32(&blob, 0x4C) as usize, blob.len());
-    // Header 0x60 + one entry = 0x70.
-    assert_eq!(le32(&blob, 0x38), 0x70);
+    // Header 0x60 + four entries = 0xA0.
+    assert_eq!(le32(&blob, 0x38), 0xA0);
+    let xsdt = table(&blob, b"XSDT");
+    assert_eq!(xsdt.len(), 36 + 2 * 8);
+    assert_eq!(le64(xsdt, 36), table_address(&blob, b"FACP"));
+    assert_eq!(le64(xsdt, 44), table_address(&blob, b"APIC"));
+}
+
+#[test]
+fn a_buffer_that_is_too_small_is_refused_at_every_step_without_panicking() {
+    let full = build(&STAGE4_DEVICES, 0).len();
+    for len in 0..full {
+        let mut out = vec![0u8; len];
+        assert!(
+            build_blob(&STAGE4_DEVICES, &mut out).is_err(),
+            "{len} bytes are not enough"
+        );
+    }
+    let mut out = vec![0u8; full];
+    assert_eq!(build_blob(&STAGE4_DEVICES, &mut out), Ok(full));
 }
 
 /// The committed fixture (`tests/fixtures/guest/stage4/acpi_blob/`) is what the freestanding

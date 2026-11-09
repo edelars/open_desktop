@@ -1,7 +1,7 @@
-# Stage 4 ACPI blob fixture (S4-31d)
+# Stage 4 ACPI blob fixture (S4-31d, S4-31g)
 
 `stage4_acpi_blob.bin` is the ACPI table blob of the stage-4 board (`pci_ecam`, `acpi_pm`,
-`acpi_tables`; DSDT and MCFG only, 492 bytes). It is not hand-written: it is the `.acpi_blob`
+`acpi_tables`; blob version 2, 1072 bytes: RSDP rev 2, DSDT with `\_S5`, MADT, FADT, MCFG, XSDT and the FACS segment). It is not hand-written: it is the `.acpi_blob`
 section of the freestanding `od-acpi-blob` binary (`firmware/uefi`, target
 `x86_64-unknown-none`), cut out by `tools/build/build_stage4_acpi_blob.py`. Format:
 `firmware/uefi/src/acpi/blob.rs`.

@@ -275,8 +275,10 @@ const fn le64(table: &[u8], at: usize) -> u64 {
 pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
     tri!(validate_table(table, &FADT_SIGNATURE), FadtError::Table);
     if table.len() != FADT_LEN {
+        // `validate_table` has accepted the header, so its `Length` equals `table.len()`; report
+        // the value read from the table, not the constant the rule demands.
         return Err(FadtError::Table(TableError::LengthMismatch {
-            declared: FADT_LEN as u32,
+            declared: le32(table, 4),
             actual: table.len(),
         }));
     }
@@ -396,7 +398,9 @@ pub const fn build_facs(out: &mut [u8]) -> Result<usize, FacsError> {
 }
 
 /// Checks signature, `Length` (64, equal to the slice), version 2, reserved bytes and reserved
-/// flag bits.
+/// flag bits. The rule that `OSPM Flags` (offset 36) are zero describes the table as the
+/// firmware builds it: an OS that already uses the FACS may legitimately have written them, so
+/// this function is not a check of a live table.
 pub const fn validate_facs(table: &[u8]) -> Result<(), FacsError> {
     if table.len() < FACS_LEN {
         return Err(FacsError::TooShort);

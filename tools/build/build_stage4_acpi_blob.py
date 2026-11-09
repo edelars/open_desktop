@@ -7,8 +7,10 @@ build_mcfg, the blob header) into the `.acpi_blob` section. This script only
 
   1. runs `cargo build` for that binary (or takes `--elf`),
   2. cuts the `.acpi_blob` section out of the ELF by its section header,
-  3. reads the header (version, manifest hash, load range, RSDP address, table directory) and
-     checks that it is consistent with the section and that every table adds up to zero,
+  3. reads the header (version, manifest hash, load ranges of the payload and of the FACS
+     segment, RSDP address, table directory) and checks that it is consistent with the section,
+     that every table and both RSDP checksums add up to zero and that the cross-references
+     (RSDP -> XSDT -> tables, FADT -> DSDT/FACS) hit real tables,
   4. writes the raw blob and a metadata JSON.
 
 Format: firmware/uefi/src/acpi/blob.rs. The machine-side validator (od-machine, `acpi_blob.rs`)
@@ -36,10 +38,14 @@ SECTION = ".acpi_blob"
 OUT_NAME = "stage4_acpi_blob"
 
 MAGIC = b"ODACPIB1"
-VERSION = 1
+VERSION = 2
 HEADER_LEN = 0x60
 DIR_ENTRY_LEN = 16
 MAX_TABLES = 8
+RSDP_LEN = 36
+FACS_LEN = 64
+ACPI_REGION_BASE = 0xE0000
+FACS_ADDRESS = 0xEF000
 
 
 class BuildError(Exception):
@@ -150,16 +156,28 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
     payload_offset, payload_len = struct.unpack_from("<II", blob, 0x38)
     (rsdp_address,) = struct.unpack_from("<Q", blob, 0x40)
     table_count, total_len = struct.unpack_from("<II", blob, 0x48)
-    if any(blob[0x50:0x60]):
-        raise BuildError("reserved header bytes are not zero")
+    facs_offset, facs_len = struct.unpack_from("<II", blob, 0x50)
+    (facs_address,) = struct.unpack_from("<Q", blob, 0x58)
     if total_len != len(blob):
         raise BuildError(f"total_len {total_len} differs from the section size {len(blob)}")
     if table_count == 0 or table_count > MAX_TABLES:
         raise BuildError(f"table count {table_count} out of range")
     dir_end = HEADER_LEN + table_count * DIR_ENTRY_LEN
-    if payload_offset < dir_end or payload_offset + payload_len != len(blob):
-        raise BuildError("payload does not end at the end of the blob")
+    if payload_offset < dir_end or payload_offset + payload_len != facs_offset:
+        raise BuildError("the FACS segment does not follow the payload")
+    if facs_len != FACS_LEN or facs_offset + facs_len != len(blob):
+        raise BuildError("the FACS segment does not end the blob")
+    if load_base != ACPI_REGION_BASE or facs_address != FACS_ADDRESS or rsdp_address != load_base:
+        raise BuildError("load base, FACS address or RSDP address is not the contract's")
+    facs = blob[facs_offset : facs_offset + facs_len]
+    if facs[:4] != b"FACS" or struct.unpack_from("<I", facs, 4)[0] != FACS_LEN:
+        raise BuildError("bad FACS signature or length")
+    payload = blob[payload_offset : payload_offset + payload_len]
+    rsdp = payload[:RSDP_LEN]
+    if rsdp[:8] != b"RSD PTR " or rsdp[15] != 2 or sum(rsdp[:20]) & 0xFF or sum(rsdp) & 0xFF:
+        raise BuildError("RSDP signature, revision or checksum is wrong")
     tables = []
+    by_signature: dict[bytes, dict[str, Any]] = {}
     for index in range(table_count):
         at = HEADER_LEN + index * DIR_ENTRY_LEN
         signature = blob[at : at + 4]
@@ -168,7 +186,7 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
             raise BuildError("directory reserved word is not zero")
         if length < 36 or offset + length > payload_len:
             raise BuildError(f"table {signature!r} lies outside the payload")
-        table = blob[payload_offset + offset : payload_offset + offset + length]
+        table = payload[offset : offset + length]
         if table[:4] != signature:
             raise BuildError(f"table at payload offset {offset:#x} has another signature than its directory entry")
         (declared,) = struct.unpack_from("<I", table, 4)
@@ -176,15 +194,31 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
             raise BuildError(f"table {signature!r}: Length field {declared} differs from the directory ({length})")
         if sum(table) & 0xFF:
             raise BuildError(f"table {signature!r}: bytes do not add to zero")
-        tables.append(
-            {
-                "signature": signature.decode("ascii"),
-                "payload_offset": offset,
-                "length": length,
-                "address": load_base + offset,
-                "sha256": sha256(table),
-            }
-        )
+        entry = {
+            "signature": signature.decode("ascii"),
+            "payload_offset": offset,
+            "length": length,
+            "address": load_base + offset,
+            "sha256": sha256(table),
+        }
+        tables.append(entry)
+        by_signature[signature] = entry
+    # RSDP -> XSDT -> FADT/MADT/MCFG; FADT -> DSDT and FACS.
+    (xsdt_address,) = struct.unpack_from("<Q", rsdp, 24)
+    if b"XSDT" not in by_signature or by_signature[b"XSDT"]["address"] != xsdt_address:
+        raise BuildError("RSDP XsdtAddress is not the XSDT of the blob")
+    xsdt = payload[by_signature[b"XSDT"]["payload_offset"] :][: by_signature[b"XSDT"]["length"]]
+    listed = [struct.unpack_from("<Q", xsdt, 36 + 8 * i)[0] for i in range((len(xsdt) - 36) // 8)]
+    wanted = sorted(t["address"] for t in tables if t["signature"] in ("FACP", "APIC", "MCFG"))
+    if sorted(listed) != wanted:
+        raise BuildError("XSDT does not list exactly FADT, MADT and MCFG")
+    if b"FACP" not in by_signature or b"DSDT" not in by_signature:
+        raise BuildError("FADT or DSDT is missing")
+    fadt = payload[by_signature[b"FACP"]["payload_offset"] :][: by_signature[b"FACP"]["length"]]
+    (x_facs,) = struct.unpack_from("<Q", fadt, 132)
+    (x_dsdt,) = struct.unpack_from("<Q", fadt, 140)
+    if x_facs != facs_address or x_dsdt != by_signature[b"DSDT"]["address"]:
+        raise BuildError("FADT X_FIRMWARE_CTRL or X_DSDT does not match the blob")
     return {
         "version": version,
         "manifest_hash": manifest_hash.hex(),
@@ -193,6 +227,14 @@ def parse_blob(blob: bytes) -> dict[str, Any]:
         "payload_len": payload_len,
         "rsdp_address": rsdp_address,
         "tables": tables,
+        "facs": {
+            "blob_offset": facs_offset,
+            "length": facs_len,
+            "address": facs_address,
+            "load_range": {"start": facs_address, "end": facs_address + facs_len},
+            "sha256": sha256(facs),
+        },
+        "xsdt_entries": listed,
     }
 
 

@@ -747,14 +747,8 @@ fn build_handoff(
     }
     for (index, device) in devices.iter().enumerate() {
         let at = device_table_offset + index * DEVICE_ENTRY_BYTES;
-        put32(&mut block, at, device.code);
-        put32(&mut block, at + 0x04, device.flags);
-        put64(&mut block, at + 0x08, device.base);
-        put64(&mut block, at + 0x10, device.length);
-        put32(&mut block, at + 0x18, device.gsi);
-        put32(&mut block, at + 0x1C, device.irq_flags);
-        put64(&mut block, at + 0x20, device.param0);
-        put64(&mut block, at + 0x28, device.param1);
+        // The same encoder the manifest hash uses (`to_bytes`), so the two cannot drift apart.
+        block[at..at + DEVICE_ENTRY_BYTES].copy_from_slice(&device.to_bytes());
     }
     let crc = crc32_ieee(&[&block]);
     put32(&mut block, 0x14, crc);

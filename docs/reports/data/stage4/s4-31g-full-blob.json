@@ -1,0 +1,215 @@
+{
+  "slice": "S4-31g",
+  "date": "2026-11-08",
+  "source": [
+    "firmware/uefi/src/acpi/rsdp.rs",
+    "firmware/uefi/src/acpi/rsdp/tests.rs",
+    "firmware/uefi/src/acpi/blob.rs",
+    "firmware/uefi/src/acpi/blob/tests.rs",
+    "firmware/uefi/src/acpi/fadt.rs",
+    "firmware/uefi/src/acpi/fadt/tests.rs",
+    "crates/od-machine/src/acpi_blob.rs",
+    "crates/od-machine/src/acpi_blob/tests.rs",
+    "crates/od-machine/src/firmware_board.rs",
+    "tools/build/build_stage4_acpi_blob.py",
+    "tools/build/test_build_stage4_acpi_blob.py",
+    "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"
+  ],
+  "blob": {
+    "version": 2,
+    "bytes": 1072,
+    "sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf",
+    "previous_version_1_sha256": "5cf5a93ae4053a216004d9c8bc266e17d44093fddeb5611f99e2765b622cc5c0",
+    "previous_version_1_bytes": 492,
+    "manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "manifest_hash_unchanged_since_s4_31d": true,
+    "header": {
+      "header_len": "0x60",
+      "load_base": "0xE0000",
+      "payload_offset": "0xB0",
+      "payload_len": "0x340",
+      "rsdp_address": "0xE0000",
+      "table_count": 5,
+      "total_len": "0x430",
+      "facs_offset": "0x3F0",
+      "facs_len": 64,
+      "facs_address": "0xEF000"
+    },
+    "load_ranges": [
+      {
+        "what": "payload (tables, E820 ACPI reclaim)",
+        "start": "0xE0000",
+        "end": "0xE0340"
+      },
+      {
+        "what": "FACS segment (E820 NVS)",
+        "start": "0xEF000",
+        "end": "0xEF040"
+      }
+    ],
+    "layout": [
+      {
+        "what": "RSDP rev 2",
+        "payload_offset": "0x000",
+        "address": "0xE0000",
+        "length": 36,
+        "slot": 64
+      },
+      {
+        "what": "DSDT with _S5",
+        "payload_offset": "0x040",
+        "address": "0xe0040",
+        "length": 245
+      },
+      {
+        "what": "MADT (APIC)",
+        "payload_offset": "0x140",
+        "address": "0xe0140",
+        "length": 84
+      },
+      {
+        "what": "FADT (FACP)",
+        "payload_offset": "0x1A0",
+        "address": "0xe01a0",
+        "length": 276
+      },
+      {
+        "what": "MCFG",
+        "payload_offset": "0x2C0",
+        "address": "0xe02c0",
+        "length": 60
+      },
+      {
+        "what": "XSDT",
+        "payload_offset": "0x300",
+        "address": "0xe0300",
+        "length": 60
+      },
+      {
+        "what": "payload tail padding",
+        "payload_offset": "0x33C",
+        "length": 4
+      },
+      {
+        "what": "FACS (separate segment)",
+        "blob_offset": "0x3F0",
+        "address": "0xEF000",
+        "length": 64
+      }
+    ],
+    "facs_placement_reason": "FACS must be at 0xE_F000 (NVS part of the region) while the payload is E820 reclaim and ends at or below 0xE_F000; one payload would need a 60 KiB zero gap. The FACS is a second 64-byte segment after the payload in the file, loaded at facs_address."
+  },
+  "rsdp": {
+    "checksum": 16,
+    "extended_checksum": 203,
+    "xsdt_address": "0xe0300",
+    "sum20": 0,
+    "sum36": 0,
+    "revision": 2,
+    "rsdt_address": 0,
+    "length": 36,
+    "oem_id": "OPNDSK"
+  },
+  "xsdt": {
+    "entries": [
+      "0xe01a0",
+      "0xe0140",
+      "0xe02c0"
+    ],
+    "checksum": 62,
+    "revision": 1,
+    "length": 60,
+    "order": [
+      "FADT",
+      "MADT",
+      "MCFG"
+    ],
+    "dsdt_and_facs_listed": false
+  },
+  "fadt": {
+    "X_DSDT": "0xe0040",
+    "X_FIRMWARE_CTRL": "0xef000",
+    "checksum": 107
+  },
+  "facs": {
+    "address": "0xef000",
+    "sha256": "8a2f3c6d08a637005f7be37885075749128a34fb49e941a47c82848fcd15fdda"
+  },
+  "tables_independent_recompute": {
+    "DSDT": {
+      "address": "0xe0040",
+      "length": 245,
+      "checksum_sum_mod256": 0,
+      "checksum_byte": 9,
+      "sha256": "e7d6a826410445d568da0251f57007cee36f25488690e6740f83f915ddac4b31"
+    },
+    "APIC": {
+      "address": "0xe0140",
+      "length": 84,
+      "checksum_sum_mod256": 0,
+      "checksum_byte": 77,
+      "sha256": "83668885afbfee8bca67a9ae479b9a2e61e06da6dfbaaed7d75fed558386c48c"
+    },
+    "FACP": {
+      "address": "0xe01a0",
+      "length": 276,
+      "checksum_sum_mod256": 0,
+      "checksum_byte": 107,
+      "sha256": "d8d8d4772518c356523395d301ecbc89bb39c6460a056580c8e9045b81b1ea5f"
+    },
+    "MCFG": {
+      "address": "0xe02c0",
+      "length": 60,
+      "checksum_sum_mod256": 0,
+      "checksum_byte": 76,
+      "sha256": "b41038bfdbf2a80720a535e9bef34cdfe7359fab482aaa036e7e9d1dd66d328e"
+    },
+    "XSDT": {
+      "address": "0xe0300",
+      "length": 60,
+      "checksum_sum_mod256": 0,
+      "checksum_byte": 62,
+      "sha256": "1f30613aa8a430f915b10fc831a70af85b3f9b12b222f3ceb820c3642caeca7c"
+    }
+  },
+  "independent_recompute": "python3 -I script (hashlib, struct) that shares no code with the firmware or the machine: manifest hash from the eight device entries, header fields, directory, every table's Length and byte sum (0), both RSDP sums, XSDT entries, FADT X_DSDT/X_FIRMWARE_CTRL, FACS bytes, zero gaps, blob sha256. All equal to the fixture and to the packager's sha256.",
+  "determinism": {
+    "clean_builds": 2,
+    "section_cmp_equal": true,
+    "elf_cmp_equal": true,
+    "blob_sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf"
+  },
+  "tests": {
+    "firmware_uefi_cargo_test": {
+      "passed": 153,
+      "failed": 0,
+      "previous": 143
+    },
+    "od_machine_lib": {
+      "passed": 442,
+      "failed": 0,
+      "previous": 431
+    },
+    "acpi_blob_tests": 26,
+    "python_packaging": {
+      "test_build_stage4_acpi_blob": 5,
+      "test_build_firmware": "not re-run (unchanged)"
+    },
+    "fmt": "cargo fmt --check clean in firmware/uefi and od-machine",
+    "cargo_check_x86_64_unknown_none": "clean"
+  },
+  "debt_closed": {
+    "a": "comments of the boundary tests rewritten with the tests (largest payload ends exactly at 0xE_F000; 0xE_EF80 is no longer a legal base)",
+    "b": "NonZeroHeaderGap: bytes between directory end and payload_offset must be zero",
+    "c": "load_base == 0xE_0000 only (UnexpectedLoadBase)",
+    "d": "firmware_board.rs build_handoff uses DeviceEntry::to_bytes",
+    "e": "validate_fadt LengthMismatch.declared is read from the table",
+    "f": "validate_facs doc: OSPM Flags rule is about the table as built, not a live table",
+    "g": "WBINVD flag stays clear: recorded deviation, already in S4-31e report"
+  },
+  "limits": [
+    "no loader, no E820, no placement in RAM (S4-37); Linux acceptance is S4-38",
+    "RSDP/XSDT layout taken from ACPI 5.2.5.3/5.2.8 and ACPICA acpi_table_rsdp from memory; the ACPI 6.6 text was not read in this slice",
+    "the blob is blob version 2; blobs of version 1 are refused"
+  ]
+}
