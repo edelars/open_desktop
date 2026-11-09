@@ -116,7 +116,7 @@ pub use interrupt_pump::{
     BackendEnv, BackendFlow, BackendStep, FlatBackend, INTERRUPT_PUMP_QUEUE_CAPACITY,
     INTERRUPT_PUMP_TRACE_LIMIT, InterruptPump, PumpBackend, PumpEntrySource, PumpExit, PumpHost,
     PumpHostEvent, PumpHostStep, PumpInjection, PumpQueueError, PumpRejection, PumpResult,
-    PumpTraceEvent, PumpTraceKind,
+    PumpTraceEvent, PumpTraceKind, PumpTraceMode, PumpTraceModeError,
 };
 pub use paged_pump_backend::PagedBackend;
 pub use stage4_interrupt_pump_paged_probe::{
