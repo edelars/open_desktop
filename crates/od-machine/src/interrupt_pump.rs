@@ -2,12 +2,20 @@
 //!
 //! `InterruptPump` owns one flat Long64/CPL0 [`DiagnosticVcpuSession`] (or its
 //! [`DiagnosticHaltWait`] after HLT) and the [`LocalApicHandle`] it polls. It is
-//! a synchronous owner loop without a thread, clock, timer or event queue:
+//! a synchronous owner loop without a thread or event queue:
 //! interrupt requests come from the caller (through the APIC handle) or from
 //! guest MMIO (for example a self-IPI), and `run(budget, stop)` examines each
 //! instruction boundary exactly once, before fetch.
 //!
-//! Boundary order: STOP, then the budget, then (Running only) the APIC check
+//! S4-27i2 (owner-driven timer): when the APIC has a shared-clock timer, the
+//! pump calls `LocalApicHandle::dispatch_timer` on every boundary (Running and
+//! Waiting). In Waiting with no eligible vector it advances the session clock
+//! to `next_timer_deadline()` and dispatches; no deadline (or IF=0, where no
+//! maskable vector can wake the CPU) is `IdleHalt` without advancing time.
+//! Time per instruction is 0 ns: the clock moves only by that idle advance
+//! (or, outside the pump, by the owner of the session).
+//!
+//! Boundary order: STOP, then the budget, then timer dispatch, then (Running only) the APIC check
 //! (IF=1, STI shadow Clear, completed boundary, `eligible()`), then either IRQ
 //! delivery through `run_apic_quantum` or one instruction. HLT never goes
 //! through `run(1)` (the ordinary interpreter has no HLT: terminal): it enters the halt wait,
@@ -24,9 +32,9 @@
 //! the pump finishes the instruction before the next APIC check (interrupt
 //! latency deviates from hardware, which may deliver between iterations).
 
-use crate::diagnostic_vcpu::DiagnosticHaltWait;
+use crate::diagnostic_vcpu::{DiagnosticHaltWait, DiagnosticHaltWaitError};
 use crate::{
-    DiagnosticApicQuantumResult, DiagnosticExit, DiagnosticHaltEnterReason,
+    DeviceError, DiagnosticApicQuantumResult, DiagnosticExit, DiagnosticHaltEnterReason,
     DiagnosticHaltWakeResult, DiagnosticIretqResult, DiagnosticRunResult,
     DiagnosticStiApicQuantumResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
     DiagnosticVcpuSession, LocalApicHandle, WorkLimitReason,
@@ -51,6 +59,9 @@ pub enum PumpInjection {
     /// interpreter has no HLT, so this is a terminal result (`Unsupported`)
     /// instead of a halt wait.
     HltAsOrdinary,
+    /// S4-27i2: the pump does not own the timer: no `dispatch_timer` and no
+    /// idle advance, so a halted guest waiting for its timer stays idle.
+    NoTimerDispatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,6 +132,13 @@ pub enum PumpRejection {
     NoRetirement(WorkLimitReason),
     /// The `INTERRUPT_PUMP_TRACE_LIMIT` bound was reached.
     TraceLimit,
+    /// `dispatch_timer` failed (S4-27i2).
+    TimerDispatch(DeviceError),
+    /// The idle clock advance failed (S4-27i2).
+    TimerAdvance(DiagnosticHaltWaitError),
+    /// The next timer deadline is not in the future after dispatch, so idle
+    /// advance cannot make progress (S4-27i2).
+    TimerNoProgress,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,6 +239,16 @@ impl InterruptPump {
         self.retired_total
     }
 
+    /// Virtual time in nanoseconds of the session clock (S4-27i2); `None`
+    /// when the session has no clock.
+    pub fn virtual_time_ns(&self) -> Option<u64> {
+        match self.cpu.as_ref().expect("cpu is always restored") {
+            Cpu::Running(session) => session.virtual_clock(),
+            Cpu::Waiting(wait) => wait.virtual_clock(),
+        }
+        .map(|clock| clock.now_ns())
+    }
+
     /// Read one qword of guest RAM without side effects (evidence only).
     pub fn peek_ram_qword(&mut self, gpa: u64) -> Option<u64> {
         match self.cpu.as_mut().expect("cpu is always restored") {
@@ -307,7 +335,25 @@ impl InterruptPump {
         }
     }
 
+    /// The pump owns the timer only when the APIC has one and the injection
+    /// does not disable it.
+    fn owns_timer(&self) -> bool {
+        self.injection != Some(PumpInjection::NoTimerDispatch) && self.apic.has_timer()
+    }
+
+    /// Dispatch at most one due timer event (S4-27i2).
+    fn dispatch_due_timer(&mut self) -> Result<(), PumpExit> {
+        if self.owns_timer() {
+            self.apic
+                .dispatch_timer()
+                .map_err(|error| PumpExit::Rejected(PumpRejection::TimerDispatch(error)))?;
+        }
+        Ok(())
+    }
+
     fn step_inner(&mut self) -> Result<Flow, PumpExit> {
+        self.observe()?;
+        self.dispatch_due_timer()?;
         self.observe()?;
         let cpu = self.cpu.take().expect("cpu is always restored");
         let flow = match cpu {
@@ -345,8 +391,13 @@ impl InterruptPump {
                 }
             },
             DiagnosticHaltWakeResult::Waiting => {
+                let advanced = self.idle_advance(&mut wait);
                 self.cpu = Some(Cpu::Waiting(wait));
-                Ok(Flow::Exit(PumpExit::IdleHalt))
+                match advanced {
+                    Ok(true) => Ok(Flow::Continue),
+                    Ok(false) => Ok(Flow::Exit(PumpExit::IdleHalt)),
+                    Err(rejection) => Ok(Self::reject(rejection)),
+                }
             }
             DiagnosticHaltWakeResult::OutsideProfile(reason) => {
                 self.cpu = Some(Cpu::Waiting(wait));
@@ -361,6 +412,33 @@ impl InterruptPump {
                 Ok(Self::terminal(cause))
             }
         }
+    }
+
+    /// Waiting with no eligible vector (S4-27i2): advance the clock to the
+    /// next timer deadline and dispatch. `Ok(false)` means nothing can wake the
+    /// CPU through the timer (no owned timer, IF=0, or no deadline).
+    fn idle_advance(&mut self, wait: &mut DiagnosticHaltWait) -> Result<bool, PumpRejection> {
+        if !self.owns_timer() || wait.state().rflags & RFLAGS_IF == 0 {
+            return Ok(false);
+        }
+        let Some(deadline) = self.apic.next_timer_deadline() else {
+            return Ok(false);
+        };
+        let now = wait
+            .virtual_clock()
+            .ok_or(PumpRejection::TimerAdvance(DiagnosticHaltWaitError::Clock(
+                crate::VirtualClockError::ClockNotConfigured,
+            )))?
+            .now_ns();
+        if deadline <= now {
+            return Err(PumpRejection::TimerNoProgress);
+        }
+        wait.advance_time_ns(deadline - now)
+            .map_err(PumpRejection::TimerAdvance)?;
+        self.apic
+            .dispatch_timer()
+            .map_err(PumpRejection::TimerDispatch)?;
+        Ok(true)
     }
 
     /// Account one run result; `Some` ends the call.

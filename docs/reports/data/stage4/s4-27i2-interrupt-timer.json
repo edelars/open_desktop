@@ -1,0 +1,365 @@
+{
+  "base_revision": "412e6f788e095ef0e4f2e34c9b2af7aea66e2aac",
+  "build": {
+    "image_bytes": 16384,
+    "layout": {
+      "code_end_gpa": "0x4063",
+      "counter_gpa": "0x5000",
+      "entry_gpa": "0x4000",
+      "gdt_gpa": "0x2000",
+      "handler_gpa": "0x4035",
+      "idt_gpa": "0x3000",
+      "image_size": "0x4000",
+      "load_gpa": "0x1000",
+      "segments": [
+        {
+          "filesz": "0x18",
+          "flags": "0x6",
+          "paddr": "0x2000"
+        },
+        {
+          "filesz": "0x1000",
+          "flags": "0x6",
+          "paddr": "0x3000"
+        },
+        {
+          "filesz": "0x64",
+          "flags": "0x5",
+          "paddr": "0x4000"
+        }
+      ],
+      "stack_top": "0x6ff0",
+      "vector": "0x61"
+    },
+    "reproducibility": "two builds byte-identical (stage4_interrupt_timer_build_cli, test_build_stage4_interrupt_timer_probe)",
+    "sources": {
+      "entry.S": "764b9436a536d5573505903c6a070ab49a87da4c60ecc8ad0ae6d46873f0af77",
+      "layout.ld": "2e14680ad5d45dc010bae356ae4dd25acd24c5d613217e60a7da3bd3051493ab"
+    },
+    "toolchain": {
+      "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "host": "aarch64-apple-darwin",
+      "ld.lld": "LLD 23.1.1 (https://github.com/rust-lang/llvm-project.git 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145) (compatible with GNU linkers)",
+      "rust-objcopy": "llvm-objcopy, compatible with GNU objcopy",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    }
+  },
+  "date": "2026-11-09",
+  "deviations": [
+    "gate S4-27c: RDTSC refusal is a code-byte check (rdtsc_controls cannot be separated from clock via public constructors)",
+    "Waiting with IF=0: no idle advance, IdleHalt (not in plan)",
+    "added LocalApicHandle::has_timer() and DiagnosticHaltWait::virtual_clock() (read-only)"
+  ],
+  "expected_sdm_and_formula": {
+    "counter": 5,
+    "events": [
+      {
+        "event": "sti"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 97
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 97
+      },
+      {
+        "event": "eoi",
+        "vector": 97
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 97
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 97
+      },
+      {
+        "event": "eoi",
+        "vector": 97
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 97
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 97
+      },
+      {
+        "event": "eoi",
+        "vector": 97
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 97
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 97
+      },
+      {
+        "event": "eoi",
+        "vector": 97
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      },
+      {
+        "event": "irr",
+        "vector": 97
+      },
+      {
+        "event": "entry",
+        "source": "halt_wake",
+        "vector": 97
+      },
+      {
+        "event": "eoi",
+        "vector": 97
+      },
+      {
+        "event": "iretq"
+      },
+      {
+        "event": "hlt"
+      }
+    ],
+    "final": {
+      "exit": "idle_halt",
+      "rflags": "0x202",
+      "rip": "0x4033",
+      "rsp": "0x6ff0",
+      "timer_deadline_ns": null,
+      "vector": {
+        "0x61": [
+          false,
+          false
+        ]
+      }
+    },
+    "frame": {
+      "address": "0x6fc8",
+      "cs": "0x8",
+      "rflags": "0x202",
+      "rip": "0x4033",
+      "rsp": "0x6ff0",
+      "ss": "0x10"
+    },
+    "handler_rflags": "0x2",
+    "n_wakeups": 5,
+    "sources": [
+      "Intel SDM Vol. 3A 10.5.4 (APIC timer: divide configuration, periodic reload)",
+      "Intel SDM Vol. 3A 6.14.2-6.14.3 (64-bit interrupt frame)",
+      "Intel SDM Vol. 3A 10.8.3.1 (EOI)"
+    ],
+    "time_ns": 500000,
+    "timer": {
+      "divide_config": "0x3",
+      "divisor": 16,
+      "formula": "period_ns = initial_count * divisor * 1e9 / timer_hz",
+      "initial_count": 625,
+      "lvt_timer": "0x20061",
+      "period_ns": 100000,
+      "timer_hz": 100000000,
+      "vector": "0x61"
+    },
+    "unarmed": {
+      "counter": 0,
+      "time_ns": 0,
+      "wakeups": 0
+    },
+    "wake_times_ns": [
+      100000,
+      200000,
+      300000,
+      400000,
+      500000
+    ]
+  },
+  "gate_s4_27c": {
+    "acceptance_tests": [
+      "interrupt_timer_pump::sti_quantum_accepts_a_session_clock",
+      "interrupt_timer_pump::rdtsc_inside_the_sti_quantum_is_still_rejected"
+    ],
+    "change": "clock no longer rejected by run_sti_apic_quantum; RDTSC at RIP (0F 31, optional REX) with a clock session is ProfileRejected",
+    "rewritten_test": "diagnostic_vcpu::tests::sti_apic_rejects_invalid_admission_without_mutation (case 2)"
+  },
+  "injection_distinguishability": {
+    "accepted": [
+      "idle_halt",
+      5,
+      5,
+      500000
+    ],
+    "fields": [
+      "stop",
+      "wakeups",
+      "counter",
+      "time_ns"
+    ],
+    "no_dispatch": [
+      "idle_halt",
+      0,
+      0,
+      0
+    ]
+  },
+  "observed_runner": {
+    "accepted": {
+      "counter": 5,
+      "entry_rips": [
+        "0x0000000000004035"
+      ],
+      "entry_times_ns": [
+        100000,
+        200000,
+        300000,
+        400000,
+        500000
+      ],
+      "exit": "idle_halt",
+      "frame_low_to_high_first_entry": [
+        "0x4033",
+        "0x8",
+        "0x202",
+        "0x6ff0",
+        "0x10"
+      ],
+      "injection": null,
+      "quanta": 83,
+      "retired": 73,
+      "rflags": "0x0000000000000202",
+      "rip": "0x0000000000004033",
+      "rsp": "0x0000000000006ff0",
+      "status": "guest_idle",
+      "time_ns": 500000,
+      "timer_deadline_ns": null,
+      "trace_events": [
+        "sti",
+        "hlt",
+        "irr:0x61",
+        "entry:0x61",
+        "eoi:0x61",
+        "iretq",
+        "hlt",
+        "irr:0x61",
+        "entry:0x61",
+        "eoi:0x61",
+        "iretq",
+        "hlt",
+        "irr:0x61",
+        "entry:0x61",
+        "eoi:0x61",
+        "iretq",
+        "hlt",
+        "irr:0x61",
+        "entry:0x61",
+        "eoi:0x61",
+        "iretq",
+        "hlt",
+        "irr:0x61",
+        "entry:0x61",
+        "eoi:0x61",
+        "iretq",
+        "hlt"
+      ],
+      "vectors": {
+        "0x61": {
+          "irr": false,
+          "isr": false
+        }
+      },
+      "waiting": true,
+      "wakeups": 5
+    },
+    "inject_no_dispatch": {
+      "counter": 0,
+      "entry_rips": [],
+      "entry_times_ns": [],
+      "exit": "idle_halt",
+      "frame_low_to_high_first_entry": null,
+      "injection": "NoTimerDispatch",
+      "quanta": 11,
+      "retired": 11,
+      "rflags": "0x0000000000000202",
+      "rip": "0x0000000000004033",
+      "rsp": "0x0000000000006ff0",
+      "status": "guest_idle",
+      "time_ns": 0,
+      "timer_deadline_ns": 100000,
+      "trace_events": [
+        "sti",
+        "hlt"
+      ],
+      "vectors": {
+        "0x61": {
+          "irr": false,
+          "isr": false
+        }
+      },
+      "waiting": true,
+      "wakeups": 0
+    },
+    "unarmed": {
+      "counter": 0,
+      "entry_rips": [],
+      "entry_times_ns": [],
+      "exit": "idle_halt",
+      "frame_low_to_high_first_entry": null,
+      "injection": null,
+      "quanta": 5,
+      "retired": 5,
+      "rflags": "0x0000000000000202",
+      "rip": "0x0000000000004012",
+      "rsp": "0x0000000000006ff0",
+      "status": "guest_idle",
+      "time_ns": 0,
+      "timer_deadline_ns": null,
+      "trace_events": [
+        "sti",
+        "hlt"
+      ],
+      "vectors": {
+        "0x61": {
+          "irr": false,
+          "isr": false
+        }
+      },
+      "waiting": true,
+      "wakeups": 0
+    }
+  },
+  "profile": "Stage4InterruptTimerProbeV1",
+  "slice": "S4-27i2"
+}

@@ -236,6 +236,27 @@ impl LocalApicHandle {
             Ok(true)
         })
     }
+    /// Whether this APIC pair has an opt-in timer (S4-27i2). Read-only.
+    pub fn has_timer(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .timer
+            .is_some()
+    }
+    /// Virtual-time deadline (ns) of the next timer expiry that can raise an
+    /// interrupt (S4-27i2). `None` when there is no timer, no armed event (not
+    /// started, cancelled, or a one-shot that already fired) or the LVT Timer is
+    /// masked (a masked expiry only re-arms and never raises an IRQ). Read-only:
+    /// it consumes no event and does not read or advance the clock.
+    pub fn next_timer_deadline(&self) -> Option<u64> {
+        let pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let timer = pair.timer.as_ref()?;
+        if timer.lvt & MASK != 0 {
+            return None;
+        }
+        timer.queue.next_deadline()
+    }
     /// Disable is rejected while a level request awaits EOI.
     pub fn set_global_enabled(&self, enabled: bool) -> Result<(), DeviceError> {
         self.0
