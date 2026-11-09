@@ -19,6 +19,7 @@ mod stage4_paged_irq_probe;
 mod stage4_paged_sti_hlt_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
+mod stage4_pit_irq0_probe;
 mod stage4_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
@@ -95,6 +96,7 @@ fn main() -> ExitCode {
         Some("--stage4-paged-sti-hlt-probe") => return stage4_paged_sti_hlt_probe::run(&args),
         Some("--stage4-pf-repair-probe") => return stage4_pf_repair_probe::run(&args),
         Some("--stage4-pit-calibrate-probe") => return stage4_pit_calibrate_probe::run(&args),
+        Some("--stage4-pit-irq0-probe") => return stage4_pit_irq0_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
