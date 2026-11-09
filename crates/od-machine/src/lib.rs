@@ -31,6 +31,7 @@ mod stage4_cr3_mixed_probe;
 mod stage4_cross_page_probe;
 mod stage4_flat_probe;
 mod stage4_huge_pages_probe;
+mod stage4_paged_irq_probe;
 mod stage4_pf_repair_probe;
 mod stage4_pit_calibrate_probe;
 mod stage4_stack_probe;
@@ -136,18 +137,18 @@ pub use paged_descriptor::{
 pub use paged_exception_delivery::{
     PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryOutcome,
     PagedExceptionDeliveryReport, PagedExceptionHandlerEntryReport,
-    PagedExceptionStackDiscardReport, PagedIretqStepReport, PagedSyscallStepReport,
-    PagedUserReturnReport, deliver_and_step_paged_pf_handler, deliver_paged_page_fault,
-    run_paged_syscall_roundtrip, step_paged_cpl3_mov, step_paged_cpl3_mov_cr0,
-    step_paged_cr0_wp_mov, step_paged_cr0_wp_page_table_repair_mov,
-    step_paged_exception_stack_discard, step_paged_iretq, step_paged_iretq_and_user_load,
-    step_paged_iretq_to_cpl3, step_paged_syscall_profile,
+    PagedExceptionStackDiscardReport, PagedExternalInterruptDeliveryReport, PagedIretqStepReport,
+    PagedSyscallStepReport, PagedUserReturnReport, deliver_and_step_paged_pf_handler,
+    deliver_paged_external_interrupt, deliver_paged_page_fault, run_paged_syscall_roundtrip,
+    step_paged_cpl3_mov, step_paged_cpl3_mov_cr0, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_exception_stack_discard, step_paged_iretq,
+    step_paged_iretq_and_user_load, step_paged_iretq_to_cpl3, step_paged_syscall_profile,
 };
 pub use paged_memory_adapter::{
-    PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,
-    PagedMovStepReport, step_paged_invlpg, step_paged_mov, step_paged_mov_2m_ram,
-    step_paged_mov_dword_read, step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch,
-    with_paged_mov_memory,
+    PagedDwordStoreStepReport, PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope,
+    PagedMovStepError, PagedMovStepReport, step_paged_invlpg, step_paged_mov,
+    step_paged_mov_2m_ram, step_paged_mov_dword_read, step_paged_mov_dword_store,
+    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, with_paged_mov_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
@@ -207,6 +208,17 @@ pub use stage4_huge_pages_probe::{
     Stage4HugePagesEvent, Stage4HugePagesFault, Stage4HugePagesInjection,
     Stage4HugePagesInjectionMismatch, Stage4HugePagesReport, Stage4HugePagesStep,
     Stage4HugePagesStop, load_stage4_huge_pages_probe,
+};
+pub use stage4_paged_irq_probe::{
+    LoadedStage4PagedIrqProbe, STAGE4_PAGED_IRQ_EOI_GVA, STAGE4_PAGED_IRQ_FINAL_RIP,
+    STAGE4_PAGED_IRQ_GDT_GVA, STAGE4_PAGED_IRQ_HANDLER_GVA, STAGE4_PAGED_IRQ_IDT_GVA,
+    STAGE4_PAGED_IRQ_IMAGE_BYTES, STAGE4_PAGED_IRQ_INITIAL_RSP, STAGE4_PAGED_IRQ_INSTRUCTIONS,
+    STAGE4_PAGED_IRQ_LAPIC_GVA, STAGE4_PAGED_IRQ_MAIN_GVA, STAGE4_PAGED_IRQ_PTE_GDT,
+    STAGE4_PAGED_IRQ_PTE_HANDLER, STAGE4_PAGED_IRQ_PTE_IDT, STAGE4_PAGED_IRQ_PTE_LAPIC,
+    STAGE4_PAGED_IRQ_PTE_MAIN, STAGE4_PAGED_IRQ_PTE_STACK, STAGE4_PAGED_IRQ_RETURN_RIP,
+    STAGE4_PAGED_IRQ_STACK_GVA, STAGE4_PAGED_IRQ_STEPS, STAGE4_PAGED_IRQ_VECTOR,
+    Stage4PagedIrqEvent, Stage4PagedIrqFault, Stage4PagedIrqInjection, Stage4PagedIrqPtes,
+    Stage4PagedIrqReport, Stage4PagedIrqStep, Stage4PagedIrqStop, load_stage4_paged_irq_probe,
 };
 pub use stage4_pf_repair_probe::{
     LoadedStage4PfRepairProbe, STAGE4_PF_REPAIR_CANARY_OFFSET, STAGE4_PF_REPAIR_DATA_GPA,

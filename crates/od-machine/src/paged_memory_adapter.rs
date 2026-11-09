@@ -78,6 +78,7 @@ pub fn step_paged_invlpg(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -135,6 +136,7 @@ pub fn with_paged_mov_memory<R>(
         reject_crossing_qword: true,
         read_only_qword: true,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -185,6 +187,7 @@ pub fn step_paged_mov(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -234,6 +237,7 @@ pub fn step_paged_mov_2m_ram(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: true,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -278,6 +282,7 @@ pub fn step_paged_mov_word_read(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -347,6 +352,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -398,6 +404,7 @@ pub fn step_paged_mov_dword_read(
         reject_crossing_qword: false,
         read_only_qword: false,
         large_ram_profile: false,
+        dword_write_profile: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -408,6 +415,67 @@ pub fn step_paged_mov_dword_read(
     )
     .map_err(PagedMovStepError::CpuInput)?;
     Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Result of one paged dword store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedDwordStoreStepReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains non-architectural walker/backend/MMIO classifications.
+    pub memory_error: Option<TrackedAccessError>,
+}
+
+/// Execute the exact S4-27h `MOV [RBX],EAX` (`89 03`) dword store through the
+/// tracked walker with MMIO dispatch (the EOI store of a paged interrupt
+/// handler). Like [`step_paged_mov_dword_read`] it does not inherit the qword
+/// profile; the CPU profile owns decode and retirement, this adapter supplies
+/// the paging snapshot, one-dword writes, MMIO routing and walker A/D callbacks.
+/// The Dirty bit of the leaf is set before an MMIO store is dispatched.
+pub fn step_paged_mov_dword_store(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedDwordStoreStepReport, crate::ProbeConfigError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: false,
+        dword_write_profile: true,
+    };
+    let cpu = od_isa::step_paged_mov_dword_store(
+        od_isa::PagedMovDwordStoreLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedDwordStoreStepReport {
         cpu,
         page_fault: memory.page_fault,
         memory_error: memory.memory_error,
@@ -443,6 +511,8 @@ pub struct PagedMovMemoryAdapter<'a> {
     reject_crossing_qword: bool,
     read_only_qword: bool,
     large_ram_profile: bool,
+    /// S4-27h: the only admitted write is one dword (`MOV [RBX],EAX`).
+    dword_write_profile: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -622,20 +692,22 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if self.read_only_qword {
             return Err(Self::unsupported("write"));
         }
-        if source.len() != 8 {
-            return Err(Self::unsupported("non-qword writes"));
+        let (width, expected) = if self.dword_write_profile {
+            (crate::AccessWidth::Dword, 4)
+        } else {
+            (crate::AccessWidth::Qword, 8)
+        };
+        if source.len() != expected {
+            return Err(Self::unsupported(if self.dword_write_profile {
+                "non-dword writes"
+            } else {
+                "non-qword writes"
+            }));
         }
         let mut bytes = [0; 8];
-        bytes.copy_from_slice(source);
+        bytes[..expected].copy_from_slice(source);
         let value = u64::from_le_bytes(bytes);
-        match self.access(
-            address,
-            context,
-            RamAccessOperation::Write {
-                width: crate::AccessWidth::Qword,
-                value,
-            },
-        )? {
+        match self.access(address, context, RamAccessOperation::Write { width, value })? {
             TrackedAccessOutcome::Written => Ok(()),
             _ => Err(Self::unsupported("non-write result")),
         }
@@ -755,6 +827,7 @@ mod tests {
             reject_crossing_qword: false,
             read_only_qword: false,
             large_ram_profile: false,
+            dword_write_profile: false,
         }
     }
 

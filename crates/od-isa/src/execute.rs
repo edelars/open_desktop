@@ -2112,6 +2112,11 @@ pub struct MovCr3WpLong64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedLidtLong64V1;
 
+/// Exact opt-in CPU profile for the paged dword store `MOV [RBX],EAX` (`89 03`)
+/// used by an interrupt handler to signal EOI (S4-27h).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedMovDwordStoreLong64V1;
+
 /// Exact opt-in CPU profile for flat (CR0/CR3/CR4 absent) `LIDT [RSP+sign_extend(disp8)]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FlatLidtLong64V1;
@@ -16170,6 +16175,107 @@ pub fn step_mov_cr3_wp(
         Cr0Profile::MovCr3WpLong64V1,
         Cr4Profile::MovCr3WpLong64V1,
     )
+}
+
+/// Execute exactly one bare `89 03` (`MOV [RBX],EAX`) dword store under the
+/// CPU-owned paged Long64 CPL0 profile (CR0/CR4 = BASE, EFER = 0xD00, CR3 below
+/// 2^36). The profile is deliberately independent of the qword MOV profiles:
+/// the two code bytes must lie in one 4 KiB page, the 4-byte operand must not
+/// cross a 4 KiB boundary (no split access, so a device register store is one
+/// access) and a non-canonical RBX raises #GP(0). Access order is fetch, then
+/// operand store; the memory implementation owns translation, A/D updates and
+/// any device dispatch. Flags and RAX are unchanged; there is no cache-type
+/// (PCD/PWT/PAT) or write-combining semantics.
+pub fn step_paged_mov_dword_store(
+    _profile: PagedMovDwordStoreLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff > 0xffe {
+        return result(PagedProbeExit::Unsupported { opcode: 0x89 }, 0);
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let mut code = [0u8; 2];
+    for (offset, byte) in code.iter_mut().enumerate() {
+        match memory.fetch(state.rip.wrapping_add(offset as u64), context) {
+            Ok(value) => *byte = value,
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        }
+    }
+    if code != [0x89, 0x03] {
+        return result(PagedProbeExit::Unsupported { opcode: code[0] }, 0);
+    }
+    let address = state.gpr[Register::Rbx as usize];
+    if !long_decode::canonical(address) {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if address & 0xfff > 0xffc {
+        return result(PagedProbeExit::Unsupported { opcode: 0x89 }, 0);
+    }
+    let value = state.gpr[Register::Rax as usize] as u32;
+    match memory.write(address, context, &value.to_le_bytes()) {
+        Ok(()) => {
+            state.rip = state.rip.wrapping_add(2);
+            result(PagedProbeExit::Retired, 1)
+        }
+        Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
 }
 
 /// Execute exactly one bare `0F 01 5C 24 ib` LIDT under the fixed paged

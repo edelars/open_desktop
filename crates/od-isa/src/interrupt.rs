@@ -493,11 +493,58 @@ pub fn deliver_maskable_interrupt(
     context: AccessContext,
     rflags_defined: u64,
 ) -> InterruptDeliveryResult {
-    if state.cr3.is_some() {
-        return outside(InterruptOutsideProfile::UnsupportedCr3State);
-    }
-    if state.cr0.is_some() || state.cr4.is_some() {
-        return outside(InterruptOutsideProfile::UnsupportedCr0State);
+    deliver_interrupt(state, memory, vector, context, rflags_defined, None)
+}
+
+/// Deliver exactly one caller-selected external maskable interrupt on the
+/// CPU-owned paged Long64 CPL0 profile (S4-27h). The body is shared with
+/// [`deliver_maskable_interrupt`]; only the control-register precondition and the
+/// stack-write origin differ. Preconditions match `step_paged_iretq`: CR0 and
+/// CR4 equal the BASE profile, CR3 is below 2^36 and EFER is 0xD00. The frame is
+/// written as `ImplicitStack` qwords (the flat profile uses `Explicit`). The
+/// caller supplies a `GuestMemory` that walks the guest page tables; it
+/// certifies the same boundary and exclusions as the flat entry. No nested
+/// delivery is modelled: a fault on any table or stack access is returned as
+/// `DeliveryAborted` and the caller must stop.
+pub fn deliver_paged_maskable_interrupt(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    context: AccessContext,
+    rflags_defined: u64,
+    efer: u64,
+) -> InterruptDeliveryResult {
+    deliver_interrupt(state, memory, vector, context, rflags_defined, Some(efer))
+}
+
+/// `paged_efer` is `Some` for the paged front and `None` for the flat front.
+fn deliver_interrupt(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    context: AccessContext,
+    rflags_defined: u64,
+    paged_efer: Option<u64>,
+) -> InterruptDeliveryResult {
+    match paged_efer {
+        None => {
+            if state.cr3.is_some() {
+                return outside(InterruptOutsideProfile::UnsupportedCr3State);
+            }
+            if state.cr0.is_some() || state.cr4.is_some() {
+                return outside(InterruptOutsideProfile::UnsupportedCr0State);
+            }
+        }
+        Some(efer) => {
+            if state.cr3.is_none_or(|cr3| cr3 & !((1u64 << 36) - 1) != 0) || efer != 0xd00 {
+                return outside(InterruptOutsideProfile::UnsupportedCr3State);
+            }
+            if state.cr0 != Some(crate::execute::Cr0Profile::BASE)
+                || state.cr4 != Some(crate::execute::Cr4Profile::BASE)
+            {
+                return outside(InterruptOutsideProfile::UnsupportedCr0State);
+            }
+        }
     }
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return outside(InterruptOutsideProfile::InterruptsInhibited);
@@ -651,7 +698,11 @@ pub fn deliver_maskable_interrupt(
         return outside(InterruptOutsideProfile::NonCanonicalStackSpan);
     }
     let write_context = AccessContext {
-        origin: AccessOrigin::Explicit,
+        origin: if paged_efer.is_some() {
+            AccessOrigin::ImplicitStack
+        } else {
+            AccessOrigin::Explicit
+        },
         ..context
     };
     let frame_slots = [
@@ -1040,6 +1091,109 @@ mod tests {
         );
         assert_eq!(state.rip, handler + 1);
         assert_eq!(state.activity, Some(crate::CpuActivity::Running));
+    }
+
+    fn paged_state(rsp: u64) -> LongModeState {
+        LongModeState {
+            cr0: Some(crate::execute::Cr0Profile::BASE),
+            cr3: Some(0x1000),
+            cr4: Some(crate::execute::Cr4Profile::BASE),
+            ..ready_state(rsp)
+        }
+    }
+
+    fn deliver_paged(
+        state: &mut LongModeState,
+        ram: &mut Ram,
+        efer: u64,
+    ) -> InterruptDeliveryResult {
+        deliver_paged_maskable_interrupt(
+            state,
+            ram,
+            0x20,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            INTEGER_FLAGS,
+            efer,
+        )
+    }
+
+    #[test]
+    fn paged_front_writes_the_flat_frame_as_implicit_stack_qwords() {
+        let mut state = paged_state(0x8008);
+        let before = state.clone();
+        let mut ram = Ram::new();
+        ram.configure(0x20, 0xffff_8000_1234_5678, 0x9b, 0x2);
+        assert_eq!(
+            deliver_paged(&mut state, &mut ram, 0xd00),
+            InterruptDeliveryResult::Delivered {
+                vector: 0x20,
+                target_rip: 0xffff_8000_1234_5678,
+                new_rsp: 0x8000 - 40,
+            }
+        );
+        assert_eq!(
+            ram.writes.iter().map(|w| w.0).collect::<Vec<_>>(),
+            [0x7ff8, 0x7ff0, 0x7fe8, 0x7fe0, 0x7fd8]
+        );
+        assert!(
+            ram.writes
+                .iter()
+                .all(|(_, len, ctx)| { *len == 8 && ctx.origin == AccessOrigin::ImplicitStack })
+        );
+        assert_eq!(
+            &ram.bytes[0x7fe8..0x7ff0],
+            &before.rflags.to_le_bytes(),
+            "saved RFLAGS keeps IF"
+        );
+        assert_eq!(state.cr0, before.cr0);
+        assert_eq!(state.cr3, before.cr3);
+        assert_eq!(state.rflags & (1 << 9), 0);
+    }
+
+    #[test]
+    fn paged_front_rejects_unsupported_controls_before_any_access() {
+        let efer_bad = |efer| {
+            let mut state = paged_state(0x8000);
+            let mut ram = Ram::new();
+            let result = deliver_paged(&mut state, &mut ram, efer);
+            assert!(ram.reads.is_empty() && ram.writes.is_empty());
+            result
+        };
+        assert_eq!(
+            efer_bad(0x500),
+            InterruptDeliveryResult::OutsideProfile(InterruptOutsideProfile::UnsupportedCr3State)
+        );
+        for mutate in [
+            |s: &mut LongModeState| s.cr3 = None,
+            |s: &mut LongModeState| s.cr3 = Some(1 << 36),
+            |s: &mut LongModeState| s.cr0 = None,
+            |s: &mut LongModeState| s.cr0 = Some(0x8005_0033),
+            |s: &mut LongModeState| s.cr4 = Some(0x20 | (1 << 9)),
+        ] {
+            let mut state = paged_state(0x8000);
+            mutate(&mut state);
+            let before = state.clone();
+            let mut ram = Ram::new();
+            assert!(matches!(
+                deliver_paged(&mut state, &mut ram, 0xd00),
+                InterruptDeliveryResult::OutsideProfile(
+                    InterruptOutsideProfile::UnsupportedCr0State
+                        | InterruptOutsideProfile::UnsupportedCr3State
+                )
+            ));
+            assert_eq!(state, before);
+            assert!(ram.reads.is_empty() && ram.writes.is_empty());
+        }
+        // The flat front still refuses a paged state.
+        let mut state = paged_state(0x8000);
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::OutsideProfile(InterruptOutsideProfile::UnsupportedCr3State)
+        );
     }
 
     #[test]
