@@ -1798,6 +1798,20 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** TLB-on не проверяется (S4-14 не принят); INVLPG не заявляется как необходимый (его пропуск ничего не ломает в этом профиле); U/S, NX и #PF из CPL3 — не входят; IST/TSS, другие пары исключений, cross-page, JIT — не входят; это не закрывает родителя S4-33.
 - **Готово:** кейс выполняется как guest fact; отказ, repair и повтор различимы в evidence; инъекции различимы.
 
+#### S4-33d. Cross-page read и fetch на собственном ядре (системный кейс S4-33)
+
+- [ ] Принято после ревью.
+- **Контракт:** кейс собственного ядра из S4-33 «cross-page effects», только чтение и fetch. Опирается на принятые S4-11b (qword `48 8B 03`), S4-11c/d (`8B 03` с fetch через границу), S4-11e/f (`66 8B 03`, fetch на `0xffe`/`0xfff`) и профиль S4-32. Профиль `Stage4CrossPageProbeV1`: соседние GVA-страницы данных отображены на несмежные RAM-фреймы probe-карты (128 KiB); инструкция с fetch через границу стоит на стыке двух несмежных кодовых фреймов; в handoff явно заданы CPL0, AC=0, NXE=1; результат проходит через `OUT DX,AL; HLT`. Исполнение — sequencer из принятых `step_paged_mov`, `step_paged_mov_dword_read`, `step_paged_mov_word_read`, `step_paged_mov_word_read_cross_page_fetch` (экспорт `od-machine/src/lib.rs`), хвост через `step_paged_pio_u8` и quantum. Allowlist `PagedCpl0ProbeV1` не расширять (S4-32c проверяет отказ quantum на cross-page).
+- **Предусловие (первый шаг реализации):** qword-путь S4-11b при NXE=1 сохраняет поведение; если нет — срез останавливается и сообщает об этом.
+- **Проверка:** builder → runner. Для каждого шага фиксируются guest state (RIP, RAX, CPL), A по страницам, отсутствие D, CR2 и PFEC. Бюджеты и STOP-причина; same-page контроль; два различных значения на второй странице.
+  Injected regression (каждая различима в evidence):
+  - второй PTE данных not-present → #PF с адресом начала второй страницы, PFEC=0x00, без retirement, RAX не меняется, A первой страницы сохраняется;
+  - второй кодовый PTE с NX → PFEC=0x11 на fetch, operand walk не выполняется;
+  - loader меняет фреймы местами → неверный RAX, кейс падает;
+  - вторая страница в RAM hole → отказ без retirement.
+- **Граница:** cross-page store, RMW, stack, REP и RAM/MMIO split не входят (S4-11 открыт; cross-page store — отдельное архитектурное решение атомарного commit, `not_supported` в матрице); TLB-on не проверяется (S4-14 не принят); в JIT-матрице кейс `not_supported`; CPL3 и delivery #PF не входят; это не закрывает родителя S4-33. Huge pages — отдельно (после S4-10c).
+- **Готово:** кейс выполняется как guest fact; успех, fault на второй странице и инъекции различимы в evidence.
+
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
 - [ ] Методика/harness приняты; физический запуск принят отдельно.
