@@ -12,6 +12,7 @@ mod firmware_board;
 mod identity_memory_adapter;
 mod interrupt_pump;
 mod io_apic;
+mod linux_boot;
 mod local_apic;
 mod nvme;
 mod page_walk;
@@ -128,6 +129,8 @@ pub use stage4_interrupt_pump_paged_probe::{
     enable_stage4_interrupt_pump_paged_apic, expected_stage4_interrupt_pump_paged_image,
     load_stage4_interrupt_pump_paged_probe,
 };
+
+pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
