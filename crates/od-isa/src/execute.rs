@@ -17377,6 +17377,39 @@ pub fn step_paged_probe<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
+        None,
+    )
+}
+
+/// Execute one `PagedCpl0ProbeV1` instruction like [`step_paged_probe`], with
+/// an explicit time source for the exact bare `RDTSC` (`0F 31`, no prefixes).
+/// The source is called exactly once per retired `RDTSC`; it owns the TSC and
+/// the instruction does not advance time. Without a source, or for any other
+/// `RDTSC` form (`66`, REX, `F2`/`F3`), the result stays `Unsupported`.
+pub fn step_paged_probe_with_rdtsc<P: crate::PortIo>(
+    _profile: PagedCpl0ProbeV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+    source: &mut dyn FnMut() -> u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_probe_inner(
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        0,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+        Some(source),
     )
 }
 
@@ -17559,6 +17592,7 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17590,6 +17624,7 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17860,6 +17895,7 @@ pub fn step_paged_cr0_wp_mov(
         &mut NoPortIo,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17895,6 +17931,7 @@ pub fn step_paged_cpl3_load(
         &mut NoPortIo,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17930,6 +17967,7 @@ pub fn step_paged_cpl3_mov(
         &mut NoPortIo,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17968,6 +18006,7 @@ pub fn step_mov_cr0_wp(
         &mut NoPortIo,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -17996,6 +18035,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
         pio,
         context,
         initial_rflags_defined,
+        None,
     )
 }
 
@@ -18013,6 +18053,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     pio: &mut P,
     context: AccessContext,
     initial_rflags_defined: u64,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
 ) -> PagedProbeResult<P::Error> {
     let result = |exit, instructions_executed| PagedProbeResult {
         exit,
@@ -18510,6 +18551,24 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     && destination.size() == OperandSize::Word)) =>
         {
             state.write(destination, value);
+            state.rip = next_rip;
+        }
+        // S4-37a6a: bare `0F 31` only in the base profile and only with an
+        // explicit time source. 32-bit register writes zero-extend into
+        // RAX/RDX; RFLAGS is untouched.
+        Operation::Rdtsc
+            if base_profile
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x31
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let Some(source) = rdtsc else {
+                return unsupported();
+            };
+            let value = source();
+            state.gpr[Register::Rax as usize] = u64::from(value as u32);
+            state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
             state.rip = next_rip;
         }
         _ => return unsupported(),
@@ -150667,6 +150726,80 @@ mod paged_cr3_probe_tests {
             0xd00,
             crate::INTEGER_FLAGS,
         )
+    }
+
+    #[test]
+    fn paged_probe_rdtsc_source_is_ignored_outside_base_profile() {
+        // Pass a source through step_paged_probe_inner with non-base flags:
+        // the base_profile gate (not the missing source) must reject RDTSC.
+        // Parameter order: user_mov, user_load_only, allow_stack_forms,
+        // allow_cr3, allow_cr0_wp, cr0_mov_only, allow_mov_cr0.
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        // allow_stack_forms isolates the gate: no other admission differs
+        // from the base profile (CR3 absent, efer unused).
+        let mut state = state();
+        state.cr3 = None;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x31]);
+        let mut calls = 0;
+        let mut source = || {
+            calls += 1;
+            0x1_2345_6789u64
+        };
+        let result = step_paged_probe_inner(
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            0,
+            &mut state,
+            &mut memory,
+            &mut NoPio,
+            context,
+            crate::INTEGER_FLAGS,
+            Some(&mut source),
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(calls, 0);
+
+        // CR3 and CR0.WP profiles: source supplied, still never called.
+        for (allow_cr3, allow_cr0_wp) in [(true, false), (false, true)] {
+            let mut state = self::state();
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x31]);
+            let mut calls = 0;
+            let mut source = || {
+                calls += 1;
+                1u64
+            };
+            let result = step_paged_probe_inner(
+                false,
+                false,
+                false,
+                allow_cr3,
+                allow_cr0_wp,
+                false,
+                false,
+                0xd00,
+                &mut state,
+                &mut memory,
+                &mut NoPio,
+                context,
+                crate::INTEGER_FLAGS,
+                Some(&mut source),
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
+            assert_eq!(state, before);
+            assert_eq!(calls, 0);
+        }
     }
 
     #[test]
