@@ -7,17 +7,19 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::{
-    ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AccessWidth, AcpiPm, AcpiPmHandle,
-    BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES,
-    DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE,
-    DisplayDevice, DisplayHandle, GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE,
-    IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus,
-    MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec,
-    MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice,
-    NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PagedProbeExit,
-    PagedProbeQuantumReport, PciEcam, PortAddress, PortRange, PortRegionBinding, RamLimits,
-    TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError,
-    VirtualClockHandle, run_paged_probe,
+    ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
+    AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
+    DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestPhysicalAddress,
+    GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE,
+    LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MachineStopReason,
+    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE,
+    NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT,
+    PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
+    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
+    PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices, PortAddress,
+    PortRange, PortRegionBinding, RamLimits, TrackedAccessError, Uart16550Handle,
+    Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
@@ -142,6 +144,14 @@ pub struct FirmwareBoardConfig {
     /// and raises `version_minor` to 2. The memory map is unchanged (the range
     /// is part of the low RAM region); no table bytes are written yet (S4-31d..g).
     pub acpi_tables: bool,
+    /// Linux profile (S4-37a1), opt-in. Requires `acpi_pm`, `acpi_tables` and
+    /// `pci_ecam` (otherwise `Config`). Binds, on the board clock: the PIT
+    /// `0x40..=0x43` and port B `0x61`, the 8259 pair `0x20..=0x21` and
+    /// `0xA0..=0xA1`, and the absent-device sinks (read `0xFF`, write ignored)
+    /// for CMOS `0x70..=0x71`, `0xED` and `0x80`. The handoff block and the ACPI
+    /// manifest hash do not depend on it (`false` and `true` give the same bytes).
+    /// Not bound: `0x60/0x64` (a trap), LAPIC shared timer, port tick, IRQ delivery.
+    pub linux_profile: bool,
 }
 
 impl Default for FirmwareBoardConfig {
@@ -156,6 +166,7 @@ impl Default for FirmwareBoardConfig {
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
+            linux_profile: false,
         }
     }
 }
@@ -346,6 +357,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     if config.acpi_tables && !config.acpi_pm {
         return Err(FirmwareBoardError::Config(
             "acpi_tables describes the PM block and needs acpi_pm",
+        ));
+    }
+    if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
+        return Err(FirmwareBoardError::Config(
+            "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
         ));
     }
     if config.serial.len() > 64 || config.serial.iter().any(|b| !(0x20..=0x7e).contains(b)) {
@@ -967,6 +983,18 @@ fn load_firmware_image_with_pci(
     config: &FirmwareBoardConfig,
     pci: PciEcam,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    load_firmware_image_inner(image, config, pci, None)
+}
+
+/// `pit_clock` replaces the clock of the Linux-profile PIT. Production code always
+/// passes `None` (the PIT then reads the board clock); only a test injects another
+/// handle, to prove that the binding really follows the board clock (S4-37a1).
+fn load_firmware_image_inner(
+    image: &[u8],
+    config: &FirmwareBoardConfig,
+    pci: PciEcam,
+    pit_clock: Option<VirtualClockHandle>,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
     let entry_offset = validate_image(image, handoff_minor(&devices))?;
     validate_config(config)?;
@@ -998,7 +1026,9 @@ fn load_firmware_image_with_pci(
         DisplayDevice::new_with_handle()
     };
     // Bus order: COM1, LAPIC, IOAPIC, display, then the optional NVMe controller,
-    // the optional PCI configuration device and the optional ACPI PM block.
+    // the optional PCI configuration device and the optional ACPI PM block; the
+    // `linux_profile` devices (PIT, port B, 8259 pair, CMOS, 0xED, 0x80) are appended
+    // at the very end of the list.
     let mut bus_devices: Vec<Box<dyn crate::BusDevice>> = vec![
         Box::new(uart_device),
         Box::new(lapic),
@@ -1065,6 +1095,35 @@ fn load_firmware_image_with_pci(
         });
         bus_devices.push(Box::new(device));
         acpi_pm = Some(handle);
+    }
+    if config.linux_profile {
+        let mut bind = |base: u16, bytes: u32, device: Box<dyn crate::BusDevice>| {
+            ports.push(PortRegionBinding {
+                range: PortRange::new(PortAddress::new(base), bytes)
+                    .map_err(FirmwareBoardError::BusBuild)?,
+                device_index: bus_devices.len(),
+            });
+            bus_devices.push(device);
+            Ok::<(), FirmwareBoardError>(())
+        };
+        // The PIT and port B read the same clock as the PM timer.
+        let pit = Pit8254Devices::new(pit_clock.unwrap_or_else(|| clock.clone()));
+        bind(PIT_BASE_PORT, PIT_PORT_BYTES, Box::new(pit.pit))?;
+        bind(PIT_PORT_B, PIT_PORT_B_BYTES, Box::new(pit.port_b))?;
+        let pair = Pic8259Pair::new();
+        bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
+        bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
+        for region in [
+            AbsentPortRegion::Cmos,
+            AbsentPortRegion::IoDelay,
+            AbsentPortRegion::Post,
+        ] {
+            bind(
+                region.base_port(),
+                region.port_bytes(),
+                Box::new(AbsentPorts::new(region)),
+            )?;
+        }
     }
     let mut bus = MachineBus::new(
         map,
@@ -2803,6 +2862,223 @@ mod tests {
                 .bus_mut()
                 .read_physical(ecam_at(0), AccessWidth::Dword),
             Ok(0xFFFF_FFFF)
+        );
+    }
+
+    // ---- S4-37a1: Linux profile (opt-in `linux_profile`) ----
+
+    fn linux_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            pci_ecam: true,
+            linux_profile: true,
+            ..tables_config()
+        }
+    }
+
+    fn linux_board() -> LoadedFirmwareBoard {
+        load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap()
+    }
+
+    fn inb(board: &mut LoadedFirmwareBoard, port: u16) -> Result<u32, BusAccessError> {
+        board.bus_mut().read_port(io_port(port), AccessWidth::Byte)
+    }
+
+    fn outb(board: &mut LoadedFirmwareBoard, port: u16, value: u32) -> Result<(), BusAccessError> {
+        board
+            .bus_mut()
+            .write_port(io_port(port), AccessWidth::Byte, value)
+    }
+
+    /// Channel 0 in mode 0, LSB then MSB, reload 10000; returns the counter read
+    /// as two bytes.
+    fn pit_ch0_program_and_read(board: &mut LoadedFirmwareBoard) -> u32 {
+        outb(board, 0x43, 0x30).unwrap();
+        outb(board, 0x40, 10_000 & 0xFF).unwrap();
+        outb(board, 0x40, 10_000 >> 8).unwrap();
+        pit_ch0_read(board)
+    }
+
+    fn pit_ch0_read(board: &mut LoadedFirmwareBoard) -> u32 {
+        let lo = inb(board, 0x40).unwrap();
+        let hi = inb(board, 0x40).unwrap();
+        (hi << 8) | lo
+    }
+
+    /// Ports the profile binds (or, without the flag, leaves as a trap).
+    const LINUX_PROFILE_PORTS: [u16; 15] = [
+        0x40, 0x41, 0x42, 0x43, 0x61, 0x20, 0x21, 0xA0, 0xA1, 0x70, 0x71, 0xED, 0x80, 0x60, 0x64,
+    ];
+
+    #[test]
+    fn linux_profile_is_off_by_default_and_leaves_its_ports_unmapped() {
+        assert!(!FirmwareBoardConfig::default().linux_profile);
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        for port in LINUX_PROFILE_PORTS {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+            assert_eq!(
+                outb(&mut board, port, 0),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "write {port:#x}"
+            );
+        }
+        // The default board is unchanged byte for byte.
+        let mut default = load(&hlt_image());
+        assert_eq!(hex(default.handoff_block()), REFERENCE_HANDOFF_HEX);
+        assert_eq!(
+            inb(&mut default, 0x80),
+            Err(BusAccessError::UnmappedPort(io_port(0x80)))
+        );
+    }
+
+    #[test]
+    fn linux_profile_does_not_change_the_handoff_or_the_manifest_hash() {
+        let off_config = tables_config_with_ecam();
+        let on_config = linux_config();
+        let image = minor2_image(&[0xf4]);
+        let off = load_firmware_image(&image, &off_config).unwrap();
+        let on = load_firmware_image(&image, &on_config).unwrap();
+        assert_eq!(on.handoff_block(), off.handoff_block());
+        assert_eq!(
+            on_config.acpi_manifest_hash().unwrap(),
+            off_config.acpi_manifest_hash().unwrap()
+        );
+        assert_eq!(on.boot_page_table_bytes(), off.boot_page_table_bytes());
+    }
+
+    fn tables_config_with_ecam() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            pci_ecam: true,
+            ..tables_config()
+        }
+    }
+
+    #[test]
+    fn linux_profile_needs_acpi_pm_acpi_tables_and_pci_ecam() {
+        let wanted =
+            || FirmwareBoardError::Config("linux_profile needs acpi_pm, acpi_tables and pci_ecam");
+        let image = minor2_image(&[0xf4]);
+        for (acpi_pm, acpi_tables, pci_ecam) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+            (false, false, true),
+        ] {
+            let config = FirmwareBoardConfig {
+                acpi_pm,
+                acpi_tables,
+                pci_ecam,
+                linux_profile: true,
+                ..reference_config()
+            };
+            assert_eq!(
+                load_firmware_image(&image, &config).err(),
+                Some(wanted()),
+                "pm={acpi_pm} tables={acpi_tables} ecam={pci_ecam}"
+            );
+            assert_eq!(config.acpi_manifest_hash().err(), Some(wanted()));
+        }
+        // `acpi_tables` without `acpi_pm` keeps its own, earlier error.
+        let tables_no_pm = FirmwareBoardConfig {
+            acpi_tables: true,
+            pci_ecam: true,
+            linux_profile: true,
+            ..reference_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&image, &tables_no_pm),
+            Err(FirmwareBoardError::Config(_))
+        ));
+        assert!(load_firmware_image(&image, &linux_config()).is_ok());
+    }
+
+    #[test]
+    fn linux_profile_pit_counts_with_the_board_clock() {
+        let mut board = linux_board();
+        let first = pit_ch0_program_and_read(&mut board);
+        assert!(first <= 10_000 && first > 9_000, "{first}");
+        board.advance_time_ns(1_000_000).unwrap(); // 1193 PIT ticks
+        let second = pit_ch0_read(&mut board);
+        assert_eq!(first - second, 1_193);
+        // Port B answers as well (refresh bit toggles, no error).
+        assert!(inb(&mut board, 0x61).is_ok());
+    }
+
+    #[test]
+    fn linux_profile_pit_on_a_foreign_clock_stands_still() {
+        // Injection (test only): the PIT reads a clock the board never advances.
+        let foreign = VirtualClockHandle::new(1_000_000_000).unwrap();
+        let mut board = load_firmware_image_inner(
+            &minor2_image(&[0xf4]),
+            &linux_config(),
+            PciEcam::new(),
+            Some(foreign),
+        )
+        .unwrap();
+        let first = pit_ch0_program_and_read(&mut board);
+        board.advance_time_ns(1_000_000).unwrap();
+        assert_eq!(pit_ch0_read(&mut board), first, "the counter must not move");
+        // The same sequence on the board clock does move (previous test), so a
+        // regression of the binding to a private clock is caught.
+    }
+
+    #[test]
+    fn linux_profile_8259_pair_accepts_the_linux_check_timer_init() {
+        use crate::Pic8259Role;
+        let mut board = linux_board();
+        // Master: ICW1, ICW2, ICW3, ICW4 = 0x03 (AEOI).
+        outb(&mut board, 0x20, 0x11).unwrap();
+        outb(&mut board, 0x21, u32::from(Pic8259Role::Master.icw2())).unwrap();
+        outb(&mut board, 0x21, u32::from(Pic8259Role::Master.icw3())).unwrap();
+        outb(&mut board, 0x21, 0x03).unwrap();
+        // Slave: ICW4 = 0x01.
+        outb(&mut board, 0xA0, 0x11).unwrap();
+        outb(&mut board, 0xA1, u32::from(Pic8259Role::Slave.icw2())).unwrap();
+        outb(&mut board, 0xA1, u32::from(Pic8259Role::Slave.icw3())).unwrap();
+        outb(&mut board, 0xA1, 0x01).unwrap();
+        // OCW1: the mask register reads back from both chips.
+        outb(&mut board, 0x21, 0xFB).unwrap();
+        outb(&mut board, 0xA1, 0xFF).unwrap();
+        assert_eq!(inb(&mut board, 0x21), Ok(0xFB));
+        assert_eq!(inb(&mut board, 0xA1), Ok(0xFF));
+    }
+
+    #[test]
+    fn linux_profile_absent_ports_read_0xff_and_ignore_writes() {
+        let mut board = linux_board();
+        for port in [0x70u16, 0x71, 0xED, 0x80] {
+            assert_eq!(inb(&mut board, port), Ok(0xFF), "read {port:#x}");
+            for value in [0u32, 0x55, 0xFF] {
+                outb(&mut board, port, value).unwrap();
+                assert_eq!(
+                    inb(&mut board, port),
+                    Ok(0xFF),
+                    "{port:#x} after {value:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn linux_profile_keeps_the_8042_and_neighbours_as_traps() {
+        let mut board = linux_board();
+        for port in [0x60u16, 0x64, 0x72, 0x81, 0xEC, 0xEE, 0x44, 0x62] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+        // The older devices of the board still answer.
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
+            Ok(u32::from(ACPI_PM1_CNT_SCI_EN))
         );
     }
 }
