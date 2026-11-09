@@ -2905,3 +2905,9 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 **Версия и образ.** С флагом образ должен объявлять `handoff_minor_max ≥ 2` (иначе `ImageHeader { field: "handoff_minor_max" }`, как для NVMe). `region_count` растёт на 3, `device_count` на 1, `total_size` на 144 байта, CRC пересчитывается.
 
 **Не делается.** Сериализаторы FADT, FACS, MADT, RSDP, XSDT и blob (S4-31d–g); E820 и loader (S4-37); изменения MCFG и DSDT; запись SCI в MADT (S4-31f); доставка SCI гостю и события PM1; разбор всего handoff-блока в прошивке (S7-04). `docs/plans/STAGE_4.md` не меняется.
+
+## Boot contract собственного ядра (S4-32d)
+
+Собственное маленькое ядро этапа 4 — отдельный профиль загрузки, а не протокол Linux и не общий ELF/segment loader: загрузчик принимает только raw image фиксированного размера. Entry state общий для всех probe-образов и зашит в код загрузчика (`stage4_flat_probe.rs`, значения раздела S4-32a, стр. 537–539): Long64/CPL0, CR3 = 0x1000, RIP = 0x400000, RSP = 0xA01000 (у Alias — 0xA00000), RDX = 0x3F8. Artifact не может его изменить. Профили различаются только значением RCX (0, store_value или payload) и CPU-профилем `run_stack` (разделы S4-32b и S4-32c). Собственные page tables лежат в image; загрузчик их не синтезирует, только проверяет. Загрузчик строит собственную маленькую карту (RAM и COM1), а не карту firmware board v1; «production memory» означает production RAM owner на этой карте. Неверный entry, битые code, page tables или stack mapping дают `loader_error` (exit 4) и ни одного UART-байта. Исполнение — только через interpreter. Не входит: размещение на board v1, ELF loader, exception delivery, IRQ, JIT.
+
+Фиксированный direct Long64/CPL0 handoff достаточен для S4-32 и расширяется в S4-33 (CPL3, timer/IRQ, IDT/GDT, exception delivery). Подтверждение пользователя требуется только для фиксации: entry state задаёт код, а не artifact.
