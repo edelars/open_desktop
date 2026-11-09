@@ -2526,6 +2526,31 @@ HLT alone does not pass. The older S4-32 loaders continue to require their
 original non-alias layouts. This evidence covers uncached interpreter access,
 not TLB/JIT invalidation, cross-page access, or system acceptance.
 
+## S4-33b: CPL3 SYSCALL/SYSRETQ probe
+
+`Stage4Cpl3SyscallProbeV1` is a strict raw-image profile (image GPA `0x1000`,
+size `0x9000`, 128 KiB RAM, no devices). The loader validates every page-table
+entry, the exact code bytes and zero tails, and that the initial and store
+qwords differ. Page tables map user code GVA `0x400000` (GPA `0x7000`, user
+RX), kernel code GVA `0x600000` (GPA `0x8000`, supervisor RX, the LSTAR target)
+and one data page GPA `0x9000` twice: GVA `0x800000` supervisor RW and GVA
+`0x801000` user RO. The loader supplies the CPL3 entry state: CS `0x23`, SS
+`0x1b`, RIP `0x400000`, EFER `0xd01`, STAR `(0x10<<48)|(8<<32)`, FMASK
+`0x200`, RDI = kernel data GVA, RBX = user data GVA, R10 = store qword, RAX a
+sentinel, RSP `0x702027`, CR3 `0x1000`.
+
+`LoadedStage4Cpl3SyscallProbe::run(budget, ..)` executes the S4-20c steps
+`SYSCALL`, `MOV [RDI],R10`, `SYSRETQ`, `MOV RAX,[RBX]` through
+`step_paged_syscall_profile` unchanged, stops at the first step that does not
+retire, and records per-step RIP, CS, CPL (from CS RPL) and committed writes.
+A successful run ends at RIP `0x400005` in CPL3 with RAX equal to the store
+qword written by the kernel; RSP, CR3 and the kernel code mapping are
+unchanged. The injections `KernelStoreMisdirected` and `SysretStaysCpl0` are
+diagnostic regressions that alter only fixture registers; the runner exposes
+them as `--inject-kernel-no-write` and `--inject-sysret-cpl0`. This profile
+does not execute OUT/HLT, UART, timers, IRQ, exception delivery, TLB or JIT and
+does not close S4-33. See the [S4-33b report](../reports/STAGE_4_S4-33B_2026-11-09.md).
+
 ## Paged `LIDT` adapter (S4-18a)
 
 `step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the

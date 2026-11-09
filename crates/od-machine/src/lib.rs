@@ -26,6 +26,7 @@ mod pic_8259;
 mod pio_step;
 mod pit_8254;
 mod stage4_alias_probe;
+mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
 mod stage4_flat_probe;
 mod stage4_stack_probe;
@@ -153,6 +154,15 @@ pub use paged_vcpu_session::{
     PagedProbeProfile, PagedVcpuError, PagedVcpuHostState, PagedVcpuSession,
 };
 pub use stage4_alias_probe::load_stage4_alias_probe;
+pub use stage4_cpl3_syscall_probe::{
+    LoadedStage4Cpl3SyscallProbe, STAGE4_CPL3_SYSCALL_DATA_GPA, STAGE4_CPL3_SYSCALL_FINAL_RIP,
+    STAGE4_CPL3_SYSCALL_INITIAL_OFFSET, STAGE4_CPL3_SYSCALL_INITIAL_RAX,
+    STAGE4_CPL3_SYSCALL_INITIAL_RSP, STAGE4_CPL3_SYSCALL_INSTRUCTIONS,
+    STAGE4_CPL3_SYSCALL_KERNEL_CODE_GVA, STAGE4_CPL3_SYSCALL_KERNEL_DATA_GVA,
+    STAGE4_CPL3_SYSCALL_STORE_OFFSET, STAGE4_CPL3_SYSCALL_USER_CODE_GVA,
+    STAGE4_CPL3_SYSCALL_USER_DATA_GVA, Stage4Cpl3SyscallEvent, Stage4Cpl3SyscallInjection,
+    Stage4Cpl3SyscallReport, Stage4Cpl3SyscallStop, load_stage4_cpl3_syscall_probe,
+};
 pub use stage4_cr3_mixed_probe::{
     LoadedStage4Cr3MixedProbe, STAGE4_CR3_MIXED_PROBE_IMAGE_BYTES,
     STAGE4_CR3_MIXED_PROBE_IMAGE_GPA, STAGE4_CR3_MIXED_PROBE_ROOT_A, STAGE4_CR3_MIXED_PROBE_ROOT_B,

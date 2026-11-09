@@ -1762,7 +1762,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-33b. CPL3 SYSCALL → kernel store → SYSRETQ → user load (системный кейс S4-33)
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью (Claude Opus, high). Родитель S4-33 открыт. Оговорка: FMASK-эффект на RFLAGS не проверяется (см. отчёт «Открыто»).
 - **Контракт:** кейс собственного ядра из S4-33 «CPL3 syscall/return». Использует принятый примитив S4-20c (bounded paged SYSCALL → kernel store → SYSRETQ → user load) и профиль S4-32; не требует PIT, насоса событий или IRQ.
 - **Проверка:** builder → runner: user-mode код делает SYSCALL, ядро пишет qword, SYSRETQ возвращает в CPL3, user читает значение; guest state (RIP, RSP, CPL, RAX) и event trace; бюджеты и STOP-причина; injected regression: ломаешь запись ядра или возврат CPL — кейс падает.
 - **Граница:** только CPL3 syscall/return; timer, IRQ, HLT wakeup, self-modifying code, huge pages, TLB-on — отдельные кейсы S4-33; это не закрывает родителя S4-33.
