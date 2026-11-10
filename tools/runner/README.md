@@ -774,4 +774,6 @@ instructions before it, and no register changed (`set_exit_detail` is `CpuidDive
 This is an honest edge, not a substitution: the DiagnosticV1 feature words for those leaves are not the
 target profile's, so they are neither supplied nor is the kernel patched. Whatever a run does past a
 `cpuid_divergence` stop is diagnostic only. Without the `cpuid` member `CPUID` stays `unsupported`
-(`0xa2`). `schema_version` stays 1 (`cpuid_divergence_leaf` and the new `exit_kind` are additive).
+(`0xa2`). The set executes only a bare `0F A2`: a prefixed `CPUID` (`66`, `48`, `F3`, ...) with a leaf
+other than the two above stays `unsupported` (`0xa2`); the boundary still sees a prefixed leaf 1 or
+0x80000001 and stops there. `schema_version` stays 1 (`cpuid_divergence_leaf` and the new `exit_kind` are additive).

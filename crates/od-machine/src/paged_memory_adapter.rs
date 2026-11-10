@@ -457,9 +457,14 @@ fn cpuid_leaf_at_rip(
         .ok()?;
         memory.read_u8(physical).ok()
     };
+    // Most instructions neither start with a prefix nor with `0F`: one walk decides that.
+    let first = byte_at(0)?;
+    if first != 0x0F && !is_cpuid_peek_prefix(first) {
+        return None;
+    }
     let mut offset = 0u64;
-    // Up to 14 prefixes and then the two opcode bytes fit the 15-byte instruction limit.
-    while offset < 14 && is_cpuid_peek_prefix(byte_at(offset)?) {
+    // Up to 13 prefixes and then the two opcode bytes fit the 15-byte instruction limit.
+    while offset < 13 && is_cpuid_peek_prefix(byte_at(offset)?) {
         offset += 1;
     }
     if byte_at(offset)? == 0x0F && byte_at(offset + 1)? == 0xA2 {
@@ -533,7 +538,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
     )
 }
 
-/// [`run_cpl0_set_paged_2m_ram`] with the CPUID boundary of S4-38L4 when `cpuid_boundary` is
+/// `run_cpl0_set_paged_2m_ram` with the CPUID boundary of S4-38L4 when `cpuid_boundary` is
 /// set: before each instruction (after the stop and budget checks, before any set call) the
 /// bytes at RIP are peeked, and a `CPUID` whose EAX is a divergence leaf
 /// ([`is_cpuid_divergence_leaf`]) ends the run as `CpuidDivergence` without executing it. This

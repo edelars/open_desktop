@@ -19,8 +19,9 @@
 //! since S4-38L4, CPUID with the DiagnosticV1 answers). The run stops BEFORE a `CPUID` of leaf 1
 //! or 0x8000_0001 (`exit_kind` `cpuid_divergence`, `cpuid_divergence_leaf`): the instruction does
 //! not execute and nothing is answered in its place; other leaves are answered by DiagnosticV1,
-//! and what follows past that edge is diagnostic. A `MOV CR3` continues the run; the `stop` object then also says `path: cpl0_set`, the set
-//! members, the set's own final exit (`set_exit_detail`) and how many CR3 changes happened
+//! and what follows past that edge is diagnostic. A `MOV CR3` continues the run; the `stop` object
+//! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
+//! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
 //! counted and `cr3` is its CR3). The `paged_probe` path carries the same fields with empty
 //! values; `schema_version` stays 1 (the fields are additive).

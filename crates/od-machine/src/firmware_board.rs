@@ -1327,8 +1327,8 @@ impl LoadedFirmwareBoard {
             };
             // A quantum stopped by a tick flag (no PM stop request) with budget left resumes;
             // decided before the exit is converted, so the `Debug` text is built only for the
-            // exit that ends the run. The CPUID boundary is
-            // not a `StopRequested`, so it never resumes.
+            // exit that ends the run. The CPUID boundary is not a `StopRequested`,
+            // so it never resumes.
             if stop_reason.is_none()
                 && remaining > 0
                 && report.instructions_executed > 0
