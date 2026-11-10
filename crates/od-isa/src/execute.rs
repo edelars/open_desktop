@@ -35289,7 +35289,7 @@ fn step_configured(
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
-        Operation::FarReturn => {
+        Operation::FarReturn | Operation::IretQ => {
             control_policy.is_some()
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
@@ -49327,6 +49327,18 @@ fn step_configured(
                 Err(error) => report_memory_error(error),
             };
         }
+        Operation::IretQ => {
+            return match iretq_cpl0(state, memory, context) {
+                Ok(true) => {
+                    *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+                    Ok(StepOutcome::Branched)
+                }
+                Ok(false) => Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                }),
+                Err(error) => report_memory_error(error),
+            };
+        }
         Operation::IndirectJump { operand } => {
             let target = match read_operand(state, memory, context, next_rip, operand) {
                 Ok(value) => value,
@@ -51582,6 +51594,221 @@ fn far_return_cpl0(
     });
     state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(16);
     Ok(true)
+}
+
+/// RFLAGS bits that `IRETQ` loads from the frame at CPL0 (S4-38L5b): `POPFQ_CPL0_FLAGS`
+/// plus RF. TF is rejected (not modeled), VM/VIF/VIP are rejected (see `iretq_cpl0`); bit 1
+/// and the reserved bits are never loaded.
+const IRETQ_CPL0_FLAGS: u64 = POPFQ_CPL0_FLAGS | (1 << 16);
+
+/// RFLAGS bits for which `IRETQ` is not modeled in the frame or in the current state.
+const IRETQ_UNMODELED_FLAGS: u64 = POPFQ_CPL0_TF | (1 << 17) | (1 << 19) | (1 << 20);
+
+/// `IRETQ` (`48 CF`) inside the CPL0 profile set (S4-38L5b): a same-privilege (CPL0 to CPL0)
+/// return to 64-bit code. In 64-bit mode the instruction always pops five qwords
+/// `[RIP][CS][RFLAGS][RSP][SS]` (SDM Vol.2 IRET; section number in Vol.3 not verified), also for a return to the
+/// same privilege level.
+///
+/// Returns `Ok(true)` after committing RIP, CS (selector and cache), RFLAGS (the
+/// `IRETQ_CPL0_FLAGS` bits), RSP and SS (selector, cache, unusable mark); `Ok(false)` for a
+/// legal form the set does not model; an error for a guest fault or a memory error. In
+/// every non-`Ok(true)` case the CPU state is untouched; the only memory writes are the
+/// accessed bits of the CS and SS descriptors, done after every check has passed.
+fn iretq_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<bool, MemoryError> {
+    let Some(gdtr) = state.gdtr else {
+        return Ok(false);
+    };
+    // The set models SS only over a loaded cache; the interrupt shadow must be clear (as for
+    // POPFQ); a current TF/VM/VIF/VIP is not modeled.
+    if state.ss_cache.is_none()
+        || state.ss_selector.is_none()
+        || state.sti_shadow != Some(crate::StiShadow::Clear)
+        || state.rflags & IRETQ_UNMODELED_FLAGS != 0
+    {
+        return Ok(false);
+    }
+    // NT = 1 in IA-32e mode is #GP(0) before the frame is read (SDM IRET task-return path,
+    // per the S4-38L5b review; not checked against the SDM text, which is not in the repo).
+    if state.rflags & (1 << 14) != 0 {
+        return Err(general_protection());
+    }
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    let mut frame = [0_u64; 5];
+    for (index, slot) in frame.iter_mut().enumerate() {
+        let address = stack_access_address(
+            old_rsp.wrapping_add(8 * index as u64),
+            false,
+            OperandSize::Qword,
+        )?;
+        *slot = memory.read_integer(address, context, OperandSize::Qword)?;
+    }
+    let [target, cs_qword, new_rflags, new_rsp, ss_qword] = frame;
+    let cs_selector = cs_qword as u16;
+    let ss_selector = ss_qword as u16;
+
+    // CS: null is #GP(0); LDT selectors and inter-privilege returns (RPL > CPL) are not
+    // modeled. Check order follows `far_return_cpl0` (SDM IRET, IA-32e mode).
+    if cs_selector & 0xfffc == 0 {
+        return Err(general_protection());
+    }
+    if cs_selector & 4 != 0 || cs_selector & 3 != 0 {
+        return Ok(false);
+    }
+    let cs_raw = read_gdt_raw_descriptor(gdtr, memory, context, cs_selector)?;
+    let cs_access = cs_raw.1[5];
+    let cs_flags = cs_raw.1[6] >> 4;
+    if cs_access & 0x10 == 0 || cs_access & 0x08 == 0 {
+        return Err(selector_fault(13, cs_selector));
+    }
+    if cs_flags & 0x2 != 0 && cs_flags & 0x4 != 0 {
+        return Err(selector_fault(13, cs_selector));
+    }
+    if (cs_access >> 5) & 3 != 0 {
+        return Err(selector_fault(13, cs_selector));
+    }
+    if cs_access & 0x80 == 0 {
+        return Err(selector_fault(11, cs_selector));
+    }
+    // A compatibility-mode CS (L = 0) is legal but switches the instruction mode.
+    if cs_flags & 0x2 == 0 {
+        return Ok(false);
+    }
+    if !canonical(target) {
+        return Err(general_protection());
+    }
+
+    // RFLAGS: TF, VM, VIF and VIP in the frame are not modeled (see CPU_CONTRACT S4-38L5b).
+    if new_rflags & IRETQ_UNMODELED_FLAGS != 0 {
+        return Ok(false);
+    }
+
+    // SS. A null selector is legal for a return to 64-bit code at RPL 0 (SDM IRET); a null
+    // selector with RPL bits is not modeled. Otherwise the descriptor must be a present,
+    // writable data segment with DPL = RPL = CPL = 0.
+    let ss_descriptor = if ss_selector & 0xfffc == 0 {
+        if ss_selector != 0 {
+            return Ok(false);
+        }
+        None
+    } else {
+        if ss_selector & 4 != 0 {
+            return Ok(false);
+        }
+        if ss_selector & 3 != 0 {
+            return Err(selector_fault(13, ss_selector));
+        }
+        let raw = read_gdt_raw_descriptor(gdtr, memory, context, ss_selector)?;
+        let access = raw.1[5];
+        if access & 0x10 == 0 || access & 0x08 != 0 || access & 0x02 == 0 {
+            return Err(selector_fault(13, ss_selector));
+        }
+        if (access >> 5) & 3 != 0 {
+            return Err(selector_fault(13, ss_selector));
+        }
+        if access & 0x80 == 0 {
+            return Err(selector_fault(12, ss_selector));
+        }
+        Some(raw)
+    };
+
+    // Accessed bits: the board adapter writes only whole qwords, so each descriptor is
+    // written back as one qword with bit 40 set. The writes follow every check.
+    let (cs_address, cs_bytes) = cs_raw;
+    if cs_access & 0x01 == 0 {
+        let mut accessed = cs_bytes;
+        accessed[5] |= 0x01;
+        memory.write_integer(
+            cs_address,
+            context.descriptor_table(),
+            OperandSize::Qword,
+            u64::from_le_bytes(accessed),
+        )?;
+    }
+    let ss_cache = match ss_descriptor {
+        Some((address, bytes)) => {
+            if bytes[5] & 0x01 == 0 {
+                let mut accessed = bytes;
+                accessed[5] |= 0x01;
+                memory.write_integer(
+                    address,
+                    context.descriptor_table(),
+                    OperandSize::Qword,
+                    u64::from_le_bytes(accessed),
+                )?;
+            }
+            let limit20 = u32::from(bytes[0])
+                | (u32::from(bytes[1]) << 8)
+                | (u32::from(bytes[6] & 0x0f) << 16);
+            let flags = bytes[6] >> 4;
+            Some(crate::state::DataSegmentDescriptorCache {
+                base: u32::from(bytes[2])
+                    | (u32::from(bytes[3]) << 8)
+                    | (u32::from(bytes[4]) << 16)
+                    | (u32::from(bytes[7]) << 24),
+                limit: if flags & 8 != 0 {
+                    (limit20 << 12) | 0x0fff
+                } else {
+                    limit20
+                },
+                access: bytes[5] | 1,
+                flags,
+            })
+        }
+        None => None,
+    };
+
+    state.rip = target;
+    state.cs_selector = Some(cs_selector);
+    state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: cs_access | 1,
+        flags: cs_flags,
+    });
+    state.rflags = (state.rflags & !IRETQ_CPL0_FLAGS) | (new_rflags & IRETQ_CPL0_FLAGS);
+    state.gpr[Register::Rsp as usize] = new_rsp;
+    state.ss_selector = Some(ss_selector);
+    match ss_cache {
+        Some(cache) => {
+            state.ss_cache = Some(cache);
+            state.ss_unusable = false;
+        }
+        // Null SS: the hidden cache is kept as it was and marked unusable (S2-46 convention).
+        None => state.ss_unusable = true,
+    }
+    Ok(true)
+}
+
+/// Reads the raw 8-byte GDT descriptor of `selector` (index checked against the GDT limit,
+/// canonical addresses) and returns its address with the bytes.
+fn read_gdt_raw_descriptor(
+    gdtr: crate::state::Gdtr,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    selector: u16,
+) -> Result<(u64, [u8; 8]), MemoryError> {
+    let offset = u64::from(selector & !7);
+    if offset + 7 > u64::from(gdtr.limit) {
+        return Err(selector_fault(13, selector));
+    }
+    let address = gdtr
+        .base
+        .checked_add(offset)
+        .ok_or_else(|| selector_fault(13, selector))?;
+    let last = address
+        .checked_add(7)
+        .ok_or_else(|| selector_fault(13, selector))?;
+    if !canonical(address) || !canonical(last) {
+        return Err(selector_fault(13, selector));
+    }
+    let raw = memory
+        .read_integer(address, context.descriptor_table(), OperandSize::Qword)?
+        .to_le_bytes();
+    Ok((address, raw))
 }
 
 fn selector_fault(vector: u8, selector: u16) -> MemoryError {
