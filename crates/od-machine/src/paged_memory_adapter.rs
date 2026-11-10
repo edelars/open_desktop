@@ -1100,6 +1100,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if self.read_only_qword {
             return Err(Self::unsupported("write"));
         }
+        // The two store profiles are exclusive: a narrow-capable adapter never keeps the
+        // dword-only store width (S4-38L3).
+        debug_assert!(!(self.dword_write_profile && self.cpl0_set_narrow_write));
         let (width, expected) = if self.dword_write_profile {
             (crate::AccessWidth::Dword, 4)
         } else if self.cpl0_set_narrow_write {
@@ -1115,6 +1118,8 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if source.len() != expected {
             return Err(Self::unsupported(if self.dword_write_profile {
                 "non-dword writes"
+            } else if self.cpl0_set_narrow_write {
+                "write width"
             } else {
                 "non-qword writes"
             }));
@@ -1506,7 +1511,7 @@ mod tests {
 
     #[test]
     fn narrow_stores_belong_to_the_cpl0_set_adapter_alone() {
-        // Shared profiles keep their fixed store width (S4-38L3).
+        // The adapter without the flag keeps its fixed store width: this is the guard of the flag.
         for len in [1usize, 2, 4] {
             let mut bus = bus(0x9007);
             let mut callback = |_| {};
@@ -1517,6 +1522,42 @@ mod tests {
                 "{error:?}"
             );
             assert_eq!(memory.page_fault, None);
+        }
+        // The dword-store profile keeps its own message and width.
+        let mut bus = self::bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.dword_write_profile = true;
+        let error = memory.write(DATA_LINEAR, context(), &[0x5a]);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("non-dword writes")),
+            "{error:?}"
+        );
+        // The set's adapter names a wrong width differently from the shared profiles.
+        let mut bus = self::bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_narrow_write = true;
+        let error = memory.write(DATA_LINEAR, context(), &[0; 3]);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("write width")),
+            "{error:?}"
+        );
+        // The public JIT adapter is read-only: it refuses every store, narrow ones included.
+        for len in [1usize, 2, 4] {
+            let mut bus = self::bus(0x9007);
+            let scope = with_paged_mov_memory(
+                &mut bus,
+                Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+                0x0040_0000,
+                |memory| memory.write(DATA_LINEAR, context(), &vec![0x5a; len]),
+            );
+            assert!(
+                matches!(&scope.callback_result, Err(MemoryError::Backend(message)) if message.contains("does not support write")),
+                "{:?}",
+                scope.callback_result
+            );
+            assert!(scope.committed_writes.is_empty());
         }
     }
 
@@ -1543,5 +1584,22 @@ mod tests {
             .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
             .unwrap();
         assert_eq!(value.to_le_bytes(), [0x5a, 0x33, 0x01, 0x02, 9, 8, 7, 6]);
+        // The data writes are exactly the source widths at the source addresses (no read-modify-
+        // write of the surrounding qword); the others are the walker's own table writes.
+        let data_writes: Vec<_> = callbacks
+            .iter()
+            .filter(|range| range.start().get() >= 0x9000)
+            .map(|range| (range.start().get(), range.len()))
+            .collect();
+        assert_eq!(data_writes, [(0x9000, 1), (0x9002, 2), (0x9004, 4)]);
+        assert!(
+            callbacks
+                .iter()
+                .filter(|range| range.start().get() < 0x9000)
+                .all(
+                    |range| [0x1000, 0x2000, 0x3020, 0x5000].contains(&range.start().get())
+                        && range.len() == 8
+                )
+        );
     }
 }

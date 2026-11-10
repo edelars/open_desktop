@@ -1875,28 +1875,97 @@ mod tests {
         write_phys(&mut boot, DATA + 8, &QWORD_SEED.to_le_bytes());
         let state = boot.board.state_mut();
         state.gpr[Register::Rax as usize] = DATA + 8;
-        // Without REX the register would be DH: the stored byte must be SIL = 0x5A.
+        // Without REX the register would be DH: DH is 0xA5 here, so the stored byte 0x5A can
+        // only be SIL.
         state.gpr[Register::Rsi as usize] = 0xFFFF_FFFF_FFFF_A55A;
+        state.gpr[Register::Rdx as usize] = 0x0000_A500;
         let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
         assert_eq!(report.instructions_executed, 1, "{report:?}");
         assert_eq!(state.rip, ENTRY + 3);
         assert_eq!(read_qword(&mut boot, DATA + 8), 0xAABB_CCDD_1122_335A);
     }
 
+    /// Offset in the page-table zone of the PDE of the 2 MiB leaf at `DATA`: the loader puts the
+    /// PML4 on page 0, the PDPT on page 1 and the PD of the first GiB on page 2, and
+    /// `DATA >> 21 = 48` (0x0600_0000 = 96 MiB).
+    const DATA_PDE_OFFSET: usize = 0x2000 + ((DATA >> 21) as usize) * 8;
+
+    fn qword_at(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    }
+
     #[test]
     fn cpl0_set_board_narrow_store_updates_the_page_tables_like_the_qword_store() {
-        let (_, _, _, before) = run_store(&[0x48, 0x89, 0x03], 0);
+        let fetch_only = tables_after_the_fetch_alone();
+        // The loader writes the leaf as present, writable and PS (0x83): A and D are clear.
+        assert_eq!(qword_at(&fetch_only, DATA_PDE_OFFSET), DATA | 0x83);
+        // The store sets A and D on that one PDE and nowhere else.
+        let mut expected = fetch_only.clone();
+        expected[DATA_PDE_OFFSET..DATA_PDE_OFFSET + 8]
+            .copy_from_slice(&(DATA | 0x83 | 0x60).to_le_bytes());
         let tables = |code: &[u8]| {
             let (mut boot, _, report, _) = run_store(code, 0);
             assert_eq!(report.instructions_executed, 1, "{report:?}");
             page_tables(&mut boot)
         };
-        let qword = tables(&[0x48, 0x89, 0x03]);
-        // The 2 MiB leaf gets accessed and dirty bits; the width changes nothing.
-        assert_ne!(before, qword, "the walker sets accessed and dirty");
-        for code in [&[0x88, 0x03][..], &[0x66, 0x89, 0x03], &[0x89, 0x03]] {
-            assert_eq!(tables(code), qword, "{code:02x?}");
+        for code in [
+            &[0x48, 0x89, 0x03][..],
+            &[0x88, 0x03],
+            &[0x66, 0x89, 0x03],
+            &[0x89, 0x03],
+        ] {
+            let after = tables(code);
+            let changed: Vec<usize> = (0..after.len())
+                .filter(|&at| after[at] != fetch_only[at])
+                .collect();
+            assert!(
+                changed
+                    .iter()
+                    .all(|at| (DATA_PDE_OFFSET..DATA_PDE_OFFSET + 8).contains(at)),
+                "{code:02x?}: bytes changed outside the data PDE: {changed:x?}"
+            );
+            assert_eq!(after, expected, "{code:02x?}");
         }
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_read_modify_write_stores_exactly_one_dword() {
+        // ADD [RBX], EAX (01 03): the dword read-modify-write of the set. The write is the
+        // 4 source bytes alone, the qword around them is not rewritten.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0x01, 0x03]);
+        write_phys(&mut boot, DATA, &QWORD_SEED.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x1111_2222_3333_445A;
+        state.gpr[Register::Rbx as usize] = DATA;
+        let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        let mut writes = Vec::new();
+        let report = run_cpl0_set_paged_2m_ram(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            1,
+            INTEGER_FLAGS,
+            &minimal_set(&cli),
+            None,
+            || false,
+            |range| writes.push(range),
+        );
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(state.rip, ENTRY + 2);
+        // 0x1122_3344 + 0x3333_445A = 0x4455_779E; the upper half of the qword is untouched.
+        assert_eq!(read_qword(&mut boot, DATA), 0xAABB_CCDD_4455_779E);
+        let data_writes: Vec<_> = writes
+            .iter()
+            .filter(|range| (DATA..DATA + 0x1000).contains(&range.start().get()))
+            .map(|range| (range.start().get(), range.len()))
+            .collect();
+        assert_eq!(data_writes, [(DATA, 4)]);
     }
 
     #[test]
@@ -1947,6 +2016,12 @@ mod tests {
                     "{code:02x?} at {offset:#x}"
                 );
                 assert_eq!(read_qword(&mut boot, DATA), QWORD_SEED);
+                // No partial write reached the end of the page either.
+                assert_eq!(
+                    read_qword(&mut boot, DATA + 0xFF8),
+                    0,
+                    "{code:02x?} at {offset:#x}"
+                );
                 let mut next_page = [0u8; 8];
                 read(&mut boot.board, DATA + 0x1000, &mut next_page).expect("read");
                 assert_eq!(next_page, [0u8; 8], "the next page is untouched");
@@ -1987,8 +2062,9 @@ mod tests {
     #[test]
     fn paged_mov_2m_ram_profile_outside_the_set_still_refuses_the_byte_store() {
         // The qword-only shared profile keeps its behavior: the narrow stores belong to the
-        // set's adapter alone. Whether the decoder or the adapter refuses, nothing retires and
-        // the memory stays as it was.
+        // set's adapter alone. `88 03` is refused by the decoder allowlist (a decoder refusal,
+        // not the flag guard: the flag guard is `narrow_stores_belong_to_the_cpl0_set_adapter_alone`
+        // in the adapter module); nothing retires and the memory stays as it was.
         let (mut boot, _) = boot_with_entry(&[0x88, 0x03]);
         write_phys(&mut boot, DATA, &QWORD_SEED.to_le_bytes());
         let state = boot.board.state_mut();
@@ -2004,10 +2080,15 @@ mod tests {
             long64(),
             INTEGER_FLAGS,
             |_| {},
+        )
+        .expect("the step runs");
+        assert_eq!(
+            report.cpu.exit,
+            RunExit::Unsupported { opcode: 0x88 },
+            "{report:?}"
         );
-        if let Ok(report) = &report {
-            assert_eq!(report.cpu.instructions_executed, 0, "{report:?}");
-        }
+        assert_eq!(report.cpu.instructions_executed, 0, "{report:?}");
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
         assert_eq!(state.rip, ENTRY);
         assert_eq!(read_qword(&mut boot, DATA), QWORD_SEED);
     }
