@@ -754,3 +754,26 @@ paged profile (`PagedCpl0ProbeV1`, no CPUID/MSR) with one addition: under the Li
 of the CS selector (0 when absent) while the interpreter always runs Ring0; `rip_bytes` reads any
 region with backing (ROM and framebuffer too), byte by byte, so the window may cross a 4 KiB
 boundary that a CPU fetch never crosses. On the real kernel the first stop is `unsupported` `0x01` (`LIDT [RIP+0x17bbd]`, `0f 01 1d`) at RIP `0x206647c` with `retired` 118 and no CR3 change: the null segment loads (S2-46), the ENDBR64 and LGDT/LRETQ forms (S2-47, S2-48), the dword read and the narrow byte/word/dword stores (S4-38L3) all retire; the set does not admit `LIDT` yet (S2-49). Evidence: `docs/reports/data/stage4/s4-38l3-core.json`.
+
+### `--run --budget N --set-cpl0` (S4-38L3, S4-38L4)
+
+`--set-cpl0` (needs `--run`) runs the board through the CPL0 profile set of od-isa instead of the base
+probe profile (`od_machine::run_linux_direct_board_set`, members `LinuxCpl0SetMembers::linux_default()`).
+The members are, in `stop.set_members` order, `cli`, `cpu_owned_cr3` and `cpuid:DiagnosticV1` (S4-38L4;
+before it the set had `cli` and `cpu_owned_cr3` only). A `MOV CR3` continues the run (`cr3_changes`,
+`last_cr3_change`), `stop.path` is `cpl0_set` and `stop.set_exit_detail` is the set's own final exit.
+No other member (`rdtsc`, `msr`, `halt`, `pio_u8`) is on by default; each is added by the slice whose
+first stop needs it.
+
+CPUID boundary (S4-38L4, checkpoint C7 of the plan). With the `cpuid` member a `CPUID` of leaf 0, 0x80000000
+or any other leaf except the two below is answered by DiagnosticV1 (vendor `OpenDesktop`, zero feature
+masks). A `CPUID` whose EAX is 1 or 0x80000001 is not answered: the run stops BEFORE retiring it with
+`stop.exit_kind = "cpuid_divergence"`, `stop.cpuid_divergence_leaf` (`"0x1"` or `"0x80000001"`; `null` for
+every other exit), `stop.rip` on the `CPUID` (or on its legacy/REX prefix), `retired` counting the
+instructions before it, and no register changed (`set_exit_detail` is `CpuidDivergence { leaf: .. }`).
+This is an honest edge, not a substitution: the DiagnosticV1 feature words for those leaves are not the
+target profile's, so they are neither supplied nor is the kernel patched. Whatever a run does past a
+`cpuid_divergence` stop is diagnostic only. Without the `cpuid` member `CPUID` stays `unsupported`
+(`0xa2`). The set executes only a bare `0F A2`: a prefixed `CPUID` (`66`, `48`, `F3`, ...) with a leaf
+other than the two above stays `unsupported` (`0xa2`); the boundary still sees a prefixed leaf 1 or
+0x80000001 and stops there. `schema_version` stays 1 (`cpuid_divergence_leaf` and the new `exit_kind` are additive).

@@ -15,9 +15,13 @@
 //! else in the evidence changes.
 //!
 //! `--run --budget N --set-cpl0` (S4-38L3) runs the board through the CPL0 profile set of od-isa
-//! instead (`od_machine::run_linux_direct_board_set`, the minimal set: CLI and the CPU-owned
-//! CR3). A `MOV CR3` continues the run; the `stop` object then also says `path: cpl0_set`, the set
-//! members, the set's own final exit (`set_exit_detail`) and how many CR3 changes happened
+//! instead (`od_machine::run_linux_direct_board_set`; the members are CLI, the CPU-owned CR3 and,
+//! since S4-38L4, CPUID with the DiagnosticV1 answers). The run stops BEFORE a `CPUID` of leaf 1
+//! or 0x8000_0001 (`exit_kind` `cpuid_divergence`, `cpuid_divergence_leaf`): the instruction does
+//! not execute and nothing is answered in its place; other leaves are answered by DiagnosticV1,
+//! and what follows past that edge is diagnostic. A `MOV CR3` continues the run; the `stop` object
+//! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
+//! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
 //! counted and `cr3` is its CR3). The `paged_probe` path carries the same fields with empty
 //! values; `schema_version` stays 1 (the fields are additive).
@@ -239,7 +243,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
                         &mut boot,
                         &machine_input,
                         budget,
-                        LinuxCpl0SetMembers::minimal(),
+                        LinuxCpl0SetMembers::linux_default(),
                     )
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)
@@ -500,6 +504,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
         "set_members": record.set_members,
         "set_exit_detail": record.set_exit_detail,
+        // S4-38L4: the CPUID leaf (EAX) the run stopped before (`exit_kind` `cpuid_divergence`),
+        // hex, or null. The CPUID did not execute and nothing was answered for it.
+        "cpuid_divergence_leaf": record.cpuid_divergence_leaf.map(|leaf| hex64(u64::from(leaf))),
         "cr3_changes": record.cr3_changes,
         "last_cr3_change": record.last_cr3_change.map(|(old, new)| json!({
             "old_cr3": hex64(old),
@@ -1344,7 +1351,11 @@ mod tests {
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
         assert_eq!(stop["path"], "cpl0_set");
-        assert_eq!(stop["set_members"], json!(["cli", "cpu_owned_cr3"]));
+        assert_eq!(
+            stop["set_members"],
+            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
+        );
+        assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
         // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches
         // (four instructions in all); the stop is the REX-prefix filler after the code, whose
         // 15-byte window has no opcode: #GP(0).
@@ -1362,6 +1373,32 @@ mod tests {
         assert_eq!(value["stop"]["path"], "paged_probe");
         assert_eq!(value["stop"]["unsupported_opcode"], "0xfc");
         assert_eq!(value["stop"]["set_members"], json!([]));
+    }
+
+    #[test]
+    fn set_cpl0_stops_before_a_divergent_cpuid_leaf() {
+        // CLI; MOV EAX, 1; CPUID; HLT: the CPUID boundary is the stop, before the instruction.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let mut case = Case::new(
+            "set-cpl0-cpuid",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "cpuid_divergence", "{value:#}");
+        assert_eq!(stop["cpuid_divergence_leaf"], "0x1");
+        assert_eq!(stop["unsupported_opcode"], Value::Null);
+        assert_eq!(stop["retired"], 2);
+        assert_eq!(value["retired"], 2);
+        assert_eq!(stop["rip"], "0x1000206");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("0f a2 f4"));
+        assert_eq!(stop["gpr"]["rax"], "0x1");
+        assert_eq!(stop["set_exit_detail"], "CpuidDivergence { leaf: 1 }");
     }
 
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
@@ -1447,9 +1484,10 @@ mod tests {
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
     /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR, `LRETQ` (S2-47b)
     /// reloads CS and `ENDBR64` (S2-48) is a NOP; the adapter's byte, word and dword stores let
-    /// the byte store `MOV [RAX], SIL` retire, and the stop is `LIDT [RIP+0x17bbd]` (`0f 01 1d`)
-    /// at RIP 0x206_647c after 118 retired instructions. The evidence file of the slice comes
-    /// from the CLI.
+    /// the byte store `MOV [RAX], SIL` retire, `LIDT` (S2-49) retires and, with the `cpuid` member
+    /// (S4-38L4), the `CPUID` of leaf 0x8000_0000 is answered; the first stop is past it (a
+    /// further unsupported form or the CPUID boundary). The evidence file of the slice comes from
+    /// the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
     fn real_artifacts_stop_at_lidt_after_the_narrow_stores() {
@@ -1486,20 +1524,22 @@ mod tests {
         // next stop is the byte store `MOV [RAX], SIL` (`40 88 30`) at 0x206_3a80, which the
         // board's paged adapter refuses (`paged MOV profile does not support non-qword writes`).
         // S4-38L3: the adapter's byte, word and dword stores let `MOV [RAX], SIL` retire and 67
-        // more instructions follow (118 in all); the next stop is `LIDT [RIP+0x17bbd]`
-        // (`0f 01 1d bd 7b 01 00`, opcode 0x01) at 0x206_647c, which the set does not admit.
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["unsupported_opcode"], "0x01");
-        assert_eq!(stop["rip"], "0x206647c");
-        assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("0f 01 1d bd 7b 01 00")
+        // more instructions follow (118 in all); the next stop was `LIDT [RIP+0x17bbd]`
+        // (`0f 01 1d bd 7b 01 00`) at 0x206_647c. S2-49: `LIDT` retires; the next stop was
+        // `CPUID` (`0f a2`) with EAX = 0x8000_0000 at 0x206_7b0d after 138 retired instructions.
+        // S4-38L4: the set now has the `cpuid` member (DiagnosticV1), which answers leaf
+        // 0x8000_0000, so the run goes past that CPUID (more than 138 retired) and stops at the
+        // next form the set does not admit, or at the CPUID boundary (`cpuid_divergence`, before
+        // a CPUID of leaf 1 or 0x8000_0001, nothing answered in its place).
+        assert_eq!(
+            stop["set_members"],
+            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
         );
-        assert_eq!(stop["exit_detail"], "Unsupported { opcode: 1 }");
-        assert_eq!(value["retired"], 118);
+        assert!(value["retired"].as_u64().unwrap() > 138, "{value:#}");
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
+        // TODO(orchestrator): set from the real run: exit_kind, rip, rip_bytes, retired and, for
+        // a CPUID boundary stop, cpuid_divergence_leaf (the first stop past CPUID 0x8000_0000).
+        // Not guessed here: the worktree has no work/stage4 artifacts.
         assert_eq!(stop["cr3_changes"], 0);
     }
 }

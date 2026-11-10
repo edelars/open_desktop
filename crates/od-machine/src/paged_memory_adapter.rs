@@ -408,9 +408,70 @@ pub(crate) enum PagedCpl0SetExit {
     /// The port of `IN AL, DX` / `OUT DX, AL` (`with_pio_u8`) failed. RIP is on the
     /// instruction, which did not retire.
     PortIo(crate::BusAccessError),
+    /// The CPUID boundary (S4-38L4): the instruction at RIP is a `CPUID` whose leaf (EAX) is
+    /// one the diagnostic profile must not answer. Nothing was fetched past the opcode bytes
+    /// and the instruction did not execute: RIP is on it and no register changed.
+    CpuidDivergence { leaf: u32 },
     /// The set reported an exit variant this board does not know (the exit enum
     /// is `#[non_exhaustive]`).
     UnknownSetExit,
+}
+
+/// CPUID leaves the diagnostic identity must not answer on the Linux board (S4-38L4, checkpoint
+/// C7): the feature leaves, where a made-up answer would decide which kernel paths are taken.
+/// Every other leaf is answered by the profile or stays unsupported.
+pub(crate) const fn is_cpuid_divergence_leaf(leaf: u32) -> bool {
+    matches!(leaf, 1 | 0x8000_0001)
+}
+
+/// Prefix bytes the peek of [`cpuid_leaf_at_rip`] skips before `0F A2` (legacy prefixes and
+/// REX); the opcode itself is decided by the set, this only keeps a prefixed `CPUID` from slipping
+/// past the boundary.
+const fn is_cpuid_peek_prefix(byte: u8) -> bool {
+    matches!(
+        byte,
+        0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF2 | 0xF3 | 0x40..=0x4F
+    )
+}
+
+/// The leaf (EAX) of a `CPUID` at RIP, or `None` when the bytes at RIP are not a `CPUID` or do
+/// not translate (the instruction itself then reports that). Read-only: every byte goes through
+/// the same walk as an instruction fetch without writing an accessed/dirty bit, and nothing
+/// but RAM is read.
+fn cpuid_leaf_at_rip(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Option<u32> {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut byte_at = |offset: u64| -> Option<u8> {
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            state.rip,
+            GuestLinearAddress::new(state.rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.read_u8(physical).ok()
+    };
+    // Most instructions neither start with a prefix nor with `0F`: one walk decides that.
+    let first = byte_at(0)?;
+    if first != 0x0F && !is_cpuid_peek_prefix(first) {
+        return None;
+    }
+    let mut offset = 0u64;
+    // Up to 13 prefixes and then the two opcode bytes fit the 15-byte instruction limit.
+    while offset < 13 && is_cpuid_peek_prefix(byte_at(offset)?) {
+        offset += 1;
+    }
+    if byte_at(offset)? == 0x0F && byte_at(offset + 1)? == 0xA2 {
+        Some(state.gpr[od_isa::Register::Rax as usize] as u32)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -446,8 +507,45 @@ pub(crate) struct PagedCpl0SetReport {
 ///
 /// Stop is polled and the budget is checked before each instruction, like the
 /// paged probe quantum.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_paged_2m_ram(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedCpl0SetReport {
+    run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        false,
+    )
+}
+
+/// `run_cpl0_set_paged_2m_ram` with the CPUID boundary of S4-38L4 when `cpuid_boundary` is
+/// set: before each instruction (after the stop and budget checks, before any set call) the
+/// bytes at RIP are peeked, and a `CPUID` whose EAX is a divergence leaf
+/// ([`is_cpuid_divergence_leaf`]) ends the run as `CpuidDivergence` without executing it. This
+/// is an honest stop, not an answer: nothing is substituted for the leaf and the state is left
+/// exactly as before the instruction. Other leaves go to the set as usual.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -459,6 +557,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
     mut rdtsc: Option<&mut dyn FnMut() -> u64>,
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    cpuid_boundary: bool,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -494,6 +593,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
                 None,
                 None,
             );
+        }
+        if cpuid_boundary
+            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context)
+            && is_cpuid_divergence_leaf(leaf)
+        {
+            break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
         let (ram, mut port) = bus.split_for_pio_step();
