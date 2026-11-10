@@ -1605,6 +1605,177 @@ fn mov_rax_cr3_is_not_reachable_from_cpl3() {
     assert_eq!((memory.fetches, &state), (0, &before));
 }
 
+// ---- S4-38L5a: MOV RAX, CR2 read in the CR3-owning set ----------------------
+
+const MOV_RAX_CR2: [u8; 3] = [0x0f, 0x20, 0xd0];
+const MOV_RAX_CR2_REX_W: [u8; 4] = [0x48, 0x0f, 0x20, 0xd0];
+/// The faulting address of the real-kernel `#PF` (S4-38L4h evidence).
+const CR2_DISTINCT: u64 = 0x0000_0000_0102_0020;
+
+fn cr2_state(cr2: Option<u64>) -> LongModeState {
+    let mut state = cr3_state(CR3_DISTINCT);
+    state.cr2 = cr2;
+    state
+}
+
+#[test]
+fn mov_rax_cr2_returns_state_cr2_and_touches_nothing_else() {
+    for (bytes, length) in [(&MOV_RAX_CR2[..], 3u64), (&MOV_RAX_CR2_REX_W[..], 4u64)] {
+        for value in [CR2_DISTINCT, 0, 0xffff_8880_dead_beef] {
+            let mut state = cr2_state(Some(value));
+            state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+            state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+            state.gpr[Register::Rsp as usize] = 0x7000;
+            let before = state.clone();
+            let mut memory = Memory::code(bytes);
+            let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+            let mut expected = before.clone();
+            expected.gpr[0] = value;
+            expected.rip = RIP + length;
+            assert_eq!(state, expected, "{bytes:02x?}");
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.gpr[Register::Rsp as usize], 0x7000);
+            assert_eq!(state.cr2, Some(value));
+            assert_eq!(state.cr3, Some(CR3_DISTINCT));
+        }
+    }
+}
+
+#[test]
+fn mov_rax_cr2_with_unmodeled_cr2_is_unsupported_without_mutation() {
+    for bytes in [&MOV_RAX_CR2[..], &MOV_RAX_CR2_REX_W[..]] {
+        let mut state = cr2_state(None);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn mov_rax_cr2_stays_unsupported_without_the_cr3_owning_set() {
+    for bytes in [&MOV_RAX_CR2[..], &MOV_RAX_CR2_REX_W[..]] {
+        let mut state = board_state();
+        state.cr2 = Some(CR2_DISTINCT);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn mov_rax_cr2_stays_unsupported_outside_the_set() {
+    for bytes in [&MOV_RAX_CR2[..], &MOV_RAX_CR2_REX_W[..]] {
+        let mut state = LongModeState {
+            rip: RIP,
+            rflags: 2 | IF,
+            cr2: Some(CR2_DISTINCT),
+            ..LongModeState::default()
+        };
+        state.gpr[0] = 0x1111_2222_3333_4444;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_rax_cr2_other_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0x0f, 0x22, 0xd0][..], // MOV CR2, RAX: write is not modeled
+        &[0x48, 0x0f, 0x22, 0xd0][..],
+        &[0x0f, 0x20, 0xc8][..], // CR1
+        &[0x0f, 0x20, 0xe8][..], // CR5
+        &[0x0f, 0x20, 0xd1][..], // CR2 into RCX
+        &[0x48, 0x0f, 0x20, 0xd1][..],
+        &[0xf0, 0x0f, 0x20, 0xd0][..], // LOCK
+        &[0x66, 0x0f, 0x20, 0xd0][..],
+        &[0xf3, 0x0f, 0x20, 0xd0][..],
+        &[0x67, 0x0f, 0x20, 0xd0][..],
+        &[0x40, 0x0f, 0x20, 0xd0][..],
+        &[0x49, 0x0f, 0x20, 0xd0][..],
+        &[0x41, 0x0f, 0x20, 0xd0][..],
+        &[0x40, 0x48, 0x0f, 0x20, 0xd0][..],
+    ] {
+        let mut state = cr2_state(Some(CR2_DISTINCT));
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert!(
+            matches!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                    opcode: 0x20 | 0x22
+                })
+            ),
+            "{bytes:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_rax_cr3_is_unchanged_by_the_cr2_form() {
+    let mut state = cr2_state(Some(CR2_DISTINCT));
+    let mut memory = Memory::code(&MOV_RAX_CR3);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], CR3_DISTINCT);
+}
+
+#[test]
+fn mov_rax_cr2_is_not_reachable_from_cpl3() {
+    let mut state = cr2_state(Some(CR2_DISTINCT));
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_RAX_CR2);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
 // ---- S2-45e: PIO u8 in the set -------------------------------------------
 
 /// `mov edx, 0x3f8`.

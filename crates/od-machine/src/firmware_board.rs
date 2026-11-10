@@ -1278,6 +1278,15 @@ impl LoadedFirmwareBoard {
             nvme.service(&mut self.bus, |_| {});
         }
         self.state.cr3 = Some(self.page_table_root);
+        // S4-38L5a: the set models CR2 for `MOV RAX, CR2`. The run uses the CR2 already set
+        // (`prior`), and 0 (the architectural reset value) only when there was none. Nothing
+        // writes CR2 yet (no #PF delivery, L5c). Unlike CR3 (kept in `page_table_root` through
+        // `report.cr3` and fed back on entry), CR2 is NOT kept: on exit the prior value is
+        // restored and whatever the guest wrote to CR2 during the run is discarded. L5c must
+        // keep it the same way as CR3 (a persistent field fed back on entry), otherwise a
+        // handler that reads CR2 in a later call gets 0.
+        let prior_cr2 = self.state.cr2;
+        self.state.cr2 = Some(prior_cr2.unwrap_or(0));
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1404,6 +1413,8 @@ impl LoadedFirmwareBoard {
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.state.cr3 = None;
+        // CR2 is restored, not kept (see the entry comment): a guest write is discarded.
+        self.state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
         Ok(LinuxSetRunReport {
             run,

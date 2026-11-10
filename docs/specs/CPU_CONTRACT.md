@@ -20692,6 +20692,36 @@ retired 390164: линейный адрес `0x545_dffc`, 8 байт — пос�
 `cpl0_set_board_store_with_a_missing_second_page_writes_no_byte_and_faults_precisely`;
 `paged_memory_adapter::tests::cross_page_stores_belong_to_the_cpl0_set_adapter_alone`.
 
+### MOV r64, CR2 (чтение) на CPL0 в наборе (S4-38L5a)
+
+Набор CPL0 исполняет `0F 20 D0` (`MOV RAX, CR2`) и `48 0F 20 D0` (то же с REX.W) в Long64 на CPL0.
+Первый шаг L5 (исключения на плате): обработчик `boot_page_fault` ядра Linux читает CR2. Доставка
+исключений (L5c) и `IRETQ` (L5b) этим срезом не делаются.
+
+**Декодер.** Только эти две формы дают `Operation::ReadCr2`. Запись `0F 22 D0`, другие ModRM
+(`D1`, CR1 `C8`, CR5 `E8`), `LOCK`, `66`, `F3`, `67`, `REX` кроме `48` — `Unsupported`.
+
+**Исполнение.** `RAX = state.cr2` целиком (64 бита), `RIP += 3` (4 с REX.W), `retired += 1`; RFLAGS не
+меняется, определённость арифметических флагов снимается, как у `ReadCr3`. `state.cr2 == None`
+(CR2 не смоделирован) — `Unsupported { opcode: 0x20 }` без мутации: значение не подставляется.
+Вне набора (`run`, `step`, профили) — `Unsupported` без мутации. CR3, CR0, CR4, CPUID, MSR, `PUSHFQ` не
+менялись; запись CR2 не добавлена.
+
+**Гейт.** Отдельного члена набора нет: чтение допущено под `with_cpu_owned_cr3` (набор владеет
+управляющими регистрами, как у `ReadCr3`); состояние на входе набора не проверяется дополнительно (CR2 —
+`Option`, `None` означает «не смоделирован»). Набор без `cpu_owned_cr3` — `Unsupported`.
+
+**Плата.** `run_linux_boot_cpl0_set` на время прогона выставляет `state.cr2 = Some(prior.unwrap_or(0))`:
+используется уже заданное значение, а 0 (архитектурное значение после сброса) — только если его не было.
+По выходе плата возвращает прежнее значение. В отличие от CR3 (он сохраняется в `page_table_root` через
+`report.cr3` и подаётся обратно на входе), CR2 между вызовами НЕ сохраняется: всё, что гость записал в CR2
+за прогон, отбрасывается. Пока нет доставки `#PF` (L5c), CR2 нигде не записывается, поэтому чтение даёт 0.
+В L5c (запись CR2 доставкой `#PF`) CR2 нужно сохранять так же, как CR3 через `page_table_root`, иначе
+обработчик, прочитавший CR2 в следующем вызове `run_linux_boot_cpl0_set`, получит 0.
+
+Тесты: `cpl0_profile_set` `mov_rax_cr2_*`; декодер `mov_rax_cr2_decodes_only_the_exact_read_forms`;
+`linux_direct::tests::set_facade_mov_rax_cr2_reads_the_reset_value_zero`.
+
 ### LRETQ на CPL0 в наборе (S2-47b)
 
 Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/
