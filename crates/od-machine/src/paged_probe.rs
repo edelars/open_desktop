@@ -255,6 +255,44 @@ pub fn run_paged_cr3_probe_2m_ram(
     )
 }
 
+/// Run the base quantum like [`run_paged_probe`] (explicit `cr3`, `state.cr3` must be `None`),
+/// but walk through mixed 4 KiB/2 MiB RAM mappings like [`run_paged_cr3_probe_2m_ram`]
+/// (S4-37L5: the Linux direct boot maps low RAM with 2 MiB leaves). The CPU profile is the base
+/// one, so `MOV r8,imm8`, `MOV r16,imm16`, `IN/OUT DX`, `HLT` and (with a `rdtsc` source) bare
+/// `RDTSC` are admitted; MOV CR3 is not (the CR3 is the board's, not the CPU's). The 4 KiB
+/// fetch and operand limits of the 2 MiB walk apply. Crate-internal, not re-exported.
+// Used by S4-38; the L5 tests exercise it now.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn run_paged_probe_2m_ram(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        false,
+        true,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+        rdtsc,
+    )
+}
+
 /// Run the opt-in CPU-owned CR0.WP quantum. A successful MOV CR0 effect is
 /// applied to the immutable paging snapshot before the next STOP poll or
 /// instruction access.
