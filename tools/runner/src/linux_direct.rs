@@ -1492,7 +1492,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_refuse_at_the_rep_partial_after_popfq() {
+    fn real_artifacts_stop_at_mov_cr3_after_the_rep_copy() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1512,22 +1512,27 @@ mod tests {
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S2-50 (POPFQ on CPL0 admitted): the set returns a partial REP (`RepIterationBudgetExhausted`)
-        // at 0x100_02aa, which the board does not resume yet. The run is refused (exit 4,
-        // `run_failed`) after 1385 retired instructions and writes no stop record. This assertion
-        // pins that state until the REP slice lands; it is not the kernel's boot result.
-        assert_eq!(value["status"], "refused", "{value:#}");
-        assert_eq!(exit, 4, "{value:#}");
-        assert_eq!(value["error"]["code"], "run_failed", "{value:#}");
-        assert_eq!(value["retired"], 1385, "{value:#}");
-        assert!(value.get("stop").is_none(), "{value:#}");
+        // S4-38L4b: the partial REP `REP MOVSQ` at 0x100_02aa is resumed by the board (it is no
+        // longer refused). The run stops `unsupported` at `MOV RAX, CR3` (`0f 20 d8`) on
+        // 0x543_c0d6 after 1678 retired instructions and 2148 quanta; `MOV r64, CR3` is outside the
+        // set. Evidence: `docs/reports/data/stage4/s4-38l4b-rep-run.json`.
+        assert_eq!(value["status"], "loaded", "{value:#}");
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(value["retired"], 1678, "{value:#}");
+        assert_eq!(stop["quanta"], 2148, "{value:#}");
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["rip"], "0x543c0d6");
         assert!(
-            value["error"]["detail"]
-                .as_str()
-                .unwrap()
-                .contains("the CPL0 set returned an exit the board never asks for"),
+            stop["rip_bytes"].as_str().unwrap().starts_with("0f 20 d8"),
             "{value:#}"
         );
+        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 32 })");
+        assert_eq!(
+            stop["set_members"],
+            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
+        );
+        assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
         // retire (22 in all). S2-47a: `LGDT [RAX]` (`0f 01 10`) at 0x100_0257 retires and four
