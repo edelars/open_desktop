@@ -14,6 +14,7 @@ mod interrupt_pump;
 mod io_apic;
 mod linux_boot;
 mod linux_boot_params;
+mod linux_load;
 mod linux_placement;
 mod local_apic;
 mod nvme;

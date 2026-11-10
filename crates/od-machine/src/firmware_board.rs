@@ -875,6 +875,8 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
+    /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
+    /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`).
     pub const fn cr3(&self) -> u64 {
         self.page_table_root
     }
@@ -883,12 +885,14 @@ impl LoadedFirmwareBoard {
         FIRMWARE_EFER
     }
 
-    /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`].
+    /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
+    /// (`AssembledBoard::into_linux_board` builds no handoff block).
     pub fn handoff_block(&self) -> &[u8] {
         &self.handoff
     }
 
-    /// Length of the `BOOT_PAGE_TABLES` region (`4096 * N`).
+    /// Length of the `BOOT_PAGE_TABLES` region (`4096 * N`). For a Linux board it is the size of
+    /// the Linux identity tables written by the loader (`3..=6` pages), not the firmware's.
     pub const fn boot_page_table_bytes(&self) -> u64 {
         self.page_table_bytes
     }
@@ -1106,7 +1110,7 @@ fn load_firmware_image_with_pci(
 /// devices, the handoff block and the boot page tables exist as values, but no
 /// byte has been written to guest memory and no ROM is filled. The firmware loader
 /// ([`AssembledBoard::load_firmware`]) and the Linux direct boot reuse it.
-struct AssembledBoard {
+pub(crate) struct AssembledBoard {
     bus: MachineBus,
     uart: Uart16550Handle,
     display: DisplayHandle,
@@ -1133,7 +1137,7 @@ struct AssembledBoard {
 /// passes `None` (the PIT then reads the board clock); only a test injects another
 /// handle, to prove that the binding really follows the board clock (S4-37a1).
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
-fn assemble_board(
+pub(crate) fn assemble_board(
     config: &FirmwareBoardConfig,
     pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
@@ -1149,6 +1153,8 @@ fn assemble_board(
     let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
     // `handoff_regions` still derives the table region from the constant and assumes the
     // tables start exactly at SHADOW_END. Moving the root requires passing it through there.
+    // This concerns the firmware path only: a Linux board builds no handoff block, and its own
+    // page table root comes from `into_linux_board`.
     debug_assert_eq!(page_table_root, FIRMWARE_BOOT_PAGE_TABLES_GPA);
     debug_assert_eq!(page_table_root, SHADOW_END);
     let tables_end = page_table_root + page_table_bytes;
@@ -1316,6 +1322,21 @@ fn assemble_board(
     })
 }
 
+/// The polling UART rejects THR writes until 8N1 and a divisor are set; the
+/// machine presents it configured (as the flat probe does). The firmware's
+/// own initialisation (FIRMWARE_BOOT.md 11) writes the same values.
+fn configure_com1(bus: &mut MachineBus) -> Result<(), FirmwareBoardError> {
+    for (offset, value) in [(3, 0x83), (0, 0x01), (1, 0x00), (3, 0x03)] {
+        bus.write_port(
+            PortAddress::new(FIRMWARE_COM1_PORT + offset),
+            AccessWidth::Byte,
+            value,
+        )
+        .map_err(FirmwareBoardError::Bus)?;
+    }
+    Ok(())
+}
+
 impl AssembledBoard {
     /// Fill ROM, copy the image to the RAM shadow, write the boot page tables and
     /// the handoff block, configure COM1 and build the direct Long64 entry state.
@@ -1361,17 +1382,7 @@ impl AssembledBoard {
             |_| {},
         )
         .map_err(FirmwareBoardError::Bus)?;
-        // The polling UART rejects THR writes until 8N1 and a divisor are set; the
-        // machine presents it configured (as the flat probe does). The firmware's
-        // own initialisation (FIRMWARE_BOOT.md 11) writes the same values.
-        for (offset, value) in [(3, 0x83), (0, 0x01), (1, 0x00), (3, 0x03)] {
-            bus.write_port(
-                PortAddress::new(FIRMWARE_COM1_PORT + offset),
-                AccessWidth::Byte,
-                value,
-            )
-            .map_err(FirmwareBoardError::Bus)?;
-        }
+        configure_com1(&mut bus)?;
 
         let mut state = LongModeState {
             cr3: None,
@@ -1396,6 +1407,52 @@ impl AssembledBoard {
             lapic,
             clock,
             handoff,
+            page_table_bytes,
+            page_table_root,
+            com1_log: Vec::new(),
+            rdtsc_tick,
+            #[cfg(test)]
+            suppress_pm_tick: false,
+            #[cfg(test)]
+            suppress_rdtsc_tick: false,
+        })
+    }
+
+    /// Turn the assembled board into a loaded board for the Linux direct boot (S4-37L5)
+    /// without writing a byte of guest RAM or ROM: no firmware shadow, no firmware tables, no
+    /// handoff block (`handoff_block` is empty, `boot_page_table_bytes` is the Linux table
+    /// size). COM1 is configured as for the firmware boot. `page_table_root` / `page_table_bytes` describe the tables the Linux loader writes
+    /// itself, and the CPU state starts as `LongModeState::default()`; the caller writes
+    /// memory through `bus_mut` and sets the entry state through `state_mut`.
+    pub(crate) fn into_linux_board(
+        self,
+        page_table_root: u64,
+        page_table_bytes: u64,
+    ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+        let AssembledBoard {
+            mut bus,
+            uart,
+            display,
+            nvme,
+            acpi_pm,
+            pit,
+            lapic,
+            clock,
+            rdtsc_tick,
+            ..
+        } = self;
+        configure_com1(&mut bus)?;
+        Ok(LoadedFirmwareBoard {
+            bus,
+            state: LongModeState::default(),
+            uart,
+            display,
+            nvme,
+            acpi_pm,
+            pit,
+            lapic,
+            clock,
+            handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
             com1_log: Vec::new(),
