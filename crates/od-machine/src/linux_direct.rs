@@ -456,7 +456,8 @@ pub struct LinuxStopRecord {
     /// value and the privilege the instructions ran with differ; the loader's CS has RPL 0.
     pub cpl: u8,
     pub cr0: Option<u64>,
-    /// The board CR3 (the CPU state carries none).
+    /// The board CR3 (the CPU state carries none). On the `cpl0_set` path it is the CR3 of
+    /// the last retired `MOV CR3`.
     pub cr3: u64,
     pub cr4: Option<u64>,
     pub efer: u64,
@@ -485,8 +486,10 @@ pub struct LinuxStopRecord {
     /// The `Debug` text of the set's own final exit, before it was expressed as `exit` (`None`
     /// on the `paged_probe` path).
     pub set_exit_detail: Option<String>,
-    /// How many `MOV CR3` retired and made the walker be rebuilt (0 on the `paged_probe`
-    /// path, where `MOV CR3` is `Unsupported`).
+    /// How many `MOV CR3` retired (0 on the `paged_probe` path, where `MOV CR3` is
+    /// `Unsupported`). A `MOV CR3` that ended the run in an integration error
+    /// (`Cr3EffectMismatch`, `Cr3SnapshotRejected`) retired too and is counted, so `cr3` is
+    /// always the CR3 of the last one.
     pub cr3_changes: u64,
     /// The last of them as `(old_cr3, new_cr3)`.
     pub last_cr3_change: Option<(u64, u64)>,
@@ -652,7 +655,7 @@ impl LinuxCpl0SetMembers {
 /// base probe profile (S4-38L3). The walker, the board CR3, the Linux-profile ticks and the stop
 /// condition are the same; the differences are the CPU profile (`members`) and that a `MOV CR3`
 /// is a continuation (the walker is rebuilt for the new CR3) whose count and last value the
-/// record carries. The board CR3 afterwards is the last one the guest wrote.
+/// record carries. The board CR3 afterwards is the CR3 of the last retired `MOV CR3`.
 ///
 /// Nothing is executed that the set does not admit: the first inadmissible instruction is the
 /// stop (`Unsupported`), and the segment caches the loader left are not touched.
@@ -694,7 +697,7 @@ pub fn run_linux_direct_board_set(
     }
     let report = boot
         .board
-        .run_linux_boot_cpl0_set(instruction_budget, &set, true)
+        .run_linux_boot_cpl0_set(instruction_budget, &set)
         .map_err(|failure| {
             let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
             error.retired = Some(failure.retired);
@@ -2238,6 +2241,90 @@ mod tests {
     }
 
     #[test]
+    fn set_facade_a_port_error_is_the_port_io_exit_with_rip_on_the_instruction() {
+        // CLI; MOV AL, 1; MOV DX, 0x1234; OUT DX, AL; HLT. Nothing is mapped at 0x1234, so the
+        // bus refuses the port before the OUT commits: three instructions retired, RIP on the OUT.
+        let (mut boot, file) =
+            boot_with_entry(&[0xFA, 0xB0, 0x01, 0x66, 0xBA, 0x34, 0x12, 0xEE, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        let error = crate::BusAccessError::UnmappedPort(crate::PortAddress::new(0x1234));
+        assert_eq!(record.exit, PagedProbeExit::PortIo(error), "{record:?}");
+        assert_eq!(record.exit_kind, "port_io");
+        assert_eq!(
+            record.exit_detail,
+            "PortIo(UnmappedPort(PortAddress(4660)))"
+        );
+        assert_eq!(
+            record.set_exit_detail.as_deref(),
+            Some("PortIo(UnmappedPort(PortAddress(4660)))")
+        );
+        assert_eq!((record.retired, record.rip), (3, ENTRY + 7));
+        assert_eq!(record.virtual_ns, 3, "only the retired instructions");
+        assert!(record.com1.is_empty());
+        assert_eq!((record.cr3_changes, record.cr3), (0, boot.board.cr3()));
+        assert_eq!(boot.board.state().cr3, None);
+    }
+
+    /// Host programming of PIT channel 2 (gate high, MSB-only mode 0, reload 0x1000): the
+    /// counter port 0x42 answers only once it is programmed. Host writes never tick.
+    fn program_pit_channel_2(boot: &mut LinuxDirectBoot) {
+        for (port, value) in [(0x61u16, 0x01u32), (0x43, 0xA0), (0x42, 0x10)] {
+            boot.board
+                .bus_mut()
+                .write_port(
+                    crate::PortAddress::new(port),
+                    crate::AccessWidth::Byte,
+                    value,
+                )
+                .expect("host port write");
+        }
+    }
+
+    #[test]
+    fn set_facade_timer_port_reads_tick_the_clock_once_each_like_run_boot() {
+        // MOV DX,0x61; 3 x IN AL,DX (PIT port B); MOV DX,0x42; 2 x IN (PIT counter);
+        // MOV DX,0x608; 2 x IN (PM timer); HLT. Seven timer reads, 1 us each, and no more: the
+        // pio member reaches the devices through the bus and the board applies the queued ticks
+        // once per quantum, as `run_boot` does for the same bytes. Every read ends the quantum.
+        let code = [
+            0x66, 0xBA, 0x61, 0x00, 0xEC, 0xEC, 0xEC, 0x66, 0xBA, 0x42, 0x00, 0xEC, 0xEC, 0x66,
+            0xBA, 0x08, 0x06, 0xEC, 0xEC, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        program_pit_channel_2(&mut boot);
+        let base = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 64)
+            .expect("runs");
+        assert_eq!(base.exit, PagedProbeExit::Halted, "{base:?}");
+        assert_eq!((base.retired, base.quanta), (11, 8));
+        assert_eq!(base.virtual_ns, 11 + 7 * 1_000);
+        // The same bytes behind CLI through the set: one more instruction, the same seven ticks.
+        let mut set_code = vec![0xFA];
+        set_code.extend_from_slice(&code);
+        let (mut boot, file) = boot_with_entry(&set_code);
+        program_pit_channel_2(&mut boot);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!((record.retired, record.quanta), (12, 8));
+        assert_eq!(record.virtual_ns, 12 + 7 * 1_000);
+        assert_eq!(boot.board.clock().now_ns(), record.virtual_ns);
+        assert_eq!(
+            record.virtual_ns - base.virtual_ns,
+            1,
+            "the CLI is the only difference"
+        );
+    }
+
+    #[test]
     fn set_facade_cr4_read_and_the_cpuid_msr_rdtsc_members() {
         // CLI; MOV RAX, CR4; XOR EAX, EAX; CPUID(0); HLT.
         let (mut boot, file) =
@@ -2271,6 +2358,39 @@ mod tests {
             "{record:?}"
         );
         assert_eq!(record.retired, 3);
+        // CLI; MOV ECX, 0xC0000080; RDMSR; HLT: the EFER member reads the board EFER (0xD00)
+        // into EDX:EAX.
+        let msr_code = [0xFA, 0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32, 0xF4];
+        let (mut boot, file) = boot_with_entry(&msr_code);
+        let members = LinuxCpl0SetMembers {
+            msr: true,
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4);
+        assert_eq!(record.gpr[Register::Rax as usize], 0xD00);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0080);
+        assert_eq!(
+            record.set_members,
+            [
+                "cli".to_string(),
+                "cpu_owned_cr3".to_string(),
+                format!("msr:{:?}", MsrProfile::EferReadOnlyV1(0xD00)),
+                "halt".to_string()
+            ]
+        );
+        // Without the member RDMSR is the stop (after CLI and the MOV).
+        let (mut boot, file) = boot_with_entry(&msr_code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 2);
         // CLI; RDTSC; HLT: the tick of the board clock is applied like in `run_boot`.
         let (mut boot, file) = boot_with_entry(&[0xFA, 0x0F, 0x31, 0xF4]);
         let members = LinuxCpl0SetMembers {

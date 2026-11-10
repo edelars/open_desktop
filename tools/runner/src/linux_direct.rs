@@ -17,7 +17,10 @@
 //! `--run --budget N --set-cpl0` (S4-38L3) runs the board through the CPL0 profile set of od-isa
 //! instead (`od_machine::run_linux_direct_board_set`, the minimal set: CLI and the CPU-owned
 //! CR3). A `MOV CR3` continues the run; the `stop` object then also says `path: cpl0_set`, the set
-//! members and how many CR3 changes happened.
+//! members, the set's own final exit (`set_exit_detail`) and how many CR3 changes happened
+//! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
+//! counted and `cr3` is its CR3). The `paged_probe` path carries the same fields with empty
+//! values; `schema_version` stays 1 (the fields are additive).
 //!
 //! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
 //! is started: their JSON says `"guest_started": false, "retired": 0`. A failure of the run

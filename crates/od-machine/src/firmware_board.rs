@@ -803,7 +803,8 @@ pub(crate) struct LinuxRunFailure {
 pub(crate) struct LinuxSetRunReport {
     /// The usual run report; `exit` is the set's exit in `PagedProbeExit` terms.
     pub(crate) run: FirmwareRunReport,
-    /// Every `MOV CR3` the walker was rebuilt for, in retirement order.
+    /// Every retired `MOV CR3`, in retirement order; a `MOV CR3` that ended the run in an
+    /// integration error is the last entry (see `PagedCpl0SetReport::translation_context_changes`).
     pub(crate) translation_context_changes: Vec<TranslationContextChange>,
     /// The `Debug` text of the set's own final exit (`PagedCpl0SetExit`), before it was
     /// expressed as a `PagedProbeExit`.
@@ -965,7 +966,10 @@ impl LoadedFirmwareBoard {
 
     /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
     /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`). After a
-    /// run through the CPL0 set (`run_linux_boot_cpl0_set`) it is the last `CR3` the guest wrote.
+    /// run through the CPL0 set (`run_linux_boot_cpl0_set`) it is the CR3 of the last `MOV CR3`
+    /// the guest retired, also when the run ended in an integration error of that very
+    /// instruction (`Cr3EffectMismatch`, `Cr3SnapshotRejected`): the instruction retired, only
+    /// the walker was not rebuilt for it.
     pub const fn cr3(&self) -> u64 {
         self.page_table_root
     }
@@ -1183,10 +1187,11 @@ impl LoadedFirmwareBoard {
     /// quantum); the quantum is [`run_cpl0_set_paged_2m_ram`], which rebuilds the 2 MiB walker
     /// on every `MOV CR3` the set retires. A `MOV CR3` is therefore a continuation, not a stop.
     ///
-    /// `hand_cr3_to_cpu` gives the board CR3 to the CPU state for the run (the set must then be
-    /// built `with_cpu_owned_cr3`, otherwise it refuses the state: `Cr3NotAdmitted`). Afterwards
-    /// the CPU state carries no CR3 again and [`Self::cr3`] is the last CR3 the guest wrote, so
-    /// the board can be run again through either path.
+    /// The board CR3 is given to the CPU state for the run (the set must therefore be built
+    /// `with_cpu_owned_cr3`, otherwise it refuses the state: `Cr3NotAdmitted`). Afterwards the
+    /// CPU state carries no CR3 again and [`Self::cr3`] is the CR3 of the last retired `MOV CR3`
+    /// (also on an integration-error exit of that instruction), so the board can be run again
+    /// through either path.
     ///
     /// COM1 (`OUT DX, AL`, `with_pio_u8`) goes through the machine bus like in `run_boot`; the
     /// PIT and PM timer port reads of the Linux profile are tick sources only through it.
@@ -1194,7 +1199,6 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
         set: &Cpl0ProfileSet<'_>,
-        hand_cr3_to_cpu: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -1222,9 +1226,7 @@ impl LoadedFirmwareBoard {
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
         }
-        if hand_cr3_to_cpu {
-            self.state.cr3 = Some(self.page_table_root);
-        }
+        self.state.cr3 = Some(self.page_table_root);
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1305,14 +1307,24 @@ impl LoadedFirmwareBoard {
                 }
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+            // A quantum stopped by a tick flag (no PM stop request) with budget left resumes;
+            // decided before the exit is converted, so the `Debug` text is built only for the
+            // exit that ends the run.
+            if stop_reason.is_none()
+                && remaining > 0
+                && report.instructions_executed > 0
+                && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::StopRequested))
+            {
+                continue;
+            }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
                 Ok(exit) => exit,
                 Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
             };
             let exit = match exit {
-                PagedProbeExit::Stopped if stop_reason.is_some() => PagedProbeExit::Stopped,
-                PagedProbeExit::Stopped if remaining == 0 => PagedProbeExit::BudgetExhausted,
-                PagedProbeExit::Stopped if report.instructions_executed > 0 => continue,
+                PagedProbeExit::Stopped if stop_reason.is_none() && remaining == 0 => {
+                    PagedProbeExit::BudgetExhausted
+                }
                 other => other,
             };
             break Ok(FirmwareRunReport {
@@ -4399,5 +4411,85 @@ mod tests {
         assert_eq!(state.cr3, None);
         assert_eq!(state.cr0, Some(0x8001_0033));
         assert_eq!(state.cr4, Some(0x20));
+    }
+
+    // ---- S4-38L3: the set's final exit expressed as a probe exit ----
+
+    #[test]
+    fn set_exit_without_a_probe_counterpart_is_an_integration_error_of_the_board() {
+        assert_eq!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::UnknownSetExit),
+            Err("the CPL0 set returned an exit variant the board does not know")
+        );
+        // The loop passes no stop address and the set admits no REP form.
+        for exit in [RunExit::StopAddress, RunExit::RepIterationBudgetExhausted] {
+            assert_eq!(
+                set_exit_to_probe_exit(PagedCpl0SetExit::Run(exit)),
+                Err("the CPL0 set returned an exit the board never asks for")
+            );
+        }
+    }
+
+    #[test]
+    fn set_exit_integration_errors_keep_their_fields_and_the_debug_text() {
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: 0x1000,
+            new_cr3: 0x2000,
+        };
+        let exit = PagedCpl0SetExit::Cr3EffectMismatch {
+            active_cr3: 0x1000,
+            effect_old_cr3: 0x1000,
+            cpu_cr3: Some(0x3000),
+            effect_new_cr3: 0x2000,
+        };
+        assert_eq!(
+            set_exit_to_probe_exit(exit),
+            Ok((
+                PagedProbeExit::IntegrationError(PagedProbeIntegrationError::Cr3EffectMismatch {
+                    active_cr3: 0x1000,
+                    effect_old_cr3: 0x1000,
+                    cpu_cr3: Some(0x3000),
+                    effect_new_cr3: 0x2000,
+                }),
+                "Cr3EffectMismatch { active_cr3: 4096, effect_old_cr3: 4096, cpu_cr3: Some(12288), \
+                 effect_new_cr3: 8192 }"
+                    .to_string()
+            ))
+        );
+        let error = crate::ProbeConfigError::InvalidCr3 {
+            value: 1 << 36,
+            offending_bits: 1 << 36,
+        };
+        let (mapped, detail) = set_exit_to_probe_exit(PagedCpl0SetExit::Cr3SnapshotRejected {
+            effect,
+            error: error.clone(),
+        })
+        .expect("mapped");
+        assert_eq!(
+            mapped,
+            PagedProbeExit::IntegrationError(PagedProbeIntegrationError::Cr3SnapshotRejected {
+                effect,
+                error
+            })
+        );
+        assert_eq!(
+            detail,
+            "Cr3SnapshotRejected { effect: Cr3Write { old_cr3: 4096, new_cr3: 8192 }, error: \
+             InvalidCr3 { value: 68719476736, offending_bits: 68719476736 } }"
+        );
+        let effect = TranslationContextChange::Cr0Write {
+            old_cr0: 1,
+            new_cr0: 2,
+        };
+        assert_eq!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::UnexpectedContextChange { effect }),
+            Ok((
+                PagedProbeExit::IntegrationError(
+                    PagedProbeIntegrationError::UnexpectedContextChange { effect }
+                ),
+                "UnexpectedContextChange { effect: Cr0Write { old_cr0: 1, new_cr0: 2 } }"
+                    .to_string()
+            ))
+        );
     }
 }
