@@ -349,16 +349,51 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
         assert_eq!(err, expected, "{name} without CLI");
         assert_eq!(memory.fetches, 0, "{name} without CLI");
     }
-    // RFLAGS.VM is a CLI precondition only; PE/PVI are covered by the policy.
-    let mut vm = board_state();
-    vm.rflags |= 1 << 17;
-    let mut memory = Memory::code(&BOARD_PROLOGUE);
-    let err = run_set(&mut vm, &mut memory, &with_cli, 64).unwrap_err();
-    assert_eq!(err, Cpl0ProfileSetInputError::CliPreconditionFailed);
-    assert_eq!(memory.fetches, 0);
-    let mut memory = Memory::code(&BOARD_PROLOGUE);
-    let result = run_set(&mut vm, &mut memory, &plain, 64).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfa });
+    // RFLAGS.VM and a clear RFLAGS bit 1 are rejected for every set, with or
+    // without CLI, with their own typed errors; PE/PVI are covered by the policy.
+    for (name, mutate, expected) in [
+        (
+            "vm",
+            (|s: &mut LongModeState| s.rflags |= 1 << 17) as fn(&mut LongModeState),
+            Cpl0ProfileSetInputError::RflagsVmSet,
+        ),
+        (
+            "bit 1 clear",
+            |s| s.rflags &= !2,
+            Cpl0ProfileSetInputError::RflagsReservedBitClear,
+        ),
+    ] {
+        for set in [&with_cli, &plain] {
+            let mut state = board_state();
+            mutate(&mut state);
+            let before = state.clone();
+            let mut memory = Memory::code(&BOARD_PROLOGUE);
+            let err = run_set(&mut state, &mut memory, set, 64).unwrap_err();
+            assert_eq!(err, expected, "{name}");
+            assert_eq!(memory.fetches, 0, "{name}");
+            assert_eq!(state, before, "{name}");
+        }
+    }
+}
+
+#[test]
+fn set_without_cli_rejects_rflags_vm_and_clear_bit1_before_any_fetch() {
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for (rflags, expected) in [
+        (2 | IF | (1 << 17), Cpl0ProfileSetInputError::RflagsVmSet),
+        (IF | (1 << 17), Cpl0ProfileSetInputError::RflagsVmSet),
+        (IF, Cpl0ProfileSetInputError::RflagsReservedBitClear),
+        (0, Cpl0ProfileSetInputError::RflagsReservedBitClear),
+    ] {
+        let mut state = board_state();
+        state.rflags = rflags;
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x90]);
+        let err = run_set(&mut state, &mut memory, &plain, 4).unwrap_err();
+        assert_eq!(err, expected, "rflags {rflags:#x}");
+        assert_eq!(memory.fetches, 0, "rflags {rflags:#x}");
+        assert_eq!(state, before, "rflags {rflags:#x}");
+    }
 }
 
 #[test]
@@ -547,9 +582,17 @@ fn cr_reads_return_current_values_and_clear_arithmetic_definedness() {
 #[test]
 fn cr4_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    // PGE, OSXSAVE and a reserved bit are outside the CR4 policy; PAE cleared
-    // is outside as well.
-    for value in [0xa0u64, CR4_BASE | 0x2_0000, CR4_BASE | (1 << 40), 0] {
+    // 0xa0 adds PGE (bit 7); bit 17 is PCIDE, bit 18 OSXSAVE, bit 2 TSD and
+    // bit 40 is reserved: all outside the CR4 policy (only OSFXSR/OSXMMEXCPT
+    // may vary). PAE cleared is outside as well.
+    for value in [
+        0xa0u64,
+        CR4_BASE | (1 << 17),
+        CR4_BASE | (1 << 18),
+        CR4_BASE | (1 << 2),
+        CR4_BASE | (1 << 40),
+        0,
+    ] {
         let mut code = movabs_rax(value);
         code.extend_from_slice(&MOV_CR4_RAX);
         let mut state = board_state();
@@ -574,7 +617,17 @@ fn cr4_write_outside_policy_is_unsupported_without_mutation() {
 #[test]
 fn cr0_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    for value in [CR0_BASE & !1, CR0_BASE & !0x8000_0000, 0] {
+    // PE, PG and WP cleared, bit 32 set (reserved), CD and NW set, and zero: the
+    // policy only lets EM/TS vary on top of CR0_BASE.
+    for value in [
+        CR0_BASE & !1,
+        CR0_BASE & !0x8000_0000,
+        CR0_BASE & !(1 << 16),
+        CR0_BASE | (1 << 32),
+        CR0_BASE | (1 << 30),
+        CR0_BASE | (1 << 29),
+        0,
+    ] {
         let mut code = movabs_rax(value);
         code.extend_from_slice(&MOV_CR0_RAX);
         let mut state = board_state();
@@ -827,10 +880,20 @@ fn rdtsc_without_a_source_is_unsupported_and_changes_nothing() {
 fn rdtsc_ignores_prefixed_forms_like_the_legacy_entry() {
     // `0x66 0x0f 0x31` is not the exact bare form; both entries agree.
     let set = base().with_rdtsc();
-    let mut source = || 7u64;
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        7u64
+    };
     let mut state = board_state();
+    let before = state.clone();
     let mut memory = Memory::code(&[0x66, 0x0f, 0x31]);
     let result = run_set_with_source(&mut state, &mut memory, &set, 1, Some(&mut source)).unwrap();
+    // Strict expectations on their own, not only agreement with the legacy entry.
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x31 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(calls, 0);
     let mut old_state = legacy_state();
     let mut old_memory = Memory::code(&[0x66, 0x0f, 0x31]);
     let mut old_source = || 7u64;
@@ -1309,6 +1372,10 @@ fn mov_cr3_stays_unsupported_without_cr3_ownership() {
 
 #[test]
 fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
+    // Architecturally these are not #UD (REX.W and 0x66 are ignored by MOV CR in
+    // 64-bit mode, and `0F 22 D9` is a valid `MOV CR3, RCX`); they are outside
+    // the exact `MOV CR3, RAX` profile, so the decoder reports the opcode byte
+    // `0x22` as unsupported in every case.
     for bytes in [
         &[0x48, 0x0f, 0x22, 0xd8][..],
         &[0x66, 0x0f, 0x22, 0xd8][..],
@@ -1319,13 +1386,10 @@ fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
         let mut memory = Memory::code(bytes);
         let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
         assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
-        assert!(
-            matches!(
-                exit(&result),
-                RunExit::Unsupported { .. } | RunExit::Fault(_)
-            ),
-            "{bytes:02x?}: {:?}",
-            result.exit
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x22 }),
+            "{bytes:02x?}"
         );
         assert_eq!(state, before, "{bytes:02x?}");
     }
@@ -1578,29 +1642,31 @@ fn pio_flag_without_a_pio_entry_stays_unsupported() {
 #[test]
 fn pio_does_not_widen_to_prefixed_or_other_port_forms() {
     let cli = CliProfile::NonPviLong64V1;
-    // 0x66/REP prefixes, the imm8 forms (E4/E6) and the word form (ED/EF).
-    for code in [
-        &[0x66, 0xee][..],
-        &[0xf3, 0xee][..],
-        &[0xe6, 0x80][..],
-        &[0xe4, 0x80][..],
-        &[0xef][..],
-        &[0xed][..],
+    // The 0x66/REP prefixes are consumed as legacy prefixes and the following
+    // opcode byte is reported, so `66 EE` and `F3 EE` give `Unsupported` with
+    // the `OUT` opcode `0xee`, not #UD. The imm8 forms (E4/E6) and the word
+    // form (ED/EF) report their own opcode.
+    for (code, opcode) in [
+        (&[0x66, 0xee][..], 0xee),
+        (&[0xf3, 0xee][..], 0xee),
+        (&[0xe6, 0x80][..], 0xe6),
+        (&[0xe4, 0x80][..], 0xe4),
+        (&[0xef][..], 0xef),
+        (&[0xed][..], 0xed),
     ] {
         let mut state = board_state();
+        let before = state.clone();
         let mut memory = Memory::code(code);
         let mut pio = TestPio::default();
         let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
-        assert!(
-            matches!(
-                result.exit,
-                Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. } | RunExit::Fault(_))
-            ),
-            "{code:x?}: {:?}",
-            result.exit
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:x?}"
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state.rip, RIP);
+        assert_eq!(state, before, "{code:x?}");
         assert!(pio.reads.is_empty() && pio.writes.is_empty());
     }
 }
@@ -2857,22 +2923,160 @@ fn lretq_accessed_bit_write_fault_is_exact_and_leaves_the_cpu_untouched() {
 
 #[test]
 fn lretq_faults_before_the_descriptor_never_write_the_accessed_bit() {
-    // L = 1 / D = 1, not present, DPL 3 and a non-canonical target all fail with A = 0:
-    // none of them may reach the write.
-    for (descriptor, target) in [
-        (0x00ef_9a00_0000_ffffu64, RIP),
-        (0x00af_1a00_0000_ffff, RIP),
-        (0x00af_fa00_0000_ffff, RIP),
-        (0x00af_9a00_0000_ffff, 0x0001_0000_0000_0000),
-        (0x00cf_9a00_0000_ffff, RIP),
+    // Every refusal below fails with A = 0 and must name its exact exit; none of them may
+    // reach the accessed-bit write.
+    for (descriptor, target, expected) in [
+        // L = 1 and D = 1.
+        (0x00ef_9a00_0000_ffffu64, RIP, selector_fault_exit(13, 0x10)),
+        // Not present.
+        (0x00af_1a00_0000_ffff, RIP, selector_fault_exit(11, 0x10)),
+        // DPL 3.
+        (0x00af_fa00_0000_ffff, RIP, selector_fault_exit(13, 0x10)),
+        // Non-canonical target.
+        (
+            0x00af_9a00_0000_ffff,
+            0x0001_0000_0000_0000,
+            selector_fault_exit(13, 0),
+        ),
+        // Compatibility-mode CS: legal but not modeled.
+        (
+            0x00cf_9a00_0000_ffff,
+            RIP,
+            RunExit::Unsupported { opcode: 0xcb },
+        ),
     ] {
         let (mut state, mut memory) = lretq_state(0x10, target);
         memory.put(LRETQ_GDT + 0x10, descriptor);
         let before = state.clone();
         let result = run_lretq(&mut state, &mut memory);
+        assert_eq!(exit(&result), &expected, "{descriptor:#x}");
         assert_eq!(result.instructions_executed, 0, "{descriptor:#x}");
         assert_eq!(state, before);
         assert_eq!(memory.writes, 0, "{descriptor:#x}");
+    }
+}
+
+#[test]
+fn lretq_reserved_l_and_d_wins_over_not_present() {
+    // SDM Vol.2 RET (IA-32e): the L = 1 / D = 1 check comes before the present check, so a
+    // not-present reserved descriptor is #GP(selector), not #NP.
+    assert_lretq_refused(
+        0x00ef_1a00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    // The same descriptor with D = 0 is a plain not-present 64-bit code segment: #NP.
+    assert_lretq_refused(
+        0x00af_1a00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(11, 0x10),
+    );
+}
+
+/// Code bytes followed by an unmapped page: a fetch past the end is an architectural `#PF`.
+struct PageFaultAfterCode {
+    bytes: Vec<u8>,
+}
+
+impl GuestMemory for PageFaultAfterCode {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.bytes
+            .get(address.wrapping_sub(RIP) as usize)
+            .copied()
+            .ok_or(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(address),
+            }))
+    }
+
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected read {address:#x}"
+        )))
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected write {address:#x}"
+        )))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn lgdt_and_endbr64_fetch_their_operand_bytes_before_deciding_unsupported() {
+    // Known deviation (S2-47a / S2-48): the decoder now fetches the SIB and displacement of
+    // `0F 01 /2` and the ModRM of `F3 0F 1E` before it decides the instruction is outside
+    // the legacy path. When the page ends inside the instruction, the legacy `run` reports
+    // the architectural `#PF` of the fetch (correct hardware behavior) instead of the former
+    // `Unsupported`. The behavior is pinned here.
+    for (code, last_mapped) in [
+        // `LGDT [SIB ...]`: the SIB byte is on the unmapped page.
+        (&[0x0fu8, 0x01, 0x14][..], 3u64),
+        // `LGDT [disp32]`: the displacement is cut after one byte.
+        (&[0x0f, 0x01, 0x15, 0xf9][..], 4),
+        // `F3 0F 1E`: the ModRM byte is on the unmapped page.
+        (&[0xf3, 0x0f, 0x1e][..], 3),
+    ] {
+        let mut state = lgdt_legacy_state(0);
+        let before = state.clone();
+        let mut memory = PageFaultAfterCode {
+            bytes: code.to_vec(),
+        };
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(RIP + last_mapped),
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 }
 

@@ -46,6 +46,17 @@
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
 - **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
+<a id="issue-073-s2-46-fs-gs-base-on-null-load"></a>
+
+### ISSUE-073 — S2-46: база FS/GS при null-загрузке не сверена с Intel
+
+- **Дата обнаружения:** 2026-11-10, при ревью S2-46–S2-48.
+- **Компонент:** `od-isa`, набор CPL0 (`MOV FS/GS, AX = 0`), `crates/od-isa/src/execute.rs`; контракт [CPU_CONTRACT.md](specs/CPU_CONTRACT.md) («Нулевая загрузка сегментов на CPL0 (S2-46)»).
+- **Статус:** открыта; владелец — этап 2 (CPU-профиль Linux) / S4-39.
+- **Суть и последствия:** база FS/GS при null-загрузке: набор (S2-46) сохраняет базу (поведение AMD без `NullSelectorClearsBase`); Intel обнуляет скрытую базу (по памяти, не сверено); CPUID набора — вендор OpenDesktop, Linux не выставит `X86_BUG_NULL_SEG`, и `load_seg_legacy` в `__switch_to` полагается на обнуление базы.
+- **Основание:** ревью S2-46–S2-48; AMD документирует поведение CPUID-битом Fn8000_0021_EAX[6] `NullSelectorClearsBase`, набор этот бит не объявляет.
+- **Следующий шаг:** решить до userspace (S4-39): выбрать поведение Intel или завести явный контракт.
+
 <a id="issue-072-s4-29f-pump-trace-limit-periodic-pit"></a>
 
 ### ISSUE-072 — S4-29f: предел трассы насоса ограничивает прогон с периодическим источником

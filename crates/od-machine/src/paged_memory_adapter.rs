@@ -408,6 +408,9 @@ pub(crate) enum PagedCpl0SetExit {
     /// The port of `IN AL, DX` / `OUT DX, AL` (`with_pio_u8`) failed. RIP is on the
     /// instruction, which did not retire.
     PortIo(crate::BusAccessError),
+    /// The set reported an exit variant this board does not know (the exit enum
+    /// is `#[non_exhaustive]`).
+    UnknownSetExit,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -574,6 +577,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             }
             Cpl0ProfileSetExit::PortIo(error) => {
                 break (PagedCpl0SetExit::PortIo(error), page_fault, memory_error);
+            }
+            // `Cpl0ProfileSetExit` is `#[non_exhaustive]`: an exit this board does
+            // not know cannot be resumed from, so it ends the run as unhandled.
+            _ => {
+                break (PagedCpl0SetExit::UnknownSetExit, page_fault, memory_error);
             }
         }
     };
