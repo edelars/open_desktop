@@ -1442,12 +1442,14 @@ mod tests {
     }
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
-    /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR and `LRETQ` (S2-47b)
-    /// reloads CS and `ENDBR64` (S2-48) is a NOP; the stop is a byte store the adapter refuses. The evidence file of the slice comes
+    /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR, `LRETQ` (S2-47b)
+    /// reloads CS and `ENDBR64` (S2-48) is a NOP; the adapter's byte, word and dword stores let
+    /// the byte store `MOV [RAX], SIL` retire, and the stop is `LIDT [RIP+0x17bbd]` (`0f 01 1d`)
+    /// at RIP 0x206_647c after 118 retired instructions. The evidence file of the slice comes
     /// from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set() {
+    fn real_artifacts_stop_at_lidt_after_the_narrow_stores() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {

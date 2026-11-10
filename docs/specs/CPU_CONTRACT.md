@@ -20247,18 +20247,25 @@ qword-only. Настоящее ядро после этого удаляет 22 
 (`0F 01 10`, RIP `0x100_0257`).
 
 **Узкие записи через адаптер платы (S4-38L3).** Тот же адаптер набора (поле
-`cpl0_set_narrow_write`, `true` только в `run_cpl0_set_paged_2m_ram`) принимает записи шириной 1, 2,
-4 и 8 байт (`MOV m8, r8`, `MOV m16, r16`, `MOV m32, r32`, `MOV m64, r64`; в том числе с REX для
-`SIL`/`DIL`, например `40 88 30` — `MOV [RAX], SIL`). Запись пишет ровно свою ширину одним
-доступом walker'а: чтения-изменения-записи окружающего qword нет, соседние байты не меняются.
+`cpl0_set_narrow_write`, `true` только в `run_cpl0_set_paged_2m_ram`) принимает любую запись шириной
+1, 2, 4 и 8 байт от инструкций набора: `MOV m, r` (в том числе с REX для `SIL`/`DIL`, например
+`40 88 30` — `MOV [RAX], SIL`), `MOV m, imm` (`C6`/`C7`), `SETcc m8`, `STOS` и dword-операции
+чтения-изменения-записи (`ADD`/`OR`/`AND m32` и т. п.; байтовые и word-варианты чтения-изменения-
+записи отвергаются на чтении, потому что адаптер не принимает чтения шириной 1 и 2). Walker от
+ширины не зависит: запись пишет ровно свою ширину одним доступом, без чтения-изменения-записи
+окружающего qword, соседние байты не меняются (у dword-RMW запись — ровно 4 байта).
 A/D-биты листа (PTE или PDE 2 MiB) — как у qword-записи на той же странице (accessed при обходе,
 dirty при записи), `#PF` — точная запись (вектор 14, код ошибки с W-битом, линейный адрес,
-RIP на инструкции) до коммита, без мутации. Запись word/dword/qword, пересекающая границу 4 KiB,
+RIP на инструкции) до записи данных и без D-бита; A-биты пройденных уровней таблиц коммитятся, как
+у qword-записи. Запись word/dword/qword, пересекающая границу 4 KiB,
 — типизированный `TrackedAccessError::CrossesPage { width }` до обхода таблиц: backend-ошибка
 адаптера, ни байта, ни A/D-бита, RIP не меняется (как для чтения); байтовая запись на `0xFFF`
-остаётся внутри страницы. Другие длины источника (например 3) отвергаются. Общие профили paged
-MOV (`step_paged_mov_2m_ram` и остальные) по-прежнему принимают только свою фиксированную ширину
-(`paged MOV profile does not support non-qword writes`). Настоящее ядро после этого проходит
+остаётся внутри страницы. Другие длины источника (например 3) отвергаются
+(`paged MOV profile does not support write width`). Общие профили paged MOV
+(`step_paged_mov_2m_ram` и остальные) по-прежнему принимают только свою фиксированную ширину:
+qword-профили — `paged MOV profile does not support non-qword writes`, dword-store профиль
+(`step_paged_mov_dword_store`) — `... non-dword writes`; флаги узкой записи и dword-store профиля
+взаимно исключают друг друга. Настоящее ядро после этого проходит
 `MOV [RAX], SIL` (`40 88 30`) на `0x206_3a80`, удаляет 118 инструкций и останавливается на
 `LIDT [RIP+0x17bbd]` (`0F 01 1D BD 7B 01 00`, RIP `0x206_647c`, `Unsupported { opcode: 0x01 }`).
 
@@ -20382,7 +20389,7 @@ Vol.3 §3.4.5.1); плата пишет только целыми qword, поэ�
 затем `mov r15, rsi` и `call 0x2066410` (retired 29); следующий стоп — `ENDBR64` (`F3 0F 1E FA`,
 `Unsupported { opcode: 0x1e }`, RIP `0x2066410`). Тесты: `crates/od-isa/tests/cpl0_profile_set.rs`
 (14 тестов `lretq_*`), декодер — `long_decode::tests::lretq_decodes_only_the_exact_rex_w_form`,
-плата — `linux_direct::tests::real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set`
+плата — `linux_direct::tests::real_artifacts_stop_at_lidt_after_the_narrow_stores`
 (`--ignored`).
 
 ### ENDBR64 на CPL0 в наборе (S2-48)
@@ -20402,7 +20409,7 @@ NOP: retired += 1, RIP += 4, регистры, RFLAGS, definedness флагов 
 `lgdt_and_endbr64_fetch_their_operand_bytes_before_deciding_unsupported`.
 
 На настоящем ядре через набор `ENDBR64` на `0x2066410` удаляется, затем retired доходит до 50; стоп —
-байтовая запись `MOV [RAX], SIL` (`40 88 30`) на `0x206_3a80`: выход `Backend` («paged MOV profile
-does not support non-qword writes», `crates/od-machine/src/paged_memory_adapter.rs`), то есть
-ограничение адаптера платы, а не набора. Тест платы —
-`linux_direct::tests::real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set` (`--ignored`).
+байтовая запись `MOV [RAX], SIL` (`40 88 30`) на `0x206_3a80` (до S4-38L3; далее — LIDT на
+`0x206_647c`): выход `Backend` («paged MOV profile does not support non-qword writes»,
+`crates/od-machine/src/paged_memory_adapter.rs`), то есть ограничение адаптера платы, а не набора.
+Тест платы — `linux_direct::tests::real_artifacts_stop_at_lidt_after_the_narrow_stores` (`--ignored`).
