@@ -1492,7 +1492,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_mov_cr3_after_the_rep_copy() {
+    fn real_artifacts_stop_at_nop_dword_after_mov_cr3() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1507,27 +1507,28 @@ mod tests {
                 "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
             ram_mib: 128,
             out: String::new(),
-            budget: Some(50000),
+            budget: Some(3_000_000),
             set_cpl0: true,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L4b: the partial REP `REP MOVSQ` at 0x100_02aa is resumed by the board (it is no
-        // longer refused). The run stops `unsupported` at `MOV RAX, CR3` (`0f 20 d8`) on
-        // 0x543_c0d6 after 1678 retired instructions and 2148 quanta; `MOV r64, CR3` is outside the
-        // set. Evidence: `docs/reports/data/stage4/s4-38l4b-rep-run.json`.
+        // S4-38L4c: `MOV RAX, CR3` (`0f 20 d8`) is executed by the set (cpu_owned_cr3). With budget
+        // 3000000 the run stops `unsupported` at `NOP DWORD [RAX]` (`0f 1f 00`) on 0x543_b792 after
+        // 329560 retired instructions and 2148 quanta (the stop below 50000 budget is budget_exhausted
+        // at 0x543_9a87: this test needs the larger budget). Evidence:
+        // `docs/reports/data/stage4/s4-38l4c-mov-cr3-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 1678, "{value:#}");
+        assert_eq!(value["retired"], 329560, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
         assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["rip"], "0x543c0d6");
+        assert_eq!(stop["rip"], "0x543b792");
         assert!(
-            stop["rip_bytes"].as_str().unwrap().starts_with("0f 20 d8"),
+            stop["rip_bytes"].as_str().unwrap().starts_with("0f 1f 00"),
             "{value:#}"
         );
-        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 32 })");
+        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 31 })");
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
