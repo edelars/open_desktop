@@ -26215,6 +26215,11 @@ fn step_configured(
                 instruction.operation,
                 Operation::ReadCr4 | Operation::WriteCr4
             ))
+        || (control_policy.is_some()
+            && matches!(
+                instruction.operation,
+                Operation::ReadCr0 | Operation::WriteCr0 | Operation::ReadCr4 | Operation::WriteCr4
+            ))
         || (mov_cr3_profile.is_some() && instruction.operation == Operation::WriteCr3))
         && context.privilege != PrivilegeLevel::Ring0
     {
@@ -31495,6 +31500,42 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::ReadCr0 | Operation::ReadCr4 if control_policy.is_some() => {
+            // The policy admitted both registers as Some before the first fetch.
+            let value = if instruction.operation == Operation::ReadCr0 {
+                state.cr0.expect("control policy state was prevalidated")
+            } else {
+                state.cr4.expect("control policy state was prevalidated")
+            };
+            state.write(RegisterView::low(Register::Rax, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        Operation::WriteCr0 | Operation::WriteCr4 if control_policy.is_some() => {
+            let policy = control_policy.expect("guarded by the match arm");
+            let value = state.gpr[Register::Rax as usize];
+            let is_cr0 = instruction.operation == Operation::WriteCr0;
+            let accepted = if is_cr0 {
+                policy.accepts_cr0(value)
+            } else {
+                policy.accepts_cr4(value)
+            };
+            if !accepted {
+                // Out-of-policy value: no state change.
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            if is_cr0 {
+                state.cr0 = Some(value);
+            } else {
+                state.cr4 = Some(value);
+            }
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         Operation::WriteCr3 if mov_cr3_profile.is_some() => {
             if let Err(fault) = commit_mov_cr3(state, next_rip, rflags_defined) {
                 return Ok(StepOutcome::Fault(fault));
@@ -33358,8 +33399,12 @@ fn step_configured(
         Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
-        Operation::ReadCr0 | Operation::WriteCr0 => cr0_profile.is_some(),
-        Operation::ReadCr4 | Operation::WriteCr4 => cr4_profile.is_some(),
+        Operation::ReadCr0 | Operation::WriteCr0 => {
+            cr0_profile.is_some() || control_policy.is_some()
+        }
+        Operation::ReadCr4 | Operation::WriteCr4 => {
+            cr4_profile.is_some() || control_policy.is_some()
+        }
         Operation::WriteCr3 => mov_cr3_profile.is_some(),
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }

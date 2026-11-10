@@ -210,15 +210,13 @@ fn lock_cli_is_ud_and_unadmitted_forms_leave_state_untouched() {
         error_code: None,
         linear_address: None,
     });
-    let cases: [(&[u8], RunExit); 5] = [
+    let cases: [(&[u8], RunExit); 3] = [
         (&[0xf0, 0xfa], ud),
         (
             &[0x66, 0x0f, 0x57, 0xc1],
             RunExit::Unsupported { opcode: 0x57 },
         ),
         (&[0xdb, 0xe3], RunExit::Unsupported { opcode: 0xdb }),
-        (&[0x0f, 0x20, 0xc0], RunExit::Unsupported { opcode: 0x20 }),
-        (&[0x0f, 0x22, 0xc0], RunExit::Unsupported { opcode: 0x22 }),
     ];
     for (bytes, expected) in cases {
         let mut state = board_state();
@@ -476,4 +474,183 @@ fn policy_values_beyond_base_admit_but_keep_fp_and_sse_closed() {
             assert_eq!(memory.bytes, bytes, "{label}");
         }
     }
+}
+
+/// CF, PF, AF, ZF, SF and OF: the flags MOV CR leaves undefined.
+const ARITHMETIC: u64 = 0x1 | 0x4 | 0x10 | 0x40 | 0x80 | 0x800;
+const MOV_RAX_CR0: [u8; 3] = [0x0f, 0x20, 0xc0];
+const MOV_CR0_RAX: [u8; 3] = [0x0f, 0x22, 0xc0];
+const MOV_RAX_CR4: [u8; 3] = [0x0f, 0x20, 0xe0];
+const MOV_CR4_RAX: [u8; 3] = [0x0f, 0x22, 0xe0];
+
+/// `movabs rax, value`.
+fn movabs_rax(value: u64) -> Vec<u8> {
+    let mut bytes = vec![0x48, 0xb8];
+    bytes.extend_from_slice(&value.to_le_bytes());
+    bytes
+}
+
+fn cr_set() -> Cpl0ProfileSet<'static> {
+    static CLI: CliProfile = CliProfile::NonPviLong64V1;
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&CLI)
+}
+
+#[test]
+fn cr0_cr4_read_modify_write_sequence_retires_every_instruction() {
+    let mut code = Vec::new();
+    code.extend_from_slice(&MOV_RAX_CR4);
+    code.extend_from_slice(&[0x48, 0x0d, 0x00, 0x06, 0x00, 0x00]); // or rax,0x600
+    code.extend_from_slice(&MOV_CR4_RAX);
+    code.extend_from_slice(&MOV_RAX_CR0);
+    code.extend_from_slice(&[0x48, 0x83, 0xc8, 0x0c]); // or rax,0xc
+    code.extend_from_slice(&MOV_CR0_RAX);
+    code.extend_from_slice(&[0x48, 0x83, 0xe0, 0xf3]); // and rax,~0xc
+    code.extend_from_slice(&MOV_CR0_RAX);
+    let set = cr_set();
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.cr4, Some(CR4_BASE | 0x600));
+    assert_eq!(state.cr4, Some(0x620));
+    assert_eq!(state.cr0, Some(CR0_BASE));
+    assert_eq!(state.gpr[0], CR0_BASE);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+}
+
+#[test]
+fn cr_reads_return_current_values_and_clear_arithmetic_definedness() {
+    let set = cr_set();
+    for (bytes, expected) in [(MOV_RAX_CR0, CR0_BASE), (MOV_RAX_CR4, CR4_BASE)] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&bytes);
+        let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+        assert_eq!(state.gpr[0], expected);
+        assert_eq!(state.rip, RIP + 3);
+        assert_eq!((state.cr0, state.cr4), (before.cr0, before.cr4));
+        assert_eq!(state.rflags, before.rflags);
+    }
+}
+
+#[test]
+fn cr4_write_outside_policy_is_unsupported_without_mutation() {
+    let set = cr_set();
+    // PGE, OSXSAVE and a reserved bit are outside the CR4 policy; PAE cleared
+    // is outside as well.
+    for value in [0xa0u64, CR4_BASE | 0x2_0000, CR4_BASE | (1 << 40), 0] {
+        let mut code = movabs_rax(value);
+        code.extend_from_slice(&MOV_CR4_RAX);
+        let mut state = board_state();
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        let label = format!("cr4 value {value:#x}");
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{label}"
+        );
+        // Only the MOV RAX,imm retired.
+        assert_eq!(result.instructions_executed, 1, "{label}");
+        assert_eq!(state.rip, RIP + 10, "{label}");
+        assert_eq!(state.cr4, Some(CR4_BASE), "{label}");
+        assert_eq!(state.cr0, Some(CR0_BASE), "{label}");
+        assert_eq!(state.gpr[0], value, "{label}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{label}");
+    }
+}
+
+#[test]
+fn cr0_write_outside_policy_is_unsupported_without_mutation() {
+    let set = cr_set();
+    for value in [CR0_BASE & !1, CR0_BASE & !0x8000_0000, 0] {
+        let mut code = movabs_rax(value);
+        code.extend_from_slice(&MOV_CR0_RAX);
+        let mut state = board_state();
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        let label = format!("cr0 value {value:#x}");
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{label}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{label}");
+        assert_eq!(state.rip, RIP + 10, "{label}");
+        assert_eq!(state.cr0, Some(CR0_BASE), "{label}");
+        assert_eq!(state.cr4, Some(CR4_BASE), "{label}");
+        assert_eq!(state.gpr[0], value, "{label}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{label}");
+    }
+}
+
+#[test]
+fn lock_mov_cr_is_ud_without_mutation() {
+    let set = cr_set();
+    let ud = RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    });
+    for bytes in [
+        &[0xf0, 0x0f, 0x22, 0xc0][..],
+        &[0xf0, 0x0f, 0x22, 0xe0][..],
+        &[0xf0, 0x0f, 0x20, 0xc0][..],
+        &[0xf0, 0x0f, 0x20, 0xe0][..],
+    ] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        assert_eq!(exit(&result), &ud, "{bytes:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn cr_moves_stay_closed_without_a_policy_entry() {
+    // `run` refuses modeled control registers before decoding; with CR0/CR4
+    // not modeled it reaches the decoder and CR moves have no profile.
+    for bytes in [MOV_RAX_CR0, MOV_CR0_RAX, MOV_RAX_CR4, MOV_CR4_RAX] {
+        let mut state = board_state();
+        state.cr0 = None;
+        state.cr4 = None;
+        let before = state.clone();
+        let mut memory = Memory::code(&bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: bytes[1] });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn em_ts_set_through_mov_cr0_keeps_fninit_closed() {
+    let mut code = Vec::new();
+    code.extend_from_slice(&MOV_RAX_CR0);
+    code.extend_from_slice(&[0x48, 0x83, 0xc8, 0x0c]); // or rax,0xc
+    code.extend_from_slice(&MOV_CR0_RAX);
+    code.extend_from_slice(&[0xdb, 0xe3]); // fninit
+    let set = cr_set();
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xdb });
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + 10);
+    assert_eq!(state.cr0, Some(CR0_BASE | 0xc));
+    assert_eq!(state.cr4, Some(CR4_BASE));
+    assert_eq!(state.gpr[0], CR0_BASE | 0xc);
+    assert!(state.x87.is_none());
 }
