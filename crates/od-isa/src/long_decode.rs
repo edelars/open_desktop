@@ -1785,6 +1785,9 @@ pub enum Operation {
     /// `REX.W CB` (LRETQ): pops a 64-bit RIP and a CS qword. Execution is admitted only
     /// inside the CPL0 profile set (S2-47b).
     FarReturn,
+    /// `F3 0F 1E FA` (ENDBR64) as an architectural NOP, because the CPU does not declare
+    /// CET_IBT. Execution is admitted only inside the CPL0 profile set (S2-48).
+    Endbr64Nop,
     /// Long-mode near indirect JMP through a 64-bit register or memory operand.
     IndirectJump {
         operand: Operand,
@@ -2426,6 +2429,29 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(DecodeError::Invalid {
                     opcode,
                     length: self.length,
+                });
+            }
+            return Err(self.unsupported(opcode));
+        }
+        // S2-48: only the exact `F3 0F 1E FA` form (no other prefix, no REX) decodes as
+        // ENDBR64; every other `0F 1E` form stays unsupported.
+        if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x1e
+            && prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    ..Prefixes::default()
+                })
+            && self.length == 3
+        {
+            if self.byte()? == 0xfa {
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Dword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::Endbr64Nop,
                 });
             }
             return Err(self.unsupported(opcode));
@@ -23554,6 +23580,39 @@ mod tests {
             // Register operand (mod = 11): XGETBV, not an LGDT form.
             &[0x0f, 0x01, 0xd0][..],
             &[0xf0, 0x0f, 0x01, 0xd0][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn endbr64_decodes_only_the_exact_f3_form() {
+        // S2-48: `F3 0F 1E FA` is the 4-byte ENDBR64 NOP; every other `0F 1E` form stays
+        // unsupported (other ModRM bytes, other or extra prefixes, REX, no prefix).
+        let decoded = Memory::new(&[0xf3, 0x0f, 0x1e, 0xfa]).decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.operation, Operation::Endbr64Nop);
+        for bytes in [
+            &[0xf3u8, 0x0f, 0x1e, 0xfb][..],
+            &[0xf3, 0x0f, 0x1e, 0xf8],
+            &[0xf3, 0x0f, 0x1e, 0xc8],
+            &[0xf3, 0x0f, 0x1e, 0x00],
+            &[0x66, 0xf3, 0x0f, 0x1e, 0xfa],
+            &[0xf3, 0x66, 0x0f, 0x1e, 0xfa],
+            &[0xf2, 0x0f, 0x1e, 0xfa],
+            &[0xf0, 0x0f, 0x1e, 0xfa],
+            &[0xf3, 0x48, 0x0f, 0x1e, 0xfa],
+            &[0x48, 0xf3, 0x0f, 0x1e, 0xfa],
+            &[0xf3, 0x2e, 0x0f, 0x1e, 0xfa],
+            &[0xf3, 0x67, 0x0f, 0x1e, 0xfa],
+            &[0xf3, 0xf3, 0x0f, 0x1e, 0xfa],
+            &[0x0f, 0x1e, 0xfa],
         ] {
             assert!(
                 matches!(
