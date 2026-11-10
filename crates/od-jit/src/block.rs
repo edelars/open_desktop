@@ -2788,7 +2788,8 @@ fn build_block_with_profile(
                     DecodeError::Unsupported { .. }
                     | DecodeError::InvalidMovCr3Lock { .. }
                     | DecodeError::InvalidMovCr0Lock { .. }
-                    | DecodeError::InvalidLgdtLock { .. } => {
+                    | DecodeError::InvalidLgdtLock { .. }
+                    | DecodeError::InvalidLidtLock { .. } => {
                         BlockStopReason::UnsupportedEncoding { guest_rip, error }
                     }
                     error => BlockStopReason::DecodeBoundary(deferred_boundary(guest_rip, error)),
@@ -8650,6 +8651,7 @@ fn deferred_boundary(guest_rip: u64, error: DecodeError) -> DecodeBoundary {
         | DecodeError::InvalidMovCr3Lock { length, .. }
         | DecodeError::InvalidMovCr0Lock { length, .. }
         | DecodeError::InvalidLgdtLock { length, .. }
+        | DecodeError::InvalidLidtLock { length, .. }
         | DecodeError::Invalid { length, .. } => Some(*length),
         DecodeError::Memory(_) => None,
     };

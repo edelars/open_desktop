@@ -20284,7 +20284,7 @@ qword-профили — `paged MOV profile does not support non-qword writes`, 
 
 **Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
 `MOV SS`/`MOV FS`/`MOV GS` с ненулевым селектором (нулевая загрузка — S2-46, ниже); `LGDT m` входит
-(S2-47a, ниже) и `LRETQ` (S2-47b, ниже) входят, LIDT — нет; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
+(S2-47a, ниже), `LIDT m` (S2-49, ниже) и `LRETQ` (S2-47b, ниже) входят; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
 (TZCNT/BSF по BMI1); WRMSR GS_BASE и набор MSR (в v1 один профиль); INVLPG; переключение
 CR0.WP; FP/SIMD при EM/TS/OSFXSR.
 
@@ -20363,6 +20363,41 @@ LGDT); `LOCK LGDT m` — `#UD` после полной выборки кодир
 памяти внутри инструкции (архитектурно корректная выборка). Известное отступление; поведение зафиксировано
 тестом `lgdt_and_endbr64_fetch_their_operand_bytes_before_deciding_unsupported`
 (`crates/od-isa/tests/cpl0_profile_set.rs`). То же для ENDBR64 (S2-48, ниже).
+
+### LIDT m на CPL0 (S2-49)
+
+Набор CPL0 исполняет `LIDT m` (`0F 01 /3`, любая адресная форма с памятью: `[RAX]`, `[reg+disp]`,
+SIB, RIP-relative; на настоящем ядре — `LIDT [RIP+0x17bbd]`, `0F 01 1D BD 7B 01 00`) без префиксов:
+2-байтный limit и 8-байтный base читаются по адресу операнда, `IDTR = (base, limit)`, RIP += длина;
+в Long64 база 64-битная и каноническая (SDM Vol.2 «LGDT/LIDT», Vol.3 §6.10; APM Vol.2 «LIDT»).
+Псевдодескриптор читается тем же путём, что у LGDT: две qword-чтения (`[a, a+8)` для limit и
+`[a+2, a+10)` для base), доступ через адаптер по правилам MOV-чтения (пересечение 4 KiB —
+классификация S4-11, #PF — точная запись). Таблица IDT не читается и не пишется. Любая ошибка
+чтения не меняет IDTR и RIP, retired 0; IDTR пишется только после всех проверок и чтений.
+
+**Отказы.** Неканонический адрес операнда или последнего байта (a+9): `#GP(0)`, для SS-операнда
+(база RSP/RBP) — `#SS(0)`; неканоническая база: `#GP(0)`; `LOCK LIDT m` — `#UD` после полной
+выборки кодировки (отдельный `DecodeError::InvalidLidtLock`; прежняя форма `LOCK LIDT [RSP+disp8]`
+сохраняет классификацию `Invalid`, в наборе тоже `#UD`); CPL != 0 — `#GP(0)` (набор входит только на
+CPL0, отказ на входе `WrongPrivilege`). `0F 01 D8` (mod = 11, `/3`) — не LIDT (VMRUN у AMD):
+остаётся `Unsupported { opcode: 0x01 }`, #UD для него не вводится. Префиксы (`66`, `67`, REX,
+сегментные) на общих формах — `Unsupported`.
+
+**Немоделированный IDTR.** В отличие от LGDT, набор грузит IDTR и при `idtr = None`: LIDT целиком
+заменяет регистр, а состояние входа Linux (`linux_load`) IDTR не моделирует. Результат — `Some`.
+Вне набора немоделированный IDTR по-прежнему даёт `Unsupported`.
+
+**Вне набора** (`run`/`step`, одиночные профили, JIT) исполняется только прежняя форма
+`[RSP+disp8]` (`0F 01 5C 24 ib`, длина 5, масштаб 1); остальные формы и `LOCK` дают тот же
+`Unsupported`, что до S2-49. Профиль `PagedLidtLong64V1` (S2-27d) и allowlist PagedCpl0ProbeV1 не
+менялись: его байтовый шлюз проверяет сырые байты `0F 01 5C 24`. Декодер читает SIB и смещение у
+`0F 01 /3` до решения об `Unsupported` (то же отступление, что у LGDT выше).
+Тесты: `crates/od-isa/tests/cpl0_profile_set.rs` (`lidt_*`, `lock_lidt_*`,
+`lgdt_then_lidt_sequence_*`), декодер —
+`long_decode::tests::lidt_decodes_only_exact_rsp_sib_disp8_and_lock_ud_after_full_fetch`.
+Ожидаемый следующий стоп настоящего ядра: после `LIDT` идут `ADD RSP, 0x18; POP RBX; POP RBP; RET`
+(`48 83 C4 18 5B 5D C3`, по `rip_bytes` из `s4-38l3-core.json`); где остановится набор — выяснит
+прогон на артефактах (оркестратор).
 
 ### LRETQ на CPL0 в наборе (S2-47b)
 

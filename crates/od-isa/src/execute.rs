@@ -18623,7 +18623,8 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         }
         Err(
             DecodeError::InvalidMovCr3Lock { opcode, .. }
-            | DecodeError::InvalidLgdtLock { opcode, .. },
+            | DecodeError::InvalidLgdtLock { opcode, .. }
+            | DecodeError::InvalidLidtLock { opcode, .. },
         ) => {
             return result(
                 PagedProbeExit::Unsupported {
@@ -19042,7 +19043,8 @@ fn execute_pio_u8<P: crate::PortIo>(
         }
         Err(
             DecodeError::InvalidMovCr3Lock { opcode, .. }
-            | DecodeError::InvalidLgdtLock { opcode, .. },
+            | DecodeError::InvalidLgdtLock { opcode, .. }
+            | DecodeError::InvalidLidtLock { opcode, .. },
         ) => {
             return PioU8Result {
                 exit: PioU8Exit::Unsupported {
@@ -26544,6 +26546,19 @@ fn step_configured(
                 opcode: opcode.byte,
             });
         }
+        // S2-49: LOCK LIDT m follows the LOCK LGDT m classification.
+        Err(DecodeError::InvalidLidtLock { .. }) if control_policy.is_some() => {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        Err(DecodeError::InvalidLidtLock { opcode, .. }) => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: opcode.byte,
+            });
+        }
         Err(DecodeError::InvalidMovCr3Lock { .. }) if mov_cr3_profile.is_some() => {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector: 6,
@@ -32392,12 +32407,32 @@ fn step_configured(
             opcode: instruction.opcode.byte,
         });
     }
+    // S2-49: likewise the general `LIDT m` forms (`0F 01 /3` memory) execute only inside
+    // the CPL0 profile set; every other path keeps the single legacy `[RSP+disp8]` form
+    // (`0F 01 5C 24 ib`).
+    if let Operation::LoadIdtr { source } = instruction.operation
+        && control_policy.is_none()
+        && !(source.base == long_decode::AddressBase::Register(Register::Rsp)
+            && source.index.is_none()
+            && source.scale == 1
+            && instruction.length == 5)
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if matches!(instruction.operation, Operation::LoadGdtr { .. }) && state.gdtr.is_none() {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
     }
-    if matches!(instruction.operation, Operation::LoadIdtr { .. }) && state.idtr.is_none() {
+    // S2-49: LIDT replaces the whole IDTR, so the CPL0 set also loads it when the entry
+    // state does not model one yet (the Linux entry state has `idtr: None`); every
+    // other path still requires a modeled IDTR.
+    if matches!(instruction.operation, Operation::LoadIdtr { .. })
+        && state.idtr.is_none()
+        && control_policy.is_none()
+    {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -47817,6 +47852,14 @@ fn step_configured(
         Operation::LoadGdtr { source } => {
             if let Err(error) = load_gdtr(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
+            }
+        }
+        Operation::LoadIdtr { source } if control_policy.is_some() => {
+            // S2-49: the CPL0 set reads the ten-byte pseudo-descriptor as two qwords,
+            // exactly like LGDT. The IDT itself is neither read nor written.
+            match read_pseudo_descriptor_qwords(state, memory, context, next_rip, source) {
+                Ok((base, limit)) => state.idtr = Some(crate::state::Idtr { base, limit }),
+                Err(error) => return report_memory_error(error),
             }
         }
         Operation::LoadIdtr { source } => {
