@@ -242,6 +242,11 @@ pub struct LongModeState {
     pub ss_cache: Option<StackSegmentDescriptorCache>,
     pub ds_unusable: bool,
     pub es_unusable: bool,
+    /// Null-selector marks for SS/FS/GS (S2-46): the last load was a null selector. A modeled
+    /// hidden cache is kept as it was; `ss_unusable` is set only over a loaded SS cache.
+    pub ss_unusable: bool,
+    pub fs_unusable: bool,
+    pub gs_unusable: bool,
     /// Hidden DS descriptor cache only in the bounded MOV-DS-load profile.
     pub ds_cache: Option<DsDescriptorCache>,
     /// Hidden ES descriptor cache only in the bounded MOV-ES-load profile.
@@ -425,6 +430,9 @@ impl Default for LongModeState {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             ds_cache: None,
             es_cache: None,
             gdtr: None,
@@ -856,6 +864,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         ds_cache: None,
                         gdtr: None,
                         idtr: None,

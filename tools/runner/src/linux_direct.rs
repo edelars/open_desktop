@@ -1442,7 +1442,7 @@ mod tests {
     /// comes from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_first_segment_load_through_the_cpl0_set() {
+    fn real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1465,11 +1465,17 @@ mod tests {
         println!("{value:#}");
         let stop = &value["stop"];
         assert_eq!(stop["path"], "cpl0_set");
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["unsupported_opcode"], "0x8e");
-        assert_eq!(stop["rip"], "0x1000204");
-        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("8e d8"));
-        assert_eq!(value["retired"], 3);
+        // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire; the next stop is the dword
+        // `MOV EAX, [RSI+0x230]`, which the paged adapter's qword-only profile refuses.
+        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
+        assert_eq!(stop["rip"], "0x1000215");
+        assert!(
+            stop["rip_bytes"]
+                .as_str()
+                .unwrap()
+                .starts_with("8b 86 30 02")
+        );
+        assert_eq!(value["retired"], 9);
         assert_eq!(stop["cr3_changes"], 0);
     }
 }
