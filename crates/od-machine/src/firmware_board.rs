@@ -816,10 +816,41 @@ pub(crate) struct LinuxSetRunReport {
     pub(crate) cpuid_divergence_leaf: Option<u32>,
 }
 
+/// Whether the CPL0 set loop calls the set again after a quantum that ended on `exit` (S4-38L4b).
+///
+/// Both resumable exits need the run to be neither stopped by the guest (`stop_requested`) nor
+/// out of budget (`remaining == 0`):
+/// - a `StopRequested` of a tick flag, once the quantum retired something (the flag is consumed
+///   between quanta, so a quantum that retired nothing would only repeat itself);
+/// - the partial REP exit `RepIterationBudgetExhausted`: the iteration limit of one REP step is
+///   a quantum boundary like a tick. RIP is still on the REP instruction and RCX/RSI/RDI carry
+///   the iterations done, so the next call continues the same instruction. It retires nothing
+///   and costs no budget (budget unit: the instruction; the REP is counted once, when it
+///   completes), and it cannot repeat forever: every call completes at least one iteration,
+///   which lowers the count.
+fn resumes_set_exit(
+    exit: &PagedCpl0SetExit,
+    stop_requested: bool,
+    remaining: u64,
+    instructions_executed: u64,
+) -> bool {
+    !stop_requested
+        && remaining > 0
+        && match exit {
+            PagedCpl0SetExit::Run(RunExit::StopRequested) => instructions_executed > 0,
+            PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted) => true,
+            _ => false,
+        }
+}
+
 /// Expresses the final exit of the CPL0 set loop as a `PagedProbeExit`, together with its own
-/// `Debug` text. `StopAddress` and `RepIterationBudgetExhausted` have no counterpart: the loop
-/// passes no stop address and the set admits no REP form, so they are an integration error of
-/// the board, reported as such instead of being folded into another exit.
+/// `Debug` text. `StopAddress` has no counterpart: the loop passes no stop address, so it is an
+/// integration error of the board, reported as such instead of being folded into another exit.
+///
+/// `RepIterationBudgetExhausted` (S4-38L4b) is the set's partial REP exit. The loop resumes it
+/// ([`resumes_set_exit`]); it reaches this function only when the run ends on it anyway (a stop
+/// the guest asked for, or no budget left) and is then expressed like the quantum stop
+/// (`Stopped`), which the loop turns into `BudgetExhausted` once the budget is spent.
 fn set_exit_to_probe_exit(
     exit: PagedCpl0SetExit,
 ) -> Result<(PagedProbeExit, String), &'static str> {
@@ -828,11 +859,13 @@ fn set_exit_to_probe_exit(
         PagedCpl0SetExit::Run(run) => match run {
             RunExit::Halted => PagedProbeExit::Halted,
             RunExit::InstructionBudgetExhausted => PagedProbeExit::BudgetExhausted,
-            RunExit::StopRequested => PagedProbeExit::Stopped,
+            RunExit::StopRequested | RunExit::RepIterationBudgetExhausted => {
+                PagedProbeExit::Stopped
+            }
             RunExit::Fault(fault) => PagedProbeExit::Fault(fault),
             RunExit::Unsupported { opcode } => PagedProbeExit::Unsupported { opcode },
             RunExit::MemoryError(error) => PagedProbeExit::Backend(error),
-            RunExit::StopAddress | RunExit::RepIterationBudgetExhausted => {
+            RunExit::StopAddress => {
                 return Err("the CPL0 set returned an exit the board never asks for");
             }
         },
@@ -1204,6 +1237,11 @@ impl LoadedFirmwareBoard {
     /// COM1 (`OUT DX, AL`, `with_pio_u8`) goes through the machine bus like in `run_boot`; the
     /// PIT and PM timer port reads of the Linux profile are tick sources only through it.
     ///
+    /// A partial REP exit of the set (`RepIterationBudgetExhausted`, S4-38L4b) is a quantum
+    /// boundary like a tick: the loop calls the set again on the same RIP while the budget lasts
+    /// and no stop was asked for. The budget unit is the instruction: the REP retires, and costs
+    /// one unit and one ns, when it completes.
+    ///
     /// With `cpuid_boundary` the run stops before a `CPUID` whose EAX is 1 or 0x8000_0001
     /// (S4-38L4, `cpuid_divergence`): the instruction does not execute and the report carries
     /// its leaf. Nothing is answered in its place.
@@ -1325,15 +1363,16 @@ impl LoadedFirmwareBoard {
                 PagedCpl0SetExit::CpuidDivergence { leaf } => Some(leaf),
                 _ => None,
             };
-            // A quantum stopped by a tick flag (no PM stop request) with budget left resumes;
-            // decided before the exit is converted, so the `Debug` text is built only for the
-            // exit that ends the run. The CPUID boundary is not a `StopRequested`,
-            // so it never resumes.
-            if stop_reason.is_none()
-                && remaining > 0
-                && report.instructions_executed > 0
-                && matches!(report.exit, PagedCpl0SetExit::Run(RunExit::StopRequested))
-            {
+            // A quantum stopped by a tick flag (no PM stop request) with budget left resumes,
+            // and so does a partial REP exit (S4-38L4b); decided before the exit is converted,
+            // so the `Debug` text is built only for the exit that ends the run. The CPUID
+            // boundary is neither, so it never resumes.
+            if resumes_set_exit(
+                &report.exit,
+                stop_reason.is_some(),
+                remaining,
+                report.instructions_executed,
+            ) {
                 continue;
             }
             let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
@@ -4456,12 +4495,45 @@ mod tests {
             set_exit_to_probe_exit(PagedCpl0SetExit::UnknownSetExit),
             Err("the CPL0 set returned an exit variant the board does not know")
         );
-        // The loop passes no stop address and the set admits no REP form.
-        for exit in [RunExit::StopAddress, RunExit::RepIterationBudgetExhausted] {
-            assert_eq!(
-                set_exit_to_probe_exit(PagedCpl0SetExit::Run(exit)),
-                Err("the CPL0 set returned an exit the board never asks for")
-            );
+        // The loop passes no stop address.
+        assert_eq!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::Run(RunExit::StopAddress)),
+            Err("the CPL0 set returned an exit the board never asks for")
+        );
+    }
+
+    #[test]
+    fn partial_rep_exit_is_a_stop_of_the_board_not_an_integration_error() {
+        assert_eq!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)),
+            Ok((
+                PagedProbeExit::Stopped,
+                "Run(RepIterationBudgetExhausted)".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn resume_decision_for_the_partial_rep_and_the_tick_stop() {
+        let partial = PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted);
+        let tick = PagedCpl0SetExit::Run(RunExit::StopRequested);
+        // A partial REP resumes with budget left, also when nothing retired in the quantum.
+        assert!(resumes_set_exit(&partial, false, 5, 0));
+        assert!(resumes_set_exit(&partial, false, 5, 3));
+        // Not when the guest asked for the stop, and not when the budget is spent.
+        assert!(!resumes_set_exit(&partial, true, 5, 3));
+        assert!(!resumes_set_exit(&partial, false, 0, 3));
+        // The tick stop keeps its rule: it needs a retired instruction.
+        assert!(resumes_set_exit(&tick, false, 5, 1));
+        assert!(!resumes_set_exit(&tick, false, 5, 0));
+        assert!(!resumes_set_exit(&tick, true, 5, 1));
+        // Other exits never resume.
+        for exit in [
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            PagedCpl0SetExit::CpuidDivergence { leaf: 1 },
+        ] {
+            assert!(!resumes_set_exit(&exit, false, 5, 1));
         }
     }
 
