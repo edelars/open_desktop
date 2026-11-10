@@ -1492,7 +1492,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_movzx_word_read_after_the_crossing() {
+    fn real_artifacts_stop_at_rep_bsf_after_the_word_read() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1512,29 +1512,26 @@ mod tests {
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L4e: the instruction `JE rel32` (`0f 84 1f 02 00 00`) that crosses the page boundary
-        // 0x543_9000 is fetched across the two pages by the set's adapter and executes. With budget
-        // 3000000 the run stops `backend` at `MOVZX r32, word [rcx]` (`0f b7 31`) on 0x543_2a44
-        // after 336587 retired instructions: the set has no 16-bit read profile yet (S4-38L4f).
-        // Evidence: `docs/reports/data/stage4/s4-38l4e-cross-page-run.json`.
+        // S4-38L4f: the 16-bit read `MOVZX r32, word [rcx]` (`0f b7 31`) is admitted by the set's
+        // adapter. With budget 3000000 the run stops `unsupported` at `REP BSF` / TZCNT EAX, EAX
+        // (`f3 0f bc c0`) on 0x541_e469 after 372548 retired instructions: BSF semantics for `F3 0F BC`
+        // on a profile without BMI1 are the next slice (S4-38L4g). Evidence:
+        // `docs/reports/data/stage4/s4-38l4f-word-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 336587, "{value:#}");
+        assert_eq!(value["retired"], 372548, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert_eq!(stop["rip"], "0x5432a44");
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["rip"], "0x541e469");
         assert!(
-            stop["rip_bytes"].as_str().unwrap().starts_with("0f b7 31"),
-            "{value:#}"
-        );
-        assert!(
-            stop["set_exit_detail"]
+            stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .contains("paged MOV profile does not support read width"),
+                .starts_with("f3 0f bc c0"),
             "{value:#}"
         );
+        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 188 })");
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
