@@ -2256,6 +2256,234 @@ mod tests {
         );
     }
 
+    // ---- S4-38L4b: a partial REP exit of the set is resumed by the board ----
+
+    /// Qwords copied by the REP tests: three REP calls (1024 + 1024 + 452 iterations).
+    const REP_QWORDS: u64 = 2500;
+    const REP_SRC: u64 = DATA;
+    const REP_DST: u64 = DATA + 0x10_0000;
+    const REP_LIMIT: u64 = od_isa::execute::REP_ITERATION_WORK_LIMIT;
+
+    fn rep_pattern() -> Vec<u8> {
+        (0..REP_QWORDS * 8)
+            .map(|index| (index.wrapping_mul(31) ^ (index >> 8)) as u8)
+            .collect()
+    }
+
+    /// The board with `code` at the entry, the source filled with [`rep_pattern`], and
+    /// RSI/RDI/RCX set for a forward copy (or, with `backward`, for a copy from the last qword
+    /// down, the shape of the kernel's relocation).
+    fn rep_boot(code: &[u8], backward: bool) -> LinuxDirectBoot {
+        let (mut boot, _) = boot_with_entry(code);
+        write_phys(&mut boot, REP_SRC, &rep_pattern());
+        let state = boot.board.state_mut();
+        let last = (REP_QWORDS - 1) * 8;
+        let (rsi, rdi) = if backward {
+            (REP_SRC + last, REP_DST + last)
+        } else {
+            (REP_SRC, REP_DST)
+        };
+        state.gpr[Register::Rsi as usize] = rsi;
+        state.gpr[Register::Rdi as usize] = rdi;
+        state.gpr[Register::Rcx as usize] = REP_QWORDS;
+        boot
+    }
+
+    fn read_bytes(boot: &mut LinuxDirectBoot, address: u64, len: u64) -> Vec<u8> {
+        let mut bytes = vec![0u8; len as usize];
+        read(&mut boot.board, address, &mut bytes).expect("read");
+        bytes
+    }
+
+    fn halt_members() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        }
+    }
+
+    #[test]
+    fn set_facade_partial_rep_resumes_and_matches_the_expected_copy() {
+        // REP MOVSQ; HLT, forward.
+        let code = [0xF3, 0x48, 0xA5, 0xF4];
+        let mut boot = rep_boot(&code, false);
+        let rflags_before = boot.board.state().rflags;
+        let file = bzimage_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, halt_members());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 2, "the REP counts once, with the HLT");
+        assert_eq!(record.quanta, 3, "1024 + 1024 + 452 iterations");
+        assert_eq!(record.virtual_ns, 2);
+        assert_eq!(record.rip, ENTRY + 4);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rsi as usize], REP_SRC + REP_QWORDS * 8);
+        assert_eq!(record.gpr[Register::Rdi as usize], REP_DST + REP_QWORDS * 8);
+        assert_eq!(record.rflags, rflags_before, "REP MOVS touches no flag");
+        assert_eq!(
+            read_bytes(&mut boot, REP_DST, REP_QWORDS * 8),
+            rep_pattern()
+        );
+        assert_eq!(read_bytes(&mut boot, REP_DST + REP_QWORDS * 8, 8), [0; 8]);
+        assert_eq!(record.page_fault, None);
+        assert_eq!(record.memory_error, None);
+    }
+
+    #[test]
+    fn set_facade_partial_backward_rep_between_std_and_cld_resumes() {
+        // STD; REP MOVSQ; CLD; HLT, the shape of the kernel's backward relocation.
+        let code = [0xFD, 0xF3, 0x48, 0xA5, 0xFC, 0xF4];
+        let mut boot = rep_boot(&code, true);
+        let file = bzimage_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, halt_members());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4);
+        assert_eq!(record.quanta, 3);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rsi as usize], REP_SRC.wrapping_sub(8));
+        assert_eq!(record.gpr[Register::Rdi as usize], REP_DST.wrapping_sub(8));
+        assert_eq!(record.rflags & (1 << 10), 0, "CLD ran after the REP");
+        assert_eq!(
+            read_bytes(&mut boot, REP_DST, REP_QWORDS * 8),
+            rep_pattern()
+        );
+        assert_eq!(read_bytes(&mut boot, REP_DST - 8, 8), [0; 8]);
+    }
+
+    #[test]
+    fn set_partial_rep_exits_keep_the_registers_and_the_memory_consistent() {
+        // The set call itself: each partial exit leaves RIP on the REP, nothing retired, and
+        // RCX/RSI/RDI/memory exactly at the iterations done; the calls chained by hand end in
+        // the state of the whole copy.
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let set = switch_set(&cli, &halt);
+        let mut boot = rep_boot(&[0xF3, 0x48, 0xA5, 0xF4], false);
+        let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(cr3);
+        let rflags_before = state.rflags;
+        let mut done = 0;
+        let mut calls = 0;
+        loop {
+            let report = run_cpl0_set_paged_2m_ram(
+                &mut state,
+                boot.board.bus_mut(),
+                cr3,
+                efer,
+                long64(),
+                64,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+            );
+            calls += 1;
+            if report.exit != PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted) {
+                assert_eq!(report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+                assert_eq!(report.instructions_executed, 2, "REP completes, then HLT");
+                break;
+            }
+            done += REP_LIMIT;
+            assert_eq!(
+                report.instructions_executed, 0,
+                "a partial REP retires nothing"
+            );
+            assert_eq!(state.rip, ENTRY);
+            assert_eq!(state.gpr[Register::Rcx as usize], REP_QWORDS - done);
+            assert_eq!(state.gpr[Register::Rsi as usize], REP_SRC + done * 8);
+            assert_eq!(state.gpr[Register::Rdi as usize], REP_DST + done * 8);
+            assert_eq!(state.rflags, rflags_before);
+            assert_eq!(
+                read_bytes(&mut boot, REP_DST, done * 8),
+                rep_pattern()[..(done * 8) as usize]
+            );
+            assert_eq!(
+                read_bytes(&mut boot, REP_DST + done * 8, 8),
+                [0; 8],
+                "no write beyond the iterations done"
+            );
+            assert_eq!((report.page_fault, report.memory_error), (None, None));
+        }
+        assert_eq!(calls, 3);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], REP_SRC + REP_QWORDS * 8);
+        assert_eq!(state.gpr[Register::Rdi as usize], REP_DST + REP_QWORDS * 8);
+        assert_eq!(state.rip, ENTRY + 4);
+        assert_eq!(state.rflags, rflags_before);
+        assert_eq!(
+            read_bytes(&mut boot, REP_DST, REP_QWORDS * 8),
+            rep_pattern()
+        );
+    }
+
+    #[test]
+    fn set_facade_budget_spent_after_a_partial_rep_is_budget_exhausted_not_an_error() {
+        // Budget 1: the REP is that one instruction. It is resumed to its end, then the budget
+        // is spent: `budget_exhausted`, RIP on the HLT, the copy complete.
+        let code = [0xF3, 0x48, 0xA5, 0xF4];
+        let mut boot = rep_boot(&code, false);
+        let file = bzimage_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 1, halt_members());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!(record.exit_kind, "budget_exhausted");
+        assert_eq!((record.retired, record.rip), (1, ENTRY + 3));
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(
+            read_bytes(&mut boot, REP_DST, REP_QWORDS * 8),
+            rep_pattern()
+        );
+        // Budget 0: the REP does not start.
+        let mut boot = rep_boot(&code, false);
+        let record = run_set_facade(&mut boot, &file, 0, halt_members());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!((record.retired, record.rip), (0, ENTRY));
+        assert_eq!(record.gpr[Register::Rcx as usize], REP_QWORDS);
+        assert_eq!(read_bytes(&mut boot, REP_DST, 8), [0; 8]);
+    }
+
+    #[test]
+    fn set_facade_guest_stop_after_a_resumed_rep_sees_the_finished_copy() {
+        // MOV DX, ACPI_RESET_REG; MOV AL, ACPI_RESET_VALUE; REP MOVSQ; OUT DX, AL; HLT.
+        let code = [
+            0x66, 0xBA, 0x0C, 0x06, 0xB0, 0x06, 0xF3, 0x48, 0xA5, 0xEE, 0xF4,
+        ];
+        let mut boot = rep_boot(&code, false);
+        let file = bzimage_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Stopped, "{record:?}");
+        assert_eq!(record.exit_kind, "stopped");
+        assert_eq!(
+            record.retired, 4,
+            "the stop is after the OUT; the HLT never runs"
+        );
+        assert_eq!(record.rip, ENTRY + 10);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(
+            read_bytes(&mut boot, REP_DST, REP_QWORDS * 8),
+            rep_pattern()
+        );
+    }
+
+    #[test]
+    fn paged_probe_path_still_refuses_the_rep_form() {
+        // Outside the set nothing changed: the base profile does not admit REP MOVSQ.
+        let code = [0xF3, 0x48, 0xA5, 0xF4];
+        let mut boot = rep_boot(&code, false);
+        let file = bzimage_with_entry(&code);
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 64)
+            .expect("runs");
+        assert_eq!(record.path, "paged_probe");
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA5 });
+        assert_eq!((record.retired, record.rip), (0, ENTRY));
+        assert_eq!(record.gpr[Register::Rcx as usize], REP_QWORDS);
+    }
+
     #[test]
     fn set_facade_com1_through_the_bus_needs_the_pio_member() {
         // MOV AL,'X'; MOV DX,0x3F8; OUT DX,AL; HLT behind CLI.
