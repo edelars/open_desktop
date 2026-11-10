@@ -1,13 +1,14 @@
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
-    Cpl0ProfileSetResult, RdtscControls, RunConfig, RunExit, run, run_with_cli_profile,
-    run_with_cpl0_profile_set, run_with_cpuid_profile, run_with_efer_rdmsr_profile,
-    run_with_halt_profile, run_with_msr_profile, run_with_rdtsc_source,
+    Cpl0ProfileSetResult, MovCr3Long64V1, RdtscControls, RunConfig, RunExit, run,
+    run_with_cli_profile, run_with_cpl0_profile_set, run_with_cpuid_profile,
+    run_with_efer_rdmsr_profile, run_with_halt_profile, run_with_msr_profile,
+    run_with_rdtsc_source,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
     GuestMemory, HaltProfile, InstructionMode, LongModeState, MemoryError, OperandSize,
-    PrivilegeLevel, StiShadow, cpuid::CpuidProfile, msr::MsrProfile,
+    PrivilegeLevel, StiShadow, TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
 };
 
 const RIP: u64 = 0x1000;
@@ -143,8 +144,10 @@ fn run_set(
 }
 
 fn exit(result: &Cpl0ProfileSetResult) -> &RunExit {
-    let Cpl0ProfileSetExit::Run(exit) = &result.exit;
-    exit
+    match &result.exit {
+        Cpl0ProfileSetExit::Run(exit) => exit,
+        other => panic!("expected a Run exit, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1105,4 +1108,282 @@ fn system_members_keep_fp_and_cr_admission_unchanged() {
         Cpl0ProfileSetInputError::Cr0Missing
     );
     assert_eq!(memory.fetches, 0);
+}
+
+const MOV_CR3_RAX: [u8; 3] = [0x0f, 0x22, 0xd8];
+
+fn cr3_set() -> Cpl0ProfileSet<'static> {
+    cr_set().with_cpu_owned_cr3(MovCr3Long64V1)
+}
+
+fn cr3_state(cr3: u64) -> LongModeState {
+    let mut state = board_state();
+    state.cr3 = Some(cr3);
+    state
+}
+
+fn cr3_write(old_cr3: u64, new_cr3: u64) -> Cpl0ProfileSetExit {
+    Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::Cr3Write {
+        old_cr3,
+        new_cr3,
+    })
+}
+
+fn ud() -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    })
+}
+
+#[test]
+fn cli_mov_rax_mov_cr3_stops_at_the_boundary_after_the_write() {
+    // `cli; movabs rax, 0x2000; mov cr3, rax`; no bytes follow, so a fetch
+    // past the MOV CR3 would surface as a memory error instead of this exit.
+    let mut code = vec![0xfa];
+    code.extend(movabs_rax(0x2000));
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x2000));
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.cr3, Some(0x2000));
+    assert_eq!(state.gpr[0], 0x2000);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(state.rflags, 2);
+    assert_eq!((state.cr0, state.cr4), (Some(CR0_BASE), Some(CR4_BASE)));
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+}
+
+#[test]
+fn mov_cr3_without_cli_retires_two_and_leaves_other_state_alone() {
+    let mut code = movabs_rax(0x2000);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpu_owned_cr3(MovCr3Long64V1);
+    let mut state = cr3_state(0x1000);
+    let before = state.clone();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x2000));
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = before;
+    expected.gpr[0] = 0x2000;
+    expected.cr3 = Some(0x2000);
+    expected.rip = RIP + code.len() as u64;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn mov_cr3_with_an_unchanged_value_still_reports_the_write() {
+    let mut code = movabs_rax(0x1000);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x1000));
+    assert_eq!(result.instructions_executed, 2);
+}
+
+#[test]
+fn mov_cr3_exit_wins_over_budget_and_stop_at_the_same_boundary() {
+    let mut code = movabs_rax(0x2000);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    code.push(0x90);
+    let end = RIP + code.len() as u64 - 1;
+    // Budget exhausted exactly at the MOV CR3.
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 2).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x2000));
+    assert_eq!(result.instructions_executed, 2);
+    // STOP address equal to the next RIP.
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let mut stop = config(PrivilegeLevel::Ring0, 64);
+    stop.stop_rip = Some(end);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        stop,
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x2000));
+    assert_eq!(state.rip, end);
+    // Resuming after the exit continues with the next instruction.
+    let mut resume = config(PrivilegeLevel::Ring0, 1);
+    resume.stop_rip = None;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        resume,
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, end + 1);
+}
+
+#[test]
+fn mov_cr3_beyond_36_bits_is_gp0_without_changing_cr3() {
+    for value in [1u64 << 40, 1 << 36, u64::MAX] {
+        let mut code = movabs_rax(value);
+        code.extend_from_slice(&MOV_CR3_RAX);
+        let mut state = cr3_state(0x1000);
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{value:#x}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+        assert_eq!(state.cr3, Some(0x1000), "{value:#x}");
+        assert_eq!(state.rip, RIP + 10, "{value:#x}");
+        assert_eq!(state.gpr[0], value, "{value:#x}");
+    }
+    // The highest accepted value is 2^36 - 1.
+    let mut code = movabs_rax((1 << 36) - 1);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let mut state = cr3_state(0);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0, (1 << 36) - 1));
+}
+
+#[test]
+fn lock_and_invalid_forms_are_ud_under_the_cr3_set() {
+    let set = cr3_set();
+    for bytes in [
+        &[0xf0, 0x0f, 0x22, 0xd8][..],
+        &[0xf0, 0x0f, 0x22, 0xc0][..],
+        &[0xf0, 0x0f, 0x20, 0xc0][..],
+        &[0xf0, 0x0f, 0x22, 0xe0][..],
+    ] {
+        let mut state = cr3_state(0x1000);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        assert_eq!(exit(&result), &ud(), "{bytes:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn lock_mov_cr3_without_cr3_ownership_keeps_its_old_classification() {
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf0, 0x0f, 0x22, 0xd8]);
+    let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn mov_cr3_stays_unsupported_without_cr3_ownership() {
+    let mut code = movabs_rax(0x2000);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr3, None);
+}
+
+#[test]
+fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0x48, 0x0f, 0x22, 0xd8][..],
+        &[0x66, 0x0f, 0x22, 0xd8][..],
+        &[0x0f, 0x22, 0xd9][..],
+    ] {
+        let mut state = cr3_state(0x1000);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert!(
+            matches!(
+                exit(&result),
+                RunExit::Unsupported { .. } | RunExit::Fault(_)
+            ),
+            "{bytes:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn cr3_admission_is_explicit_and_checked_before_fetch() {
+    // A modeled CR3 without ownership is rejected as before.
+    let mut state = cr3_state(0x1000);
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_CR3_RAX);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &cr_set(), 64).unwrap_err(),
+        Cpl0ProfileSetInputError::Cr3NotAdmitted
+    );
+    assert_eq!((memory.fetches, &state), (0, &before));
+    // Ownership needs a modeled CR3 within 36 bits.
+    let mut state = board_state();
+    let mut memory = Memory::code(&MOV_CR3_RAX);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap_err(),
+        Cpl0ProfileSetInputError::Cr3Missing
+    );
+    assert_eq!(memory.fetches, 0);
+    let mut state = cr3_state(1 << 40);
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_CR3_RAX);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap_err(),
+        Cpl0ProfileSetInputError::InvalidInitialCr3 { value: 1 << 40 }
+    );
+    assert_eq!((memory.fetches, &state), (0, &before));
+    // A valid CR3 admits and the first instruction runs.
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&movabs_rax(7));
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 7);
+    assert_eq!(state.cr3, Some(0x1000));
+}
+
+#[test]
+fn cr3_ownership_keeps_cr0_cr4_moves_and_other_members_working() {
+    // `mov rax,cr4; mov cr3,rax` writes CR4's value (0x20) to CR3.
+    let mut code = MOV_RAX_CR4.to_vec();
+    code.extend_from_slice(&MOV_CR3_RAX);
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, CR4_BASE));
+    assert_eq!(result.instructions_executed, 2);
+    // CR0 writes outside the policy stay Unsupported with CR3 owned.
+    let mut code = movabs_rax(0x8001_0031);
+    code.extend_from_slice(&MOV_CR0_RAX);
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(state.cr0, Some(CR0_BASE));
+    assert_eq!(state.cr3, Some(0x1000));
 }
