@@ -2320,3 +2320,558 @@ fn lgdt_outside_the_set_stays_unsupported_for_general_forms() {
         })
     );
 }
+
+// ---- S2-47b: LRETQ with a CS reload from the loaded GDT ----
+
+const RAM_BASE: u64 = 0x1_0000;
+const RAM_SIZE: usize = 0x4000;
+const STACK: u64 = RAM_BASE + 0x1000;
+const LRETQ_GDT: u64 = RAM_BASE + 0x2000;
+const LRETQ: [u8; 2] = [0x48, 0xcb];
+const CODE64: u64 = 0x00af_9b00_0000_ffff;
+
+/// Code at `RIP` and one RAM window (stack and GDT). A read or write that touches a page
+/// in `fault_pages` returns the architectural #PF; every access is recorded.
+struct LretqMemory {
+    code: Vec<u8>,
+    ram: Vec<u8>,
+    fault_pages: Vec<u64>,
+    /// Pages whose writes (only) fault.
+    write_fault_pages: Vec<u64>,
+    reads: Vec<(u64, usize, AccessOrigin)>,
+    writes: usize,
+    write_log: Vec<(u64, Vec<u8>, AccessOrigin)>,
+}
+
+impl LretqMemory {
+    fn new(code: &[u8]) -> Self {
+        Self {
+            code: code.to_vec(),
+            ram: vec![0; RAM_SIZE],
+            fault_pages: Vec::new(),
+            write_fault_pages: Vec::new(),
+            reads: Vec::new(),
+            writes: 0,
+            write_log: Vec::new(),
+        }
+    }
+
+    fn put(&mut self, address: u64, value: u64) {
+        let offset = (address - RAM_BASE) as usize;
+        self.ram[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn page_fault(&self, address: u64, length: usize) -> Option<MemoryError> {
+        let first = address & !0xfff;
+        let last = (address + length as u64 - 1) & !0xfff;
+        self.fault_pages
+            .iter()
+            .find(|page| (first..=last).contains(page))
+            .map(|page| {
+                MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0),
+                    linear_address: Some(address.max(*page)),
+                })
+            })
+    }
+}
+
+impl GuestMemory for LretqMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.code
+            .get(address.wrapping_sub(RIP) as usize)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.reads
+            .push((address, destination.len(), context.origin));
+        if let Some(error) = self.page_fault(address, destination.len()) {
+            return Err(error);
+        }
+        for (index, byte) in destination.iter_mut().enumerate() {
+            *byte = self.ram[(address + index as u64 - RAM_BASE) as usize];
+        }
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.writes += 1;
+        if let Some(error) = self.page_fault(address, source.len()) {
+            return Err(error);
+        }
+        if self.write_fault_pages.contains(&(address & !0xfff)) {
+            return Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(address),
+            }));
+        }
+        self.write_log
+            .push((address, source.to_vec(), context.origin));
+        let offset = (address - RAM_BASE) as usize;
+        self.ram[offset..offset + source.len()].copy_from_slice(source);
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+fn lretq_state(selector: u64, target: u64) -> (LongModeState, LretqMemory) {
+    let mut state = board_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: LRETQ_GDT,
+        limit: 0x1f,
+    });
+    state.gpr[4] = STACK;
+    let mut memory = LretqMemory::new(&LRETQ);
+    memory.put(STACK, target);
+    memory.put(STACK + 8, selector);
+    memory.put(LRETQ_GDT + 8, 0x00cf_9300_0000_ffff);
+    memory.put(LRETQ_GDT + 0x10, CODE64);
+    memory.put(LRETQ_GDT + 0x18, 0x00cf_9300_0000_ffff);
+    (state, memory)
+}
+
+fn run_lretq(state: &mut LongModeState, memory: &mut LretqMemory) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+fn selector_fault_exit(vector: u8, selector: u32) -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector,
+        error_code: Some(selector),
+        linear_address: None,
+    })
+}
+
+/// Run `LRETQ` on a frame `[target, selector]` with `descriptor` at GDT index 2 and
+/// expect `expected` with no CPU or memory change.
+fn assert_lretq_refused(descriptor: u64, selector: u64, target: u64, expected: RunExit) {
+    let (mut state, mut memory) = lretq_state(selector, target);
+    memory.put(LRETQ_GDT + 0x10, descriptor);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &expected, "{descriptor:#x} {selector:#x}");
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn lretq_loads_cs_from_the_gdt_pops_the_frame_and_retires() {
+    // The target is the NOP after LRETQ; budget 2 retires both.
+    let mut code = LRETQ.to_vec();
+    code.push(0x90);
+    for old_cs in [None, Some((0x08u16, 0x9b_u8))] {
+        let (mut state, mut memory) = lretq_state(0x10, RIP + 2);
+        memory.code = code.clone();
+        if let Some((selector, access)) = old_cs {
+            state.cs_selector = Some(selector);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access,
+                flags: 0xa,
+            });
+        }
+        let mut expected = state.clone();
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 2),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 2);
+        expected.rip = RIP + 3;
+        expected.cs_selector = Some(0x10);
+        expected.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 0xa,
+        });
+        expected.gpr[4] = STACK + 16;
+        assert_eq!(state, expected);
+        // RFLAGS (IF included) are untouched.
+        assert_eq!(state.rflags, 2 | IF);
+        // Two stack qwords, then the descriptor qword from the GDT as a descriptor-table
+        // access; nothing is written.
+        assert_eq!(
+            memory.reads,
+            vec![
+                (STACK, 8, AccessOrigin::Explicit),
+                (STACK + 8, 8, AccessOrigin::Explicit),
+                (LRETQ_GDT + 0x10, 8, AccessOrigin::DescriptorTable),
+            ]
+        );
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn lretq_uses_only_the_low_sixteen_bits_of_the_cs_qword() {
+    let (mut state, mut memory) = lretq_state(0xdead_beef_0000_0010, RIP + 2);
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cs_selector, Some(0x10));
+}
+
+#[test]
+fn lretq_follows_the_kernel_push_lea_push_sequence() {
+    // `push 0x10; lea rax,[rip+3]; push rax; lretq; nop`: the real kernel's far jump.
+    let code = [
+        0x6a, 0x10, 0x48, 0x8d, 0x05, 3, 0, 0, 0, 0x50, 0x48, 0xcb, 0x90,
+    ];
+    let (mut state, mut memory) = lretq_state(0, 0);
+    memory.code = code.to_vec();
+    state.gpr[4] = STACK + 0x100;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 5),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 5);
+    assert_eq!(state.rip, RIP + 13);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.gpr[4], STACK + 0x100);
+}
+
+#[test]
+fn lretq_rejects_wrong_descriptors_with_exact_faults_and_no_mutation() {
+    // Reserved long-mode code: L = 1 and D = 1.
+    assert_lretq_refused(
+        0x00ef_9b00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    // Data descriptor and system descriptor (64-bit TSS type 9, S = 0).
+    assert_lretq_refused(
+        0x00cf_9300_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    assert_lretq_refused(
+        0x00af_8900_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    // Code with DPL 3 under RPL 0 (conforming or not).
+    assert_lretq_refused(
+        0x00af_fb00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    assert_lretq_refused(
+        0x00af_ff00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    // Not present: #NP(selector), vector 11.
+    assert_lretq_refused(
+        0x00af_1b00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(11, 0x10),
+    );
+}
+
+#[test]
+fn lretq_selector_checks_follow_the_gdt_limit_and_null_rules() {
+    // Null selector: #GP(0). Index 4 (0x20) ends beyond limit 0x1f: #GP(selector).
+    assert_lretq_refused(CODE64, 0, RIP, selector_fault_exit(13, 0));
+    assert_lretq_refused(CODE64, 3, RIP, selector_fault_exit(13, 0));
+    assert_lretq_refused(CODE64, 0x20, RIP, selector_fault_exit(13, 0x20));
+    // A limit that cuts the descriptor in the middle (0x10..0x17 needs limit >= 0x17).
+    let (mut state, mut memory) = lretq_state(0x10, RIP);
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: LRETQ_GDT,
+        limit: 0x16,
+    });
+    let before = state.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &selector_fault_exit(13, 0x10));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    // The stack was read, the GDT was not.
+    assert_eq!(memory.reads.len(), 2);
+}
+
+#[test]
+fn lretq_non_canonical_target_is_gp0_after_the_descriptor_checks() {
+    assert_lretq_refused(
+        CODE64,
+        0x10,
+        0x0001_0000_0000_0000,
+        selector_fault_exit(13, 0),
+    );
+    // A bad descriptor wins over a bad target.
+    assert_lretq_refused(
+        0x00ef_9b00_0000_ffff,
+        0x10,
+        0x0001_0000_0000_0000,
+        selector_fault_exit(13, 0x10),
+    );
+}
+
+#[test]
+fn lretq_unmodeled_legal_returns_are_unsupported_without_mutation() {
+    let unsupported = RunExit::Unsupported { opcode: 0xcb };
+    // Compatibility-mode CS (L = 0, D = 1 or 0): legal but switches the instruction mode.
+    assert_lretq_refused(0x00cf_9b00_0000_ffff, 0x10, RIP, unsupported.clone());
+    assert_lretq_refused(0x008f_9b00_0000_ffff, 0x10, RIP, unsupported.clone());
+    // RPL 3 (inter-privilege return) and a TI = 1 (LDT) selector.
+    assert_lretq_refused(CODE64, 0x13, RIP, unsupported.clone());
+    assert_lretq_refused(CODE64, 0x14, RIP, unsupported.clone());
+}
+
+#[test]
+fn lretq_without_a_modeled_gdtr_is_unsupported() {
+    let (mut state, mut memory) = lretq_state(0x10, RIP);
+    state.gdtr = None;
+    let before = state.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xcb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lretq_stack_page_faults_are_exact_and_leave_state_untouched() {
+    // First qword unmapped, second qword unmapped (frame crosses into a bad page), and the
+    // GDT descriptor page unmapped.
+    for (rsp, bad_page) in [
+        (STACK, STACK),
+        (STACK + 0xff8, STACK + 0x1000),
+        (LRETQ_GDT + 0x10, LRETQ_GDT),
+    ] {
+        let (mut state, mut memory) = lretq_state(0x10, RIP);
+        if rsp == LRETQ_GDT + 0x10 {
+            // Frame in a good page, descriptor read faults.
+            memory.fault_pages.push(bad_page);
+            state.gpr[4] = STACK;
+        } else {
+            memory.put(rsp, RIP);
+            if rsp != STACK {
+                memory.put(rsp + 8, 0x10);
+            }
+            memory.fault_pages.push(bad_page);
+            state.gpr[4] = rsp;
+        }
+        let before = state.clone();
+        let result = run_lretq(&mut state, &mut memory);
+        let RunExit::Fault(fault) = exit(&result) else {
+            panic!(
+                "expected a page fault for {rsp:#x}, got {:?}",
+                exit(&result)
+            );
+        };
+        assert_eq!(fault.vector, 14, "{rsp:#x}");
+        assert_eq!(fault.error_code, Some(0));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn lretq_non_canonical_rsp_is_ss0_before_any_read() {
+    let (mut state, mut memory) = lretq_state(0x10, RIP);
+    state.gpr[4] = 0x0001_0000_0000_0000;
+    let before = state.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &selector_fault_exit(12, 0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lretq_outside_the_set_and_with_other_prefixes_stays_unsupported() {
+    // `run` without the set: `48 CB` keeps the old exit and reads nothing.
+    let (mut state, mut memory) = lretq_state(0x10, RIP);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xcb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+    // Inside the set only the exact REX.W form decodes.
+    for code in [
+        &[0xcbu8][..],
+        &[0x66, 0x48, 0xcb],
+        &[0x49, 0xcb],
+        &[0x4b, 0xcb],
+        &[0xf0, 0x48, 0xcb],
+        &[0x2e, 0x48, 0xcb],
+        &[0x67, 0x48, 0xcb],
+    ] {
+        let (mut state, mut memory) = lretq_state(0x10, RIP);
+        memory.code = code.to_vec();
+        let before = state.clone();
+        let result = run_lretq(&mut state, &mut memory);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xcb },
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn lretq_sets_the_accessed_bit_with_one_qword_gdt_write() {
+    // The real kernel's early GDT holds `0x00af9a000000ffff` (A = 0): a CS load writes the
+    // accessed bit back (SDM Vol.3 §3.4.5.1), here as one descriptor-table qword write.
+    let (mut state, mut memory) = lretq_state(0x10, RIP + 2);
+    memory.put(LRETQ_GDT + 0x10, 0x00af_9a00_0000_ffff);
+    let mut expected = state.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip = RIP + 2;
+    expected.cs_selector = Some(0x10);
+    expected.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xa,
+    });
+    expected.gpr[4] = STACK + 16;
+    assert_eq!(state, expected);
+    assert_eq!(
+        memory.write_log,
+        vec![(
+            LRETQ_GDT + 0x10,
+            0x00af_9b00_0000_ffffu64.to_le_bytes().to_vec(),
+            AccessOrigin::DescriptorTable
+        )]
+    );
+}
+
+#[test]
+fn lretq_accessed_bit_write_fault_is_exact_and_leaves_the_cpu_untouched() {
+    let (mut state, mut memory) = lretq_state(0x10, RIP);
+    memory.put(LRETQ_GDT + 0x10, 0x00af_9a00_0000_ffff);
+    memory.write_fault_pages.push(LRETQ_GDT);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(LRETQ_GDT + 0x10)
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+}
+
+#[test]
+fn lretq_faults_before_the_descriptor_never_write_the_accessed_bit() {
+    // L = 1 / D = 1, not present, DPL 3 and a non-canonical target all fail with A = 0:
+    // none of them may reach the write.
+    for (descriptor, target) in [
+        (0x00ef_9a00_0000_ffffu64, RIP),
+        (0x00af_1a00_0000_ffff, RIP),
+        (0x00af_fa00_0000_ffff, RIP),
+        (0x00af_9a00_0000_ffff, 0x0001_0000_0000_0000),
+        (0x00cf_9a00_0000_ffff, RIP),
+    ] {
+        let (mut state, mut memory) = lretq_state(0x10, target);
+        memory.put(LRETQ_GDT + 0x10, descriptor);
+        let before = state.clone();
+        let result = run_lretq(&mut state, &mut memory);
+        assert_eq!(result.instructions_executed, 0, "{descriptor:#x}");
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0, "{descriptor:#x}");
+    }
+}
