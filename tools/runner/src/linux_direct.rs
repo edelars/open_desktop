@@ -1492,7 +1492,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_rep_bsf_after_the_word_read() {
+    fn real_artifacts_stop_at_the_crossing_store_after_rep_bsf() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1512,32 +1512,41 @@ mod tests {
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L4f: the 16-bit read `MOVZX r32, word [rcx]` (`0f b7 31`) is admitted by the set's
-        // adapter. With budget 3000000 the run stops `unsupported` at `REP BSF` / TZCNT EAX, EAX
-        // (`f3 0f bc c0`) on 0x541_e469 after 372548 retired instructions: BSF semantics for `F3 0F BC`
-        // on a profile without BMI1 are the next slice (S4-38L4g). Evidence:
-        // `docs/reports/data/stage4/s4-38l4f-word-run.json`.
+        // S4-38L4g: `REP BSF` (`f3 0f bc c0`) executes as BSF on the profile without BMI1. With
+        // budget 3000000 the run stops `backend` at the 8-byte store `MOV [RCX+4], RDI` (`48 89 79 04`)
+        // on 0x543_0920 after 390164 retired instructions: its linear address 0x545_dffc crosses the
+        // 4 KiB boundary, and the set has no cross-page store yet (S4-38L4h). Evidence:
+        // `docs/reports/data/stage4/s4-38l4g-rep-bsf-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 372548, "{value:#}");
+        assert_eq!(value["retired"], 390164, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["rip"], "0x541e469");
+        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
+        assert_eq!(stop["rip"], "0x5430920");
         assert!(
             stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .starts_with("f3 0f bc c0"),
+                .starts_with("48 89 79 04"),
             "{value:#}"
         );
-        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 188 })");
+        assert!(
+            stop["set_exit_detail"]
+                .as_str()
+                .unwrap()
+                .contains("CrossesPage { address: GuestLinearAddress(88465404), width: 8 }"),
+            "{value:#}"
+        );
+        assert_eq!(
+            stop["memory_error"],
+            "CrossesPage { address: GuestLinearAddress(88465404), width: 8 }"
+        );
+        assert!(stop["page_fault"].is_null());
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
         );
-        assert!(stop["memory_error"].is_null());
-        assert!(stop["page_fault"].is_null());
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
         // retire (22 in all). S2-47a: `LGDT [RAX]` (`0f 01 10`) at 0x100_0257 retires and four
