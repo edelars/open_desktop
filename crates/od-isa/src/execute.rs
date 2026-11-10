@@ -35254,6 +35254,9 @@ fn step_configured(
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
+        // S4-38L4d: `0F 1F /0` is a NOP that never touches its operand; admitted only inside
+        // the CPL0 profile set, like ENDBR64.
+        Operation::NopModrm => control_policy.is_some(),
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         Operation::FarReturn => {
             control_policy.is_some()
@@ -49282,7 +49285,7 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop => {}
+        Operation::Endbr64Nop | Operation::NopModrm => {}
         Operation::FarReturn => {
             return match far_return_cpl0(state, memory, context) {
                 Ok(true) => Ok(StepOutcome::Branched),
