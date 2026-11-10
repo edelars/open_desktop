@@ -7,7 +7,9 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::page_walk::translate_long64_2m_ram_read_only;
-use crate::paged_memory_adapter::{PagedCpl0SetExit, run_cpl0_set_paged_2m_ram};
+use crate::paged_memory_adapter::{
+    PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+};
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
@@ -809,6 +811,9 @@ pub(crate) struct LinuxSetRunReport {
     /// The `Debug` text of the set's own final exit (`PagedCpl0SetExit`), before it was
     /// expressed as a `PagedProbeExit`.
     pub(crate) set_exit_detail: String,
+    /// The leaf (EAX) of the `CPUID` the run stopped before (S4-38L4, `cpuid_divergence`): the
+    /// instruction did not execute. `None` for every other exit.
+    pub(crate) cpuid_divergence_leaf: Option<u32>,
 }
 
 /// Expresses the final exit of the CPL0 set loop as a `PagedProbeExit`, together with its own
@@ -860,6 +865,9 @@ fn set_exit_to_probe_exit(
             })
         }
         PagedCpl0SetExit::PortIo(error) => PagedProbeExit::PortIo(error),
+        // A stop of the board, not an exit of the CPU: `Stopped`, told apart by the report's
+        // `cpuid_divergence_leaf` (the exit enum gets no new variant).
+        PagedCpl0SetExit::CpuidDivergence { .. } => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
             return Err("the CPL0 set returned an exit variant the board does not know");
         }
@@ -1195,10 +1203,15 @@ impl LoadedFirmwareBoard {
     ///
     /// COM1 (`OUT DX, AL`, `with_pio_u8`) goes through the machine bus like in `run_boot`; the
     /// PIT and PM timer port reads of the Linux profile are tick sources only through it.
+    ///
+    /// With `cpuid_boundary` the run stops before a `CPUID` whose EAX is 1 or 0x8000_0001
+    /// (S4-38L4, `cpuid_divergence`): the instruction does not execute and the report carries
+    /// its leaf. Nothing is answered in its place.
     pub(crate) fn run_linux_boot_cpl0_set(
         &mut self,
         instruction_budget: u64,
         set: &Cpl0ProfileSet<'_>,
+        cpuid_boundary: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -1250,7 +1263,7 @@ impl LoadedFirmwareBoard {
                         .as_ref()
                         .is_some_and(|flag| flag.load(Ordering::Relaxed))
             };
-            let report = run_cpl0_set_paged_2m_ram(
+            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 &mut self.state,
                 &mut self.bus,
                 self.page_table_root,
@@ -1264,6 +1277,7 @@ impl LoadedFirmwareBoard {
                     .map(|source| source as &mut dyn FnMut() -> u64),
                 stop,
                 |_| {},
+                cpuid_boundary,
             );
             quanta += 1;
             // The walker of the next quantum starts from the CR3 the guest left.
@@ -1307,9 +1321,14 @@ impl LoadedFirmwareBoard {
                 }
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+            let cpuid_divergence_leaf = match report.exit {
+                PagedCpl0SetExit::CpuidDivergence { leaf } => Some(leaf),
+                _ => None,
+            };
             // A quantum stopped by a tick flag (no PM stop request) with budget left resumes;
             // decided before the exit is converted, so the `Debug` text is built only for the
-            // exit that ends the run.
+            // exit that ends the run. The CPUID boundary is
+            // not a `StopRequested`, so it never resumes.
             if stop_reason.is_none()
                 && remaining > 0
                 && report.instructions_executed > 0
@@ -1322,7 +1341,11 @@ impl LoadedFirmwareBoard {
                 Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
             };
             let exit = match exit {
-                PagedProbeExit::Stopped if stop_reason.is_none() && remaining == 0 => {
+                PagedProbeExit::Stopped
+                    if stop_reason.is_none()
+                        && remaining == 0
+                        && cpuid_divergence_leaf.is_none() =>
+                {
                     PagedProbeExit::BudgetExhausted
                 }
                 other => other,
@@ -1338,15 +1361,16 @@ impl LoadedFirmwareBoard {
                 tsc_hz: self.clock().tsc_hz(),
                 stop_reason,
             })
-            .map(|run| (run, set_exit_detail));
+            .map(|run| (run, set_exit_detail, cpuid_divergence_leaf));
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.state.cr3 = None;
-        let (run, set_exit_detail) = result?;
+        let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
         Ok(LinuxSetRunReport {
             run,
             translation_context_changes: changes,
             set_exit_detail,
+            cpuid_divergence_leaf,
         })
     }
 
@@ -4414,6 +4438,17 @@ mod tests {
     }
 
     // ---- S4-38L3: the set's final exit expressed as a probe exit ----
+
+    #[test]
+    fn cpuid_divergence_is_a_stop_of_the_board_told_apart_by_its_leaf() {
+        assert_eq!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::CpuidDivergence { leaf: 1 }),
+            Ok((
+                PagedProbeExit::Stopped,
+                "CpuidDivergence { leaf: 1 }".to_string()
+            ))
+        );
+    }
 
     #[test]
     fn set_exit_without_a_probe_counterpart_is_an_integration_error_of_the_board() {

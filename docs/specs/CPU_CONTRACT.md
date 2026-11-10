@@ -20282,6 +20282,28 @@ qword-профили — `paged MOV profile does not support non-qword writes`, 
 `MOV [RAX], SIL` (`40 88 30`) на `0x206_3a80`, удаляет 118 инструкций и останавливается на
 `LIDT [RIP+0x17bbd]` (`0F 01 1D BD 7B 01 00`, RIP `0x206_647c`, `Unsupported { opcode: 0x01 }`).
 
+**Член cpuid на плате и граница расхождения CPUID (S4-38L4).** Набор Linux-платы по умолчанию
+(`LinuxCpl0SetMembers::linux_default()`, `--set-cpl0` раннера) — `cli`, `cpu_owned_cr3` и
+`cpuid:DiagnosticV1` (`with_cpuid`); `rdtsc`, `msr`, `halt`, `pio_u8` по умолчанию не включены.
+`CPUID` с остальными листами (0, `0x8000_0000`, `0x21` и т. д.) обслуживает DiagnosticV1 как раньше
+(лист 0: максимум 1 и вендор `OpenDesktop`; `0x8000_0000`: `0x8000_0008`; неизвестные листы — нули).
+`CPUID` с EAX = 1 или `0x8000_0001` плата НЕ исполняет: адаптер (`run_cpl0_set_paged_2m_ram_with_cpuid_boundary`)
+перед каждой инструкцией (после проверок остановки и бюджета, до вызова набора) только читает байты по
+RIP (те же трансляция и окно fetch, что у `rip_bytes`, без записи accessed/dirty) и по EAX решает, что
+это `CPUID` (`0F A2`, перед ним допускаются префиксы legacy/REX) листа 1 или `0x8000_0001`. Тогда прогон
+заканчивается до retirement: exit платы — `Stopped`, `exit_kind = "cpuid_divergence"` в stop record,
+`cpuid_divergence_leaf` (лист из EAX), `set_exit_detail = CpuidDivergence { leaf }`, RIP на
+инструкции (на её префиксе, если он есть), `retired` — число инструкций до неё, регистры, флаги и
+память не менялись; повторный вызов останавливается там же с нулём удалённых. Граница действует
+только при члене `cpuid`: без него `CPUID` остаётся `Unsupported { opcode: 0xA2 }` для любого листа.
+Причина: DiagnosticV1 намеренно нулевой по feature-маскам и не является профилем целевого CPU
+(checkpoint C7 плана S4-38L): ответ на листах 1 и `0x8000_0001` определял бы, какие пути ядра берёт
+Linux, поэтому честная верхняя граница прогона — этот стоп, а результаты за ним диагностические.
+Это не подстановка CPUID: ни одного ответа, которого нет у DiagnosticV1, не выдаётся, ядро не патчится,
+расширение набора листов и профилей (`Cr0Profile`/`Cr4Profile`, allowlist `PagedCpl0ProbeV1`) не
+затрагивается. Тесты: `linux_direct::tests::cpuid_boundary_*`, `cpuid_without_the_member_*`,
+`linux_default_set_is_cli_cr3_and_cpuid`; раннер `set_cpl0_stops_before_a_divergent_cpuid_leaf`.
+
 **Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
 `MOV SS`/`MOV FS`/`MOV GS` с ненулевым селектором (нулевая загрузка — S2-46, ниже); `LGDT m` входит
 (S2-47a, ниже), `LIDT m` (S2-49, ниже) и `LRETQ` (S2-47b, ниже) входят; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
