@@ -420,9 +420,12 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) rflags_defined: u64,
     pub(crate) page_fault: Option<PageFaultRecord>,
     pub(crate) memory_error: Option<TrackedAccessError>,
-    /// Every `MOV CR3` the walker was rebuilt for, in order.
+    /// Every retired `MOV CR3`, in order, including one whose walker rebuild failed
+    /// (`Cr3EffectMismatch`, `Cr3SnapshotRejected`: the failing event is the last entry).
     pub(crate) translation_context_changes: Vec<TranslationContextChange>,
-    /// CR3 of the walker that would execute the next instruction.
+    /// CR3 after the last retired `MOV CR3` (the initial root when there was none). On
+    /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
+    /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
 }
 
@@ -478,6 +481,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
     let mut instructions_executed = 0u64;
     let mut current_rflags_defined = rflags_defined;
     let mut changes = Vec::new();
+    // CR3 of the last retired MOV CR3 (the initial root before any), independent of
+    // whether the walker could be rebuilt for it.
+    let mut reported_cr3 = cr3;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
@@ -535,54 +541,16 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
         };
         instructions_executed += result.instructions_executed;
         current_rflags_defined = result.rflags_defined;
-        match result.exit {
-            Cpl0ProfileSetExit::TranslationContextChange(
-                effect @ TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
-            ) => {
-                if old_cr3 != paging.cr3() || state.cr3 != Some(new_cr3) {
-                    break (
-                        PagedCpl0SetExit::Cr3EffectMismatch {
-                            active_cr3: paging.cr3(),
-                            effect_old_cr3: old_cr3,
-                            cpu_cr3: state.cr3,
-                            effect_new_cr3: new_cr3,
-                        },
-                        page_fault,
-                        memory_error,
-                    );
-                }
-                match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
-                    Ok(candidate) => paging = candidate,
-                    Err(error) => {
-                        break (
-                            PagedCpl0SetExit::Cr3SnapshotRejected { effect, error },
-                            page_fault,
-                            memory_error,
-                        );
-                    }
-                }
-                changes.push(effect);
-            }
-            Cpl0ProfileSetExit::TranslationContextChange(effect) => {
-                break (
-                    PagedCpl0SetExit::UnexpectedContextChange { effect },
-                    page_fault,
-                    memory_error,
-                );
-            }
-            Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
-                if result.instructions_executed > 0 => {}
-            Cpl0ProfileSetExit::Run(exit) => {
-                break (PagedCpl0SetExit::Run(exit), page_fault, memory_error);
-            }
-            Cpl0ProfileSetExit::PortIo(error) => {
-                break (PagedCpl0SetExit::PortIo(error), page_fault, memory_error);
-            }
-            // `Cpl0ProfileSetExit` is `#[non_exhaustive]`: an exit this board does
-            // not know cannot be resumed from, so it ends the run as unhandled.
-            _ => {
-                break (PagedCpl0SetExit::UnknownSetExit, page_fault, memory_error);
-            }
+        if let Some(exit) = handle_set_exit(
+            result.exit,
+            result.instructions_executed,
+            state,
+            efer,
+            &mut paging,
+            &mut reported_cr3,
+            &mut changes,
+        ) {
+            break (exit, page_fault, memory_error);
         }
     };
     PagedCpl0SetReport {
@@ -592,7 +560,65 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
         page_fault,
         memory_error,
         translation_context_changes: changes,
-        cr3: paging.cr3(),
+        cr3: reported_cr3,
+    }
+}
+
+/// What the set loop does with the exit of one set call: `None` continues with the next
+/// instruction, `Some(exit)` ends the run.
+///
+/// A retired `MOV CR3` is recorded first, before any check: `reported_cr3` becomes the new
+/// CR3 and the change is appended to `changes`, so that an integration error on that very
+/// instruction (`Cr3EffectMismatch`, `Cr3SnapshotRejected`) still leaves the report with the
+/// CR3 of the retired instruction (the instruction retired and was counted; only the walker
+/// is stale). On `Cr3EffectMismatch` the CPU and the effect disagree: the report (`cr3` and
+/// `changes`) carries `effect_new_cr3` (the `new_cr3` of the effect), and the CPU value is
+/// exposed only in the `cpu_cr3` field of the exit. The walker (`paging`) is replaced only
+/// when the snapshot for the new CR3 is accepted.
+fn handle_set_exit(
+    exit: Cpl0ProfileSetExit<crate::BusAccessError>,
+    instructions_executed: u64,
+    state: &LongModeState,
+    efer: u64,
+    paging: &mut Long64ProbeConfig,
+    reported_cr3: &mut u64,
+    changes: &mut Vec<TranslationContextChange>,
+) -> Option<PagedCpl0SetExit> {
+    match exit {
+        Cpl0ProfileSetExit::TranslationContextChange(
+            effect @ TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
+        ) => {
+            *reported_cr3 = new_cr3;
+            changes.push(effect);
+            if old_cr3 != paging.cr3() || state.cr3 != Some(new_cr3) {
+                return Some(PagedCpl0SetExit::Cr3EffectMismatch {
+                    active_cr3: paging.cr3(),
+                    effect_old_cr3: old_cr3,
+                    cpu_cr3: state.cr3,
+                    effect_new_cr3: new_cr3,
+                });
+            }
+            match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
+                Ok(candidate) => {
+                    *paging = candidate;
+                    None
+                }
+                Err(error) => Some(PagedCpl0SetExit::Cr3SnapshotRejected { effect, error }),
+            }
+        }
+        Cpl0ProfileSetExit::TranslationContextChange(effect) => {
+            Some(PagedCpl0SetExit::UnexpectedContextChange { effect })
+        }
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+            if instructions_executed > 0 =>
+        {
+            None
+        }
+        Cpl0ProfileSetExit::Run(exit) => Some(PagedCpl0SetExit::Run(exit)),
+        Cpl0ProfileSetExit::PortIo(error) => Some(PagedCpl0SetExit::PortIo(error)),
+        // `Cpl0ProfileSetExit` is `#[non_exhaustive]`: an exit this board does not know
+        // cannot be resumed from, so it ends the run as unhandled.
+        _ => Some(PagedCpl0SetExit::UnknownSetExit),
     }
 }
 
@@ -853,12 +879,14 @@ impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
 }
 
 impl AdapterBus<'_> {
-    /// The whole bus; the `Ram` form is built only for the large-RAM walk, which never asks
-    /// for it.
-    fn machine(&mut self) -> &mut MachineBus {
+    /// The whole bus. The `Ram` form is built only for the large-RAM walk, which never asks
+    /// for it; if it ever does, that is a typed backend error and not a panic.
+    fn machine(&mut self) -> Result<&mut MachineBus, MemoryError> {
         match self {
-            Self::Machine(bus) => bus,
-            Self::Ram(_) => unreachable!("the RAM-only adapter bus serves the large-RAM walk only"),
+            Self::Machine(bus) => Ok(bus),
+            Self::Ram(_) => Err(MemoryError::Backend(
+                "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
+            )),
         }
     }
 
@@ -943,11 +971,11 @@ impl PagedMovMemoryAdapter<'_> {
                     .access_2m_ram(&self.paging, request, |range| writes.push(range))
             } else if self.ram_only {
                 self.bus
-                    .machine()
+                    .machine()?
                     .access_tracked_ram(&self.paging, request, |range| writes.push(range))
             } else {
                 self.bus
-                    .machine()
+                    .machine()?
                     .access_tracked(&self.paging, request, |range| writes.push(range))
             };
             self.committed_writes
@@ -968,12 +996,14 @@ impl PagedMovMemoryAdapter<'_> {
             self.bus
                 .access_2m_ram(&self.paging, request, &mut *self.committed_write)
         } else if self.ram_only {
-            self.bus
-                .machine()
-                .access_tracked_ram(&self.paging, request, &mut *self.committed_write)
+            self.bus.machine()?.access_tracked_ram(
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+            )
         } else {
             self.bus
-                .machine()
+                .machine()?
                 .access_tracked(&self.paging, request, &mut *self.committed_write)
         };
         match report.outcome {
@@ -995,7 +1025,7 @@ impl PagedMovMemoryAdapter<'_> {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
-        let result = self.bus.machine().read_tracked_bounded_ram_read(
+        let result = self.bus.machine()?.read_tracked_bounded_ram_read(
             &self.paging,
             TrackedAccessRequest {
                 instruction_rip: self.instruction_rip,
@@ -1601,5 +1631,239 @@ mod tests {
                         && range.len() == 8
                 )
         );
+    }
+
+    // ---- S4-38L3: the exits of the CPL0 set loop (`handle_set_exit`) ----
+
+    /// The state the walker snapshot is rebuilt from: CR0/CR4 as in the other tests and
+    /// the CPU-owned CR3.
+    fn set_loop_state(cr3: u64) -> LongModeState {
+        LongModeState {
+            cr0: Some(CR0),
+            cr3: Some(cr3),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        }
+    }
+
+    /// The loop variables of `run_cpl0_set_paged_2m_ram` at its start: the walker on `ROOT`,
+    /// nothing reported yet.
+    struct SetLoop {
+        paging: Long64ProbeConfig,
+        reported_cr3: u64,
+        changes: Vec<TranslationContextChange>,
+    }
+
+    impl SetLoop {
+        fn new() -> Self {
+            Self {
+                paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+                reported_cr3: ROOT,
+                changes: Vec::new(),
+            }
+        }
+
+        fn handle(
+            &mut self,
+            exit: Cpl0ProfileSetExit<crate::BusAccessError>,
+            instructions_executed: u64,
+            state: &LongModeState,
+        ) -> Option<PagedCpl0SetExit> {
+            handle_set_exit(
+                exit,
+                instructions_executed,
+                state,
+                EFER,
+                &mut self.paging,
+                &mut self.reported_cr3,
+                &mut self.changes,
+            )
+        }
+    }
+
+    #[test]
+    fn set_loop_a_retired_mov_cr3_rebuilds_the_walker_and_is_reported() {
+        let mut run = SetLoop::new();
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3: 0x2000,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(0x2000),
+        );
+        assert_eq!(exit, None);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, 0x2000, CR4, EFER).unwrap()
+        );
+        assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_a_cr3_effect_that_disagrees_with_the_cpu_still_reports_the_retired_write() {
+        // The CPU says CR3 is 0x3000 although the effect names 0x2000: the walker is not
+        // touched, but the MOV CR3 retired, so the report carries it.
+        let mut run = SetLoop::new();
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3: 0x2000,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(0x3000),
+        );
+        assert_eq!(
+            exit,
+            Some(PagedCpl0SetExit::Cr3EffectMismatch {
+                active_cr3: ROOT,
+                effect_old_cr3: ROOT,
+                cpu_cr3: Some(0x3000),
+                effect_new_cr3: 0x2000,
+            })
+        );
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
+        assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_a_cr3_effect_whose_old_value_is_not_the_walker_is_a_mismatch() {
+        let mut run = SetLoop::new();
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: 0x9000,
+            new_cr3: 0x2000,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(0x2000),
+        );
+        assert_eq!(
+            exit,
+            Some(PagedCpl0SetExit::Cr3EffectMismatch {
+                active_cr3: ROOT,
+                effect_old_cr3: 0x9000,
+                cpu_cr3: Some(0x2000),
+                effect_new_cr3: 0x2000,
+            })
+        );
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
+        assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_a_rejected_snapshot_for_the_new_cr3_still_reports_the_retired_write() {
+        // CR3 bit 36 is outside the 36-bit physical address space of the walker.
+        let new_cr3 = ROOT | (1 << 36);
+        let mut run = SetLoop::new();
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(new_cr3),
+        );
+        assert_eq!(
+            exit,
+            Some(PagedCpl0SetExit::Cr3SnapshotRejected {
+                effect,
+                error: crate::ProbeConfigError::InvalidCr3 {
+                    value: new_cr3,
+                    offending_bits: 1 << 36,
+                },
+            })
+        );
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
+        assert_eq!((run.reported_cr3, run.changes), (new_cr3, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_a_cr0_write_is_an_unexpected_context_change_and_nothing_is_reported() {
+        let mut run = SetLoop::new();
+        let effect = TranslationContextChange::Cr0Write {
+            old_cr0: CR0,
+            new_cr0: CR0 & !(1 << 16),
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(
+            exit,
+            Some(PagedCpl0SetExit::UnexpectedContextChange { effect })
+        );
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
+        assert_eq!((run.reported_cr3, run.changes), (ROOT, Vec::new()));
+    }
+
+    #[test]
+    fn set_loop_a_port_error_ends_the_run_with_that_error() {
+        let mut run = SetLoop::new();
+        let error = || crate::BusAccessError::UnmappedPort(crate::PortAddress::new(0x1234));
+        let exit = run.handle(
+            Cpl0ProfileSetExit::PortIo(error()),
+            0,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(exit, Some(PagedCpl0SetExit::PortIo(error())));
+        assert_eq!((run.reported_cr3, run.changes), (ROOT, Vec::new()));
+    }
+
+    #[test]
+    fn set_loop_the_one_instruction_budget_continues_only_when_the_instruction_retired() {
+        let mut run = SetLoop::new();
+        let budget = || Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted);
+        assert_eq!(run.handle(budget(), 1, &set_loop_state(ROOT)), None);
+        assert_eq!(
+            run.handle(budget(), 0, &set_loop_state(ROOT)),
+            Some(PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted))
+        );
+        assert_eq!(
+            run.handle(
+                Cpl0ProfileSetExit::Run(RunExit::Halted),
+                1,
+                &set_loop_state(ROOT)
+            ),
+            Some(PagedCpl0SetExit::Run(RunExit::Halted))
+        );
+    }
+
+    #[test]
+    fn the_ram_only_adapter_bus_refuses_the_whole_bus_with_a_backend_error() {
+        let mut machine = bus(0x6007);
+        let (ram, _port) = machine.split_for_pio_step();
+        let mut adapter_bus = AdapterBus::Ram(ram);
+        match adapter_bus.machine() {
+            Err(MemoryError::Backend(message)) => assert_eq!(
+                message,
+                "the RAM-only adapter bus serves the large-RAM walk only"
+            ),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("the RAM-only bus has no machine bus"),
+        }
+        // The whole-bus form hands the bus out.
+        let mut adapter_bus = AdapterBus::from(&mut machine);
+        assert!(adapter_bus.machine().is_ok());
     }
 }
