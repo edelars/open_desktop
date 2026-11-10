@@ -349,16 +349,51 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
         assert_eq!(err, expected, "{name} without CLI");
         assert_eq!(memory.fetches, 0, "{name} without CLI");
     }
-    // RFLAGS.VM is a CLI precondition only; PE/PVI are covered by the policy.
-    let mut vm = board_state();
-    vm.rflags |= 1 << 17;
-    let mut memory = Memory::code(&BOARD_PROLOGUE);
-    let err = run_set(&mut vm, &mut memory, &with_cli, 64).unwrap_err();
-    assert_eq!(err, Cpl0ProfileSetInputError::CliPreconditionFailed);
-    assert_eq!(memory.fetches, 0);
-    let mut memory = Memory::code(&BOARD_PROLOGUE);
-    let result = run_set(&mut vm, &mut memory, &plain, 64).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfa });
+    // RFLAGS.VM and a clear RFLAGS bit 1 are rejected for every set, with or
+    // without CLI, with their own typed errors; PE/PVI are covered by the policy.
+    for (name, mutate, expected) in [
+        (
+            "vm",
+            (|s: &mut LongModeState| s.rflags |= 1 << 17) as fn(&mut LongModeState),
+            Cpl0ProfileSetInputError::RflagsVmSet,
+        ),
+        (
+            "bit 1 clear",
+            |s| s.rflags &= !2,
+            Cpl0ProfileSetInputError::RflagsReservedBitClear,
+        ),
+    ] {
+        for set in [&with_cli, &plain] {
+            let mut state = board_state();
+            mutate(&mut state);
+            let before = state.clone();
+            let mut memory = Memory::code(&BOARD_PROLOGUE);
+            let err = run_set(&mut state, &mut memory, set, 64).unwrap_err();
+            assert_eq!(err, expected, "{name}");
+            assert_eq!(memory.fetches, 0, "{name}");
+            assert_eq!(state, before, "{name}");
+        }
+    }
+}
+
+#[test]
+fn set_without_cli_rejects_rflags_vm_and_clear_bit1_before_any_fetch() {
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for (rflags, expected) in [
+        (2 | IF | (1 << 17), Cpl0ProfileSetInputError::RflagsVmSet),
+        (IF | (1 << 17), Cpl0ProfileSetInputError::RflagsVmSet),
+        (IF, Cpl0ProfileSetInputError::RflagsReservedBitClear),
+        (0, Cpl0ProfileSetInputError::RflagsReservedBitClear),
+    ] {
+        let mut state = board_state();
+        state.rflags = rflags;
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x90]);
+        let err = run_set(&mut state, &mut memory, &plain, 4).unwrap_err();
+        assert_eq!(err, expected, "rflags {rflags:#x}");
+        assert_eq!(memory.fetches, 0, "rflags {rflags:#x}");
+        assert_eq!(state, before, "rflags {rflags:#x}");
+    }
 }
 
 #[test]
@@ -547,9 +582,17 @@ fn cr_reads_return_current_values_and_clear_arithmetic_definedness() {
 #[test]
 fn cr4_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    // PGE, OSXSAVE and a reserved bit are outside the CR4 policy; PAE cleared
-    // is outside as well.
-    for value in [0xa0u64, CR4_BASE | 0x2_0000, CR4_BASE | (1 << 40), 0] {
+    // 0xa0 adds PGE (bit 7); bit 17 is PCIDE, bit 18 OSXSAVE, bit 2 TSD and
+    // bit 40 is reserved: all outside the CR4 policy (only OSFXSR/OSXMMEXCPT
+    // may vary). PAE cleared is outside as well.
+    for value in [
+        0xa0u64,
+        CR4_BASE | (1 << 17),
+        CR4_BASE | (1 << 18),
+        CR4_BASE | (1 << 2),
+        CR4_BASE | (1 << 40),
+        0,
+    ] {
         let mut code = movabs_rax(value);
         code.extend_from_slice(&MOV_CR4_RAX);
         let mut state = board_state();
@@ -574,7 +617,17 @@ fn cr4_write_outside_policy_is_unsupported_without_mutation() {
 #[test]
 fn cr0_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    for value in [CR0_BASE & !1, CR0_BASE & !0x8000_0000, 0] {
+    // PE, PG and WP cleared, bit 32 set (reserved), CD and NW set, and zero: the
+    // policy only lets EM/TS vary on top of CR0_BASE.
+    for value in [
+        CR0_BASE & !1,
+        CR0_BASE & !0x8000_0000,
+        CR0_BASE & !(1 << 16),
+        CR0_BASE | (1 << 32),
+        CR0_BASE | (1 << 30),
+        CR0_BASE | (1 << 29),
+        0,
+    ] {
         let mut code = movabs_rax(value);
         code.extend_from_slice(&MOV_CR0_RAX);
         let mut state = board_state();
@@ -827,10 +880,20 @@ fn rdtsc_without_a_source_is_unsupported_and_changes_nothing() {
 fn rdtsc_ignores_prefixed_forms_like_the_legacy_entry() {
     // `0x66 0x0f 0x31` is not the exact bare form; both entries agree.
     let set = base().with_rdtsc();
-    let mut source = || 7u64;
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        7u64
+    };
     let mut state = board_state();
+    let before = state.clone();
     let mut memory = Memory::code(&[0x66, 0x0f, 0x31]);
     let result = run_set_with_source(&mut state, &mut memory, &set, 1, Some(&mut source)).unwrap();
+    // Strict expectations on their own, not only agreement with the legacy entry.
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x31 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(calls, 0);
     let mut old_state = legacy_state();
     let mut old_memory = Memory::code(&[0x66, 0x0f, 0x31]);
     let mut old_source = || 7u64;
@@ -1309,6 +1372,10 @@ fn mov_cr3_stays_unsupported_without_cr3_ownership() {
 
 #[test]
 fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
+    // Architecturally these are not #UD (REX.W and 0x66 are ignored by MOV CR in
+    // 64-bit mode, and `0F 22 D9` is a valid `MOV CR3, RCX`); they are outside
+    // the exact `MOV CR3, RAX` profile, so the decoder reports the opcode byte
+    // `0x22` as unsupported in every case.
     for bytes in [
         &[0x48, 0x0f, 0x22, 0xd8][..],
         &[0x66, 0x0f, 0x22, 0xd8][..],
@@ -1319,13 +1386,10 @@ fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
         let mut memory = Memory::code(bytes);
         let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
         assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
-        assert!(
-            matches!(
-                exit(&result),
-                RunExit::Unsupported { .. } | RunExit::Fault(_)
-            ),
-            "{bytes:02x?}: {:?}",
-            result.exit
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x22 }),
+            "{bytes:02x?}"
         );
         assert_eq!(state, before, "{bytes:02x?}");
     }
@@ -1578,29 +1642,31 @@ fn pio_flag_without_a_pio_entry_stays_unsupported() {
 #[test]
 fn pio_does_not_widen_to_prefixed_or_other_port_forms() {
     let cli = CliProfile::NonPviLong64V1;
-    // 0x66/REP prefixes, the imm8 forms (E4/E6) and the word form (ED/EF).
-    for code in [
-        &[0x66, 0xee][..],
-        &[0xf3, 0xee][..],
-        &[0xe6, 0x80][..],
-        &[0xe4, 0x80][..],
-        &[0xef][..],
-        &[0xed][..],
+    // The 0x66/REP prefixes are consumed as legacy prefixes and the following
+    // opcode byte is reported, so `66 EE` and `F3 EE` give `Unsupported` with
+    // the `OUT` opcode `0xee`, not #UD. The imm8 forms (E4/E6) and the word
+    // form (ED/EF) report their own opcode.
+    for (code, opcode) in [
+        (&[0x66, 0xee][..], 0xee),
+        (&[0xf3, 0xee][..], 0xee),
+        (&[0xe6, 0x80][..], 0xe6),
+        (&[0xe4, 0x80][..], 0xe4),
+        (&[0xef][..], 0xef),
+        (&[0xed][..], 0xed),
     ] {
         let mut state = board_state();
+        let before = state.clone();
         let mut memory = Memory::code(code);
         let mut pio = TestPio::default();
         let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
-        assert!(
-            matches!(
-                result.exit,
-                Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. } | RunExit::Fault(_))
-            ),
-            "{code:x?}: {:?}",
-            result.exit
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:x?}"
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state.rip, RIP);
+        assert_eq!(state, before, "{code:x?}");
         assert!(pio.reads.is_empty() && pio.writes.is_empty());
     }
 }

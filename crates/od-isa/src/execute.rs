@@ -1872,8 +1872,8 @@ impl<'a> Cpl0ProfileSet<'a> {
 
     /// Admit the exact bare RDTSC form. The value comes from the
     /// `rdtsc_source` passed to [`run_with_cpl0_profile_set`]; without a
-    /// source RDTSC stays `Unsupported`. CR4.TSD is taken from the admitted
-    /// CR4, which the policy keeps at zero.
+    /// source RDTSC stays `Unsupported`. CR4.TSD is read from the live CR4 at each
+    /// RDTSC; the policy keeps it clear (`accepts_cr4`), so it is always 0 here.
     pub const fn with_rdtsc(mut self) -> Self {
         self.rdtsc = true;
         self
@@ -1918,6 +1918,7 @@ impl<'a> Cpl0ProfileSet<'a> {
 /// Exit of a CPL0 profile-set run. `E` is the port error of the PIO entry
 /// point; entries without a port use the uninhabited default.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Cpl0ProfileSetExit<E = std::convert::Infallible> {
     Run(RunExit),
     /// A `MOV CR3, RAX` retired under `with_cpu_owned_cr3`. The run stopped at
@@ -1943,6 +1944,7 @@ pub struct Cpl0ProfileSetResult<E = std::convert::Infallible> {
 /// Typed admission failure. Nothing is fetched or executed and the state is
 /// left unchanged.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Cpl0ProfileSetInputError {
     WrongMode,
     WrongPrivilege,
@@ -1970,6 +1972,12 @@ pub enum Cpl0ProfileSetInputError {
     StiShadowMissing,
     StiShadowActive,
     CliPreconditionFailed,
+    /// RFLAGS.VM is set. Virtual-8086 mode does not exist in IA-32e mode, so
+    /// this is rejected for every set, with or without CLI.
+    RflagsVmSet,
+    /// RFLAGS bit 1 is clear. It is always 1 architecturally, so the state is
+    /// rejected for every set, with or without CLI.
+    RflagsReservedBitClear,
 }
 
 const fn cr3_profiles_match(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>) -> bool {
@@ -19535,9 +19543,13 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
 /// leaves `state` unchanged.
 ///
 /// Admission requires Long64 at CPL0, `initial_rflags_defined` within the
-/// integer flags, CR0/CR4 modeled inside the policy, CR3/x87/SSE unmodeled,
-/// `Running` activity with a `Clear` STI shadow and, with CLI, CR0.PE=1,
-/// CR4.PVI=0 and RFLAGS.VM=0. `rdtsc_source` feeds RDTSC only when the set
+/// integer flags, CR0/CR4 modeled inside the policy, x87/SSE unmodeled, CR3
+/// unmodeled unless the set owns it (`with_cpu_owned_cr3`, then modeled within
+/// 36 bits), RFLAGS.VM=0 and RFLAGS bit 1 set (always 1 in IA-32e mode),
+/// `Running` activity and an STI shadow that is `Clear`, or `Blocking` only with
+/// IF=0 (the shadow a MOV SS leaves; STI stays outside, ISSUE-069), and, with
+/// CLI, CR0.PE=1 and CR4.PVI=0. Null segment loads over loaded hidden caches
+/// are handled by the set (S2-46). `rdtsc_source` feeds RDTSC only when the set
 /// was built with `with_rdtsc`; otherwise it is never called. `IN`/`OUT` stay
 /// `Unsupported` here even for a set built with `with_pio_u8`.
 pub fn run_with_cpl0_profile_set(
@@ -19700,8 +19712,16 @@ fn run_cpl0_profile_set_inner(
         Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 => {}
         Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
     }
-    // CR0.PE, CR4.PVI and RFLAGS.VM are the non-PVI Long64 CLI preconditions.
-    if set.cli.is_some() && (cr0 & 1 == 0 || cr4 & (1 << 1) != 0 || state.rflags & (1 << 17) != 0) {
+    // RFLAGS.VM and bit 1 are checked for every set: IA-32e has no virtual-8086
+    // mode and RFLAGS[1] always reads 1 (SDM Vol. 1, 3.4.3).
+    if state.rflags & (1 << 17) != 0 {
+        return Err(Error::RflagsVmSet);
+    }
+    if state.rflags & (1 << 1) == 0 {
+        return Err(Error::RflagsReservedBitClear);
+    }
+    // CR0.PE and CR4.PVI are the non-PVI Long64 CLI preconditions.
+    if set.cli.is_some() && (cr0 & 1 == 0 || cr4 & (1 << 1) != 0) {
         return Err(Error::CliPreconditionFailed);
     }
     let cr3_effect = Cell::new(None);
@@ -19840,7 +19860,9 @@ fn run_cpl0_profile_set_inner(
             fx_cr0: None,
             unmasked_minss_denormal: false,
             // The policy keeps CR4.TSD clear, so this is always false; it is
-            // read from the admitted CR4 rather than assumed.
+            // read from the admitted CR4 rather than assumed, and the step
+            // re-reads the live CR4 while `control_policy` is set (the value
+            // here only serves paths without a policy).
             rdtsc: set.rdtsc.then_some(RdtscControls {
                 cr4_tsd: cr4 & (1 << 2) != 0,
             }),
@@ -32186,7 +32208,14 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         };
-        if controls.cr4_tsd && context.privilege != PrivilegeLevel::Ring0 {
+        // Under a control-register policy the live CR4 is authoritative: the
+        // policy keeps TSD clear (`accepts_cr4`), but TSD is read from the
+        // CR4 at this step instead of the value captured at entry.
+        let cr4_tsd = match (control_policy, state.cr4) {
+            (Some(_), Some(cr4)) => cr4 & (1 << 2) != 0,
+            _ => controls.cr4_tsd,
+        };
+        if cr4_tsd && context.privilege != PrivilegeLevel::Ring0 {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector: 13,
                 error_code: Some(0),

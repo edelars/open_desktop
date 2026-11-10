@@ -859,6 +859,9 @@ fn set_exit_to_probe_exit(
             })
         }
         PagedCpl0SetExit::PortIo(error) => PagedProbeExit::PortIo(error),
+        PagedCpl0SetExit::UnknownSetExit => {
+            return Err("the CPL0 set returned an exit variant the board does not know");
+        }
     };
     Ok((mapped, detail))
 }
