@@ -1712,7 +1712,9 @@ pub enum Operation {
         dst: Operand,
         offset: BitOffset,
     },
-    /// BSF/BSR register and memory source forms. F3-prefixed forms are outside this slice.
+    /// BSF/BSR register and memory source forms. `F3 0F BC` (REP BSF, prefix ignored as on a
+    /// CPU without BMI1) decodes to the same operation (S4-38L4g) and executes only inside
+    /// the CPL0 profile set; no other F3/F2/LOCK form decodes.
     BitScan {
         kind: BitScanKind,
         dst: RegisterView,
@@ -4825,8 +4827,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefix_bytes[0] == 0xf3
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0b == 0);
+        // S4-38L4g: `F3 0F BC /r` (optionally with one REX byte right before the opcode) is
+        // decoded as BSF with an ignored REP prefix, which is the architectural behaviour of
+        // this encoding on a CPU without BMI1. The 16-bit, segment and address-override forms
+        // stay outside; execution is admitted only inside the CPL0 profile set.
+        let rep_bsf = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xbc
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf3
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         if !known
             || (prefixes.group1.is_some()
+                && !rep_bsf
                 && !rep_stosb
                 && !rep_stos
                 && !rep_lods
@@ -21278,7 +21296,7 @@ mod tests {
     }
 
     #[test]
-    fn bit_scan_memory_forms_decode_addressing_and_f3_remains_unsupported() {
+    fn bit_scan_memory_forms_decode_addressing_and_only_rep_bsf_takes_f3() {
         for (bytes, kind, size, dst, base, index, scale, displacement) in [
             (
                 &[0x0f, 0xbc, 0x4d, 0x08][..],
@@ -21329,11 +21347,42 @@ mod tests {
                 }
             );
         }
-        for bytes in [&[0xf3, 0x0f, 0xbc, 0xc1][..], &[0xf3, 0x0f, 0xbd, 0xc1][..]] {
+        // S4-38L4g: `F3 0F BC` decodes as BSF (REP ignored); every other REP/REPNE/LOCK or
+        // prefix-mixed form and LZCNT-shaped `F3 0F BD` stay unsupported.
+        for bytes in [
+            &[0xf3, 0x0f, 0xbd, 0xc1][..],
+            &[0xf2, 0x0f, 0xbc, 0xc1][..],
+            &[0xf0, 0x0f, 0xbc, 0xc1][..],
+            &[0xf0, 0xf3, 0x0f, 0xbc, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xbc, 0xc1][..],
+            &[0xf3, 0x66, 0x0f, 0xbc, 0xc1][..],
+            &[0x48, 0xf3, 0x0f, 0xbc, 0xc1][..],
+            &[0xf3, 0x64, 0x0f, 0xbc, 0xc1][..],
+            &[0xf3, 0x67, 0x0f, 0xbc, 0xc1][..],
+        ] {
             assert!(
                 matches!(
                     Memory::new(bytes).decode(),
                     Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for (bytes, size, length) in [
+            (&[0xf3, 0x0f, 0xbc, 0xc0][..], OperandSize::Dword, 4),
+            (&[0xf3, 0x48, 0x0f, 0xbc, 0xc1][..], OperandSize::Qword, 5),
+        ] {
+            let decoded = Memory::new(bytes).decode().expect("REP BSF decodes");
+            assert_eq!(decoded.length, length);
+            assert_eq!(decoded.prefixes.group1, Some(0xf3));
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::BitScan {
+                        kind: BitScanKind::Forward,
+                        dst,
+                        ..
+                    } if dst.size() == size
                 ),
                 "{bytes:02x?}"
             );

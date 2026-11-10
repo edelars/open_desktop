@@ -4338,3 +4338,170 @@ fn movzx_r32_m16_in_the_plain_entry_is_the_same_instruction_and_the_set_adds_no_
         [(RAM_BASE + 0x100, 2, AccessOrigin::Explicit)]
     );
 }
+
+// ---- S4-38L4g: `F3 0F BC /r` (REP BSF) as BSF on a profile without BMI1 ----
+
+const ZF: u64 = 1 << 6;
+
+fn run_bsf(code: &[u8], rax: u64, rcx: u64) -> (LongModeState, Cpl0ProfileSetResult) {
+    let mut state = board_state();
+    state.gpr[0] = rax;
+    state.gpr[1] = rcx;
+    let mut memory = Memory::code(code);
+    let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+    (state, result)
+}
+
+#[test]
+fn rep_bsf_is_bsf_with_an_ignored_prefix_in_the_set() {
+    // (bytes, rax, rcx, expected rax, expected ZF)
+    let cases: [(&[u8], u64, u64, u64, bool); 5] = [
+        // EAX, EAX with a non-zero source: lowest set bit is bit 6; upper half is cleared.
+        (
+            &[0xf3, 0x0f, 0xbc, 0xc0],
+            0x1111_2222_3333_4440,
+            0,
+            6,
+            false,
+        ),
+        // Zero 32-bit source: ZF = 1 and the destination is left unchanged (like plain BSF).
+        (
+            &[0xf3, 0x0f, 0xbc, 0xc0],
+            0x1111_2222_0000_0000,
+            0,
+            0x1111_2222_0000_0000,
+            true,
+        ),
+        // REX.W, 64-bit source in RCX: bit 40.
+        (
+            &[0xf3, 0x48, 0x0f, 0xbc, 0xc1],
+            0xdead_beef_dead_beef,
+            0x0000_0100_0000_0000,
+            40,
+            false,
+        ),
+        // REX.W, zero 64-bit source.
+        (
+            &[0xf3, 0x48, 0x0f, 0xbc, 0xc1],
+            0xdead_beef_dead_beef,
+            0,
+            0xdead_beef_dead_beef,
+            true,
+        ),
+        // The 64-bit scan looks at the high half too.
+        (
+            &[0xf3, 0x48, 0x0f, 0xbc, 0xc1],
+            0,
+            0x8000_0000_0000_0000,
+            63,
+            false,
+        ),
+    ];
+    for (code, rax, rcx, expected_rax, zero) in cases {
+        let (state, result) = run_bsf(code, rax, rcx);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert_eq!(state.gpr[0], expected_rax, "{code:02x?}");
+        assert_eq!(state.gpr[1], rcx, "{code:02x?}");
+        assert_eq!(state.rflags & ZF != 0, zero, "{code:02x?}");
+        // ZF is defined; the whole arithmetic flag group is defined exactly as for plain BSF.
+        assert_ne!(result.rflags_defined & ZF, 0, "{code:02x?}");
+
+        // The same instruction without the REP prefix gives an identical outcome.
+        let plain: Vec<u8> = code.iter().copied().filter(|&byte| byte != 0xf3).collect();
+        let (plain_state, plain_result) = run_bsf(&plain, rax, rcx);
+        assert_eq!(plain_state.gpr, state.gpr, "{code:02x?}");
+        assert_eq!(plain_state.rflags, state.rflags, "{code:02x?}");
+        assert_eq!(
+            plain_result.rflags_defined, result.rflags_defined,
+            "{code:02x?}"
+        );
+        assert_eq!(plain_state.rip + 1, state.rip, "{code:02x?}");
+        assert_eq!(
+            plain_result.instructions_executed, result.instructions_executed,
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn rep_bsf_non_zero_source_clears_zf_and_keeps_other_gprs() {
+    let (state, _) = run_bsf(&[0xf3, 0x0f, 0xbc, 0xc0], 0x8000_0000, 0x55);
+    assert_eq!(state.gpr[0], 31);
+    assert_eq!(state.gpr[1], 0x55);
+    assert_eq!(state.rflags & ZF, 0);
+    assert_eq!(state.rflags & (1 << 9), 1 << 9, "IF is untouched");
+}
+
+#[test]
+fn rep_bsf_lookalikes_stay_unsupported_without_mutation() {
+    for code in [
+        &[0xf2u8, 0x0f, 0xbc, 0xc0][..], // REPNE
+        &[0xf0, 0xf3, 0x0f, 0xbc, 0xc0], // LOCK, then REP
+        &[0xf3, 0xf0, 0x0f, 0xbc, 0xc0], // REP, then LOCK
+        &[0xf0, 0x0f, 0xbc, 0xc0],       // LOCK alone
+        &[0x66, 0xf3, 0x0f, 0xbc, 0xc0], // 16-bit form
+        &[0xf3, 0x0f, 0xbd, 0xc0],       // LZCNT-shaped, not modelled
+        &[0xf3, 0xf3, 0x0f, 0xbc, 0xc0], // duplicate REP
+        &[0x48, 0xf3, 0x0f, 0xbc, 0xc0], // REX before REP is ignored by hardware
+        &[0xf3, 0x64, 0x0f, 0xbc, 0xc0], // segment override
+        &[0xf3, 0x67, 0x0f, 0xbc, 0xc0], // address-size override
+    ] {
+        let mut state = board_state();
+        state.gpr[0] = 0x40;
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        let opcode = if code.contains(&0xbd) { 0xbd } else { 0xbc };
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn rep_bsf_outside_the_set_stays_unsupported() {
+    let mut state = board_state();
+    state.gpr[0] = 0x40;
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf3, 0x0f, 0xbc, 0xc0]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xbc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+
+    // Plain BSF outside the set keeps working.
+    let mut state = board_state();
+    state.gpr[0] = 0x40;
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let mut memory = Memory::code(&[0x0f, 0xbc, 0xc0]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 6);
+}

@@ -34325,7 +34325,6 @@ fn step_configured(
         | Operation::SignExtendAccumulator { .. }
         | Operation::Bswap { .. }
         | Operation::Bit { .. }
-        | Operation::BitScan { .. }
         | Operation::Arithmetic { .. }
         | Operation::Logic { .. }
         | Operation::Mul { .. }
@@ -35251,6 +35250,11 @@ fn step_configured(
         Operation::Jump { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.prefixes == Prefixes::default()
+        }
+        // BSF/BSR. S4-38L4g: the decoder also yields BSF for `F3 0F BC` (REP ignored, no
+        // BMI1 in the profile); that REP form executes only inside the CPL0 profile set.
+        Operation::BitScan { .. } => {
+            instruction.prefixes.group1.is_none() || control_policy.is_some()
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
