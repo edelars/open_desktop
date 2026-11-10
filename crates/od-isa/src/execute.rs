@@ -51606,7 +51606,7 @@ const IRETQ_UNMODELED_FLAGS: u64 = POPFQ_CPL0_TF | (1 << 17) | (1 << 19) | (1 <<
 
 /// `IRETQ` (`48 CF`) inside the CPL0 profile set (S4-38L5b): a same-privilege (CPL0 to CPL0)
 /// return to 64-bit code. In 64-bit mode the instruction always pops five qwords
-/// `[RIP][CS][RFLAGS][RSP][SS]` (SDM Vol.2 IRET; Vol.3 6.14.3), also for a return to the
+/// `[RIP][CS][RFLAGS][RSP][SS]` (SDM Vol.2 IRET; section number in Vol.3 not verified), also for a return to the
 /// same privilege level.
 ///
 /// Returns `Ok(true)` after committing RIP, CS (selector and cache), RFLAGS (the
@@ -51623,13 +51623,18 @@ fn iretq_cpl0(
         return Ok(false);
     };
     // The set models SS only over a loaded cache; the interrupt shadow must be clear (as for
-    // POPFQ); a current TF/VM/VIF/VIP or NT = 1 (task-return path of IRET) is not modeled.
+    // POPFQ); a current TF/VM/VIF/VIP is not modeled.
     if state.ss_cache.is_none()
         || state.ss_selector.is_none()
         || state.sti_shadow != Some(crate::StiShadow::Clear)
-        || state.rflags & (IRETQ_UNMODELED_FLAGS | (1 << 14)) != 0
+        || state.rflags & IRETQ_UNMODELED_FLAGS != 0
     {
         return Ok(false);
+    }
+    // NT = 1 in IA-32e mode is #GP(0) before the frame is read (SDM IRET task-return path,
+    // per the S4-38L5b review; not checked against the SDM text, which is not in the repo).
+    if state.rflags & (1 << 14) != 0 {
+        return Err(general_protection());
     }
     let old_rsp = state.gpr[Register::Rsp as usize];
     let mut frame = [0_u64; 5];

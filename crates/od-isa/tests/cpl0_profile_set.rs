@@ -3127,6 +3127,8 @@ struct LretqMemory {
     reads: Vec<(u64, usize, AccessOrigin)>,
     writes: usize,
     write_log: Vec<(u64, Vec<u8>, AccessOrigin)>,
+    /// The write with this one-based number (counted in `writes`) faults with a #PF.
+    fail_write_number: Option<usize>,
 }
 
 impl LretqMemory {
@@ -3139,6 +3141,7 @@ impl LretqMemory {
             reads: Vec::new(),
             writes: 0,
             write_log: Vec::new(),
+            fail_write_number: None,
         }
     }
 
@@ -3198,6 +3201,13 @@ impl GuestMemory for LretqMemory {
         source: &[u8],
     ) -> Result<(), MemoryError> {
         self.writes += 1;
+        if self.fail_write_number == Some(self.writes) {
+            return Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(address),
+            }));
+        }
         if let Some(error) = self.page_fault(address, source.len()) {
             return Err(error);
         }
@@ -4883,6 +4893,59 @@ fn iretq_sets_the_accessed_bits_with_one_qword_write_each() {
 }
 
 #[test]
+fn iretq_cs_accessed_write_fault_writes_nothing_and_leaves_the_cpu_untouched() {
+    let (mut state, mut memory) = default_iretq();
+    memory.put(IRETQ_CS_SLOT, 0x00af_9a00_0000_ffff);
+    memory.put(IRETQ_SS_SLOT, 0x00cf_9200_0000_ffff);
+    memory.fail_write_number = Some(1);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert!(matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 14));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.writes, 1);
+}
+
+#[test]
+fn iretq_ss_accessed_write_fault_keeps_the_cs_accessed_bit_and_the_cpu_untouched() {
+    // Documented partial effect (CPU_CONTRACT S4-38L5b): the CS accessed-bit write has
+    // happened when the SS accessed-bit write faults; the CPU state is unchanged.
+    let (mut state, mut memory) = default_iretq();
+    memory.put(IRETQ_CS_SLOT, 0x00af_9a00_0000_ffff);
+    memory.put(IRETQ_SS_SLOT, 0x00cf_9200_0000_ffff);
+    memory.fail_write_number = Some(2);
+    let before = state.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(IRETQ_SS_SLOT)
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 2);
+    // The CS descriptor now has A = 1; the SS descriptor is unchanged.
+    assert_eq!(
+        memory.write_log,
+        vec![(
+            IRETQ_CS_SLOT,
+            0x00af_9b00_0000_ffffu64.to_le_bytes().to_vec(),
+            AccessOrigin::DescriptorTable
+        )]
+    );
+    let offset = (IRETQ_SS_SLOT - RAM_BASE) as usize;
+    assert_eq!(
+        memory.ram[offset..offset + 8],
+        0x00cf_9200_0000_ffffu64.to_le_bytes()
+    );
+}
+
+#[test]
 fn iretq_uses_only_the_low_sixteen_bits_of_the_cs_and_ss_qwords() {
     let (mut state, mut memory) = iretq_state(
         RIP + 2,
@@ -5022,14 +5085,19 @@ fn iretq_unmodeled_flags_and_state_are_unsupported_without_mutation() {
             label,
         );
     }
-    for (bit, label) in [
-        (8, "current TF"),
-        (14, "current NT"),
-        (19, "current VIF"),
-        (20, "current VIP"),
-    ] {
+    for (bit, label) in [(8, "current TF"), (19, "current VIF"), (20, "current VIP")] {
         assert_iretq_refused(|state, _| state.rflags |= 1 << bit, unsupported_cf(), label);
     }
+    // NT = 1 in IA-32e mode is #GP(0) before the frame is read.
+    let (mut state, mut memory) = default_iretq();
+    state.rflags |= 1 << 14;
+    let before = state.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &selector_fault_exit(13, 0));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+    assert_eq!(memory.writes, 0);
     assert_iretq_refused(
         |state, _| state.sti_shadow = Some(StiShadow::Blocking),
         unsupported_cf(),
