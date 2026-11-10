@@ -1785,6 +1785,89 @@ impl Cr4Profile {
     }
 }
 
+/// Control-register policy for the combined CPL0 profile set. Under a policy,
+/// CR0/CR4 stay modeled in `LongModeState` without a per-register profile; the
+/// accepted values reuse the `FpInitLong64V1` predicates, so the policy adds no
+/// second value list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlRegisterPolicy {
+    Cpl0BaseLong64V1,
+}
+
+impl ControlRegisterPolicy {
+    const fn accepts_cr0(self, value: u64) -> bool {
+        match self {
+            Self::Cpl0BaseLong64V1 => Cr0Profile::FpInitLong64V1.accepts(value),
+        }
+    }
+
+    const fn accepts_cr4(self, value: u64) -> bool {
+        match self {
+            Self::Cpl0BaseLong64V1 => Cr4Profile::FpInitLong64V1.accepts(value),
+        }
+    }
+
+    /// Whether the policy admits the modeled control-register state. CR3 stays
+    /// unmodeled until a CPU-owned CR3 profile exists.
+    fn admits_state(self, state: &LongModeState) -> bool {
+        state.cr0.is_some_and(|value| self.accepts_cr0(value))
+            && state.cr4.is_some_and(|value| self.accepts_cr4(value))
+            && state.cr3.is_none()
+    }
+}
+
+/// Narrow public profile set executed by one interpreter loop at CPL0. Fields
+/// are private so that new members can be added without breaking callers.
+#[derive(Clone, Copy, Debug)]
+pub struct Cpl0ProfileSet<'a> {
+    policy: ControlRegisterPolicy,
+    cli: Option<&'a crate::CliProfile>,
+}
+
+impl<'a> Cpl0ProfileSet<'a> {
+    pub const fn new(policy: ControlRegisterPolicy) -> Self {
+        Self { policy, cli: None }
+    }
+
+    /// Admit the exact bare CLI form under its non-PVI Long64 profile.
+    pub const fn with_cli(mut self, profile: &'a crate::CliProfile) -> Self {
+        self.cli = Some(profile);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Cpl0ProfileSetExit {
+    Run(RunExit),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Cpl0ProfileSetResult {
+    pub exit: Cpl0ProfileSetExit,
+    pub instructions_executed: u64,
+    pub rflags_defined: u64,
+}
+
+/// Typed admission failure. Nothing is fetched or executed and the state is
+/// left unchanged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Cpl0ProfileSetInputError {
+    WrongMode,
+    WrongPrivilege,
+    InvalidRflagsDefined { value: u64 },
+    Cr0Missing,
+    Cr0OutsidePolicy { value: u64 },
+    Cr4Missing,
+    Cr4OutsidePolicy { value: u64 },
+    Cr3NotAdmitted,
+    FpStateNotAdmitted,
+    ActivityMissing,
+    NotRunning,
+    StiShadowMissing,
+    StiShadowActive,
+    CliPreconditionFailed,
+}
+
 const fn cr3_profiles_match(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>) -> bool {
     matches!(
         (cr0, cr4),
@@ -1968,6 +2051,7 @@ struct ExecutionProfiles<'a> {
     cr0: Option<Cr0Profile>,
     cr4: Option<Cr4Profile>,
     mov_cr3: Option<MovCr3Long64V1>,
+    control_policy: Option<ControlRegisterPolicy>,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3094,6 +3178,7 @@ pub fn run_with_maxss_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -3245,6 +3330,7 @@ pub fn run_with_minsd_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -3396,6 +3482,7 @@ pub fn run_with_maxsd_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -3547,6 +3634,7 @@ pub fn run_with_minpd_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -3698,6 +3786,7 @@ pub fn run_with_minps_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -3849,6 +3938,7 @@ pub fn run_with_maxps_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4000,6 +4090,7 @@ pub fn run_with_maxpd_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4151,6 +4242,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4302,6 +4394,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4453,6 +4546,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4604,6 +4698,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4755,6 +4850,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -4906,6 +5002,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5057,6 +5154,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5208,6 +5306,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5359,6 +5458,7 @@ pub fn run_with_cvtss2si_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5510,6 +5610,7 @@ pub fn run_with_cvttss2si_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5660,6 +5761,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5844,6 +5946,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -5995,6 +6098,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -6181,6 +6285,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -6336,6 +6441,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -6520,6 +6626,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -6671,6 +6778,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -6822,6 +6930,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7006,6 +7115,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7158,6 +7268,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7309,6 +7420,7 @@ pub fn run_with_cvtdq2pd_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7460,6 +7572,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7610,6 +7723,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7761,6 +7875,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -7945,6 +8060,7 @@ fn run_with_cvtdq2ps_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8096,6 +8212,7 @@ pub fn run_with_cvtps2dq_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8247,6 +8364,7 @@ pub fn run_with_cvttps2dq_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8431,6 +8549,7 @@ fn run_with_cvtps2dq_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8615,6 +8734,7 @@ fn run_with_cvttps2dq_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8799,6 +8919,7 @@ fn run_with_cvttpd2dq_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -8983,6 +9104,7 @@ fn run_with_cvtpd2dq_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9134,6 +9256,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9285,6 +9408,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9436,6 +9560,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9587,6 +9712,7 @@ pub fn run_with_cvtss2sd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9738,6 +9864,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -9925,6 +10052,7 @@ fn run_with_cvtpi2ps_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10243,6 +10371,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10394,6 +10523,7 @@ pub fn run_with_cvtps2pd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10545,6 +10675,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10696,6 +10827,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10846,6 +10978,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -10997,6 +11130,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11206,6 +11340,7 @@ fn run_with_cmpss_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11357,6 +11492,7 @@ pub fn run_with_cmpsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11508,6 +11644,7 @@ pub fn run_with_cmppd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11658,6 +11795,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11808,6 +11946,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -11981,6 +12120,7 @@ fn run_with_minsd_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12132,6 +12272,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12310,6 +12451,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12473,6 +12615,7 @@ fn run_with_minpd_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12659,6 +12802,7 @@ fn run_with_minps_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12810,6 +12954,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -12961,6 +13106,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13111,6 +13257,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13261,6 +13408,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13411,6 +13559,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13594,6 +13743,7 @@ fn run_with_sqrtps_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13744,6 +13894,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -13926,6 +14077,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -14108,6 +14260,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -14297,6 +14450,7 @@ fn run_with_maxpd_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -14486,6 +14640,7 @@ fn run_with_maxps_memory_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -14689,6 +14844,7 @@ fn run_minss_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -14882,6 +15038,7 @@ fn run_maxss_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -15032,6 +15189,7 @@ pub fn run_with_cmpps_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -15183,6 +15341,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             halt: None,
             cr0: Some(Cr0Profile::FpInitLong64V1),
             mov_cr3: None,
+            control_policy: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -15387,6 +15546,7 @@ pub fn run_with_efer_rdmsr_profile(
             halt: None,
             cr0: Some(Cr0Profile::EferReadOnlyLong64V1),
             mov_cr3: None,
+            control_policy: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -15783,6 +15943,7 @@ pub fn run_with_cr0_profile(
             halt: None,
             cr0: Some(profile),
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -15993,6 +16154,7 @@ fn run_with_cr4_profile_and_rflags_defined(
                 _ => Cr0Profile::FpInitLong64V1,
             }),
             mov_cr3: mov_cr3_profile,
+            control_policy: None,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -19075,6 +19237,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             halt: halt_profile,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -19084,6 +19247,217 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             stop_requested,
         },
     )
+}
+
+/// Execute the combined CPL0 profile set until a run exit, after a typed
+/// admission that runs before any fetch. A rejected call executes nothing and
+/// leaves `state` unchanged.
+///
+/// Admission requires Long64 at CPL0, `initial_rflags_defined` within the
+/// integer flags, CR0/CR4 modeled inside the policy, CR3/x87/SSE unmodeled,
+/// `Running` activity with a `Clear` STI shadow and, with CLI, CR0.PE=1,
+/// CR4.PVI=0 and RFLAGS.VM=0. `rdtsc_source` is reserved for a later RDTSC
+/// member and is unused while the set has none.
+pub fn run_with_cpl0_profile_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    use Cpl0ProfileSetInputError as Error;
+    // Formally unreachable while `InstructionMode` has the single variant
+    // `Long64`: no `RunConfig` can carry another mode, so a test for this
+    // error cannot be built. The check stays so that adding a mode variant
+    // cannot silently admit it into the CPL0 profile set.
+    if config.context.mode != InstructionMode::Long64 {
+        return Err(Error::WrongMode);
+    }
+    if config.context.privilege != PrivilegeLevel::Ring0 {
+        return Err(Error::WrongPrivilege);
+    }
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(Error::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    let cr0 = state.cr0.ok_or(Error::Cr0Missing)?;
+    if !set.policy.accepts_cr0(cr0) {
+        return Err(Error::Cr0OutsidePolicy { value: cr0 });
+    }
+    let cr4 = state.cr4.ok_or(Error::Cr4Missing)?;
+    if !set.policy.accepts_cr4(cr4) {
+        return Err(Error::Cr4OutsidePolicy { value: cr4 });
+    }
+    if state.cr3.is_some() {
+        return Err(Error::Cr3NotAdmitted);
+    }
+    if state.x87.is_some() || state.sse.is_some() {
+        return Err(Error::FpStateNotAdmitted);
+    }
+    match state.activity {
+        None => return Err(Error::ActivityMissing),
+        Some(crate::CpuActivity::Running) => {}
+        Some(_) => return Err(Error::NotRunning),
+    }
+    match state.sti_shadow {
+        None => return Err(Error::StiShadowMissing),
+        Some(crate::StiShadow::Clear) => {}
+        Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
+    }
+    // CR0.PE, CR4.PVI and RFLAGS.VM are the non-PVI Long64 CLI preconditions.
+    if set.cli.is_some() && (cr0 & 1 == 0 || cr4 & (1 << 1) != 0 || state.rflags & (1 << 17) != 0) {
+        return Err(Error::CliPreconditionFailed);
+    }
+    let result = run_configured(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
+            cvtdq2ps_registers: None,
+            cvtdq2ps_memory: None,
+            cvtps2dq_registers: None,
+            cvtps2dq_memory: None,
+            cvttps2dq_registers: None,
+            cvttps2dq_memory: None,
+            cvtpd2dq_registers: None,
+            cvtpd2ps_registers: None,
+            cvtpd2ps_memory: None,
+            cvttpd2dq_registers: None,
+            cvttpd2dq_memory: None,
+            cvtpd2dq_memory: None,
+            sqrtss_registers: None,
+            sqrtss_memory_rax: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            subpd_memory_rax: None,
+            mulpd_memory_rax: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addpd_memory_rax: None,
+            addsd_registers: None,
+            addsd_memory_rax: None,
+            addss_registers: None,
+            addss_memory_rax: None,
+            addps_registers: None,
+            addps_memory_rax_unmasked: None,
+            subps_memory_rax_unmasked: None,
+            divpd_registers: None,
+            divpd_memory_rax: None,
+            divsd_registers: None,
+            divps_registers: None,
+            divps_memory_rax_unmasked: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            scalar_float_memory_rax: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            cvtps2pd_memory: None,
+            cvtss2sd_memory: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpss_memory_rax: None,
+            cmpsd_memory_rax: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmppd_memory_rax: None,
+            cmpps_memory_rax: None,
+            minsd_memory_rax: None,
+            minsd_memory_unmasked_rax: None,
+            maxss_memory_rax: None,
+            minss_memory_rax: None,
+            maxsd_memory_rax: None,
+            maxsd_memory_unmasked_rax: None,
+            minpd_memory_rax: None,
+            minps_memory_rax: None,
+            sqrtps_memory_rax: None,
+            rsqrtps_memory_rax: None,
+            rsqrtss_memory_rax: None,
+            rcpps_memory_rax: None,
+            rcpss_memory_rax: None,
+            sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
+            maxpd_memory_rax: None,
+            maxpd_memory_unmasked_rax: None,
+            maxps_memory_rax: None,
+            maxps_memory_unmasked_rax: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            comparison_memory_rax: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r32_memory: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_r64_memory: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtsi2ss_r32_memory: None,
+            cvtsi2ss_r64_memory: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
+            cvttsd2si_r32_memory: None,
+            cvttsd2si_r64_memory: None,
+            cvtss2si_r32_memory: None,
+            cvtss2si_r64_memory: None,
+            cvttss2si_r64_memory: None,
+            cvttss2si_r32_memory: None,
+            cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
+            cvtsd2ss_memory: None,
+            cvtpi2pd_memory_rax: None,
+            cvtpi2_profile: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: set.cli,
+            sti: None,
+            halt: None,
+            cr0: None,
+            mov_cr3: None,
+            control_policy: Some(set.policy),
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    );
+    Ok(Cpl0ProfileSetResult {
+        exit: Cpl0ProfileSetExit::Run(result.exit),
+        instructions_executed: result.instructions_executed,
+        rflags_defined: result.rflags_defined,
+    })
 }
 
 fn run_configured(
@@ -19098,8 +19472,27 @@ fn run_configured(
     let halt_profile = profiles.halt;
     let rdtsc_source = &mut runtime.rdtsc_source;
     let stop_requested = &mut runtime.stop_requested;
-    if (state.cr0.is_some() && profiles.cr0.is_none())
-        || (state.cr4.is_some() && profiles.cr4.is_none())
+    let control_policy = profiles.control_policy;
+    if let Some(policy) = control_policy {
+        // A policy is exclusive with per-register profiles and requires an
+        // admitted Long64 control-register state at every entry. A violated
+        // exclusion is unreachable from outside (the field is private) and is
+        // reported as Unsupported identically in debug and release builds.
+        let exclusive =
+            profiles.cr0.is_none() && profiles.cr4.is_none() && profiles.mov_cr3.is_none();
+        if !exclusive
+            || config.context.mode != InstructionMode::Long64
+            || !policy.admits_state(state)
+        {
+            return RunResult {
+                exit: RunExit::Unsupported { opcode: 0x0f },
+                instructions_executed: 0,
+                rflags_defined,
+            };
+        }
+    }
+    if (state.cr0.is_some() && profiles.cr0.is_none() && control_policy.is_none())
+        || (state.cr4.is_some() && profiles.cr4.is_none() && control_policy.is_none())
         || (state.cr3.is_some() && profiles.mov_cr3.is_none())
         || (state.cr3.is_none() && profiles.mov_cr3.is_some())
         || ((profiles.cr0.is_some_and(is_mov_cr3_cr0) || profiles.cr4.is_some_and(is_mov_cr3_cr4))
@@ -19486,6 +19879,7 @@ pub fn step_with_cr0_profile(
             halt: None,
             cr0: Some(profile),
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -19880,6 +20274,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             halt: halt_profile,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -20031,6 +20426,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -20406,6 +20802,7 @@ fn run_with_comparison_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -20559,6 +20956,7 @@ pub fn run_with_sqrtss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -20710,6 +21108,7 @@ pub fn run_with_sqrtsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -20861,6 +21260,7 @@ pub fn run_with_sqrtps_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21012,6 +21412,7 @@ pub fn run_with_sqrtpd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21168,6 +21569,7 @@ fn run_with_subpd_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21374,6 +21776,7 @@ pub fn run_with_mulpd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21528,6 +21931,7 @@ fn run_with_addpd_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21712,6 +22116,7 @@ fn run_with_mulpd_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -21918,6 +22323,7 @@ pub fn run_with_addsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22069,6 +22475,7 @@ pub fn run_with_divpd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22253,6 +22660,7 @@ fn run_with_divpd_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22404,6 +22812,7 @@ pub fn run_with_addss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22589,6 +22998,7 @@ fn run_with_addss_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22773,6 +23183,7 @@ fn run_with_addsd_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -22960,6 +23371,7 @@ fn run_with_addps_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23111,6 +23523,7 @@ pub fn run_with_divsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23298,6 +23711,7 @@ fn run_with_divps_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23449,6 +23863,7 @@ pub fn run_with_divss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23600,6 +24015,7 @@ pub fn run_with_mulsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23751,6 +24167,7 @@ pub fn run_with_mulss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -23938,6 +24355,7 @@ fn run_with_mulps_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -24089,6 +24507,7 @@ pub fn run_with_subsd_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -24240,6 +24659,7 @@ pub fn run_with_subss_register_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -24391,6 +24811,7 @@ fn run_with_scalar_float_memory_rax_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -24786,6 +25207,7 @@ fn run_with_subps_profile(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -24936,6 +25358,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             halt: None,
             cr0: None,
             mov_cr3: None,
+            control_policy: None,
             cr4: None,
         },
         StepRuntime {
@@ -25385,6 +25808,7 @@ fn step_configured(
         halt: halt_profile,
         cr0: cr0_profile,
         mov_cr3: mov_cr3_profile,
+        control_policy,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -25415,8 +25839,17 @@ fn step_configured(
         exact_hlt_only,
         stop_requested,
     } = runtime;
-    if (state.cr0.is_some() && cr0_profile.is_none())
-        || (state.cr4.is_some() && cr4_profile.is_none())
+    if let Some(policy) = control_policy {
+        // Unreachable from outside (the field is private); a violated
+        // exclusion is reported as Unsupported identically in debug and
+        // release builds.
+        let exclusive = cr0_profile.is_none() && cr4_profile.is_none() && mov_cr3_profile.is_none();
+        if !exclusive || context.mode != InstructionMode::Long64 || !policy.admits_state(state) {
+            return Ok(StepOutcome::Unsupported { opcode: 0x0f });
+        }
+    }
+    if (state.cr0.is_some() && cr0_profile.is_none() && control_policy.is_none())
+        || (state.cr4.is_some() && cr4_profile.is_none() && control_policy.is_none())
         || (state.cr3.is_some() != mov_cr3_profile.is_some())
         || ((cr0_profile.is_some_and(is_mov_cr3_cr0) || cr4_profile.is_some_and(is_mov_cr3_cr4))
             != mov_cr3_profile.is_some())
