@@ -1398,6 +1398,9 @@ pub enum Operation {
     /// Exact `0F 20 D8` / `48 0F 20 D8` MOV RAX, CR3 (S4-38L4c). Executes only
     /// in the CPL0 profile set that owns CR3 (`with_cpu_owned_cr3`).
     ReadCr3,
+    /// Exact `0F 20 D0` / `48 0F 20 D0` MOV RAX, CR2 (S4-38L5a). Executes only
+    /// in the CPL0 profile set that owns CR3 (`with_cpu_owned_cr3`); read-only.
+    ReadCr2,
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -2318,9 +2321,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 return Err(self.unsupported(opcode));
             }
-            // S4-38L4c: `48 0F 20 D8` (REX.W `MOV RAX, CR3`) is the only
-            // prefixed control-register form; every other prefix stays
-            // unsupported.
+            // S4-38L4c / S4-38L5a: `48 0F 20 D8` (REX.W `MOV RAX, CR3`) and
+            // `48 0F 20 D0` (REX.W `MOV RAX, CR2`) are the only prefixed
+            // control-register forms; every other prefix stays unsupported.
             let rex_w_read_cr3 = opcode.byte == 0x20
                 && prefixes
                     == (Prefixes {
@@ -2331,7 +2334,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
-            if !matches!(modrm, 0xc0 | 0xd8 | 0xe0) || (rex_w_read_cr3 && modrm != 0xd8) {
+            // `0F 20 D0` (MOV RAX, CR2) is read-only: `0F 22 D0` stays unsupported.
+            let cr2_read = opcode.byte == 0x20 && modrm == 0xd0;
+            if !(matches!(modrm, 0xc0 | 0xd8 | 0xe0) || cr2_read)
+                || (rex_w_read_cr3 && !matches!(modrm, 0xd8 | 0xd0))
+            {
                 return Err(self.unsupported(opcode));
             }
             return Ok(Instruction {
@@ -2345,6 +2352,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     (0x22, 0xc0) => Operation::WriteCr0,
                     (0x22, 0xd8) => Operation::WriteCr3,
                     (0x20, 0xd8) => Operation::ReadCr3,
+                    (0x20, 0xd0) => Operation::ReadCr2,
                     (0x20, 0xe0) => Operation::ReadCr4,
                     (0x22, 0xe0) => Operation::WriteCr4,
                     _ => unreachable!("control-register opcode was validated"),
@@ -23979,6 +23987,39 @@ mod tests {
                 matches!(
                     Memory::new(bytes).decode(),
                     Err(DecodeError::InvalidLidtLock { length: l, .. }) if l == length
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mov_rax_cr2_decodes_only_the_exact_read_forms() {
+        for (bytes, length) in [
+            (&[0x0f, 0x20, 0xd0][..], 3),
+            (&[0x48, 0x0f, 0x20, 0xd0][..], 4),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operation, Operation::ReadCr2, "{bytes:02x?}");
+            assert_eq!(instruction.length, length);
+            assert_eq!(instruction.operand_size, OperandSize::Qword);
+        }
+        for bytes in [
+            &[0x0f, 0x22, 0xd0][..],
+            &[0x48, 0x0f, 0x22, 0xd0][..],
+            &[0xf0, 0x0f, 0x20, 0xd0][..],
+            &[0x66, 0x0f, 0x20, 0xd0][..],
+            &[0xf3, 0x0f, 0x20, 0xd0][..],
+            &[0x49, 0x0f, 0x20, 0xd0][..],
+            &[0x40, 0x0f, 0x20, 0xd0][..],
+            &[0x0f, 0x20, 0xd1][..],
+            &[0x0f, 0x20, 0xc8][..],
+            &[0x0f, 0x20, 0xe8][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
                 ),
                 "{bytes:02x?}"
             );

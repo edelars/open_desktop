@@ -1278,6 +1278,11 @@ impl LoadedFirmwareBoard {
             nvme.service(&mut self.bus, |_| {});
         }
         self.state.cr3 = Some(self.page_table_root);
+        // S4-38L5a: the set models CR2 for `MOV RAX, CR2`. Nothing writes it yet (no #PF
+        // delivery, L5c), so it holds the architectural reset value 0 for the run and, like
+        // CR3, is not kept in the CPU state afterwards.
+        let prior_cr2 = self.state.cr2;
+        self.state.cr2 = Some(prior_cr2.unwrap_or(0));
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1404,6 +1409,7 @@ impl LoadedFirmwareBoard {
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.state.cr3 = None;
+        self.state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
         Ok(LinuxSetRunReport {
             run,

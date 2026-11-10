@@ -26927,7 +26927,11 @@ fn step_configured(
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
             && instruction.operation == Operation::WriteCr3)
-        || (cpu_owned_cr3.is_some() && instruction.operation == Operation::ReadCr3))
+        || (cpu_owned_cr3.is_some()
+            && matches!(
+                instruction.operation,
+                Operation::ReadCr3 | Operation::ReadCr2
+            )))
         && context.privilege != PrivilegeLevel::Ring0
     {
         return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -32271,6 +32275,29 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::ReadCr2 if cpu_owned_cr3.is_some() => {
+            // S4-38L5a: `0F 20 D0` and `48 0F 20 D0` only (the decoder maps
+            // other register operands, prefixes and the write direction away
+            // from `ReadCr2`). The set reads the CR2 the state models; an
+            // unmodeled CR2 (`None`) is `Unsupported`, never a made-up value.
+            let rex_w = Prefixes {
+                rex: Some(0x48),
+                ..Prefixes::default()
+            };
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x20
+                && ((instruction.length == 3 && instruction.prefixes == Prefixes::default())
+                    || (instruction.length == 4 && instruction.prefixes == rex_w))
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            let Some(value) = state.cr2.filter(|_| exact_form) else {
+                return Ok(StepOutcome::Unsupported { opcode: 0x20 });
+            };
+            state.write(RegisterView::low(Register::Rax, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         Operation::WriteCr3 if cpu_owned_cr3.is_some() => {
             // Only the exact bare `0F 22 D8` form; the decoder already maps
             // other register operands away from `WriteCr3`.
@@ -34242,7 +34269,7 @@ fn step_configured(
             cr4_profile.is_some() || control_policy.is_some()
         }
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
-        Operation::ReadCr3 => cpu_owned_cr3.is_some(),
+        Operation::ReadCr3 | Operation::ReadCr2 => cpu_owned_cr3.is_some(),
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -36453,7 +36480,8 @@ fn step_configured(
         | Operation::ReadCr4
         | Operation::WriteCr4
         | Operation::WriteCr3
-        | Operation::ReadCr3 => {
+        | Operation::ReadCr3
+        | Operation::ReadCr2 => {
             unreachable!("CR operations commit in their explicit profile path")
         }
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),

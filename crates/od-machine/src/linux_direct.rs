@@ -2181,6 +2181,27 @@ mod tests {
         assert!(base.set_members.is_empty() && base.set_exit_detail.is_none());
     }
 
+    /// S4-38L5a: `MOV RAX, CR2` retires in the board's CPL0 set and reads the architectural
+    /// reset value 0 (the board has no delivery yet, so nothing else writes CR2); the CPU state
+    /// keeps no CR2 outside the run, like CR3.
+    #[test]
+    fn set_facade_mov_rax_cr2_reads_the_reset_value_zero() {
+        for (code, length) in [
+            (&[0x0F, 0x20, 0xD0][..], 3u64),
+            (&[0x48, 0x0F, 0x20, 0xD0][..], 4),
+        ] {
+            let (mut boot, file) = boot_with_entry(code);
+            boot.board.state_mut().gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+            assert_eq!(boot.board.state().cr2, None);
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+            // The read retires and exhausts the one-instruction budget.
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!((record.retired, record.rip), (1, ENTRY + length));
+            assert_eq!(record.gpr[Register::Rax as usize], 0, "{code:02x?}");
+            assert_eq!(boot.board.state().cr2, None, "the CPU state keeps no CR2");
+        }
+    }
+
     #[test]
     fn set_facade_mov_cr3_is_a_continuation_that_the_record_counts() {
         let board_cr3 = boot_with_entry(&[0xF4]).0.board.cr3();
