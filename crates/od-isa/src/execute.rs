@@ -51260,6 +51260,12 @@ fn far_return_cpl0(
     if access & 0x10 == 0 || access & 0x08 == 0 {
         return Err(selector_fault(13, selector));
     }
+    // L = 1 with D = 1 is reserved in long mode: #GP(selector). The SDM RET pseudocode
+    // (IA-32e mode) checks it right after the "not a code segment" test, before the DPL and
+    // present checks, so a not-present L = D = 1 descriptor is #GP, not #NP.
+    if flags & 0x2 != 0 && flags & 0x4 != 0 {
+        return Err(selector_fault(13, selector));
+    }
     // Same-level return: the descriptor DPL must equal RPL = 0 (conforming code needs
     // DPL <= RPL, which is the same condition at RPL = 0).
     if (access >> 5) & 3 != 0 {
@@ -51267,10 +51273,6 @@ fn far_return_cpl0(
     }
     if access & 0x80 == 0 {
         return Err(selector_fault(11, selector));
-    }
-    // L = 1 with D = 1 is reserved in long mode: #GP(selector).
-    if flags & 0x2 != 0 && flags & 0x4 != 0 {
-        return Err(selector_fault(13, selector));
     }
     // A compatibility-mode CS (L = 0) is a legal target but switches the instruction mode,
     // which the set does not model.
