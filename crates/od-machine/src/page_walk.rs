@@ -986,6 +986,50 @@ pub(crate) fn translate_long64_2m_ram_read_only(
     .map(|translation| translation.physical)
 }
 
+/// S4-38L4h: the translation half of a data write through the 4 KiB / 2 MiB tracked walk, with no
+/// operand access. The walk is the one a real write takes: the present, reserved-bit, user and
+/// write-protection checks are those of [`access_long64_2m_ram`] for a write, and accessed bits
+/// are set (and reported through `committed_write`) exactly as a walk does. The DIRTY bit is not
+/// set and no operand byte is written: a split store calls this for both of its pages first and
+/// writes only if both succeed, so a fault on the second page leaves the first untouched. The
+/// target must be plain RAM (a write to MMIO or a read-only region is a typed error, never
+/// started on the first page and abandoned on the second).
+pub(crate) fn translate_long64_2m_ram_write_check(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<(), TrackedAccessError> {
+    let walk = walk_long64_4k_with_writer(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        AccessKind::Write,
+        &mut committed_write,
+        &mut write_tracked_table_entry,
+        true,
+    );
+    let physical = walk.translation?.physical;
+    match memory.locate_region_kind(physical, 1) {
+        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
+        Ok(MemoryRegionKind::Mmio) => {
+            Err(TrackedAccessError::DeviceUnavailable { address: physical })
+        }
+        Ok(kind) => Err(TrackedAccessError::OperandPhysical {
+            address: physical,
+            source: MemoryAccessError::ReadOnlyRegion(kind),
+        }),
+        Err(source) => Err(TrackedAccessError::OperandPhysical {
+            address: physical,
+            source,
+        }),
+    }
+}
+
 pub(crate) fn access_long64_4k_with_mmio(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,

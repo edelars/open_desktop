@@ -2032,46 +2032,36 @@ mod tests {
     }
 
     #[test]
-    fn cpl0_set_board_word_and_dword_stores_crossing_a_4k_boundary_are_the_typed_cross_page_stop() {
-        // (code, width, offsets that cross): the walker admits no split access and mutates
-        // nothing (no byte, no accessed/dirty bit) before reporting `CrossesPage`.
-        let cases: [(&[u8], u8, &[u64]); 2] = [
-            (&[0x66, 0x89, 0x03], 2, &[0xFFF]),
-            (&[0x89, 0x03], 4, &[0xFFD, 0xFFE, 0xFFF]),
+    fn cpl0_set_board_word_and_dword_stores_crossing_a_4k_boundary_store_both_pieces() {
+        // S4-38L4h: the set's adapter performs a store across a 4 KiB boundary (it was the typed
+        // `CrossesPage` stop). The pages here lie in one identity-mapped 2 MiB leaf, so the
+        // physical bytes are contiguous: the value is stored whole, nothing around it moves.
+        let cases: [(&[u8], &[u8], &[u64]); 2] = [
+            (&[0x66, 0x89, 0x03], &[0x5A, 0x44], &[0xFFF]),
+            (
+                &[0x89, 0x03],
+                &[0x5A, 0x44, 0x33, 0x33],
+                &[0xFFD, 0xFFE, 0xFFF],
+            ),
         ];
-        for (code, width, offsets) in cases {
+        let fetch_only = tables_after_the_fetch_alone();
+        let mut expected_tables = fetch_only.clone();
+        expected_tables[DATA_PDE_OFFSET..DATA_PDE_OFFSET + 8]
+            .copy_from_slice(&(DATA | 0x83 | 0x60).to_le_bytes());
+        for (code, stored, offsets) in cases {
             for &offset in offsets {
                 let (mut boot, state, report, _) = run_store(code, offset);
-                let fetch_only = tables_after_the_fetch_alone();
-                assert!(
-                    matches!(report.exit, PagedCpl0SetExit::Run(RunExit::MemoryError(_))),
-                    "{report:?}"
-                );
-                assert_eq!(report.instructions_executed, 0);
-                assert_eq!(
-                    report.memory_error,
-                    Some(crate::TrackedAccessError::CrossesPage {
-                        address: crate::GuestLinearAddress::new(DATA + offset),
-                        width
-                    })
-                );
-                assert_eq!(report.page_fault, None);
-                assert_eq!(state.rip, ENTRY);
-                assert_eq!(
-                    page_tables(&mut boot),
-                    fetch_only,
-                    "{code:02x?} at {offset:#x}"
-                );
+                assert_eq!(report.instructions_executed, 1, "{report:?}");
+                assert_eq!((report.page_fault, report.memory_error), (None, None));
+                assert_eq!(state.rip, ENTRY + code.len() as u64);
+                let mut window = [0u8; 0x20];
+                read(&mut boot.board, DATA + 0xFF0, &mut window).expect("read");
+                let mut expected = [0u8; 0x20];
+                let at = (offset - 0xFF0) as usize;
+                expected[at..at + stored.len()].copy_from_slice(stored);
+                assert_eq!(window, expected, "{code:02x?} at {offset:#x}");
                 assert_eq!(read_qword(&mut boot, DATA), QWORD_SEED);
-                // No partial write reached the end of the page either.
-                assert_eq!(
-                    read_qword(&mut boot, DATA + 0xFF8),
-                    0,
-                    "{code:02x?} at {offset:#x}"
-                );
-                let mut next_page = [0u8; 8];
-                read(&mut boot.board, DATA + 0x1000, &mut next_page).expect("read");
-                assert_eq!(next_page, [0u8; 8], "the next page is untouched");
+                assert_eq!(page_tables(&mut boot), expected_tables, "{code:02x?}");
             }
         }
     }
@@ -3307,6 +3297,314 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], 0xBEEF);
         assert_eq!(state.rip, ENTRY + 4);
         assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    // ---- S4-38L4h: stores across a 4 KiB page boundary through the set's board adapter ----
+
+    /// `MOV [RCX+4], RDI`, the kernel's store at 0x0543_0920.
+    const MOV_RCX4_RDI: [u8; 4] = [0x48, 0x89, 0x79, 0x04];
+    /// `MOV [RCX+4], EDI`.
+    const MOV_RCX4_EDI: [u8; 3] = [0x89, 0x79, 0x04];
+    /// `MOV [RCX+4], DI` (66 89 79 04).
+    const MOV_RCX4_DI: [u8; 4] = [0x66, 0x89, 0x79, 0x04];
+    const STORE_VALUE: u64 = 0x8877_6655_4433_2211;
+    /// The fill of both data pages around the store (it must survive the store).
+    const STORE_FILL: u8 = 0xEE;
+    /// The data pages: `SPLIT_VA + 0x1000` and `SPLIT_VA + 0x2000`.
+    const STORE_PAGE_A: u64 = SPLIT_VA + 0x1000;
+    const STORE_PAGE_B: u64 = SPLIT_VA + 0x2000;
+
+    /// The split tree with the store at the end of the code page, the first data page mapped
+    /// with `first_pte` and the second with `second_pte` (absent when `None`), both filled with
+    /// `STORE_FILL`, RDI = `STORE_VALUE` and RCX such that the store lands on `at`.
+    fn store_state(
+        boot: &mut LinuxDirectBoot,
+        code: &[u8],
+        at: u64,
+        first_pte: u64,
+        second_pte: Option<u64>,
+    ) -> LongModeState {
+        let mut state = split_code_state(boot, code, code.len(), Some(first_pte));
+        if let Some(pte) = second_pte {
+            write_phys(boot, TREE_PT + 16, &pte.to_le_bytes());
+        }
+        write_phys(boot, SPLIT_PAGE1, &[STORE_FILL; 0x1000]);
+        write_phys(boot, SPLIT_PAGE2, &[STORE_FILL; 0x1000]);
+        state.gpr[Register::Rdi as usize] = STORE_VALUE;
+        state.gpr[Register::Rcx as usize] = at - 4;
+        state
+    }
+
+    fn phys_bytes(boot: &mut LinuxDirectBoot, address: u64, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; len];
+        read(&mut boot.board, address, &mut bytes).expect("read");
+        bytes
+    }
+
+    /// What the two data pages hold: the fill with `stored` laid from `at`.
+    fn expected_store_pages(at: u64, stored: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let mut a = vec![STORE_FILL; 0x1000];
+        let mut b = vec![STORE_FILL; 0x1000];
+        for (index, byte) in stored.iter().enumerate() {
+            let linear = at + index as u64;
+            if linear < STORE_PAGE_B {
+                a[(linear - STORE_PAGE_A) as usize] = *byte;
+            } else {
+                b[(linear - STORE_PAGE_B) as usize] = *byte;
+            }
+        }
+        (a, b)
+    }
+
+    const PTE_A: u64 = 0x20;
+    const PTE_D: u64 = 0x40;
+
+    #[test]
+    fn cpl0_set_board_qword_store_across_a_page_boundary_writes_both_pages_for_every_split() {
+        let cli = CliProfile::NonPviLong64V1;
+        let bytes = STORE_VALUE.to_le_bytes();
+        for on_first in 1..8u64 {
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let at = STORE_PAGE_B - on_first;
+            let mut state = store_state(
+                &mut boot,
+                &MOV_RCX4_RDI,
+                at,
+                SPLIT_PAGE1 | 3,
+                Some(SPLIT_PAGE2 | 3),
+            );
+            let start = state.rip;
+            let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                "{on_first}: {report:?}"
+            );
+            assert_eq!(report.instructions_executed, 1, "{on_first}");
+            assert_eq!((report.page_fault, report.memory_error), (None, None));
+            assert_eq!(state.rip, start + 4);
+            // Both pages hold their part, and no byte around the store changed.
+            let (page_a, page_b) = expected_store_pages(at, &bytes);
+            assert_eq!(
+                phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000),
+                page_a,
+                "{on_first}"
+            );
+            assert_eq!(
+                phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
+                page_b,
+                "{on_first}"
+            );
+            // Accessed and dirty on the leaf of each page the store touches; the code page is
+            // accessed (fetched) and not dirty.
+            assert_eq!(read_qword(&mut boot, TREE_PT), SPLIT_PAGE0 | 3 | PTE_A);
+            assert_eq!(
+                read_qword(&mut boot, TREE_PT + 8),
+                SPLIT_PAGE1 | 3 | PTE_A | PTE_D
+            );
+            assert_eq!(
+                read_qword(&mut boot, TREE_PT + 16),
+                SPLIT_PAGE2 | 3 | PTE_A | PTE_D
+            );
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_word_and_dword_stores_across_a_page_boundary_on_the_split_tree() {
+        let cli = CliProfile::NonPviLong64V1;
+        let cases: [(&[u8], usize, &[u64]); 2] =
+            [(&MOV_RCX4_DI, 2, &[1]), (&MOV_RCX4_EDI, 4, &[1, 2, 3])];
+        for (code, width, cuts) in cases {
+            for &on_first in cuts {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let at = STORE_PAGE_B - on_first;
+                let mut state =
+                    store_state(&mut boot, code, at, SPLIT_PAGE1 | 3, Some(SPLIT_PAGE2 | 3));
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                assert_eq!(
+                    report.instructions_executed, 1,
+                    "{code:02x?} {on_first}: {report:?}"
+                );
+                assert_eq!((report.page_fault, report.memory_error), (None, None));
+                let (page_a, page_b) =
+                    expected_store_pages(at, &STORE_VALUE.to_le_bytes()[..width]);
+                assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000), page_a);
+                assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000), page_b);
+                assert_eq!(
+                    read_qword(&mut boot, TREE_PT + 8),
+                    SPLIT_PAGE1 | 3 | PTE_A | PTE_D
+                );
+                assert_eq!(
+                    read_qword(&mut boot, TREE_PT + 16),
+                    SPLIT_PAGE2 | 3 | PTE_A | PTE_D
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_store_inside_one_page_sets_dirty_only_on_that_leaf() {
+        let cli = CliProfile::NonPviLong64V1;
+        // A qword ending exactly on the page end and one in the middle: one page each, and
+        // the next (absent) page is not walked.
+        for at in [STORE_PAGE_B - 8, STORE_PAGE_A + 0x100] {
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let mut state = store_state(&mut boot, &MOV_RCX4_RDI, at, SPLIT_PAGE1 | 3, None);
+            let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+            assert_eq!(report.instructions_executed, 1, "{at:#x}: {report:?}");
+            let (page_a, page_b) = expected_store_pages(at, &STORE_VALUE.to_le_bytes());
+            assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000), page_a);
+            assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000), page_b);
+            assert_eq!(
+                read_qword(&mut boot, TREE_PT + 8),
+                SPLIT_PAGE1 | 3 | PTE_A | PTE_D
+            );
+            assert_eq!(read_qword(&mut boot, TREE_PT + 16), 0);
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_store_with_a_missing_second_page_writes_no_byte_and_faults_precisely() {
+        let cli = CliProfile::NonPviLong64V1;
+        for (code, width) in [
+            (&MOV_RCX4_RDI[..], 8u64),
+            (&MOV_RCX4_DI[..], 2),
+            (&MOV_RCX4_EDI[..], 4),
+        ] {
+            for on_first in 1..width {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let at = STORE_PAGE_B - on_first;
+                let mut state = store_state(&mut boot, code, at, SPLIT_PAGE1 | 3, None);
+                let before = state.clone();
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+                    panic!("{width} {on_first}: {report:?}");
+                };
+                // Write to a not-present page at CPL0: W = 1, P = 0; CR2 is the first byte on it.
+                assert_eq!(
+                    (fault.vector, fault.error_code, fault.linear_address),
+                    (14, Some(2), Some(STORE_PAGE_B)),
+                    "{width} {on_first}"
+                );
+                assert_eq!(report.instructions_executed, 0);
+                assert_eq!(report.memory_error, None);
+                let record = report.page_fault.expect("the walker's record");
+                assert_eq!(record.saved_rip(), before.rip);
+                assert_eq!(record.access(), od_isa::memory::AccessKind::Write);
+                assert_eq!(state, before, "{width} {on_first}: the state is unchanged");
+                // No partial store: not one byte reached the first page, nor the second.
+                assert_eq!(
+                    phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000),
+                    vec![STORE_FILL; 0x1000],
+                    "{width} {on_first}"
+                );
+                assert_eq!(
+                    phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
+                    vec![STORE_FILL; 0x1000]
+                );
+                // The walk of the first page set its accessed bit; no page is dirty.
+                assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+                assert_eq!(read_qword(&mut boot, TREE_PT + 16), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_store_to_a_read_only_second_page_is_a_present_write_fault_and_no_byte() {
+        let cli = CliProfile::NonPviLong64V1;
+        // CR0.WP is set on the board, so a supervisor write to W = 0 faults (P = 1, W = 1).
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = STORE_PAGE_B - 3;
+        let mut state = store_state(
+            &mut boot,
+            &MOV_RCX4_RDI,
+            at,
+            SPLIT_PAGE1 | 3,
+            Some(SPLIT_PAGE2 | 1),
+        );
+        let before = state.clone();
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(3), Some(STORE_PAGE_B))
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000),
+            vec![STORE_FILL; 0x1000]
+        );
+        assert_eq!(
+            phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
+            vec![STORE_FILL; 0x1000]
+        );
+        // The walk of the first page set its accessed bit (as with a missing second page); the
+        // walk of the read-only second page set its own before the write check refused it; no
+        // page is dirty.
+        assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 1 | PTE_A);
+    }
+
+    #[test]
+    fn cpl0_set_board_store_with_a_faulting_first_page_reports_the_store_address() {
+        let cli = CliProfile::NonPviLong64V1;
+        // The first data page is read-only, the second writable: the fault is on the first byte.
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = STORE_PAGE_B - 3;
+        let mut state = store_state(
+            &mut boot,
+            &MOV_RCX4_RDI,
+            at,
+            SPLIT_PAGE1 | 1,
+            Some(SPLIT_PAGE2 | 3),
+        );
+        let before = state.clone();
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(3), Some(at))
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000),
+            vec![STORE_FILL; 0x1000]
+        );
+        assert_eq!(
+            phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
+            vec![STORE_FILL; 0x1000]
+        );
+        // The second page was not walked.
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 3);
+    }
+
+    #[test]
+    fn cpl0_set_board_store_to_a_non_executable_second_page_succeeds() {
+        // NX does not restrict a write: the store completes and both leaves are dirty.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        assert_ne!(boot.board.efer() & (1 << 11), 0, "the board runs with NXE");
+        let at = STORE_PAGE_B - 4;
+        let mut state = store_state(
+            &mut boot,
+            &MOV_RCX4_RDI,
+            at,
+            SPLIT_PAGE1 | 3 | (1 << 63),
+            Some(SPLIT_PAGE2 | 3 | (1 << 63)),
+        );
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        let (page_a, page_b) = expected_store_pages(at, &STORE_VALUE.to_le_bytes());
+        assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000), page_a);
+        assert_eq!(phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000), page_b);
+        assert_eq!(
+            read_qword(&mut boot, TREE_PT + 16),
+            SPLIT_PAGE2 | 3 | (1 << 63) | PTE_A | PTE_D
+        );
     }
 
     // ---- S4-38L4g: `F3 0F BC /r` (REP BSF) as BSF through the set's facade ----
