@@ -753,7 +753,7 @@ paged profile (`PagedCpl0ProbeV1`, no CPUID/MSR) with one addition: under the Li
 `RDTSC` is executed (`step_paged_probe_with_rdtsc`, 1 us tick as in `run_boot`). `cpl` is the RPL
 of the CS selector (0 when absent) while the interpreter always runs Ring0; `rip_bytes` reads any
 region with backing (ROM and framebuffer too), byte by byte, so the window may cross a 4 KiB
-boundary that a CPU fetch never crosses. On the real kernel the first stop is `unsupported` `0x01` (`LIDT [RIP+0x17bbd]`, `0f 01 1d`) at RIP `0x206647c` with `retired` 118 and no CR3 change: the null segment loads (S2-46), the ENDBR64 and LGDT/LRETQ forms (S2-47, S2-48), the dword read and the narrow byte/word/dword stores (S4-38L3) all retire; the set does not admit `LIDT` yet (S2-49). Evidence: `docs/reports/data/stage4/s4-38l3-core.json`.
+boundary that a CPU fetch never crosses. On the real kernel the first stop with the `cpuid` member (S4-38L4) is `backend` (`paged MOV profile does not support read width`) at RIP `0x20669d7` with `retired` 162 and no CR3 change: `CMP byte [RDI+0x1EF], 0` (`80 bf ef 01 00 00 00`) is the one-byte read the paged adapter does not profile yet. Before it the null segment loads (S2-46), the ENDBR64 and LGDT/LRETQ forms (S2-47, S2-48), the narrow stores (S4-38L3), `LIDT` (S2-49) and `CPUID` 0x8000_0000 (S4-38L4) all retire. The CPUID boundary for leaves 1 and 0x8000_0001 is not reached on this run. Evidence: `docs/reports/data/stage4/s4-38l4-core.json` (earlier L3 evidence: `s4-38l3-core.json`).
 
 ### `--run --budget N --set-cpl0` (S4-38L3, S4-38L4)
 

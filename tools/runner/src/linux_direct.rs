@@ -1490,7 +1490,7 @@ mod tests {
     /// the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_lidt_after_the_narrow_stores() {
+    fn real_artifacts_stop_at_the_byte_compare_past_cpuid_0x8000_0000() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1527,19 +1527,28 @@ mod tests {
         // more instructions follow (118 in all); the next stop was `LIDT [RIP+0x17bbd]`
         // (`0f 01 1d bd 7b 01 00`) at 0x206_647c. S2-49: `LIDT` retires; the next stop was
         // `CPUID` (`0f a2`) with EAX = 0x8000_0000 at 0x206_7b0d after 138 retired instructions.
-        // S4-38L4: the set now has the `cpuid` member (DiagnosticV1), which answers leaf
-        // 0x8000_0000, so the run goes past that CPUID (more than 138 retired) and stops at the
-        // next form the set does not admit, or at the CPUID boundary (`cpuid_divergence`, before
-        // a CPUID of leaf 1 or 0x8000_0001, nothing answered in its place).
+        // S4-38L4: the set has the `cpuid` member (DiagnosticV1), which answers leaf 0x8000_0000,
+        // so the run goes past that CPUID. The first stop after it is the byte compare
+        // `CMP byte [RDI+0x1EF], 0` (`80 bf ef 01 00 00 00`) at 0x206_69d7 after 162 retired
+        // instructions: the set reads one byte and the paged adapter has no byte-read profile
+        // (`paged MOV profile does not support read width`). It is not the CPUID boundary: no
+        // `cpuid_divergence` stop happens on this kernel yet.
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
         );
-        assert!(value["retired"].as_u64().unwrap() > 138, "{value:#}");
+        assert_eq!(value["retired"], 162, "{value:#}");
+        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
+        assert_eq!(stop["rip"], "0x20669d7");
+        assert!(
+            stop["rip_bytes"]
+                .as_str()
+                .unwrap()
+                .starts_with("80 bf ef 01 00 00 00"),
+            "{value:#}"
+        );
+        assert!(stop["cpuid_divergence_leaf"].is_null(), "{value:#}");
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
-        // TODO(orchestrator): set from the real run: exit_kind, rip, rip_bytes, retired and, for
-        // a CPUID boundary stop, cpuid_divergence_leaf (the first stop past CPUID 0x8000_0000).
-        // Not guessed here: the worktree has no work/stage4 artifacts.
         assert_eq!(stop["cr3_changes"], 0);
     }
 }
