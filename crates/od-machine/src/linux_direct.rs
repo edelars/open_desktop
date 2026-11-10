@@ -3135,4 +3135,177 @@ mod tests {
         assert_eq!(record.retired, 2);
         assert_eq!(record.gpr[Register::Rax as usize], 1);
     }
+
+    // ---- S4-38L4f: 16-bit reads (`MOVZX r32, m16`) through the set's board adapter ----
+
+    /// The third page behind `SPLIT_VA + 0x2000` (not contiguous with the others).
+    const SPLIT_PAGE2: u64 = 0x0500_4000;
+    /// `MOVZX ESI, word [RCX]`.
+    const MOVZX_ESI_WORD_RCX: [u8; 3] = [0x0F, 0xB7, 0x31];
+    const MOVZX_SEED: u64 = 0xDEAD_BEEF_CAFE_F00D;
+
+    /// The split tree with the code at the end of the first page, the data page `SPLIT_VA +
+    /// 0x1000` and (when `third`) `SPLIT_VA + 0x2000` mapped with clear accessed/dirty bits,
+    /// RSI holding `MOVZX_SEED` and RCX the linear address `at`.
+    fn movzx_state(boot: &mut LinuxDirectBoot, at: u64, third: bool) -> LongModeState {
+        let mut state = split_code_state(
+            boot,
+            &MOVZX_ESI_WORD_RCX,
+            MOVZX_ESI_WORD_RCX.len(),
+            Some(SPLIT_PAGE1 | 3),
+        );
+        if third {
+            write_phys(boot, TREE_PT + 16, &(SPLIT_PAGE2 | 3).to_le_bytes());
+        }
+        state.gpr[Register::Rsi as usize] = MOVZX_SEED;
+        state.gpr[Register::Rcx as usize] = at;
+        state
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_reads_two_bytes_and_zero_extends_into_the_whole_register() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = SPLIT_VA + 0x1100;
+        let mut state = movzx_state(&mut boot, at, false);
+        // The bytes around the word differ from it: only two bytes are read.
+        write_phys(
+            &mut boot,
+            SPLIT_PAGE1 + 0x100,
+            &0x8877_6655_4433_ABCDu64.to_le_bytes(),
+        );
+        let start = state.rip;
+        let rflags = state.rflags;
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        // Bit 15 is set: MOVZX does not sign-extend, and the old upper bytes of RSI are gone.
+        assert_eq!(state.gpr[Register::Rsi as usize], 0xABCD);
+        assert_eq!(state.rip, start + 3);
+        assert_eq!(state.rflags, rflags);
+        assert_eq!(state.gpr[Register::Rcx as usize], at);
+        // The leaf got its accessed bit and no dirty bit; the data page is unchanged.
+        let pte = read_qword(&mut boot, TREE_PT + 8);
+        assert_eq!(pte, SPLIT_PAGE1 | 3 | 0x20);
+        assert_eq!(
+            read_qword(&mut boot, SPLIT_PAGE1 + 0x100),
+            0x8877_6655_4433_ABCD
+        );
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_on_the_last_two_bytes_of_a_page_is_one_translation() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = SPLIT_VA + 0x1FFE;
+        let mut state = movzx_state(&mut boot, at, false);
+        write_phys(&mut boot, SPLIT_PAGE1 + 0xFFE, &[0x34, 0x12]);
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1234);
+        // Only the page that holds the word is touched: the next (unmapped) page is not walked.
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | 0x20);
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), 0);
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_across_a_page_boundary_translates_each_byte_on_its_page() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = SPLIT_VA + 0x1FFF;
+        let mut state = movzx_state(&mut boot, at, true);
+        // The low byte ends the first data page, the high byte starts the other (and distant) one.
+        write_phys(&mut boot, SPLIT_PAGE1 + 0xFFF, &[0x34]);
+        write_phys(&mut boot, SPLIT_PAGE2, &[0x92, 0xFF]);
+        let start = state.rip;
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x9234);
+        assert_eq!(state.rip, start + 3);
+        // Both leaves are accessed, neither is dirty, and the data stays as written.
+        assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | 0x20);
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 3 | 0x20);
+        assert_eq!(read_qword(&mut boot, SPLIT_PAGE2) & 0xFFFF, 0xFF92);
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_with_a_missing_second_page_is_a_precise_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = SPLIT_VA + 0x1FFF;
+        // The page of the high byte is not present.
+        let mut state = movzx_state(&mut boot, at, false);
+        let start = state.rip;
+        let rflags = state.rflags;
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        // Not-present read at CPL0: error code 0, CR2 is the first byte on the missing page.
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0), Some(SPLIT_VA + 0x2000))
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(report.memory_error, None);
+        let record = report.page_fault.expect("the walker's record");
+        assert_eq!(record.saved_rip(), start);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Read);
+        // Nothing retired: RSI, RIP and RFLAGS are as before.
+        assert_eq!(state.gpr[Register::Rsi as usize], MOVZX_SEED);
+        assert_eq!((state.rip, state.rflags), (start, rflags));
+        // The first byte was already read and its page marked accessed (never dirty).
+        assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | 0x20);
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_from_an_unmapped_page_is_the_exact_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xFC, 0x0F, 0xB7, 0x03]);
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x77;
+        state.gpr[Register::Rbx as usize] = 256 * MIB;
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0), Some(256 * MIB))
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(
+            (state.rip, state.gpr[Register::Rax as usize]),
+            (ENTRY + 1, 0x77)
+        );
+    }
+
+    #[test]
+    fn cpl0_set_board_movzx_word_on_the_identity_mapped_ram_reads_the_word() {
+        let cli = CliProfile::NonPviLong64V1;
+        // MOVZX EAX, word [RBX + 2] (0F B7 43 02): the word is the last two bytes of a 4 KiB
+        // page of the identity-mapped 2 MiB leaf.
+        let (mut boot, _) = boot_with_entry(&[0x0F, 0xB7, 0x43, 0x02]);
+        write_phys(&mut boot, DATA + 0xFFE, &[0xEF, 0xBE, 0xAD, 0xDE]);
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = u64::MAX;
+        state.gpr[Register::Rbx as usize] = DATA + 0xFFC;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rax as usize], 0xBEEF);
+        assert_eq!(state.rip, ENTRY + 4);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
 }

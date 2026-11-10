@@ -20594,6 +20594,40 @@ CR2 = линейный адрес первого байта на этой стр
 `cpl0_set_board_a_missing_second_page_is_the_precise_fetch_page_fault`,
 `paged_memory_adapter::tests::page_crossing_fetch_belongs_to_the_cpl0_set_adapter_alone`.
 
+### 16-битное чтение `MOVZX r32, m16` в наборе (S4-38L4f)
+
+Адаптер набора CPL0 на плате Linux (`run_cpl0_set_paged_2m_ram`) читает слово (2 байта) — флаг
+`cpl0_set_word_read`, рядом с `cpl0_set_byte_read` и `cpl0_set_dword_read`. До среза любое чтение
+шириной 2 в адаптере набора было `Unsupported "read width"` (настоящее ядро остановилось на `0F B7 31`,
+`MOVZX r32, word [rcx]`, RIP `0x543_2a44`, retired 336587). Декодер и исполнитель `0F B7` не менялись
+(`Operation::Extend`, `signed = false`, не зависит от набора): результат — 16-битное значение, нулевое
+расширение до 32 бит (верхняя половина RAX/r32 обнуляется, как у любой записи 32-битного регистра), с
+`REX.W` — до 64 бит; RFLAGS (значение и определённость) не меняются; RIP += длина, retired += 1.
+Регистровая форма `0F B7 C1` (`MOVZX EAX, CX`) исполняется без чтения. `LOCK`, `66`, `F3` — `Unsupported
+{ opcode: 0xb7 }` без изменения состояния (как раньше).
+
+**Чтение.** Одно `access(Read, Word)`: A-бит на листе, D не ставится, данные не пишутся.
+
+**Через границу 4 KiB.** Слово на последнем байте страницы (смещение `0xfff`) читается корректно, а не
+отказом: два однобайтовых чтения, каждое со своей трансляцией (как у выборки через границу, S4-38L4e),
+A-бит у каждой из страниц. Отсутствующая вторая страница — точный `#PF` на данные: CR2 = первый байт на
+ней, код ошибки без I/D (P по наличию, W/U по CPL), сохранённый RIP — адрес инструкции; регистры, RIP,
+RFLAGS и retired не меняются, буфер результата не меняется; уже поставленный A-бит первой страницы
+остаётся (как у любого отказа по ходу доступа). Слово, целиком лежащее на странице (включая последние
+два байта), — один доступ. Лист 2 MiB, перекрывающий оба байта, транслируется дважды тем же листом.
+
+**Область.** Только адаптер набора (`cpl0_set_word_read`, `true` лишь в конструкторе платы
+`run_cpl0_set_paged_2m_ram_with_cpuid_boundary`; во всех остальных 9 конструкторах `PagedMovMemoryAdapter`
+и в тестовом помощнике — `false`). Профиль чтения слова (`word_read_profile`, `step_paged_mov_word_read`)
+и остальные профили сохраняют свои ширины и сообщение `read width`; `dword`-чтение через границу
+в наборе остаётся типизированным `CrossesPage`. Остальное чтение слова из набора (например `CMP word`
+или `MOV r16, m16`, если декодер их допустит) идёт тем же путём.
+
+Тесты: `cpl0_profile_set::movzx_*`; `linux_direct::tests::cpl0_set_board_movzx_word_*`;
+`paged_memory_adapter::tests::word_reads_belong_to_the_cpl0_set_adapter_alone`,
+`cpl0_set_adapter_reads_one_word_with_the_ordinary_read_ad_rules`,
+`cpl0_set_adapter_reads_the_last_word_of_a_page_and_splits_a_crossing_word`.
+
 ### LRETQ на CPL0 в наборе (S2-47b)
 
 Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/

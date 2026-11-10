@@ -83,6 +83,7 @@ pub fn step_paged_invlpg(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -202,6 +203,7 @@ fn step_paged_state_op(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -270,6 +272,7 @@ pub fn with_paged_mov_memory<R>(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -325,6 +328,7 @@ pub fn step_paged_mov(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -379,6 +383,7 @@ pub fn step_paged_mov_2m_ram(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -632,6 +637,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             dword_write_profile: false,
             cpl0_set_dword_read: true,
             cpl0_set_byte_read: true,
+            cpl0_set_word_read: true,
             cpl0_set_narrow_write: true,
             cpl0_set_cross_page_fetch: true,
         };
@@ -776,6 +782,7 @@ pub fn step_paged_mov_word_read(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -850,6 +857,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -906,6 +914,7 @@ pub fn step_paged_mov_dword_read(
         dword_write_profile: false,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -971,6 +980,7 @@ pub fn step_paged_mov_dword_store(
         dword_write_profile: true,
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
+        cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
     };
@@ -1069,6 +1079,13 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// `CMP byte [mem], imm8`, any other byte-reading form the set admits uses the same read).
     /// The shared profiles keep their read widths. Reads never cross a page for one byte.
     cpl0_set_byte_read: bool,
+    /// S4-38L4f: the CPL0 profile set's adapter alone reads one word (`MOVZX r32, m16`, and any
+    /// other word-reading form the set admits). The word-read probe profile
+    /// (`word_read_profile`) and every shared profile keep their own read widths. A word on the
+    /// last byte of a 4 KiB page is read as two one-byte accesses, each translated on its own
+    /// (accessed bit per page, no dirty bit); a missing second page is a precise data `#PF` at
+    /// the first byte on it. Accessed bits set by the first byte stay set after that fault.
+    cpl0_set_word_read: bool,
     /// S4-38L3: the CPL0 profile set also stores bytes, words and dwords
     /// (`MOV m8, r8`, `MOV m16, r16`, `MOV m32, r32`), next to its qword stores. Each store
     /// writes exactly its own width (no read-modify-write of the surrounding qword). The
@@ -1233,7 +1250,7 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
     ) -> Result<(), MemoryError> {
         let width = match destination.len() {
             1 if self.cpl0_set_byte_read => crate::AccessWidth::Byte,
-            2 if self.word_read_profile => crate::AccessWidth::Word,
+            2 if self.word_read_profile || self.cpl0_set_word_read => crate::AccessWidth::Word,
             4 if self.dword_read_profile || self.cpl0_set_dword_read => crate::AccessWidth::Dword,
             8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
             _ => return Err(Self::unsupported("read width")),
@@ -1244,7 +1261,30 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         {
             return Err(Self::unsupported("cross-page qword read"));
         }
-        let value = if !self.large_ram_profile
+        let value = if width == crate::AccessWidth::Word
+            && self.cpl0_set_word_read
+            && !self.word_read_profile
+            && self.large_ram_profile
+            && address & 0xfff == 0xfff
+        {
+            // S4-38L4f: a word on the last byte of a page, one translation per byte.
+            let mut bytes = [0u8; 2];
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                let byte_address = address.wrapping_add(index as u64);
+                let access = self.access(
+                    byte_address,
+                    context,
+                    RamAccessOperation::Read {
+                        width: crate::AccessWidth::Byte,
+                    },
+                )?;
+                match access {
+                    TrackedAccessOutcome::Read(value) => *byte = value as u8,
+                    _ => return Err(Self::unsupported("non-read result")),
+                }
+            }
+            u64::from(u16::from_le_bytes(bytes))
+        } else if !self.large_ram_profile
             && (self.dword_read_profile
                 || self.word_read_profile
                 || (address & 0xfff) + u64::from(width.bytes()) > 4096)
@@ -1419,6 +1459,7 @@ mod tests {
             dword_write_profile: false,
             cpl0_set_dword_read: false,
             cpl0_set_byte_read: false,
+            cpl0_set_word_read: false,
             cpl0_set_narrow_write: false,
             cpl0_set_cross_page_fetch: false,
         }
@@ -1866,6 +1907,146 @@ mod tests {
             .unwrap();
         assert_eq!(destination, [0x5c]);
         assert_eq!(memory.page_fault, None);
+    }
+
+    #[test]
+    fn word_reads_belong_to_the_cpl0_set_adapter_alone() {
+        // Without the flag every shared profile keeps refusing a two-byte read.
+        let mut bus = bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        let mut destination = [0x77; 2];
+        let error = memory.read(DATA_LINEAR, context(), &mut destination);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{error:?}"
+        );
+        assert_eq!(destination, [0x77; 2]);
+        assert_eq!(memory.page_fault, None);
+        // The large-RAM profile and the byte/dword flags do not admit a word either.
+        memory.large_ram_profile = true;
+        memory.cpl0_set_byte_read = true;
+        memory.cpl0_set_dword_read = true;
+        assert!(memory.read(DATA_LINEAR, context(), &mut [0; 2]).is_err());
+        memory.dword_read_profile = true;
+        assert!(memory.read(DATA_LINEAR, context(), &mut [0; 2]).is_err());
+        // The public (probe) adapter refuses it too.
+        let mut bus = self::bus(0x9007);
+        let scope = with_paged_mov_memory(
+            &mut bus,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            0x0040_0000,
+            |memory| memory.read(DATA_LINEAR, context(), &mut [0; 2]),
+        );
+        assert!(
+            matches!(&scope.callback_result, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{:?}",
+            scope.callback_result
+        );
+        // The word-read probe profile keeps working on its own flag, with no set flag.
+        let mut bus = self::bus(0x9007);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.word_read_profile = true;
+        let mut destination = [0; 2];
+        memory
+            .read(DATA_LINEAR, context(), &mut destination)
+            .unwrap();
+        assert_eq!(destination, [0x44, 0x33]);
+        // The set's adapter still refuses widths it does not admit (3 bytes).
+        let mut bus = self::bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_word_read = true;
+        let error = memory.read(DATA_LINEAR, context(), &mut [0; 3]);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn cpl0_set_adapter_reads_one_word_with_the_ordinary_read_ad_rules() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callbacks = Vec::new();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.large_ram_profile = true;
+        memory.cpl0_set_word_read = true;
+        for (offset, expected) in [(0u64, [0x44u8, 0x33]), (1, [0x33, 0x22]), (6, [0xbb, 0xaa])] {
+            let mut destination = [0; 2];
+            memory
+                .read(DATA_LINEAR + offset, context(), &mut destination)
+                .unwrap();
+            assert_eq!(destination, expected);
+        }
+        drop(memory);
+        drop(callback);
+        // A read sets Accessed on the leaf PTE and never Dirty; the data page is untouched.
+        let pte = bus
+            .read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(pte, 0x9027);
+        let data = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(data, 0xaabb_ccdd_1122_3344);
+        assert!(
+            callbacks
+                .iter()
+                .all(|range| range.start().get() < 0x9000 && range.len() == 8),
+            "{callbacks:?}"
+        );
+    }
+
+    #[test]
+    fn cpl0_set_adapter_reads_the_last_word_of_a_page_and_splits_a_crossing_word() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x9ff8, 0x5c5d_0000_0000_0000);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.large_ram_profile = true;
+        memory.cpl0_set_word_read = true;
+        let mut destination = [0; 2];
+        memory
+            .read(DATA_LINEAR + 0xffe, context(), &mut destination)
+            .unwrap();
+        assert_eq!(destination, [0x5d, 0x5c]);
+        assert_eq!(memory.page_fault, None);
+        // The word on the last byte: the page of its second byte is not mapped here, so the
+        // read is a data `#PF` at the first byte of that page (not a backend error), and the
+        // caller's buffer is unchanged.
+        let mut destination = [0x77; 2];
+        let error = memory.read(DATA_LINEAR + 0xfff, context(), &mut destination);
+        assert!(
+            matches!(error, Err(MemoryError::Architectural(_))),
+            "{error:?}"
+        );
+        assert_eq!(destination, [0x77; 2]);
+        assert_eq!(memory.memory_error, None);
+        let record = memory.page_fault.take().expect("data fault");
+        assert_eq!(record.fault().linear_address, Some(DATA_LINEAR + 0x1000));
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(record.saved_rip(), 0x0040_0000);
+        // Without the flag the shared large-RAM walk keeps the typed `CrossesPage` refusal for
+        // every width the profile reads across the boundary.
+        let mut bus = self::bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.large_ram_profile = true;
+        memory.cpl0_set_dword_read = true;
+        let mut destination = [0x77; 4];
+        assert!(
+            memory
+                .read(DATA_LINEAR + 0xffe, context(), &mut destination)
+                .is_err()
+        );
+        assert!(matches!(
+            memory.memory_error,
+            Some(TrackedAccessError::CrossesPage { .. })
+        ));
     }
 
     // ---- S4-38L3: the exits of the CPL0 set loop (`handle_set_exit`) ----

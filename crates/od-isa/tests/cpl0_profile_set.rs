@@ -4139,3 +4139,202 @@ fn popfq_restores_if_from_a_saved_flags_value() {
     assert_eq!(state.rflags, 0x246);
     assert_eq!(state.rip, RIP + 2);
 }
+
+// ---- S4-38L4f: `MOVZX r32, r/m16` (`0F B7 /r`) in the set ----
+
+const MOVZX_SEED: u64 = 0xdead_beef_cafe_f00d;
+
+/// `code` at `RIP`; the RAM window holds `0x8877_6655_4433_abcd` at `RAM_BASE + 0x100`.
+/// RCX points there, RSP is `STACK`, RAX and RSI hold `MOVZX_SEED`.
+fn movzx_state(code: &[u8]) -> (LongModeState, LretqMemory) {
+    let mut state = endbr_state();
+    state.gpr[Register::Rax as usize] = MOVZX_SEED;
+    state.gpr[Register::Rsi as usize] = MOVZX_SEED;
+    state.gpr[Register::Rcx as usize] = RAM_BASE + 0x100;
+    state.gpr[Register::Rsp as usize] = STACK;
+    let mut memory = LretqMemory::new(code);
+    memory.put(RAM_BASE + 0x100, 0x8877_6655_4433_abcd);
+    memory.put(STACK, 0x1122_3344_5566_f234);
+    (state, memory)
+}
+
+fn run_movzx(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    let defined = 0x1 | 0x40;
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        defined,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn movzx_r32_m16_reads_one_word_and_zero_extends_into_the_whole_register() {
+    // (code, destination register, expected value, address of the word)
+    let cases: [(&[u8], Register, u64, u64); 5] = [
+        (&[0x0f, 0xb7, 0x31], Register::Rsi, 0xabcd, RAM_BASE + 0x100),
+        (&[0x0f, 0xb7, 0x04, 0x24], Register::Rax, 0xf234, STACK),
+        (
+            &[0x0f, 0xb7, 0x41, 0x02],
+            Register::Rax,
+            0x4433,
+            RAM_BASE + 0x102,
+        ),
+        (
+            &[0x0f, 0xb7, 0x81, 0x04, 0x00, 0x00, 0x00],
+            Register::Rax,
+            0x6655,
+            RAM_BASE + 0x104,
+        ),
+        // A 67 prefix only narrows the address (ECX).
+        (
+            &[0x67, 0x0f, 0xb7, 0x31],
+            Register::Rsi,
+            0xabcd,
+            RAM_BASE + 0x100,
+        ),
+    ];
+    for (code, destination, expected, address) in cases {
+        let (mut state, mut memory) = movzx_state(code);
+        let mut after = state.clone();
+        let result = run_movzx(&mut state, &mut memory, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        // Bit 15 of 0xf234 is set: no sign extension; the old upper bytes are gone.
+        after.gpr[destination as usize] = expected;
+        after.rip += code.len() as u64;
+        assert_eq!(state, after, "{code:02x?}");
+        // Flags and their definedness are untouched.
+        assert_eq!(result.rflags_defined, 0x1 | 0x40, "{code:02x?}");
+        // Exactly one two-byte read at the operand address, and no write.
+        assert_eq!(
+            memory.reads,
+            [(address, 2, AccessOrigin::Explicit)],
+            "{code:02x?}"
+        );
+        assert_eq!(memory.writes, 0, "{code:02x?}");
+    }
+}
+
+#[test]
+fn movzx_r32_r16_register_form_executes_without_a_read() {
+    // `0F B7 C1`: MOVZX EAX, CX.
+    let (mut state, mut memory) = movzx_state(&[0x0f, 0xb7, 0xc1]);
+    state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_8001;
+    let mut after = state.clone();
+    let result = run_movzx(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    after.gpr[Register::Rax as usize] = 0x8001;
+    after.rip += 3;
+    assert_eq!(state, after);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn movzx_r64_m16_with_rex_w_zero_extends_to_64_bits() {
+    let (mut state, mut memory) = movzx_state(&[0x48, 0x0f, 0xb7, 0x31]);
+    let mut after = state.clone();
+    let result = run_movzx(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    after.gpr[Register::Rsi as usize] = 0xabcd;
+    after.rip += 4;
+    assert_eq!(state, after);
+    assert_eq!(
+        memory.reads,
+        [(RAM_BASE + 0x100, 2, AccessOrigin::Explicit)]
+    );
+}
+
+#[test]
+fn movzx_r32_m16_then_the_next_instruction_continues_at_the_decoded_length() {
+    // MOVZX ESI, word [RCX] ; MOV RAX, RSI
+    let (mut state, mut memory) = movzx_state(&[0x0f, 0xb7, 0x31, 0x48, 0x89, 0xf0]);
+    let result = run_movzx(&mut state, &mut memory, 2);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xabcd);
+    assert_eq!(state.rip, RIP + 6);
+}
+
+#[test]
+fn movzx_r32_m16_page_fault_leaves_the_state_unchanged() {
+    let (mut state, mut memory) = movzx_state(&[0x0f, 0xb7, 0x31]);
+    memory.fault_pages.push((RAM_BASE + 0x100) & !0xfff);
+    let before = state.clone();
+    let result = run_movzx(&mut state, &mut memory, 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(RAM_BASE + 0x100),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn movzx_r32_m16_lookalikes_keep_their_classification_in_the_set() {
+    for code in [
+        &[0xf0u8, 0x0f, 0xb7, 0x31][..], // LOCK
+        &[0x66, 0x0f, 0xb7, 0x31],       // 66: the 16->16 form does not exist
+        &[0xf3, 0x0f, 0xb7, 0x31],       // REP
+    ] {
+        let (mut state, mut memory) = movzx_state(code);
+        let before = state.clone();
+        let result = run_movzx(&mut state, &mut memory, 1);
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert_eq!(memory.writes, 0, "{code:02x?}");
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xb7 });
+    }
+}
+
+#[test]
+fn movzx_r32_m16_in_the_plain_entry_is_the_same_instruction_and_the_set_adds_no_admission() {
+    // The decoder and the executor of `0F B7` are not gated by the set (S4-38L4f changes none
+    // of them): the plain entry executes the same bytes the same way. What the set's board
+    // adapter adds is the two-byte read width, which lives in the memory backend.
+    let (mut state, mut memory) = movzx_state(&[0x0f, 0xb7, 0x31]);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let mut after = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    after.gpr[Register::Rsi as usize] = 0xabcd;
+    after.rip += 3;
+    assert_eq!(state, after);
+    assert_eq!(
+        memory.reads,
+        [(RAM_BASE + 0x100, 2, AccessOrigin::Explicit)]
+    );
+}
