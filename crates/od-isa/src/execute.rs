@@ -35024,6 +35024,12 @@ fn step_configured(
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.prefixes == Prefixes::default()
         }
+        // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
+        Operation::FarReturn => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
         Operation::Call { .. } | Operation::Return { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && (instruction.prefixes == Prefixes::default()
@@ -49006,6 +49012,15 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
+        Operation::FarReturn => {
+            return match far_return_cpl0(state, memory, context) {
+                Ok(true) => Ok(StepOutcome::Branched),
+                Ok(false) => Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                }),
+                Err(error) => report_memory_error(error),
+            };
+        }
         Operation::IndirectJump { operand } => {
             let target = match read_operand(state, memory, context, next_rip, operand) {
                 Ok(value) => value,
@@ -51156,6 +51171,109 @@ fn verify_writable_gdt_selector(
     };
     let rpl = (selector & 3) as u8;
     Ok(!system && !executable && writable && cpl <= dpl && rpl <= dpl)
+}
+
+/// `LRETQ` (`48 CB`) inside the CPL0 profile set (S2-47b): pops RIP and CS, loads CS from
+/// the GDT and returns to the same privilege level (RPL = CPL = 0).
+///
+/// Returns `Ok(true)` after committing RIP, CS (selector and cache) and `RSP + 16`,
+/// `Ok(false)` for a legal return that the set does not model (nothing is changed), and an
+/// error for a guest fault or a memory error (nothing is changed either). The new CS is read
+/// from the GDT, never from the cached CS; the only write is the accessed bit of the
+/// descriptor when it is clear.
+fn far_return_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<bool, MemoryError> {
+    let Some(gdtr) = state.gdtr else {
+        return Ok(false);
+    };
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    // Two qword pops; each is validated (#SS(0) for a non-canonical address) and read
+    // separately so that adapters limited to qword/dword widths serve them.
+    let rip_address = stack_access_address(old_rsp, false, OperandSize::Qword)?;
+    let target = memory.read_integer(rip_address, context, OperandSize::Qword)?;
+    let cs_address = stack_access_address(old_rsp.wrapping_add(8), false, OperandSize::Qword)?;
+    let selector = memory.read_integer(cs_address, context, OperandSize::Qword)? as u16;
+
+    // A null selector is #GP(0) (SDM Vol.2 RET).
+    if selector & 0xfffc == 0 {
+        return Err(general_protection());
+    }
+    // LDT descriptors and inter-privilege returns (RPL > CPL) are not modeled.
+    if selector & 4 != 0 || selector & 3 != 0 {
+        return Ok(false);
+    }
+    let offset = u64::from(selector & !7);
+    if offset + 7 > u64::from(gdtr.limit) {
+        return Err(selector_fault(13, selector));
+    }
+    let address = gdtr
+        .base
+        .checked_add(offset)
+        .ok_or_else(|| selector_fault(13, selector))?;
+    let last = address
+        .checked_add(7)
+        .ok_or_else(|| selector_fault(13, selector))?;
+    if !canonical(address) || !canonical(last) {
+        return Err(selector_fault(13, selector));
+    }
+    let raw = memory
+        .read_integer(address, context.descriptor_table(), OperandSize::Qword)?
+        .to_le_bytes();
+    let access = raw[5];
+    let flags = raw[6] >> 4;
+    // Not a code segment (data or system): #GP(selector).
+    if access & 0x10 == 0 || access & 0x08 == 0 {
+        return Err(selector_fault(13, selector));
+    }
+    // Same-level return: the descriptor DPL must equal RPL = 0 (conforming code needs
+    // DPL <= RPL, which is the same condition at RPL = 0).
+    if (access >> 5) & 3 != 0 {
+        return Err(selector_fault(13, selector));
+    }
+    if access & 0x80 == 0 {
+        return Err(selector_fault(11, selector));
+    }
+    // L = 1 with D = 1 is reserved in long mode: #GP(selector).
+    if flags & 0x2 != 0 && flags & 0x4 != 0 {
+        return Err(selector_fault(13, selector));
+    }
+    // A compatibility-mode CS (L = 0) is a legal target but switches the instruction mode,
+    // which the set does not model.
+    if flags & 0x2 == 0 {
+        return Ok(false);
+    }
+    if !canonical(target) {
+        return Err(general_protection());
+    }
+    // A CS load sets the descriptor's accessed bit in the GDT when it is clear (SDM Vol.3
+    // §3.4.5.1). The board adapter writes only whole qwords, so the descriptor is written
+    // back as one qword with bit 40 set. This is the only memory write of the instruction;
+    // a failure here leaves the CPU state untouched.
+    if access & 0x01 == 0 {
+        let mut accessed = raw;
+        accessed[5] |= 0x01;
+        memory.write_integer(
+            address,
+            context.descriptor_table(),
+            OperandSize::Qword,
+            u64::from_le_bytes(accessed),
+        )?;
+    }
+    let access = access | 0x01;
+
+    state.rip = target;
+    state.cs_selector = Some(selector);
+    state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access,
+        flags,
+    });
+    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(16);
+    Ok(true)
 }
 
 fn selector_fault(vector: u8, selector: u16) -> MemoryError {

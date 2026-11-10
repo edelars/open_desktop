@@ -20247,7 +20247,7 @@ qword-only. Настоящее ядро после этого удаляет 22 
 
 **Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
 `MOV SS`/`MOV FS`/`MOV GS` с ненулевым селектором (нулевая загрузка — S2-46, ниже); `LGDT m` входит
-(S2-47a, ниже), LIDT и LRETQ — нет; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
+(S2-47a, ниже) и `LRETQ` (S2-47b, ниже) входят, LIDT — нет; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
 (TZCNT/BSF по BMI1); WRMSR GS_BASE и набор MSR (в v1 один профиль); INVLPG; переключение
 CR0.WP; FP/SIMD при EM/TS/OSFXSR.
 
@@ -20316,6 +20316,44 @@ LGDT); `LOCK LGDT m` — `#UD` после полной выборки кодир
 `[RBP+disp8]` (`0F 01 55 ib`); остальные формы и `LOCK` дают тот же `Unsupported`, что до S2-47a.
 На настоящем ядре через набор `LGDT [RAX]` (RIP `0x100_0257`) удаляется и ещё четыре инструкции
 (retired 26); следующий стоп — `LRETQ` (`48 CB`, RIP `0x100_0264`, `Unsupported { opcode: 0xcb }`).
-Запись в GDT, перезагрузка CS (`LRETQ`, S2-47b) и LIDT в общих формах не входят. Тесты:
+Запись в GDT и LIDT в общих формах не входят; перезагрузка CS (`LRETQ`) — S2-47b, ниже. Тесты:
 `crates/od-isa/tests/cpl0_profile_set.rs` (12 тестов `lgdt_*`/`lock_lgdt_*`), декодер —
 `long_decode::tests::lgdt_decodes_general_memory_forms_and_lock_after_full_fetch`.
+
+### LRETQ на CPL0 в наборе (S2-47b)
+
+Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/
+сегментным/`LOCK` — `Unsupported { opcode: 0xcb }`) в Long64 на CPL0. Вне набора (`run`/`step`,
+одиночные профили, JIT) поведение прежнее: `Unsupported { opcode: 0xcb }`; отдельный строгий профиль
+`LretqProfile` (S2-27l) не менялся. Два qword со стека: RIP, затем CS (берутся младшие 16 бит), без
+записи в стек; каждое чтение проверяется отдельно (`#SS(0)` для неканонического адреса, `#PF` и
+классификации адаптера — как у MOV-чтения). Дескриптор читается qword-чтением из GDT по
+`gdtr.base + (sel & ~7)` (происхождение доступа — таблица дескрипторов), а не берётся из кэша CS.
+
+**Проверки (порядок).** null-селектор (`sel & 0xfffc == 0`) — `#GP(0)`; `sel` вне `gdtr.limit`
+(`offset + 7 > limit`) или неканонический адрес дескриптора — `#GP(sel)`; не code-сегмент (S=0 или
+не исполняемый) — `#GP(sel)`; DPL != 0 (RPL = CPL = 0; для conforming условие `DPL <= RPL` то же) —
+`#GP(sel)`; P=0 — `#NP(sel)`; L=1 и D=1 — `#GP(sel)`; неканонический RIP — `#GP(0)`. Код ошибки —
+`sel & 0xfffc`. Любой отказ, включая `#PF`, не меняет RIP, RSP, CS и retired.
+
+**Что не моделируется (`Unsupported { opcode: 0xcb }`, без изменений).** RPL > 0 (межуровневый
+возврат на CPL3, смена стека), селектор с TI=1 (LDT), CS с L=0 (режим совместимости — законная цель,
+но смена режима инструкций набором не моделируется), GDTR не смоделирован. Не входят IRETQ, `RETF`
+с 32-битными селекторами (`CB` без REX.W) и `RETF imm16`.
+
+**Результат.** CS = `sel`, кэш CS = (base 0, limit `0xFFFF_FFFF`, access/flags из дескриптора),
+RIP со стека, RSP += 16, RFLAGS и IF не меняются, retired += 1. Если бит accessed у дескриптора
+сброшен (ядро Linux: `0x00af9a000000ffff` в `startup_gdt`), загрузка CS записывает его в GDT (SDM
+Vol.3 §3.4.5.1); плата пишет только целыми qword, поэтому дескриптор пишется назад одним qword-
+доступом (таблица дескрипторов) с битом 40, и это единственная запись инструкции; ошибка записи
+(`#PF`) — точная запись без изменения состояния, а проверки, ведущие к `#GP`/`#NP`/`Unsupported`,
+выполняются до записи. **Источники:** порядок и коды ошибок восстановлены по Intel SDM Vol.2 `RET`
+(far return, 64-bit) и Vol.3 §3.4.5.1, §5.8; текст SDM/APM в этой среде не сверялся, взаимный порядок
+`#NP` и `#GP` по L/D в источниках, доступных автору, не зафиксирован (выбран P раньше L/D).
+
+На настоящем ядре через набор `LRETQ` (RIP `0x100_0264`, CS `0x10`, дескриптор с A=0) удаляется,
+затем `mov r15, rsi` и `call 0x2066410` (retired 29); следующий стоп — `ENDBR64` (`F3 0F 1E FA`,
+`Unsupported { opcode: 0x1e }`, RIP `0x2066410`). Тесты: `crates/od-isa/tests/cpl0_profile_set.rs`
+(14 тестов `lretq_*`), декодер — `long_decode::tests::lretq_decodes_only_the_exact_rex_w_form`,
+плата — `linux_direct::tests::real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set`
+(`--ignored`).
