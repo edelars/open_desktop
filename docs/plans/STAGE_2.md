@@ -20697,3 +20697,14 @@ immediate, memory, or LOCK coverage and does not close S2-15c or parent S2-42.
 See the [protocol](../testing/S2_42AF_BITOPS_QWORD_REGISTER_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42af--qword-register-bt-family-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42af-qword-register-bt-family-corpus).
+
+### S2-45. Комбинированный вход CPU-профилей для Linux CPL0 (блокер S4-38L3)
+
+- [ ] Принято после ревью.
+- **Где:** `od-isa` (`execute.rs`, профили и публичные входы), `CPU_CONTRACT.md`, `od-machine` адаптер (только вызов).
+- **Зачем:** S4-38L3 (вариант B, решение пользователя) требует исполнять ядро единым интерпретатором с набором профилей. Сейчас публичные входы (`run_with_cli_profile`, `run_with_cr0_profile`, `run_with_cr4_profile`, …) принимают ровно один профиль за вызов; `run_configured` приватный. Состояние с `cr0`/`cr4 = Some` без соответствующего профиля даёт `Unsupported{0x0f}` при retired 0, поэтому CLI на плате с `CR0 = 0x8001_0033`, `CR4 = 0x20` не исполняется.
+- **Сделать:** публичный комбинированный вход (набор профилей CPUID, MSR, CLI, STI, HLT, RDTSC, CR0/CR3/CR4 с политикой reserved-битов) или профиль «Linux CPL0 v1», собирающий принятые формы. Состояние с `cr0`/`cr4 = Some` должно работать вместе с CLI. Контракт значений CR0/CR4, которые пишет Linux (включая MOV CR4 с PGE).
+- **Проверка:** на синтетике — CLI + MOV CR0/CR4 вместе в одном вызове; прежние профили дают те же результаты (регрессии); CR0/CR4 вне политики — точный отказ.
+- **Готово:** комбинированный вход принят ревью, старые публичные входы не меняют поведения, S4-38L3 может быть сделан поверх него.
+- **Блокирует:** S4-38L3 и далее (S4-38L4–L10). Формы из S4-38L2 (`8E D0` MOV SS absent, `8E E0/E8` MOV FS/GS partial, `0F 01 10` LGDT [RAX] partial, MOV CR4 partial, POPFQ CPL0 partial, `C9` LEAVE absent) — отдельные задачи этого же этапа с ревью.
+
