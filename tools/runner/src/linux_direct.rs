@@ -1442,12 +1442,14 @@ mod tests {
     }
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
-    /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR and `LRETQ` (S2-47b)
-    /// reloads CS and `ENDBR64` (S2-48) is a NOP; the stop is a byte store the adapter refuses. The evidence file of the slice comes
+    /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR, `LRETQ` (S2-47b)
+    /// reloads CS and `ENDBR64` (S2-48) is a NOP; the adapter's byte, word and dword stores let
+    /// the byte store `MOV [RAX], SIL` retire, and the stop is `LIDT [RIP+0x17bbd]` (`0f 01 1d`)
+    /// at RIP 0x206_647c after 118 retired instructions. The evidence file of the slice comes
     /// from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set() {
+    fn real_artifacts_stop_at_lidt_after_the_narrow_stores() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1480,17 +1482,20 @@ mod tests {
         // runs `ENDBR64` as a NOP (no CET_IBT) and 20 more instructions retire (50 in all); the
         // next stop is the byte store `MOV [RAX], SIL` (`40 88 30`) at 0x206_3a80, which the
         // board's paged adapter refuses (`paged MOV profile does not support non-qword writes`).
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert!(stop["unsupported_opcode"].is_null());
-        assert_eq!(stop["rip"], "0x2063a80");
-        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("40 88 30"));
+        // S4-38L3: the adapter's byte, word and dword stores let `MOV [RAX], SIL` retire and 67
+        // more instructions follow (118 in all); the next stop is `LIDT [RIP+0x17bbd]`
+        // (`0f 01 1d bd 7b 01 00`, opcode 0x01) at 0x206_647c, which the set does not admit.
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x01");
+        assert_eq!(stop["rip"], "0x206647c");
         assert!(
-            stop["exit_detail"]
+            stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .contains("paged MOV profile does not support non-qword writes")
+                .starts_with("0f 01 1d bd 7b 01 00")
         );
-        assert_eq!(value["retired"], 50);
+        assert_eq!(stop["exit_detail"], "Unsupported { opcode: 1 }");
+        assert_eq!(value["retired"], 118);
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
     }
