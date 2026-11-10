@@ -1822,16 +1822,57 @@ impl ControlRegisterPolicy {
 pub struct Cpl0ProfileSet<'a> {
     policy: ControlRegisterPolicy,
     cli: Option<&'a crate::CliProfile>,
+    cpuid: Option<&'a CpuidProfile>,
+    rdtsc: bool,
+    msr: Option<&'a MsrProfile>,
+    halt: Option<&'a crate::HaltProfile>,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
     pub const fn new(policy: ControlRegisterPolicy) -> Self {
-        Self { policy, cli: None }
+        Self {
+            policy,
+            cli: None,
+            cpuid: None,
+            rdtsc: false,
+            msr: None,
+            halt: None,
+        }
     }
 
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
     pub const fn with_cli(mut self, profile: &'a crate::CliProfile) -> Self {
         self.cli = Some(profile);
+        self
+    }
+
+    /// Admit CPUID under the selected profile, exactly as
+    /// [`run_with_cpuid_profile`] does.
+    pub const fn with_cpuid(mut self, profile: &'a CpuidProfile) -> Self {
+        self.cpuid = Some(profile);
+        self
+    }
+
+    /// Admit the exact bare RDTSC form. The value comes from the
+    /// `rdtsc_source` passed to [`run_with_cpl0_profile_set`]; without a
+    /// source RDTSC stays `Unsupported`. CR4.TSD is taken from the admitted
+    /// CR4, which the policy keeps at zero.
+    pub const fn with_rdtsc(mut self) -> Self {
+        self.rdtsc = true;
+        self
+    }
+
+    /// Admit RDMSR/WRMSR under exactly one MSR profile. A later call replaces
+    /// the earlier profile.
+    pub const fn with_msr(mut self, profile: &'a MsrProfile) -> Self {
+        self.msr = Some(profile);
+        self
+    }
+
+    /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
+    /// STI stays outside the set (ISSUE-069), so HLT cannot resume itself.
+    pub const fn with_halt(mut self, profile: &'a crate::HaltProfile) -> Self {
+        self.halt = Some(profile);
         self
     }
 }
@@ -19256,8 +19297,8 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
 /// Admission requires Long64 at CPL0, `initial_rflags_defined` within the
 /// integer flags, CR0/CR4 modeled inside the policy, CR3/x87/SSE unmodeled,
 /// `Running` activity with a `Clear` STI shadow and, with CLI, CR0.PE=1,
-/// CR4.PVI=0 and RFLAGS.VM=0. `rdtsc_source` is reserved for a later RDTSC
-/// member and is unused while the set has none.
+/// CR4.PVI=0 and RFLAGS.VM=0. `rdtsc_source` feeds RDTSC only when the set
+/// was built with `with_rdtsc`; otherwise it is never called.
 pub fn run_with_cpl0_profile_set(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -19317,8 +19358,8 @@ pub fn run_with_cpl0_profile_set(
         config,
         initial_rflags_defined,
         ExecutionProfiles {
-            cpuid: None,
-            msr: None,
+            cpuid: set.cpuid,
+            msr: set.msr,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -19436,11 +19477,15 @@ pub fn run_with_cpl0_profile_set(
             cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
-            rdtsc: None,
+            // The policy keeps CR4.TSD clear, so this is always false; it is
+            // read from the admitted CR4 rather than assumed.
+            rdtsc: set.rdtsc.then_some(RdtscControls {
+                cr4_tsd: cr4 & (1 << 2) != 0,
+            }),
             swapgs: None,
             cli: set.cli,
             sti: None,
-            halt: None,
+            halt: set.halt,
             cr0: None,
             mov_cr3: None,
             control_policy: Some(set.policy),
