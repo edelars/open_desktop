@@ -237,6 +237,8 @@ pub struct AcpiBlobTable {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedAcpiBlob {
     pub version: u32,
+    /// SHA-256 of the whole blob this description was validated from (header included).
+    pub blob_sha256: [u8; 32],
     pub manifest_hash: AcpiManifestHash,
     /// GPA of payload offset 0.
     pub load_base: u64,
@@ -535,6 +537,7 @@ pub fn validate_acpi_blob(
 
     let info = ValidatedAcpiBlob {
         version,
+        blob_sha256: sha256(blob),
         manifest_hash: found,
         load_base,
         payload_offset: payload_offset as usize,

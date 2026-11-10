@@ -34,12 +34,12 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::acpi_blob::ValidatedAcpiBlob;
+use crate::firmware_board::FIRMWARE_LOW_RAM_LIMIT;
 use crate::linux_boot::LinuxBzImageHeader;
 
-/// End of the low RAM window: the board maps RAM at `[0, min(R, 0xF400_0000))` and the rest of
-/// RAM above 4 GiB, so nothing in `[0xF400_0000, 4 GiB)` is RAM. Mirrors `LOW_RAM_LIMIT` of
-/// `firmware_board.rs` (private there) and the identity map of S4-37L5 in STAGE_4.md.
-pub(crate) const LINUX_LOW_RAM_LIMIT: u64 = 0xF400_0000;
+// The low RAM window is `[0, min(R, FIRMWARE_LOW_RAM_LIMIT))` (the board maps RAM there and the
+// rest of RAM above 4 GiB, so nothing in `[FIRMWARE_LOW_RAM_LIMIT, 4 GiB)` is RAM). The constant
+// has one definition, in `firmware_board.rs` (S4-37L6; before it was a copy here).
 
 /// Page size used for initrd alignment.
 pub(crate) const LINUX_PAGE_BYTES: u64 = 0x1000;
@@ -160,7 +160,7 @@ pub(crate) enum LinuxPlacementError {
 /// Inputs of the planner that do not come from the bzImage header.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LinuxPlacementInput<'a> {
-    /// Full guest RAM size in bytes. Only low RAM `[0, min(ram_size, LINUX_LOW_RAM_LIMIT))`
+    /// Full guest RAM size in bytes. Only low RAM `[0, min(ram_size, FIRMWARE_LOW_RAM_LIMIT))`
     /// is used for placement.
     pub ram_size: u64,
     /// Initrd length in bytes; 0 means no initrd.
@@ -231,7 +231,7 @@ pub(crate) fn validate_linux_placement(
     header: &LinuxBzImageHeader,
     ram_size: u64,
 ) -> Result<(), LinuxPlacementError> {
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
     let zones = plan.zones();
     for &(zone, range) in &zones {
         if range.is_empty() {
@@ -331,7 +331,7 @@ pub(crate) fn plan_linux_placement(
     input: &LinuxPlacementInput<'_>,
 ) -> Result<LinuxPlacement, LinuxPlacementError> {
     let ram_size = input.ram_size;
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
 
     if input.cmdline_len > header.cmdline_size {
         return Err(LinuxPlacementError::CmdlineTooLong {
@@ -490,6 +490,7 @@ mod tests {
     fn acpi_blob() -> ValidatedAcpiBlob {
         ValidatedAcpiBlob {
             version: 2,
+            blob_sha256: [0; 32],
             manifest_hash: [0; 32],
             load_base: 0xE_0000,
             payload_offset: 0x60,

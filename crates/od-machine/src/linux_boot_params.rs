@@ -17,9 +17,16 @@
 //! [0x0F_0000, 0x15_0000)  reserved  BIOS ROM area and the whole loader area of L2
 //! [0x15_0000, L)          RAM       kernel window and initrd lie inside (Linux requires an
 //!                                   initrd to be RAM and reserves the kernel itself)
+//! [0xF800_0000, 0xFA40_0000) reserved  display framebuffer (board map; S4-37L6)
 //! [0xFC10_0000, +1 MiB)   reserved  PCIe ECAM window; Linux only trusts MCFG when it is reserved
+//! [0xFFC0_0000, 4 GiB)    reserved  firmware ROM window (board map; S4-37L6)
 //! [4 GiB, 4 GiB + R - L)  RAM       only when R > L
 //! ```
+//!
+//! The framebuffer and the ROM window are the two non-RAM windows of the board map that are
+//! large enough to matter (S4-37L6): Linux must not treat them as holes it may assign to PCI
+//! BARs. The small device windows (local APIC, I/O APIC, display registers, NVMe BAR) stay
+//! unlisted; Linux knows the first two from MADT and none of them is RAM.
 //!
 //! The kernel window may be large (`init_size`), so it stays RAM instead of being wasted as
 //! reserved; the loader structures in `[0x10_0000, 0x15_0000)` are reserved (a cheap 320 KiB).
@@ -38,11 +45,15 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::acpi_blob::{ACPI_RECLAIM_END, ACPI_REGION_END, ValidatedAcpiBlob};
-use crate::firmware_board::{FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_TABLES_BASE};
+use crate::display_device::{DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES};
+use crate::firmware_board::{
+    FIRMWARE_ACPI_FACS_BASE, FIRMWARE_ACPI_TABLES_BASE, FIRMWARE_HIGH_RAM_BASE,
+    FIRMWARE_IMAGE_BYTES, FIRMWARE_LOW_RAM_LIMIT, FIRMWARE_ROM_BASE,
+};
 use crate::linux_boot::LINUX_SETUP_HEADER_MIN_BYTES;
 use crate::linux_placement::{
     LINUX_BOOT_PARAMS_BYTES, LINUX_HIGH_FORBIDDEN_START, LINUX_LOADER_END, LINUX_LOW_FORBIDDEN_END,
-    LINUX_LOW_RAM_LIMIT, LinuxPlacement, LinuxRange, LinuxZone,
+    LinuxPlacement, LinuxRange, LinuxZone,
 };
 use crate::pci_ecam::PCI_ECAM_DESCRIPTOR;
 
@@ -93,11 +104,10 @@ pub(crate) const E820_RESERVED: u32 = 2;
 pub(crate) const E820_ACPI: u32 = 3;
 pub(crate) const E820_NVS: u32 = 4;
 
-/// RAM above 4 GiB starts here on the board (`HIGH_RAM_BASE` of `firmware_board.rs`, private).
-pub(crate) const LINUX_HIGH_RAM_BASE: u64 = 0x1_0000_0000;
-
 /// Handoff region kinds (FIRMWARE_BOOT.md section 6; `REGION_*` of `firmware_board.rs`, private).
 const HANDOFF_REGION_MMIO: u32 = 3;
+const HANDOFF_REGION_ROM: u32 = 4;
+const HANDOFF_REGION_FRAMEBUFFER: u32 = 6;
 const HANDOFF_REGION_ACPI_TABLES: u32 = 11;
 const HANDOFF_REGION_ACPI_NVS: u32 = 12;
 /// Handoff block header: magic, region table offset (u32 @0x30), region count (u32 @0x34), region
@@ -154,6 +164,8 @@ pub(crate) enum LinuxBootParamsError {
     EmptyRange { kind: u32, start: u64, end: u64 },
     /// No single reserved entry covers the ECAM window.
     EcamNotReserved { ecam: LinuxRange },
+    /// No single reserved entry covers this MMIO window of the board map (framebuffer or ROM).
+    WindowNotReserved { window: LinuxRange },
     /// No single ACPI (tables) or NVS (FACS) entry covers the plan range.
     AcpiNotCovered { zone: LinuxZone, range: LinuxRange },
     /// The RAM entries below 4 GiB are not exactly `[0, 0x9_F000)` and `[0x15_0000, low end)`.
@@ -177,6 +189,10 @@ pub(crate) enum LinuxBootParamsError {
         expected: LinuxRange,
         found: Option<LinuxRange>,
     },
+    /// A handoff ROM, framebuffer or ECAM region is not covered by one reserved E820 entry.
+    HandoffWindowNotReserved { kind: u32, range: LinuxRange },
+    /// The handoff declares no ECAM MMIO region at the ECAM base.
+    HandoffNoEcam,
     /// The handoff block is shorter than its header, has a bad magic or a region table outside
     /// the block.
     HandoffMalformed,
@@ -231,6 +247,28 @@ fn ecam_range() -> Result<LinuxRange, LinuxBootParamsError> {
     Ok(LinuxRange { start: base, end })
 }
 
+/// The display framebuffer window of the board map.
+fn framebuffer_range() -> Result<LinuxRange, LinuxBootParamsError> {
+    let end = DISPLAY_FRAMEBUFFER_BASE
+        .checked_add(DISPLAY_FRAMEBUFFER_BYTES)
+        .ok_or(LinuxBootParamsError::RangeOverflow)?;
+    Ok(LinuxRange {
+        start: DISPLAY_FRAMEBUFFER_BASE,
+        end,
+    })
+}
+
+/// The firmware ROM window of the board map (`[0xFFC0_0000, 4 GiB)`).
+fn rom_range() -> Result<LinuxRange, LinuxBootParamsError> {
+    let end = FIRMWARE_ROM_BASE
+        .checked_add(FIRMWARE_IMAGE_BYTES as u64)
+        .ok_or(LinuxBootParamsError::RangeOverflow)?;
+    Ok(LinuxRange {
+        start: FIRMWARE_ROM_BASE,
+        end,
+    })
+}
+
 /// Builds the E820 map of the module documentation for `plan` and guest RAM `ram_size`, and
 /// validates it with [`validate_linux_e820`]. The ACPI entry is `FIRMWARE_ACPI_TABLES_BASE ..
 /// ACPI_RECLAIM_END` and the NVS entry `FIRMWARE_ACPI_FACS_BASE .. ACPI_REGION_END`; the plan
@@ -239,8 +277,10 @@ pub(crate) fn build_linux_e820(
     plan: &LinuxPlacement,
     ram_size: u64,
 ) -> Result<Vec<LinuxE820Entry>, LinuxBootParamsError> {
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
     let ecam = ecam_range()?;
+    let framebuffer = framebuffer_range()?;
+    let rom = rom_range()?;
     let mut entries = vec![
         ram_entry(0, LINUX_LOW_FORBIDDEN_END)?,
         piece(
@@ -252,14 +292,16 @@ pub(crate) fn build_linux_e820(
         piece(E820_NVS, FIRMWARE_ACPI_FACS_BASE, ACPI_REGION_END)?,
         piece(E820_RESERVED, ACPI_REGION_END, LINUX_LOADER_END)?,
         ram_entry(LINUX_LOADER_END, low_end)?,
+        piece(E820_RESERVED, framebuffer.start, framebuffer.end)?,
         piece(E820_RESERVED, ecam.start, ecam.end)?,
+        piece(E820_RESERVED, rom.start, rom.end)?,
     ];
     let high = ram_size - low_end;
     if high > 0 {
-        let end = LINUX_HIGH_RAM_BASE
+        let end = FIRMWARE_HIGH_RAM_BASE
             .checked_add(high)
             .ok_or(LinuxBootParamsError::RangeOverflow)?;
-        entries.push(ram_entry(LINUX_HIGH_RAM_BASE, end)?);
+        entries.push(ram_entry(FIRMWARE_HIGH_RAM_BASE, end)?);
     }
     validate_linux_e820(&entries, plan, ram_size)?;
     Ok(entries)
@@ -271,7 +313,8 @@ fn covers(outer: LinuxRange, inner: LinuxRange) -> bool {
 
 /// Checks an E820 map against the plan: at most 128 well-formed, sorted, disjoint entries with
 /// 4 KiB aligned ACPI and NVS boundaries; the plan's ACPI tables and FACS starting at the board
-/// constants; the ECAM window reserved; ACPI tables and FACS covered by ACPI and NVS entries; RAM exactly
+/// constants; the ECAM, framebuffer and ROM windows reserved; ACPI tables and FACS covered by
+/// ACPI and NVS entries; RAM exactly
 /// `[0, 0x9_F000)`, `[0x15_0000, low end)` and `[4 GiB, 4 GiB + R - low end)`; kernel and initrd
 /// inside RAM; loader structures outside RAM.
 pub(crate) fn validate_linux_e820(
@@ -340,6 +383,11 @@ pub(crate) fn validate_linux_e820(
     if !of_kind(E820_RESERVED).any(|r| covers(r, ecam)) {
         return Err(LinuxBootParamsError::EcamNotReserved { ecam });
     }
+    for window in [framebuffer_range()?, rom_range()?] {
+        if !of_kind(E820_RESERVED).any(|r| covers(r, window)) {
+            return Err(LinuxBootParamsError::WindowNotReserved { window });
+        }
+    }
     if !of_kind(E820_ACPI).any(|r| covers(r, plan.acpi_tables)) {
         return Err(LinuxBootParamsError::AcpiNotCovered {
             zone: LinuxZone::AcpiTables,
@@ -353,7 +401,7 @@ pub(crate) fn validate_linux_e820(
         });
     }
 
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
     let expected_low = [
         LinuxRange {
             start: 0,
@@ -365,7 +413,7 @@ pub(crate) fn validate_linux_e820(
         },
     ];
     let low: Vec<LinuxRange> = of_kind(E820_RAM)
-        .filter(|r| r.start < LINUX_HIGH_RAM_BASE)
+        .filter(|r| r.start < FIRMWARE_HIGH_RAM_BASE)
         .collect();
     if low != expected_low {
         return Err(LinuxBootParamsError::LowRamMismatch {
@@ -376,8 +424,8 @@ pub(crate) fn validate_linux_e820(
     let high_len = ram_size - low_end;
     let expected_high = if high_len > 0 {
         Some(LinuxRange {
-            start: LINUX_HIGH_RAM_BASE,
-            end: LINUX_HIGH_RAM_BASE
+            start: FIRMWARE_HIGH_RAM_BASE,
+            end: FIRMWARE_HIGH_RAM_BASE
                 .checked_add(high_len)
                 .ok_or(LinuxBootParamsError::RangeOverflow)?,
         })
@@ -385,7 +433,7 @@ pub(crate) fn validate_linux_e820(
         None
     };
     let high: Vec<LinuxRange> = of_kind(E820_RAM)
-        .filter(|r| r.start >= LINUX_HIGH_RAM_BASE)
+        .filter(|r| r.start >= FIRMWARE_HIGH_RAM_BASE)
         .collect();
     if high != expected_high.into_iter().collect::<Vec<_>>() {
         return Err(LinuxBootParamsError::HighRamMismatch {
@@ -516,6 +564,39 @@ pub(crate) fn check_e820_acpi_against_handoff(
     Ok(())
 }
 
+/// Compares an E820 map with the region table of the board's handoff block (S4-37L6): the single
+/// ACPI and NVS entries equal handoff regions 11 and 12 ([`check_e820_acpi_against_handoff`]),
+/// the handoff declares the ECAM window, and every handoff ROM, framebuffer and ECAM region is
+/// covered by one reserved E820 entry.
+pub(crate) fn check_e820_against_handoff(
+    entries: &[LinuxE820Entry],
+    regions: &[LinuxHandoffRegion],
+) -> Result<(), LinuxBootParamsError> {
+    check_e820_acpi_against_handoff(entries, &handoff_acpi_regions(regions)?)?;
+    if handoff_ecam_region(regions).is_none() {
+        return Err(LinuxBootParamsError::HandoffNoEcam);
+    }
+    let reserved: Vec<LinuxRange> = entries
+        .iter()
+        .filter(|e| e.kind == E820_RESERVED)
+        .filter_map(LinuxE820Entry::range)
+        .collect();
+    for region in regions {
+        let window = match region.kind {
+            HANDOFF_REGION_ROM | HANDOFF_REGION_FRAMEBUFFER => true,
+            HANDOFF_REGION_MMIO => region.range.start == PCI_ECAM_DESCRIPTOR.base,
+            _ => false,
+        };
+        if window && !reserved.iter().any(|r| covers(*r, region.range)) {
+            return Err(LinuxBootParamsError::HandoffWindowNotReserved {
+                kind: region.kind,
+                range: region.range,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Everything [`serialize_linux_boot_params`] needs.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LinuxBootParamsInput<'a> {
@@ -563,7 +644,7 @@ fn put(
 fn below_4g(range: LinuxRange) -> Option<(u32, u32)> {
     let start = u32::try_from(range.start).ok()?;
     let len = u32::try_from(range.len()).ok()?;
-    (range.end <= LINUX_HIGH_RAM_BASE).then_some((start, len))
+    (range.end <= FIRMWARE_HIGH_RAM_BASE).then_some((start, len))
 }
 
 /// Serializes the 4096-byte `boot_params` page:
@@ -760,6 +841,7 @@ mod tests {
     fn acpi_blob() -> ValidatedAcpiBlob {
         ValidatedAcpiBlob {
             version: 2,
+            blob_sha256: [0; 32],
             manifest_hash: [0; 32],
             load_base: 0xE_0000,
             payload_offset: 0x60,
@@ -793,8 +875,8 @@ mod tests {
         LinuxE820Entry { addr, size, kind }
     }
 
-    /// The first six entries and the ECAM entry are the same for every RAM size; the entry at
-    /// index 5 ends at the low RAM end.
+    /// The first six entries and the framebuffer, ECAM and ROM entries are the same for every
+    /// RAM size; the entry at index 5 ends at the low RAM end.
     fn expected_e820(low_end: u64, high: u64) -> Vec<LinuxE820Entry> {
         let mut v = vec![
             e(0, 0x9_F000, E820_RAM),
@@ -803,7 +885,9 @@ mod tests {
             e(0xE_F000, 0x1000, E820_NVS),
             e(0xF_0000, 0x6_0000, E820_RESERVED),
             e(0x15_0000, low_end - 0x15_0000, E820_RAM),
+            e(0xF800_0000, 0x0240_0000, E820_RESERVED),
             e(0xFC10_0000, 0x10_0000, E820_RESERVED),
+            e(0xFFC0_0000, 0x40_0000, E820_RESERVED),
         ];
         if high > 0 {
             v.push(e(0x1_0000_0000, high, E820_RAM));
@@ -879,7 +963,7 @@ mod tests {
             })
         );
         assert_eq!(e820, expected_e820(0x800_0000, 0));
-        assert_eq!(e820.len(), 7);
+        assert_eq!(e820.len(), 9);
 
         assert_eq!(page.len(), 4096);
         assert_eq!(page[0x210], 0xFF);
@@ -888,21 +972,26 @@ mod tests {
         assert_eq!(rd32(&page, 0x21C), 0x40_0000);
         assert_eq!(rd64(&page, 0x70), 0xE_0000);
         assert_eq!(page[0x211], 0x81);
-        assert_eq!(page[0x1E8], 7);
-        // First entry: RAM [0, 0x9F000); last: ECAM reserved.
+        assert_eq!(page[0x1E8], 9);
+        // First entry: RAM [0, 0x9F000); entry 7: ECAM reserved; last: ROM reserved.
         let mut first = [0u8; 20];
         first[8..12].copy_from_slice(&0x9_F000u32.to_le_bytes());
         first[16] = 1;
         assert_eq!(page[0x2D0..0x2D0 + 20], first);
-        let mut last = [0u8; 20];
-        last[..4].copy_from_slice(&0xFC10_0000u32.to_le_bytes());
-        last[8..12].copy_from_slice(&0x10_0000u32.to_le_bytes());
-        last[16] = 2;
-        assert_eq!(page[0x2D0 + 6 * 20..0x2D0 + 7 * 20], last);
+        let mut ecam = [0u8; 20];
+        ecam[..4].copy_from_slice(&0xFC10_0000u32.to_le_bytes());
+        ecam[8..12].copy_from_slice(&0x10_0000u32.to_le_bytes());
+        ecam[16] = 2;
+        assert_eq!(page[0x2D0 + 7 * 20..0x2D0 + 8 * 20], ecam);
+        let mut rom = [0u8; 20];
+        rom[..4].copy_from_slice(&0xFFC0_0000u32.to_le_bytes());
+        rom[8..12].copy_from_slice(&0x40_0000u32.to_le_bytes());
+        rom[16] = 2;
+        assert_eq!(page[0x2D0 + 8 * 20..0x2D0 + 9 * 20], rom);
         // The entry after the last one is untouched.
-        assert_eq!(page[0x2D0 + 7 * 20..0x2D0 + 8 * 20], [0u8; 20]);
+        assert_eq!(page[0x2D0 + 9 * 20..0x2D0 + 10 * 20], [0u8; 20]);
         assert_e820_in_page(&page, &e820);
-        assert_zero_outside(&page, &written_ranges(7));
+        assert_zero_outside(&page, &written_ranges(9));
     }
 
     #[test]
@@ -919,19 +1008,19 @@ mod tests {
             })
         );
         assert_eq!(e820, expected_e820(0xF400_0000, 0xF_0000_0000));
-        assert_eq!(e820.len(), 8);
+        assert_eq!(e820.len(), 10);
         assert_eq!(e820[5], e(0x15_0000, 0xF3EB_0000, E820_RAM));
-        assert_eq!(e820[7], e(0x1_0000_0000, 0xF_0000_0000, E820_RAM));
-        assert_eq!(page[0x1E8], 8);
+        assert_eq!(e820[9], e(0x1_0000_0000, 0xF_0000_0000, E820_RAM));
+        assert_eq!(page[0x1E8], 10);
         let mut high = [0u8; 20];
         high[4] = 1; // addr 0x1_0000_0000
         high[12] = 0xF; // size 0xF_0000_0000
         high[16] = 1;
-        assert_eq!(page[0x2D0 + 7 * 20..0x2D0 + 8 * 20], high);
+        assert_eq!(page[0x2D0 + 9 * 20..0x2D0 + 10 * 20], high);
         assert_eq!(rd32(&page, 0x218), 0x7FC0_0000);
         assert_eq!(rd32(&page, 0x228), 0x10_1000);
         assert_e820_in_page(&page, &e820);
-        assert_zero_outside(&page, &written_ranges(8));
+        assert_zero_outside(&page, &written_ranges(10));
     }
 
     #[test]
@@ -939,7 +1028,7 @@ mod tests {
         let file = patterned_file();
         let (_, e820, page) = build(&file, 4 * GIB, 0);
         assert_eq!(e820, expected_e820(0xF400_0000, 0x0C00_0000));
-        assert_eq!(e820[7], e(0x1_0000_0000, 0x0C00_0000, E820_RAM));
+        assert_eq!(e820[9], e(0x1_0000_0000, 0x0C00_0000, E820_RAM));
         assert_e820_in_page(&page, &e820);
         // 3 GiB is below the limit 0xF400_0000 (3 GiB + 0x3400_0000): no high entry.
         let (_, e820, _) = build(&file, 3 * GIB, 0);
@@ -1230,7 +1319,7 @@ mod tests {
             .copied()
             .filter(|x| x.addr != ECAM.start)
             .collect();
-        assert_eq!(without.len(), 6);
+        assert_eq!(without.len(), 8);
         assert_eq!(
             validate_linux_e820(&without, &plan, 128 * MIB),
             Err(ecam_error)
@@ -1239,12 +1328,12 @@ mod tests {
 
         // One byte short of the window is not enough.
         let mut short = e820.clone();
-        short[6].size -= 1;
+        short[7].size -= 1;
         assert_eq!(page_with(&file, &plan, &short), Err(ecam_error));
         // The window typed as RAM (or ACPI) is not reserved.
         for kind in [E820_RAM, E820_ACPI] {
             let mut wrong = e820.clone();
-            wrong[6].kind = kind;
+            wrong[7].kind = kind;
             assert_eq!(
                 page_with(&file, &plan, &wrong),
                 Err(ecam_error),
@@ -1256,13 +1345,116 @@ mod tests {
     }
 
     #[test]
+    fn missing_framebuffer_or_rom_window_fails_validation() {
+        let file = synthetic_file();
+        let (plan, e820, _) = build(&file, 128 * MIB, 4 * MIB);
+        for (addr, window) in [
+            (
+                0xF800_0000,
+                LinuxRange {
+                    start: 0xF800_0000,
+                    end: 0xFA40_0000,
+                },
+            ),
+            (
+                0xFFC0_0000,
+                LinuxRange {
+                    start: 0xFFC0_0000,
+                    end: 0x1_0000_0000,
+                },
+            ),
+        ] {
+            let without: Vec<_> = e820.iter().copied().filter(|x| x.addr != addr).collect();
+            assert_eq!(
+                validate_linux_e820(&without, &plan, 128 * MIB),
+                Err(LinuxBootParamsError::WindowNotReserved { window })
+            );
+            // Typed as RAM it is not reserved either.
+            let mut ram = e820.clone();
+            ram.iter_mut().find(|x| x.addr == addr).unwrap().kind = E820_RAM;
+            assert_eq!(
+                validate_linux_e820(&ram, &plan, 128 * MIB),
+                Err(LinuxBootParamsError::WindowNotReserved { window })
+            );
+        }
+    }
+
+    fn region(kind: u32, start: u64, end: u64) -> LinuxHandoffRegion {
+        LinuxHandoffRegion {
+            kind,
+            range: LinuxRange { start, end },
+        }
+    }
+
+    /// The handoff regions of the board that matter to E820: ACPI tables and NVS, ECAM, ROM and
+    /// the framebuffer (kinds 11, 12, 3, 4, 6).
+    fn board_regions() -> Vec<LinuxHandoffRegion> {
+        vec![
+            region(11, 0xE_0000, 0xE_F000),
+            region(12, 0xE_F000, 0xF_0000),
+            region(6, 0xF800_0000, 0xFA40_0000),
+            region(3, 0xFC10_0000, 0xFC20_0000),
+            region(3, 0xFEC0_0000, 0xFEC0_1000),
+            region(4, 0xFFC0_0000, 0x1_0000_0000),
+        ]
+    }
+
+    #[test]
+    fn e820_is_checked_against_the_handoff_regions() {
+        let file = synthetic_file();
+        let (_, e820, _) = build(&file, 128 * MIB, 4 * MIB);
+        assert_eq!(check_e820_against_handoff(&e820, &board_regions()), Ok(()));
+
+        // A handoff without an ECAM window.
+        let mut no_ecam = board_regions();
+        no_ecam.retain(|r| r.range.start != 0xFC10_0000);
+        assert_eq!(
+            check_e820_against_handoff(&e820, &no_ecam),
+            Err(LinuxBootParamsError::HandoffNoEcam)
+        );
+        // An ACPI region that moved in the handoff only.
+        let mut moved = board_regions();
+        moved[0].range.end = 0xE_E000;
+        assert!(matches!(
+            check_e820_against_handoff(&e820, &moved),
+            Err(LinuxBootParamsError::HandoffAcpiMismatch { .. })
+        ));
+        // E820 entries missing for each window the handoff declares.
+        for (addr, kind) in [(0xFC10_0000u64, 3), (0xF800_0000, 6), (0xFFC0_0000, 4)] {
+            let without: Vec<_> = e820.iter().copied().filter(|x| x.addr != addr).collect();
+            assert!(
+                matches!(
+                    check_e820_against_handoff(&without, &board_regions()),
+                    Err(LinuxBootParamsError::HandoffWindowNotReserved { kind: k, .. }) if k == kind
+                ),
+                "window at {addr:#x}"
+            );
+        }
+        // A window typed as RAM in E820 is not reserved.
+        let mut ram = e820.clone();
+        ram.iter_mut().find(|x| x.addr == 0xFFC0_0000).unwrap().kind = E820_RAM;
+        assert!(matches!(
+            check_e820_against_handoff(&ram, &board_regions()),
+            Err(LinuxBootParamsError::HandoffWindowNotReserved { kind: 4, .. })
+        ));
+        // A second framebuffer in the handoff that E820 does not list is refused (the Linux
+        // loader does not build second-screen boards).
+        let mut two = board_regions();
+        two.push(region(6, 0xFA40_0000, 0xFC80_0000));
+        assert!(matches!(
+            check_e820_against_handoff(&e820, &two),
+            Err(LinuxBootParamsError::HandoffWindowNotReserved { kind: 6, .. })
+        ));
+    }
+
+    #[test]
     fn malformed_maps_are_rejected() {
         let file = synthetic_file();
         let (plan, e820, _) = build(&file, 128 * MIB, 4 * MIB);
 
         // 129 entries: one more than the zero page holds.
         let mut many = e820.clone();
-        for i in 0..122u64 {
+        for i in 0..120u64 {
             many.push(e(0x2_0000_0000 + i * 0x2000, 0x1000, E820_RESERVED));
         }
         assert_eq!(many.len(), 129);
@@ -1290,10 +1482,10 @@ mod tests {
             Err(LinuxBootParamsError::BadEntry { index: 1 })
         );
         let mut overflow = e820.clone();
-        overflow[6].size = u64::MAX;
+        overflow[7].size = u64::MAX;
         assert_eq!(
             page_with(&file, &plan, &overflow),
-            Err(LinuxBootParamsError::BadEntry { index: 6 })
+            Err(LinuxBootParamsError::BadEntry { index: 7 })
         );
         let mut unknown = e820.clone();
         unknown[1].kind = 5;
