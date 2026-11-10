@@ -2923,22 +2923,160 @@ fn lretq_accessed_bit_write_fault_is_exact_and_leaves_the_cpu_untouched() {
 
 #[test]
 fn lretq_faults_before_the_descriptor_never_write_the_accessed_bit() {
-    // L = 1 / D = 1, not present, DPL 3 and a non-canonical target all fail with A = 0:
-    // none of them may reach the write.
-    for (descriptor, target) in [
-        (0x00ef_9a00_0000_ffffu64, RIP),
-        (0x00af_1a00_0000_ffff, RIP),
-        (0x00af_fa00_0000_ffff, RIP),
-        (0x00af_9a00_0000_ffff, 0x0001_0000_0000_0000),
-        (0x00cf_9a00_0000_ffff, RIP),
+    // Every refusal below fails with A = 0 and must name its exact exit; none of them may
+    // reach the accessed-bit write.
+    for (descriptor, target, expected) in [
+        // L = 1 and D = 1.
+        (0x00ef_9a00_0000_ffffu64, RIP, selector_fault_exit(13, 0x10)),
+        // Not present.
+        (0x00af_1a00_0000_ffff, RIP, selector_fault_exit(11, 0x10)),
+        // DPL 3.
+        (0x00af_fa00_0000_ffff, RIP, selector_fault_exit(13, 0x10)),
+        // Non-canonical target.
+        (
+            0x00af_9a00_0000_ffff,
+            0x0001_0000_0000_0000,
+            selector_fault_exit(13, 0),
+        ),
+        // Compatibility-mode CS: legal but not modeled.
+        (
+            0x00cf_9a00_0000_ffff,
+            RIP,
+            RunExit::Unsupported { opcode: 0xcb },
+        ),
     ] {
         let (mut state, mut memory) = lretq_state(0x10, target);
         memory.put(LRETQ_GDT + 0x10, descriptor);
         let before = state.clone();
         let result = run_lretq(&mut state, &mut memory);
+        assert_eq!(exit(&result), &expected, "{descriptor:#x}");
         assert_eq!(result.instructions_executed, 0, "{descriptor:#x}");
         assert_eq!(state, before);
         assert_eq!(memory.writes, 0, "{descriptor:#x}");
+    }
+}
+
+#[test]
+fn lretq_reserved_l_and_d_wins_over_not_present() {
+    // SDM Vol.2 RET (IA-32e): the L = 1 / D = 1 check comes before the present check, so a
+    // not-present reserved descriptor is #GP(selector), not #NP.
+    assert_lretq_refused(
+        0x00ef_1a00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(13, 0x10),
+    );
+    // The same descriptor with D = 0 is a plain not-present 64-bit code segment: #NP.
+    assert_lretq_refused(
+        0x00af_1a00_0000_ffff,
+        0x10,
+        RIP,
+        selector_fault_exit(11, 0x10),
+    );
+}
+
+/// Code bytes followed by an unmapped page: a fetch past the end is an architectural `#PF`.
+struct PageFaultAfterCode {
+    bytes: Vec<u8>,
+}
+
+impl GuestMemory for PageFaultAfterCode {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.bytes
+            .get(address.wrapping_sub(RIP) as usize)
+            .copied()
+            .ok_or(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(address),
+            }))
+    }
+
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected read {address:#x}"
+        )))
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected write {address:#x}"
+        )))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn lgdt_and_endbr64_fetch_their_operand_bytes_before_deciding_unsupported() {
+    // Known deviation (S2-47a / S2-48): the decoder now fetches the SIB and displacement of
+    // `0F 01 /2` and the ModRM of `F3 0F 1E` before it decides the instruction is outside
+    // the legacy path. When the page ends inside the instruction, the legacy `run` reports
+    // the architectural `#PF` of the fetch (correct hardware behavior) instead of the former
+    // `Unsupported`. The behavior is pinned here.
+    for (code, last_mapped) in [
+        // `LGDT [SIB ...]`: the SIB byte is on the unmapped page.
+        (&[0x0fu8, 0x01, 0x14][..], 3u64),
+        // `LGDT [disp32]`: the displacement is cut after one byte.
+        (&[0x0f, 0x01, 0x15, 0xf9][..], 4),
+        // `F3 0F 1E`: the ModRM byte is on the unmapped page.
+        (&[0xf3, 0x0f, 0x1e][..], 3),
+    ] {
+        let mut state = lgdt_legacy_state(0);
+        let before = state.clone();
+        let mut memory = PageFaultAfterCode {
+            bytes: code.to_vec(),
+        };
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(RIP + last_mapped),
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 }
 
