@@ -82,6 +82,7 @@ pub fn step_paged_invlpg(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -198,6 +199,7 @@ fn step_paged_state_op(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -263,6 +265,7 @@ pub fn with_paged_mov_memory<R>(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -315,6 +318,7 @@ pub fn step_paged_mov(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -366,6 +370,7 @@ pub fn step_paged_mov_2m_ram(
         large_ram_profile: true,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -502,6 +507,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             large_ram_profile: true,
             dword_write_profile: false,
             cpl0_set_dword_read: true,
+            cpl0_set_narrow_write: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -618,6 +624,7 @@ pub fn step_paged_mov_word_read(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -689,6 +696,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -742,6 +750,7 @@ pub fn step_paged_mov_dword_read(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -804,6 +813,7 @@ pub fn step_paged_mov_dword_store(
         large_ram_profile: false,
         dword_write_profile: true,
         cpl0_set_dword_read: false,
+        cpl0_set_narrow_write: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -894,6 +904,11 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// (`MOV r32, m32`), next to its qword reads. The qword-only shared profiles stay
     /// as they were: this flag is set by the set's adapter alone.
     cpl0_set_dword_read: bool,
+    /// S4-38L3: the CPL0 profile set also stores bytes, words and dwords
+    /// (`MOV m8, r8`, `MOV m16, r16`, `MOV m32, r32`), next to its qword stores. Each store
+    /// writes exactly its own width (no read-modify-write of the surrounding qword). The
+    /// shared profiles keep their fixed store width: this flag is set by the set's adapter alone.
+    cpl0_set_narrow_write: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1079,6 +1094,13 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         }
         let (width, expected) = if self.dword_write_profile {
             (crate::AccessWidth::Dword, 4)
+        } else if self.cpl0_set_narrow_write {
+            match source.len() {
+                1 => (crate::AccessWidth::Byte, 1),
+                2 => (crate::AccessWidth::Word, 2),
+                4 => (crate::AccessWidth::Dword, 4),
+                _ => (crate::AccessWidth::Qword, 8),
+            }
         } else {
             (crate::AccessWidth::Qword, 8)
         };
@@ -1214,6 +1236,7 @@ mod tests {
             large_ram_profile: false,
             dword_write_profile: false,
             cpl0_set_dword_read: false,
+            cpl0_set_narrow_write: false,
         }
     }
 
@@ -1471,5 +1494,46 @@ mod tests {
             callbacks,
             [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
         );
+    }
+
+    #[test]
+    fn narrow_stores_belong_to_the_cpl0_set_adapter_alone() {
+        // Shared profiles keep their fixed store width (S4-38L3).
+        for len in [1usize, 2, 4] {
+            let mut bus = bus(0x9007);
+            let mut callback = |_| {};
+            let mut memory = adapter(&mut bus, &mut callback);
+            let error = memory.write(DATA_LINEAR, context(), &vec![0x5a; len]);
+            assert!(
+                matches!(&error, Err(MemoryError::Backend(message)) if message.contains("non-qword writes")),
+                "{error:?}"
+            );
+            assert_eq!(memory.page_fault, None);
+        }
+    }
+
+    #[test]
+    fn cpl0_set_adapter_writes_exactly_the_source_width() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callbacks = Vec::new();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_narrow_write = true;
+        memory.write(DATA_LINEAR, context(), &[0x5a]).unwrap();
+        memory
+            .write(DATA_LINEAR + 2, context(), &[0x01, 0x02])
+            .unwrap();
+        memory
+            .write(DATA_LINEAR + 4, context(), &[9, 8, 7, 6])
+            .unwrap();
+        // Three source lengths are the only admitted narrow widths.
+        assert!(memory.write(DATA_LINEAR, context(), &[0; 3]).is_err());
+        drop(memory);
+        drop(callback);
+        let value = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(value.to_le_bytes(), [0x5a, 0x33, 0x01, 0x02, 9, 8, 7, 6]);
     }
 }

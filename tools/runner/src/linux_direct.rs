@@ -1480,17 +1480,20 @@ mod tests {
         // runs `ENDBR64` as a NOP (no CET_IBT) and 20 more instructions retire (50 in all); the
         // next stop is the byte store `MOV [RAX], SIL` (`40 88 30`) at 0x206_3a80, which the
         // board's paged adapter refuses (`paged MOV profile does not support non-qword writes`).
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert!(stop["unsupported_opcode"].is_null());
-        assert_eq!(stop["rip"], "0x2063a80");
-        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("40 88 30"));
+        // S4-38L3: the adapter's byte, word and dword stores let `MOV [RAX], SIL` retire and 67
+        // more instructions follow (118 in all); the next stop is `LIDT [RIP+0x17bbd]`
+        // (`0f 01 1d bd 7b 01 00`, opcode 0x01) at 0x206_647c, which the set does not admit.
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x01");
+        assert_eq!(stop["rip"], "0x206647c");
         assert!(
-            stop["exit_detail"]
+            stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .contains("paged MOV profile does not support non-qword writes")
+                .starts_with("0f 01 1d bd 7b 01 00")
         );
-        assert_eq!(value["retired"], 50);
+        assert_eq!(stop["exit_detail"], "Unsupported { opcode: 1 }");
+        assert_eq!(value["retired"], 118);
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
     }

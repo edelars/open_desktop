@@ -1793,6 +1793,225 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], 0xAABB_CCDD_1234_5678);
     }
 
+    // ---- S4-38L3: byte, word and dword stores through the set's board adapter ----
+
+    const QWORD_SEED: u64 = 0xAABB_CCDD_1122_3344;
+
+    fn read_qword(boot: &mut LinuxDirectBoot, address: u64) -> u64 {
+        let mut bytes = [0u8; 8];
+        read(&mut boot.board, address, &mut bytes).expect("read");
+        u64::from_le_bytes(bytes)
+    }
+
+    /// Runs one store at `ENTRY` with RBX = `DATA + offset`, RAX = `0x1111_2222_3333_445A`.
+    fn run_store(
+        code: &[u8],
+        offset: u64,
+    ) -> (LinuxDirectBoot, LongModeState, PagedCpl0SetReport, Vec<u8>) {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(code);
+        write_phys(&mut boot, DATA, &QWORD_SEED.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x1111_2222_3333_445A;
+        state.gpr[Register::Rbx as usize] = DATA + offset;
+        let before = page_tables(&mut boot);
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        (boot, state, report, before)
+    }
+
+    /// The page tables after one `CLD` fetched at `ENTRY`: the fetch walk sets its own accessed
+    /// bits, so a store that must not touch the tables is compared against this, not against the
+    /// tables before the fetch.
+    fn tables_after_the_fetch_alone() -> Vec<u8> {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xFC]);
+        let (_, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        page_tables(&mut boot)
+    }
+
+    #[test]
+    fn cpl0_set_board_byte_store_writes_one_byte_and_keeps_the_rest_of_the_qword() {
+        // MOV [RBX], AL
+        let (mut boot, state, report, _) = run_store(&[0x88, 0x03], 0);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(state.rip, ENTRY + 2);
+        assert_eq!(read_qword(&mut boot, DATA), 0xAABB_CCDD_1122_335A);
+    }
+
+    #[test]
+    fn cpl0_set_board_word_store_writes_two_bytes_and_keeps_the_rest_of_the_qword() {
+        // MOV [RBX], AX (66 89 03)
+        let (mut boot, state, report, _) = run_store(&[0x66, 0x89, 0x03], 0);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(read_qword(&mut boot, DATA), 0xAABB_CCDD_1122_445A);
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_store_writes_four_bytes_and_keeps_the_rest_of_the_qword() {
+        // MOV [RBX], EAX
+        let (mut boot, state, report, _) = run_store(&[0x89, 0x03], 0);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 2);
+        assert_eq!(read_qword(&mut boot, DATA), 0xAABB_CCDD_3333_445A);
+    }
+
+    #[test]
+    fn cpl0_set_board_qword_store_still_writes_all_eight_bytes() {
+        // MOV [RBX], RAX
+        let (mut boot, state, report, _) = run_store(&[0x48, 0x89, 0x03], 0);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(read_qword(&mut boot, DATA), 0x1111_2222_3333_445A);
+    }
+
+    #[test]
+    fn cpl0_set_board_mov_rax_sil_with_rex_stores_the_low_byte_of_rsi() {
+        // MOV [RAX], SIL (40 88 30): the form of the real kernel at 0x0206_3a80.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0x40, 0x88, 0x30]);
+        write_phys(&mut boot, DATA + 8, &QWORD_SEED.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = DATA + 8;
+        // Without REX the register would be DH: the stored byte must be SIL = 0x5A.
+        state.gpr[Register::Rsi as usize] = 0xFFFF_FFFF_FFFF_A55A;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(read_qword(&mut boot, DATA + 8), 0xAABB_CCDD_1122_335A);
+    }
+
+    #[test]
+    fn cpl0_set_board_narrow_store_updates_the_page_tables_like_the_qword_store() {
+        let (_, _, _, before) = run_store(&[0x48, 0x89, 0x03], 0);
+        let tables = |code: &[u8]| {
+            let (mut boot, _, report, _) = run_store(code, 0);
+            assert_eq!(report.instructions_executed, 1, "{report:?}");
+            page_tables(&mut boot)
+        };
+        let qword = tables(&[0x48, 0x89, 0x03]);
+        // The 2 MiB leaf gets accessed and dirty bits; the width changes nothing.
+        assert_ne!(before, qword, "the walker sets accessed and dirty");
+        for code in [&[0x88, 0x03][..], &[0x66, 0x89, 0x03], &[0x89, 0x03]] {
+            assert_eq!(tables(code), qword, "{code:02x?}");
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_byte_store_on_the_last_byte_of_a_4k_page_is_one_access() {
+        let (mut boot, _, report, _) = run_store(&[0x88, 0x03], 0xFFF);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(report.memory_error, None);
+        let mut byte = [0u8];
+        read(&mut boot.board, DATA + 0xFFF, &mut byte).expect("read");
+        assert_eq!(byte, [0x5A]);
+        // The dword store ending exactly on the page end is one access too.
+        let (mut boot, _, report, _) = run_store(&[0x89, 0x03], 0xFFC);
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        let mut dword = [0u8; 4];
+        read(&mut boot.board, DATA + 0xFFC, &mut dword).expect("read");
+        assert_eq!(u32::from_le_bytes(dword), 0x3333_445A);
+    }
+
+    #[test]
+    fn cpl0_set_board_word_and_dword_stores_crossing_a_4k_boundary_are_the_typed_cross_page_stop() {
+        // (code, width, offsets that cross): the walker admits no split access and mutates
+        // nothing (no byte, no accessed/dirty bit) before reporting `CrossesPage`.
+        let cases: [(&[u8], u8, &[u64]); 2] = [
+            (&[0x66, 0x89, 0x03], 2, &[0xFFF]),
+            (&[0x89, 0x03], 4, &[0xFFD, 0xFFE, 0xFFF]),
+        ];
+        for (code, width, offsets) in cases {
+            for &offset in offsets {
+                let (mut boot, state, report, _) = run_store(code, offset);
+                let fetch_only = tables_after_the_fetch_alone();
+                assert!(
+                    matches!(report.exit, PagedCpl0SetExit::Run(RunExit::MemoryError(_))),
+                    "{report:?}"
+                );
+                assert_eq!(report.instructions_executed, 0);
+                assert_eq!(
+                    report.memory_error,
+                    Some(crate::TrackedAccessError::CrossesPage {
+                        address: crate::GuestLinearAddress::new(DATA + offset),
+                        width
+                    })
+                );
+                assert_eq!(report.page_fault, None);
+                assert_eq!(state.rip, ENTRY);
+                assert_eq!(
+                    page_tables(&mut boot),
+                    fetch_only,
+                    "{code:02x?} at {offset:#x}"
+                );
+                assert_eq!(read_qword(&mut boot, DATA), QWORD_SEED);
+                let mut next_page = [0u8; 8];
+                read(&mut boot.board, DATA + 0x1000, &mut next_page).expect("read");
+                assert_eq!(next_page, [0u8; 8], "the next page is untouched");
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_byte_store_to_an_unmapped_page_is_the_exact_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        // CLD retires, then MOV [RBX], AL faults: the record names the second instruction.
+        let (mut boot, _) = boot_with_entry(&[0xFC, 0x88, 0x03]);
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x5A;
+        state.gpr[Register::Rbx as usize] = 256 * MIB;
+        let fetch_only = tables_after_the_fetch_alone();
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        // Not-present data write at CPL0: error code 2 (W/R = 1, P = 0).
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(2), Some(256 * MIB))
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state.rip, ENTRY + 1);
+        let record = report.page_fault.expect("the walker's record");
+        assert_eq!(record.saved_rip(), ENTRY + 1);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Write);
+        assert_eq!(
+            page_tables(&mut boot),
+            fetch_only,
+            "no accessed or dirty bit moved"
+        );
+    }
+
+    #[test]
+    fn paged_mov_2m_ram_profile_outside_the_set_still_refuses_the_byte_store() {
+        // The qword-only shared profile keeps its behavior: the narrow stores belong to the
+        // set's adapter alone. Whether the decoder or the adapter refuses, nothing retires and
+        // the memory stays as it was.
+        let (mut boot, _) = boot_with_entry(&[0x88, 0x03]);
+        write_phys(&mut boot, DATA, &QWORD_SEED.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x5A;
+        state.gpr[Register::Rbx as usize] = DATA;
+        let mut state = state.clone();
+        let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+        let report = crate::paged_memory_adapter::step_paged_mov_2m_ram(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            INTEGER_FLAGS,
+            |_| {},
+        );
+        if let Ok(report) = &report {
+            assert_eq!(report.cpu.instructions_executed, 0, "{report:?}");
+        }
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(read_qword(&mut boot, DATA), QWORD_SEED);
+    }
+
     // ---- S4-38L3: the Linux board through the CPL0 set, the stop record ----
 
     fn run_set_facade(
