@@ -1353,7 +1353,7 @@ mod tests {
         assert_eq!(stop["path"], "cpl0_set");
         assert_eq!(
             stop["set_members"],
-            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
+            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
         // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches

@@ -20285,6 +20285,7 @@ qword-профили — `paged MOV profile does not support non-qword writes`, 
 **Член cpuid на плате и граница расхождения CPUID (S4-38L4).** Набор Linux-платы по умолчанию
 (`LinuxCpl0SetMembers::linux_default()`, `--set-cpl0` раннера) — `cli`, `cpu_owned_cr3` и
 `cpuid:DiagnosticV1` (`with_cpuid`); `rdtsc`, `msr`, `halt`, `pio_u8` по умолчанию не включены.
+С S2-50 в набор по умолчанию входит и `popf_cpl0` (`with_popf_cpl0`, ниже).
 `CPUID` с остальными листами (0, `0x8000_0000`, `0x21` и т. д.) обслуживает DiagnosticV1 как раньше
 (лист 0: максимум 1 и вендор `OpenDesktop`; `0x8000_0000`: `0x8000_0008`; неизвестные листы — нули).
 Оговорка: набор исполняет только голый `0F A2`; `CPUID` с префиксом (`66`/`48`/`F3` и т. д.) и не граничным
@@ -20309,7 +20310,8 @@ Linux, поэтому честная верхняя граница прогон�
 
 **Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
 `MOV SS`/`MOV FS`/`MOV GS` с ненулевым селектором (нулевая загрузка — S2-46, ниже); `LGDT m` входит
-(S2-47a, ниже), `LIDT m` (S2-49, ниже) и `LRETQ` (S2-47b, ниже) входят; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
+(S2-47a, ниже), `LIDT m` (S2-49, ниже) и `LRETQ` (S2-47b, ниже) входят; POPFQ CPL0 (`9D`) входит только с
+членом `popf_cpl0` (S2-50, ниже); `LEAVE` (`C9`); `F3 0F BC`
 (TZCNT/BSF по BMI1); WRMSR GS_BASE и набор MSR (в v1 один профиль); INVLPG; переключение
 CR0.WP; FP/SIMD при EM/TS/OSFXSR.
 
@@ -20423,6 +20425,46 @@ CPL0, отказ на входе `WrongPrivilege`). `0F 01 D8` (mod = 11, `/3`) 
 Ожидаемый следующий стоп настоящего ядра: после `LIDT` идут `ADD RSP, 0x18; POP RBX; POP RBP; RET`
 (`48 83 C4 18 5B 5D C3`, по `rip_bytes` из `s4-38l3-core.json`); где остановится набор — выяснит
 прогон на артефактах (оркестратор).
+
+### POPFQ на CPL0 в наборе (S2-50)
+
+Набор CPL0 исполняет `POPFQ` (`9D` и `48 9D`) только с членом `with_popf_cpl0` (на плате — член
+`popf_cpl0` в `stop.set_members`, включён в `LinuxCpl0SetMembers::linux_default()`; `minimal()` и
+сборки без члена не меняются). Форма выбрана как член, а не безусловное правило набора (в отличие от
+LIDT, S2-49): так граница видна в evidence (`set_members`), `POPFQ` остаётся закрытым в наборах без члена,
+а первая запись IF/IOPL из стека на плате — явное решение сборки набора, а не побочный эффект набора CPL0.
+Поле `popf_cpl0` в `ExecutionProfiles` задаёт только `run_with_cpl0_profile_set`; остальные входы
+(`run`, `step`, одиночные профили, paged, JIT) не меняются.
+
+**Семантика (Intel SDM Vol.2 «POPF/POPFD/POPFQ», режим 64 бита, CPL 0).** qword читается со стека по
+RSP (`stack_access_address`: неканонический адрес или последний байт — `#SS(0)`, `#PF` и классификации
+адаптера — как у MOV-чтения), затем RFLAGS = `(old & !M) | (value & M)`, где `M` = CF, PF, AF, ZF,
+SF, DF, OF, IF (бит 9), IOPL (биты 12–13), NT, AC (бит 18), ID (бит 21) = `0x24_7ed5`. На CPL0 IF
+записывается, так как CPL <= IOPL, а IOPL — так как CPL = 0. RF, VM, VIF и VIP POPF не меняет (VM
+набором и так отвергается на входе), бит 1 и зарезервированные биты не меняются (бит 1 остаётся
+1 с входа), RSP += 8, RIP += длина (1 или 2), retired += 1. Определённость флагов — как у PopFlags
+(`POPFQ_INTEGER_FLAGS` становятся определёнными). IF 0 -> 1 не открывает interrupt shadow (его даёт
+только STI).
+
+**Отказы без мутации (`Unsupported { opcode: 0x9d }`, retired 0).** TF = 1 в текущем RFLAGS или в
+поднимаемом значении (политика CPL3, S2-17o/S2-17r, сохранена); слово `66 9D`, `66 48 9D` и
+любые другие префиксы/REX, кроме `48` (форма `41 9D` тоже остаётся закрытой); `sti_shadow` =
+`Blocking` (MOV SS shadow при IF = 0 заканчивался бы этой инструкцией, набор этого не моделирует).
+Ошибка чтения стека (`#SS`, `#PF`, backend) не меняет ни одного регистра, ни RSP, ни RIP.
+
+**Вне члена и вне набора.** Без члена в наборе — `Unsupported { opcode: 0x9d }`, чтение стека не
+происходит. `run` на CPL0 — `Unsupported { opcode: 0x9d }`; на CPL3 действует прежний профиль S2-17o
+(IF и IOPL не загружаются со стека). PUSHFQ, политика CR0/CR4, CPUID/MSR и allowlist
+`PagedCpl0ProbeV1` не менялись. Тесты: `crates/od-isa/tests/cpl0_profile_set.rs` (`popfq_*`),
+`linux_direct::tests::linux_default_set_is_cli_cr3_cpuid_and_popf`.
+
+**Настоящее ядро (прогон на артефактах S4-38, бюджет 50000, `--set-cpl0`).** `POPFQ` на
+`0x100_0292` удаляется (retired 1379 -> 1380). Следом удаляются `LEA RSI,[RIP+...]`, `LEA RDI,[RBX+...]`
+и `MOV ECX,imm32`, затем прогон доходит до REP-строковой инструкции на RIP `0x100_02aa`: набор возвращает
+`RunExit::RepIterationBudgetExhausted`, а цикл платы (`set_exit_to_probe_exit`) считает такой выход
+невозможным («the CPL0 set returned an exit the board never asks for», `status: refused`,
+`error.code: run_failed`, retired 1385). Это следующая граница, не относящаяся к POPFQ: плате нужно
+либо обслуживать частичный REP-выход набора (возобновление), либо ограничивать REP по бюджету итераций.
 
 ### LRETQ на CPL0 в наборе (S2-47b)
 
