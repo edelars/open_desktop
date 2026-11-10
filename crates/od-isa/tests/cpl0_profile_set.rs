@@ -1524,19 +1524,32 @@ fn mov_rax_cr3_stays_unsupported_without_cr3_ownership() {
 
 #[test]
 fn mov_rax_cr3_stays_unsupported_outside_the_set() {
-    let mut state = board_state();
-    let before = state.clone();
-    let mut memory = Memory::code(&MOV_RAX_CR3);
-    let result = run(
-        &mut state,
-        &mut memory,
-        config(PrivilegeLevel::Ring0, 4),
-        || false,
-    );
-    // The plain entry reports the escape byte; only the Unsupported class matters.
-    assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
+    // No CR0/CR3/CR4 model, so the plain entry admits the state and the decoder reaches
+    // `ReadCr3`; the executor refuses it (all three bytes were fetched, nothing retired).
+    for bytes in [&MOV_RAX_CR3[..], &MOV_RAX_CR3_REX_W[..]] {
+        let mut state = LongModeState {
+            rip: RIP,
+            rflags: 2 | IF,
+            ..LongModeState::default()
+        };
+        state.gpr[0] = 0x1111_2222_3333_4444;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(memory.fetches, bytes.len(), "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
 }
 
 #[test]
@@ -1549,6 +1562,14 @@ fn mov_rax_cr3_other_forms_are_unsupported_without_mutation() {
         &[0x0f, 0x20, 0xd9][..],
         &[0x0f, 0x20, 0x18][..],
         &[0x48, 0x0f, 0x20, 0xd9][..],
+        &[0xf3, 0x0f, 0x20, 0xd8][..],
+        &[0x67, 0x0f, 0x20, 0xd8][..],
+        &[0x2e, 0x0f, 0x20, 0xd8][..],
+        &[0x41, 0x0f, 0x20, 0xd8][..],
+        &[0x4c, 0x0f, 0x20, 0xd8][..],
+        // Only the REX nearest the opcode is effective, but the length 5 is outside the
+        // exact forms: the executor refuses it.
+        &[0x40, 0x48, 0x0f, 0x20, 0xd8][..],
     ] {
         let mut state = cr3_state(CR3_DISTINCT);
         let before = state.clone();
