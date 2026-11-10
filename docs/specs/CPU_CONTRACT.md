@@ -20508,6 +20508,32 @@ SF, DF, OF, IF (бит 9), IOPL (биты 12–13), NT, AC (бит 18), ID (би
 `set_facade_budget_spent_after_a_partial_rep_*`, `set_facade_guest_stop_after_a_resumed_rep_*`,
 `paged_probe_path_still_refuses_the_rep_form`, `firmware_board::tests::resume_decision_*`.
 
+### MOV r64, CR3 (чтение) на CPL0 в наборе (S4-38L4c)
+
+Набор CPL0 исполняет `0F 20 D8` (`MOV RAX, CR3`) и `48 0F 20 D8` (то же с REX.W) в Long64 на CPL0.
+Новая операция декодера — `Operation::ReadCr3`; другие префиксы (`66`, `LOCK`, `REX` кроме `48`,
+сегментные, `67`) и другие ModRM (`D9`, mod≠11, `48 0F 20 C0/E0`) остаются `Unsupported { opcode: 0x20 }`
+(`F0 0F 20 D8` — тоже `Unsupported`, как и раньше). Запись CR3 (`0F 22 D8`), CR0, CR4 не менялись.
+
+**Гейт.** Отдельного члена набора нет: чтение допущено под существующим `with_cpu_owned_cr3`. Обоснование:
+`state.cr3` моделируется (и должен помещаться в 36 бит) только если набор владеет CR3, поэтому чтение —
+естественная часть той же ответственности; плата включает этот член всегда (`minimal()` и
+`linux_default()`), `stop.set_members` и ожидания существующих тестов не менялись. Набор без
+`cpu_owned_cr3` отвергает состояние с CR3 при входе (`Cr3NotAdmitted`), а набор без CR3 в состоянии
+не допускает чтение (`Unsupported { opcode: 0x20 }`). Вне набора (`run`, `paged_probe`, одиночные
+профили) чтение недоступно: `Unsupported`; код опкода в простом пути `run` — `0x0f` (так же, как у
+других нераспознанных форм `0F xx`, раньше при отказе в декодере было `0x20`).
+
+**Семантика.** RAX := `state.cr3` целиком (без маски; значение уже в пределах 36 бит по входной
+проверке и по `MOV CR3`), RIP += 3 (4 с REX.W), retired += 1, RSP, память и RFLAGS (значение) не меняются;
+учёт определённости арифметических флагов сбрасывается так же, как у `MOV RAX, CR4` (SDM: флаги не
+определены после MOV CR). Привилегия CPL > 0 недостижима через вход набора (`WrongPrivilege` до выборки);
+защитная проверка `#GP(0)` в пути чтения повторяет `ReadCr4`. Трансляционный контекст не меняется:
+`TranslationContextChange` у чтения нет.
+
+Тесты: `cpl0_profile_set::mov_rax_cr3_*`, `long_decode::tests::cr0_moves_and_lock_ud_*`,
+`linux_direct::tests::set_facade_mov_rax_cr3_*`.
+
 ### LRETQ на CPL0 в наборе (S2-47b)
 
 Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/
