@@ -1,11 +1,13 @@
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
-    Cpl0ProfileSetResult, RunConfig, RunExit, run, run_with_cli_profile, run_with_cpl0_profile_set,
+    Cpl0ProfileSetResult, RdtscControls, RunConfig, RunExit, run, run_with_cli_profile,
+    run_with_cpl0_profile_set, run_with_cpuid_profile, run_with_efer_rdmsr_profile,
+    run_with_halt_profile, run_with_msr_profile, run_with_rdtsc_source,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
-    GuestMemory, InstructionMode, LongModeState, MemoryError, OperandSize, PrivilegeLevel,
-    StiShadow,
+    GuestMemory, HaltProfile, InstructionMode, LongModeState, MemoryError, OperandSize,
+    PrivilegeLevel, StiShadow, cpuid::CpuidProfile, msr::MsrProfile,
 };
 
 const RIP: u64 = 0x1000;
@@ -653,4 +655,454 @@ fn em_ts_set_through_mov_cr0_keeps_fninit_closed() {
     assert_eq!(state.cr4, Some(CR4_BASE));
     assert_eq!(state.gpr[0], CR0_BASE | 0xc);
     assert!(state.x87.is_none());
+}
+
+/// Same input as `board_state` but without the control-register, activity and
+/// STI-shadow modeling that the set requires; what the legacy entries accept.
+fn legacy_state() -> LongModeState {
+    LongModeState {
+        cr0: None,
+        cr4: None,
+        activity: None,
+        sti_shadow: None,
+        ..board_state()
+    }
+}
+
+fn run_set_with_source(
+    state: &mut LongModeState,
+    memory: &mut Memory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+    source: Option<&mut dyn FnMut() -> u64>,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        source,
+        || false,
+    )
+}
+
+fn base() -> Cpl0ProfileSet<'static> {
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+}
+
+#[test]
+fn cpuid_leaves_match_the_legacy_entry() {
+    let cpuid = CpuidProfile::DiagnosticV1;
+    let set = base().with_cpuid(&cpuid);
+    // `xor eax,eax; cpuid`, `mov eax,1; cpuid` and an unknown leaf.
+    let programs: [&[u8]; 3] = [
+        &[0x31, 0xc0, 0x0f, 0xa2],
+        &[0xb8, 1, 0, 0, 0, 0x0f, 0xa2],
+        &[0xb8, 0x34, 0x12, 0, 0, 0x0f, 0xa2],
+    ];
+    for bytes in programs {
+        let mut set_state = board_state();
+        let mut set_memory = Memory::code(bytes);
+        let set_result = run_set(&mut set_state, &mut set_memory, &set, 2).unwrap();
+        let mut old_state = legacy_state();
+        let mut old_memory = Memory::code(bytes);
+        let old_result = run_with_cpuid_profile(
+            &mut old_state,
+            &mut old_memory,
+            config(PrivilegeLevel::Ring0, 2),
+            &cpuid,
+            || false,
+        );
+        assert_eq!(exit(&set_result), &old_result.exit, "{bytes:02x?}");
+        assert_eq!(
+            set_result.instructions_executed, old_result.instructions_executed,
+            "{bytes:02x?}"
+        );
+        assert_eq!(
+            set_result.rflags_defined, old_result.rflags_defined,
+            "{bytes:02x?}"
+        );
+        assert_eq!(set_state.gpr, old_state.gpr, "{bytes:02x?}");
+        assert_eq!(set_state.rip, old_state.rip, "{bytes:02x?}");
+        assert_eq!(set_state.rflags, old_state.rflags, "{bytes:02x?}");
+        assert_eq!(set_state.cr0, Some(CR0_BASE));
+        assert_eq!(set_state.cr4, Some(CR4_BASE));
+    }
+    // Leaf 0: the diagnostic vendor identity in EBX, EDX, ECX order.
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x0f, 0xa2]);
+    run_set(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(state.gpr[0], 1);
+    let mut vendor = Vec::new();
+    for register in [3, 2, 1] {
+        vendor.extend_from_slice(&(state.gpr[register] as u32).to_le_bytes());
+    }
+    assert_eq!(vendor, b"OpenDesktop ");
+}
+
+#[test]
+fn cpuid_stays_closed_without_its_builder() {
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0xa2]);
+    let result = run_set(&mut state, &mut memory, &base(), 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xa2 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn rdtsc_splits_the_injected_source_into_edx_eax() {
+    let set = base().with_rdtsc();
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        0x1_2345_6789u64
+    };
+    let mut state = board_state();
+    state.gpr[2] = u64::MAX;
+    let mut memory = Memory::code(&[0x0f, 0x31]);
+    let result = run_set_with_source(&mut state, &mut memory, &set, 1, Some(&mut source)).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 0x2345_6789);
+    assert_eq!(state.gpr[2], 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(calls, 1);
+
+    // The legacy RDTSC entry with TSD clear gives the same registers.
+    let mut old_state = legacy_state();
+    let mut old_memory = Memory::code(&[0x0f, 0x31]);
+    let mut old_source = || 0x1_2345_6789u64;
+    let old = run_with_rdtsc_source(
+        &mut old_state,
+        &mut old_memory,
+        config(PrivilegeLevel::Ring0, 1),
+        RdtscControls { cr4_tsd: false },
+        &mut old_source,
+        || false,
+    );
+    assert_eq!(&old.exit, exit(&result));
+    assert_eq!(old_state.gpr, state.gpr);
+    assert_eq!(old_state.rip, state.rip);
+}
+
+#[test]
+fn rdtsc_stays_closed_without_its_builder_even_with_a_source() {
+    let cpuid = CpuidProfile::DiagnosticV1;
+    let set = base().with_cpuid(&cpuid);
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        0x1_2345_6789u64
+    };
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x31]);
+    let result = run_set_with_source(&mut state, &mut memory, &set, 4, Some(&mut source)).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x31 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn rdtsc_without_a_source_is_unsupported_and_changes_nothing() {
+    let set = base().with_rdtsc();
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x31]);
+    let result = run_set(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x31 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn rdtsc_ignores_prefixed_forms_like_the_legacy_entry() {
+    // `0x66 0x0f 0x31` is not the exact bare form; both entries agree.
+    let set = base().with_rdtsc();
+    let mut source = || 7u64;
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0x66, 0x0f, 0x31]);
+    let result = run_set_with_source(&mut state, &mut memory, &set, 1, Some(&mut source)).unwrap();
+    let mut old_state = legacy_state();
+    let mut old_memory = Memory::code(&[0x66, 0x0f, 0x31]);
+    let mut old_source = || 7u64;
+    let old = run_with_rdtsc_source(
+        &mut old_state,
+        &mut old_memory,
+        config(PrivilegeLevel::Ring0, 1),
+        RdtscControls { cr4_tsd: false },
+        &mut old_source,
+        || false,
+    );
+    assert_eq!(&old.exit, exit(&result));
+    assert_eq!(old.instructions_executed, result.instructions_executed);
+    assert_eq!(old_state.gpr, state.gpr);
+}
+
+#[test]
+fn efer_rdmsr_returns_the_synthetic_value() {
+    let msr = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base().with_msr(&msr);
+    // `mov ecx,0xc0000080; rdmsr`.
+    let mut state = board_state();
+    state.gpr[2] = u64::MAX;
+    let mut memory = Memory::code(&[0xb9, 0x80, 0x00, 0x00, 0xc0, 0x0f, 0x32]);
+    let result = run_set(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[0], 0xd00);
+    assert_eq!(state.gpr[2], 0);
+    assert_eq!(state.rip, RIP + 7);
+
+    // Same bytes and register input as the dedicated EFER entry.
+    let mut set_state = board_state();
+    set_state.gpr[1] = 0xc000_0080;
+    let mut set_memory = Memory::code(&[0x0f, 0x32]);
+    let set_result = run_set(&mut set_state, &mut set_memory, &set, 1).unwrap();
+    let mut old_state = board_state();
+    old_state.gpr[1] = 0xc000_0080;
+    let mut old_memory = Memory::code(&[0x0f, 0x32]);
+    let old = run_with_efer_rdmsr_profile(
+        &mut old_state,
+        &mut old_memory,
+        config(PrivilegeLevel::Ring0, 1),
+        0xd00,
+        || false,
+    );
+    assert_eq!(&old.exit, exit(&set_result));
+    assert_eq!(old_state.gpr, set_state.gpr);
+    assert_eq!(old_state.rip, set_state.rip);
+}
+
+#[test]
+fn msr_set_holds_exactly_one_profile_and_rejects_other_indices() {
+    let fs = MsrProfile::FsBaseV1;
+    let set = base().with_msr(&fs);
+    // GS_BASE is not handled by the FS_BASE profile.
+    let mut state = board_state();
+    state.gpr[1] = 0xc000_0101;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x32]);
+    let result = run_set(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+
+    // EFER is not handled either, and RDMSR stays closed with no profile.
+    let mut state = board_state();
+    state.gpr[1] = 0xc000_0080;
+    let mut memory = Memory::code(&[0x0f, 0x32]);
+    let result = run_set(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    let mut state = board_state();
+    state.gpr[1] = 0xc000_0100;
+    let mut memory = Memory::code(&[0x0f, 0x32]);
+    let result = run_set(&mut state, &mut memory, &base(), 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(result.instructions_executed, 0);
+
+    // A later with_msr replaces the earlier profile.
+    let efer = MsrProfile::EferReadOnlyV1(0x500);
+    let replaced = set.with_msr(&efer);
+    let mut state = board_state();
+    state.gpr[1] = 0xc000_0080;
+    let mut memory = Memory::code(&[0x0f, 0x32]);
+    run_set(&mut state, &mut memory, &replaced, 1).unwrap();
+    assert_eq!(state.gpr[0], 0x500);
+}
+
+#[test]
+fn fs_base_msr_read_and_write_match_the_legacy_entry() {
+    let fs = MsrProfile::FsBaseV1;
+    let set = base().with_msr(&fs);
+    // `mov ecx,0xc0000100; rdmsr` and a WRMSR of a non-canonical value (#GP).
+    let read: &[u8] = &[0xb9, 0x00, 0x01, 0x00, 0xc0, 0x0f, 0x32];
+    let write: &[u8] = &[0xb9, 0x00, 0x01, 0x00, 0xc0, 0x0f, 0x30];
+    for (bytes, edx_eax) in [(read, (0u64, 0u64)), (write, (0x8000_0000, 0))] {
+        let mut set_state = board_state();
+        set_state.fs_base = 0xffff_8000_dead_beef;
+        set_state.gpr[0] = edx_eax.1;
+        set_state.gpr[2] = edx_eax.0;
+        let mut set_memory = Memory::code(bytes);
+        let set_result = run_set(&mut set_state, &mut set_memory, &set, 2).unwrap();
+        let mut old_state = legacy_state();
+        old_state.fs_base = 0xffff_8000_dead_beef;
+        old_state.gpr[0] = edx_eax.1;
+        old_state.gpr[2] = edx_eax.0;
+        let mut old_memory = Memory::code(bytes);
+        let old = run_with_msr_profile(
+            &mut old_state,
+            &mut old_memory,
+            config(PrivilegeLevel::Ring0, 2),
+            &fs,
+            || false,
+        );
+        assert_eq!(&old.exit, exit(&set_result), "{bytes:02x?}");
+        assert_eq!(
+            old.instructions_executed, set_result.instructions_executed,
+            "{bytes:02x?}"
+        );
+        assert_eq!(old_state.gpr, set_state.gpr, "{bytes:02x?}");
+        assert_eq!(old_state.fs_base, set_state.fs_base, "{bytes:02x?}");
+        assert_eq!(old_state.rip, set_state.rip, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn cli_then_hlt_halts_after_two_retired_instructions() {
+    let cli = CliProfile::NonPviLong64V1;
+    let halt = HaltProfile::Long64V1;
+    let set = base().with_cli(&cli).with_halt(&halt);
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0xfa, 0xf4, 0x90]);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Halted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.activity, Some(CpuActivity::Halted));
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags & IF, 0);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // The byte after HLT is never fetched.
+    assert_eq!(memory.fetches, 2);
+
+    // The same bytes under the legacy HLT entry end in the same state.
+    let mut old_state = legacy_state();
+    old_state.activity = Some(CpuActivity::Running);
+    old_state.sti_shadow = Some(StiShadow::Clear);
+    let mut old_memory = Memory::code(&[0xfa, 0xf4, 0x90]);
+    let old = run_with_halt_profile(
+        &mut old_state,
+        &mut old_memory,
+        config(PrivilegeLevel::Ring0, 64),
+        &halt,
+        || false,
+    );
+    assert_eq!(&old.exit, exit(&result));
+    assert_eq!(old.instructions_executed, result.instructions_executed);
+    assert_eq!(old_state.activity, state.activity);
+    assert_eq!(old_state.rip, state.rip);
+    assert_eq!(old_state.rflags, state.rflags);
+}
+
+#[test]
+fn bare_hlt_without_cli_halts_with_interrupts_untouched() {
+    let halt = HaltProfile::Long64V1;
+    let set = base().with_halt(&halt);
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0xf4]);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Halted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags & IF, IF);
+    assert_eq!(state.rip, RIP + 1);
+}
+
+#[test]
+fn hlt_stays_closed_without_its_builder_and_sti_stays_closed_with_it() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf4]);
+    let result = run_set(&mut state, &mut memory, &base().with_cli(&cli), 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(state, before);
+
+    // STI is not part of the set even when HLT is.
+    let halt = HaltProfile::Long64V1;
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xfb]);
+    let result = run_set(&mut state, &mut memory, &base().with_halt(&halt), 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn halted_input_is_rejected_by_admission_unlike_the_legacy_entry() {
+    let halt = HaltProfile::Long64V1;
+    let set = base().with_halt(&halt);
+    let mut state = board_state();
+    state.activity = Some(CpuActivity::Halted);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf4]);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &set, 4).unwrap_err(),
+        Cpl0ProfileSetInputError::NotRunning
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+
+    // The legacy entry accepts a Halted state and reports Halted at once.
+    let mut old_state = legacy_state();
+    old_state.activity = Some(CpuActivity::Halted);
+    old_state.sti_shadow = Some(StiShadow::Clear);
+    let mut old_memory = Memory::code(&[0xf4]);
+    let old = run_with_halt_profile(
+        &mut old_state,
+        &mut old_memory,
+        config(PrivilegeLevel::Ring0, 4),
+        &halt,
+        || false,
+    );
+    assert_eq!(old.exit, RunExit::Halted);
+    assert_eq!(old.instructions_executed, 0);
+}
+
+static ALL_CPUID: CpuidProfile = CpuidProfile::DiagnosticV1;
+static ALL_MSR: MsrProfile = MsrProfile::EferReadOnlyV1(0xd00);
+static ALL_HALT: HaltProfile = HaltProfile::Long64V1;
+static ALL_CLI: CliProfile = CliProfile::NonPviLong64V1;
+const FULL_SET: Cpl0ProfileSet<'static> =
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(&ALL_CLI)
+        .with_cpuid(&ALL_CPUID)
+        .with_rdtsc()
+        .with_msr(&ALL_MSR)
+        .with_halt(&ALL_HALT);
+
+#[test]
+fn full_set_is_const_and_runs_one_system_sequence() {
+    // `xor eax,eax; cpuid; rdtsc; mov ecx,0xc0000080; rdmsr; cli; hlt`.
+    let bytes = [
+        0x31, 0xc0, 0x0f, 0xa2, 0x0f, 0x31, 0xb9, 0x80, 0x00, 0x00, 0xc0, 0x0f, 0x32, 0xfa, 0xf4,
+    ];
+    let mut source = || 0x1_2345_6789u64;
+    let mut state = board_state();
+    let mut memory = Memory::code(&bytes);
+    let result =
+        run_set_with_source(&mut state, &mut memory, &FULL_SET, 64, Some(&mut source)).unwrap();
+    assert_eq!(exit(&result), &RunExit::Halted);
+    assert_eq!(result.instructions_executed, 7);
+    assert_eq!(state.gpr[0], 0xd00);
+    assert_eq!(state.gpr[2], 0);
+    assert_eq!(state.activity, Some(CpuActivity::Halted));
+    assert_eq!(state.cr0, Some(CR0_BASE));
+    assert_eq!(state.cr4, Some(CR4_BASE));
+}
+
+#[test]
+fn system_members_keep_fp_and_cr_admission_unchanged() {
+    // Admission is identical with and without the new members.
+    let mut state = board_state();
+    state.cr3 = Some(0x1000);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf4]);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &FULL_SET, 4).unwrap_err(),
+        Cpl0ProfileSetInputError::Cr3NotAdmitted
+    );
+    assert_eq!(state, before);
+    let mut state = board_state();
+    state.cr0 = None;
+    let mut memory = Memory::code(&[0xf4]);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &FULL_SET, 4).unwrap_err(),
+        Cpl0ProfileSetInputError::Cr0Missing
+    );
+    assert_eq!(memory.fetches, 0);
 }
