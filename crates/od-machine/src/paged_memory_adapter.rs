@@ -82,6 +82,7 @@ pub fn step_paged_invlpg(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_invlpg(
@@ -199,6 +200,7 @@ fn step_paged_state_op(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = match op {
@@ -265,6 +267,7 @@ pub fn with_paged_mov_memory<R>(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let callback_result = callback(&mut memory);
@@ -318,6 +321,7 @@ pub fn step_paged_mov(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
@@ -370,6 +374,7 @@ pub fn step_paged_mov_2m_ram(
         large_ram_profile: true,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
@@ -621,6 +626,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             large_ram_profile: true,
             dword_write_profile: false,
             cpl0_set_dword_read: true,
+            cpl0_set_byte_read: true,
             cpl0_set_narrow_write: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
@@ -763,6 +769,7 @@ pub fn step_paged_mov_word_read(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
@@ -835,6 +842,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
@@ -889,6 +897,7 @@ pub fn step_paged_mov_dword_read(
         large_ram_profile: false,
         dword_write_profile: false,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
@@ -952,6 +961,7 @@ pub fn step_paged_mov_dword_store(
         large_ram_profile: false,
         dword_write_profile: true,
         cpl0_set_dword_read: false,
+        cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
@@ -1045,6 +1055,9 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// (`MOV r32, m32`), next to its qword reads. The qword-only shared profiles stay
     /// as they were: this flag is set by the set's adapter alone.
     cpl0_set_dword_read: bool,
+    /// The CPL0 set's adapter alone reads one byte (S4-38L4a, `CMP byte [mem], imm8`); the shared
+    /// profiles keep their read widths. Reads never cross a page for one byte.
+    cpl0_set_byte_read: bool,
     /// S4-38L3: the CPL0 profile set also stores bytes, words and dwords
     /// (`MOV m8, r8`, `MOV m16, r16`, `MOV m32, r32`), next to its qword stores. Each store
     /// writes exactly its own width (no read-modify-write of the surrounding qword). The
@@ -1199,6 +1212,7 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         let width = match destination.len() {
+            1 if self.cpl0_set_byte_read => crate::AccessWidth::Byte,
             2 if self.word_read_profile => crate::AccessWidth::Word,
             4 if self.dword_read_profile || self.cpl0_set_dword_read => crate::AccessWidth::Dword,
             8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
@@ -1384,6 +1398,7 @@ mod tests {
             large_ram_profile: false,
             dword_write_profile: false,
             cpl0_set_dword_read: false,
+            cpl0_set_byte_read: false,
             cpl0_set_narrow_write: false,
         }
     }
@@ -1736,6 +1751,100 @@ mod tests {
                         && range.len() == 8
                 )
         );
+    }
+
+    #[test]
+    fn byte_reads_belong_to_the_cpl0_set_adapter_alone() {
+        // Without the flag every shared profile keeps refusing a one-byte read.
+        let mut bus = bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        let mut destination = [0x77; 1];
+        let error = memory.read(DATA_LINEAR, context(), &mut destination);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{error:?}"
+        );
+        assert_eq!(destination, [0x77]);
+        assert_eq!(memory.page_fault, None);
+        // The narrow-profile flags do not admit a byte either.
+        memory.word_read_profile = true;
+        assert!(memory.read(DATA_LINEAR, context(), &mut [0; 1]).is_err());
+        memory.word_read_profile = false;
+        memory.dword_read_profile = true;
+        assert!(memory.read(DATA_LINEAR, context(), &mut [0; 1]).is_err());
+        // The public (probe) adapter refuses it too.
+        let mut bus = self::bus(0x9007);
+        let scope = with_paged_mov_memory(
+            &mut bus,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            0x0040_0000,
+            |memory| memory.read(DATA_LINEAR, context(), &mut [0; 1]),
+        );
+        assert!(
+            matches!(&scope.callback_result, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{:?}",
+            scope.callback_result
+        );
+        // The set's adapter still refuses widths it does not admit (3 bytes).
+        let mut bus = self::bus(0x9007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_byte_read = true;
+        let error = memory.read(DATA_LINEAR, context(), &mut [0; 3]);
+        assert!(
+            matches!(&error, Err(MemoryError::Backend(message)) if message.contains("read width")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn cpl0_set_adapter_reads_one_byte_with_the_ordinary_read_ad_rules() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x9000, 0xaabb_ccdd_1122_3344);
+        let mut callbacks = Vec::new();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_byte_read = true;
+        for (offset, expected) in [(0u64, 0x44u8), (1, 0x33), (7, 0xaa)] {
+            let mut destination = [0; 1];
+            memory
+                .read(DATA_LINEAR + offset, context(), &mut destination)
+                .unwrap();
+            assert_eq!(destination, [expected]);
+        }
+        drop(memory);
+        drop(callback);
+        // A read sets Accessed on the leaf PTE and never Dirty; the data page is untouched.
+        let pte = bus
+            .read_physical(GuestPhysicalAddress::new(0x5000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(pte, 0x9027);
+        let data = bus
+            .read_physical(GuestPhysicalAddress::new(0x9000), AccessWidth::Qword)
+            .unwrap();
+        assert_eq!(data, 0xaabb_ccdd_1122_3344);
+        assert!(
+            callbacks
+                .iter()
+                .all(|range| range.start().get() < 0x9000 && range.len() == 8),
+            "{callbacks:?}"
+        );
+    }
+
+    #[test]
+    fn cpl0_set_adapter_reads_the_last_byte_of_a_page() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x9ff8, 0x5c00_0000_0000_0000);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut bus, &mut callback);
+        memory.cpl0_set_byte_read = true;
+        let mut destination = [0; 1];
+        memory
+            .read(DATA_LINEAR + 0xfff, context(), &mut destination)
+            .unwrap();
+        assert_eq!(destination, [0x5c]);
+        assert_eq!(memory.page_fault, None);
     }
 
     // ---- S4-38L3: the exits of the CPL0 set loop (`handle_set_exit`) ----
