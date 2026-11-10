@@ -506,9 +506,10 @@ pub enum Cpl0PageFaultDelivery {
     },
 }
 
-/// RFLAGS bits the gate entry clears in the live flags: TF, NT, RF, VM and AC (and IF for an
-/// interrupt gate).
-const GATE_CLEARED_FLAGS: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 17) | (1 << 18);
+/// RFLAGS bits the gate entry clears in the live flags: TF, NT, RF and VM (and IF for an
+/// interrupt gate). AC is NOT cleared by the entry (from memory of the SDM; indirectly, Linux
+/// executes CLAC in its entry code, which would be redundant if the entry cleared AC).
+const GATE_CLEARED_FLAGS: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 17);
 
 /// Deliver a synchronous page fault of the Long64 CPL0 profile set through the IDT gate of
 /// vector 14 (S4-38L5c): CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0.
@@ -523,14 +524,14 @@ const GATE_CLEARED_FLAGS: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 17) | (
 /// CS, saved RIP, error code. RFLAGS in the frame is the live RFLAGS with RF = 1 (a fault) and
 /// bit 1 set. After the entry: CS = the gate selector (cache base 0, limit 4 GiB - 1, access
 /// with A = 1, flags of the descriptor), RIP = the gate offset, RSP = the frame, SS unchanged
-/// (no privilege change loads no new SS), live RFLAGS with TF, NT, RF, VM, AC cleared and IF
+/// (no privilege change loads no new SS), live RFLAGS with TF, NT, RF and VM cleared (AC is kept) and IF
 /// cleared for an interrupt gate, CR2 = the faulting linear address.
 ///
 /// SDM (Vol. 3, 6.12 and 6.14), from memory, the text is not in the repository: the frame
 /// layout and the 16-byte alignment (6.14.2); the always-pushed SS:RSP (6.14.2); RF = 1 in the
 /// frame of a fault (Vol. 3, resume flag section); TF/NT/RF/VM cleared and IF cleared for an
-/// interrupt gate (6.12.1.3, also the IA-32e pseudocode of INT n). That AC is cleared too, and
-/// that SS is not reloaded without a CPL change, is also from memory. The gate DPL is not
+/// interrupt gate (6.12.1.3, also the IA-32e pseudocode of INT n). That AC is not cleared by
+/// the entry, and that SS is not reloaded without a CPL change, is also from memory. The gate DPL is not
 /// checked (a hardware exception). The values of undefined arithmetic flags are copied into
 /// the frame as the model holds them.
 pub fn deliver_page_fault_cpl0_set(

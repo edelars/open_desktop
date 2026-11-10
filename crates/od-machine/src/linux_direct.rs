@@ -3999,4 +3999,42 @@ mod tests {
         );
         assert_eq!(state.rip, PF_VA + 0x100);
     }
+
+    #[test]
+    fn cpl0_set_board_rf_stays_when_the_restarted_instruction_is_an_iretq() {
+        let cli = CliProfile::NonPviLong64V1;
+        // `IRETQ` with RF = 1 live and RF = 1 in its own frame: it loads RF itself, so the
+        // board must not clear it after the instruction retires (SDM, from memory).
+        let (mut boot, _) = boot_with_entry(&[0x48, 0xCF]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        let target = ENTRY + 0x400;
+        for (offset, value) in [
+            (0u64, target),
+            (8, 0x10),
+            (16, 2 | (1 << 16)),
+            (24, rsp),
+            (32, 0x18),
+        ] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rsp as usize] = rsp;
+        state.rflags |= 1 << 16;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, target);
+        assert_ne!(state.rflags & (1 << 16), 0, "RF loaded by IRETQ stays");
+        // The same live RF with a frame that carries RF = 0: IRETQ loads 0.
+        let (mut boot, _) = boot_with_entry(&[0x48, 0xCF]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        for (offset, value) in [(0u64, target), (8, 0x10), (16, 2), (24, rsp), (32, 0x18)] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rsp as usize] = rsp;
+        state.rflags |= 1 << 16;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rflags & (1 << 16), 0);
+    }
 }

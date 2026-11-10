@@ -536,6 +536,32 @@ fn cpuid_leaf_at_rip(
     }
 }
 
+/// Whether the instruction at RIP is exactly `IRETQ` (`48 CF`). Same read-only walk as
+/// [`cpuid_leaf_at_rip`] (no accessed/dirty bit, RAM only); an untranslatable byte is `false`.
+/// Used for the RF rule of S4-38L5c: `IRETQ` loads RF from its own frame, so the board must not
+/// clear it afterwards.
+fn iretq_at_rip(
+    state: &LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> bool {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut byte_at = |offset: u64| -> Option<u8> {
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            state.rip,
+            GuestLinearAddress::new(state.rip.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.read_u8(physical).ok()
+    };
+    byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PagedCpl0SetReport {
     pub(crate) exit: PagedCpl0SetExit,
@@ -671,8 +697,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         }
         let instruction_rip = state.rip;
         // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
-        // frame came back through `IRETQ`) is cleared once the instruction retires.
+        // frame came back through `IRETQ`) is cleared once the instruction retires, except
+        // when that instruction is itself an `IRETQ`: it loads RF from its own frame (SDM, from
+        // memory) and the loaded value stays.
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
+        let clear_resume_flag = resume_flag_before && !iretq_at_rip(state, bus, &paging, context);
         let (ram, mut port) = bus.split_for_pio_step();
         let mut memory = PagedMovMemoryAdapter {
             bus: AdapterBus::Ram(ram),
@@ -718,7 +747,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         if let Ok(done) = &result {
             if done.instructions_executed > 0 {
                 deliveries_without_retirement = 0;
-                if resume_flag_before {
+                if clear_resume_flag {
                     state.rflags &= !RFLAGS_RF;
                 }
             }
@@ -756,6 +785,10 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                         continue;
                     }
                     Some(failure) => {
+                        // `memory.memory_error` is the walker's classification of an access
+                        // made by the DELIVERY (IDT/GDT read, frame store); the faulting
+                        // instruction itself raised an architectural `#PF`, never a
+                        // non-architectural one. `page_fault` is the original record.
                         break (
                             PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
                             original_record,

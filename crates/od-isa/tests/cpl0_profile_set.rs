@@ -5235,8 +5235,10 @@ const PF_HANDLER: u64 = RIP + 0x100;
 const PF_RSP: u64 = STACK + 0x800;
 const PF_FAULT_PAGE: u64 = RAM_BASE;
 const PF_FAULT_ADDRESS: u64 = PF_FAULT_PAGE + 0x20;
-/// TF, NT, RF and AC: the flags the gate entry clears (IF too for an interrupt gate).
-const PF_FLAGS_ALL: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 18);
+/// TF, NT and RF: the flags the gate entry clears besides VM (IF too for an interrupt gate).
+/// AC is kept by the entry.
+const PF_FLAGS_ALL: u64 = (1 << 8) | (1 << 14) | (1 << 16);
+const PF_AC: u64 = 1 << 18;
 
 fn pf_gate_bytes(offset: u64, selector: u16, ist: u8, attributes: u8) -> [u8; 16] {
     let mut gate = [0u8; 16];
@@ -5314,7 +5316,7 @@ fn pf_qword(memory: &LretqMemory, address: u64) -> u64 {
 #[test]
 fn pf_delivery_writes_the_frame_and_enters_the_handler() {
     let (mut state, mut memory) = pf_state();
-    // A live TF/NT/AC (and RF = 0) in the image; the handler must see them cleared.
+    // A live TF/NT (RF = 0) and AC in the image; the handler sees TF/NT cleared and AC kept.
     state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
     let before = state.clone();
     let rflags_in_frame = before.rflags | (1 << 16);
@@ -5355,10 +5357,12 @@ fn pf_delivery_writes_the_frame_and_enters_the_handler() {
     let mut expected = before.clone();
     expected.rip = PF_HANDLER;
     expected.gpr[Register::Rsp as usize] = PF_RSP - 48;
-    expected.rflags = 2 | 0x1 | 0x40;
+    expected.rflags = 2 | 0x1 | 0x40 | PF_AC;
     expected.cr2 = Some(PF_FAULT_ADDRESS);
     assert_eq!(state, expected);
     assert_eq!(state.rflags & (IF | PF_FLAGS_ALL | (1 << 17)), 0);
+    assert_eq!(state.rflags & PF_AC, PF_AC);
+    assert_eq!(pf_qword(&memory, PF_RSP - 24) & PF_AC, PF_AC);
 }
 
 #[test]

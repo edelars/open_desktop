@@ -951,10 +951,11 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
-    /// CR2 the guest left at the end of the latest `run_linux_boot_cpl0_set` (S4-38L5c): the
-    /// faulting address of the last `#PF` delivered to the guest, fed back as CR2 on entry the
-    /// way `page_table_root` is for CR3. `None` until the first CPL0-set run.
-    page_fault_address: Option<u64>,
+    /// The whole CR2 the guest left at the end of the latest `run_linux_boot_cpl0_set`
+    /// (S4-38L5c): the faulting address of the last delivered `#PF`, or any other value the CR2
+    /// took (a guest write of CR2, should the set ever model it). Fed back as CR2 on entry the way
+    /// `page_table_root` is for CR3. `None` until the first CPL0-set run.
+    guest_cr2: Option<u64>,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1291,13 +1292,13 @@ impl LoadedFirmwareBoard {
         self.state.cr3 = Some(self.page_table_root);
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
         // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
-        // entry), the CR2 the guest left is kept in `page_fault_address` and fed back on entry,
+        // entry), the CR2 the guest left is kept in `guest_cr2` and fed back on entry,
         // so a handler that reads CR2 in a later call gets the address of its fault. CR2 is
         // `0` (the architectural reset value) until a `#PF` was delivered or the guest wrote
         // it; the CPU state itself carries no CR2 outside this call (the prior value is
         // restored on exit).
         let prior_cr2 = self.state.cr2;
-        self.state.cr2 = Some(self.page_fault_address.or(prior_cr2).unwrap_or(0));
+        self.state.cr2 = Some(self.guest_cr2.or(prior_cr2).unwrap_or(0));
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1427,7 +1428,7 @@ impl LoadedFirmwareBoard {
         self.state.cr3 = None;
         // CR2 moves to the board field (see the entry comment); the CPU state gets back what
         // it had.
-        self.page_fault_address = self.state.cr2;
+        self.guest_cr2 = self.state.cr2;
         self.state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
         Ok(LinuxSetRunReport {
@@ -1872,7 +1873,7 @@ impl AssembledBoard {
             handoff,
             page_table_bytes,
             page_table_root,
-            page_fault_address: None,
+            guest_cr2: None,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -1925,7 +1926,7 @@ impl AssembledBoard {
             handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
-            page_fault_address: None,
+            guest_cr2: None,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
