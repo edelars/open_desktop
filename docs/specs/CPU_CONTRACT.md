@@ -20628,6 +20628,30 @@ RFLAGS и retired не меняются, буфер результата не м
 `cpl0_set_adapter_reads_one_word_with_the_ordinary_read_ad_rules`,
 `cpl0_set_adapter_reads_the_last_word_of_a_page_and_splits_a_crossing_word`.
 
+### `F3 0F BC /r` (REP BSF) как BSF в наборе (S4-38L4g)
+
+Настоящее ядро Linux на плате остановилось на `f3 0f bc c0` (`REP BSF EAX, EAX`), RIP `0x541_e469`,
+retired 372548 (`Unsupported { opcode: 0xbc }`). Ядро выбирает TZCNT (`F3 0F BC`) через ALTERNATIVE только
+при признаке BMI1; профиль CPUID набора его не объявляет (лист 7, EBX бит 3 = 0), поэтому на этом профиле
+кодировка — обычный `BSF` с игнорируемым префиксом REP (так она исполняется на CPU без BMI1). BMI1 в
+CPUID не добавляется, TZCNT как отдельная семантика не вводится.
+
+**Декодер.** `F3 0F BC /r` (только один `F3`, опционально один REX сразу перед опкодом, регистровая или
+любая ModRM-память, размер 32 или 64 по `REX.W`) даёт тот же `Operation::BitScan { kind: Forward }`, что и
+`0F BC`; `prefixes.group1 = Some(0xf3)` сохраняется. Остаются `Unsupported { opcode: 0xbc }`: `F2`, `LOCK`
+(`F0`, в любом порядке с `F3`), `66` (16-битная форма), сегментный и `67`-префиксы, повторный `F3`, REX до
+`F3`; `F3 0F BD` (LZCNT) не меняется.
+
+**Исполнитель.** `Operation::BitScan` с `group1 = Some(0xf3)` допускается только внутри набора CPL0
+(`control_policy.is_some()`, как `ENDBR64` и `0F 1F`); вне набора (`run`/`step`) — `Unsupported { opcode:
+0xbc }` без изменения состояния. Само исполнение общее с BSF: ненулевой источник — ZF = 0 и приёмник =
+индекс младшего установленного бита (32-битный приёмник обнуляет верхнюю половину), нулевой источник — ZF =
+1 и приёмник не меняется; PF — чётность источника, CF/OF/SF/AF сброшены, определены все арифметические
+флаги (как у `0F BC`); RIP += длина, retired += 1.
+
+Тесты: `cpl0_profile_set::rep_bsf_*`; `long_decode::tests::bit_scan_memory_forms_decode_addressing_and_only_rep_bsf_takes_f3`;
+`linux_direct::tests::cpl0_set_board_rep_bsf_executes_as_bsf_on_the_board`.
+
 ### LRETQ на CPL0 в наборе (S2-47b)
 
 Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/

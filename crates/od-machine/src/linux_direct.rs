@@ -3308,4 +3308,34 @@ mod tests {
         assert_eq!(state.rip, ENTRY + 4);
         assert_eq!((report.page_fault, report.memory_error), (None, None));
     }
+
+    // ---- S4-38L4g: `F3 0F BC /r` (REP BSF) as BSF through the set's facade ----
+
+    #[test]
+    fn cpl0_set_board_rep_bsf_executes_as_bsf_on_the_board() {
+        const ZF: u64 = 1 << 6;
+        let cli = CliProfile::NonPviLong64V1;
+        // The kernel's `f3 0f bc c0` (REP BSF EAX, EAX) with a non-zero source.
+        let (mut boot, _) = boot_with_entry(&[0xF3, 0x0F, 0xBC, 0xC0]);
+        boot.board.state_mut().gpr[Register::Rax as usize] = 0xAAAA_BBBB_0001_0000;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(state.gpr[Register::Rax as usize], 16);
+        assert_eq!(state.rip, ENTRY + 4);
+        assert_eq!(state.rflags & ZF, 0);
+        // A zero source sets ZF and leaves the destination alone, exactly like plain BSF.
+        let (mut boot, _) = boot_with_entry(&[0xF3, 0x0F, 0xBC, 0xC0]);
+        boot.board.state_mut().gpr[Register::Rax as usize] = 0xAAAA_BBBB_0000_0000;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rax as usize], 0xAAAA_BBBB_0000_0000);
+        assert_eq!(state.rip, ENTRY + 4);
+        assert_ne!(state.rflags & ZF, 0);
+    }
 }
