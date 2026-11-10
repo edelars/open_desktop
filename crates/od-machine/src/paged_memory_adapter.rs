@@ -84,6 +84,7 @@ pub fn step_paged_invlpg(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -202,6 +203,7 @@ fn step_paged_state_op(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -269,6 +271,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -323,6 +326,7 @@ pub fn step_paged_mov(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -376,6 +380,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -628,6 +633,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             cpl0_set_dword_read: true,
             cpl0_set_byte_read: true,
             cpl0_set_narrow_write: true,
+            cpl0_set_cross_page_fetch: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -771,6 +777,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -844,6 +851,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -899,6 +907,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -963,6 +972,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_dword_read: false,
         cpl0_set_byte_read: false,
         cpl0_set_narrow_write: false,
+        cpl0_set_cross_page_fetch: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1064,6 +1074,12 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// writes exactly its own width (no read-modify-write of the surrounding qword). The
     /// shared profiles keep their fixed store width: this flag is set by the set's adapter alone.
     cpl0_set_narrow_write: bool,
+    /// S4-38L4e: the CPL0 profile set's adapter alone lets the instruction fetch continue onto
+    /// the next 4 KiB page. The decoder fetches one byte at a time and each byte is translated
+    /// on its own, so a page-crossing instruction sees the two pages as a real CPU does: a
+    /// missing second page is a precise instruction-fetch `#PF` at the first byte on it, with
+    /// the RIP of the instruction. The shared large-RAM profile keeps its one-code-page window.
+    cpl0_set_cross_page_fetch: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1186,7 +1202,10 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if self.read_only_qword {
             return Err(Self::unsupported("instruction fetch"));
         }
-        if self.large_ram_profile && (address & !0xfff) != (self.instruction_rip & !0xfff) {
+        if self.large_ram_profile
+            && !self.cpl0_set_cross_page_fetch
+            && (address & !0xfff) != (self.instruction_rip & !0xfff)
+        {
             // The profile admits one 4 KiB code page: reject decoder lookahead
             // before any page walk for the next page.
             let width = address
@@ -1401,6 +1420,7 @@ mod tests {
             cpl0_set_dword_read: false,
             cpl0_set_byte_read: false,
             cpl0_set_narrow_write: false,
+            cpl0_set_cross_page_fetch: false,
         }
     }
 
@@ -2062,6 +2082,47 @@ mod tests {
             ),
             Some(PagedCpl0SetExit::Run(RunExit::Halted))
         );
+    }
+
+    #[test]
+    fn page_crossing_fetch_belongs_to_the_cpl0_set_adapter_alone() {
+        // The shared large-RAM profile keeps its one-code-page window: the byte on the next
+        // page is a typed backend `CrossesPage` before any walk of that page.
+        let mut machine = bus(0x6007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut machine, &mut callback);
+        memory.large_ram_profile = true;
+        memory.instruction_rip = DATA_LINEAR + 0xffe;
+        assert!(matches!(
+            memory.fetch(DATA_LINEAR + 0xfff, context()),
+            Ok(_)
+        ));
+        assert!(matches!(
+            memory.fetch(DATA_LINEAR + 0x1000, context()),
+            Err(MemoryError::Backend(_))
+        ));
+        assert!(matches!(
+            memory.memory_error,
+            Some(TrackedAccessError::CrossesPage { .. })
+        ));
+        assert_eq!(memory.page_fault, None);
+        // The set's adapter walks the next page on its own: it is unmapped here, so the byte
+        // is an instruction-fetch `#PF` at exactly that address, not a backend error.
+        let mut machine = bus(0x6007);
+        let mut callback = |_| {};
+        let mut memory = adapter(&mut machine, &mut callback);
+        memory.large_ram_profile = true;
+        memory.cpl0_set_cross_page_fetch = true;
+        memory.instruction_rip = DATA_LINEAR + 0xffe;
+        assert!(matches!(
+            memory.fetch(DATA_LINEAR + 0x1000, context()),
+            Err(MemoryError::Architectural(_))
+        ));
+        assert_eq!(memory.memory_error, None);
+        let record = memory.page_fault.expect("fetch fault");
+        assert_eq!(record.fault().linear_address, Some(DATA_LINEAR + 0x1000));
+        assert_eq!(record.fault().error_code, Some(0x10));
+        assert_eq!(record.saved_rip(), DATA_LINEAR + 0xffe);
     }
 
     #[test]
