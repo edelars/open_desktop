@@ -1490,7 +1490,7 @@ mod tests {
     /// the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_byte_compare_past_cpuid_0x8000_0000() {
+    fn real_artifacts_stop_at_popfq_past_the_byte_compare() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1505,7 +1505,7 @@ mod tests {
                 "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
             ram_mib: 128,
             out: String::new(),
-            budget: Some(1000),
+            budget: Some(50000),
             set_cpl0: true,
         };
         let (value, exit) = evaluate(&options);
@@ -1527,26 +1527,26 @@ mod tests {
         // more instructions follow (118 in all); the next stop was `LIDT [RIP+0x17bbd]`
         // (`0f 01 1d bd 7b 01 00`) at 0x206_647c. S2-49: `LIDT` retires; the next stop was
         // `CPUID` (`0f a2`) with EAX = 0x8000_0000 at 0x206_7b0d after 138 retired instructions.
-        // S4-38L4: the set has the `cpuid` member (DiagnosticV1), which answers leaf 0x8000_0000,
-        // so the run goes past that CPUID. The first stop after it is the byte compare
-        // `CMP byte [RDI+0x1EF], 0` (`80 bf ef 01 00 00 00`) at 0x206_69d7 after 162 retired
-        // instructions: the set reads one byte and the paged adapter has no byte-read profile
-        // (`paged MOV profile does not support read width`). It is not the CPUID boundary: no
-        // `cpuid_divergence` stop happens on this kernel yet.
+        // S4-38L4: the set has the `cpuid` member (DiagnosticV1), which answers leaf 0x8000_0000.
+        // S4-38L4a: the one-byte read of `CMP byte [RDI+0x1EF], 0` (`80 bf ef 01 00 00 00`) at
+        // 0x206_69d7 is admitted. The run with budget 50000 stops at `POPFQ` (`9d`) on 0x100_0292
+        // after 1379 retired instructions, `Unsupported { opcode: 157 }`: the next blocker
+        // (S2-50, POPFQ on CPL0). It is not the CPUID boundary: no `cpuid_divergence` stop yet.
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
         );
-        assert_eq!(value["retired"], 162, "{value:#}");
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert_eq!(stop["rip"], "0x20669d7");
+        assert_eq!(value["retired"], 1379, "{value:#}");
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["rip"], "0x1000292");
         assert!(
             stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .starts_with("80 bf ef 01 00 00 00"),
+                .starts_with("9d 48 8d 35"),
             "{value:#}"
         );
+        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 157 })");
         assert!(stop["cpuid_divergence_leaf"].is_null(), "{value:#}");
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
