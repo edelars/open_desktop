@@ -1153,4 +1153,318 @@ mod tests {
             .expect("truncated");
         assert_eq!(refused.retired, None);
     }
+    // ---- S2-45f: the CPL0 profile set through the board walker ----
+
+    use crate::paged_memory_adapter::{
+        PagedCpl0SetExit, PagedCpl0SetReport, run_cpl0_set_paged_2m_ram,
+    };
+    use od_isa::execute::{
+        ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, RunExit, TranslationContextChange,
+    };
+    use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::{CliProfile, CpuActivity, HaltProfile, INTEGER_FLAGS, LongModeState};
+
+    const ENTRY: u64 = 0x0100_0200;
+    /// `cld; cli; xor eax,eax; mov ds,ax; mov es,ax; mov ss,ax`: the first bytes of `startup_64`
+    /// up to the first `MOV Sreg`.
+    const PROLOGUE: [u8; 10] = [0xfc, 0xfa, 0x31, 0xc0, 0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xd0];
+    /// Second page-table tree: PML4, PDPT, PD and PT, then the code page it maps at GVA 0x0100_0000.
+    const TREE_PML4: u64 = 0x0400_0000;
+    const TREE_PDPT: u64 = TREE_PML4 + 0x1000;
+    const TREE_PD: u64 = TREE_PML4 + 0x2000;
+    const TREE_PT: u64 = TREE_PML4 + 0x3000;
+    const TREE_CODE: u64 = 0x0500_0000;
+
+    fn long64() -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        }
+    }
+
+    /// Runs the set against the board walker from the board's state (CR3 stays the board's unless
+    /// `owned_cr3`, which hands it to the CPU).
+    fn run_set(
+        boot: &mut LinuxDirectBoot,
+        owned_cr3: bool,
+        budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+    ) -> (LongModeState, PagedCpl0SetReport) {
+        let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+        let mut state = boot.board.state().clone();
+        state.cr3 = owned_cr3.then_some(cr3);
+        let report = run_cpl0_set_paged_2m_ram(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+        );
+        (state, report)
+    }
+
+    fn write_phys(boot: &mut LinuxDirectBoot, address: u64, bytes: &[u8]) {
+        boot.board
+            .bus_mut()
+            .write_flat_bytes(GuestPhysicalAddress::new(address), bytes, |_| {})
+            .expect("write");
+    }
+
+    #[test]
+    fn cpl0_set_board_prologue_stops_at_the_first_segment_load_the_set_does_not_admit() {
+        let cli = CliProfile::NonPviLong64V1;
+        for owned_cr3 in [false, true] {
+            let mut set =
+                Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+            if owned_cr3 {
+                set = set.with_cpu_owned_cr3(MovCr3Long64V1);
+            }
+            // The state the loader hands over has loaded DS/ES descriptor caches, so a null
+            // `MOV DS, AX` is not the legacy load the set admits: CLD, CLI and XOR retire, the
+            // first `MOV Sreg` (0x8E) is the stop. RIP stays on it.
+            let (mut boot, _) = boot_with_entry(&PROLOGUE);
+            let (state, report) = run_set(&mut boot, owned_cr3, 64, &set);
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0x8E }),
+                "{report:?}"
+            );
+            assert_eq!(report.instructions_executed, 3);
+            assert_eq!(state.rip, ENTRY + 4);
+            assert_eq!(state.rflags & (1 << 9), 0, "CLI cleared IF");
+            assert_eq!(report.page_fault, None);
+            assert_eq!(report.memory_error, None);
+            assert!(report.translation_context_changes.is_empty());
+
+            // The S2-45a invariant on the same bytes and the same walker: with legacy (cache-less)
+            // DS/ES the null loads retire and the stop is `MOV SS` after five instructions.
+            let (mut boot, _) = boot_with_entry(&PROLOGUE);
+            let state = boot.board.state_mut();
+            (state.ds_cache, state.es_cache) = (None, None);
+            let (state, report) = run_set(&mut boot, owned_cr3, 64, &set);
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0x8E }),
+                "{report:?}"
+            );
+            assert_eq!(report.instructions_executed, 5);
+            assert_eq!(state.rip, ENTRY + 8);
+            assert_eq!(state.rflags & (1 << 9), 0, "CLI cleared IF");
+            assert_eq!(state.gpr[Register::Rax as usize], 0);
+        }
+        // Without CLI the first stop is FA, after CLD only.
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+        let (mut boot, _) = boot_with_entry(&PROLOGUE);
+        let (state, report) = run_set(&mut boot, false, 64, &set);
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0xFA })
+        );
+        assert_eq!((report.instructions_executed, state.rip), (1, ENTRY + 1));
+    }
+
+    #[test]
+    fn cpl0_set_board_fetch_from_an_unmapped_page_is_the_exact_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        boot.board.state_mut().rip = 256 * MIB;
+        let (state, report) = run_set(&mut boot, false, 8, &set);
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(16), Some(256 * MIB))
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(state.rip, 256 * MIB);
+        let record = report.page_fault.expect("the walker's record");
+        assert_eq!(record.saved_rip(), 256 * MIB);
+        assert_eq!(record.fault(), fault);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Fetch);
+    }
+
+    #[test]
+    fn cpl0_set_board_lock_mov_cr3_is_ud_with_nothing_retired() {
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cpu_owned_cr3(MovCr3Long64V1);
+        let (mut boot, _) = boot_with_entry(&[0xF0, 0x0F, 0x22, 0xD8]);
+        let (state, report) = run_set(&mut boot, true, 8, &set);
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!((fault.vector, fault.error_code), (6, None));
+        assert_eq!((report.instructions_executed, state.rip), (0, ENTRY));
+        assert_eq!(state.cr3, Some(boot.board.cr3()));
+        assert_eq!(report.page_fault, None);
+    }
+
+    /// `CLI; MOV RAX, imm32; MOV CR3, RAX; MOV RBX, marker; HLT`. The bytes after MOV CR3 sit at
+    /// GVA `0x0100_020B`; `marker` there is what the old tree executes.
+    fn cr3_switch_program(new_cr3: u64, marker: u32) -> Vec<u8> {
+        let mut code = vec![0xFA, 0x48, 0xC7, 0xC0];
+        code.extend_from_slice(&(new_cr3 as u32).to_le_bytes());
+        code.extend_from_slice(&[0x0F, 0x22, 0xD8]);
+        code.extend_from_slice(&[0x48, 0xC7, 0xC3]);
+        code.extend_from_slice(&marker.to_le_bytes());
+        code.push(0xF4);
+        code
+    }
+
+    /// Maps GVA `0x0100_0000..+4 KiB` to `TREE_CODE` through a 4 KiB leaf and puts the code of
+    /// `cr3_switch_program` (with `marker`) on that page. Everything else is unmapped.
+    fn install_second_tree(boot: &mut LinuxDirectBoot, marker: u32) {
+        write_phys(boot, TREE_PML4, &(TREE_PDPT | 3).to_le_bytes());
+        write_phys(boot, TREE_PDPT, &(TREE_PD | 3).to_le_bytes());
+        // GVA 0x0100_0000 is PD index 8 (2 MiB units), PT index 0.
+        write_phys(boot, TREE_PD + 8 * 8, &(TREE_PT | 3).to_le_bytes());
+        write_phys(boot, TREE_PT, &(TREE_CODE | 3).to_le_bytes());
+        write_phys(
+            boot,
+            TREE_CODE + 0x200,
+            &cr3_switch_program(TREE_PML4, marker),
+        );
+    }
+
+    fn switch_set<'a>(cli: &'a CliProfile, halt: &'a HaltProfile) -> Cpl0ProfileSet<'a> {
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(cli)
+            .with_halt(halt)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+    }
+
+    #[test]
+    fn cpl0_set_board_fetch_after_mov_cr3_walks_the_new_cr3() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let board_cr3 = {
+            let (boot, _) = boot_with_entry(&[0xF4]);
+            boot.board.cr3()
+        };
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let (state, report) = run_set(&mut boot, true, 64, &switch_set(&cli, &halt));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{report:?}"
+        );
+        // CLI, MOV RAX, MOV CR3, then the instruction at the old RIP + 11 fetched through the
+        // new tree (marker 0x2222, not the 0x1111 the old tree holds), then HLT.
+        assert_eq!(report.instructions_executed, 5);
+        assert_eq!(state.gpr[Register::Rbx as usize], 0x2222);
+        assert_eq!(state.rip, ENTRY + 0x13);
+        assert_eq!(state.cr3, Some(TREE_PML4));
+        assert_eq!(report.cr3, TREE_PML4);
+        assert_eq!(
+            report.translation_context_changes,
+            [TranslationContextChange::Cr3Write {
+                old_cr3: board_cr3,
+                new_cr3: TREE_PML4
+            }]
+        );
+        assert_eq!(state.activity, Some(CpuActivity::Halted));
+    }
+
+    #[test]
+    fn cpl0_set_board_rewriting_the_same_cr3_keeps_the_old_translation() {
+        // Control for the test above: the same program with the board's own CR3 executes the
+        // old bytes (marker 0x1111), so the new tree is what changed the result.
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let board_cr3 = {
+            let (boot, _) = boot_with_entry(&[0xF4]);
+            boot.board.cr3()
+        };
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(board_cr3, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let (state, report) = run_set(&mut boot, true, 64, &switch_set(&cli, &halt));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 5);
+        assert_eq!(state.gpr[Register::Rbx as usize], 0x1111);
+        assert_eq!(
+            report.translation_context_changes,
+            [TranslationContextChange::Cr3Write {
+                old_cr3: board_cr3,
+                new_cr3: board_cr3
+            }]
+        );
+    }
+
+    #[test]
+    fn cpl0_set_board_budget_after_mov_cr3_stops_before_the_next_fetch() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let (state, report) = run_set(&mut boot, true, 3, &switch_set(&cli, &halt));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        );
+        assert_eq!(report.instructions_executed, 3);
+        assert_eq!(state.rip, ENTRY + 0xB);
+        assert_eq!(state.gpr[Register::Rbx as usize], 0);
+        assert_eq!(report.cr3, TREE_PML4);
+        assert_eq!(report.translation_context_changes.len(), 1);
+    }
+
+    #[test]
+    fn cpl0_set_board_an_unmapped_rip_in_the_new_tree_is_a_page_fault_with_the_new_cr3() {
+        // The new tree maps only the code page: after the switch, jump-free execution continues
+        // on the same page, so unmap it by pointing CR3 at an empty PML4 instead.
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        // TREE_PML4 stays zeroed: nothing is mapped.
+        let (state, report) = run_set(&mut boot, true, 64, &switch_set(&cli, &halt));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(16), Some(ENTRY + 0xB))
+        );
+        assert_eq!(report.instructions_executed, 3);
+        assert_eq!(state.cr3, Some(TREE_PML4));
+        assert_eq!(report.page_fault.expect("record").saved_rip(), ENTRY + 0xB);
+    }
+
+    #[test]
+    fn cpl0_set_board_a_cr3_that_disagrees_with_the_cpu_is_a_configuration_error() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let efer = boot.board.efer();
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(boot.board.cr3());
+        let report = run_cpl0_set_paged_2m_ram(
+            &mut state,
+            boot.board.bus_mut(),
+            TREE_PML4,
+            efer,
+            long64(),
+            8,
+            INTEGER_FLAGS,
+            &switch_set(&cli, &halt),
+            None,
+            || false,
+            |_| {},
+        );
+        assert!(
+            matches!(
+                report.exit,
+                PagedCpl0SetExit::Configuration(crate::ProbeConfigError::Cr3Mismatch { .. })
+            ),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 0);
+    }
 }
