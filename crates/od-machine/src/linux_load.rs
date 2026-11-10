@@ -141,7 +141,8 @@ pub(crate) struct LinuxLoadInput<'a> {
 ///
 /// `board` is a [`LoadedFirmwareBoard`] only in type: its `handoff_block()` is empty and
 /// `boot_page_table_bytes()` is the size of the Linux identity tables, not the firmware's;
-/// `cr3()` is the Linux table root. `run_boot` must not be used on it (S4-38).
+/// `cr3()` is the Linux table root. `run_boot` (4 KiB walker) must not be used on it: the Linux
+/// table uses 2 MiB leaves; `run_linux_boot` (S4-38L1) is the 2 MiB walk.
 pub(crate) struct LoadedLinuxBoard {
     pub board: LoadedFirmwareBoard,
     pub header: LinuxBzImageHeader,

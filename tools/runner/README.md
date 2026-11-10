@@ -686,8 +686,8 @@ claimed; see the [standalone report](../../docs/reports/S2_38X_UCOMISD_MEMORY_IN
 ## Linux direct boot loader (S4-37L6)
 
 `linux-direct` loads a Linux bzImage, an initramfs and the ACPI blob (version 2) onto the
-Linux-profile board and writes JSON evidence. It does NOT start the guest: `retired` is always 0
-(the first instruction runs in S4-38).
+Linux-profile board and writes JSON evidence. Without `--run` it does NOT start the guest:
+`retired` is 0 and `guest_started` is false.
 
 ```sh
 cargo run --offline -p od-runner -- linux-direct \
@@ -730,3 +730,29 @@ E820 map, `acpi_rsdp_addr`, the command line (`cmdline_in_memory`), the RSDP sig
 (`acpi_rsdp_signature_in_memory`, `"RSD PTR "`) and the SHA-256 of the kernel code and initrd
 bytes (`memory_sha256`, with `*_matches_file`) are read back from guest memory, not copied from
 the inputs.
+
+### `--run --budget N` (S4-38L1)
+
+`--run --budget <n>` (a bare `--run` and a value flag, one needs the other) runs the loaded board for
+at most `n` instructions after loading, through `od_machine::run_linux_direct_board`: the 2 MiB
+walk (`run_paged_probe_2m_ram`, not the 4 KiB walker), the base CPU profile (no CPUID/MSR; the
+allowlist is not widened) and the board CR3, with the PIT, PM_TMR and RDTSC ticks of the Linux
+profile applied as in `run_boot`. The evidence gets a `stop` object, `guest_started` becomes true and
+`retired` is the count of the run; every other field is as without `--run`. `guest_started` means
+"the run was requested by `--run`" (also with `--budget 0`), not that an instruction retired; read
+`retired` for that. A failure of the run itself (`run_failed`, status `refused`, exit 4; only a
+virtual-clock overflow today) keeps `guest_started: true` and reports `retired` as the count known
+at the error (`null` plus a note in the detail when unknown). The budget is plain decimal digits
+(a leading `+` is `invalid_input`). `stop` holds: `exit_kind`
+(`budget_exhausted`, `halted`, `unsupported` with `unsupported_opcode`, `fault`, `backend`,
+`shutdown`, ...), `rip`, `rip_gpa`, `rip_bytes` (16 bytes at RIP, each byte translated through the
+same walk without writing accessed/dirty bits), `mode`, `cpl`, `cr0`, `cr3`, `cr4`, `efer`, `rflags`,
+`gpr`, `retired`, `quanta`, `virtual_ns`, `tsc_hz`, COM1 (`com1_hex`, `com1_text`), `cpu_profile`,
+`linux_profile`, `page_fault`, `memory_error` and the input hashes. `cpu_profile` is the base
+paged profile (`PagedCpl0ProbeV1`, no CPUID/MSR) with one addition: under the Linux profile a bare
+`RDTSC` is executed (`step_paged_probe_with_rdtsc`, 1 us tick as in `run_boot`). `cpl` is the RPL
+of the CS selector (0 when absent) while the interpreter always runs Ring0; `rip_bytes` reads any
+region with backing (ROM and framebuffer too), byte by byte, so the window may cross a 4 KiB
+boundary that a CPU fetch never crosses. On the real kernel the first stop is
+`unsupported` `0xfc` (CLD) at RIP `0x1000200` with `retired` 0
+(`docs/reports/data/stage4/s4-38l1-first-stop.json`).

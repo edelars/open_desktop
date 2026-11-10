@@ -6,24 +6,26 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::page_walk::translate_long64_2m_ram_read_only;
+use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
     DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
-    DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestPhysicalAddress,
-    GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE,
-    LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, MachineBus, MachineMemoryMap,
-    MachineStopReason, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
-    NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle,
-    PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_MASTER_BASE_PORT,
-    PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES,
-    PIT_PORT_BYTES, PagedProbeExit, PagedProbeQuantumReport, PciEcam, Pic8259Pair, Pit8254Devices,
-    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
-    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
-    run_paged_probe, run_paged_probe_with_rdtsc,
+    DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestLinearAddress,
+    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
+    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, Long64ProbeConfig,
+    MachineBus, MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind,
+    MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
+    NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
+    PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
+    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeQuantumReport, PciEcam,
+    Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding,
+    RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
+    VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
 use od_isa::memory::{
-    AccessContext, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
+    AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register, StiShadow};
 use std::collections::{BTreeMap, BTreeSet};
@@ -784,6 +786,15 @@ fn build_handoff(
     block
 }
 
+/// A failed run of the board loop (S4-38L1): the error and the instructions retired before it.
+#[derive(Debug)]
+pub(crate) struct LinuxRunFailure {
+    pub(crate) error: FirmwareBoardError,
+    /// Instructions of the quanta that had executed when the error happened (including the
+    /// quantum whose clock advance failed).
+    pub(crate) retired: u64,
+}
+
 /// Result of [`LoadedFirmwareBoard::run_boot`].
 #[derive(Debug, Eq, PartialEq)]
 pub struct FirmwareRunReport {
@@ -875,6 +886,12 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
+    /// True under `linux_profile`: the RDTSC time source (and with it the tick) exists only
+    /// there, see `assemble_board`.
+    pub(crate) const fn has_linux_profile(&self) -> bool {
+        self.rdtsc_tick.is_some()
+    }
+
     /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
     /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`).
     pub const fn cr3(&self) -> u64 {
@@ -930,11 +947,47 @@ impl LoadedFirmwareBoard {
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
+        self.run_quantum(false, instruction_budget, stop, committed_write)
+    }
+
+    /// [`Self::run`] with the 4 KiB walker (`large_ram = false`) or with the 2 MiB walk of the
+    /// Linux direct boot (`large_ram = true`, S4-38L1: `run_paged_probe_2m_ram`). The CPU
+    /// profile, the board CR3 and the RDTSC source are the same in both.
+    fn run_quantum(
+        &mut self,
+        large_ram: bool,
+        instruction_budget: u64,
+        stop: impl FnMut() -> bool,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> PagedProbeQuantumReport {
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
             origin: AccessOrigin::Explicit,
         };
+        if large_ram {
+            let mut source = self.rdtsc_tick.clone().map(|tick| {
+                let clock = self.clock.clone();
+                move || {
+                    tick.store(true, Ordering::Relaxed);
+                    clock.snapshot().tsc()
+                }
+            });
+            return run_paged_probe_2m_ram(
+                &mut self.state,
+                &mut self.bus,
+                self.page_table_root,
+                FIRMWARE_EFER,
+                context,
+                instruction_budget,
+                INTEGER_FLAGS,
+                stop,
+                committed_write,
+                source
+                    .as_mut()
+                    .map(|source| source as &mut dyn FnMut() -> u64),
+            );
+        }
         if let Some(tick) = self.rdtsc_tick.clone() {
             let clock = self.clock.clone();
             let mut source = move || {
@@ -967,6 +1020,55 @@ impl LoadedFirmwareBoard {
         )
     }
 
+    /// Up to `len` bytes at `rip` as an instruction fetch would see them (S4-38L1): every byte is
+    /// translated through the 2 MiB walk with the board CR3 (no accessed/dirty bit is written) and
+    /// read from RAM. Returns the GPA of `rip` (when it translates), the bytes read (they stop at
+    /// the first byte that does not translate or is not RAM) and the text of that failure.
+    pub(crate) fn fetch_view_2m(
+        &mut self,
+        rip: u64,
+        len: usize,
+    ) -> (Option<u64>, Vec<u8>, Option<String>) {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let paging = match Long64ProbeConfig::from_cpu_state(
+            &self.state,
+            self.page_table_root,
+            FIRMWARE_EFER,
+        ) {
+            Ok(paging) => paging,
+            Err(error) => return (None, Vec::new(), Some(format!("{error:?}"))),
+        };
+        let (memory, _) = self.bus.split_for_pio_step();
+        let mut first = None;
+        let mut bytes = Vec::with_capacity(len);
+        for offset in 0..len as u64 {
+            let linear = rip.wrapping_add(offset);
+            let physical = match translate_long64_2m_ram_read_only(
+                memory,
+                &paging,
+                rip,
+                GuestLinearAddress::new(linear),
+                context,
+                AccessKind::Fetch,
+            ) {
+                Ok(physical) => physical,
+                Err(error) => return (first, bytes, Some(format!("{error:?}"))),
+            };
+            if offset == 0 {
+                first = Some(physical.get());
+            }
+            match memory.read_u8(physical) {
+                Ok(byte) => bytes.push(byte),
+                Err(error) => return (first, bytes, Some(format!("{error:?}"))),
+            }
+        }
+        (first, bytes, None)
+    }
+
     /// Run quanta until the guest halts, faults or the instruction budget is
     /// spent. Each quantum ends on a COM1 THR write (FIRMWARE_BOOT.md 11); the
     /// byte is moved through the UART and recorded, then virtual time advances
@@ -987,6 +1089,27 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, FirmwareBoardError> {
+        self.run_boot_with(false, instruction_budget)
+            .map_err(|failure| failure.error)
+    }
+
+    /// [`Self::run_boot`] through the 2 MiB walk of the Linux direct boot (S4-38L1). The ticks
+    /// (retired ns, PM timer, PIT, RDTSC) are applied exactly as in `run_boot`.
+    ///
+    /// Unlike `run_boot`, a failure also carries the instructions retired before it (the clock
+    /// can fail after a quantum has executed), so the caller does not report a false zero.
+    pub(crate) fn run_linux_boot(
+        &mut self,
+        instruction_budget: u64,
+    ) -> Result<FirmwareRunReport, LinuxRunFailure> {
+        self.run_boot_with(true, instruction_budget)
+    }
+
+    fn run_boot_with(
+        &mut self,
+        large_ram: bool,
+        instruction_budget: u64,
+    ) -> Result<FirmwareRunReport, LinuxRunFailure> {
         let mut remaining = instruction_budget;
         let mut retired = 0u64;
         let mut quanta = 0u64;
@@ -1011,7 +1134,8 @@ impl LoadedFirmwareBoard {
         }
         loop {
             let uart = self.uart.clone();
-            let report = self.run(
+            let report = self.run_quantum(
+                large_ram,
                 remaining,
                 || {
                     uart.holding_occupied()
@@ -1044,15 +1168,18 @@ impl LoadedFirmwareBoard {
                     self.com1_log.push(byte);
                 }
             }
-            self.advance_time_ns(report.instructions_executed)?;
+            self.advance_time_ns(report.instructions_executed)
+                .map_err(|error| LinuxRunFailure { error, retired })?;
             if let Some(pm) = &acpi_pm {
                 let tick_ns = pm.take_timer_tick_ns();
                 #[cfg(test)]
                 let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
-                self.advance_time_ns(tick_ns)?;
+                self.advance_time_ns(tick_ns)
+                    .map_err(|error| LinuxRunFailure { error, retired })?;
             }
             if let Some(pit) = &pit {
-                self.advance_time_ns(pit.take_port_tick_ns())?;
+                self.advance_time_ns(pit.take_port_tick_ns())
+                    .map_err(|error| LinuxRunFailure { error, retired })?;
             }
             if let Some(flag) = &rdtsc_tick
                 && flag.swap(false, Ordering::Relaxed)
@@ -1060,7 +1187,8 @@ impl LoadedFirmwareBoard {
                 let tick_ns = RDTSC_TICK_NS;
                 #[cfg(test)]
                 let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
-                self.advance_time_ns(tick_ns)?;
+                self.advance_time_ns(tick_ns)
+                    .map_err(|error| LinuxRunFailure { error, retired })?;
             }
             let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
             let exit = match report.exit {
@@ -3639,6 +3767,7 @@ mod tests {
     fn rdtsc_without_the_linux_profile_stays_unsupported_without_a_tick() {
         let mut board = load_firmware_image(&rdtsc_image(2), &tables_config()).unwrap();
         assert!(board.rdtsc_tick.is_none());
+        assert!(!board.has_linux_profile());
         let report = board.run_boot(100).unwrap();
         assert_eq!(report.exit, PagedProbeExit::Unsupported { opcode: 0x31 });
         assert_eq!(report.retired, 0, "Unsupported on the first instruction");

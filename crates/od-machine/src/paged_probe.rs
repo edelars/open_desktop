@@ -260,9 +260,7 @@ pub fn run_paged_cr3_probe_2m_ram(
 /// (S4-37L5: the Linux direct boot maps low RAM with 2 MiB leaves). The CPU profile is the base
 /// one, so `MOV r8,imm8`, `MOV r16,imm16`, `IN/OUT DX`, `HLT` and (with a `rdtsc` source) bare
 /// `RDTSC` are admitted; MOV CR3 is not (the CR3 is the board's, not the CPU's). The 4 KiB
-/// fetch and operand limits of the 2 MiB walk apply. Crate-internal, not re-exported.
-// Used by S4-38; the L5 tests exercise it now.
-#[cfg_attr(not(test), allow(dead_code))]
+/// fetch and operand limits of the 2 MiB walk apply. Crate-internal, not re-exported (S4-38L1: `LoadedFirmwareBoard::run_linux_boot` runs it).
 pub(crate) fn run_paged_probe_2m_ram(
     state: &mut LongModeState,
     bus: &mut MachineBus,

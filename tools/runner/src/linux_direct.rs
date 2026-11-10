@@ -1,14 +1,24 @@
 //! `linux-direct`: load a Linux bzImage, an initramfs and the ACPI blob onto the board and write
-//! JSON evidence, WITHOUT starting the guest (S4-37L6).
+//! JSON evidence. Without `--run` the guest is NOT started (S4-37L6); with `--run` it is run
+//! until the budget or the first stop (S4-38L1).
 //!
 //! The runner reads the files, checks the content hash of the kernel and calls
 //! `od_machine::load_linux_direct_board`, which validates every input in a fixed order and
-//! leaves the board at the 64-bit entry state of the Linux boot protocol. No instruction is
-//! retired: the guest runs in S4-38. Placement, E820, `boot_params`, GDT and page tables live in
-//! `od-machine` (`linux_*.rs`).
+//! leaves the board at the 64-bit entry state of the Linux boot protocol. Placement, E820,
+//! `boot_params`, GDT and page tables live in `od-machine` (`linux_*.rs`).
 //!
-//! Order of checks (an earlier failure hides a later one; every failure happens before a
-//! single guest instruction and the JSON says `"retired": 0`):
+//! `--run --budget N` (S4-38L1) then runs the board for at most N instructions through
+//! `od_machine::run_linux_direct_board` (2 MiB walk, base CPU profile, Linux-profile ticks) and
+//! adds a `stop` object (the stop record: exit kind, RIP and its bytes, control registers,
+//! registers, counters, COM1, input hashes); `guest_started` is then true (it means "the run was
+//! requested by `--run`", also for `--budget 0`) and `retired` is the count of the run. Nothing
+//! else in the evidence changes.
+//!
+//! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
+//! is started: their JSON says `"guest_started": false, "retired": 0`. A failure of the run
+//! itself (`run_failed`, after step 8, only with `--run`) is reported separately: its evidence
+//! has `"guest_started": true` and `retired` is the count known at the error (`null` when
+//! unknown, with a note in the detail):
 //!
 //! ```text
 //! 1. arguments, nonce shape, RAM size cap        invalid_input            exit 3
@@ -32,7 +42,10 @@
 //! too (there is no file to write it to). Every `refused` and `loaded` result is printed and
 //! written to `--out`.
 
-use od_machine::{LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, load_linux_direct_board};
+use od_machine::{
+    LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord, load_linux_direct_board,
+    run_linux_direct_board,
+};
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
 use std::fs::File;
@@ -41,7 +54,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex>";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n>]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -68,6 +81,8 @@ struct Options {
     expected_initramfs_sha256: String,
     ram_mib: u64,
     out: String,
+    /// `--run --budget N`: run the guest for at most N instructions after loading.
+    budget: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -101,7 +116,8 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 /// Runs the whole pipeline and returns the JSON evidence and the exit code (0 loaded, 4 refused,
-/// 3 unreadable input). Never starts the guest.
+/// 3 unreadable input). Without `--run` the guest is not started; with `--run` it runs until the
+/// budget or its first stop, after the load has succeeded.
 fn evaluate(options: &Options) -> (Value, u8) {
     let mut evidence = json!({
         "retired": 0,
@@ -196,17 +212,27 @@ fn evaluate(options: &Options) -> (Value, u8) {
     evidence["cmdline"] = json!(cmdline);
 
     // 4-8. od-machine.
-    let loaded = load_linux_direct_board(&LinuxDirectInput {
+    let machine_input = LinuxDirectInput {
         bzimage: &vmlinuz,
         initrd: &initramfs,
         cmdline: cmdline.as_bytes(),
         acpi_blob: &acpi_blob,
         expected_acpi_manifest_hash: options.expected_acpi_manifest_hash,
         ram_bytes,
-    });
-    match loaded {
-        Ok(boot) => {
+    };
+    match load_linux_direct_board(&machine_input) {
+        Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
+            if let Some(budget) = options.budget {
+                match run_linux_direct_board(&mut boot, &machine_input, budget) {
+                    Ok(record) => {
+                        evidence["guest_started"] = json!(true);
+                        evidence["retired"] = json!(record.retired);
+                        evidence["stop"] = describe_stop(&record, budget);
+                    }
+                    Err(error) => return (run_failure(&error, evidence), 4),
+                }
+            }
             let mut value = json!({
                 "schema_version": 1,
                 "command": "linux-direct",
@@ -217,6 +243,22 @@ fn evaluate(options: &Options) -> (Value, u8) {
         }
         Err(error) => (machine_refusal(&error, evidence), 4),
     }
+}
+
+/// The refusal of a failed `--run` (`run_failed`): the run was requested and may have executed
+/// quanta, so the evidence must not claim `guest_started: false` / `retired: 0`. `retired` is the
+/// count known at the error; when it is not known it is `null` and the detail says so.
+fn run_failure(error: &LinuxDirectError, mut evidence: Value) -> Value {
+    evidence["guest_started"] = json!(true);
+    let mut detail = error.detail.clone();
+    match error.retired {
+        Some(retired) => evidence["retired"] = json!(retired),
+        None => {
+            evidence["retired"] = Value::Null;
+            detail.push_str("; instructions retired before the error: unknown");
+        }
+    }
+    refusal(error.code, error.stage, detail, evidence)
 }
 
 /// Marker detail of [`read_capped`] for a file above the cap.
@@ -383,6 +425,68 @@ fn describe(
     evidence["retired"] = json!(boot.retired);
 }
 
+/// Register names in the order of `LinuxStopRecord::gpr` (`od_isa::Register`).
+const GPR_NAMES: [&str; 16] = [
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
+
+/// Space-separated lowercase hex bytes (`fc fa 31 c0`).
+fn hex_spaced(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The stop record of a `--run` (S4-38L1) as JSON.
+fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
+    let mut gpr = serde_json::Map::new();
+    for (name, value) in GPR_NAMES.iter().zip(record.gpr) {
+        gpr.insert((*name).to_string(), json!(hex64(value)));
+    }
+    let inputs = &record.inputs;
+    json!({
+        "budget": budget,
+        "exit_kind": record.exit_kind,
+        "exit_detail": record.exit_detail,
+        "unsupported_opcode": record.unsupported_opcode.map(|opcode| format!("0x{opcode:02x}")),
+        "rip": hex64(record.rip),
+        "rip_gpa": record.rip_gpa.map(hex64),
+        "rip_bytes": hex_spaced(&record.rip_bytes),
+        "rip_bytes_error": record.rip_bytes_error,
+        "mode": record.mode,
+        "cpl": record.cpl,
+        "cr0": record.cr0.map(hex64),
+        "cr3": hex64(record.cr3),
+        "cr4": record.cr4.map(hex64),
+        "efer": hex64(record.efer),
+        "rflags": hex64(record.rflags),
+        "gpr": Value::Object(gpr),
+        "retired": record.retired,
+        "quanta": record.quanta,
+        "virtual_ns": record.virtual_ns,
+        "tsc_hz": record.tsc_hz,
+        "com1_hex": hex(&record.com1),
+        "com1_text": String::from_utf8_lossy(&record.com1),
+        "cpu_profile": "PagedCpl0ProbeV1 (base paged profile, no CPUID/MSR) with a bare RDTSC \
+                            (step_paged_probe_with_rdtsc) under the Linux profile, 2 MiB walk",
+        "linux_profile": record.linux_profile,
+        "page_fault": record.page_fault,
+        "memory_error": record.memory_error,
+        "inputs": {
+            "vmlinuz_sha256": hex(&inputs.bzimage_sha256),
+            "initramfs_sha256": inputs.initrd_sha256.as_ref().map(|hash| hex(hash)),
+            "acpi_blob_sha256": hex(&inputs.acpi_blob_sha256),
+            "acpi_manifest_hash": hex(&inputs.acpi_manifest_hash),
+            "kernel_pm_code_sha256_in_memory": hex(&inputs.kernel_pm_code_sha256_in_memory),
+            "initramfs_sha256_in_memory":
+                inputs.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash)),
+        },
+    })
+}
+
 /// The protected-mode code of the bzImage file: the bytes the loader copies to the kernel zone.
 fn pm_code<'a>(header: &od_machine::LinuxBzImageHeader, file: &'a [u8]) -> Option<&'a [u8]> {
     let start = usize::try_from(header.protected_mode_offset).ok()?;
@@ -400,9 +504,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut expected_initramfs = None;
     let mut ram_mib = None;
     let mut out = None;
+    let mut run = false;
+    let mut budget = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
+        // `--run` is the one flag without a value.
+        if name == "--run" {
+            if std::mem::replace(&mut run, true) {
+                return Err(format!("duplicate option --run; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
         // A value that looks like the next flag is a forgotten value, not a value.
         let value = args
             .get(index + 1)
@@ -418,6 +532,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--expected-initramfs-sha256" => &mut expected_initramfs,
             "--ram-mib" => &mut ram_mib,
             "--out" => &mut out,
+            "--budget" => &mut budget,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -429,6 +544,18 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     let required = |value: Option<String>, name: &str| {
         value.ok_or_else(|| format!("{name} is required; usage: {USAGE}"))
+    };
+    let budget = match (run, budget) {
+        // `u64::from_str` accepts a leading '+'; the budget is plain decimal digits.
+        (true, Some(text)) => Some(
+            text.parse::<u64>()
+                .ok()
+                .filter(|_| !text.starts_with('+'))
+                .ok_or_else(|| format!("invalid --budget '{text}'"))?,
+        ),
+        (true, None) => return Err(format!("--run needs --budget; usage: {USAGE}")),
+        (false, Some(_)) => return Err(format!("--budget needs --run; usage: {USAGE}")),
+        (false, None) => None,
     };
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
@@ -473,6 +600,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         )?)?,
         ram_mib,
         out: required(out, "--out")?,
+        budget,
     })
 }
 
@@ -556,6 +684,14 @@ mod tests {
         b
     }
 
+    /// `bzimage()` with `code` at the 64-bit entry (`startup_64`, offset 0x200 of the kernel).
+    fn bzimage_with_entry(code: &[u8]) -> Vec<u8> {
+        let mut file = bzimage();
+        let at = PM_OFFSET + 0x200;
+        file[at..at + code.len()].copy_from_slice(code);
+        file
+    }
+
     /// A scratch directory with the input files of one case.
     struct Case {
         dir: PathBuf,
@@ -584,6 +720,7 @@ mod tests {
                 expected_initramfs_sha256: sha256_hex(initramfs),
                 ram_mib: 128,
                 out: dir.join("out.json").to_string_lossy().into_owned(),
+                budget: None,
             };
             Self { dir, options }
         }
@@ -975,6 +1112,170 @@ mod tests {
         }
     }
 
+    #[test]
+    fn run_and_budget_are_parsed_together() {
+        let hash = "a".repeat(64);
+        let base = |extra: &[&str]| {
+            let mut v: Vec<String> = [
+                "--vmlinuz",
+                "k",
+                "--initramfs",
+                "i",
+                "--acpi-blob",
+                "b",
+                "--nonce",
+                "n1",
+                "--expected-vmlinuz-sha256",
+                hash.as_str(),
+                "--expected-acpi-manifest-hash",
+                hash.as_str(),
+                "--ram-mib",
+                "128",
+                "--out",
+                "o",
+                "--expected-initramfs-sha256",
+                hash.as_str(),
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        assert_eq!(parse(&base(&[])).unwrap().budget, None);
+        assert_eq!(
+            parse(&base(&["--run", "--budget", "1000"])).unwrap().budget,
+            Some(1000)
+        );
+        // `--run` may stand anywhere, and a budget of 0 is allowed.
+        assert_eq!(
+            parse(&base(&["--budget", "0", "--run"])).unwrap().budget,
+            Some(0)
+        );
+        for bad in [
+            base(&["--run"]),
+            base(&["--budget", "5"]),
+            base(&["--run", "--run", "--budget", "5"]),
+            base(&["--run", "--budget", "x"]),
+            base(&["--run", "--budget", "-1"]),
+            base(&["--run", "--budget", "+5"]),
+            base(&["--run", "--budget", ""]),
+            base(&["--run", "--budget"]),
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    fn run_case(name: &str, code: &[u8], budget: u64) -> Value {
+        let mut case = Case::new(name, &bzimage_with_entry(code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(budget);
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["status"], "loaded");
+        value
+    }
+
+    #[test]
+    fn without_run_the_guest_is_not_started_and_there_is_no_stop_record() {
+        let case = Case::good("no-run");
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["guest_started"], false);
+        assert_eq!(value["retired"], 0);
+        assert!(value.get("stop").is_none());
+    }
+
+    #[test]
+    fn run_reports_the_stop_record_of_each_exit() {
+        // CLD: outside the base profile, stops before retirement.
+        let value = run_case("run-cld", &[0xFC, 0xFA, 0x31, 0xC0], 100);
+        assert_eq!(value["guest_started"], true);
+        assert_eq!(value["retired"], 0);
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported");
+        assert_eq!(stop["unsupported_opcode"], "0xfc");
+        assert_eq!(stop["rip"], "0x1000200");
+        assert_eq!(stop["rip_gpa"], "0x1000200");
+        assert!(
+            stop["rip_bytes"]
+                .as_str()
+                .unwrap()
+                .starts_with("fc fa 31 c0")
+        );
+        assert_eq!(stop["retired"], 0);
+        assert_eq!(stop["budget"], 100);
+        assert_eq!(
+            (stop["mode"].as_str(), stop["cpl"].as_u64()),
+            (Some("long64"), Some(0))
+        );
+        assert_eq!(stop["cr3"], "0x130000");
+        assert_eq!(stop["linux_profile"], true);
+        assert_eq!(
+            stop["inputs"]["vmlinuz_sha256"],
+            sha256_hex(&bzimage_with_entry(&[0xFC, 0xFA, 0x31, 0xC0]))
+        );
+        assert_eq!(
+            stop["inputs"]["initramfs_sha256"],
+            sha256_hex(&[0xAB; 4688])
+        );
+        // The entry registers of the loader stay as they were.
+        assert_eq!(value["entry"]["rip"], "0x1000200");
+
+        // Budget 0: stops before the first fetch.
+        let value = run_case("run-b0", &[0xF4], 0);
+        assert_eq!(value["stop"]["exit_kind"], "budget_exhausted");
+        assert_eq!(value["retired"], 0);
+
+        // HLT as the first byte; and MOV/OUT/HLT writes COM1.
+        let value = run_case("run-hlt", &[0xF4], 100);
+        assert_eq!(value["stop"]["exit_kind"], "halted");
+        assert_eq!(value["retired"], 1);
+        assert_eq!(value["stop"]["rip"], "0x1000201");
+        let value = run_case(
+            "run-com1",
+            &[0xb0, b'X', 0x66, 0xba, 0xf8, 0x03, 0xee, 0xf4],
+            100,
+        );
+        assert_eq!(value["stop"]["exit_kind"], "halted");
+        assert_eq!(value["stop"]["com1_text"], "X");
+        assert_eq!(value["stop"]["com1_hex"], "58");
+        assert_eq!(value["retired"], 4);
+    }
+
+    #[test]
+    fn a_failed_run_is_not_reported_as_not_started() {
+        // `run_failed` cannot be provoked through the CLI (it needs a clock at its maximum), so
+        // the evidence builder is checked directly with the error of the machine.
+        let error = LinuxDirectError {
+            code: "run_failed",
+            stage: "run",
+            detail: "Clock(TimeOverflow)".to_string(),
+            retired: Some(7),
+        };
+        let base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
+        let value = run_failure(&error, base.clone());
+        assert_eq!(value["status"], "refused");
+        assert_eq!(code_of(&value), ("run_failed", "run"));
+        assert_eq!(value["guest_started"], true);
+        assert_eq!(value["retired"], 7);
+        assert_eq!(value["error"]["detail"], "Clock(TimeOverflow)");
+        assert_eq!(value["nonce"], "n");
+        // An unknown count is null with a note, never a false 0.
+        let unknown = LinuxDirectError {
+            retired: None,
+            ..error
+        };
+        let value = run_failure(&unknown, base);
+        assert_eq!(value["guest_started"], true);
+        assert_eq!(value["retired"], Value::Null);
+        assert!(
+            value["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .ends_with("instructions retired before the error: unknown")
+        );
+    }
+
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
     /// instruction runs. Run with `-- --ignored` on a machine that has `work/stage4`.
     #[test]
@@ -994,6 +1295,7 @@ mod tests {
                 "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
             ram_mib: 128,
             out: String::new(),
+            budget: None,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1011,5 +1313,44 @@ mod tests {
             (ecam["size"].as_str(), ecam["type"].as_u64()),
             (Some("0x100000"), Some(2))
         );
+    }
+
+    /// Real kernel, first stop (S4-38L1): `startup_64` begins with CLD (`fc fa 31 c0`), which the
+    /// base paged profile does not admit. The evidence file of the slice comes from the CLI.
+    #[test]
+    #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
+    fn real_artifacts_stop_at_the_first_instruction_of_the_kernel() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let options = Options {
+            vmlinuz: path("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"),
+            initramfs: path("work/stage4/initramfs/initramfs.cpio"),
+            acpi_blob: path("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"),
+            nonce: "real-run-1".to_string(),
+            expected_vmlinuz_sha256:
+                "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e".to_string(),
+            expected_acpi_manifest_hash: board_manifest_hash(),
+            expected_initramfs_sha256:
+                "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
+            ram_mib: 128,
+            out: String::new(),
+            budget: Some(1000),
+        };
+        let (value, exit) = evaluate(&options);
+        assert_eq!(exit, 0, "{value:#}");
+        println!("{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xfc");
+        assert_eq!(stop["rip"], "0x1000200");
+        assert_eq!(stop["rip_gpa"], "0x1000200");
+        assert!(
+            stop["rip_bytes"]
+                .as_str()
+                .unwrap()
+                .starts_with("fc fa 31 c0")
+        );
+        assert_eq!(value["retired"], 0);
+        assert_eq!(value["guest_started"], true);
     }
 }
