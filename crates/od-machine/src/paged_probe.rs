@@ -18,6 +18,8 @@ use od_isa::memory::{
 #[derive(Debug, Eq, PartialEq)]
 pub enum PagedProbeRejection {
     Configuration(crate::ProbeConfigError),
+    /// The CPL0 profile set refused the state before any fetch (S4-38L3, set path only).
+    Cpl0Set(od_isa::Cpl0ProfileSetInputError),
     Cpu(CpuProbeRejection),
     CpuOwnedCr3State {
         value: u64,

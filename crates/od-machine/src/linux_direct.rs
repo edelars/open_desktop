@@ -41,12 +41,17 @@ use crate::PagedProbeExit;
 use crate::acpi_blob::{
     AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
 };
-use crate::firmware_board::{FirmwareBoardConfig, LoadedFirmwareBoard};
+use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwareBoard};
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
-use od_isa::Register;
+use od_isa::cpuid::CpuidProfile;
+use od_isa::execute::{
+    ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
+};
+use od_isa::msr::MsrProfile;
+use od_isa::{CliProfile, HaltProfile, Register};
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -472,6 +477,19 @@ pub struct LinuxStopRecord {
     /// The last non-architectural RAM/backend classification, as `Debug` text.
     pub memory_error: Option<String>,
     pub inputs: LinuxStopInputs,
+    /// How the run executed: `paged_probe` ([`run_linux_direct_board`], the base profile) or
+    /// `cpl0_set` ([`run_linux_direct_board_set`], S4-38L3).
+    pub path: &'static str,
+    /// The members of the CPL0 profile set, in builder order (empty on the `paged_probe` path).
+    pub set_members: Vec<String>,
+    /// The `Debug` text of the set's own final exit, before it was expressed as `exit` (`None`
+    /// on the `paged_probe` path).
+    pub set_exit_detail: Option<String>,
+    /// How many `MOV CR3` retired and made the walker be rebuilt (0 on the `paged_probe`
+    /// path, where `MOV CR3` is `Unsupported`).
+    pub cr3_changes: u64,
+    /// The last of them as `(old_cr3, new_cr3)`.
+    pub last_cr3_change: Option<(u64, u64)>,
 }
 
 fn exit_kind(exit: &PagedProbeExit) -> &'static str {
@@ -510,6 +528,33 @@ pub fn run_linux_direct_board(
             error.retired = Some(failure.retired);
             error
         })?;
+    Ok(stop_record(
+        boot,
+        input,
+        report,
+        SetExtras {
+            path: "paged_probe",
+            members: Vec::new(),
+            exit_detail: None,
+            changes: &[],
+        },
+    ))
+}
+
+/// What the set path adds to a stop record.
+struct SetExtras<'a> {
+    path: &'static str,
+    members: Vec<String>,
+    exit_detail: Option<String>,
+    changes: &'a [TranslationContextChange],
+}
+
+fn stop_record(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    report: FirmwareRunReport,
+    extras: SetExtras<'_>,
+) -> LinuxStopRecord {
     let state = boot.board.state().clone();
     let (rip_gpa, rip_bytes, rip_bytes_error) =
         boot.board.fetch_view_2m(state.rip, LINUX_STOP_RIP_BYTES);
@@ -517,7 +562,7 @@ pub fn run_linux_direct_board(
         PagedProbeExit::Unsupported { opcode } => Some(opcode),
         _ => None,
     };
-    Ok(LinuxStopRecord {
+    LinuxStopRecord {
         exit_kind: exit_kind(&report.exit),
         exit_detail: format!("{:?}", report.exit),
         exit: report.exit,
@@ -550,7 +595,122 @@ pub fn run_linux_direct_board(
             kernel_pm_code_sha256_in_memory: boot.kernel_sha256_in_memory,
             initrd_sha256_in_memory: boot.initrd_sha256_in_memory,
         },
-    })
+        path: extras.path,
+        set_members: extras.members,
+        set_exit_detail: extras.exit_detail,
+        cr3_changes: extras.changes.len() as u64,
+        // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
+        last_cr3_change: extras
+            .changes
+            .iter()
+            .rev()
+            .find_map(|change| match *change {
+                TranslationContextChange::Cr3Write { old_cr3, new_cr3 } => Some((old_cr3, new_cr3)),
+                _ => None,
+            }),
+    }
+}
+
+/// The members of the CPL0 profile set a Linux run is built with (S4-38L3). `CLI` is always
+/// there (`startup_64` begins `CLD; CLI`). The default is the minimal set: nothing is added for
+/// a form the kernel has not yet reached; each further member is added by the slice that moves
+/// the first stop onto the form that needs it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinuxCpl0SetMembers {
+    /// `with_cpu_owned_cr3`: `MOV CR3, RAX` retires and the walker follows it. The board CR3 is
+    /// handed to the CPU either way; without this member the set refuses the state
+    /// (`Cr3NotAdmitted`, a negative control).
+    pub cpu_owned_cr3: bool,
+    /// `with_cpuid(DiagnosticV1)`: only what that profile declares, nothing more.
+    pub cpuid: bool,
+    /// `with_rdtsc`: the source is the board clock, which also queues the 1 us RDTSC tick like
+    /// `run_boot`; admitted only under the board's Linux profile.
+    pub rdtsc: bool,
+    /// `with_msr(EferReadOnlyV1(board EFER))`.
+    pub msr: bool,
+    /// `with_halt`.
+    pub halt: bool,
+    /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus (COM1, PM timer, PIT).
+    pub pio_u8: bool,
+}
+
+impl LinuxCpl0SetMembers {
+    /// CLI and the CPU-owned CR3 only.
+    pub const fn minimal() -> Self {
+        Self {
+            cpu_owned_cr3: true,
+            cpuid: false,
+            rdtsc: false,
+            msr: false,
+            halt: false,
+            pio_u8: false,
+        }
+    }
+}
+
+/// [`run_linux_direct_board`] through the CPL0 profile set of od-isa (S2-45) instead of the
+/// base probe profile (S4-38L3). The walker, the board CR3, the Linux-profile ticks and the stop
+/// condition are the same; the differences are the CPU profile (`members`) and that a `MOV CR3`
+/// is a continuation (the walker is rebuilt for the new CR3) whose count and last value the
+/// record carries. The board CR3 afterwards is the last one the guest wrote.
+///
+/// Nothing is executed that the set does not admit: the first inadmissible instruction is the
+/// stop (`Unsupported`), and the segment caches the loader left are not touched.
+pub fn run_linux_direct_board_set(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let cli = CliProfile::NonPviLong64V1;
+    let cpuid = CpuidProfile::DiagnosticV1;
+    let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
+    let halt = HaltProfile::Long64V1;
+    let mut names = vec!["cli".to_string()];
+    let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+    if members.cpu_owned_cr3 {
+        set = set.with_cpu_owned_cr3(MovCr3Long64V1);
+        names.push("cpu_owned_cr3".into());
+    }
+    if members.cpuid {
+        set = set.with_cpuid(&cpuid);
+        names.push("cpuid:DiagnosticV1".into());
+    }
+    if members.rdtsc {
+        set = set.with_rdtsc();
+        names.push("rdtsc".into());
+    }
+    if members.msr {
+        set = set.with_msr(&msr);
+        names.push(format!("msr:{msr:?}"));
+    }
+    if members.halt {
+        set = set.with_halt(&halt);
+        names.push("halt".into());
+    }
+    if members.pio_u8 {
+        set = set.with_pio_u8();
+        names.push("pio_u8".into());
+    }
+    let report = boot
+        .board
+        .run_linux_boot_cpl0_set(instruction_budget, &set, true)
+        .map_err(|failure| {
+            let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
+            error.retired = Some(failure.retired);
+            error
+        })?;
+    Ok(stop_record(
+        boot,
+        input,
+        report.run,
+        SetExtras {
+            path: "cpl0_set",
+            members: names,
+            exit_detail: Some(report.set_exit_detail),
+            changes: &report.translation_context_changes,
+        },
+    ))
 }
 
 /// Reads the E820 table out of a `boot_params` page. The count byte comes from guest memory
@@ -1466,5 +1626,203 @@ mod tests {
             "{report:?}"
         );
         assert_eq!(report.instructions_executed, 0);
+    }
+
+    // ---- S4-38L3: the Linux board through the CPL0 set, the stop record ----
+
+    fn run_set_facade(
+        boot: &mut LinuxDirectBoot,
+        file: &[u8],
+        budget: u64,
+        members: LinuxCpl0SetMembers,
+    ) -> LinuxStopRecord {
+        run_linux_direct_board_set(boot, &input(file, &[], BLOB, board_hash()), budget, members)
+            .expect("runs")
+    }
+
+    #[test]
+    fn set_facade_prologue_stops_on_the_loader_segment_cache_with_three_retired() {
+        let (mut boot, file) = boot_with_entry(&PROLOGUE);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x8E },
+            "{record:?}"
+        );
+        assert_eq!(record.unsupported_opcode, Some(0x8E));
+        assert_eq!((record.retired, record.rip), (3, ENTRY + 4));
+        assert_eq!(record.rip_bytes[..2], [0x8E, 0xD8]);
+        assert_eq!(record.rflags & (1 << 9), 0, "CLI cleared IF");
+        assert_eq!(record.path, "cpl0_set");
+        assert_eq!(record.set_members, ["cli", "cpu_owned_cr3"]);
+        assert_eq!(
+            record.set_exit_detail.as_deref(),
+            Some("Run(Unsupported { opcode: 142 })")
+        );
+        assert_eq!((record.cr3_changes, record.last_cr3_change), (0, None));
+        assert_eq!(record.cr3, boot.board.cr3());
+        assert_eq!(boot.board.state().cr3, None, "the CPU state keeps no CR3");
+        // The same board run through the base profile is the L1 control: CLD is the stop.
+        let (mut boot, file) = boot_with_entry(&PROLOGUE);
+        let base = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 64)
+            .expect("runs");
+        assert_eq!(base.exit, PagedProbeExit::Unsupported { opcode: 0xFC });
+        assert_eq!(
+            (base.retired, base.path, base.cr3_changes),
+            (0, "paged_probe", 0)
+        );
+        assert!(base.set_members.is_empty() && base.set_exit_detail.is_none());
+    }
+
+    #[test]
+    fn set_facade_mov_cr3_is_a_continuation_that_the_record_counts() {
+        let board_cr3 = boot_with_entry(&[0xF4]).0.board.cr3();
+        let (mut boot, file) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5);
+        assert_eq!(
+            record.gpr[Register::Rbx as usize],
+            0x2222,
+            "new tree fetched"
+        );
+        assert_eq!(record.cr3_changes, 1);
+        assert_eq!(record.last_cr3_change, Some((board_cr3, TREE_PML4)));
+        assert_eq!(record.cr3, TREE_PML4);
+        assert_eq!(boot.board.cr3(), TREE_PML4);
+        assert_eq!(boot.board.state().cr3, None);
+        assert_eq!(record.set_members, ["cli", "cpu_owned_cr3", "halt"]);
+        // Budget exactly at the MOV CR3: the continuation still stops before the next fetch.
+        let (mut boot, file) = boot_with_entry(&cr3_switch_program(TREE_PML4, 0x1111));
+        install_second_tree(&mut boot, 0x2222);
+        let record = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!((record.retired, record.rip), (3, ENTRY + 0xB));
+        assert_eq!(record.last_cr3_change, Some((board_cr3, TREE_PML4)));
+    }
+
+    #[test]
+    fn set_facade_without_the_cr3_member_refuses_the_board_cr3_before_any_fetch() {
+        let (mut boot, file) = boot_with_entry(&PROLOGUE);
+        let members = LinuxCpl0SetMembers {
+            cpu_owned_cr3: false,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit_kind, "rejected", "{record:?}");
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Rejected(crate::PagedProbeRejection::Cpl0Set(
+                od_isa::Cpl0ProfileSetInputError::Cr3NotAdmitted
+            ))
+        );
+        assert_eq!((record.retired, record.rip), (0, ENTRY));
+        assert_eq!(record.set_members, ["cli"]);
+        assert_eq!(boot.board.state().cr3, None);
+    }
+
+    #[test]
+    fn set_facade_budget_zero_stops_before_any_fetch() {
+        let (mut boot, file) = boot_with_entry(&PROLOGUE);
+        let record = run_set_facade(&mut boot, &file, 0, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!((record.retired, record.rip), (0, ENTRY));
+        assert_eq!(record.page_fault, None);
+        assert_eq!(
+            record.set_exit_detail.as_deref(),
+            Some("Run(InstructionBudgetExhausted)")
+        );
+    }
+
+    #[test]
+    fn set_facade_com1_through_the_bus_needs_the_pio_member() {
+        // MOV AL,'X'; MOV DX,0x3F8; OUT DX,AL; HLT behind CLI.
+        let mut code = vec![0xFA];
+        code.extend_from_slice(&com1_program(b'X'));
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            pio_u8: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.com1, b"X");
+        assert_eq!(record.retired, 5);
+        assert!(record.quanta >= 2, "the THR write ends the quantum");
+        // Without the member the OUT is the stop and no byte reaches the bus.
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xEE },
+            "{record:?}"
+        );
+        assert_eq!((record.retired, record.rip), (3, ENTRY + 1 + 6));
+        assert!(record.com1.is_empty());
+    }
+
+    #[test]
+    fn set_facade_cr4_read_and_the_cpuid_msr_rdtsc_members() {
+        // CLI; MOV RAX, CR4; XOR EAX, EAX; CPUID(0); HLT.
+        let (mut boot, file) =
+            boot_with_entry(&[0xFA, 0x0F, 0x20, 0xE0, 0x31, 0xC0, 0x0F, 0xA2, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            cpuid: true,
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.gpr[Register::Rax as usize],
+            1,
+            "DiagnosticV1 leaf 0 maximum"
+        );
+        assert_eq!(
+            record.gpr[Register::Rbx as usize],
+            u64::from(u32::from_le_bytes(*b"Open"))
+        );
+        assert_eq!(
+            record.set_members,
+            ["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "halt"]
+        );
+        // The same bytes without the CPUID member stop at it.
+        let (mut boot, file) =
+            boot_with_entry(&[0xFA, 0x0F, 0x20, 0xE0, 0x31, 0xC0, 0x0F, 0xA2, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert!(
+            matches!(record.exit, PagedProbeExit::Unsupported { .. }),
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        // CLI; RDTSC; HLT: the tick of the board clock is applied like in `run_boot`.
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0x0F, 0x31, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            rdtsc: true,
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!((record.retired, record.quanta), (3, 2));
+        assert_eq!(record.virtual_ns, 3 + 1_000);
+        // Without the member RDTSC is the stop.
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0x0F, 0x31, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{record:?}"
+        );
     }
 }

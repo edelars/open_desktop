@@ -8,7 +8,7 @@ use od_isa::LongModeState;
 use od_isa::execute::{
     Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, InvlpgExit, InvlpgLong64V1,
     InvlpgResult, RunConfig, RunExit, RunInputError, RunResult, TranslationContextChange,
-    run_with_cpl0_profile_set, step_invlpg as cpu_step_invlpg,
+    run_with_cpl0_profile_set_and_pio, step_invlpg as cpu_step_invlpg,
     step_paged_mov as cpu_step_paged_mov,
 };
 use od_isa::execute::{
@@ -64,7 +64,7 @@ pub fn step_paged_invlpg(
         .map_err(PagedInvlpgStepError::Configuration)?;
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -179,7 +179,7 @@ fn step_paged_state_op(
     let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -243,7 +243,7 @@ pub fn with_paged_mov_memory<R>(
 ) -> PagedMovMemoryScope<R> {
     let mut ignore_write = |_| {};
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut ignore_write,
@@ -294,7 +294,7 @@ pub fn step_paged_mov(
     };
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -344,7 +344,7 @@ pub fn step_paged_mov_2m_ram(
     };
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -373,7 +373,6 @@ pub fn step_paged_mov_2m_ram(
 
 /// Final exit of [`run_cpl0_set_paged_2m_ram`].
 #[derive(Debug, Eq, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum PagedCpl0SetExit {
     /// The set's own exit. `InstructionBudgetExhausted` and `StopRequested` are
     /// raised by the loop between instructions, before any fetch.
@@ -396,10 +395,12 @@ pub(crate) enum PagedCpl0SetExit {
     },
     /// The set reported a context change the board does not rebuild for.
     UnexpectedContextChange { effect: TranslationContextChange },
+    /// The port of `IN AL, DX` / `OUT DX, AL` (`with_pio_u8`) failed. RIP is on the
+    /// instruction, which did not retire.
+    PortIo(crate::BusAccessError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct PagedCpl0SetReport {
     pub(crate) exit: PagedCpl0SetExit,
     pub(crate) instructions_executed: u64,
@@ -422,13 +423,14 @@ pub(crate) struct PagedCpl0SetReport {
 /// `MOV CR3, RAX` and the next fetch already walks the new CR3. `cr3` is the
 /// initial walker root; with a CPU-owned CR3 (`with_cpu_owned_cr3`) it must
 /// equal `state.cr3`. The memory profile is the one of
-/// [`step_paged_mov_2m_ram`]: qword operands inside one 4 KiB page and no MMIO;
-/// `IN`/`OUT` are not reachable (`with_pio_u8` is not served here).
+/// [`step_paged_mov_2m_ram`]: qword operands inside one 4 KiB page and no MMIO.
+/// `IN`/`OUT` DX reach the port half of `bus` only for a set built with `with_pio_u8`
+/// (S4-38L3); the memory half and the port half are split off the same bus for every
+/// instruction, and without that member the forms stay `Unsupported` and no port is touched.
 ///
 /// Stop is polled and the budget is checked before each instruction, like the
 /// paged probe quantum.
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_cpl0_set_paged_2m_ram(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -475,8 +477,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             );
         }
         let instruction_rip = state.rip;
+        let (ram, mut port) = bus.split_for_pio_step();
         let mut memory = PagedMovMemoryAdapter {
-            bus: &mut *bus,
+            bus: AdapterBus::Ram(ram),
             paging,
             instruction_rip,
             committed_write: &mut committed_write,
@@ -494,7 +497,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             large_ram_profile: true,
             dword_write_profile: false,
         };
-        let result = run_with_cpl0_profile_set(
+        let result = run_with_cpl0_profile_set_and_pio(
             state,
             &mut memory,
             RunConfig {
@@ -507,6 +510,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             rdtsc
                 .as_mut()
                 .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+            &mut port,
             || false,
         );
         let (page_fault, memory_error) = (memory.page_fault, memory.memory_error);
@@ -556,8 +560,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             Cpl0ProfileSetExit::Run(exit) => {
                 break (PagedCpl0SetExit::Run(exit), page_fault, memory_error);
             }
-            // The set has no port here, so its port exit cannot occur.
-            Cpl0ProfileSetExit::PortIo(never) => match never {},
+            Cpl0ProfileSetExit::PortIo(error) => {
+                break (PagedCpl0SetExit::PortIo(error), page_fault, memory_error);
+            }
         }
     };
     PagedCpl0SetReport {
@@ -589,7 +594,7 @@ pub fn step_paged_mov_word_read(
     };
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -659,7 +664,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
     };
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -711,7 +716,7 @@ pub fn step_paged_mov_dword_read(
     };
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -772,7 +777,7 @@ pub fn step_paged_mov_dword_store(
     let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)?;
     let instruction_rip = state.rip;
     let mut memory = PagedMovMemoryAdapter {
-        bus,
+        bus: bus.into(),
         paging,
         instruction_rip,
         committed_write: &mut committed_write,
@@ -805,6 +810,45 @@ pub fn step_paged_mov_dword_store(
     })
 }
 
+/// What the adapter reads and writes through. `Machine` is the whole bus (every profile);
+/// `Ram` is the physical memory alone, split off from the bus so that the port half of the same
+/// bus can serve `IN`/`OUT` in the same instruction (large-RAM profile only, S4-38L3).
+enum AdapterBus<'a> {
+    Machine(&'a mut MachineBus),
+    Ram(&'a mut crate::PhysicalMemory),
+}
+
+impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
+    fn from(bus: &'a mut MachineBus) -> Self {
+        Self::Machine(bus)
+    }
+}
+
+impl AdapterBus<'_> {
+    /// The whole bus; the `Ram` form is built only for the large-RAM walk, which never asks
+    /// for it.
+    fn machine(&mut self) -> &mut MachineBus {
+        match self {
+            Self::Machine(bus) => bus,
+            Self::Ram(_) => unreachable!("the RAM-only adapter bus serves the large-RAM walk only"),
+        }
+    }
+
+    fn access_2m_ram(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> crate::TrackedAccessReport {
+        match self {
+            Self::Machine(bus) => bus.access_tracked_2m_ram(paging, request, committed_write),
+            Self::Ram(memory) => {
+                crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
+            }
+        }
+    }
+}
+
 /// `GuestMemory` view scoped to one instruction attempt; same-page RAM and
 /// MMIO backing is routed through `MachineBus`. A crossing qword load resolves
 /// both 4 KiB walks and RAM ranges before reading either operand portion; it
@@ -818,7 +862,7 @@ pub fn step_paged_mov_dword_store(
 /// faults, and are not retried; this adapter makes no rollback claim for device
 /// effects.
 pub struct PagedMovMemoryAdapter<'a> {
-    bus: &'a mut MachineBus,
+    bus: AdapterBus<'a>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
@@ -859,12 +903,14 @@ impl PagedMovMemoryAdapter<'_> {
             let mut writes = Vec::new();
             let report = if self.large_ram_profile {
                 self.bus
-                    .access_tracked_2m_ram(&self.paging, request, |range| writes.push(range))
+                    .access_2m_ram(&self.paging, request, |range| writes.push(range))
             } else if self.ram_only {
                 self.bus
+                    .machine()
                     .access_tracked_ram(&self.paging, request, |range| writes.push(range))
             } else {
                 self.bus
+                    .machine()
                     .access_tracked(&self.paging, request, |range| writes.push(range))
             };
             self.committed_writes
@@ -883,12 +929,14 @@ impl PagedMovMemoryAdapter<'_> {
             report
         } else if self.large_ram_profile {
             self.bus
-                .access_tracked_2m_ram(&self.paging, request, &mut *self.committed_write)
+                .access_2m_ram(&self.paging, request, &mut *self.committed_write)
         } else if self.ram_only {
             self.bus
+                .machine()
                 .access_tracked_ram(&self.paging, request, &mut *self.committed_write)
         } else {
             self.bus
+                .machine()
                 .access_tracked(&self.paging, request, &mut *self.committed_write)
         };
         match report.outcome {
@@ -910,7 +958,7 @@ impl PagedMovMemoryAdapter<'_> {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
         };
-        let result = self.bus.read_tracked_bounded_ram_read(
+        let result = self.bus.machine().read_tracked_bounded_ram_read(
             &self.paging,
             TrackedAccessRequest {
                 instruction_rip: self.instruction_rip,
@@ -1134,7 +1182,7 @@ mod tests {
         callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
     ) -> PagedMovMemoryAdapter<'a> {
         PagedMovMemoryAdapter {
-            bus,
+            bus: bus.into(),
             paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
             instruction_rip: 0x0040_0000,
             committed_write: callbacks,
