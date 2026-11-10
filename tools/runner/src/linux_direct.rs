@@ -23,7 +23,10 @@
 //! then also says `path: cpl0_set`, the set members, the set's own final exit (`set_exit_detail`)
 //! and how many CR3 changes happened
 //! (`cr3_changes`, `last_cr3_change`; a `MOV CR3` that ended the run in an integration error is
-//! counted and `cr3` is its CR3). The `paged_probe` path carries the same fields with empty
+//! counted and `cr3` is its CR3). Since S4-38L5c a guest `#PF` is delivered through the guest IDT
+//! when one is loaded; `exceptions_delivered` counts these (a delivery is not a retired
+//! instruction), and a `#PF` that could not be delivered is still the `fault` stop, with the reason
+//! in `set_exit_detail`. The `paged_probe` path carries the same fields with empty
 //! values; `schema_version` stays 1 (the fields are additive).
 //!
 //! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
@@ -507,6 +510,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         // S4-38L4: the CPUID leaf (EAX) the run stopped before (`exit_kind` `cpuid_divergence`),
         // hex, or null. The CPUID did not execute and nothing was answered for it.
         "cpuid_divergence_leaf": record.cpuid_divergence_leaf.map(|leaf| hex64(u64::from(leaf))),
+        "exceptions_delivered": record.exceptions_delivered,
         "cr3_changes": record.cr3_changes,
         "last_cr3_change": record.last_cr3_change.map(|(old, new)| json!({
             "old_cr3": hex64(old),

@@ -502,6 +502,9 @@ pub struct LinuxStopRecord {
     /// `retired` counts what came before, no register changed, nothing was answered. `None` for
     /// every other exit.
     pub cpuid_divergence_leaf: Option<u32>,
+    /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
+    /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
+    pub exceptions_delivered: u64,
 }
 
 fn exit_kind(exit: &PagedProbeExit) -> &'static str {
@@ -550,6 +553,7 @@ pub fn run_linux_direct_board(
             exit_detail: None,
             changes: &[],
             cpuid_divergence_leaf: None,
+            exceptions_delivered: 0,
         },
     ))
 }
@@ -561,6 +565,7 @@ struct SetExtras<'a> {
     exit_detail: Option<String>,
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
+    exceptions_delivered: u64,
 }
 
 fn stop_record(
@@ -617,6 +622,7 @@ fn stop_record(
         set_members: extras.members,
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
+        exceptions_delivered: extras.exceptions_delivered,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
         last_cr3_change: extras
@@ -756,6 +762,7 @@ pub fn run_linux_direct_board_set(
             exit_detail: Some(report.set_exit_detail),
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
+            exceptions_delivered: report.exceptions_delivered,
         },
     ))
 }
@@ -3656,5 +3663,340 @@ mod tests {
         assert_eq!(state.gpr[Register::Rax as usize], 0xAAAA_BBBB_0000_0000);
         assert_eq!(state.rip, ENTRY + 4);
         assert_ne!(state.rflags & ZF, 0);
+    }
+
+    use crate::paged_memory_adapter::PagedCpl0ExceptionFailure;
+    use od_isa::{ArchitecturalFault, MemoryError};
+
+    // ---- S4-38L5c: a guest #PF is delivered through the guest IDT and the handler returns ----
+
+    /// The page the faulting store hits: 256 MiB, past the identity map (128 MiB), so the walk
+    /// finds a not-present PDE and the supervisor write is the `#PF` with error code 2.
+    const PF_VA: u64 = 256 * MIB;
+    const PF_IDT_AT: u64 = DATA + 0x2000;
+    const PF_HANDLER_AT: u64 = ENTRY + 0x100;
+    /// `MOV [RBX], CL` (the handler reads CR2 into RAX, so the stored byte is in CL).
+    const PF_STORE: [u8; 2] = [0x88, 0x0B];
+
+    /// The handler of the delivered `#PF`: maps the 2 MiB page of the fault onto `DATA`'s
+    /// 2 MiB frame (a PDE store), reads CR2 into RAX, drops the error code and returns.
+    fn pf_repair_handler(pde_address: u64, pde: u64) -> Vec<u8> {
+        let mut code = vec![0x48, 0xC7, 0xC2]; // MOV RDX, imm32
+        code.extend_from_slice(&(pde_address as u32).to_le_bytes());
+        code.extend_from_slice(&[0x48, 0xC7, 0xC6]); // MOV RSI, imm32
+        code.extend_from_slice(&(pde as u32).to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x32]); // MOV [RDX], RSI
+        code.extend_from_slice(&[0x0F, 0x20, 0xD0]); // MOV RAX, CR2
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // ADD RSP, 8
+        code.extend_from_slice(&[0x48, 0xCF]); // IRETQ
+        code
+    }
+
+    /// A board whose entry is the faulting store. The IDT (gate 14: interrupt gate, CS 0x10, the
+    /// handler) is loaded; RBX points into the unmapped page and CL holds `value`.
+    fn pf_board(value: u8, handler: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = boot_with_entry(&PF_STORE);
+        if !handler.is_empty() {
+            write_phys(&mut boot, PF_HANDLER_AT, handler);
+        }
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(PF_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((PF_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, PF_IDT_AT + 14 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.gpr[Register::Rcx as usize] = u64::from(value);
+        state.gpr[Register::Rbx as usize] = PF_VA + 0x20;
+        state.rflags = 2 | (1 << 9) | 1;
+        (boot, file)
+    }
+
+    fn pf_pde_address(boot: &LinuxDirectBoot) -> u64 {
+        // PD of the first GiB: page 2 of the table zone; entry 128 covers 256 MiB.
+        boot.board.cr3() + 2 * 0x1000 + (PF_VA / (2 * MIB)) * 8
+    }
+
+    #[test]
+    fn cpl0_set_board_delivers_a_page_fault_and_the_handler_restarts_the_store() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = pf_board(0x5A, &[]);
+        let pde_address = pf_pde_address(&boot);
+        // 2 MiB leaf (P, W, PS) onto the 2 MiB frame that holds `DATA`.
+        let handler = pf_repair_handler(pde_address, (DATA & !(2 * MIB - 1)) | 0x83);
+        write_phys(&mut boot, PF_HANDLER_AT, &handler);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        // The store faults, the frame is pushed, six handler instructions retire and IRETQ is
+        // the last of them: the store is back at RIP and RF is set (it came from the frame).
+        let (state, report) = run_set(&mut boot, true, 6, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 6);
+        assert_eq!(report.delivered_exceptions, 1);
+        assert_eq!(state.rip, ENTRY, "the faulting instruction is repeated");
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_eq!(state.gpr[Register::Rax as usize], PF_VA + 0x20, "CR2 read");
+        assert_eq!(state.cr2, Some(PF_VA + 0x20));
+        assert_ne!(
+            state.rflags & (1 << 16),
+            0,
+            "RF from the frame, until the store retires"
+        );
+        assert_ne!(state.rflags & (1 << 9), 0, "IF back from the frame");
+        // The frame the CPU pushed is still on the stack below RSP: error code 2 (not present,
+        // write, supervisor), saved RIP, CS, RFLAGS with RF, old RSP, SS.
+        let frame = rsp & !15;
+        assert_eq!(read_qword(&mut boot, frame - 48), 2);
+        assert_eq!(read_qword(&mut boot, frame - 40), ENTRY);
+        assert_eq!(read_qword(&mut boot, frame - 32), 0x10);
+        assert_eq!(read_qword(&mut boot, frame - 24) & (1 << 16), 1 << 16);
+        assert_eq!(read_qword(&mut boot, frame - 16), rsp);
+        assert_eq!(read_qword(&mut boot, frame - 8), 0x18);
+        // One more instruction: the restarted store retires and clears RF.
+        let (mut boot, _) = pf_board(0x5A, &[]);
+        write_phys(&mut boot, PF_HANDLER_AT, &handler);
+        let (state, report) = run_set(&mut boot, true, 7, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 7, "{report:?}");
+        assert_eq!(report.delivered_exceptions, 1);
+        assert_eq!(state.rip, ENTRY + 2);
+        assert_eq!(
+            state.rflags & (1 << 16),
+            0,
+            "RF cleared after the retired store"
+        );
+        assert_ne!(state.rflags & (1 << 9), 0);
+        // The store reached the frame the handler mapped: DATA + 0x20.
+        let mut byte = [0u8; 1];
+        read(&mut boot.board, DATA + 0x20, &mut byte).expect("read");
+        assert_eq!(byte[0], 0x5A);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
+    fn cpl0_set_board_page_fault_without_an_idt_stays_the_fault_stop() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = pf_board(0x5A, &[0xF4]);
+        boot.board.state_mut().idtr = None;
+        let before = boot.board.state().clone();
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(2), Some(PF_VA + 0x20))
+        );
+        assert_eq!(report.delivered_exceptions, 0);
+        assert!(report.page_fault.is_some());
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.cr2, None);
+    }
+
+    #[test]
+    fn cpl0_set_board_other_faults_are_not_delivered() {
+        let cli = CliProfile::NonPviLong64V1;
+        // `LOCK MOV CR3, RAX` is #UD: an IDT is loaded, vector 6 is still the stop.
+        let (mut boot, _) = pf_board(0, &[0xF4]);
+        write_phys(&mut boot, ENTRY, &[0xF0, 0x0F, 0x22, 0xD8]);
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!((fault.vector, fault.error_code), (6, None));
+        assert_eq!(report.delivered_exceptions, 0);
+        assert_eq!(state.rip, ENTRY);
+    }
+
+    /// The delivery is refused or aborted: the stop is the original fault with the reason in the
+    /// set exit, the CPU state is what the faulting instruction left (unchanged) and CR2 is not
+    /// written.
+    fn assert_pf_delivery_failed(
+        boot: &mut LinuxDirectBoot,
+        expected: impl FnOnce(&PagedCpl0ExceptionFailure) -> bool,
+        label: &str,
+    ) {
+        let cli = CliProfile::NonPviLong64V1;
+        let before = boot.board.state().clone();
+        let (state, report) = run_set(boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure } = &report.exit else {
+            panic!("{label}: {report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(2), Some(PF_VA + 0x20)),
+            "{label}"
+        );
+        assert!(expected(failure), "{label}: {failure:?}");
+        assert_eq!(report.delivered_exceptions, 0, "{label}");
+        assert_eq!(report.instructions_executed, 0, "{label}");
+        let record = report.page_fault.as_ref().expect("the original record");
+        assert_eq!(record.fault(), fault, "{label}");
+        assert_eq!(state.rip, ENTRY, "{label}");
+        assert_eq!(state.gpr, before.gpr, "{label}");
+        assert_eq!(state.rflags, before.rflags, "{label}");
+        assert_eq!(state.cs_selector, before.cs_selector, "{label}");
+        assert_eq!(state.cr2, None, "{label}");
+    }
+
+    #[test]
+    fn cpl0_set_board_page_fault_delivery_that_cannot_complete_keeps_the_fault_stop() {
+        use od_isa::Cpl0PageFaultRefusal as Refusal;
+        // IST 1: not modeled.
+        let (mut boot, _) = pf_board(0, &[0xF4]);
+        let mut gate = [0u8; 16];
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[4] = 1;
+        gate[5] = 0x8E;
+        write_phys(&mut boot, PF_IDT_AT + 14 * 16, &gate);
+        assert_pf_delivery_failed(
+            &mut boot,
+            |failure| {
+                matches!(
+                    failure,
+                    PagedCpl0ExceptionFailure::Refused(Refusal::UnsupportedIst(1))
+                )
+            },
+            "IST",
+        );
+        // The gate lies beyond the IDT limit.
+        let (mut boot, _) = pf_board(0, &[0xF4]);
+        boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0x7F,
+        });
+        assert_pf_delivery_failed(
+            &mut boot,
+            |failure| {
+                matches!(
+                    failure,
+                    PagedCpl0ExceptionFailure::Refused(Refusal::GateBeyondIdtLimit)
+                )
+            },
+            "limit",
+        );
+        // The stack is not mapped: the first frame store faults, nothing is written, the CPU
+        // is untouched.
+        let (mut boot, _) = pf_board(0, &[0xF4]);
+        boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
+        assert_pf_delivery_failed(
+            &mut boot,
+            |failure| {
+                matches!(
+                    failure,
+                    PagedCpl0ExceptionFailure::Aborted {
+                        phase: od_isa::Cpl0PageFaultDeliveryPhase::StackWrite {
+                            slot: od_isa::PageFaultFrameSlot::OldSs
+                        },
+                        cause: MemoryError::Architectural(ArchitecturalFault { vector: 14, .. }),
+                    }
+                )
+            },
+            "stack",
+        );
+    }
+
+    #[test]
+    fn set_facade_keeps_cr2_between_calls_and_reports_the_delivery() {
+        // Call 1 delivers the #PF and retires the handler's first instruction (`MOV RDX, 1`);
+        // call 2 reads CR2 in the handler and halts. CR2 must survive the call boundary, and
+        // the CPU state keeps no CR2 outside a call.
+        let mut handler = vec![0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00]; // MOV RDX, 1
+        handler.extend_from_slice(&[0x48, 0x0F, 0x20, 0xD0]); // MOV RAX, CR2
+        handler.push(0xF4); // HLT
+        let (mut boot, file) = pf_board(0x5A, &handler);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let first = run_set_facade(&mut boot, &file, 1, members);
+        assert_eq!(first.exit, PagedProbeExit::BudgetExhausted, "{first:?}");
+        assert_eq!((first.retired, first.exceptions_delivered), (1, 1));
+        assert_eq!(
+            first.rip,
+            PF_HANDLER_AT + 7,
+            "in the handler, before the CR2 read"
+        );
+        assert_eq!(first.gpr[Register::Rdx as usize], 1);
+        assert_eq!(boot.board.state().cr2, None, "the CPU state keeps no CR2");
+        let second = run_set_facade(&mut boot, &file, 8, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!((second.retired, second.exceptions_delivered), (2, 0));
+        assert_eq!(second.gpr[Register::Rax as usize], PF_VA + 0x20);
+        assert_eq!(boot.board.state().cr2, None);
+    }
+
+    #[test]
+    fn set_facade_page_fault_without_an_idt_is_the_unchanged_fault_stop() {
+        let (mut boot, file) = pf_board(0x5A, &[0xF4]);
+        boot.board.state_mut().idtr = None;
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit_kind, "fault", "{record:?}");
+        assert_eq!(record.exceptions_delivered, 0);
+        assert_eq!(
+            record.set_exit_detail.as_deref(),
+            Some(
+                format!(
+                    "Run(Fault(ArchitecturalFault {{ vector: 14, error_code: Some(2), linear_address: Some({}) }}))",
+                    PF_VA + 0x20
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn set_facade_a_refused_page_fault_delivery_is_a_fault_stop_with_the_reason() {
+        let (mut boot, file) = pf_board(0x5A, &[0xF4]);
+        boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0x7F,
+        });
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit_kind, "fault", "{record:?}");
+        assert_eq!(
+            (record.retired, record.rip, record.exceptions_delivered),
+            (0, ENTRY, 0)
+        );
+        let detail = record.set_exit_detail.expect("detail");
+        assert!(
+            detail.starts_with("ExceptionDeliveryFailed {")
+                && detail.contains("Refused(GateBeyondIdtLimit)"),
+            "{detail}"
+        );
+        assert!(record.page_fault.is_some());
+    }
+
+    #[test]
+    fn cpl0_set_board_a_fault_chain_that_retires_nothing_ends_at_the_repeat_limit() {
+        let cli = CliProfile::NonPviLong64V1;
+        // The gate points into the unmapped page: each delivery lands on a fetch #PF of its
+        // own, which is delivered again, and nothing ever retires.
+        let (mut boot, _) = pf_board(0, &[]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((PF_VA >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, PF_IDT_AT + 14 * 16, &gate);
+        let (state, report) = run_set(&mut boot, true, 1_000_000, &minimal_set(&cli));
+        let PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure } = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(*failure, PagedCpl0ExceptionFailure::RepeatLimit);
+        assert_eq!(fault.vector, 14);
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(
+            report.delivered_exceptions,
+            crate::paged_memory_adapter::MAX_DELIVERIES_WITHOUT_RETIREMENT
+        );
+        assert_eq!(state.rip, PF_VA + 0x100);
     }
 }

@@ -814,6 +814,9 @@ pub(crate) struct LinuxSetRunReport {
     /// The leaf (EAX) of the `CPUID` the run stopped before (S4-38L4, `cpuid_divergence`): the
     /// instruction did not execute. `None` for every other exit.
     pub(crate) cpuid_divergence_leaf: Option<u32>,
+    /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
+    /// delivery is not a retired instruction.
+    pub(crate) exceptions_delivered: u64,
 }
 
 /// Whether the CPL0 set loop calls the set again after a quantum that ended on `exit` (S4-38L4b).
@@ -898,6 +901,9 @@ fn set_exit_to_probe_exit(
             })
         }
         PagedCpl0SetExit::PortIo(error) => PagedProbeExit::PortIo(error),
+        // S4-38L5c: the guest `#PF` stays the stop, as it was before delivery existed; the
+        // reason it was not delivered is in the `Debug` text of the set exit (`detail`).
+        PagedCpl0SetExit::ExceptionDeliveryFailed { fault, .. } => PagedProbeExit::Fault(fault),
         // A stop of the board, not an exit of the CPU: `Stopped`, told apart by the report's
         // `cpuid_divergence_leaf` (the exit enum gets no new variant).
         PagedCpl0SetExit::CpuidDivergence { .. } => PagedProbeExit::Stopped,
@@ -945,6 +951,10 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
+    /// CR2 the guest left at the end of the latest `run_linux_boot_cpl0_set` (S4-38L5c): the
+    /// faulting address of the last `#PF` delivered to the guest, fed back as CR2 on entry the
+    /// way `page_table_root` is for CR3. `None` until the first CPL0-set run.
+    page_fault_address: Option<u64>,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1260,6 +1270,7 @@ impl LoadedFirmwareBoard {
         let mut retired = 0u64;
         let mut quanta = 0u64;
         let mut changes: Vec<TranslationContextChange> = Vec::new();
+        let mut exceptions_delivered = 0u64;
         self.com1_log.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
@@ -1278,15 +1289,15 @@ impl LoadedFirmwareBoard {
             nvme.service(&mut self.bus, |_| {});
         }
         self.state.cr3 = Some(self.page_table_root);
-        // S4-38L5a: the set models CR2 for `MOV RAX, CR2`. The run uses the CR2 already set
-        // (`prior`), and 0 (the architectural reset value) only when there was none. Nothing
-        // writes CR2 yet (no #PF delivery, L5c). Unlike CR3 (kept in `page_table_root` through
-        // `report.cr3` and fed back on entry), CR2 is NOT kept: on exit the prior value is
-        // restored and whatever the guest wrote to CR2 during the run is discarded. L5c must
-        // keep it the same way as CR3 (a persistent field fed back on entry), otherwise a
-        // handler that reads CR2 in a later call gets 0.
+        // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
+        // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
+        // entry), the CR2 the guest left is kept in `page_fault_address` and fed back on entry,
+        // so a handler that reads CR2 in a later call gets the address of its fault. CR2 is
+        // `0` (the architectural reset value) until a `#PF` was delivered or the guest wrote
+        // it; the CPU state itself carries no CR2 outside this call (the prior value is
+        // restored on exit).
         let prior_cr2 = self.state.cr2;
-        self.state.cr2 = Some(prior_cr2.unwrap_or(0));
+        self.state.cr2 = Some(self.page_fault_address.or(prior_cr2).unwrap_or(0));
         let result = loop {
             let uart = self.uart.clone();
             let mut source = rdtsc_tick.clone().map(|tick| {
@@ -1330,6 +1341,7 @@ impl LoadedFirmwareBoard {
             // The walker of the next quantum starts from the CR3 the guest left.
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
+            exceptions_delivered += report.delivered_exceptions;
             if let Some(nvme) = &nvme {
                 nvme.service(&mut self.bus, |_| {});
             }
@@ -1413,7 +1425,9 @@ impl LoadedFirmwareBoard {
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.state.cr3 = None;
-        // CR2 is restored, not kept (see the entry comment): a guest write is discarded.
+        // CR2 moves to the board field (see the entry comment); the CPU state gets back what
+        // it had.
+        self.page_fault_address = self.state.cr2;
         self.state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
         Ok(LinuxSetRunReport {
@@ -1421,6 +1435,7 @@ impl LoadedFirmwareBoard {
             translation_context_changes: changes,
             set_exit_detail,
             cpuid_divergence_leaf,
+            exceptions_delivered,
         })
     }
 
@@ -1857,6 +1872,7 @@ impl AssembledBoard {
             handoff,
             page_table_bytes,
             page_table_root,
+            page_fault_address: None,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -1909,6 +1925,7 @@ impl AssembledBoard {
             handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
+            page_fault_address: None,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]

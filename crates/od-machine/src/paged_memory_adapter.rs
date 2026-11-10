@@ -17,7 +17,13 @@ use od_isa::execute::{
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
-use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
+use od_isa::memory::{
+    AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
+};
+use od_isa::{
+    Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
+    deliver_page_fault_cpl0_set,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -435,7 +441,43 @@ pub(crate) enum PagedCpl0SetExit {
     /// The set reported an exit variant this board does not know (the exit enum
     /// is `#[non_exhaustive]`).
     UnknownSetExit,
+    /// A guest `#PF` (vector 14) could not be delivered through the guest IDT (S4-38L5c, the
+    /// IDT is loaded): the original fault is the stop, `failure` says why delivery failed.
+    /// Without a loaded IDT, and for every other fault vector, the fault is a plain
+    /// `Run(Fault)` as before.
+    ExceptionDeliveryFailed {
+        fault: ArchitecturalFault,
+        failure: PagedCpl0ExceptionFailure,
+    },
 }
+
+/// Why a `#PF` of the guest was not delivered (S4-38L5c).
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PagedCpl0ExceptionFailure {
+    /// The walker left no precise `PageFaultRecord` for the fault (integration error).
+    NoPageFaultRecord,
+    /// The delivery was refused before any write (see `Cpl0PageFaultRefusal`).
+    Refused(Cpl0PageFaultRefusal),
+    /// A memory access of the delivery failed (a `#PF` there is a double fault, not modeled).
+    /// The CPU state is unchanged; frame words may have been stored below the old RSP.
+    Aborted {
+        phase: Cpl0PageFaultDeliveryPhase,
+        cause: MemoryError,
+    },
+    /// [`MAX_DELIVERIES_WITHOUT_RETIREMENT`] deliveries in a row retired nothing: a fault
+    /// that the handler chain does not resolve and that would otherwise never use up the
+    /// instruction budget.
+    RepeatLimit,
+}
+
+/// RFLAGS.RF (resume flag), bit 16.
+const RFLAGS_RF: u64 = 1 << 16;
+
+/// Consecutive `#PF` deliveries without a retired instruction in between that the loop
+/// allows. A handler that returns to a faulting instruction retires at least its `IRETQ`,
+/// so this only bounds a fault at the handler's own first fetch (each delivery pushes a
+/// frame, so the stack ends such a chain anyway; this keeps the bound explicit).
+pub(crate) const MAX_DELIVERIES_WITHOUT_RETIREMENT: u64 = 256;
 
 /// CPUID leaves the diagnostic identity must not answer on the Linux board (S4-38L4, checkpoint
 /// C7): the feature leaves, where a made-up answer would decide which kernel paths are taken.
@@ -508,6 +550,9 @@ pub(crate) struct PagedCpl0SetReport {
     /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
     /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
+    /// `#PF` exceptions the loop delivered through the guest IDT (S4-38L5c). A delivery is not
+    /// a retired instruction: `instructions_executed` does not count it.
+    pub(crate) delivered_exceptions: u64,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -594,6 +639,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 memory_error: None,
                 translation_context_changes: Vec::new(),
                 cr3,
+                delivered_exceptions: 0,
             };
         }
     };
@@ -603,6 +649,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     // CR3 of the last retired MOV CR3 (the initial root before any), independent of
     // whether the walker could be rebuilt for it.
     let mut reported_cr3 = cr3;
+    let mut delivered_exceptions = 0u64;
+    // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
+    let mut deliveries_without_retirement = 0u64;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
@@ -621,6 +670,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
+        // S4-38L5c: RF set before the instruction (a restarted instruction after a `#PF`
+        // frame came back through `IRETQ`) is cleared once the instruction retires.
+        let resume_flag_before = state.rflags & RFLAGS_RF != 0;
         let (ram, mut port) = bus.split_for_pio_step();
         let mut memory = PagedMovMemoryAdapter {
             bus: AdapterBus::Ram(ram),
@@ -663,6 +715,56 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             &mut port,
             || false,
         );
+        if let Ok(done) = &result {
+            if done.instructions_executed > 0 {
+                deliveries_without_retirement = 0;
+                if resume_flag_before {
+                    state.rflags &= !RFLAGS_RF;
+                }
+            }
+            // S4-38L5c: a guest `#PF` goes through the guest IDT when one is loaded; without
+            // an IDT, and for every other vector, the fault stays the stop it was.
+            if let Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) = &done.exit
+                && fault.vector == 14
+                && state.idtr.is_some()
+            {
+                let fault = fault.clone();
+                let original_record = memory.page_fault.clone();
+                let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
+                {
+                    Some(PagedCpl0ExceptionFailure::RepeatLimit)
+                } else {
+                    match &original_record {
+                        Some(record) if record.fault() == &fault => {
+                            match deliver_page_fault_cpl0_set(state, &mut memory, record, context) {
+                                Cpl0PageFaultDelivery::Delivered { .. } => None,
+                                Cpl0PageFaultDelivery::Refused(reason) => {
+                                    Some(PagedCpl0ExceptionFailure::Refused(reason))
+                                }
+                                Cpl0PageFaultDelivery::Aborted { phase, cause } => {
+                                    Some(PagedCpl0ExceptionFailure::Aborted { phase, cause })
+                                }
+                            }
+                        }
+                        _ => Some(PagedCpl0ExceptionFailure::NoPageFaultRecord),
+                    }
+                };
+                match failure {
+                    None => {
+                        delivered_exceptions += 1;
+                        deliveries_without_retirement += 1;
+                        continue;
+                    }
+                    Some(failure) => {
+                        break (
+                            PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
+                            original_record,
+                            memory.memory_error,
+                        );
+                    }
+                }
+            }
+        }
         let (page_fault, memory_error) = (memory.page_fault, memory.memory_error);
         let result = match result {
             Ok(result) => result,
@@ -690,6 +792,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         memory_error,
         translation_context_changes: changes,
         cr3: reported_cr3,
+        delivered_exceptions,
     }
 }
 
