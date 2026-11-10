@@ -572,13 +572,14 @@ fn boot_page_table_count(map: &MachineMemoryMap) -> u64 {
 /// the PML4 is page 0.
 fn build_boot_tables(
     map: &MachineMemoryMap,
+    root: u64,
     expected_pages: u64,
 ) -> Result<Vec<u8>, FirmwareBoardError> {
     let mut entries: Vec<u64> = vec![0; 512];
     let mut pdpt: BTreeMap<u64, usize> = BTreeMap::new();
     let mut pd: BTreeMap<u64, usize> = BTreeMap::new();
     let mut pt: BTreeMap<u64, usize> = BTreeMap::new();
-    let table_address = |page: usize| FIRMWARE_BOOT_PAGE_TABLES_GPA + page as u64 * PAGE;
+    let table_address = |page: usize| root + page as u64 * PAGE;
     fn allocate(entries: &mut Vec<u64>) -> usize {
         entries.resize(entries.len() + 512, 0);
         entries.len() / 512 - 1
@@ -638,6 +639,8 @@ struct HandoffRegion {
 
 /// Handoff region table: every region of the map, with the lowest RAM region
 /// split by the boot reservations of FIRMWARE_BOOT.md section 2.
+/// The boot page tables region is fixed at `FIRMWARE_BOOT_PAGE_TABLES_GPA`, which must equal
+/// `SHADOW_END` (checked in `assemble_board`).
 fn handoff_regions(
     map: &MachineMemoryMap,
     devices: &[DeviceEntry],
@@ -815,6 +818,9 @@ pub struct LoadedFirmwareBoard {
     clock: VirtualClockHandle,
     handoff: Vec<u8>,
     page_table_bytes: u64,
+    /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
+    /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
+    page_table_root: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -870,7 +876,7 @@ impl LoadedFirmwareBoard {
     }
 
     pub const fn cr3(&self) -> u64 {
-        FIRMWARE_BOOT_PAGE_TABLES_GPA
+        self.page_table_root
     }
 
     pub const fn efer(&self) -> u64 {
@@ -934,7 +940,7 @@ impl LoadedFirmwareBoard {
             return run_paged_probe_with_rdtsc(
                 &mut self.state,
                 &mut self.bus,
-                FIRMWARE_BOOT_PAGE_TABLES_GPA,
+                self.page_table_root,
                 FIRMWARE_EFER,
                 context,
                 instruction_budget,
@@ -947,7 +953,7 @@ impl LoadedFirmwareBoard {
         run_paged_probe(
             &mut self.state,
             &mut self.bus,
-            FIRMWARE_BOOT_PAGE_TABLES_GPA,
+            self.page_table_root,
             FIRMWARE_EFER,
             context,
             instruction_budget,
@@ -1096,26 +1102,56 @@ fn load_firmware_image_with_pci(
     load_firmware_image_inner(image, config, pci, None, None)
 }
 
+/// A board that is assembled but not loaded (S4-37L4): the memory map, bus and
+/// devices, the handoff block and the boot page tables exist as values, but no
+/// byte has been written to guest memory and no ROM is filled. The firmware loader
+/// ([`AssembledBoard::load_firmware`]) and the Linux direct boot reuse it.
+struct AssembledBoard {
+    bus: MachineBus,
+    uart: Uart16550Handle,
+    display: DisplayHandle,
+    nvme: Option<NvmeHandle>,
+    acpi_pm: Option<AcpiPmHandle>,
+    pit: Option<Pit8254Handle>,
+    lapic: LocalApicHandle,
+    clock: VirtualClockHandle,
+    /// Handoff block bytes, to be written at [`FIRMWARE_HANDOFF_GPA`].
+    handoff: Vec<u8>,
+    /// Temporary identity tables, to be written at `page_table_root`.
+    tables: Vec<u8>,
+    page_table_bytes: u64,
+    /// GPA of the PML4 and the `CR3` the paged interpreter uses.
+    page_table_root: u64,
+    rdtsc_tick: Option<Arc<AtomicBool>>,
+}
+
+/// Assemble the board without touching guest memory (S4-37L4): validate the
+/// configuration, build the memory map, handoff block, boot tables, devices and
+/// bus.
+///
 /// `pit_clock` replaces the clock of the Linux-profile PIT. Production code always
 /// passes `None` (the PIT then reads the board clock); only a test injects another
 /// handle, to prove that the binding really follows the board clock (S4-37a1).
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
-fn load_firmware_image_inner(
-    image: &[u8],
+fn assemble_board(
     config: &FirmwareBoardConfig,
     pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
-) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+) -> Result<AssembledBoard, FirmwareBoardError> {
     let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
-    let entry_offset = validate_image(image, handoff_minor(&devices))?;
     validate_config(config)?;
 
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
     let low_end = config.ram_bytes.min(LOW_RAM_LIMIT);
-    let tables_end = FIRMWARE_BOOT_PAGE_TABLES_GPA + page_table_bytes;
+    let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
+    // `handoff_regions` still derives the table region from the constant and assumes the
+    // tables start exactly at SHADOW_END. Moving the root requires passing it through there.
+    debug_assert_eq!(page_table_root, FIRMWARE_BOOT_PAGE_TABLES_GPA);
+    debug_assert_eq!(page_table_root, SHADOW_END);
+    let tables_end = page_table_root + page_table_bytes;
     if tables_end > low_end {
         return Err(FirmwareBoardError::BootTablesDoNotFit {
             required_end: tables_end,
@@ -1127,7 +1163,7 @@ fn load_firmware_image_inner(
         return Err(FirmwareBoardError::TooManyRegions(regions.len()));
     }
     let handoff = build_handoff(config, &devices, &regions);
-    let tables = build_boot_tables(&map, table_pages)?;
+    let tables = build_boot_tables(&map, page_table_root, table_pages)?;
 
     let (uart_device, uart) = Uart16550PollingTx::new_with_handle();
     // One clock for the whole board: the PM timer, the PIT and (Linux profile) the
@@ -1253,7 +1289,7 @@ fn load_firmware_image_inner(
             )?;
         }
     }
-    let mut bus = MachineBus::new(
+    let bus = MachineBus::new(
         map,
         RamLimits::new(config.ram_bytes),
         bus_devices,
@@ -1261,59 +1297,8 @@ fn load_firmware_image_inner(
         ports,
     )
     .map_err(FirmwareBoardError::BusBuild)?;
-
-    // ROM is the source of truth; the shadow is a copy read back from ROM.
-    let rom = GuestPhysicalAddress::new(FIRMWARE_ROM_BASE);
-    bus.load_rom_bytes(rom, image)
-        .map_err(FirmwareBoardError::Bus)?;
-    let mut shadow = vec![0u8; FIRMWARE_IMAGE_BYTES];
-    bus.read_flat_bytes(rom, &mut shadow)
-        .map_err(FirmwareBoardError::Bus)?;
-    bus.write_flat_bytes(
-        GuestPhysicalAddress::new(FIRMWARE_LINK_BASE),
-        &shadow,
-        |_| {},
-    )
-    .map_err(FirmwareBoardError::Bus)?;
-    bus.write_flat_bytes(
-        GuestPhysicalAddress::new(FIRMWARE_BOOT_PAGE_TABLES_GPA),
-        &tables,
-        |_| {},
-    )
-    .map_err(FirmwareBoardError::Bus)?;
-    bus.write_flat_bytes(
-        GuestPhysicalAddress::new(FIRMWARE_HANDOFF_GPA),
-        &handoff,
-        |_| {},
-    )
-    .map_err(FirmwareBoardError::Bus)?;
-    // The polling UART rejects THR writes until 8N1 and a divisor are set; the
-    // machine presents it configured (as the flat probe does). The firmware's
-    // own initialisation (FIRMWARE_BOOT.md 11) writes the same values.
-    for (offset, value) in [(3, 0x83), (0, 0x01), (1, 0x00), (3, 0x03)] {
-        bus.write_port(
-            PortAddress::new(FIRMWARE_COM1_PORT + offset),
-            AccessWidth::Byte,
-            value,
-        )
-        .map_err(FirmwareBoardError::Bus)?;
-    }
-
-    let mut state = LongModeState {
-        cr3: None,
-        rip: FIRMWARE_LINK_BASE + entry_offset,
-        rflags: 2,
-        cr0: Some(CR0),
-        cr4: Some(CR4),
-        sti_shadow: Some(StiShadow::Clear),
-        activity: Some(CpuActivity::Running),
-        ..LongModeState::default()
-    };
-    state.gpr[Register::Rsp as usize] = FIRMWARE_BOOT_STACK_TOP;
-    state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
-    Ok(LoadedFirmwareBoard {
+    Ok(AssembledBoard {
         bus,
-        state,
         uart,
         display,
         nvme,
@@ -1322,16 +1307,120 @@ fn load_firmware_image_inner(
         lapic: lapic_handle,
         clock,
         handoff,
+        tables,
         page_table_bytes,
-        com1_log: Vec::new(),
+        page_table_root,
         rdtsc_tick: config
             .linux_profile
             .then(|| Arc::new(AtomicBool::new(false))),
-        #[cfg(test)]
-        suppress_pm_tick: false,
-        #[cfg(test)]
-        suppress_rdtsc_tick: false,
     })
+}
+
+impl AssembledBoard {
+    /// Fill ROM, copy the image to the RAM shadow, write the boot page tables and
+    /// the handoff block, configure COM1 and build the direct Long64 entry state.
+    fn load_firmware(
+        self,
+        image: &[u8],
+        entry_offset: u64,
+    ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+        let AssembledBoard {
+            mut bus,
+            uart,
+            display,
+            nvme,
+            acpi_pm,
+            pit,
+            lapic,
+            clock,
+            handoff,
+            tables,
+            page_table_bytes,
+            page_table_root,
+            rdtsc_tick,
+        } = self;
+
+        // ROM is the source of truth; the shadow is a copy read back from ROM.
+        let rom = GuestPhysicalAddress::new(FIRMWARE_ROM_BASE);
+        bus.load_rom_bytes(rom, image)
+            .map_err(FirmwareBoardError::Bus)?;
+        let mut shadow = vec![0u8; FIRMWARE_IMAGE_BYTES];
+        bus.read_flat_bytes(rom, &mut shadow)
+            .map_err(FirmwareBoardError::Bus)?;
+        bus.write_flat_bytes(
+            GuestPhysicalAddress::new(FIRMWARE_LINK_BASE),
+            &shadow,
+            |_| {},
+        )
+        .map_err(FirmwareBoardError::Bus)?;
+        bus.write_flat_bytes(GuestPhysicalAddress::new(page_table_root), &tables, |_| {})
+            .map_err(FirmwareBoardError::Bus)?;
+        bus.write_flat_bytes(
+            GuestPhysicalAddress::new(FIRMWARE_HANDOFF_GPA),
+            &handoff,
+            |_| {},
+        )
+        .map_err(FirmwareBoardError::Bus)?;
+        // The polling UART rejects THR writes until 8N1 and a divisor are set; the
+        // machine presents it configured (as the flat probe does). The firmware's
+        // own initialisation (FIRMWARE_BOOT.md 11) writes the same values.
+        for (offset, value) in [(3, 0x83), (0, 0x01), (1, 0x00), (3, 0x03)] {
+            bus.write_port(
+                PortAddress::new(FIRMWARE_COM1_PORT + offset),
+                AccessWidth::Byte,
+                value,
+            )
+            .map_err(FirmwareBoardError::Bus)?;
+        }
+
+        let mut state = LongModeState {
+            cr3: None,
+            rip: FIRMWARE_LINK_BASE + entry_offset,
+            rflags: 2,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            sti_shadow: Some(StiShadow::Clear),
+            activity: Some(CpuActivity::Running),
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rsp as usize] = FIRMWARE_BOOT_STACK_TOP;
+        state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
+        Ok(LoadedFirmwareBoard {
+            bus,
+            state,
+            uart,
+            display,
+            nvme,
+            acpi_pm,
+            pit,
+            lapic,
+            clock,
+            handoff,
+            page_table_bytes,
+            page_table_root,
+            com1_log: Vec::new(),
+            rdtsc_tick,
+            #[cfg(test)]
+            suppress_pm_tick: false,
+            #[cfg(test)]
+            suppress_rdtsc_tick: false,
+        })
+    }
+}
+
+/// Validate `image` and the configuration, assemble the board and load the image
+/// into it. The image is checked first, so its errors keep precedence over
+/// configuration errors. See [`assemble_board`] for the injected clocks.
+fn load_firmware_image_inner(
+    image: &[u8],
+    config: &FirmwareBoardConfig,
+    pci: PciEcam,
+    pit_clock: Option<VirtualClockHandle>,
+    apic_timer_clock: Option<VirtualClockHandle>,
+) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
+    let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
+    let entry_offset = validate_image(image, handoff_minor(&devices))?;
+    assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
 }
 
 #[cfg(test)]
@@ -3803,5 +3892,86 @@ mod tests {
             apic_read(&mut board, TMCCT),
             Ok(TM_INITIAL - report.virtual_ns / 10)
         );
+    }
+
+    // ---- S4-37L4: board refactor golden (values taken before the refactor) ----
+
+    /// Every optional device and the Linux profile at once, on 512 MiB.
+    fn golden_full_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            ram_bytes: 512 << 20,
+            second_screen: true,
+            nvme: Some(NvmeConfig::default()),
+            pci_ecam: true,
+            acpi_pm: true,
+            acpi_tables: true,
+            linux_profile: true,
+            ..reference_config()
+        }
+    }
+
+    const GOLDEN_FULL_HANDOFF_HEX: &str = concat!(
+        "4f4448414e444f4601000200a000000090040000ff227302000000000100000000ca9a3b000000000100000000000000",
+        "a00000001200000020000000e00200000900000030000000101112131415161718191a1b1c1d1e1f0700000000000000",
+        "4f442d303030310000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000100000000000000000000000000000000000e0000000000ffffffff00000000",
+        "0b0000000000000000000e000000000000f0000000000000ffffffff000000000c0000000000000000f00e0000000000",
+        "0010000000000000ffffffff00000000010000000000000000000f00000000000000010000000000ffffffff00000000",
+        "070000000000000000001000000000000000010000000000ffffffff0000000008000000000000000000110000000000",
+        "0000040000000000ffffffff000000000100000000000000000015000000000000000b0000000000ffffffff00000000",
+        "090000000000000000002000000000000000400000000000ffffffff000000000a000000000000000000600000000000",
+        "00d0120000000000ffffffff00000000010000000000000000d072000000000000308d1f00000000ffffffff00000000",
+        "0600000001000000000000f400000000000040020000000003000000000000000600000000000000000000f800000000",
+        "000040020000000003000000000000000300000000000000000000fc0000000000100000000000000300000000000000",
+        "0300000000000000001000fc00000000002000000000000007000000000000000300000000000000000010fc00000000",
+        "0000100000000000060000000000000003000000000000000000c0fe0000000000100000000000000200000000000000",
+        "03000000000000000000e0fe000000000010000000000000010000000000000004000000000000000000c0ff00000000",
+        "0000400000000000ffffffff000000000100000003000000f80300000000000008000000000000000400000000000000",
+        "0100000000000000000000000000000002000000010000000000e0fe000000000010000000000000ffffffff00000000",
+        "0000000000000000000000000000000003000000010000000000c0fe000000000010000000000000ffffffff00000000",
+        "000000000000000000000000000000000400000001000000000000fc000000000010000000000000ffffffff00000000",
+        "00000000000000000000000000000000050000000000000000000000000000000000000000000000ffffffff00000000",
+        "00000000000000000000000000000000060000000000000000000000000000000000000000000000ffffffff00000000",
+        "000000000000000000000000000000000700000001000000000010fc000000000000100000000000ffffffff00000000",
+        "000000000000000000000000000000000800000001000000001000fc000000000020000000000000ffffffff00000000",
+        "000000000000000000000000000000000900000003000000000600000000000010000000000000000900000003000000",
+        "0006040608060c060605000000000000"
+    );
+
+    #[test]
+    fn board_refactor_golden_handoff_manifest_hash_tables_and_entry_state() {
+        let config = golden_full_config();
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        assert_eq!(hex(board.handoff_block()), GOLDEN_FULL_HANDOFF_HEX);
+        assert_eq!(
+            hex(&config.acpi_manifest_hash().unwrap()),
+            "e0a4281a967d6e6fe2ed939210ec74a66ee718baa63aa4d761e434d34945e9ee"
+        );
+        assert_eq!(
+            hex(&tables_config_with_ecam().acpi_manifest_hash().unwrap()),
+            "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2"
+        );
+        assert_eq!(board.boot_page_table_bytes(), 0x12d000);
+        assert_eq!(board.cr3(), 0x0060_0000);
+        let mut tables = vec![0u8; board.boot_page_table_bytes() as usize];
+        let cr3 = board.cr3();
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(cr3), &mut tables)
+            .unwrap();
+        assert_eq!(crc32_ieee(&[&tables]), 0x7d9e_71ea);
+        let mut shadow = vec![0u8; FIRMWARE_IMAGE_BYTES];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(FIRMWARE_LINK_BASE), &mut shadow)
+            .unwrap();
+        assert_eq!(crc32_ieee(&[&shadow]), 0x161a_397f);
+        let state = board.state();
+        assert_eq!(state.rip, 0x0020_0040);
+        assert_eq!(state.gpr[Register::Rsp as usize], 0x0015_0000);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x0010_0000);
+        assert_eq!(state.cr3, None);
+        assert_eq!(state.cr0, Some(0x8001_0033));
+        assert_eq!(state.cr4, Some(0x20));
     }
 }
