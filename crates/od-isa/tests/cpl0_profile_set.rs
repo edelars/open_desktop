@@ -4676,3 +4676,483 @@ fn rep_bsf_outside_the_set_stays_unsupported() {
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.gpr[0], 6);
 }
+
+// ---- S4-38L5b: IRETQ (48 CF), same-privilege return in the CPL0 set ----
+
+const IRETQ: [u8; 2] = [0x48, 0xcf];
+const IRETQ_NEW_RSP: u64 = RAM_BASE + 0x3000;
+const DATA_DESCRIPTOR: u64 = 0x00cf_9300_0000_ffff;
+const IRETQ_CS_SLOT: u64 = LRETQ_GDT + 0x10;
+const IRETQ_SS_SLOT: u64 = LRETQ_GDT + 0x18;
+
+/// Frame `[RIP][CS][RFLAGS][RSP][SS]` at `STACK`; GDT slot 2 is `CODE64`, slot 3 a flat data
+/// segment (both with A = 1); the SS cache is modeled and differs from the frame's SS.
+fn iretq_state(
+    target: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+) -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = lretq_state(cs, target);
+    memory.code = IRETQ.to_vec();
+    memory.put(STACK + 16, rflags);
+    memory.put(STACK + 24, rsp);
+    memory.put(STACK + 32, ss);
+    state.rflags = 2;
+    state.ss_selector = Some(0x10);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0x1234,
+        limit: 0xfff,
+        access: 0x93,
+        flags: 0x4,
+    });
+    state.ss_unusable = true;
+    (state, memory)
+}
+
+fn default_iretq() -> (LongModeState, LretqMemory) {
+    iretq_state(RIP + 2, 0x10, 0x202, IRETQ_NEW_RSP, 0x18)
+}
+
+fn run_iretq(state: &mut LongModeState, memory: &mut LretqMemory) -> Cpl0ProfileSetResult {
+    run_lretq(state, memory)
+}
+
+/// Run `IRETQ` after `tweak` and expect `expected` with no CPU or memory change.
+fn assert_iretq_refused(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: RunExit,
+    label: &str,
+) {
+    let (mut state, mut memory) = default_iretq();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &expected, "{label}");
+    assert_eq!(result.instructions_executed, 0, "{label}");
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+fn unsupported_cf() -> RunExit {
+    RunExit::Unsupported { opcode: 0xcf }
+}
+
+#[test]
+fn iretq_loads_the_whole_frame_and_retires() {
+    // Frame RFLAGS: every loaded bit, plus bits IRET never loads (reserved bits 3, 5, 15, 22;
+    // the always-one bit 1 is clear in the image).
+    const STATUS_DF: u64 = 0x1 | 0x4 | 0x10 | 0x40 | 0x80 | 0x400 | 0x800;
+    const LOADED: u64 = STATUS_DF | IF | (3 << 12) | (1 << 14) | (1 << 16) | (1 << 18) | (1 << 21);
+    const NEVER_LOADED: u64 = (1 << 3) | (1 << 5) | (1 << 15) | (1 << 22);
+    let (mut state, mut memory) =
+        iretq_state(RIP + 2, 0x10, LOADED | NEVER_LOADED, IRETQ_NEW_RSP, 0x18);
+    state.gpr[0] = 0xaaaa;
+    let mut expected = state.clone();
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        0,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    // The loaded flags are defined afterwards (as for POPFQ); nothing else is.
+    assert_eq!(result.rflags_defined, od_isa::POPFQ_INTEGER_FLAGS);
+    expected.rip = RIP + 2;
+    expected.cs_selector = Some(0x10);
+    expected.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xa,
+    });
+    expected.rflags = 2 | LOADED;
+    expected.gpr[4] = IRETQ_NEW_RSP;
+    expected.ss_selector = Some(0x18);
+    expected.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    expected.ss_unusable = false;
+    assert_eq!(state, expected);
+    // Five stack qwords, then the CS and SS descriptors as descriptor-table accesses.
+    assert_eq!(
+        memory.reads,
+        vec![
+            (STACK, 8, AccessOrigin::Explicit),
+            (STACK + 8, 8, AccessOrigin::Explicit),
+            (STACK + 16, 8, AccessOrigin::Explicit),
+            (STACK + 24, 8, AccessOrigin::Explicit),
+            (STACK + 32, 8, AccessOrigin::Explicit),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_SS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn iretq_clears_loaded_flags_the_frame_clears_and_keeps_bit_one() {
+    // Current state: CF, IF, IOPL, RF and bit 1 set; the frame clears them. Loaded flags
+    // follow the frame; bit 1 stays one.
+    let (mut state, mut memory) = default_iretq();
+    state.rflags = 2 | 1 | IF | (3 << 12) | (1 << 16);
+    memory.put(STACK + 16, 0);
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags, 2);
+}
+
+#[test]
+fn iretq_target_is_executed_next_and_rsp_comes_from_the_frame() {
+    // `iretq` to a NOP right after it: the budget-2 run retires both, and RSP is the frame
+    // value, not RSP + 40.
+    let (mut state, mut memory) = default_iretq();
+    memory.code = vec![0x48, 0xcf, 0x90];
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.gpr[4], IRETQ_NEW_RSP);
+    assert_eq!(state.rflags, 2 | IF);
+}
+
+#[test]
+fn iretq_with_a_null_ss_marks_it_unusable_and_keeps_the_cache() {
+    // The kernel's early boot runs with SS = 0, so the hardware-pushed frame holds a null SS.
+    let (mut state, mut memory) = iretq_state(RIP + 2, 0x10, 0x202, IRETQ_NEW_RSP, 0);
+    state.ss_unusable = false;
+    let cache = state.ss_cache;
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ss_unusable);
+    assert_eq!(state.ss_cache, cache);
+    assert_eq!(state.gpr[4], IRETQ_NEW_RSP);
+    assert_eq!(state.cs_selector, Some(0x10));
+    // Only the CS descriptor was read from the GDT.
+    assert_eq!(
+        memory.reads.last(),
+        Some(&(IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable))
+    );
+}
+
+#[test]
+fn iretq_sets_the_accessed_bits_with_one_qword_write_each() {
+    let (mut state, mut memory) = default_iretq();
+    memory.put(IRETQ_CS_SLOT, 0x00af_9a00_0000_ffff);
+    memory.put(IRETQ_SS_SLOT, 0x00cf_9200_0000_ffff);
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        memory.write_log,
+        vec![
+            (
+                IRETQ_CS_SLOT,
+                0x00af_9b00_0000_ffffu64.to_le_bytes().to_vec(),
+                AccessOrigin::DescriptorTable
+            ),
+            (
+                IRETQ_SS_SLOT,
+                0x00cf_9300_0000_ffffu64.to_le_bytes().to_vec(),
+                AccessOrigin::DescriptorTable
+            ),
+        ]
+    );
+    assert_eq!(state.ss_cache.unwrap().access, 0x93);
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+}
+
+#[test]
+fn iretq_uses_only_the_low_sixteen_bits_of_the_cs_and_ss_qwords() {
+    let (mut state, mut memory) = iretq_state(
+        RIP + 2,
+        0xdead_beef_0000_0010,
+        0x202,
+        IRETQ_NEW_RSP,
+        0xbeef_dead_0000_0018,
+    );
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.ss_selector, Some(0x18));
+}
+
+#[test]
+fn iretq_non_canonical_rip_is_gp0_after_the_cs_checks() {
+    assert_iretq_refused(
+        |_, memory| memory.put(STACK, 0x0001_0000_0000_0000),
+        selector_fault_exit(13, 0),
+        "non-canonical RIP",
+    );
+    // A bad CS wins over a non-canonical RIP.
+    assert_iretq_refused(
+        |_, memory| {
+            memory.put(STACK, 0x0001_0000_0000_0000);
+            memory.put(IRETQ_CS_SLOT, DATA_DESCRIPTOR);
+        },
+        selector_fault_exit(13, 0x10),
+        "bad CS before RIP",
+    );
+}
+
+#[test]
+fn iretq_rejects_bad_cs_with_exact_faults_and_no_mutation() {
+    for (descriptor, expected, label) in [
+        (DATA_DESCRIPTOR, selector_fault_exit(13, 0x10), "data CS"),
+        (
+            0x00ef_9b00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "L = D = 1",
+        ),
+        (
+            0x00af_fb00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "DPL 3",
+        ),
+        (
+            0x00af_1b00_0000_ffff,
+            selector_fault_exit(11, 0x10),
+            "not present",
+        ),
+        (
+            0x00af_8100_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "system",
+        ),
+        (0, selector_fault_exit(13, 0x10), "empty slot"),
+        (0x00cf_9b00_0000_ffff, unsupported_cf(), "compatibility CS"),
+    ] {
+        assert_iretq_refused(
+            |_, memory| memory.put(IRETQ_CS_SLOT, descriptor),
+            expected,
+            label,
+        );
+    }
+    for (cs, expected, label) in [
+        (0, selector_fault_exit(13, 0), "null CS"),
+        (3, selector_fault_exit(13, 0), "null CS with RPL"),
+        (0x38, selector_fault_exit(13, 0x38), "beyond the GDT limit"),
+        (0x14, unsupported_cf(), "LDT CS"),
+        (0x13, unsupported_cf(), "RPL 3 CS"),
+    ] {
+        assert_iretq_refused(|_, memory| memory.put(STACK + 8, cs), expected, label);
+    }
+}
+
+#[test]
+fn iretq_rejects_bad_ss_with_exact_faults_and_no_mutation() {
+    for (descriptor, expected, label) in [
+        (
+            0x00af_9b00_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "code SS",
+        ),
+        (
+            0x00cf_9100_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "read-only SS",
+        ),
+        (
+            0x00cf_b300_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "DPL 3 SS",
+        ),
+        (
+            0x00cf_1300_0000_ffff,
+            selector_fault_exit(12, 0x18),
+            "not present SS",
+        ),
+        (
+            0x00cf_8300_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "system SS",
+        ),
+    ] {
+        assert_iretq_refused(
+            |_, memory| memory.put(IRETQ_SS_SLOT, descriptor),
+            expected,
+            label,
+        );
+    }
+    for (ss, expected, label) in [
+        (
+            0x38,
+            selector_fault_exit(13, 0x38),
+            "SS beyond the GDT limit",
+        ),
+        (0x1b, selector_fault_exit(13, 0x18), "SS RPL 3"),
+        (0x1c, unsupported_cf(), "LDT SS"),
+        (0x01, unsupported_cf(), "null SS with RPL bits"),
+    ] {
+        assert_iretq_refused(|_, memory| memory.put(STACK + 32, ss), expected, label);
+    }
+}
+
+#[test]
+fn iretq_unmodeled_flags_and_state_are_unsupported_without_mutation() {
+    for (bit, label) in [
+        (8, "frame TF"),
+        (17, "frame VM"),
+        (19, "frame VIF"),
+        (20, "frame VIP"),
+    ] {
+        assert_iretq_refused(
+            |_, memory| memory.put(STACK + 16, 0x202 | (1 << bit)),
+            unsupported_cf(),
+            label,
+        );
+    }
+    for (bit, label) in [
+        (8, "current TF"),
+        (14, "current NT"),
+        (19, "current VIF"),
+        (20, "current VIP"),
+    ] {
+        assert_iretq_refused(|state, _| state.rflags |= 1 << bit, unsupported_cf(), label);
+    }
+    assert_iretq_refused(
+        |state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        unsupported_cf(),
+        "interrupt shadow",
+    );
+    assert_iretq_refused(|state, _| state.gdtr = None, unsupported_cf(), "no GDTR");
+    assert_iretq_refused(
+        |state, _| state.ss_cache = None,
+        unsupported_cf(),
+        "no SS cache",
+    );
+    assert_iretq_refused(
+        |state, _| state.ss_selector = None,
+        unsupported_cf(),
+        "no SS selector",
+    );
+}
+
+#[test]
+fn iretq_stack_page_faults_are_exact_and_leave_state_untouched() {
+    // Qword `k` of the frame is the first one in an unmapped page (the frame straddles the
+    // page boundary at STACK + 0x1000); the earlier qwords are readable.
+    for k in 0..5_u64 {
+        let rsp = STACK + 0x1000 - 8 * k;
+        let (mut state, mut memory) = default_iretq();
+        state.gpr[4] = rsp;
+        let frame = [RIP + 2, 0x10, 0x202, IRETQ_NEW_RSP, 0x18];
+        for (slot, value) in frame.iter().enumerate().take(k as usize) {
+            memory.put(rsp + 8 * slot as u64, *value);
+        }
+        memory.fault_pages.push(STACK + 0x1000);
+        let before = state.clone();
+        let ram = memory.ram.clone();
+        let result = run_iretq(&mut state, &mut memory);
+        let RunExit::Fault(fault) = exit(&result) else {
+            panic!("expected a page fault for k = {k}, got {:?}", exit(&result));
+        };
+        assert_eq!(fault.vector, 14, "{k}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.ram, ram);
+        assert_eq!(memory.writes, 0);
+    }
+    // The CS descriptor page unmapped (frame in a good page).
+    let (mut state, mut memory) = default_iretq();
+    memory.fault_pages.push(LRETQ_GDT);
+    let before = state.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert!(matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 14));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn iretq_non_canonical_rsp_is_ss0_before_any_read() {
+    let (mut state, mut memory) = default_iretq();
+    state.gpr[4] = 0x0001_0000_0000_0000;
+    let before = state.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &selector_fault_exit(12, 0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn iretq_ss_descriptor_page_fault_leaves_state_and_gdt_untouched() {
+    // The SS descriptor sits in its own page; the CS descriptor (A = 0) and the frame are
+    // fine, so the CS accessed-bit write must not have happened either.
+    let (mut state, mut memory) = default_iretq();
+    memory.put(IRETQ_CS_SLOT, 0x00af_9a00_0000_ffff);
+    memory.put(STACK + 32, 0x1018);
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: LRETQ_GDT,
+        limit: 0x1fff,
+    });
+    memory.fault_pages.push(LRETQ_GDT + 0x1000);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert!(matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 14));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn iretq_outside_the_set_and_with_other_prefixes_stays_unsupported() {
+    let (mut state, mut memory) = default_iretq();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, unsupported_cf());
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+    // Inside the set only the exact REX.W form decodes.
+    for code in [
+        &[0xcfu8][..],
+        &[0x66, 0x48, 0xcf],
+        &[0x66, 0xcf],
+        &[0x49, 0xcf],
+        &[0xf0, 0x48, 0xcf],
+        &[0xf3, 0x48, 0xcf],
+        &[0xf2, 0x48, 0xcf],
+        &[0x2e, 0x48, 0xcf],
+        &[0x67, 0x48, 0xcf],
+    ] {
+        let (mut state, mut memory) = default_iretq();
+        memory.code = code.to_vec();
+        let before = state.clone();
+        let result = run_iretq(&mut state, &mut memory);
+        assert_eq!(exit(&result), &unsupported_cf(), "{code:x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
