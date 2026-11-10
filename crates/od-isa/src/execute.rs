@@ -1,7 +1,7 @@
 //! On-demand single-instruction execution for the implemented long-mode integer slice.
 //! Unlike the fragment API, targets are decoded only when execution reaches them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::CpuidProfile;
@@ -1840,6 +1840,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr: Option<&'a MsrProfile>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
+    pio_u8: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1852,6 +1853,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr: None,
             halt: None,
             cpu_owned_cr3: false,
+            pio_u8: false,
         }
     }
 
@@ -1902,10 +1904,21 @@ impl<'a> Cpl0ProfileSet<'a> {
         self.cpu_owned_cr3 = true;
         self
     }
+
+    /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms.
+    /// They execute only through [`run_with_cpl0_profile_set_and_pio`]; any
+    /// other entry point, and a set built without this call, leaves them
+    /// `Unsupported` without touching a port.
+    pub const fn with_pio_u8(mut self) -> Self {
+        self.pio_u8 = true;
+        self
+    }
 }
 
+/// Exit of a CPL0 profile-set run. `E` is the port error of the PIO entry
+/// point; entries without a port use the uninhabited default.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Cpl0ProfileSetExit {
+pub enum Cpl0ProfileSetExit<E = std::convert::Infallible> {
     Run(RunExit),
     /// A `MOV CR3, RAX` retired under `with_cpu_owned_cr3`. The run stopped at
     /// the following instruction boundary before any further fetch; this exit
@@ -1913,11 +1926,16 @@ pub enum Cpl0ProfileSetExit {
     /// would apply at that same boundary. `instructions_executed` includes the
     /// MOV CR3.
     TranslationContextChange(TranslationContextChange),
+    /// The port callback of `IN AL, DX` / `OUT DX, AL` failed. The callback
+    /// runs before the commit, so the instruction did not retire: RIP stays on
+    /// it, AL is unchanged and `instructions_executed` counts only the earlier
+    /// instructions.
+    PortIo(E),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Cpl0ProfileSetResult {
-    pub exit: Cpl0ProfileSetExit,
+pub struct Cpl0ProfileSetResult<E = std::convert::Infallible> {
+    pub exit: Cpl0ProfileSetExit<E>,
     pub instructions_executed: u64,
     pub rflags_defined: u64,
 }
@@ -2142,6 +2160,10 @@ struct ExecutionProfiles<'a> {
     /// translation-context effect of a retired `MOV CR3, RAX`, which makes the
     /// run loop stop at the following instruction boundary.
     cpu_owned_cr3: Option<&'a Cell<Option<TranslationContextChange>>>,
+    /// Port bridge for the exact `IN AL, DX` / `OUT DX, AL` forms. A port
+    /// failure is recorded by the bridge and surfaces as an `Unsupported`
+    /// placeholder outcome that the caller replaces with its typed exit.
+    pio_u8: Option<&'a RefCell<&'a mut dyn crate::PortIo<Error = ()>>>,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3270,6 +3292,7 @@ pub fn run_with_maxss_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -3423,6 +3446,7 @@ pub fn run_with_minsd_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -3576,6 +3600,7 @@ pub fn run_with_maxsd_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -3729,6 +3754,7 @@ pub fn run_with_minpd_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -3882,6 +3908,7 @@ pub fn run_with_minps_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4035,6 +4062,7 @@ pub fn run_with_maxps_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4188,6 +4216,7 @@ pub fn run_with_maxpd_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4341,6 +4370,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4494,6 +4524,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4647,6 +4678,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4800,6 +4832,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -4953,6 +4986,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5106,6 +5140,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5259,6 +5294,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5412,6 +5448,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5565,6 +5602,7 @@ pub fn run_with_cvtss2si_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5718,6 +5756,7 @@ pub fn run_with_cvttss2si_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -5870,6 +5909,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6056,6 +6096,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6209,6 +6250,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6397,6 +6439,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6554,6 +6597,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6740,6 +6784,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -6893,6 +6938,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7046,6 +7092,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7232,6 +7279,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7386,6 +7434,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7539,6 +7588,7 @@ pub fn run_with_cvtdq2pd_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7692,6 +7742,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7844,6 +7895,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -7997,6 +8049,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -8183,6 +8236,7 @@ fn run_with_cvtdq2ps_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -8336,6 +8390,7 @@ pub fn run_with_cvtps2dq_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -8489,6 +8544,7 @@ pub fn run_with_cvttps2dq_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -8675,6 +8731,7 @@ fn run_with_cvtps2dq_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -8861,6 +8918,7 @@ fn run_with_cvttps2dq_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9047,6 +9105,7 @@ fn run_with_cvttpd2dq_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9233,6 +9292,7 @@ fn run_with_cvtpd2dq_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9386,6 +9446,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9539,6 +9600,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9692,6 +9754,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9845,6 +9908,7 @@ pub fn run_with_cvtss2sd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -9998,6 +10062,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -10187,6 +10252,7 @@ fn run_with_cvtpi2ps_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -10507,6 +10573,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -10660,6 +10727,7 @@ pub fn run_with_cvtps2pd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -10813,6 +10881,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -10966,6 +11035,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11118,6 +11188,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11271,6 +11342,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11482,6 +11554,7 @@ fn run_with_cmpss_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11635,6 +11708,7 @@ pub fn run_with_cmpsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11788,6 +11862,7 @@ pub fn run_with_cmppd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -11940,6 +12015,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12092,6 +12168,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12267,6 +12344,7 @@ fn run_with_minsd_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12420,6 +12498,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12600,6 +12679,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12765,6 +12845,7 @@ fn run_with_minpd_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -12953,6 +13034,7 @@ fn run_with_minps_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13106,6 +13188,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13259,6 +13342,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13411,6 +13495,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13563,6 +13648,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13715,6 +13801,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -13900,6 +13987,7 @@ fn run_with_sqrtps_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -14052,6 +14140,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -14236,6 +14325,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -14420,6 +14510,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -14611,6 +14702,7 @@ fn run_with_maxpd_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -14802,6 +14894,7 @@ fn run_with_maxps_memory_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -15007,6 +15100,7 @@ fn run_minss_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -15202,6 +15296,7 @@ fn run_maxss_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -15354,6 +15449,7 @@ pub fn run_with_cmpps_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -15507,6 +15603,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -15713,6 +15810,7 @@ pub fn run_with_efer_rdmsr_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -16111,6 +16209,7 @@ pub fn run_with_cr0_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -16323,6 +16422,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             mov_cr3: mov_cr3_profile,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -18975,16 +19075,43 @@ fn execute_pio_u8<P: crate::PortIo>(
             };
         }
     };
-    if instruction.length != 1 || instruction.prefixes != Prefixes::default() {
-        return PioU8Result {
-            exit: PioU8Exit::Unsupported {
-                opcode: instruction.opcode.byte,
-            },
+    match commit_pio_u8(state, &instruction, pio) {
+        PioU8Commit::Retired => PioU8Result {
+            exit: PioU8Exit::Retired,
+            instructions_executed: 1,
+            rflags_defined: initial_rflags_defined,
+        },
+        PioU8Commit::Unsupported { opcode } => PioU8Result {
+            exit: PioU8Exit::Unsupported { opcode },
             instructions_executed: 0,
             rflags_defined: initial_rflags_defined,
-        };
+        },
+        PioU8Commit::PortIo { error, .. } => PioU8Result {
+            exit: PioU8Exit::PortIoError(error),
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        },
     }
+}
 
+enum PioU8Commit<E> {
+    Retired,
+    Unsupported { opcode: u8 },
+    PortIo { opcode: u8, error: E },
+}
+
+/// Shared commit of the exact bare `IN AL, DX` / `OUT DX, AL` forms for an
+/// already decoded instruction. The port callback runs before any state
+/// change, so a failure leaves RIP and AL untouched.
+fn commit_pio_u8<P: crate::PortIo + ?Sized>(
+    state: &mut LongModeState,
+    instruction: &long_decode::Instruction,
+    pio: &mut P,
+) -> PioU8Commit<P::Error> {
+    let opcode = instruction.opcode.byte;
+    if instruction.length != 1 || instruction.prefixes != Prefixes::default() {
+        return PioU8Commit::Unsupported { opcode };
+    }
     let port = state.gpr[Register::Rdx as usize] as u16;
     match instruction.operation {
         Operation::InAlDx => match pio.read_u8(port) {
@@ -18992,39 +19119,17 @@ fn execute_pio_u8<P: crate::PortIo>(
                 RegisterView::low(Register::Rax, OperandSize::Byte),
                 u64::from(value),
             ),
-            Err(error) => {
-                return PioU8Result {
-                    exit: PioU8Exit::PortIoError(error),
-                    instructions_executed: 0,
-                    rflags_defined: initial_rflags_defined,
-                };
-            }
+            Err(error) => return PioU8Commit::PortIo { opcode, error },
         },
         Operation::OutDxAl => {
             if let Err(error) = pio.write_u8(port, state.gpr[Register::Rax as usize] as u8) {
-                return PioU8Result {
-                    exit: PioU8Exit::PortIoError(error),
-                    instructions_executed: 0,
-                    rflags_defined: initial_rflags_defined,
-                };
+                return PioU8Commit::PortIo { opcode, error };
             }
         }
-        _ => {
-            return PioU8Result {
-                exit: PioU8Exit::Unsupported {
-                    opcode: instruction.opcode.byte,
-                },
-                instructions_executed: 0,
-                rflags_defined: initial_rflags_defined,
-            };
-        }
+        _ => return PioU8Commit::Unsupported { opcode },
     }
     state.rip = state.rip.wrapping_add(u64::from(instruction.length));
-    PioU8Result {
-        exit: PioU8Exit::Retired,
-        instructions_executed: 1,
-        rflags_defined: initial_rflags_defined,
-    }
+    PioU8Commit::Retired
 }
 
 /// Continue an execution while carrying the caller's explicit RFLAGS
@@ -19407,6 +19512,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -19426,7 +19532,8 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
 /// integer flags, CR0/CR4 modeled inside the policy, CR3/x87/SSE unmodeled,
 /// `Running` activity with a `Clear` STI shadow and, with CLI, CR0.PE=1,
 /// CR4.PVI=0 and RFLAGS.VM=0. `rdtsc_source` feeds RDTSC only when the set
-/// was built with `with_rdtsc`; otherwise it is never called.
+/// was built with `with_rdtsc`; otherwise it is never called. `IN`/`OUT` stay
+/// `Unsupported` here even for a set built with `with_pio_u8`.
 pub fn run_with_cpl0_profile_set(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -19434,8 +19541,110 @@ pub fn run_with_cpl0_profile_set(
     initial_rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
-    mut stop_requested: impl FnMut() -> bool,
+    stop_requested: impl FnMut() -> bool,
 ) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    let (result, cr3_effect) = run_cpl0_profile_set_inner(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        set,
+        rdtsc_source,
+        None,
+        stop_requested,
+    )?;
+    // A pending effect means the run loop stopped right after the retired
+    // MOV CR3; its placeholder exit is replaced by the typed one.
+    let exit = match cr3_effect {
+        Some(effect) => Cpl0ProfileSetExit::TranslationContextChange(effect),
+        None => Cpl0ProfileSetExit::Run(result.exit),
+    };
+    Ok(Cpl0ProfileSetResult {
+        exit,
+        instructions_executed: result.instructions_executed,
+        rflags_defined: result.rflags_defined,
+    })
+}
+
+/// [`run_with_cpl0_profile_set`] with a byte port for the exact `IN AL, DX`
+/// and `OUT DX, AL` forms. Admission is identical. The port is called only for
+/// a set built with `with_pio_u8`; otherwise `IN`/`OUT` stay `Unsupported` and
+/// the port is never touched. The callback runs before the instruction
+/// commits, so a failure ends the run with [`Cpl0ProfileSetExit::PortIo`]
+/// with RIP on the instruction and no architectural change from it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    pio: &mut P,
+    stop_requested: impl FnMut() -> bool,
+) -> Result<Cpl0ProfileSetResult<P::Error>, Cpl0ProfileSetInputError> {
+    let mut capture = PortErrorCapture {
+        port: pio,
+        error: None,
+    };
+    let (result, cr3_effect) = run_cpl0_profile_set_inner(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        set,
+        rdtsc_source,
+        Some(&mut capture),
+        stop_requested,
+    )?;
+    // The failed instruction did not retire, so a port error and a CR3 effect
+    // cannot both be pending.
+    let exit = match (capture.error, cr3_effect) {
+        (Some(error), _) => Cpl0ProfileSetExit::PortIo(error),
+        (None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
+        (None, None) => Cpl0ProfileSetExit::Run(result.exit),
+    };
+    Ok(Cpl0ProfileSetResult {
+        exit,
+        instructions_executed: result.instructions_executed,
+        rflags_defined: result.rflags_defined,
+    })
+}
+
+/// Erases the port error type for the run loop and keeps the real error for
+/// the caller.
+struct PortErrorCapture<'p, P: crate::PortIo> {
+    port: &'p mut P,
+    error: Option<P::Error>,
+}
+
+impl<P: crate::PortIo> crate::PortIo for PortErrorCapture<'_, P> {
+    type Error = ();
+
+    fn read_u8(&mut self, port: u16) -> Result<u8, ()> {
+        self.port.read_u8(port).map_err(|error| {
+            self.error = Some(error);
+        })
+    }
+
+    fn write_u8(&mut self, port: u16, value: u8) -> Result<(), ()> {
+        self.port.write_u8(port, value).map_err(|error| {
+            self.error = Some(error);
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_cpl0_profile_set_inner(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    pio: Option<&mut dyn crate::PortIo<Error = ()>>,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<(RunResult, Option<TranslationContextChange>), Cpl0ProfileSetInputError> {
     use Cpl0ProfileSetInputError as Error;
     // Formally unreachable while `InstructionMode` has the single variant
     // `Long64`: no `RunConfig` can carry another mode, so a test for this
@@ -19486,6 +19695,15 @@ pub fn run_with_cpl0_profile_set(
         return Err(Error::CliPreconditionFailed);
     }
     let cr3_effect = Cell::new(None);
+    let mut pio = pio;
+    // Shorten the trait-object lifetime to this call; the cell is invariant.
+    let pio_cell = match pio.as_deref_mut() {
+        Some(port) => {
+            let port: &mut dyn crate::PortIo<Error = ()> = port;
+            Some(RefCell::new(port))
+        }
+        None => None,
+    };
     let result = run_configured(
         state,
         memory,
@@ -19624,6 +19842,7 @@ pub fn run_with_cpl0_profile_set(
             mov_cr3: None,
             control_policy: Some(set.policy),
             cpu_owned_cr3: set.cpu_owned_cr3.then_some(&cr3_effect),
+            pio_u8: pio_cell.as_ref().filter(|_| set.pio_u8),
             cr4: None,
         },
         StepRuntime {
@@ -19633,17 +19852,7 @@ pub fn run_with_cpl0_profile_set(
             stop_requested: &mut stop_requested,
         },
     );
-    // A pending effect means the run loop stopped right after the retired
-    // MOV CR3; its placeholder exit is replaced by the typed one.
-    let exit = match cr3_effect.get() {
-        Some(effect) => Cpl0ProfileSetExit::TranslationContextChange(effect),
-        None => Cpl0ProfileSetExit::Run(result.exit),
-    };
-    Ok(Cpl0ProfileSetResult {
-        exit,
-        instructions_executed: result.instructions_executed,
-        rflags_defined: result.rflags_defined,
-    })
+    Ok((result, cr3_effect.get()))
 }
 
 fn run_configured(
@@ -20079,6 +20288,7 @@ pub fn step_with_cr0_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -20475,6 +20685,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -20628,6 +20839,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21005,6 +21217,7 @@ fn run_with_comparison_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21160,6 +21373,7 @@ pub fn run_with_sqrtss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21313,6 +21527,7 @@ pub fn run_with_sqrtsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21466,6 +21681,7 @@ pub fn run_with_sqrtps_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21619,6 +21835,7 @@ pub fn run_with_sqrtpd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21777,6 +21994,7 @@ fn run_with_subpd_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -21985,6 +22203,7 @@ pub fn run_with_mulpd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -22141,6 +22360,7 @@ fn run_with_addpd_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -22327,6 +22547,7 @@ fn run_with_mulpd_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -22535,6 +22756,7 @@ pub fn run_with_addsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -22688,6 +22910,7 @@ pub fn run_with_divpd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -22874,6 +23097,7 @@ fn run_with_divpd_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23027,6 +23251,7 @@ pub fn run_with_addss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23214,6 +23439,7 @@ fn run_with_addss_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23400,6 +23626,7 @@ fn run_with_addsd_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23589,6 +23816,7 @@ fn run_with_addps_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23742,6 +23970,7 @@ pub fn run_with_divsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -23931,6 +24160,7 @@ fn run_with_divps_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24084,6 +24314,7 @@ pub fn run_with_divss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24237,6 +24468,7 @@ pub fn run_with_mulsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24390,6 +24622,7 @@ pub fn run_with_mulss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24579,6 +24812,7 @@ fn run_with_mulps_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24732,6 +24966,7 @@ pub fn run_with_subsd_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -24885,6 +25120,7 @@ pub fn run_with_subss_register_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -25038,6 +25274,7 @@ fn run_with_scalar_float_memory_rax_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -25435,6 +25672,7 @@ fn run_with_subps_profile(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -25587,6 +25825,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             mov_cr3: None,
             control_policy: None,
             cpu_owned_cr3: None,
+            pio_u8: None,
             cr4: None,
         },
         StepRuntime {
@@ -26038,6 +26277,7 @@ fn step_configured(
         mov_cr3: mov_cr3_profile,
         control_policy,
         cpu_owned_cr3,
+        pio_u8,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -31814,6 +32054,19 @@ fn step_configured(
                 Err(fault) => return Ok(StepOutcome::Fault(fault)),
             }
             return Ok(StepOutcome::Advanced);
+        }
+        Operation::InAlDx | Operation::OutDxAl if pio_u8.is_some() => {
+            let bridge = pio_u8.expect("guarded by the match arm");
+            return Ok(
+                match commit_pio_u8(state, &instruction, &mut **bridge.borrow_mut()) {
+                    PioU8Commit::Retired => StepOutcome::Advanced,
+                    // A port failure is kept by the bridge; the caller turns
+                    // this placeholder into its typed exit.
+                    PioU8Commit::Unsupported { opcode } | PioU8Commit::PortIo { opcode, .. } => {
+                        StepOutcome::Unsupported { opcode }
+                    }
+                },
+            );
         }
         _ => {}
     }
