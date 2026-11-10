@@ -14,6 +14,11 @@
 //! requested by `--run`", also for `--budget 0`) and `retired` is the count of the run. Nothing
 //! else in the evidence changes.
 //!
+//! `--run --budget N --set-cpl0` (S4-38L3) runs the board through the CPL0 profile set of od-isa
+//! instead (`od_machine::run_linux_direct_board_set`, the minimal set: CLI and the CPU-owned
+//! CR3). A `MOV CR3` continues the run; the `stop` object then also says `path: cpl0_set`, the set
+//! members and how many CR3 changes happened.
+//!
 //! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
 //! is started: their JSON says `"guest_started": false, "retired": 0`. A failure of the run
 //! itself (`run_failed`, after step 8, only with `--run`) is reported separately: its evidence
@@ -43,8 +48,8 @@
 //! written to `--out`.
 
 use od_machine::{
-    LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord, load_linux_direct_board,
-    run_linux_direct_board,
+    LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
+    load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -54,7 +59,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n>]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -83,6 +88,8 @@ struct Options {
     out: String,
     /// `--run --budget N`: run the guest for at most N instructions after loading.
     budget: Option<u64>,
+    /// `--set-cpl0`: run through the CPL0 profile set instead of the base probe profile.
+    set_cpl0: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -224,7 +231,17 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
-                match run_linux_direct_board(&mut boot, &machine_input, budget) {
+                let result = if options.set_cpl0 {
+                    run_linux_direct_board_set(
+                        &mut boot,
+                        &machine_input,
+                        budget,
+                        LinuxCpl0SetMembers::minimal(),
+                    )
+                } else {
+                    run_linux_direct_board(&mut boot, &machine_input, budget)
+                };
+                match result {
                     Ok(record) => {
                         evidence["guest_started"] = json!(true);
                         evidence["retired"] = json!(record.retired);
@@ -470,8 +487,21 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         "tsc_hz": record.tsc_hz,
         "com1_hex": hex(&record.com1),
         "com1_text": String::from_utf8_lossy(&record.com1),
-        "cpu_profile": "PagedCpl0ProbeV1 (base paged profile, no CPUID/MSR) with a bare RDTSC \
-                            (step_paged_probe_with_rdtsc) under the Linux profile, 2 MiB walk",
+        "path": record.path,
+        "cpu_profile": if record.path == "cpl0_set" {
+            "Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; \
+             members in set_members"
+        } else {
+            "PagedCpl0ProbeV1 (base paged profile, no CPUID/MSR) with a bare RDTSC \
+             (step_paged_probe_with_rdtsc) under the Linux profile, 2 MiB walk"
+        },
+        "set_members": record.set_members,
+        "set_exit_detail": record.set_exit_detail,
+        "cr3_changes": record.cr3_changes,
+        "last_cr3_change": record.last_cr3_change.map(|(old, new)| json!({
+            "old_cr3": hex64(old),
+            "new_cr3": hex64(new),
+        })),
         "linux_profile": record.linux_profile,
         "page_fault": record.page_fault,
         "memory_error": record.memory_error,
@@ -505,6 +535,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut ram_mib = None;
     let mut out = None;
     let mut run = false;
+    let mut set_cpl0 = false;
     let mut budget = None;
     let mut index = 0;
     while index < args.len() {
@@ -513,6 +544,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--run" {
             if std::mem::replace(&mut run, true) {
                 return Err(format!("duplicate option --run; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--set-cpl0" {
+            if std::mem::replace(&mut set_cpl0, true) {
+                return Err(format!("duplicate option --set-cpl0; usage: {USAGE}"));
             }
             index += 1;
             continue;
@@ -557,6 +595,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         (false, Some(_)) => return Err(format!("--budget needs --run; usage: {USAGE}")),
         (false, None) => None,
     };
+    if set_cpl0 && !run {
+        return Err(format!("--set-cpl0 needs --run; usage: {USAGE}"));
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -601,6 +642,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         ram_mib,
         out: required(out, "--out")?,
         budget,
+        set_cpl0,
     })
 }
 
@@ -721,6 +763,7 @@ mod tests {
                 ram_mib: 128,
                 out: dir.join("out.json").to_string_lossy().into_owned(),
                 budget: None,
+                set_cpl0: false,
             };
             Self { dir, options }
         }
@@ -1152,7 +1195,18 @@ mod tests {
             parse(&base(&["--budget", "0", "--run"])).unwrap().budget,
             Some(0)
         );
+        // `--set-cpl0` (S4-38L3) is a flag without a value and needs `--run`.
+        assert!(!parse(&base(&["--run", "--budget", "1"])).unwrap().set_cpl0);
+        assert!(
+            parse(&base(&["--set-cpl0", "--run", "--budget", "1"]))
+                .unwrap()
+                .set_cpl0
+        );
         for bad in [
+            base(&["--set-cpl0"]),
+            base(&["--set-cpl0", "--budget", "1"]),
+            base(&["--run", "--set-cpl0", "--set-cpl0", "--budget", "1"]),
+            base(&["--run", "--budget", "1", "--set-cpl0", "x"]),
             base(&["--run"]),
             base(&["--budget", "5"]),
             base(&["--run", "--run", "--budget", "5"]),
@@ -1276,6 +1330,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_cpl0_runs_the_set_and_reports_its_path_and_members() {
+        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: with the set the stop moves from CLD to MOV DS.
+        let code = [0xFC, 0xFA, 0x31, 0xC0, 0x8E, 0xD8];
+        let mut case = Case::new("set-cpl0", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["path"], "cpl0_set");
+        assert_eq!(stop["set_members"], json!(["cli", "cpu_owned_cr3"]));
+        assert_eq!(stop["exit_kind"], "unsupported");
+        // The loader's entry state carries loaded segment descriptor caches, so the null
+        // `MOV DS, AX` is not the legacy (cache-less) form the set admits: it is the stop.
+        assert_eq!(stop["unsupported_opcode"], "0x8e");
+        assert_eq!(stop["retired"], 3);
+        assert_eq!(stop["rip"], "0x1000204");
+        assert_eq!(stop["cr3_changes"], 0);
+        assert_eq!(stop["last_cr3_change"], Value::Null);
+        // The same bytes through the default path stop at CLD, with the old schema values.
+        let value = run_case("set-cpl0-control", &code, 64);
+        assert_eq!(value["stop"]["path"], "paged_probe");
+        assert_eq!(value["stop"]["unsupported_opcode"], "0xfc");
+        assert_eq!(value["stop"]["set_members"], json!([]));
+    }
+
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
     /// instruction runs. Run with `-- --ignored` on a machine that has `work/stage4`.
     #[test]
@@ -1296,6 +1377,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: None,
+            set_cpl0: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1335,6 +1417,7 @@ mod tests {
             ram_mib: 128,
             out: String::new(),
             budget: Some(1000),
+            set_cpl0: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1352,5 +1435,41 @@ mod tests {
         );
         assert_eq!(value["retired"], 0);
         assert_eq!(value["guest_started"], true);
+    }
+
+    /// Real kernel through the CPL0 set (S4-38L3): CLD, CLI and XOR retire, `MOV DS, AX` (`8e d8`)
+    /// on the DS descriptor cache the loader left is the stop. The evidence file of the slice
+    /// comes from the CLI.
+    #[test]
+    #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
+    fn real_artifacts_stop_at_the_first_segment_load_through_the_cpl0_set() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let options = Options {
+            vmlinuz: path("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"),
+            initramfs: path("work/stage4/initramfs/initramfs.cpio"),
+            acpi_blob: path("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"),
+            nonce: "real-run-1".to_string(),
+            expected_vmlinuz_sha256:
+                "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e".to_string(),
+            expected_acpi_manifest_hash: board_manifest_hash(),
+            expected_initramfs_sha256:
+                "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
+            ram_mib: 128,
+            out: String::new(),
+            budget: Some(1000),
+            set_cpl0: true,
+        };
+        let (value, exit) = evaluate(&options);
+        assert_eq!(exit, 0, "{value:#}");
+        println!("{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["path"], "cpl0_set");
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x8e");
+        assert_eq!(stop["rip"], "0x1000204");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("8e d8"));
+        assert_eq!(value["retired"], 3);
+        assert_eq!(stop["cr3_changes"], 0);
     }
 }

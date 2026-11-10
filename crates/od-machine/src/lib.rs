@@ -136,9 +136,9 @@ pub use stage4_interrupt_pump_paged_probe::{
 
 pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 pub use linux_direct::{
-    LINUX_STOP_RIP_BYTES, LinuxDirectBoot, LinuxDirectE820, LinuxDirectEntryState,
-    LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs, LinuxStopRecord,
-    load_linux_direct_board, run_linux_direct_board,
+    LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
+    LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
+    LinuxStopRecord, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
 };
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};

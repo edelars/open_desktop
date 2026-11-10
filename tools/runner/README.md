@@ -756,3 +756,19 @@ region with backing (ROM and framebuffer too), byte by byte, so the window may c
 boundary that a CPU fetch never crosses. On the real kernel the first stop is
 `unsupported` `0xfc` (CLD) at RIP `0x1000200` with `retired` 0
 (`docs/reports/data/stage4/s4-38l1-first-stop.json`).
+
+### `--set-cpl0` (S4-38L3)
+
+`--run --budget <n> --set-cpl0` runs the same board through the CPL0 profile set of od-isa (S2-45)
+instead of the base probe profile: `od_machine::run_linux_direct_board_set` with the minimal set
+(`with_cli` and `with_cpu_owned_cr3`; CPUID, RDTSC, MSR, HLT and port I/O members exist in
+`LinuxCpl0SetMembers` and are added only when a slice moves the first stop onto a form that needs
+them). The walker, the board CR3 and the ticks are the same; a `MOV CR3` is not a stop but a
+continuation (the 2 MiB walker is rebuilt for the new CR3). `stop` additionally has `path`
+(`cpl0_set`, or `paged_probe` without the flag), `set_members`, `set_exit_detail` (the set's own
+exit before it is expressed as `exit_kind`), `cr3_changes` and `last_cr3_change`
+(`old_cr3`/`new_cr3`); `cr3` is the last CR3 the guest wrote. `--set-cpl0` needs `--run`. On the
+real kernel the first stop is `unsupported` `0x8e` (`MOV DS, AX`, `8e d8`) at RIP `0x1000204` with
+`retired` 3 and no CR3 change: the loader's entry state carries loaded DS/ES/SS descriptor caches,
+and the set admits a null selector load only into a cache-less segment
+(`docs/reports/data/stage4/s4-38l3-core.json`).

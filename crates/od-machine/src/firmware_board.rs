@@ -7,6 +7,7 @@
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
 use crate::page_walk::translate_long64_2m_ram_read_only;
+use crate::paged_memory_adapter::{PagedCpl0SetExit, run_cpl0_set_paged_2m_ram};
 use crate::paged_probe::run_paged_probe_2m_ram;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
@@ -19,11 +20,13 @@ use crate::{
     MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
     NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
     PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
-    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeQuantumReport, PciEcam,
-    Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding,
-    RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
-    VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
+    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
+    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Pair, Pit8254Devices,
+    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
+    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
+    run_paged_probe, run_paged_probe_with_rdtsc,
 };
+use od_isa::execute::{Cpl0ProfileSet, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
@@ -795,6 +798,71 @@ pub(crate) struct LinuxRunFailure {
     pub(crate) retired: u64,
 }
 
+/// Result of [`LoadedFirmwareBoard::run_linux_boot_cpl0_set`] (S4-38L3).
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LinuxSetRunReport {
+    /// The usual run report; `exit` is the set's exit in `PagedProbeExit` terms.
+    pub(crate) run: FirmwareRunReport,
+    /// Every `MOV CR3` the walker was rebuilt for, in retirement order.
+    pub(crate) translation_context_changes: Vec<TranslationContextChange>,
+    /// The `Debug` text of the set's own final exit (`PagedCpl0SetExit`), before it was
+    /// expressed as a `PagedProbeExit`.
+    pub(crate) set_exit_detail: String,
+}
+
+/// Expresses the final exit of the CPL0 set loop as a `PagedProbeExit`, together with its own
+/// `Debug` text. `StopAddress` and `RepIterationBudgetExhausted` have no counterpart: the loop
+/// passes no stop address and the set admits no REP form, so they are an integration error of
+/// the board, reported as such instead of being folded into another exit.
+fn set_exit_to_probe_exit(
+    exit: PagedCpl0SetExit,
+) -> Result<(PagedProbeExit, String), &'static str> {
+    let detail = format!("{exit:?}");
+    let mapped = match exit {
+        PagedCpl0SetExit::Run(run) => match run {
+            RunExit::Halted => PagedProbeExit::Halted,
+            RunExit::InstructionBudgetExhausted => PagedProbeExit::BudgetExhausted,
+            RunExit::StopRequested => PagedProbeExit::Stopped,
+            RunExit::Fault(fault) => PagedProbeExit::Fault(fault),
+            RunExit::Unsupported { opcode } => PagedProbeExit::Unsupported { opcode },
+            RunExit::MemoryError(error) => PagedProbeExit::Backend(error),
+            RunExit::StopAddress | RunExit::RepIterationBudgetExhausted => {
+                return Err("the CPL0 set returned an exit the board never asks for");
+            }
+        },
+        PagedCpl0SetExit::Rejected(error) => {
+            PagedProbeExit::Rejected(PagedProbeRejection::Cpl0Set(error))
+        }
+        PagedCpl0SetExit::Configuration(error) => {
+            PagedProbeExit::Rejected(PagedProbeRejection::Configuration(error))
+        }
+        PagedCpl0SetExit::Cr3EffectMismatch {
+            active_cr3,
+            effect_old_cr3,
+            cpu_cr3,
+            effect_new_cr3,
+        } => PagedProbeExit::IntegrationError(PagedProbeIntegrationError::Cr3EffectMismatch {
+            active_cr3,
+            effect_old_cr3,
+            cpu_cr3,
+            effect_new_cr3,
+        }),
+        PagedCpl0SetExit::Cr3SnapshotRejected { effect, error } => {
+            PagedProbeExit::IntegrationError(PagedProbeIntegrationError::Cr3SnapshotRejected {
+                effect,
+                error,
+            })
+        }
+        PagedCpl0SetExit::UnexpectedContextChange { effect } => {
+            PagedProbeExit::IntegrationError(PagedProbeIntegrationError::UnexpectedContextChange {
+                effect,
+            })
+        }
+        PagedCpl0SetExit::PortIo(error) => PagedProbeExit::PortIo(error),
+    };
+    Ok((mapped, detail))
+}
+
 /// Result of [`LoadedFirmwareBoard::run_boot`].
 #[derive(Debug, Eq, PartialEq)]
 pub struct FirmwareRunReport {
@@ -893,7 +961,8 @@ impl LoadedFirmwareBoard {
     }
 
     /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
-    /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`).
+    /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`). After a
+    /// run through the CPL0 set (`run_linux_boot_cpl0_set`) it is the last `CR3` the guest wrote.
     pub const fn cr3(&self) -> u64 {
         self.page_table_root
     }
@@ -1103,6 +1172,167 @@ impl LoadedFirmwareBoard {
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
         self.run_boot_with(true, instruction_budget)
+    }
+
+    /// The Linux direct boot through the CPL0 profile set instead of the base probe profile
+    /// (S4-38L3). Same quantum structure and ticks as [`Self::run_linux_boot`] (retired ns, PM
+    /// timer, PIT, RDTSC in that order; a guest port B/PIT/PM-timer read or RDTSC ends the
+    /// quantum); the quantum is [`run_cpl0_set_paged_2m_ram`], which rebuilds the 2 MiB walker
+    /// on every `MOV CR3` the set retires. A `MOV CR3` is therefore a continuation, not a stop.
+    ///
+    /// `hand_cr3_to_cpu` gives the board CR3 to the CPU state for the run (the set must then be
+    /// built `with_cpu_owned_cr3`, otherwise it refuses the state: `Cr3NotAdmitted`). Afterwards
+    /// the CPU state carries no CR3 again and [`Self::cr3`] is the last CR3 the guest wrote, so
+    /// the board can be run again through either path.
+    ///
+    /// COM1 (`OUT DX, AL`, `with_pio_u8`) goes through the machine bus like in `run_boot`; the
+    /// PIT and PM timer port reads of the Linux profile are tick sources only through it.
+    pub(crate) fn run_linux_boot_cpl0_set(
+        &mut self,
+        instruction_budget: u64,
+        set: &Cpl0ProfileSet<'_>,
+        hand_cr3_to_cpu: bool,
+    ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut remaining = instruction_budget;
+        let mut retired = 0u64;
+        let mut quanta = 0u64;
+        let mut changes: Vec<TranslationContextChange> = Vec::new();
+        self.com1_log.clear();
+        let nvme = self.nvme.clone();
+        let acpi_pm = self.acpi_pm.clone();
+        let pit = self.pit.clone();
+        let rdtsc_tick = self.rdtsc_tick.clone();
+        if let Some(pm) = &acpi_pm {
+            pm.take_timer_tick_ns();
+        }
+        if let Some(pit) = &pit {
+            pit.take_port_tick_ns();
+        }
+        if let Some(flag) = &rdtsc_tick {
+            flag.store(false, Ordering::Relaxed);
+        }
+        if let Some(nvme) = &nvme {
+            nvme.service(&mut self.bus, |_| {});
+        }
+        if hand_cr3_to_cpu {
+            self.state.cr3 = Some(self.page_table_root);
+        }
+        let result = loop {
+            let uart = self.uart.clone();
+            let mut source = rdtsc_tick.clone().map(|tick| {
+                let clock = self.clock.clone();
+                move || {
+                    tick.store(true, Ordering::Relaxed);
+                    clock.snapshot().tsc()
+                }
+            });
+            let stop = || {
+                uart.holding_occupied()
+                    || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                    || acpi_pm
+                        .as_ref()
+                        .is_some_and(|pm| pm.stop_request().is_some())
+                    || acpi_pm
+                        .as_ref()
+                        .is_some_and(AcpiPmHandle::timer_tick_pending)
+                    || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
+                    || rdtsc_tick
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            };
+            let report = run_cpl0_set_paged_2m_ram(
+                &mut self.state,
+                &mut self.bus,
+                self.page_table_root,
+                FIRMWARE_EFER,
+                context,
+                remaining,
+                INTEGER_FLAGS,
+                set,
+                source
+                    .as_mut()
+                    .map(|source| source as &mut dyn FnMut() -> u64),
+                stop,
+                |_| {},
+            );
+            quanta += 1;
+            // The walker of the next quantum starts from the CR3 the guest left.
+            self.page_table_root = report.cr3;
+            changes.extend(report.translation_context_changes.iter().copied());
+            if let Some(nvme) = &nvme {
+                nvme.service(&mut self.bus, |_| {});
+            }
+            retired += report.instructions_executed;
+            remaining = remaining.saturating_sub(report.instructions_executed);
+            while uart.transfer_holding_to_shift() {
+                if let Some(byte) = uart.complete_transmission() {
+                    self.com1_log.push(byte);
+                }
+            }
+            let failure = |error| LinuxRunFailure { error, retired };
+            if let Err(error) = self.advance_time_ns(report.instructions_executed) {
+                break Err(failure(error));
+            }
+            if let Some(pm) = &acpi_pm {
+                let tick_ns = pm.take_timer_tick_ns();
+                #[cfg(test)]
+                let tick_ns = if self.suppress_pm_tick { 0 } else { tick_ns };
+                if let Err(error) = self.advance_time_ns(tick_ns) {
+                    break Err(failure(error));
+                }
+            }
+            if let Some(pit) = &pit
+                && let Err(error) = self.advance_time_ns(pit.take_port_tick_ns())
+            {
+                break Err(failure(error));
+            }
+            if let Some(flag) = &rdtsc_tick
+                && flag.swap(false, Ordering::Relaxed)
+            {
+                let tick_ns = RDTSC_TICK_NS;
+                #[cfg(test)]
+                let tick_ns = if self.suppress_rdtsc_tick { 0 } else { tick_ns };
+                if let Err(error) = self.advance_time_ns(tick_ns) {
+                    break Err(failure(error));
+                }
+            }
+            let stop_reason = acpi_pm.as_ref().and_then(AcpiPmHandle::stop_request);
+            let (exit, set_exit_detail) = match set_exit_to_probe_exit(report.exit) {
+                Ok(exit) => exit,
+                Err(detail) => break Err(failure(FirmwareBoardError::Config(detail))),
+            };
+            let exit = match exit {
+                PagedProbeExit::Stopped if stop_reason.is_some() => PagedProbeExit::Stopped,
+                PagedProbeExit::Stopped if remaining == 0 => PagedProbeExit::BudgetExhausted,
+                PagedProbeExit::Stopped if report.instructions_executed > 0 => continue,
+                other => other,
+            };
+            break Ok(FirmwareRunReport {
+                exit,
+                page_fault: report.page_fault,
+                memory_error: report.memory_error,
+                retired,
+                quanta,
+                com1: self.com1_log.clone(),
+                virtual_ns: self.clock().now_ns(),
+                tsc_hz: self.clock().tsc_hz(),
+                stop_reason,
+            })
+            .map(|run| (run, set_exit_detail));
+        };
+        // The CPU state carries no CR3 outside this call, whatever way the loop ended.
+        self.state.cr3 = None;
+        let (run, set_exit_detail) = result?;
+        Ok(LinuxSetRunReport {
+            run,
+            translation_context_changes: changes,
+            set_exit_detail,
+        })
     }
 
     fn run_boot_with(
