@@ -753,38 +753,4 @@ paged profile (`PagedCpl0ProbeV1`, no CPUID/MSR) with one addition: under the Li
 `RDTSC` is executed (`step_paged_probe_with_rdtsc`, 1 us tick as in `run_boot`). `cpl` is the RPL
 of the CS selector (0 when absent) while the interpreter always runs Ring0; `rip_bytes` reads any
 region with backing (ROM and framebuffer too), byte by byte, so the window may cross a 4 KiB
-boundary that a CPU fetch never crosses. On the real kernel the first stop is
-`unsupported` `0xfc` (CLD) at RIP `0x1000200` with `retired` 0
-(`docs/reports/data/stage4/s4-38l1-first-stop.json`).
-
-### `--set-cpl0` (S4-38L3)
-
-`--run --budget <n> --set-cpl0` runs the same board through the CPL0 profile set of od-isa (S2-45)
-instead of the base probe profile: `od_machine::run_linux_direct_board_set` with the minimal set
-(`with_cli` and `with_cpu_owned_cr3`; CPUID, RDTSC, MSR, HLT and port I/O members exist in
-`LinuxCpl0SetMembers` and are added only when a slice moves the first stop onto a form that needs
-them). The walker, the board CR3 and the ticks are the same; a `MOV CR3` is not a stop but a
-continuation (the 2 MiB walker is rebuilt for the new CR3). `stop` additionally has these fields:
-
-- `path`: `cpl0_set`, or `paged_probe` without the flag.
-- `set_members`: the members of the set in builder order (`cli`, `cpu_owned_cr3`, ...); `[]` on
-  `paged_probe`.
-- `set_exit_detail`: the `Debug` text of the set's own final exit before it is expressed as
-  `exit_kind` (for example `Run(Unsupported { opcode: 142 })`, `PortIo(...)`); `null` on `paged_probe`.
-- `cr3_changes`: how many `MOV CR3` retired (0 on `paged_probe`, where `MOV CR3` is `unsupported`).
-  A `MOV CR3` that ended the run in an integration error (`Cr3EffectMismatch`,
-  `Cr3SnapshotRejected`) retired and is counted too.
-- `last_cr3_change`: the last of them as `{old_cr3, new_cr3}`; `null` when there was none.
-
-`cr3` is the CR3 of the last retired `MOV CR3` (the board CR3 when there was none), also when the
-run ended in an integration error of that very instruction, so `cr3` and `cr3_changes` agree; the
-`rip_bytes` window is read through the current tree, except after `Cr3SnapshotRejected`, where the
-window is empty and `rip_bytes_error` is `InvalidCr3...`. On the `paged_probe` path (without
-`--set-cpl0`) the `stop` object got the same five fields additively (`path: "paged_probe"`, `[]`,
-`null`, `0`, `null`): `schema_version` of the evidence stays 1, because no field was removed,
-renamed or changed in meaning and a consumer that ignores unknown fields reads the old and the new
-object alike; a consumer that checks the exact key set must be updated. `--set-cpl0` needs `--run`. On the
-real kernel the first stop is `unsupported` `0x8e` (`MOV DS, AX`, `8e d8`) at RIP `0x1000204` with
-`retired` 3 and no CR3 change: the loader's entry state carries loaded DS/ES/SS descriptor caches,
-and the set admits a null selector load only into a cache-less segment
-(`docs/reports/data/stage4/s4-38l3-core.json`).
+boundary that a CPU fetch never crosses. On the real kernel the first stop is `unsupported` `0x01` (`LIDT [RIP+0x17bbd]`, `0f 01 1d`) at RIP `0x206647c` with `retired` 118 and no CR3 change: the null segment loads (S2-46), the ENDBR64 and LGDT/LRETQ forms (S2-47, S2-48), the dword read and the narrow byte/word/dword stores (S4-38L3) all retire; the set does not admit `LIDT` yet (S2-49). Evidence: `docs/reports/data/stage4/s4-38l3-core.json`.

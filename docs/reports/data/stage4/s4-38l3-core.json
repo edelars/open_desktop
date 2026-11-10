@@ -204,7 +204,7 @@
     }
   },
   "ram_mib": 128,
-  "retired": 3,
+  "retired": 118,
   "schema_version": 1,
   "status": "loaded",
   "stop": {
@@ -218,7 +218,7 @@
     "cr3_changes": 0,
     "cr4": "0x20",
     "efer": "0xd00",
-    "exit_detail": "Unsupported { opcode: 142 }",
+    "exit_detail": "Unsupported { opcode: 1 }",
     "exit_kind": "unsupported",
     "gpr": {
       "r10": "0x0",
@@ -226,17 +226,17 @@
       "r12": "0x0",
       "r13": "0x0",
       "r14": "0x0",
-      "r15": "0x0",
+      "r15": "0x100000",
       "r8": "0x0",
       "r9": "0x0",
-      "rax": "0x0",
-      "rbp": "0x0",
+      "rax": "0x207e220",
+      "rbp": "0x1000000",
       "rbx": "0x0",
       "rcx": "0x0",
-      "rdi": "0x0",
+      "rdi": "0x207e230",
       "rdx": "0x0",
-      "rsi": "0x100000",
-      "rsp": "0x150000"
+      "rsi": "0x5459fe0",
+      "rsp": "0x5459fd0"
     },
     "inputs": {
       "acpi_blob_sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf",
@@ -253,19 +253,19 @@
     "page_fault": null,
     "path": "cpl0_set",
     "quanta": 1,
-    "retired": 3,
-    "rflags": "0x46",
-    "rip": "0x1000204",
-    "rip_bytes": "8e d8 8e c0 8e d0 8e e0 8e e8 48 8d 2d eb fd ff",
+    "retired": 118,
+    "rflags": "0x2",
+    "rip": "0x206647c",
+    "rip_bytes": "0f 01 1d bd 7b 01 00 48 83 c4 18 5b 5d c3 66 0f",
     "rip_bytes_error": null,
-    "rip_gpa": "0x1000204",
-    "set_exit_detail": "Run(Unsupported { opcode: 142 })",
+    "rip_gpa": "0x206647c",
+    "set_exit_detail": "Run(Unsupported { opcode: 1 })",
     "set_members": [
       "cli",
       "cpu_owned_cr3"
     ],
     "tsc_hz": 1000000000,
-    "unsupported_opcode": "0x8e",
-    "virtual_ns": 3
+    "unsupported_opcode": "0x01",
+    "virtual_ns": 118
   }
 }
