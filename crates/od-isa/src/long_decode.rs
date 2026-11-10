@@ -452,6 +452,9 @@ pub enum Operation {
     /// S2-22k null selector loads: bare `8E D8` / `8E C0` at CPL0.
     LoadNullDsSelector,
     LoadNullEsSelector,
+    /// S2-46 null selector load into SS: bare `8E D0` (MOV SS, AX). Executes only through the
+    /// CPL0 profile set with a loaded SS cache; every other path leaves it `Unsupported`.
+    LoadNullSsSelector,
     Extend {
         dst: RegisterView,
         src: Operand,
@@ -8025,7 +8028,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if self.length != 2
                     || prefixes != Prefixes::default()
-                    || !matches!(modrm, 0xe0 | 0xe8 | 0xd8 | 0xc0)
+                    || !matches!(modrm, 0xe0 | 0xe8 | 0xd8 | 0xc0 | 0xd0)
                 {
                     return Err(self.unsupported(opcode));
                 }
@@ -8034,6 +8037,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe8 => Operation::LoadGsSelector,
                     0xd8 => Operation::LoadNullDsSelector,
                     0xc0 => Operation::LoadNullEsSelector,
+                    0xd0 => Operation::LoadNullSsSelector,
                     _ => unreachable!("ModR/M was checked above"),
                 }
             }
@@ -8203,6 +8207,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::LoadGsSelector => false,
                 Operation::LoadNullDsSelector => false,
                 Operation::LoadNullEsSelector => false,
+                Operation::LoadNullSsSelector => false,
                 Operation::Extend { src, .. } => {
                     matches!(src, Operand::Memory(_))
                 }
@@ -21454,7 +21459,6 @@ mod tests {
         assert_eq!(decoded.length, 2);
         assert!(matches!(decoded.operation, Operation::LoadFsSelector));
         for bytes in [
-            &[0x8e, 0xd0][..], // SS
             &[0x8e, 0xc8][..], // CS is not a MOV destination
             &[0x8e, 0x20][..], // memory source
             &[0x8e, 0xe1][..], // another GPR
@@ -21487,7 +21491,6 @@ mod tests {
         assert_eq!(decoded.length, 2);
         assert!(matches!(decoded.operation, Operation::LoadGsSelector));
         for bytes in [
-            &[0x8e, 0xd0][..],
             &[0x8e, 0xc8][..],
             &[0x8e, 0x28][..],
             &[0x8e, 0xe9][..],
@@ -21513,6 +21516,7 @@ mod tests {
         for (bytes, operation) in [
             (&[0x8e, 0xd8][..], Operation::LoadNullDsSelector),
             (&[0x8e, 0xc0][..], Operation::LoadNullEsSelector),
+            (&[0x8e, 0xd0][..], Operation::LoadNullSsSelector),
         ] {
             let mut memory = Memory::new(bytes);
             let decoded = memory.decode().unwrap();
@@ -21520,7 +21524,6 @@ mod tests {
             assert_eq!(decoded.operation, operation);
         }
         for bytes in [
-            &[0x8e, 0xd0][..],
             &[0x8e, 0xc8][..],
             &[0x8e, 0x20][..],
             &[0x8e, 0xd9][..],
@@ -21576,6 +21579,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,

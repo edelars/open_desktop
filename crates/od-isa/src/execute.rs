@@ -19688,6 +19688,10 @@ fn run_cpl0_profile_set_inner(
     match state.sti_shadow {
         None => return Err(Error::StiShadowMissing),
         Some(crate::StiShadow::Clear) => {}
+        // A MOV SS shadow can outlive a one-instruction run only with IF = 0, where it is
+        // not observable through maskable interrupts; with IF = 1 it could come from STI
+        // (ISSUE-069), which stays outside the set.
+        Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 => {}
         Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
     }
     // CR0.PE, CR4.PVI and RFLAGS.VM are the non-PVI Long64 CLI preconditions.
@@ -20037,7 +20041,12 @@ fn run_configured(
             rflags_defined,
         };
     }
-    if sti_profile.is_none() && state.sti_shadow == Some(crate::StiShadow::Blocking) {
+    // Under the CPL0 set a MOV SS shadow may be carried across run boundaries, but only
+    // with IF = 0 (see the matching entry admission).
+    if sti_profile.is_none()
+        && state.sti_shadow == Some(crate::StiShadow::Blocking)
+        && !(control_policy.is_some() && state.rflags & (1 << 9) == 0)
+    {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0xfb },
             instructions_executed: 0,
@@ -20092,7 +20101,10 @@ fn run_configured(
             };
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
-                    if sti_profile.is_some() && old_shadow == Some(crate::StiShadow::Blocking) {
+                    // The CPL0 profile set has no STI; its only shadow source is MOV SS.
+                    if (sti_profile.is_some() || control_policy.is_some())
+                        && old_shadow == Some(crate::StiShadow::Blocking)
+                    {
                         state.sti_shadow = Some(crate::StiShadow::Clear);
                     }
                     retired += 1;
@@ -26432,9 +26444,12 @@ fn step_configured(
     if state.activity == Some(crate::CpuActivity::Halted) {
         return Ok(StepOutcome::Halted);
     }
+    // S2-46: the CPL0 profile set carries a MOV SS shadow only with IF = 0.
+    let mov_ss_shadow = control_policy.is_some() && state.rflags & (1 << 9) == 0;
     if state.sti_shadow == Some(crate::StiShadow::Blocking)
         && sti_profile.is_none()
         && halt_profile.is_none()
+        && !mov_ss_shadow
     {
         return Ok(StepOutcome::Unsupported { opcode: 0xfb });
     }
@@ -32351,7 +32366,14 @@ fn step_configured(
             opcode: instruction.opcode.byte,
         });
     }
+    // S2-46: a null FS/GS load is admitted only under the CPL0 profile set at CPL0,
+    // whether or not the hidden cache is modeled (the board state models none); the
+    // legacy Ring3 forms stay non-null.
+    let null_fs_gs_load = control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring0
+        && state.gpr[Register::Rax as usize] as u16 == 0;
     if matches!(instruction.operation, Operation::LoadFsSelector)
+        && !null_fs_gs_load
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
             || state.fs_cache.is_none()
@@ -32365,6 +32387,7 @@ fn step_configured(
         });
     }
     if matches!(instruction.operation, Operation::LoadGsSelector)
+        && !null_fs_gs_load
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
             || state.gs_cache.is_none()
@@ -32380,9 +32403,14 @@ fn step_configured(
     if matches!(instruction.operation, Operation::LoadNullEsSelector) {
         let selector = state.gpr[Register::Rax as usize] as u16;
         let legacy_null_load = selector == 0 && state.es_cache.is_none();
+        // S2-46: a null load over a loaded cache only under the CPL0 profile set.
+        let loaded_null_load =
+            selector == 0 && state.es_cache.is_some() && control_policy.is_some();
         let gdt_load =
             selector != 0 && selector & 4 == 0 && state.gdtr.is_some() && state.es_cache.is_some();
-        if context.privilege != PrivilegeLevel::Ring0 || !(legacy_null_load || gdt_load) {
+        if context.privilege != PrivilegeLevel::Ring0
+            || !(legacy_null_load || loaded_null_load || gdt_load)
+        {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -32391,9 +32419,32 @@ fn step_configured(
     if matches!(instruction.operation, Operation::LoadNullDsSelector) {
         let selector = state.gpr[Register::Rax as usize] as u16;
         let legacy_null_load = selector == 0 && state.ds_cache.is_none();
+        // S2-46: a null load over a loaded cache only under the CPL0 profile set.
+        let loaded_null_load =
+            selector == 0 && state.ds_cache.is_some() && control_policy.is_some();
         let gdt_load =
             selector != 0 && selector & 4 == 0 && state.gdtr.is_some() && state.ds_cache.is_some();
-        if context.privilege != PrivilegeLevel::Ring0 || !(legacy_null_load || gdt_load) {
+        if context.privilege != PrivilegeLevel::Ring0
+            || !(legacy_null_load || loaded_null_load || gdt_load)
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
+    if matches!(instruction.operation, Operation::LoadNullSsSelector) {
+        // S2-46: MOV SS, AX with AX = 0 is legal at CPL0 (RPL 0) in Long64. It is admitted
+        // only under the CPL0 profile set, over a loaded SS cache, with the interrupt
+        // shadow clear and IF = 0 so that the one-instruction shadow it opens is not
+        // observable through maskable interrupts. Nonzero selectors are not modeled.
+        let admitted = control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && state.gpr[Register::Rax as usize] as u16 == 0
+            && state.ss_cache.is_some()
+            && state.ss_selector.is_some()
+            && state.sti_shadow == Some(crate::StiShadow::Clear)
+            && state.rflags & (1 << 9) == 0;
+        if !admitted {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -34843,7 +34894,9 @@ fn step_configured(
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
         }
-        Operation::LoadNullDsSelector | Operation::LoadNullEsSelector => {
+        Operation::LoadNullDsSelector
+        | Operation::LoadNullEsSelector
+        | Operation::LoadNullSsSelector => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8e
                 && instruction.length == 2
@@ -47662,6 +47715,14 @@ fn step_configured(
                 }
             }
         }
+        Operation::LoadNullSsSelector => {
+            // Admission guarantees AX = 0 and a loaded SS cache. The cache stays as
+            // the unusable descriptor; Long64 ignores SS base and limit.
+            state.ss_selector = Some(0);
+            state.ss_unusable = true;
+            // MOV SS opens a one-instruction interrupt shadow.
+            state.sti_shadow = Some(crate::StiShadow::Blocking);
+        }
         Operation::VerwGdt => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             match verify_writable_gdt_selector(state, memory, context, selector) {
@@ -47685,6 +47746,17 @@ fn step_configured(
             if let Err(error) = load_idtr(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
             }
+        }
+        Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
+            // Null load (admitted by the CPL0 set only). The visible selector becomes 0 and
+            // the register is marked unusable; the FS base MSR value and any modeled cache
+            // contents are left untouched.
+            state.fs_selector = 0;
+            state.fs_unusable = true;
+        }
+        Operation::LoadGsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
+            state.gs_selector = 0;
+            state.gs_unusable = true;
         }
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
@@ -51126,6 +51198,7 @@ fn load_fs_gdt_selector(
         return Ok(false);
     };
     state.fs_selector = selector;
+    state.fs_unusable = false;
     state.fs_base = u64::from(descriptor.base);
     state.fs_cache = Some(FsDescriptorCache {
         limit: descriptor.limit,
@@ -51148,6 +51221,7 @@ fn load_gs_gdt_selector(
         return Ok(false);
     };
     state.gs_selector = selector;
+    state.gs_unusable = false;
     state.gs_base = u64::from(descriptor.base);
     state.gs_cache = Some(FsDescriptorCache {
         limit: descriptor.limit,
@@ -54304,6 +54378,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54393,6 +54470,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54449,6 +54529,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54510,6 +54593,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54557,6 +54643,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54628,6 +54717,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54708,6 +54800,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -54758,6 +54853,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54813,6 +54911,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54877,6 +54978,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -54997,6 +55101,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55052,6 +55159,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55110,6 +55220,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55162,6 +55275,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55221,6 +55337,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -55273,6 +55392,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55357,6 +55479,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55401,6 +55526,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55464,6 +55592,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -55509,6 +55640,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55595,6 +55729,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -55657,6 +55794,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55760,6 +55900,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55810,6 +55953,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -55860,6 +56006,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55916,6 +56065,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -55968,6 +56120,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56051,6 +56206,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56103,6 +56261,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -56178,6 +56339,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         gdtr: None,
                         idtr: None,
                         fs_cache: None,
@@ -56267,6 +56431,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56344,6 +56511,9 @@ mod tests {
                     ss_cache: None,
                     ds_unusable: false,
                     es_unusable: false,
+                    ss_unusable: false,
+                    fs_unusable: false,
+                    gs_unusable: false,
                     gdtr: None,
                     idtr: None,
                     fs_cache: None,
@@ -56426,6 +56596,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56572,6 +56745,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -56721,6 +56897,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56771,6 +56950,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56820,6 +57002,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56879,6 +57064,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -56928,6 +57116,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -57006,6 +57197,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -57107,6 +57301,9 @@ mod tests {
                     ss_cache: None,
                     ds_unusable: false,
                     es_unusable: false,
+                    ss_unusable: false,
+                    fs_unusable: false,
+                    gs_unusable: false,
                     gdtr: None,
                     idtr: None,
                     fs_cache: None,
@@ -57258,6 +57455,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57356,6 +57556,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         gdtr: None,
                         idtr: None,
                         fs_cache: None,
@@ -57452,6 +57655,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57533,6 +57739,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57588,6 +57797,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57654,6 +57866,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57706,6 +57921,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -57781,6 +57999,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57852,6 +58073,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -57924,6 +58148,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -57996,6 +58223,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -58068,6 +58298,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -58140,6 +58373,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -58212,6 +58448,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -58284,6 +58523,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -58345,6 +58587,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -58405,6 +58650,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         gdtr: None,
                         idtr: None,
                         fs_cache: None,
@@ -58481,6 +58729,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -58704,6 +58955,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -58801,6 +59055,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         gdtr: None,
                         idtr: None,
                         fs_cache: None,
@@ -58877,6 +59134,9 @@ mod tests {
                         ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
+                        ss_unusable: false,
+                        fs_unusable: false,
+                        gs_unusable: false,
                         gdtr: None,
                         idtr: None,
                         fs_cache: None,
@@ -59056,6 +59316,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59103,6 +59366,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59161,6 +59427,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59224,6 +59493,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59287,6 +59559,9 @@ mod tests {
                     ss_cache: None,
                     ds_unusable: false,
                     es_unusable: false,
+                    ss_unusable: false,
+                    fs_unusable: false,
+                    gs_unusable: false,
                     gdtr: None,
                     idtr: None,
                     fs_cache: None,
@@ -59343,6 +59618,9 @@ mod tests {
                     ss_cache: None,
                     ds_unusable: false,
                     es_unusable: false,
+                    ss_unusable: false,
+                    fs_unusable: false,
+                    gs_unusable: false,
                     gdtr: None,
                     idtr: None,
                     fs_cache: None,
@@ -59421,6 +59699,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59501,6 +59782,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59560,6 +59844,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59615,6 +59902,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59670,6 +59960,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59725,6 +60018,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59771,6 +60067,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59826,6 +60125,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59875,6 +60177,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -59931,6 +60236,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -59987,6 +60295,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60041,6 +60352,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -60132,6 +60446,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -60173,6 +60490,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60334,6 +60654,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -60391,6 +60714,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60446,6 +60772,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60491,6 +60820,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60548,6 +60880,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60596,6 +60931,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60667,6 +61005,9 @@ mod tests {
                     ss_cache: None,
                     ds_unusable: false,
                     es_unusable: false,
+                    ss_unusable: false,
+                    fs_unusable: false,
+                    gs_unusable: false,
                     gdtr: None,
                     idtr: None,
                     fs_cache: None,
@@ -60748,6 +61089,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -60810,6 +61154,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -60905,6 +61252,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -60955,6 +61305,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -61008,6 +61361,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -61051,6 +61407,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -61190,6 +61549,9 @@ mod tests {
                 ss_cache: None,
                 ds_unusable: false,
                 es_unusable: false,
+                ss_unusable: false,
+                fs_unusable: false,
+                gs_unusable: false,
                 gdtr: None,
                 idtr: None,
                 fs_cache: None,
@@ -61263,6 +61625,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -61313,6 +61678,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -62147,6 +62515,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -62182,6 +62553,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -62219,6 +62593,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             gdtr: None,
             idtr: None,
             fs_cache: None,
@@ -62257,6 +62634,9 @@ mod tests {
             ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             fs_base: 0xffff_8000_1122_3344,
             fs_selector: 0x5678,
             fs_cache: Some(FsDescriptorCache {

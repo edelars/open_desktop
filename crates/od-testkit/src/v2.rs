@@ -1402,6 +1402,9 @@ impl IntegerState {
             },
             ds_unusable: self.ds_unusable.unwrap_or(false),
             es_unusable: self.es_unusable.unwrap_or(false),
+            ss_unusable: false,
+            fs_unusable: false,
+            gs_unusable: false,
             ds_cache: None,
             es_cache: None,
             gdtr: match (self.gdtr_base, self.gdtr_limit) {

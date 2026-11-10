@@ -7,8 +7,9 @@ use od_isa::execute::{
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
-    GuestMemory, HaltProfile, InstructionMode, LongModeState, MemoryError, OperandSize, PortIo,
-    PrivilegeLevel, StiShadow, TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
+    DataSegmentDescriptorCache, FsDescriptorCache, GuestMemory, HaltProfile, InstructionMode,
+    LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
+    TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
 };
 
 const RIP: u64 = 0x1000;
@@ -1625,4 +1626,250 @@ fn pio_entry_admission_is_unchanged() {
     assert_eq!(error, Cpl0ProfileSetInputError::Cr0Missing);
     assert_eq!(memory.fetches, 0);
     assert!(pio.writes.is_empty());
+}
+
+// ---- S2-46: null segment loads over loaded hidden caches ----
+
+const DATA_CACHE: DataSegmentDescriptorCache = DataSegmentDescriptorCache {
+    base: 0,
+    limit: 0xffff_ffff,
+    access: 0x93,
+    flags: 0xc,
+};
+const FS_GS_CACHE: FsDescriptorCache = FsDescriptorCache {
+    limit: 0xffff_ffff,
+    access: 0x93,
+    flags: 0xc,
+};
+
+/// The Linux board entry: DS/ES/SS/FS/GS hold loaded data caches, IF = 0.
+fn loaded_state() -> LongModeState {
+    LongModeState {
+        rflags: 2,
+        ss_selector: Some(0x18),
+        ss_cache: Some(DATA_CACHE),
+        ds_cache: Some(DATA_CACHE),
+        es_cache: Some(DATA_CACHE),
+        fs_cache: Some(FS_GS_CACHE),
+        gs_cache: Some(FS_GS_CACHE),
+        fs_selector: 0x18,
+        gs_selector: 0x18,
+        fs_base: 0x1234_5000,
+        gs_base: 0x5678_9000,
+        ..board_state()
+    }
+}
+
+fn cli_set() -> Cpl0ProfileSet<'static> {
+    static CLI: CliProfile = CliProfile::NonPviLong64V1;
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&CLI)
+}
+
+#[test]
+fn null_ds_es_ss_loads_over_loaded_caches_retire_and_open_the_mov_ss_shadow() {
+    let mut state = loaded_state();
+    let mut memory = Memory::code(&BOARD_PROLOGUE);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 64).unwrap();
+    // cld, cli, xor, mov ds, mov es, mov ss retire; the fetch after the code is unmapped.
+    assert_eq!(result.instructions_executed, 6);
+    assert!(matches!(exit(&result), RunExit::MemoryError(_)));
+    assert_eq!(state.rip, RIP + 10);
+    assert_eq!(state.rflags & IF, 0);
+    assert_eq!((state.ds_selector, state.es_selector), (0, 0));
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ds_unusable && state.es_unusable && state.ss_unusable);
+    assert!(!state.fs_unusable && !state.gs_unusable);
+    // The hidden caches are kept; Long64 ignores DS/ES/SS base and limit.
+    assert_eq!(state.ds_cache, Some(DATA_CACHE));
+    assert_eq!(state.es_cache, Some(DATA_CACHE));
+    assert_eq!(state.ss_cache, Some(DATA_CACHE));
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.gpr[0], 0);
+}
+
+#[test]
+fn mov_ss_shadow_lasts_one_instruction_and_survives_single_step_runs() {
+    let mut code = BOARD_PROLOGUE.to_vec();
+    code.extend([0x90, 0x90]);
+    // One run.
+    let mut state = loaded_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 7).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 7);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // The machine runs one instruction per call: the shadow must be accepted at
+    // entry after MOV SS (IF = 0) and cleared by the next retired instruction.
+    let mut stepped = loaded_state();
+    let mut defined = od_isa::INTEGER_FLAGS;
+    for index in 0..7 {
+        let mut memory = Memory::code(&code);
+        let result = run_with_cpl0_profile_set(
+            &mut stepped,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            defined,
+            &cli_set(),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.instructions_executed, 1, "step {index}");
+        defined = result.rflags_defined;
+        let expected = if index == 5 {
+            Some(StiShadow::Blocking)
+        } else {
+            Some(StiShadow::Clear)
+        };
+        assert_eq!(stepped.sti_shadow, expected, "step {index}");
+    }
+    assert_eq!(stepped.rip, state.rip);
+    assert_eq!(stepped, state);
+}
+
+#[test]
+fn null_fs_gs_loads_keep_the_base_and_mark_the_cache_unusable() {
+    let mut state = loaded_state();
+    // xor eax,eax; mov fs,ax; mov gs,ax
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xe0, 0x8e, 0xe8]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!((state.fs_selector, state.gs_selector), (0, 0));
+    assert!(state.fs_unusable && state.gs_unusable);
+    assert_eq!((state.fs_base, state.gs_base), (0x1234_5000, 0x5678_9000));
+    assert_eq!(state.fs_cache, Some(FS_GS_CACHE));
+    assert_eq!(state.gs_cache, Some(FS_GS_CACHE));
+    // MOV FS/GS open no interrupt shadow and leave DS/ES/SS alone.
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!((state.ds_selector, state.ss_selector), (0x18, Some(0x18)));
+    assert!(!state.ds_unusable && !state.ss_unusable);
+}
+
+#[test]
+fn null_loads_without_a_modeled_cache_keep_the_legacy_ds_es_and_refuse_ss() {
+    // DS/ES without caches: the legacy null load, no unusable-cache state.
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd8, 0x8e, 0xc0]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 3).unwrap();
+    assert_eq!(result.instructions_executed, 3);
+    assert!(state.ds_unusable && state.es_unusable);
+    assert!(state.ds_cache.is_none() && state.es_cache.is_none());
+    // SS without a cache stays unsupported with nothing mutated.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.ss_selector, before.ss_selector);
+    assert_eq!(state.sti_shadow, before.sti_shadow);
+    assert!(!state.ss_unusable);
+    // FS/GS null loads need no modeled cache (the board models none): the base stays.
+    let mut state = LongModeState {
+        fs_base: 0x1111_0000,
+        gs_base: 0x2222_0000,
+        fs_selector: 0x18,
+        gs_selector: 0x18,
+        ..board_state()
+    };
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xe0, 0x8e, 0xe8]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 3).unwrap();
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!((state.fs_selector, state.gs_selector), (0, 0));
+    assert!(state.fs_unusable && state.gs_unusable);
+    assert!(state.fs_cache.is_none() && state.gs_cache.is_none());
+    assert_eq!((state.fs_base, state.gs_base), (0x1111_0000, 0x2222_0000));
+}
+
+#[test]
+fn nonzero_selectors_over_loaded_caches_without_a_gdt_are_exact_refusals() {
+    // mov eax, 0x10; mov <sreg>, ax
+    for modrm in [0xd8u8, 0xc0, 0xd0, 0xe0, 0xe8] {
+        let mut state = loaded_state();
+        let mut memory = Memory::code(&[0xb8, 0x10, 0, 0, 0, 0x8e, modrm]);
+        let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8e },
+            "modrm {modrm:#x}"
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, RIP + 5);
+        let mut expected = loaded_state();
+        expected.rip = RIP + 5;
+        expected.gpr[0] = 0x10;
+        assert_eq!(state.gpr, expected.gpr);
+        assert_eq!(state.ds_selector, expected.ds_selector);
+        assert_eq!(state.es_selector, expected.es_selector);
+        assert_eq!(state.ss_selector, expected.ss_selector);
+        assert_eq!(state.fs_selector, expected.fs_selector);
+        assert_eq!(state.gs_selector, expected.gs_selector);
+        assert!(!state.ds_unusable && !state.es_unusable && !state.ss_unusable);
+        assert!(!state.fs_unusable && !state.gs_unusable);
+        assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    }
+}
+
+#[test]
+fn mov_ss_stays_closed_with_interrupts_enabled_or_under_a_shadow() {
+    // IF = 1: refused without mutation (the shadow would be observable).
+    let mut state = loaded_state();
+    state.rflags |= IF;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ss_selector, before.ss_selector);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // MOV SS directly after MOV SS: the second one is refused under the shadow.
+    let mut state = loaded_state();
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0, 0x8e, 0xd0]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+}
+
+#[test]
+fn blocking_shadow_with_interrupts_enabled_is_still_rejected_at_entry() {
+    let mut state = loaded_state();
+    state.rflags |= IF;
+    state.sti_shadow = Some(StiShadow::Blocking);
+    let mut memory = Memory::code(&[0x90]);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &cli_set(), 1),
+        Err(Cpl0ProfileSetInputError::StiShadowActive)
+    );
+    assert_eq!(memory.fetches, 0);
+}
+
+#[test]
+fn legacy_entries_do_not_gain_null_loads_over_loaded_caches() {
+    // `run` with loaded caches: DS/ES/SS stay Unsupported as before.
+    for modrm in [0xd8u8, 0xc0, 0xd0] {
+        let mut state = LongModeState {
+            cr0: None,
+            cr4: None,
+            activity: None,
+            sti_shadow: None,
+            ..loaded_state()
+        };
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, modrm]);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 8),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8e });
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.ds_selector, before.ds_selector);
+        assert_eq!(state.ss_selector, before.ss_selector);
+        assert!(!state.ds_unusable && !state.es_unusable && !state.ss_unusable);
+    }
 }

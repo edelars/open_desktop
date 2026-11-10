@@ -1386,28 +1386,33 @@ mod tests {
             if owned_cr3 {
                 set = set.with_cpu_owned_cr3(MovCr3Long64V1);
             }
-            // The state the loader hands over has loaded DS/ES descriptor caches, so a null
-            // `MOV DS, AX` is not the legacy load the set admits: CLD, CLI and XOR retire, the
-            // first `MOV Sreg` (0x8E) is the stop. RIP stays on it.
+            // The state the loader hands over has loaded DS/ES/SS descriptor caches. Since S2-46
+            // the set admits the null `MOV DS/ES/SS, AX` over them: CLD, CLI, XOR and the three
+            // loads retire (six), and the stop is the filler byte after the prologue (0x7A).
             let (mut boot, _) = boot_with_entry(&PROLOGUE);
             let (state, report) = run_set(&mut boot, owned_cr3, 64, &set);
             assert_eq!(
                 report.exit,
-                PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0x8E }),
+                PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0x7A }),
                 "{report:?}"
             );
-            assert_eq!(report.instructions_executed, 3);
-            assert_eq!(state.rip, ENTRY + 4);
+            assert_eq!(report.instructions_executed, 6);
+            assert_eq!((state.ds_selector, state.es_selector), (0, 0));
+            assert_eq!(state.ss_selector, Some(0));
+            assert!(state.ds_unusable && state.es_unusable && state.ss_unusable);
+            // MOV SS opened the one-instruction shadow; the filler stop did not retire.
+            assert_eq!(state.sti_shadow, Some(od_isa::StiShadow::Blocking));
+            assert_eq!(state.rip, ENTRY + 10);
             assert_eq!(state.rflags & (1 << 9), 0, "CLI cleared IF");
             assert_eq!(report.page_fault, None);
             assert_eq!(report.memory_error, None);
             assert!(report.translation_context_changes.is_empty());
 
             // The S2-45a invariant on the same bytes and the same walker: with legacy (cache-less)
-            // DS/ES the null loads retire and the stop is `MOV SS` after five instructions.
+            // DS/ES/SS the null loads retire and the stop is `MOV SS` after five instructions.
             let (mut boot, _) = boot_with_entry(&PROLOGUE);
             let state = boot.board.state_mut();
-            (state.ds_cache, state.es_cache) = (None, None);
+            (state.ds_cache, state.es_cache, state.ss_cache) = (None, None, None);
             let (state, report) = run_set(&mut boot, owned_cr3, 64, &set);
             assert_eq!(
                 report.exit,
@@ -1641,23 +1646,24 @@ mod tests {
     }
 
     #[test]
-    fn set_facade_prologue_stops_on_the_loader_segment_cache_with_three_retired() {
+    fn set_facade_prologue_runs_the_null_segment_loads_over_the_loader_caches() {
         let (mut boot, file) = boot_with_entry(&PROLOGUE);
         let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        // S2-46: the three null loads retire (six instructions); the stop is the filler byte
+        // after the prologue.
         assert_eq!(
             record.exit,
-            PagedProbeExit::Unsupported { opcode: 0x8E },
+            PagedProbeExit::Unsupported { opcode: 0x7A },
             "{record:?}"
         );
-        assert_eq!(record.unsupported_opcode, Some(0x8E));
-        assert_eq!((record.retired, record.rip), (3, ENTRY + 4));
-        assert_eq!(record.rip_bytes[..2], [0x8E, 0xD8]);
+        assert_eq!(record.unsupported_opcode, Some(0x7A));
+        assert_eq!((record.retired, record.rip), (6, ENTRY + 10));
         assert_eq!(record.rflags & (1 << 9), 0, "CLI cleared IF");
         assert_eq!(record.path, "cpl0_set");
         assert_eq!(record.set_members, ["cli", "cpu_owned_cr3"]);
         assert_eq!(
             record.set_exit_detail.as_deref(),
-            Some("Run(Unsupported { opcode: 142 })")
+            Some("Run(Unsupported { opcode: 122 })")
         );
         assert_eq!((record.cr3_changes, record.last_cr3_change), (0, None));
         assert_eq!(record.cr3, boot.board.cr3());
