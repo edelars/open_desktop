@@ -1633,6 +1633,166 @@ mod tests {
         assert_eq!(report.instructions_executed, 0);
     }
 
+    // ---- S4-38L3: dword reads through the set's board adapter ----
+
+    /// Mapped, otherwise unused RAM of the board (the identity-mapped 128 MiB).
+    const DATA: u64 = 0x0600_0000;
+
+    fn minimal_set(cli: &CliProfile) -> Cpl0ProfileSet<'_> {
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+            .with_cli(cli)
+            .with_cpu_owned_cr3(MovCr3Long64V1)
+    }
+
+    #[test]
+    fn cpl0_set_board_mov_eax_from_rbx_reads_a_dword_and_zero_extends() {
+        let cli = CliProfile::NonPviLong64V1;
+        // MOV EAX, [RBX]; the bytes after it are the filler, not executed (budget 1).
+        let (mut boot, _) = boot_with_entry(&[0x8B, 0x03]);
+        // The qword around the dword has a different upper half: only 4 bytes are read.
+        write_phys(&mut boot, DATA, &0xAABB_CCDD_1234_5678u64.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = u64::MAX;
+        state.gpr[Register::Rbx as usize] = DATA;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state.rip, ENTRY + 2);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
+    fn cpl0_set_board_mov_eax_rsi_disp32_reads_the_dword_at_the_displaced_address() {
+        let cli = CliProfile::NonPviLong64V1;
+        // MOV EAX, [RSI + 0x230] (8B 86 30 02 00 00), the form of the real kernel at 0x0100_0215.
+        let (mut boot, _) = boot_with_entry(&[0x8B, 0x86, 0x30, 0x02, 0x00, 0x00]);
+        write_phys(&mut boot, DATA + 0x230, &0x8000_0001u32.to_le_bytes());
+        write_phys(&mut boot, DATA + 0x234, &0xFFFF_FFFFu32.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0xDEAD_BEEF_0000_0000;
+        state.gpr[Register::Rsi as usize] = DATA;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(state.rip, ENTRY + 6);
+        // Bit 31 set: MOV r32 zero-extends, it does not sign-extend.
+        assert_eq!(state.gpr[Register::Rax as usize], 0x8000_0001);
+        assert_eq!(state.gpr[Register::Rsi as usize], DATA);
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_read_updates_the_page_tables_like_the_qword_read() {
+        let cli = CliProfile::NonPviLong64V1;
+        let run = |code: &[u8]| {
+            let (mut boot, _) = boot_with_entry(code);
+            boot.board.state_mut().gpr[Register::Rbx as usize] = DATA;
+            let before = page_tables(&mut boot);
+            let (_, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+            assert_eq!(report.instructions_executed, 1, "{report:?}");
+            (before, page_tables(&mut boot))
+        };
+        let (before, dword) = run(&[0x8B, 0x03]);
+        let (_, qword) = run(&[0x48, 0x8B, 0x03]);
+        // The walk of the 2 MiB leaf at DATA sets its accessed bit; the width changes nothing.
+        assert_ne!(before, dword, "the walker updates the accessed bit");
+        assert_eq!(dword, qword);
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_inside_the_last_bytes_of_a_4k_page_is_one_access() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0x8B, 0x03]);
+        // The dword ends exactly on the page end: bytes 0xFFC..0x1000.
+        write_phys(&mut boot, DATA + 0xFFC, &0x0A0B_0C0Du32.to_le_bytes());
+        boot.board.state_mut().gpr[Register::Rbx as usize] = DATA + 0xFFC;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rax as usize], 0x0A0B_0C0D);
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_crossing_a_4k_boundary_is_the_typed_cross_page_stop() {
+        let cli = CliProfile::NonPviLong64V1;
+        // S4-11: the walker admits no split access; a crossing dword is `CrossesPage` before any
+        // table or operand access, a backend error of the adapter (nothing retires, RAX stays).
+        for offset in [0xFFD, 0xFFE, 0xFFF] {
+            let (mut boot, _) = boot_with_entry(&[0x8B, 0x03]);
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rax as usize] = 0x55;
+            state.gpr[Register::Rbx as usize] = DATA + offset;
+            let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+            assert!(
+                matches!(report.exit, PagedCpl0SetExit::Run(RunExit::MemoryError(_))),
+                "{report:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(
+                report.memory_error,
+                Some(crate::TrackedAccessError::CrossesPage {
+                    address: crate::GuestLinearAddress::new(DATA + offset),
+                    width: 4
+                })
+            );
+            assert_eq!(
+                (state.rip, state.gpr[Register::Rax as usize]),
+                (ENTRY, 0x55)
+            );
+            assert_eq!(report.page_fault, None);
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_dword_read_from_an_unmapped_page_is_the_exact_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        // CLD retires, then MOV EAX, [RBX] faults: the record names the second instruction.
+        let (mut boot, _) = boot_with_entry(&[0xFC, 0x8B, 0x03]);
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x77;
+        state.gpr[Register::Rbx as usize] = 256 * MIB;
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        // Not-present data read at CPL0: error code 0.
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0), Some(256 * MIB))
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(
+            (state.rip, state.gpr[Register::Rax as usize]),
+            (ENTRY + 1, 0x77)
+        );
+        let record = report.page_fault.expect("the walker's record");
+        assert_eq!(record.saved_rip(), ENTRY + 1);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Read);
+        // The qword form fails the same way, with the same record shape.
+        let (mut boot, _) = boot_with_entry(&[0xFC, 0x48, 0x8B, 0x03]);
+        boot.board.state_mut().gpr[Register::Rbx as usize] = 256 * MIB;
+        let (_, qword) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        assert_eq!(qword.exit, report.exit);
+        assert_eq!(qword.instructions_executed, report.instructions_executed);
+    }
+
+    #[test]
+    fn cpl0_set_board_qword_read_still_works_next_to_the_dword_read() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0x48, 0x8B, 0x03]);
+        write_phys(&mut boot, DATA, &0xAABB_CCDD_1234_5678u64.to_le_bytes());
+        boot.board.state_mut().gpr[Register::Rbx as usize] = DATA;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rax as usize], 0xAABB_CCDD_1234_5678);
+    }
+
     // ---- S4-38L3: the Linux board through the CPL0 set, the stop record ----
 
     fn run_set_facade(

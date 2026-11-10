@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn set_cpl0_runs_the_set_and_reports_its_path_and_members() {
-        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: with the set the stop moves from CLD to MOV DS.
+        // CLD; CLI; XOR EAX,EAX; MOV DS,AX: with the set the stop moves from CLD past MOV DS.
         let code = [0xFC, 0xFA, 0x31, 0xC0, 0x8E, 0xD8];
         let mut case = Case::new("set-cpl0", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
         case.options.budget = Some(64);
@@ -1342,12 +1342,16 @@ mod tests {
         let stop = &value["stop"];
         assert_eq!(stop["path"], "cpl0_set");
         assert_eq!(stop["set_members"], json!(["cli", "cpu_owned_cr3"]));
-        assert_eq!(stop["exit_kind"], "unsupported");
-        // The loader's entry state carries loaded segment descriptor caches, so the null
-        // `MOV DS, AX` is not the legacy (cache-less) form the set admits: it is the stop.
-        assert_eq!(stop["unsupported_opcode"], "0x8e");
-        assert_eq!(stop["retired"], 3);
-        assert_eq!(stop["rip"], "0x1000204");
+        // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches
+        // (four instructions in all); the stop is the REX-prefix filler after the code, whose
+        // 15-byte window has no opcode: #GP(0).
+        assert_eq!(stop["exit_kind"], "fault", "{value:#}");
+        assert_eq!(
+            stop["exit_detail"],
+            "Fault(ArchitecturalFault { vector: 13, error_code: Some(0), linear_address: None })"
+        );
+        assert_eq!(stop["retired"], 4);
+        assert_eq!(stop["rip"], "0x1000206");
         assert_eq!(stop["cr3_changes"], 0);
         assert_eq!(stop["last_cr3_change"], Value::Null);
         // The same bytes through the default path stop at CLD, with the old schema values.
@@ -1437,9 +1441,9 @@ mod tests {
         assert_eq!(value["guest_started"], true);
     }
 
-    /// Real kernel through the CPL0 set (S4-38L3): CLD, CLI and XOR retire, `MOV DS, AX` (`8e d8`)
-    /// on the DS descriptor cache the loader left is the stop. The evidence file of the slice
-    /// comes from the CLI.
+    /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
+    /// `MOV EAX, [RSI+0x230]` retire; the stop is the `LGDT [RAX]` after them. The evidence file
+    /// of the slice comes from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
     fn real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set() {
@@ -1465,17 +1469,21 @@ mod tests {
         println!("{value:#}");
         let stop = &value["stop"];
         assert_eq!(stop["path"], "cpl0_set");
-        // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire; the next stop is the dword
-        // `MOV EAX, [RSI+0x230]`, which the paged adapter's qword-only profile refuses.
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert_eq!(stop["rip"], "0x1000215");
+        // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
+        // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
+        // retire (22 in all); the next stop is `LGDT [RAX]` (`0f 01 10`) at 0x100_0257, a
+        // two-byte opcode with ModRM that the set does not admit (decoded as opcode 0x01).
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x01");
+        assert_eq!(stop["rip"], "0x1000257");
         assert!(
             stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .starts_with("8b 86 30 02")
+                .starts_with("0f 01 10 6a 10")
         );
-        assert_eq!(value["retired"], 9);
+        assert_eq!(value["retired"], 22);
+        assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
     }
 }
