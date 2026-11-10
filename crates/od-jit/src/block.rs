@@ -2787,7 +2787,8 @@ fn build_block_with_profile(
                 let reason = match error {
                     DecodeError::Unsupported { .. }
                     | DecodeError::InvalidMovCr3Lock { .. }
-                    | DecodeError::InvalidMovCr0Lock { .. } => {
+                    | DecodeError::InvalidMovCr0Lock { .. }
+                    | DecodeError::InvalidLgdtLock { .. } => {
                         BlockStopReason::UnsupportedEncoding { guest_rip, error }
                     }
                     error => BlockStopReason::DecodeBoundary(deferred_boundary(guest_rip, error)),
@@ -8648,6 +8649,7 @@ fn deferred_boundary(guest_rip: u64, error: DecodeError) -> DecodeBoundary {
         DecodeError::Unsupported { length, .. }
         | DecodeError::InvalidMovCr3Lock { length, .. }
         | DecodeError::InvalidMovCr0Lock { length, .. }
+        | DecodeError::InvalidLgdtLock { length, .. }
         | DecodeError::Invalid { length, .. } => Some(*length),
         DecodeError::Memory(_) => None,
     };

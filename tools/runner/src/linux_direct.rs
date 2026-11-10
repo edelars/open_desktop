@@ -1442,8 +1442,9 @@ mod tests {
     }
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
-    /// `MOV EAX, [RSI+0x230]` retire; the stop is the `LGDT [RAX]` after them. The evidence file
-    /// of the slice comes from the CLI.
+    /// `MOV EAX, [RSI+0x230]` retire, and `LGDT [RAX]` (S2-47a) loads the GDTR; the stop is the
+    /// `LRETQ` after `push 0x10; lea rax,[rip+3]; push rax`. The evidence file of the slice comes
+    /// from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
     fn real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set() {
@@ -1471,18 +1472,14 @@ mod tests {
         assert_eq!(stop["path"], "cpl0_set");
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
-        // retire (22 in all); the next stop is `LGDT [RAX]` (`0f 01 10`) at 0x100_0257, a
-        // two-byte opcode with ModRM that the set does not admit (decoded as opcode 0x01).
+        // retire (22 in all). S2-47a: `LGDT [RAX]` (`0f 01 10`) at 0x100_0257 retires and four
+        // more instructions follow (26 in all); the next stop is `LRETQ` (`48 cb`) at
+        // 0x100_0264, which the set does not admit (opcode 0xcb, S2-47b).
         assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["unsupported_opcode"], "0x01");
-        assert_eq!(stop["rip"], "0x1000257");
-        assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("0f 01 10 6a 10")
-        );
-        assert_eq!(value["retired"], 22);
+        assert_eq!(stop["unsupported_opcode"], "0xcb");
+        assert_eq!(stop["rip"], "0x1000264");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("48 cb"));
+        assert_eq!(value["retired"], 26);
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
     }

@@ -1873,3 +1873,450 @@ fn legacy_entries_do_not_gain_null_loads_over_loaded_caches() {
         assert!(!state.ds_unusable && !state.es_unusable && !state.ss_unusable);
     }
 }
+
+// ---- S2-47a: LGDT m (`0F 01 /2`) in the CPL0 profile set ----
+
+const LGDT_DATA: u64 = 0x2000;
+const GDT_BASE: u64 = 0x0000_0000_0012_0000;
+const OLD_GDTR: od_isa::state::Gdtr = od_isa::state::Gdtr {
+    base: 0x7000,
+    limit: 0x0007,
+};
+
+/// Code at `RIP` plus one data window; reads in the page that starts at `fail_page`
+/// return `fail` instead of data.
+struct LgdtMemory {
+    code: Vec<u8>,
+    data: Vec<u8>,
+    fail_page: Option<(u64, MemoryError)>,
+    reads: Vec<(u64, usize)>,
+}
+
+impl LgdtMemory {
+    fn new(code: &[u8], descriptor: &[u8]) -> Self {
+        Self {
+            code: code.to_vec(),
+            data: descriptor.to_vec(),
+            fail_page: None,
+            reads: Vec::new(),
+        }
+    }
+}
+
+impl GuestMemory for LgdtMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.code
+            .get(address.wrapping_sub(RIP) as usize)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.reads.push((address, destination.len()));
+        if let Some((page, error)) = &self.fail_page
+            && address + destination.len() as u64 > *page
+            && address < page + 0x1000
+        {
+            return Err(error.clone());
+        }
+        for (index, byte) in destination.iter_mut().enumerate() {
+            let offset = (address + index as u64).wrapping_sub(LGDT_DATA) as usize;
+            *byte = self.data.get(offset).copied().unwrap_or(0);
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected write {address:#x}"
+        )))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+fn pseudo_descriptor(limit: u16, base: u64) -> Vec<u8> {
+    let mut bytes = limit.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&base.to_le_bytes());
+    bytes
+}
+
+fn lgdt_state(rax: u64) -> LongModeState {
+    let mut state = board_state();
+    state.gdtr = Some(OLD_GDTR);
+    state.gpr[0] = rax;
+    state
+}
+
+/// `lgdt_state` without the control-register, activity and STI-shadow modeling
+/// that the set requires: what `run` accepts.
+fn lgdt_legacy_state(rax: u64) -> LongModeState {
+    LongModeState {
+        cr0: None,
+        cr4: None,
+        activity: None,
+        sti_shadow: None,
+        ..lgdt_state(rax)
+    }
+}
+
+fn run_lgdt_set(
+    state: &mut LongModeState,
+    memory: &mut LgdtMemory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn lgdt_rax_loads_gdtr_from_the_pseudo_descriptor() {
+    let mut state = lgdt_state(LGDT_DATA);
+    let mut before = state.clone();
+    let mut memory = LgdtMemory::new(
+        &[0x0f, 0x01, 0x10, 0x90],
+        &pseudo_descriptor(0x001f, GDT_BASE),
+    );
+    // One instruction, then the budget ends before the NOP byte is decoded.
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.gdtr,
+        Some(od_isa::state::Gdtr {
+            base: GDT_BASE,
+            limit: 0x001f
+        })
+    );
+    assert_eq!(state.rip, RIP + 3);
+    // Only RIP and GDTR changed.
+    before.rip = RIP + 3;
+    before.gdtr = state.gdtr;
+    assert_eq!(state, before);
+    // Two qword reads inside the ten-byte operand, no write.
+    assert_eq!(memory.reads, vec![(LGDT_DATA, 8), (LGDT_DATA + 2, 8)]);
+}
+
+#[test]
+fn lgdt_other_addressing_forms_load_gdtr() {
+    // [RBX+0x10] (disp8), [RIP+disp32] (RIP-relative), [RAX+RCX*1].
+    let cases: [(&[u8], u64); 3] = [
+        (&[0x0f, 0x01, 0x53, 0x10], LGDT_DATA - 0x10),
+        (&[0x0f, 0x01, 0x15, 0xf9, 0x0f, 0x00, 0x00], 0),
+        (&[0x0f, 0x01, 0x14, 0x08], LGDT_DATA - 5),
+    ];
+    for (code, register) in cases {
+        let mut state = lgdt_state(register);
+        state.gpr[3] = register; // RBX
+        state.gpr[1] = 5; // RCX
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x0fff, 0x0000_7fff_ffff_f000));
+        // RIP-relative: RIP + 7 + 0xff9 = 0x2000.
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(result.instructions_executed, 1, "{code:x?}");
+        assert_eq!(
+            state.gdtr,
+            Some(od_isa::state::Gdtr {
+                base: 0x0000_7fff_ffff_f000,
+                limit: 0x0fff
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn lgdt_with_a_register_operand_stays_unsupported() {
+    // `0F 01 D0` (mod = 11, /2) is XGETBV, not an LGDT form: it is not decoded as
+    // one and stays Unsupported (no #UD classification invented for it).
+    let mut state = lgdt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0xd0], &pseudo_descriptor(0x1f, GDT_BASE));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 4);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lock_lgdt_is_ud_in_the_set_and_unsupported_elsewhere() {
+    for code in [
+        &[0xf0u8, 0x0f, 0x01, 0x10][..],
+        &[0xf0, 0x0f, 0x01, 0x53, 0x10],
+        &[0xf0, 0x0f, 0x01, 0x14, 0x08],
+    ] {
+        let mut state = lgdt_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, GDT_BASE));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 4);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+
+        // Outside the set the form keeps its previous Unsupported exit.
+        let mut state = lgdt_legacy_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, GDT_BASE));
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn lgdt_with_a_non_canonical_base_is_gp0_without_mutation() {
+    // Bit 63 differs from bit 47 (SDM Vol. 3 §3.5.1: the GDTR base is a linear
+    // address; AMD APM Vol. 2 LGDT lists #GP for a non-canonical base).
+    for bad_base in [0x8000_0000_0000_0000u64, 0x0001_0000_0000_0000] {
+        let mut state = lgdt_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, bad_base));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn lgdt_with_a_non_canonical_operand_address_faults_by_segment() {
+    // DS-based operand: #GP(0); SS-based (RBP/RSP base): #SS(0).
+    for (code, register, vector) in [
+        (&[0x0f, 0x01, 0x10][..], 0x0001_0000_0000_0000u64, 13u8),
+        (&[0x0f, 0x01, 0x55, 0x00], 0x0001_0000_0000_0000, 12),
+        // Canonical first byte, non-canonical last byte of the ten-byte operand.
+        (&[0x0f, 0x01, 0x10], 0x0000_7fff_ffff_fffa, 13),
+    ] {
+        let mut state = lgdt_state(register);
+        state.gpr[5] = register; // RBP
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, GDT_BASE));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn lgdt_unmapped_operand_reports_the_page_fault_without_mutation() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(LGDT_DATA),
+    };
+    let mut state = lgdt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, GDT_BASE));
+    memory.fail_page = Some((LGDT_DATA, MemoryError::Architectural(fault.clone())));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn lgdt_second_read_fault_leaves_gdtr_unchanged() {
+    // The operand starts in a mapped page and its tail is in an unmapped one: the
+    // second qword read faults, the first one has no architectural effect.
+    let start = LGDT_DATA + 0xff8;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(LGDT_DATA + 0x1000),
+    };
+    let mut state = lgdt_state(start);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, GDT_BASE));
+    memory.fail_page = Some((
+        LGDT_DATA + 0x1000,
+        MemoryError::Architectural(fault.clone()),
+    ));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads.len(), 2);
+}
+
+#[test]
+fn lgdt_page_crossing_backend_classification_passes_through_without_mutation() {
+    // The board adapter reports a 4 KiB crossing as a backend error (S4-11); the set
+    // surfaces it as MemoryError exactly as for MOV and does not touch GDTR.
+    let start = LGDT_DATA + 0xff8;
+    let mut state = lgdt_state(start);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, GDT_BASE));
+    memory.fail_page = Some((
+        LGDT_DATA + 0x1000,
+        MemoryError::Backend("cross-page qword read".to_string()),
+    ));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::MemoryError(MemoryError::Backend("cross-page qword read".to_string()))
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn lgdt_below_cpl0_is_rejected_at_set_entry() {
+    let mut state = lgdt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, GDT_BASE));
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lgdt_without_a_modeled_gdtr_stays_unsupported() {
+    let mut state = lgdt_state(LGDT_DATA);
+    state.gdtr = None;
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10], &pseudo_descriptor(0x1f, GDT_BASE));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn lgdt_outside_the_set_stays_unsupported_for_general_forms() {
+    // `run` without the set: `LGDT [RAX]`, `[RBX+disp8]` and RIP-relative forms keep
+    // the Unsupported exit and read nothing; the legacy `[RBP+disp8]` form still loads.
+    for code in [
+        &[0x0fu8, 0x01, 0x10][..],
+        &[0x0f, 0x01, 0x53, 0x10],
+        &[0x0f, 0x01, 0x15, 0xf9, 0x0f, 0x00, 0x00],
+    ] {
+        let mut state = lgdt_legacy_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, GDT_BASE));
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x01 },
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+    let mut state = lgdt_legacy_state(0);
+    state.gpr[5] = LGDT_DATA - 0x10;
+    let mut memory = LgdtMemory::new(
+        &[0x0f, 0x01, 0x55, 0x10],
+        &pseudo_descriptor(0x1f, GDT_BASE),
+    );
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.gdtr,
+        Some(od_isa::state::Gdtr {
+            base: GDT_BASE,
+            limit: 0x1f
+        })
+    );
+}

@@ -2048,6 +2048,12 @@ pub enum DecodeError {
         opcode: Opcode,
         length: u8,
     },
+    /// LOCK-prefixed `LGDT m` other than the legacy `[RBP+disp8]` form, retained for
+    /// profile-specific exit mapping (#UD in the CPL0 profile set).
+    InvalidLgdtLock {
+        opcode: Opcode,
+        length: u8,
+    },
     Memory(MemoryError),
 }
 
@@ -2365,7 +2371,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         },
                     });
                 }
-                if modrm != 0x55 {
+                // LGDT m is `0F 01 /2` with a memory operand. The register forms
+                // (mod = 11, e.g. `0F 01 D0` XGETBV) are other instructions and stay
+                // unsupported. Which memory forms execute is decided by the caller
+                // (the CPL0 profile set admits all of them, legacy paths only the
+                // `[RBP+disp8]` form).
+                if (modrm >> 3) & 7 != 2 || modrm >> 6 == 3 {
                     return Err(self.unsupported(opcode));
                 }
                 let Operand::Memory(source) =
@@ -2397,6 +2408,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                     0x5c if self.byte()? == 0x24 => {
                         self.byte()?;
+                    }
+                    // LOCK LGDT m (S2-47a): #UD only under the CPL0 profile set; the
+                    // caller maps this to Unsupported elsewhere.
+                    _ if (modrm >> 3) & 7 == 2 && modrm >> 6 != 3 => {
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                        return Err(DecodeError::InvalidLgdtLock {
+                            opcode,
+                            length: self.length,
+                        });
                     }
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -23514,9 +23534,75 @@ mod tests {
             &[0x67, 0x0f, 0x01, 0x55, 0][..],
             &[0x2e, 0x0f, 0x01, 0x55, 0][..],
             &[0x48, 0x0f, 0x01, 0x55, 0][..],
-            &[0xf0, 0x0f, 0x01, 0x15, 0, 0, 0, 0][..],
-            &[0x0f, 0x01, 0x15, 0, 0, 0, 0][..],
-            &[0x0f, 0x01, 0x95, 0, 0, 0, 0, 0, 0, 0, 0][..],
+            // Register operand (mod = 11): XGETBV, not an LGDT form.
+            &[0x0f, 0x01, 0xd0][..],
+            &[0xf0, 0x0f, 0x01, 0xd0][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lgdt_decodes_general_memory_forms_and_lock_after_full_fetch() {
+        // S2-47a: `0F 01 /2` with any memory operand decodes as LoadGdtr; the caller
+        // decides which forms execute.
+        let decoded = Memory::new(&[0x0f, 0x01, 0x10]).decode().unwrap();
+        assert_eq!(decoded.length, 3);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LoadGdtr {
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rax),
+                    index: None,
+                    displacement: 0,
+                    ..
+                }
+            }
+        ));
+        let decoded = Memory::new(&[0x0f, 0x01, 0x15, 1, 0, 0, 0])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 7);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LoadGdtr {
+                source: MemoryOperand {
+                    base: AddressBase::NextRip,
+                    displacement: 1,
+                    ..
+                }
+            }
+        ));
+        let decoded = Memory::new(&[0x0f, 0x01, 0x95, 0, 0, 0, 0x80])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 7);
+        // LOCK is a distinct #UD classification after the full encoding is fetched.
+        for (bytes, length) in [
+            (&[0xf0u8, 0x0f, 0x01, 0x10][..], 4u8),
+            (&[0xf0, 0x0f, 0x01, 0x15, 0, 0, 0, 0][..], 8),
+            (&[0xf0, 0x0f, 0x01, 0x14, 0x08][..], 5),
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::InvalidLgdtLock { length: l, .. }) if l == length
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // Non-default prefixes on the general forms stay unsupported.
+        for bytes in [
+            &[0x66u8, 0x0f, 0x01, 0x10][..],
+            &[0x48, 0x0f, 0x01, 0x10][..],
+            &[0x2e, 0x0f, 0x01, 0x10][..],
+            &[0x67, 0x0f, 0x01, 0x10][..],
         ] {
             assert!(
                 matches!(
