@@ -1487,17 +1487,19 @@ mod tests {
     /// the byte store `MOV [RAX], SIL` retire, `LIDT` (S2-49) retires and, with the `cpuid` member
     /// (S4-38L4), the `CPUID` of leaf 0x8000_0000 is answered; the first stop is past it (a
     /// further unsupported form or the CPUID boundary). The evidence file of the slice comes from
-    /// the CLI.
+    /// the CLI. The nonce is the evidence's (`s4-38l4a`): the cmdline carries it, and its length
+    /// changes the instruction count of the boot (`real-run-1` gives 1411 retired, `s4-38l4a`
+    /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_popfq_past_the_byte_compare() {
+    fn real_artifacts_refuse_at_the_rep_partial_after_popfq() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
             vmlinuz: path("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic"),
             initramfs: path("work/stage4/initramfs/initramfs.cpio"),
             acpi_blob: path("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"),
-            nonce: "real-run-1".to_string(),
+            nonce: "s4-38l4a".to_string(),
             expected_vmlinuz_sha256:
                 "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e".to_string(),
             expected_acpi_manifest_hash: board_manifest_hash(),
