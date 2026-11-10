@@ -1055,8 +1055,9 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// (`MOV r32, m32`), next to its qword reads. The qword-only shared profiles stay
     /// as they were: this flag is set by the set's adapter alone.
     cpl0_set_dword_read: bool,
-    /// The CPL0 set's adapter alone reads one byte (S4-38L4a, `CMP byte [mem], imm8`); the shared
-    /// profiles keep their read widths. Reads never cross a page for one byte.
+    /// The CPL0 set's adapter alone reads one byte (S4-38L4a; the first consumer is
+    /// `CMP byte [mem], imm8`, any other byte-reading form the set admits uses the same read).
+    /// The shared profiles keep their read widths. Reads never cross a page for one byte.
     cpl0_set_byte_read: bool,
     /// S4-38L3: the CPL0 profile set also stores bytes, words and dwords
     /// (`MOV m8, r8`, `MOV m16, r16`, `MOV m32, r32`), next to its qword stores. Each store
