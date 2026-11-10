@@ -3785,7 +3785,9 @@ fn nop_0f1f_forms_are_architectural_nops_of_their_decoded_length() {
         &[0x3e, 0x0f, 0x1f, 0x00],                               // DS
         &[0x0f, 0x1f, 0x05, 0x00, 0x00, 0x00, 0x00],             // RIP-relative
         &[0x0f, 0x1f, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00],       // SIB no base, disp32
-        &[0x0f, 0x1f, 0xc0],                                     // register form
+        &[0x0f, 0x1f, 0x01],       // [rcx] with non-canonical RCX: no #GP, no #PF
+        &[0x0f, 0x1f, 0x04, 0x08], // [rax+rcx], non-canonical index
+        &[0x0f, 0x1f, 0xc0],       // register form
         &[0x0f, 0x1f, 0xc1],
     ] {
         let (state, before, result) = run_nop_0f1f(code);
