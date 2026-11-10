@@ -1492,7 +1492,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_crossing_fetch_after_the_nops() {
+    fn real_artifacts_stop_at_movzx_word_read_after_the_crossing() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1512,42 +1512,34 @@ mod tests {
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L4d: the multi-byte NOP `0F 1F 00` (and the other NOP forms of the boot) retire in
-        // the set. With budget 3000000 the run stops `backend` at `JE rel32` (`0f 84 1f 02 00 00`)
-        // on 0x543_8ffe after 336424 retired instructions: the 6-byte instruction starts 2 bytes
-        // before the page boundary 0x543_9000, and the 2 MiB adapter refuses its fetch as
-        // `CrossesPage` (S4-38L4e, cross-page instruction fetch). Evidence:
-        // `docs/reports/data/stage4/s4-38l4d-nop-run.json`.
+        // S4-38L4e: the instruction `JE rel32` (`0f 84 1f 02 00 00`) that crosses the page boundary
+        // 0x543_9000 is fetched across the two pages by the set's adapter and executes. With budget
+        // 3000000 the run stops `backend` at `MOVZX r32, word [rcx]` (`0f b7 31`) on 0x543_2a44
+        // after 336587 retired instructions: the set has no 16-bit read profile yet (S4-38L4f).
+        // Evidence: `docs/reports/data/stage4/s4-38l4e-cross-page-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 336424, "{value:#}");
+        assert_eq!(value["retired"], 336587, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
         assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert_eq!(stop["rip"], "0x5438ffe");
+        assert_eq!(stop["rip"], "0x5432a44");
         assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("0f 84 1f 02"),
+            stop["rip_bytes"].as_str().unwrap().starts_with("0f b7 31"),
             "{value:#}"
         );
         assert!(
             stop["set_exit_detail"]
                 .as_str()
                 .unwrap()
-                .contains("CrossesPage { address: GuestLinearAddress(88313854), width: 3 }"),
+                .contains("paged MOV profile does not support read width"),
             "{value:#}"
         );
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
         );
-        // The stop is the tracked-walker refusal of the fetch (`memory_error`), not a page fault.
-        assert_eq!(
-            stop["memory_error"],
-            "CrossesPage { address: GuestLinearAddress(88313854), width: 3 }"
-        );
+        assert!(stop["memory_error"].is_null());
         assert!(stop["page_fault"].is_null());
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
