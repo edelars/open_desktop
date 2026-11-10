@@ -20395,7 +20395,7 @@ LGDT); `LOCK LGDT m` — `#UD` после полной выборки кодир
 SIB, RIP-relative; на настоящем ядре — `LIDT [RIP+0x17bbd]`, `0F 01 1D BD 7B 01 00`) без префиксов:
 2-байтный limit и 8-байтный base читаются по адресу операнда, `IDTR = (base, limit)`, RIP += длина;
 в Long64 база 64-битная и каноническая (SDM Vol.2 «LGDT/LIDT», Vol.3 §6.10; APM Vol.2 «LIDT»).
-Псевдодескриптор читается тем же путём, что у LGDT: две qword-чтения (`[a, a+8)` для limit и
+Псевдодескриптор читается тем же путём, что у LGDT: два qword-чтения (`[a, a+8)` для limit и
 `[a+2, a+10)` для base), доступ через адаптер по правилам MOV-чтения (пересечение 4 KiB —
 классификация S4-11, #PF — точная запись). Таблица IDT не читается и не пишется. Любая ошибка
 чтения не меняет IDTR и RIP, retired 0; IDTR пишется только после всех проверок и чтений.
@@ -20419,7 +20419,7 @@ CPL0, отказ на входе `WrongPrivilege`). `0F 01 D8` (mod = 11, `/3`) 
 `0F 01 /3` до решения об `Unsupported` (то же отступление, что у LGDT выше).
 Тесты: `crates/od-isa/tests/cpl0_profile_set.rs` (`lidt_*`, `lock_lidt_*`,
 `lgdt_then_lidt_sequence_*`), декодер —
-`long_decode::tests::lidt_decodes_only_exact_rsp_sib_disp8_and_lock_ud_after_full_fetch`.
+`long_decode::tests::lidt_decodes_every_memory_form_and_lock_ud_after_full_fetch`.
 Ожидаемый следующий стоп настоящего ядра: после `LIDT` идут `ADD RSP, 0x18; POP RBX; POP RBP; RET`
 (`48 83 C4 18 5B 5D C3`, по `rip_bytes` из `s4-38l3-core.json`); где остановится набор — выяснит
 прогон на артефактах (оркестратор).

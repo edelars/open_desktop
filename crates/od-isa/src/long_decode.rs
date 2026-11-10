@@ -23722,7 +23722,7 @@ mod tests {
     }
 
     #[test]
-    fn lidt_decodes_only_exact_rsp_sib_disp8_and_lock_ud_after_full_fetch() {
+    fn lidt_decodes_every_memory_form_and_lock_ud_after_full_fetch() {
         let mut memory = Memory::new(&[0x0f, 0x01, 0x5c, 0x24, 0x06]);
         let decoded = memory.decode().unwrap();
         assert_eq!(decoded.length, 5);
