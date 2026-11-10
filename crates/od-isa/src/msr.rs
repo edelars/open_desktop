@@ -114,7 +114,8 @@ impl ApicBaseCpu {
             Err(
                 DecodeError::Invalid { .. }
                 | DecodeError::InvalidMovCr0Lock { .. }
-                | DecodeError::InvalidMovCr3Lock { .. },
+                | DecodeError::InvalidMovCr3Lock { .. }
+                | DecodeError::InvalidLgdtLock { .. },
             ) => return ApicBaseExit::Unsupported,
             Err(DecodeError::Unsupported { .. }) => return ApicBaseExit::Unsupported,
         };

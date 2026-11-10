@@ -18613,7 +18613,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 0,
             );
         }
-        Err(DecodeError::InvalidMovCr3Lock { opcode, .. }) => {
+        Err(
+            DecodeError::InvalidMovCr3Lock { opcode, .. }
+            | DecodeError::InvalidLgdtLock { opcode, .. },
+        ) => {
             return result(
                 PagedProbeExit::Unsupported {
                     opcode: opcode.byte,
@@ -19029,7 +19032,10 @@ fn execute_pio_u8<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
-        Err(DecodeError::InvalidMovCr3Lock { opcode, .. }) => {
+        Err(
+            DecodeError::InvalidMovCr3Lock { opcode, .. }
+            | DecodeError::InvalidLgdtLock { opcode, .. },
+        ) => {
             return PioU8Result {
                 exit: PioU8Exit::Unsupported {
                     opcode: opcode.byte,
@@ -26502,6 +26508,20 @@ fn step_configured(
                 linear_address: None,
             }));
         }
+        // S2-47a: LOCK LGDT m is #UD only inside the CPL0 profile set; every other
+        // path keeps the Unsupported exit it had before the form was decoded.
+        Err(DecodeError::InvalidLgdtLock { .. }) if control_policy.is_some() => {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        Err(DecodeError::InvalidLgdtLock { opcode, .. }) => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: opcode.byte,
+            });
+        }
         Err(DecodeError::InvalidMovCr3Lock { .. }) if mov_cr3_profile.is_some() => {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector: 6,
@@ -32326,6 +32346,18 @@ fn step_configured(
     if matches!(instruction.operation, Operation::RepCmps { .. })
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
             || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    // S2-47a: the general `LGDT m` forms (`0F 01 /2` memory) execute only inside the
+    // CPL0 profile set; every other path keeps the single legacy `[RBP+disp8]` form.
+    if let Operation::LoadGdtr { source } = instruction.operation
+        && control_policy.is_none()
+        && !(source.base == long_decode::AddressBase::Register(Register::Rbp)
+            && source.index.is_none()
+            && instruction.length == 4)
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -47737,6 +47769,14 @@ fn step_configured(
                 Err(error) => return Err(error),
             }
         }
+        Operation::LoadGdtr { source } if control_policy.is_some() => {
+            // S2-47a: the CPL0 set reads the ten-byte pseudo-descriptor as two qwords
+            // (the board adapter has no ten-byte or word read).
+            match read_pseudo_descriptor_qwords(state, memory, context, next_rip, source) {
+                Ok((base, limit)) => state.gdtr = Some(crate::state::Gdtr { base, limit }),
+                Err(error) => return report_memory_error(error),
+            }
+        }
         Operation::LoadGdtr { source } => {
             if let Err(error) = load_gdtr(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
@@ -51155,6 +51195,47 @@ fn read_pseudo_descriptor(
     )?;
     let limit = u16::from_le_bytes([pseudo_descriptor[0], pseudo_descriptor[1]]);
     let base = u64::from_le_bytes(pseudo_descriptor[2..10].try_into().unwrap());
+    if !canonical(base) {
+        return Err(general_protection());
+    }
+    Ok((base, limit))
+}
+
+/// Pseudo-descriptor read for the CPL0 profile set: two qword reads (`[a, a+8)` for
+/// the limit, `[a+2, a+10)` for the base), so that adapters limited to qword/dword
+/// widths serve it. A non-canonical operand address or last byte faults with #SS(0)
+/// for SS-based operands (RSP/RBP base) and #GP(0) otherwise; a non-canonical base
+/// is #GP(0). Nothing is modified before every check and read has passed.
+fn read_pseudo_descriptor_qwords(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(u64, u16), MemoryError> {
+    let address = source.effective_address(state, next_rip);
+    let last = address.checked_add(9);
+    if !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        let ss_based = matches!(
+            source.base,
+            long_decode::AddressBase::Register(Register::Rsp | Register::Rbp)
+        );
+        return Err(MemoryError::Architectural(ArchitecturalFault {
+            vector: if ss_based { 12 } else { 13 },
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+    let context = AccessContext {
+        origin: crate::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let mut head = [0; 8];
+    memory.read(address, context, &mut head)?;
+    let mut tail = [0; 8];
+    memory.read(address + 2, context, &mut tail)?;
+    let limit = u16::from_le_bytes([head[0], head[1]]);
+    let base = u64::from_le_bytes(tail);
     if !canonical(base) {
         return Err(general_protection());
     }
