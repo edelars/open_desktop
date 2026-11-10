@@ -3540,8 +3540,11 @@ mod tests {
             phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
             vec![STORE_FILL; 0x1000]
         );
-        assert_eq!(read_qword(&mut boot, TREE_PT + 8) & PTE_D, 0);
-        assert_eq!(read_qword(&mut boot, TREE_PT + 16) & PTE_D, 0);
+        // The walk of the first page set its accessed bit (as with a missing second page); the
+        // walk of the read-only second page set its own before the write check refused it; no
+        // page is dirty.
+        assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 1 | PTE_A);
     }
 
     #[test]
@@ -3567,6 +3570,10 @@ mod tests {
             (14, Some(3), Some(at))
         );
         assert_eq!(state, before);
+        assert_eq!(
+            phys_bytes(&mut boot, SPLIT_PAGE1, 0x1000),
+            vec![STORE_FILL; 0x1000]
+        );
         assert_eq!(
             phys_bytes(&mut boot, SPLIT_PAGE2, 0x1000),
             vec![STORE_FILL; 0x1000]

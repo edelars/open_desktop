@@ -1112,9 +1112,14 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// first (present, reserved, user and write-protection checks, accessed bits set, no dirty
     /// bit); only if both pass are the bytes written, each through its own write access (the
     /// dirty bit of each touched leaf is set). A fault on either page is a precise data `#PF`
-    /// at the first linear address on the faulting page with the write bit set, and not one
-    /// byte has been stored: there is no partial store. Elsewhere a crossing store stays the
-    /// typed `CrossesPage`.
+    /// at the first linear address on the faulting page with the write bit set, and under the
+    /// ordinary conditions (the tables are not in ROM, regions are whole frames, the operand
+    /// does not write the page tables of the second walk) not one byte has been stored.
+    /// Known limits, where this is NOT guaranteed: the operand itself writes into the page
+    /// tables on the path of the second page's walk; a table lies in ROM and its leaf is already
+    /// on the second page; a region boundary falls inside a frame (only the first byte on each
+    /// page is checked). A later slice may translate once and write by the physical addresses
+    /// of the check. Elsewhere a crossing store stays the typed `CrossesPage`.
     cpl0_set_cross_page_store: bool,
 }
 
@@ -1210,8 +1215,9 @@ impl PagedMovMemoryAdapter<'_> {
     }
 
     /// S4-38L4h: a store across a 4 KiB boundary. Both pages are checked for a write before any
-    /// byte is stored (no partial store); then each byte is its own one-byte write access, which
-    /// sets the dirty bit of the leaf it lands on and stores it.
+    /// byte is stored (so under ordinary conditions there is no partial store; the known limits
+    /// are listed at `cpl0_set_cross_page_store`); then each byte is its own one-byte write
+    /// access, which sets the dirty bit of the leaf it lands on and stores it.
     fn write_crossing_page(
         &mut self,
         address: u64,
