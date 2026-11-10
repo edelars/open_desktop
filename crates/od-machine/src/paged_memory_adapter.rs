@@ -81,6 +81,7 @@ pub fn step_paged_invlpg(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -196,6 +197,7 @@ fn step_paged_state_op(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -260,6 +262,7 @@ pub fn with_paged_mov_memory<R>(
         read_only_qword: true,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -311,6 +314,7 @@ pub fn step_paged_mov(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -361,6 +365,7 @@ pub fn step_paged_mov_2m_ram(
         read_only_qword: false,
         large_ram_profile: true,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -496,6 +501,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
             read_only_qword: false,
             large_ram_profile: true,
             dword_write_profile: false,
+            cpl0_set_dword_read: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -611,6 +617,7 @@ pub fn step_paged_mov_word_read(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -681,6 +688,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -733,6 +741,7 @@ pub fn step_paged_mov_dword_read(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: false,
+        cpl0_set_dword_read: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -794,6 +803,7 @@ pub fn step_paged_mov_dword_store(
         read_only_qword: false,
         large_ram_profile: false,
         dword_write_profile: true,
+        cpl0_set_dword_read: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -880,6 +890,10 @@ pub struct PagedMovMemoryAdapter<'a> {
     large_ram_profile: bool,
     /// S4-27h: the only admitted write is one dword (`MOV [RBX],EAX`).
     dword_write_profile: bool,
+    /// S4-38L3: the CPL0 profile set (`run_cpl0_set_paged_2m_ram`) also reads dwords
+    /// (`MOV r32, m32`), next to its qword reads. The qword-only shared profiles stay
+    /// as they were: this flag is set by the set's adapter alone.
+    cpl0_set_dword_read: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1028,7 +1042,7 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
     ) -> Result<(), MemoryError> {
         let width = match destination.len() {
             2 if self.word_read_profile => crate::AccessWidth::Word,
-            4 if self.dword_read_profile => crate::AccessWidth::Dword,
+            4 if self.dword_read_profile || self.cpl0_set_dword_read => crate::AccessWidth::Dword,
             8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
             _ => return Err(Self::unsupported("read width")),
         };
@@ -1199,6 +1213,7 @@ mod tests {
             read_only_qword: false,
             large_ram_profile: false,
             dword_write_profile: false,
+            cpl0_set_dword_read: false,
         }
     }
 
