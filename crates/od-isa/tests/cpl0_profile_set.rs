@@ -1,13 +1,13 @@
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
     Cpl0ProfileSetResult, MovCr3Long64V1, RdtscControls, RunConfig, RunExit, run,
-    run_with_cli_profile, run_with_cpl0_profile_set, run_with_cpuid_profile,
-    run_with_efer_rdmsr_profile, run_with_halt_profile, run_with_msr_profile,
-    run_with_rdtsc_source,
+    run_with_cli_profile, run_with_cpl0_profile_set, run_with_cpl0_profile_set_and_pio,
+    run_with_cpuid_profile, run_with_efer_rdmsr_profile, run_with_halt_profile,
+    run_with_msr_profile, run_with_rdtsc_source,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
-    GuestMemory, HaltProfile, InstructionMode, LongModeState, MemoryError, OperandSize,
+    GuestMemory, HaltProfile, InstructionMode, LongModeState, MemoryError, OperandSize, PortIo,
     PrivilegeLevel, StiShadow, TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
 };
 
@@ -1386,4 +1386,243 @@ fn cr3_ownership_keeps_cr0_cr4_moves_and_other_members_working() {
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
     assert_eq!(state.cr0, Some(CR0_BASE));
     assert_eq!(state.cr3, Some(0x1000));
+}
+
+// ---- S2-45e: PIO u8 in the set -------------------------------------------
+
+/// `mov edx, 0x3f8`.
+const MOV_EDX_3F8: [u8; 5] = [0xba, 0xf8, 0x03, 0x00, 0x00];
+/// `mov al, 'X'`.
+const MOV_AL_X: [u8; 2] = [0xb0, 0x58];
+const OUT_DX_AL: u8 = 0xee;
+const IN_AL_DX: u8 = 0xec;
+
+#[derive(Default)]
+struct TestPio {
+    read_value: u8,
+    reads: Vec<u16>,
+    writes: Vec<(u16, u8)>,
+    fail_read: bool,
+    fail_write: bool,
+}
+
+impl PortIo for TestPio {
+    type Error = &'static str;
+
+    fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
+        self.reads.push(port);
+        if self.fail_read {
+            Err("read failed")
+        } else {
+            Ok(self.read_value)
+        }
+    }
+
+    fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
+        self.writes.push((port, value));
+        if self.fail_write {
+            Err("write failed")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn pio_set(cli: &CliProfile) -> Cpl0ProfileSet<'_> {
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(cli)
+        .with_pio_u8()
+}
+
+fn run_pio(
+    state: &mut LongModeState,
+    memory: &mut Memory,
+    set: &Cpl0ProfileSet<'_>,
+    pio: &mut TestPio,
+    budget: u64,
+) -> Cpl0ProfileSetResult<&'static str> {
+    run_with_cpl0_profile_set_and_pio(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        pio,
+        || false,
+    )
+    .unwrap()
+}
+
+fn pio_code(tail: u8) -> Vec<u8> {
+    let mut code = MOV_EDX_3F8.to_vec();
+    code.extend_from_slice(&MOV_AL_X);
+    code.push(tail);
+    code
+}
+
+#[test]
+fn out_dx_al_writes_one_byte_and_retires_three_instructions() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    let mut memory = Memory::code(&pio_code(OUT_DX_AL));
+    let mut pio = TestPio::default();
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 3);
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+    );
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(pio.writes, [(0x3f8, 0x58)]);
+    assert!(pio.reads.is_empty());
+    assert_eq!(state.rip, RIP + 8);
+    assert_eq!(state.gpr[0] & 0xff, 0x58);
+    assert_eq!(state.gpr[2], 0x3f8);
+}
+
+#[test]
+fn out_dx_al_port_error_is_typed_and_leaves_the_out_unretired() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    let mut memory = Memory::code(&pio_code(OUT_DX_AL));
+    let mut pio = TestPio {
+        fail_write: true,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+    assert_eq!(result.exit, Cpl0ProfileSetExit::PortIo("write failed"));
+    assert_eq!(result.instructions_executed, 2);
+    // Exactly one callback; it ran before the commit, so RIP stays on the OUT
+    // and the register state is the state after the two MOVs.
+    assert_eq!(pio.writes, [(0x3f8, 0x58)]);
+    assert_eq!(state.rip, RIP + 7);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_4458);
+    assert_eq!(state.gpr[2], 0x3f8);
+    assert_eq!(state.rflags & IF, IF);
+}
+
+#[test]
+fn in_al_dx_loads_al_from_the_port_and_keeps_the_high_rax_bits() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    let mut memory = Memory::code(&pio_code(IN_AL_DX));
+    let mut pio = TestPio {
+        read_value: 0xa5,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 3);
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+    );
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(pio.reads, [0x3f8]);
+    assert!(pio.writes.is_empty());
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_44a5);
+    assert_eq!(state.rip, RIP + 8);
+}
+
+#[test]
+fn in_al_dx_port_error_keeps_al_and_rip() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    let mut memory = Memory::code(&pio_code(IN_AL_DX));
+    let mut pio = TestPio {
+        read_value: 0xa5,
+        fail_read: true,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+    assert_eq!(result.exit, Cpl0ProfileSetExit::PortIo("read failed"));
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(pio.reads, [0x3f8]);
+    assert_eq!(state.rip, RIP + 7);
+    // AL still holds 'X' from the MOV, not the port value.
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_4458);
+}
+
+#[test]
+fn pio_entry_without_the_set_flag_leaves_out_unsupported_and_untouched() {
+    let cli = CliProfile::NonPviLong64V1;
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+    for (tail, opcode) in [(OUT_DX_AL, 0xee), (IN_AL_DX, 0xec)] {
+        let mut state = board_state();
+        let mut memory = Memory::code(&pio_code(tail));
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &set, &mut pio, 64);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode })
+        );
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(state.rip, RIP + 7);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn pio_flag_without_a_pio_entry_stays_unsupported() {
+    let cli = CliProfile::NonPviLong64V1;
+    let set = pio_set(&cli);
+    for (tail, opcode) in [(OUT_DX_AL, 0xee), (IN_AL_DX, 0xec)] {
+        let mut state = board_state();
+        let mut memory = Memory::code(&pio_code(tail));
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(state.rip, RIP + 7);
+    }
+}
+
+#[test]
+fn pio_does_not_widen_to_prefixed_or_other_port_forms() {
+    let cli = CliProfile::NonPviLong64V1;
+    // 0x66/REP prefixes, the imm8 forms (E4/E6) and the word form (ED/EF).
+    for code in [
+        &[0x66, 0xee][..],
+        &[0xf3, 0xee][..],
+        &[0xe6, 0x80][..],
+        &[0xe4, 0x80][..],
+        &[0xef][..],
+        &[0xed][..],
+    ] {
+        let mut state = board_state();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+        assert!(
+            matches!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. } | RunExit::Fault(_))
+            ),
+            "{code:x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.rip, RIP);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn pio_entry_admission_is_unchanged() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    state.cr0 = None;
+    let mut memory = Memory::code(&pio_code(OUT_DX_AL));
+    let mut pio = TestPio::default();
+    let error = run_with_cpl0_profile_set_and_pio(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 8),
+        od_isa::INTEGER_FLAGS,
+        &pio_set(&cli),
+        None,
+        &mut pio,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::Cr0Missing);
+    assert_eq!(memory.fetches, 0);
+    assert!(pio.writes.is_empty());
 }
