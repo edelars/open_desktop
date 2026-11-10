@@ -5224,3 +5224,517 @@ fn iretq_outside_the_set_and_with_other_prefixes_stays_unsupported() {
         assert!(memory.reads.is_empty());
     }
 }
+
+// ---- S4-38L5c: delivery of a #PF through the IDT gate of vector 14 ----------
+
+const PF_IDT: u64 = RAM_BASE + 0x3000;
+/// The gate of vector 14 needs IDT bytes 224..=239.
+const PF_IDT_LIMIT: u16 = 0xff;
+const PF_GATE: u64 = PF_IDT + 14 * 16;
+const PF_HANDLER: u64 = RIP + 0x100;
+const PF_RSP: u64 = STACK + 0x800;
+const PF_FAULT_PAGE: u64 = RAM_BASE;
+const PF_FAULT_ADDRESS: u64 = PF_FAULT_PAGE + 0x20;
+/// TF, NT, RF and AC: the flags the gate entry clears (IF too for an interrupt gate).
+const PF_FLAGS_ALL: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 18);
+
+fn pf_gate_bytes(offset: u64, selector: u16, ist: u8, attributes: u8) -> [u8; 16] {
+    let mut gate = [0u8; 16];
+    gate[0..2].copy_from_slice(&(offset as u16).to_le_bytes());
+    gate[2..4].copy_from_slice(&selector.to_le_bytes());
+    gate[4] = ist;
+    gate[5] = attributes;
+    gate[6..8].copy_from_slice(&((offset >> 16) as u16).to_le_bytes());
+    gate[8..12].copy_from_slice(&((offset >> 32) as u32).to_le_bytes());
+    gate
+}
+
+fn pf_put_gate(memory: &mut LretqMemory, gate: [u8; 16]) {
+    let offset = (PF_GATE - RAM_BASE) as usize;
+    memory.ram[offset..offset + 16].copy_from_slice(&gate);
+}
+
+fn pf_record() -> od_isa::PageFaultRecord {
+    od_isa::PageFaultRecord::new(
+        RIP,
+        AccessKind::Write,
+        context(PrivilegeLevel::Ring0),
+        3,
+        PF_FAULT_ADDRESS,
+    )
+}
+
+/// A CPL0 state about to retry `MOV [RBX], AL` at `RIP`; GDT slot 2 is `CODE64` (the gate
+/// selector 0x10), IDT gate 14 is an interrupt gate to `PF_HANDLER`, the handler is `IRETQ`.
+fn pf_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = lretq_state(0x10, 0);
+    let mut code = vec![0x88, 0x03];
+    code.resize((PF_HANDLER - RIP) as usize, 0x90);
+    // The handler drops the error code (ADD RSP, 8) and returns.
+    code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x08]);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    pf_put_gate(&mut memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8e));
+    state.idtr = Some(od_isa::state::Idtr {
+        base: PF_IDT,
+        limit: PF_IDT_LIMIT,
+    });
+    state.cs_selector = Some(0x10);
+    state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xa,
+    });
+    state.ss_selector = Some(0x18);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.gpr[Register::Rsp as usize] = PF_RSP;
+    state.gpr[Register::Rbx as usize] = PF_FAULT_ADDRESS;
+    state.rflags = 2 | IF | 0x1 | 0x40;
+    (state, memory)
+}
+
+fn pf_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0PageFaultDelivery {
+    od_isa::deliver_page_fault_cpl0_set(state, memory, &pf_record(), context(PrivilegeLevel::Ring0))
+}
+
+fn pf_qword(memory: &LretqMemory, address: u64) -> u64 {
+    let offset = (address - RAM_BASE) as usize;
+    u64::from_le_bytes(memory.ram[offset..offset + 8].try_into().unwrap())
+}
+
+#[test]
+fn pf_delivery_writes_the_frame_and_enters_the_handler() {
+    let (mut state, mut memory) = pf_state();
+    // A live TF/NT/AC (and RF = 0) in the image; the handler must see them cleared.
+    state.rflags |= (1 << 8) | (1 << 14) | (1 << 18);
+    let before = state.clone();
+    let rflags_in_frame = before.rflags | (1 << 16);
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Delivered {
+            target_rip: PF_HANDLER,
+            new_rsp: PF_RSP - 48,
+            trap_gate: false,
+        }
+    );
+    // Frame, from the highest address: SS, RSP, RFLAGS (RF = 1), CS, RIP, error code.
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0x18);
+    assert_eq!(pf_qword(&memory, PF_RSP - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 24), rflags_in_frame);
+    assert_eq!(pf_qword(&memory, PF_RSP - 32), 0x10);
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), RIP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 48), 3);
+    // Six qword stores with the implicit-stack origin, plus nothing else (A bit already set).
+    assert_eq!(memory.writes, 6);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(_, bytes, origin)| bytes.len() == 8 && *origin == AccessOrigin::ImplicitStack)
+    );
+    // The gate is read as two qwords and the descriptor as one, all as descriptor-table reads.
+    assert_eq!(
+        memory.reads,
+        vec![
+            (PF_GATE, 8, AccessOrigin::DescriptorTable),
+            (PF_GATE + 8, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    // The CPU: handler entry, new stack, IF/TF/NT/RF/AC clear, CR2 = fault address, SS kept.
+    let mut expected = before.clone();
+    expected.rip = PF_HANDLER;
+    expected.gpr[Register::Rsp as usize] = PF_RSP - 48;
+    expected.rflags = 2 | 0x1 | 0x40;
+    expected.cr2 = Some(PF_FAULT_ADDRESS);
+    assert_eq!(state, expected);
+    assert_eq!(state.rflags & (IF | PF_FLAGS_ALL | (1 << 17)), 0);
+}
+
+#[test]
+fn pf_delivery_aligns_the_stack_down_to_sixteen_and_saves_the_real_rsp() {
+    for rsp in [PF_RSP + 8, PF_RSP + 15, PF_RSP + 1] {
+        let (mut state, mut memory) = pf_state();
+        state.gpr[Register::Rsp as usize] = rsp;
+        let delivered = pf_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(delivered, od_isa::Cpl0PageFaultDelivery::Delivered { .. }),
+            "{rsp:#x}: {delivered:?}"
+        );
+        assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP - 48, "{rsp:#x}");
+        assert_eq!(pf_qword(&memory, PF_RSP - 16), rsp, "{rsp:#x}");
+        assert_eq!(state.gpr[Register::Rsp as usize] % 16, 0);
+    }
+}
+
+#[test]
+fn pf_delivery_through_a_trap_gate_keeps_if_and_clears_the_rest() {
+    let (mut state, mut memory) = pf_state();
+    pf_put_gate(&mut memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8f));
+    state.rflags |= (1 << 8) | (1 << 14);
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0PageFaultDelivery::Delivered {
+                trap_gate: true,
+                ..
+            }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!(state.rflags & IF, IF);
+    assert_eq!(state.rflags & PF_FLAGS_ALL, 0);
+}
+
+#[test]
+fn pf_delivery_sets_the_accessed_bit_of_the_target_descriptor_after_the_frame() {
+    let (mut state, mut memory) = pf_state();
+    // CODE64 with A = 0 (type 0x9a): the cache of the current CS has A = 1.
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert!(matches!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Delivered { .. }
+    ));
+    assert_eq!(pf_qword(&memory, LRETQ_GDT + 0x10), CODE64);
+    let last = memory.write_log.last().unwrap();
+    assert_eq!(
+        (last.0, last.1.len(), last.2),
+        (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable)
+    );
+    assert_eq!(memory.writes, 7);
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+}
+
+#[test]
+fn pf_delivery_handler_iretq_restarts_the_instruction_with_rf_set() {
+    let (mut state, mut memory) = pf_state();
+    state.gpr[Register::Rax as usize] = 0x5a;
+    memory.write_fault_pages = vec![PF_FAULT_PAGE];
+    let start = state.clone();
+    // The store faults (P = 1, W = 1, supervisor write to a read-only page) and retires nothing.
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(PF_FAULT_ADDRESS),
+        })
+    );
+    assert_eq!((result.instructions_executed, state.rip), (0, RIP));
+    assert_eq!(state, start);
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert!(matches!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Delivered { .. }
+    ));
+    // The handler repairs the page (here: the harness lifts the fault) and returns with IRETQ.
+    memory.write_fault_pages.clear();
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP - 40);
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP, "back on the faulting instruction");
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.ss_selector, Some(0x18));
+    // IRETQ restores the frame RFLAGS: IF back, RF = 1 (the board clears it after the retry).
+    assert_eq!(state.rflags, start.rflags | (1 << 16));
+    assert_eq!(memory.ram[(PF_FAULT_ADDRESS - RAM_BASE) as usize], 0);
+    // The retried store now executes (RF = 1 does not suppress it in the model).
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!((result.instructions_executed, state.rip), (1, RIP + 2));
+    assert_eq!(memory.ram[(PF_FAULT_ADDRESS - RAM_BASE) as usize], 0x5a);
+    assert_eq!(state.cr2, Some(PF_FAULT_ADDRESS));
+}
+
+/// Deliver after `tweak` and expect exactly `expected` with no write and no CPU change.
+fn assert_pf_refused(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: od_isa::Cpl0PageFaultRefusal,
+    label: &str,
+) {
+    let (mut state, mut memory) = pf_state();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Refused(expected),
+        "{label}"
+    );
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+#[test]
+fn pf_delivery_refuses_a_bad_gate_without_any_write() {
+    use od_isa::Cpl0PageFaultRefusal as R;
+    assert_pf_refused(|state, _| state.idtr = None, R::MissingIdtr, "no IDTR");
+    assert_pf_refused(
+        |state, _| state.idtr.as_mut().unwrap().limit = 14 * 16 + 14,
+        R::GateBeyondIdtLimit,
+        "limit one byte short of the gate",
+    );
+    assert_pf_refused(
+        |state, _| state.idtr.as_mut().unwrap().base = u64::MAX - 100,
+        R::NonCanonicalIdtSpan,
+        "IDT base overflows",
+    );
+    assert_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x0e)),
+        R::GateNotPresent,
+        "P = 0",
+    );
+    for attributes in [0x8c, 0x85, 0x8d, 0x9e, 0x80] {
+        assert_pf_refused(
+            |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x10, 0, attributes)),
+            R::InvalidGateType(attributes),
+            &format!("type/attributes {attributes:#x}"),
+        );
+    }
+    for ist in 1..=7u8 {
+        assert_pf_refused(
+            |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x10, ist, 0x8e)),
+            R::UnsupportedIst(ist),
+            &format!("IST {ist}"),
+        );
+    }
+    assert_pf_refused(
+        |_, memory| {
+            let mut gate = pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8e);
+            gate[4] = 0x08;
+            pf_put_gate(memory, gate);
+        },
+        R::GateReservedBitsSet,
+        "reserved bit of byte 4",
+    );
+    assert_pf_refused(
+        |_, memory| {
+            let mut gate = pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8e);
+            gate[12] = 1;
+            pf_put_gate(memory, gate);
+        },
+        R::GateReservedBitsSet,
+        "reserved dword",
+    );
+    for selector in [0u16, 3, 0x14, 0x12] {
+        assert_pf_refused(
+            |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, selector, 0, 0x8e)),
+            R::InvalidTargetSelector,
+            &format!("selector {selector:#x}"),
+        );
+    }
+    assert_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(PF_HANDLER, 0x20, 0, 0x8e)),
+        R::TargetBeyondGdtLimit,
+        "selector beyond the GDT",
+    );
+    assert_pf_refused(
+        |_, memory| pf_put_gate(memory, pf_gate_bytes(0x0000_8000_0000_0000, 0x10, 0, 0x8e)),
+        R::NonCanonicalTargetRip,
+        "non-canonical handler",
+    );
+}
+
+#[test]
+fn pf_delivery_refuses_a_bad_target_descriptor_without_any_write() {
+    use od_isa::Cpl0PageFaultRefusal as R;
+    for (label, descriptor) in [
+        ("data segment", DATA_DESCRIPTOR),
+        ("DPL 3", CODE64 | (3 << 45)),
+        ("not present", CODE64 & !(1 << 47)),
+        ("L = 0", CODE64 & !(1 << 53)),
+        ("L = 1 and D = 1", CODE64 | (1 << 54)),
+        ("conforming", CODE64 | (1 << 42)),
+        ("system descriptor", CODE64 & !(1 << 44)),
+    ] {
+        assert_pf_refused(
+            |_, memory| memory.put(LRETQ_GDT + 0x10, descriptor),
+            R::InvalidTargetCodeDescriptor,
+            label,
+        );
+    }
+    assert_pf_refused(|state, _| state.gdtr = None, R::MissingGdtr, "no GDTR");
+    assert_pf_refused(
+        |state, _| state.gdtr.as_mut().unwrap().base = u64::MAX - 4,
+        R::NonCanonicalGdtSpan,
+        "GDT base overflows",
+    );
+}
+
+#[test]
+fn pf_delivery_refuses_unmodeled_state_without_any_write() {
+    use od_isa::Cpl0PageFaultRefusal as R;
+    assert_pf_refused(
+        |state, _| state.rip = RIP + 1,
+        R::FaultRipMismatch,
+        "RIP moved",
+    );
+    assert_pf_refused(
+        |state, _| state.activity = Some(CpuActivity::Halted),
+        R::ActivityOutsideProfile,
+        "halted",
+    );
+    assert_pf_refused(
+        |state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        R::StiShadowActive,
+        "interrupt shadow",
+    );
+    assert_pf_refused(
+        |state, _| state.cs_cache = None,
+        R::MissingCurrentSelectors,
+        "no CS cache",
+    );
+    assert_pf_refused(
+        |state, _| state.ss_selector = None,
+        R::MissingCurrentSelectors,
+        "no SS selector",
+    );
+    assert_pf_refused(
+        |state, _| state.cs_cache.as_mut().unwrap().flags = 0xc,
+        R::InvalidCurrentCodeSegment,
+        "current CS is not 64-bit code",
+    );
+    assert_pf_refused(
+        |state, _| state.gpr[Register::Rsp as usize] = 0x2f,
+        R::StackAddressOverflow,
+        "RSP below the frame size",
+    );
+    assert_pf_refused(
+        |state, _| state.gpr[Register::Rsp as usize] = 0xffff_8000_0000_0010,
+        R::NonCanonicalStackSpan,
+        "non-canonical stack",
+    );
+}
+
+#[test]
+fn pf_delivery_refuses_a_cpl3_context() {
+    let (mut state, mut memory) = pf_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_page_fault_cpl0_set(
+        &mut state,
+        &mut memory,
+        &pf_record(),
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Refused(od_isa::Cpl0PageFaultRefusal::NotRing0Long64)
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn pf_delivery_stack_write_failure_leaves_the_cpu_unchanged() {
+    // The first store (SS, the highest word) fails: nothing is stored at all.
+    let (mut state, mut memory) = pf_state();
+    memory.fail_write_number = Some(1);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Aborted {
+            phase: od_isa::Cpl0PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::OldSs
+            },
+            cause: MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(PF_RSP - 8),
+            }),
+        }
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.write_log.len(), 0);
+    // A later store failing leaves the CPU unchanged too; the words already stored lie below
+    // the old RSP (dead stack), CR2 is not written.
+    for failing in 2..=6usize {
+        let (mut state, mut memory) = pf_state();
+        memory.fail_write_number = Some(failing);
+        let before = state.clone();
+        let delivered = pf_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                delivered,
+                od_isa::Cpl0PageFaultDelivery::Aborted {
+                    phase: od_isa::Cpl0PageFaultDeliveryPhase::StackWrite { .. },
+                    ..
+                }
+            ),
+            "{failing}: {delivered:?}"
+        );
+        assert_eq!(state, before, "{failing}");
+        assert_eq!(memory.write_log.len(), failing - 1, "{failing}");
+        assert!(
+            memory
+                .write_log
+                .iter()
+                .all(|(address, _, _)| *address < PF_RSP),
+            "{failing}"
+        );
+    }
+}
+
+#[test]
+fn pf_delivery_descriptor_accessed_write_failure_leaves_the_cpu_unchanged() {
+    let (mut state, mut memory) = pf_state();
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    memory.fail_write_number = Some(7);
+    let before = state.clone();
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0PageFaultDelivery::Aborted {
+                phase: od_isa::Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+                ..
+            }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn pf_delivery_idt_and_gdt_read_failures_write_nothing() {
+    use od_isa::Cpl0PageFaultDeliveryPhase as Phase;
+    for (page, phase) in [
+        (PF_IDT, Phase::IdtGateRead),
+        (LRETQ_GDT, Phase::TargetCodeDescriptorRead),
+    ] {
+        let (mut state, mut memory) = pf_state();
+        memory.fault_pages = vec![page];
+        let before = state.clone();
+        let delivered = pf_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                &delivered,
+                od_isa::Cpl0PageFaultDelivery::Aborted { phase: got, .. } if *got == phase
+            ),
+            "{delivered:?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
