@@ -20357,3 +20357,20 @@ Vol.3 §3.4.5.1); плата пишет только целыми qword, поэ�
 (14 тестов `lretq_*`), декодер — `long_decode::tests::lretq_decodes_only_the_exact_rex_w_form`,
 плата — `linux_direct::tests::real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set`
 (`--ignored`).
+
+### ENDBR64 на CPL0 в наборе (S2-48)
+
+Набор CPL0 исполняет ровно `F3 0F 1E FA` (ENDBR64, 4 байта, без других префиксов и без REX) как
+NOP: retired += 1, RIP += 4, регистры, RFLAGS, definedness флагов и кэши не меняются. DiagnosticV1
+не объявляет CET (`CPUID.7.EDX[20]` = 0), а без CET_IBT ENDBR64 архитектурно NOP (Intel SDM Vol.2
+`ENDBR64`/`NOP` `0F 1E`; сверено по памяти, текст SDM в этой среде не открывался). Другие формы
+`0F 1E` (иной ModRM, `66`/`F2`/`F0`/сегментный/`67`, REX, без `F3`) остаются
+`Unsupported { opcode: 0x1e }`. Вне набора (`run`/`step`, одиночные профили, JIT) ENDBR64 также
+`Unsupported { opcode: 0x1e }`. Тесты: `crates/od-isa/tests/cpl0_profile_set.rs` (4 теста
+`endbr64_*`), декодер — `long_decode::tests::endbr64_decodes_only_the_exact_f3_form`.
+
+На настоящем ядре через набор `ENDBR64` на `0x2066410` удаляется, затем retired доходит до 50; стоп —
+байтовая запись `MOV [RAX], SIL` (`40 88 30`) на `0x206_3a80`: выход `Backend` («paged MOV profile
+does not support non-qword writes», `crates/od-machine/src/paged_memory_adapter.rs`), то есть
+ограничение адаптера платы, а не набора. Тест платы —
+`linux_direct::tests::real_artifacts_stop_at_the_first_dword_read_through_the_cpl0_set` (`--ignored`).

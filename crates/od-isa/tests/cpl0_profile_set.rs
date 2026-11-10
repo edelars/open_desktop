@@ -2875,3 +2875,113 @@ fn lretq_faults_before_the_descriptor_never_write_the_accessed_bit() {
         assert_eq!(memory.writes, 0, "{descriptor:#x}");
     }
 }
+
+const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
+
+fn endbr_state() -> LongModeState {
+    // Loaded caches and an unusual arithmetic flag pattern: ENDBR64 must not touch any of it.
+    let mut state = loaded_state();
+    state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+    state.gpr[4] = 0x7fff_f000;
+    state
+}
+
+#[test]
+fn endbr64_in_the_set_is_a_four_byte_nop() {
+    // S2-48: no CET_IBT is declared, so the landing pad executes as a NOP.
+    let mut state = endbr_state();
+    let mut before = state.clone();
+    before.rip += 4;
+    let mut memory = Memory::code(&ENDBR64);
+    let defined = 0x1 | 0x40;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        defined,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn endbr64_then_push_rbp_retires_both() {
+    // The kernel function prologue `endbr64; push rbp`.
+    let (mut state, mut memory) = lretq_state(0, 0);
+    memory.code = vec![0xf3, 0x0f, 0x1e, 0xfa, 0x55];
+    state.gpr[4] = STACK + 0x100;
+    state.gpr[5] = 0xdead_beef_cafe_f00d;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(state.gpr[4], STACK + 0xf8);
+    let offset = (STACK + 0xf8 - RAM_BASE) as usize;
+    assert_eq!(
+        memory.ram[offset..offset + 8],
+        0xdead_beef_cafe_f00du64.to_le_bytes()
+    );
+}
+
+#[test]
+fn endbr64_lookalikes_stay_unsupported_in_the_set() {
+    for code in [
+        &[0xf3u8, 0x0f, 0x1e, 0xfb][..],
+        &[0xf3, 0x0f, 0x1e, 0xf8],
+        &[0x66, 0xf3, 0x0f, 0x1e, 0xfa],
+        &[0xf3, 0x66, 0x0f, 0x1e, 0xfa],
+        &[0xf2, 0x0f, 0x1e, 0xfa],
+        &[0xf3, 0x48, 0x0f, 0x1e, 0xfa],
+        &[0xf3, 0x2e, 0x0f, 0x1e, 0xfa],
+        &[0xf3, 0x67, 0x0f, 0x1e, 0xfa],
+        &[0x0f, 0x1e, 0xfa],
+    ] {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x1e },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn endbr64_outside_the_set_stays_unsupported() {
+    let mut state = endbr_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&ENDBR64);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x1e });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}

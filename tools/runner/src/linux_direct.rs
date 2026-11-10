@@ -1443,7 +1443,7 @@ mod tests {
 
     /// Real kernel through the CPL0 set (S4-38L3): the null segment loads (S2-46) and the dword
     /// `MOV EAX, [RSI+0x230]` retire, `LGDT [RAX]` (S2-47a) loads the GDTR and `LRETQ` (S2-47b)
-    /// reloads CS; the stop is the `ENDBR64` at the `call` target. The evidence file of the slice comes
+    /// reloads CS and `ENDBR64` (S2-48) is a NOP; the stop is a byte store the adapter refuses. The evidence file of the slice comes
     /// from the CLI.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
@@ -1476,17 +1476,21 @@ mod tests {
         // more instructions follow (26 in all). S2-47b: `LRETQ` (`48 cb`) at 0x100_0264 reloads
         // CS = 0x10 from the loaded GDT (descriptor `0x00af9a000000ffff`, accessed bit set by
         // the load), then `mov r15, rsi` and `call 0x2066410` retire (29 in all); the next stop
-        // is the `ENDBR64` (`f3 0f 1e fa`, opcode 0x1e) at the call target.
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["unsupported_opcode"], "0x1e");
-        assert_eq!(stop["rip"], "0x2066410");
+        // is the `ENDBR64` (`f3 0f 1e fa`, opcode 0x1e) at the call target. S2-48: the set
+        // runs `ENDBR64` as a NOP (no CET_IBT) and 20 more instructions retire (50 in all); the
+        // next stop is the byte store `MOV [RAX], SIL` (`40 88 30`) at 0x206_3a80, which the
+        // board's paged adapter refuses (`paged MOV profile does not support non-qword writes`).
+        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
+        assert!(stop["unsupported_opcode"].is_null());
+        assert_eq!(stop["rip"], "0x2063a80");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("40 88 30"));
         assert!(
-            stop["rip_bytes"]
+            stop["exit_detail"]
                 .as_str()
                 .unwrap()
-                .starts_with("f3 0f 1e fa")
+                .contains("paged MOV profile does not support non-qword writes")
         );
-        assert_eq!(value["retired"], 29);
+        assert_eq!(value["retired"], 50);
         assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
         assert_eq!(stop["cr3_changes"], 0);
     }
