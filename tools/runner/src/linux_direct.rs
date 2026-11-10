@@ -1496,7 +1496,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_guest_page_fault_after_the_cross_store() {
+    fn real_artifacts_stop_at_mov_rbx_cr2_after_the_page_fault_delivery() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1516,41 +1516,26 @@ mod tests {
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L4h: the 8-byte store across the 4 KiB boundary (`MOV [RCX+4], RDI`, `48 89 79 04`)
-        // is written by the set's adapter. With budget 3000000 the run stops `fault` at
-        // `MOV [RDI-4], R15B` (`44 88 7f fc`) on 0x541_f236 after 390836 retired instructions: a
-        // guest `#PF` (vector 14, error code 2 = supervisor write to a not-present page) at linear
-        // 0x102_0020, which the set does not deliver through the guest IDT yet (L5, exception
-        // delivery). Evidence: `docs/reports/data/stage4/s4-38l4h-cross-store-run.json`.
+        // S4-38L5c: the guest `#PF` at 0x102_0020 (from `MOV [RDI-4], R15B` on 0x541_f236) is
+        // delivered through the guest IDT; the boot page-fault handler maps the page, returns with
+        // `IRETQ`, and the instruction restarts (`exceptions_delivered` = 1, 24 handler instructions).
+        // With budget 3000000 the run stops `unsupported` at `MOV RBX, CR2` (`0f 20 d3`) on
+        // 0x543_c35e after 390860 retired instructions: the set models `MOV RAX, CR2` only (S4-38L5d,
+        // any general-purpose register). Evidence: `docs/reports/data/stage4/s4-38l5c-pf-delivery-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 390836, "{value:#}");
+        assert_eq!(value["retired"], 390860, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
-        assert_eq!(stop["exit_kind"], "fault", "{value:#}");
-        assert_eq!(stop["rip"], "0x541f236");
+        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
+        assert_eq!(stop["rip"], "0x543c35e");
         assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("44 88 7f fc"),
+            stop["rip_bytes"].as_str().unwrap().starts_with("0f 20 d3"),
             "{value:#}"
         );
-        assert!(
-            stop["set_exit_detail"]
-                .as_str()
-                .unwrap()
-                .contains("vector: 14, error_code: Some(2), linear_address: Some(16908320)"),
-            "{value:#}"
-        );
+        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 32 })");
         assert!(stop["memory_error"].is_null());
-        assert!(
-            stop["page_fault"]
-                .as_str()
-                .unwrap()
-                .contains("linear_address: Some(16908320)"),
-            "{value:#}"
-        );
+        assert!(stop["page_fault"].is_null());
         assert_eq!(
             stop["set_members"],
             json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
