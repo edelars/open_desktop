@@ -2917,4 +2917,222 @@ mod tests {
         assert_eq!(record.cpuid_divergence_leaf, None);
         assert_eq!(record.exit_kind, "unsupported");
     }
+
+    // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----
+
+    /// GVA of the first (always mapped) code page of the split tree.
+    const SPLIT_VA: u64 = 0x0100_0000;
+    /// The physical pages behind the two code pages (not contiguous on purpose).
+    const SPLIT_PAGE0: u64 = 0x0500_0000;
+    const SPLIT_PAGE1: u64 = 0x0500_8000;
+
+    /// A tree that maps `SPLIT_VA` and `SPLIT_VA + 0x1000` through 4 KiB leaves (the second one
+    /// only when `second_pte` is given) and puts `code` so that its first `on_first` bytes end
+    /// the first page and the rest starts the second. Returns the state to run from.
+    fn split_code_state(
+        boot: &mut LinuxDirectBoot,
+        code: &[u8],
+        on_first: usize,
+        second_pte: Option<u64>,
+    ) -> LongModeState {
+        write_phys(boot, TREE_PML4, &(TREE_PDPT | 3).to_le_bytes());
+        write_phys(boot, TREE_PDPT, &(TREE_PD | 3).to_le_bytes());
+        write_phys(boot, TREE_PD + 8 * 8, &(TREE_PT | 3).to_le_bytes());
+        write_phys(boot, TREE_PT, &(SPLIT_PAGE0 | 3).to_le_bytes());
+        if let Some(pte) = second_pte {
+            write_phys(boot, TREE_PT + 8, &pte.to_le_bytes());
+        }
+        write_phys(
+            boot,
+            SPLIT_PAGE0 + 0x1000 - on_first as u64,
+            &code[..on_first],
+        );
+        if on_first < code.len() {
+            write_phys(boot, SPLIT_PAGE1, &code[on_first..]);
+        }
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(TREE_PML4);
+        state.rip = SPLIT_VA + 0x1000 - on_first as u64;
+        state
+    }
+
+    fn run_split(
+        boot: &mut LinuxDirectBoot,
+        state: &mut LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+    ) -> PagedCpl0SetReport {
+        let efer = boot.board.efer();
+        run_cpl0_set_paged_2m_ram(
+            state,
+            boot.board.bus_mut(),
+            TREE_PML4,
+            efer,
+            long64(),
+            1,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |_| {},
+        )
+    }
+
+    const JE_REL32: [u8; 6] = [0x0F, 0x84, 0x1F, 0x02, 0x00, 0x00];
+
+    #[test]
+    fn cpl0_set_board_jcc_rel32_across_a_page_boundary_executes_for_every_split() {
+        let cli = CliProfile::NonPviLong64V1;
+        for on_first in 1..JE_REL32.len() {
+            for (zf, target) in [(true, 6 + 0x21F), (false, 6)] {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let mut state =
+                    split_code_state(&mut boot, &JE_REL32, on_first, Some(SPLIT_PAGE1 | 3));
+                let start = state.rip;
+                if zf {
+                    state.rflags |= 1 << 6;
+                } else {
+                    state.rflags &= !(1 << 6);
+                }
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                assert_eq!(
+                    report.exit,
+                    PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                    "{on_first} {zf}: {report:?}"
+                );
+                assert_eq!(report.instructions_executed, 1, "{on_first} {zf}");
+                assert_eq!((report.page_fault, report.memory_error), (None, None));
+                assert_eq!(state.rip, start + target, "{on_first} {zf}");
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_mov_imm64_across_a_page_boundary_executes_for_every_split() {
+        let cli = CliProfile::NonPviLong64V1;
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        for on_first in 1..code.len() {
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let mut state = split_code_state(&mut boot, &code, on_first, Some(SPLIT_PAGE1 | 3));
+            let start = state.rip;
+            let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+            assert_eq!(report.instructions_executed, 1, "{on_first}: {report:?}");
+            assert_eq!((report.page_fault, report.memory_error), (None, None));
+            assert_eq!(state.rip, start + 10, "{on_first}");
+            assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_a_fifteen_byte_instruction_across_a_page_boundary_executes() {
+        // The longest standard NOP: six 0x66, CS override, 0F 1F /0 with SIB and disp32 (the
+        // decoder admits repeated 0x66 for this form only): exactly 15 bytes.
+        let cli = CliProfile::NonPviLong64V1;
+        let mut code = vec![0x66; 6];
+        code.extend([0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(code.len(), 15);
+        for on_first in [1, 7, 8, 10, 14] {
+            let (mut boot, _) = boot_with_entry(&[0xF4]);
+            let mut state = split_code_state(&mut boot, &code, on_first, Some(SPLIT_PAGE1 | 3));
+            let start = state.rip;
+            let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+            assert_eq!(report.instructions_executed, 1, "{on_first}: {report:?}");
+            assert_eq!((report.page_fault, report.memory_error), (None, None));
+            assert_eq!(state.rip, start + 15, "{on_first}");
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_a_missing_second_page_is_the_precise_fetch_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        for (name, bytes) in [("je", &JE_REL32[..]), ("movabs", &code[..])] {
+            for on_first in 1..bytes.len() {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                // The second PTE is absent.
+                let mut state = split_code_state(&mut boot, bytes, on_first, None);
+                let before = state.clone();
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+                    panic!("{name} {on_first}: {report:?}");
+                };
+                // CR2 is the first byte on the missing page; I/D = 1, P = 0, supervisor read.
+                assert_eq!(
+                    (fault.vector, fault.error_code, fault.linear_address),
+                    (14, Some(0x10), Some(SPLIT_VA + 0x1000)),
+                    "{name} {on_first}"
+                );
+                assert_eq!(report.instructions_executed, 0);
+                assert_eq!(
+                    report.page_fault.expect("record").saved_rip(),
+                    before.rip,
+                    "{name} {on_first}"
+                );
+                assert_eq!(report.memory_error, None);
+                assert_eq!(state, before, "{name} {on_first}: the state is unchanged");
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_a_non_executable_second_page_is_a_present_fetch_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        assert_ne!(boot.board.efer() & (1 << 11), 0, "the board runs with NXE");
+        let mut state =
+            split_code_state(&mut boot, &JE_REL32, 2, Some(SPLIT_PAGE1 | 3 | (1 << 63)));
+        let before = state.clone();
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        // P = 1, I/D = 1.
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x11), Some(SPLIT_VA + 0x1000))
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn cpl0_set_board_an_instruction_ending_on_the_page_end_does_not_touch_the_next_page() {
+        // The whole JE is on the first page: no fetch looks ahead, so an unmapped second
+        // page changes nothing.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = split_code_state(&mut boot, &JE_REL32, JE_REL32.len(), None);
+        let start = state.rip;
+        state.rflags |= 1 << 6;
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(state.rip, start + 6 + 0x21F);
+    }
+
+    #[test]
+    fn cpl0_set_board_cpuid_across_a_page_boundary_is_seen_by_the_boundary_and_executes() {
+        // CPUID (0F A2) with 0F on the last byte of an identity-mapped page and A2 on the next.
+        let at = 0x0100_0FFF;
+        // Leaf 1 stops before the instruction, RIP on the 0F byte.
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        write_phys(&mut boot, at, &[0x0F, 0xA2, 0xF4]);
+        let state = boot.board.state_mut();
+        state.rip = at;
+        state.gpr[Register::Rax as usize] = 1;
+        let record = run_set_facade(&mut boot, &file, 8, halting_default());
+        assert_eq!(record.exit_kind, "cpuid_divergence", "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, Some(1));
+        assert_eq!((record.retired, record.rip), (0, at));
+        // Leaf 0 is answered by the set: CPUID retires, then the HLT on the next page.
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        write_phys(&mut boot, at, &[0x0F, 0xA2, 0xF4]);
+        let state = boot.board.state_mut();
+        state.rip = at;
+        state.gpr[Register::Rax as usize] = 0;
+        let record = run_set_facade(&mut boot, &file, 8, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 2);
+        assert_eq!(record.gpr[Register::Rax as usize], 1);
+    }
 }
