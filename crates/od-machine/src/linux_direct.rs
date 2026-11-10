@@ -2602,6 +2602,42 @@ mod tests {
     }
 
     #[test]
+    fn set_facade_mov_rax_cr3_returns_the_board_cr3_under_the_owned_cr3_member() {
+        // S4-38L4c: CLI; MOV RAX, CR3; HLT (and the REX.W spelling). `cpu_owned_cr3` is part of
+        // every facade set (also `minimal()`), so no extra member is needed.
+        for read in [&[0x0F, 0x20, 0xD8][..], &[0x48, 0x0F, 0x20, 0xD8][..]] {
+            let mut code = vec![0xFA];
+            code.extend_from_slice(read);
+            code.push(0xF4);
+            let (mut boot, file) = boot_with_entry(&code);
+            let board_cr3 = boot.board.cr3();
+            let members = LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            };
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+            assert_eq!(record.retired, 3, "{record:?}");
+            assert_eq!(record.gpr[Register::Rax as usize], board_cr3);
+            assert_eq!(record.cr3, board_cr3);
+            assert_eq!(record.cr3_changes, 0);
+            assert!(record.set_members.contains(&"cpu_owned_cr3".to_string()));
+        }
+        // The default Linux set keeps the owning member, so the read is available there too.
+        assert!(LinuxCpl0SetMembers::linux_default().cpu_owned_cr3);
+        // Without CR3 ownership the set is rejected at admission (the board CR3 is modeled), so
+        // the read cannot execute.
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0x0F, 0x20, 0xD8, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            cpu_owned_cr3: false,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit_kind, "rejected", "{record:?}");
+        assert_eq!(record.retired, 0);
+    }
+
+    #[test]
     fn set_facade_cr4_read_and_the_cpuid_msr_rdtsc_members() {
         // CLI; MOV RAX, CR4; XOR EAX, EAX; CPUID(0); HLT.
         let (mut boot, file) =

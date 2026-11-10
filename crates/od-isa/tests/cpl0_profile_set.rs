@@ -8,7 +8,7 @@ use od_isa::execute::{
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
     DataSegmentDescriptorCache, FsDescriptorCache, GuestMemory, HaltProfile, InstructionMode,
-    LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
+    LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, Register, StiShadow,
     TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
 };
 
@@ -1451,6 +1451,158 @@ fn cr3_ownership_keeps_cr0_cr4_moves_and_other_members_working() {
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
     assert_eq!(state.cr0, Some(CR0_BASE));
     assert_eq!(state.cr3, Some(0x1000));
+}
+
+// ---- S4-38L4c: MOV RAX, CR3 read in the CR3-owning set ----------------------
+
+const MOV_RAX_CR3: [u8; 3] = [0x0f, 0x20, 0xd8];
+const MOV_RAX_CR3_REX_W: [u8; 4] = [0x48, 0x0f, 0x20, 0xd8];
+/// A 64-bit-looking value that stays within the 36-bit CR3 limit.
+const CR3_DISTINCT: u64 = 0x8_0013_0000;
+
+#[test]
+fn mov_rax_cr3_returns_state_cr3_and_touches_nothing_else() {
+    for (bytes, length) in [(&MOV_RAX_CR3[..], 3u64), (&MOV_RAX_CR3_REX_W[..], 4u64)] {
+        // Read followed by a NOP boundary: the budget ends the run after the read.
+        let mut state = cr3_state(CR3_DISTINCT);
+        state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+        state.gpr[Register::Rsp as usize] = 0x7000;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+        let mut expected = before;
+        expected.gpr[0] = CR3_DISTINCT;
+        expected.rip = RIP + length;
+        assert_eq!(state, expected, "{bytes:02x?}");
+        assert_eq!(state.cr3, Some(CR3_DISTINCT));
+    }
+}
+
+#[test]
+fn mov_rax_cr3_follows_a_cr3_write_and_reads_the_new_value() {
+    // `movabs rax, 0x2000; mov cr3, rax` stops with a translation-context
+    // change; after resuming, `mov rax, cr3` returns the new CR3.
+    let mut code = movabs_rax(0x2000);
+    code.extend_from_slice(&MOV_CR3_RAX);
+    code.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
+    code.extend_from_slice(&MOV_RAX_CR3);
+    let mut state = cr3_state(0x1000);
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(result.exit, cr3_write(0x1000, 0x2000));
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[0], 0x2000);
+    assert_eq!(state.cr3, Some(0x2000));
+    assert_eq!(state.rip, RIP + code.len() as u64);
+}
+
+#[test]
+fn mov_rax_cr3_stays_unsupported_without_cr3_ownership() {
+    for bytes in [&MOV_RAX_CR3[..], &MOV_RAX_CR3_REX_W[..]] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn mov_rax_cr3_stays_unsupported_outside_the_set() {
+    // No CR0/CR3/CR4 model, so the plain entry admits the state and the decoder reaches
+    // `ReadCr3`; the executor refuses it (all three bytes were fetched, nothing retired).
+    for bytes in [&MOV_RAX_CR3[..], &MOV_RAX_CR3_REX_W[..]] {
+        let mut state = LongModeState {
+            rip: RIP,
+            rflags: 2 | IF,
+            ..LongModeState::default()
+        };
+        state.gpr[0] = 0x1111_2222_3333_4444;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(memory.fetches, bytes.len(), "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_rax_cr3_other_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0x66, 0x0f, 0x20, 0xd8][..],
+        &[0xf0, 0x0f, 0x20, 0xd8][..],
+        &[0x40, 0x0f, 0x20, 0xd8][..],
+        &[0x49, 0x0f, 0x20, 0xd8][..],
+        &[0x0f, 0x20, 0xd9][..],
+        &[0x0f, 0x20, 0x18][..],
+        &[0x48, 0x0f, 0x20, 0xd9][..],
+        &[0xf3, 0x0f, 0x20, 0xd8][..],
+        &[0x67, 0x0f, 0x20, 0xd8][..],
+        &[0x2e, 0x0f, 0x20, 0xd8][..],
+        &[0x41, 0x0f, 0x20, 0xd8][..],
+        &[0x4c, 0x0f, 0x20, 0xd8][..],
+        // Only the REX nearest the opcode is effective, but the length 5 is outside the
+        // exact forms: the executor refuses it.
+        &[0x40, 0x48, 0x0f, 0x20, 0xd8][..],
+    ] {
+        let mut state = cr3_state(CR3_DISTINCT);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x20 }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_rax_cr3_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch, so the read never runs.
+    let mut state = cr3_state(CR3_DISTINCT);
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_RAX_CR3);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
 }
 
 // ---- S2-45e: PIO u8 in the set -------------------------------------------
