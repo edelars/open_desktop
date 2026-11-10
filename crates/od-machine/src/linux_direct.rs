@@ -2,9 +2,10 @@
 //!
 //! The loader pieces of L1-L5 are `pub(crate)`; this module is the one door the runner uses. It
 //! takes the raw bzImage, initrd, command line and ACPI blob, validates every input in a fixed
-//! order, loads a board and hands back a plain-data description of what was placed. It never
-//! runs the guest: the board comes back at the entry state, with no instruction retired
-//! (S4-38 starts it).
+//! order, loads a board and hands back a plain-data description of what was placed. Loading never
+//! runs the guest: the board comes back at the entry state, with no instruction retired.
+//! [`run_linux_direct_board`] (S4-38L1) is the separate, explicit step that runs it for a bounded
+//! number of instructions and returns a [`LinuxStopRecord`].
 //!
 //! Order of checks (each failure has a stable [`LinuxDirectError::code`]; none of them has
 //! assembled a board, except the handoff comparison, which still writes nothing):
@@ -36,6 +37,7 @@
 //! what the loader meant to write.
 
 use crate::GuestPhysicalAddress;
+use crate::PagedProbeExit;
 use crate::acpi_blob::{
     AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
 };
@@ -135,7 +137,8 @@ pub struct LinuxDirectBoot {
     /// SHA-256 of the initrd at its zone, read back from guest memory; `None` without an initrd.
     pub initrd_sha256_in_memory: Option<[u8; 32]>,
     pub entry: LinuxDirectEntryState,
-    /// Instructions the guest retired: always 0, the loader never runs it.
+    /// Instructions the guest retired while loading: always 0 (the loader never runs it; a run
+    /// reports its own count in [`LinuxStopRecord::retired`]).
     pub retired: u64,
 }
 
@@ -146,6 +149,9 @@ pub struct LinuxDirectError {
     pub code: &'static str,
     pub stage: &'static str,
     pub detail: String,
+    /// Instructions the guest retired before the error, when the failing step had already run
+    /// it (`run_failed`); `None` for every error of the loader, which never runs the guest.
+    pub retired: Option<u64>,
 }
 
 impl LinuxDirectError {
@@ -154,6 +160,7 @@ impl LinuxDirectError {
             code,
             stage,
             detail: format!("{detail:?}"),
+            retired: None,
         }
     }
 
@@ -163,6 +170,7 @@ impl LinuxDirectError {
             code,
             stage,
             detail,
+            retired: None,
         }
     }
 }
@@ -391,6 +399,157 @@ pub fn load_linux_direct_board(
         initrd_sha256_in_memory,
         entry,
         retired: 0,
+    })
+}
+
+/// Bytes of the instruction window the stop record shows at RIP.
+pub const LINUX_STOP_RIP_BYTES: usize = 16;
+
+/// Hashes of the inputs of a run (S4-38L1). The kernel and initrd hashes are of the files given
+/// to the loader; the in-memory hashes are the ones read back after loading.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinuxStopInputs {
+    pub bzimage_sha256: [u8; 32],
+    /// `None` without an initrd.
+    pub initrd_sha256: Option<[u8; 32]>,
+    pub acpi_blob_sha256: [u8; 32],
+    pub acpi_manifest_hash: [u8; 32],
+    pub kernel_pm_code_sha256_in_memory: [u8; 32],
+    pub initrd_sha256_in_memory: Option<[u8; 32]>,
+}
+
+/// Where and why a bounded Linux run stopped. One schema for every S4-38 subslice: the exit
+/// kind, the instruction window at RIP (GVA and GPA), the control state, the registers, the
+/// counters, COM1, the profile and the input hashes.
+#[derive(Debug, Eq, PartialEq)]
+pub struct LinuxStopRecord {
+    /// The exit of the paged interpreter, as it came (no new variants).
+    pub exit: PagedProbeExit,
+    /// Stable name of `exit`: `budget_exhausted`, `stopped`, `halted`, `shutdown`, `rejected`,
+    /// `integration_error`, `unsupported`, `fault`, `backend` or `port_io`.
+    pub exit_kind: &'static str,
+    /// The `Debug` text of `exit` (carries the fault, rejection or backend details).
+    pub exit_detail: String,
+    /// The opcode byte of an `Unsupported` exit.
+    pub unsupported_opcode: Option<u8>,
+    pub rip: u64,
+    /// The GPA of RIP through the board CR3 and the 2 MiB walk (`None` when it does not translate).
+    pub rip_gpa: Option<u64>,
+    /// Up to [`LINUX_STOP_RIP_BYTES`] bytes at RIP, each translated through the same walk as an
+    /// instruction fetch (no accessed/dirty bit is written); shorter when a byte does not
+    /// translate or has no backing. Any region with backing is read (ROM and the framebuffer
+    /// too, not only RAM), and the window may cross a 4 KiB boundary (each byte is translated
+    /// on its own); the CPU profile never fetches across one, so the window is wider than a
+    /// single fetch.
+    pub rip_bytes: Vec<u8>,
+    /// Why `rip_bytes` is short, if it is.
+    pub rip_bytes_error: Option<String>,
+    /// `long64` (the board only runs 64-bit mode).
+    pub mode: &'static str,
+    /// The RPL (low two bits) of the CS selector, 0 when the state carries none. The interpreter
+    /// itself always executes with Ring0 (`run_quantum`), so with a CS whose RPL is not 0 this
+    /// value and the privilege the instructions ran with differ; the loader's CS has RPL 0.
+    pub cpl: u8,
+    pub cr0: Option<u64>,
+    /// The board CR3 (the CPU state carries none).
+    pub cr3: u64,
+    pub cr4: Option<u64>,
+    pub efer: u64,
+    pub rflags: u64,
+    /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
+    pub gpr: [u64; 16],
+    pub retired: u64,
+    pub quanta: u64,
+    pub virtual_ns: u64,
+    pub tsc_hz: u64,
+    /// The bytes the guest transmitted through COM1.
+    pub com1: Vec<u8>,
+    /// The board has the Linux profile (PIT, PM_TMR and RDTSC ticks are applied as in `run_boot`);
+    /// read from the board (its RDTSC time source exists only under the profile).
+    pub linux_profile: bool,
+    /// The last architectural page fault of the walker, as `Debug` text.
+    pub page_fault: Option<String>,
+    /// The last non-architectural RAM/backend classification, as `Debug` text.
+    pub memory_error: Option<String>,
+    pub inputs: LinuxStopInputs,
+}
+
+fn exit_kind(exit: &PagedProbeExit) -> &'static str {
+    match exit {
+        PagedProbeExit::BudgetExhausted => "budget_exhausted",
+        PagedProbeExit::Stopped => "stopped",
+        PagedProbeExit::Halted => "halted",
+        PagedProbeExit::Shutdown => "shutdown",
+        PagedProbeExit::Rejected(_) => "rejected",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
+        PagedProbeExit::Unsupported { .. } => "unsupported",
+        PagedProbeExit::Fault(_) => "fault",
+        PagedProbeExit::Backend(_) => "backend",
+        PagedProbeExit::PortIo(_) => "port_io",
+    }
+}
+
+/// Runs a loaded Linux board for at most `instruction_budget` instructions through the 2 MiB
+/// walk (`run_paged_probe_2m_ram`, base CPU profile, the board CR3) and describes where it
+/// stopped (S4-38L1). The ticks of the Linux profile are applied as in `run_boot`. Nothing is
+/// executed that the base profile does not admit: the first inadmissible instruction is the stop
+/// (`Unsupported`). `input` must be the input `boot` was loaded from (it is hashed here).
+///
+/// The board is left at the stop (a second call continues from it); `boot.retired` stays the
+/// loader's 0, the record carries the count.
+pub fn run_linux_direct_board(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    let report = boot
+        .board
+        .run_linux_boot(instruction_budget)
+        .map_err(|failure| {
+            let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
+            error.retired = Some(failure.retired);
+            error
+        })?;
+    let state = boot.board.state().clone();
+    let (rip_gpa, rip_bytes, rip_bytes_error) =
+        boot.board.fetch_view_2m(state.rip, LINUX_STOP_RIP_BYTES);
+    let unsupported_opcode = match report.exit {
+        PagedProbeExit::Unsupported { opcode } => Some(opcode),
+        _ => None,
+    };
+    Ok(LinuxStopRecord {
+        exit_kind: exit_kind(&report.exit),
+        exit_detail: format!("{:?}", report.exit),
+        exit: report.exit,
+        unsupported_opcode,
+        rip: state.rip,
+        rip_gpa,
+        rip_bytes,
+        rip_bytes_error,
+        mode: "long64",
+        cpl: state.cs_selector.map_or(0, |cs| (cs & 3) as u8),
+        cr0: state.cr0,
+        cr3: boot.board.cr3(),
+        cr4: state.cr4,
+        efer: boot.board.efer(),
+        rflags: state.rflags,
+        gpr: state.gpr,
+        retired: report.retired,
+        quanta: report.quanta,
+        virtual_ns: report.virtual_ns,
+        tsc_hz: report.tsc_hz,
+        com1: report.com1,
+        linux_profile: boot.board.has_linux_profile(),
+        page_fault: report.page_fault.map(|record| format!("{record:?}")),
+        memory_error: report.memory_error.map(|error| format!("{error:?}")),
+        inputs: LinuxStopInputs {
+            bzimage_sha256: sha256(input.bzimage),
+            initrd_sha256: (!input.initrd.is_empty()).then(|| sha256(input.initrd)),
+            acpi_blob_sha256: sha256(input.acpi_blob),
+            acpi_manifest_hash: boot.acpi.manifest_hash,
+            kernel_pm_code_sha256_in_memory: boot.kernel_sha256_in_memory,
+            initrd_sha256_in_memory: boot.initrd_sha256_in_memory,
+        },
     })
 }
 
@@ -750,5 +909,248 @@ mod tests {
             (error.code, error.stage),
             ("acpi_blob_invalid", "acpi_blob")
         );
+    }
+
+    // ---- S4-38L1: the bounded run and its stop record ----
+
+    /// `bzimage()` with `code` at the 64-bit entry (`startup_64`, offset 0x200 of the kernel).
+    fn bzimage_with_entry(code: &[u8]) -> Vec<u8> {
+        let mut file = bzimage();
+        let at = PM_OFFSET + 0x200;
+        file[at..at + code.len()].copy_from_slice(code);
+        file
+    }
+
+    /// `MOV AL, imm8; MOV DX, 0x03F8; OUT DX, AL; HLT`.
+    fn com1_program(byte: u8) -> Vec<u8> {
+        vec![0xb0, byte, 0x66, 0xba, 0xf8, 0x03, 0xee, 0xf4]
+    }
+
+    fn boot_with_entry(code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+        let file = bzimage_with_entry(code);
+        let boot = load_linux_direct_board(&input(&file, &[], BLOB, board_hash())).expect("loads");
+        (boot, file)
+    }
+
+    fn run_entry(code: &[u8], budget: u64) -> LinuxStopRecord {
+        let (mut boot, file) = boot_with_entry(code);
+        run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), budget)
+            .expect("runs")
+    }
+
+    fn page_tables(boot: &mut LinuxDirectBoot) -> Vec<u8> {
+        let zone = boot
+            .zones
+            .iter()
+            .find(|zone| zone.name == "page_tables")
+            .expect("page table zone");
+        let mut bytes = vec![0u8; (zone.end - zone.start) as usize];
+        read(&mut boot.board, zone.start, &mut bytes).expect("read");
+        bytes
+    }
+
+    #[test]
+    fn budget_zero_stops_before_any_fetch_and_leaves_the_page_tables_alone() {
+        let (mut boot, file) = boot_with_entry(&com1_program(b'X'));
+        let tables_before = page_tables(&mut boot);
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 0)
+            .expect("runs");
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(record.exit_kind, "budget_exhausted");
+        assert_eq!((record.retired, record.quanta), (0, 1));
+        assert_eq!(record.rip, 0x0100_0200);
+        // The instruction window is shown, but through a read-only walk: no accessed bit moved.
+        assert_eq!(record.rip_gpa, Some(0x0100_0200));
+        assert_eq!(
+            record.rip_bytes,
+            file[PM_OFFSET + 0x200..PM_OFFSET + 0x200 + LINUX_STOP_RIP_BYTES]
+        );
+        assert_eq!(record.rip_bytes_error, None);
+        assert_eq!(page_tables(&mut boot), tables_before);
+        assert!(record.com1.is_empty());
+        assert_eq!((record.mode, record.cpl), ("long64", 0));
+        assert!(record.linux_profile);
+        assert_eq!(record.cr3, boot.entry.cr3);
+        assert_eq!(record.cr0, boot.entry.cr0);
+        assert_eq!(record.efer, 0xd00);
+    }
+
+    #[test]
+    fn the_synthetic_kernel_halts_and_writes_com1_through_the_new_facade() {
+        let record = run_entry(&com1_program(b'X'), 64);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.com1, b"X");
+        assert_eq!(record.retired, 4);
+        assert_eq!(record.rip, 0x0100_0200 + 8);
+        // Other bytes give other COM1 bytes: the run is not vacuous.
+        assert_eq!(run_entry(&com1_program(0xA5), 64).com1, [0xA5]);
+        // RSI is the boot_params pointer, untouched.
+        assert_eq!(record.gpr[od_isa::Register::Rsi as usize], 0x10_0000);
+    }
+
+    #[test]
+    fn hlt_as_the_first_kernel_byte_halts_after_one_instruction() {
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        let tables_before = page_tables(&mut boot);
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 64)
+            .expect("runs");
+        // The fetch of a real run does set accessed bits: the budget-0 comparison is not vacuous.
+        assert_ne!(page_tables(&mut boot), tables_before);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 1);
+        assert_eq!(record.rip, 0x0100_0201);
+        assert!(record.com1.is_empty());
+    }
+
+    #[test]
+    fn cld_outside_the_allowlist_is_the_unsupported_stop_before_retirement() {
+        // The first instruction of the real kernel (`startup_64`): CLD; CLI; XOR EAX,EAX.
+        let record = run_entry(&[0xFC, 0xFA, 0x31, 0xC0], 64);
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xFC });
+        assert_eq!(record.exit_kind, "unsupported");
+        assert_eq!(record.unsupported_opcode, Some(0xFC));
+        assert_eq!((record.retired, record.rip), (0, 0x0100_0200));
+        assert_eq!(&record.rip_bytes[..4], &[0xFC, 0xFA, 0x31, 0xC0]);
+        assert_eq!(record.rip_bytes.len(), LINUX_STOP_RIP_BYTES);
+    }
+
+    #[test]
+    fn the_stop_record_hashes_its_inputs() {
+        let initrd = [0xAB; 100];
+        let file = bzimage_with_entry(&[0xF4]);
+        let input = input(&file, &initrd, BLOB, board_hash());
+        let mut boot = load_linux_direct_board(&input).expect("loads");
+        let record = run_linux_direct_board(&mut boot, &input, 8).expect("runs");
+        assert_eq!(record.inputs.bzimage_sha256, sha256(&file));
+        assert_eq!(record.inputs.initrd_sha256, Some(sha256(&initrd)));
+        assert_eq!(record.inputs.initrd_sha256_in_memory, Some(sha256(&initrd)));
+        assert_eq!(record.inputs.acpi_blob_sha256, sha256(BLOB));
+        assert_eq!(record.inputs.acpi_manifest_hash, board_hash());
+        assert_eq!(
+            record.inputs.kernel_pm_code_sha256_in_memory,
+            sha256(&file[PM_OFFSET..PM_OFFSET + PM_CODE])
+        );
+    }
+
+    #[test]
+    fn the_4k_walker_on_the_linux_board_is_a_walk_error_not_unsupported() {
+        // The Linux tables map low RAM with 2 MiB leaves; the 4 KiB walker (`run_boot`) refuses
+        // the leaf while it walks, before any opcode is decoded.
+        let (mut boot, _) = boot_with_entry(&com1_program(b'X'));
+        let report = boot.board.run_boot(16).expect("runs");
+        assert_eq!(report.retired, 0);
+        assert!(
+            matches!(report.exit, PagedProbeExit::Backend(_)),
+            "{:?}",
+            report.exit
+        );
+        assert!(
+            matches!(
+                report.memory_error,
+                Some(crate::TrackedAccessError::UnsupportedPageSize { .. })
+            ),
+            "{:?}",
+            report.memory_error
+        );
+    }
+
+    #[test]
+    fn rdtsc_through_the_facade_ticks_the_virtual_clock_by_one_microsecond() {
+        // RDTSC; HLT. RDTSC is the first quantum (it ends the quantum after one instruction),
+        // HLT the second: quanta == 2, retired == 2. The clock moves by 1 ns per retired
+        // instruction plus the 1000 ns RDTSC tick: 2 + 1000.
+        let record = run_entry(&[0x0F, 0x31, 0xF4], 64);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!((record.retired, record.quanta), (2, 2));
+        assert_eq!(record.virtual_ns, 2 + 1_000);
+        assert_eq!(record.rip, 0x0100_0200 + 3);
+        // RDTSC read the clock at the start of the run (0): EDX:EAX = 0.
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert!(record.linux_profile);
+        // The same code without RDTSC (MOV AL, 1; HLT) moves the clock only by the retired instructions.
+        let plain = run_entry(&[0xB0, 0x01, 0xF4], 64);
+        assert_eq!((plain.retired, plain.quanta, plain.virtual_ns), (2, 1, 2));
+    }
+
+    #[test]
+    fn a_rip_that_translates_only_in_part_gives_a_short_window_and_its_error() {
+        // The last 4 bytes of the 128 MiB RAM are mapped, the next 2 MiB page is not: the walk
+        // gives the GPA of RIP and 4 bytes, then the not-present PD entry of the fifth byte.
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.state_mut().rip = 128 * MIB - 4;
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 0)
+            .expect("runs");
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted);
+        assert_eq!(record.rip_gpa, Some(128 * MIB - 4));
+        assert_eq!(record.rip_bytes, [0, 0, 0, 0]);
+        let error = record.rip_bytes_error.expect("the window is short");
+        assert!(error.contains("NotPresent") && error.contains("linear_address: Some(134217728)"));
+    }
+
+    #[test]
+    fn a_rip_that_does_not_translate_has_no_gpa_and_no_bytes() {
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.state_mut().rip = 256 * MIB;
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 0)
+            .expect("runs");
+        assert_eq!(record.rip, 256 * MIB);
+        assert_eq!(record.rip_gpa, None);
+        assert!(record.rip_bytes.is_empty());
+        let error = record.rip_bytes_error.expect("the first byte fails");
+        assert!(error.contains("NotPresent"), "{error}");
+    }
+
+    #[test]
+    fn a_fetch_from_an_unmapped_page_is_the_fault_exit_with_the_page_fault_record() {
+        // Fetching from an unmapped RIP is the architectural #PF (vector 14, error code 16 =
+        // instruction fetch). A store or an OUT does not reach `Fault` in this profile: MOV
+        // [mem], r8 is `Unsupported` (0x88) and OUT to a missing port is `PortIo`.
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.state_mut().rip = 256 * MIB;
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 8)
+            .expect("runs");
+        assert_eq!(record.exit_kind, "fault");
+        let PagedProbeExit::Fault(fault) = &record.exit else {
+            panic!("{record:?}");
+        };
+        assert_eq!(fault.vector, 14);
+        assert_eq!(fault.error_code, Some(16));
+        assert_eq!(fault.linear_address, Some(256 * MIB));
+        assert_eq!((record.retired, record.rip), (0, 256 * MIB));
+        let page_fault = record.page_fault.expect("the walker's record");
+        assert!(page_fault.contains("access: Fetch"), "{page_fault}");
+        assert_eq!(record.rip_gpa, None);
+        assert!(record.rip_bytes.is_empty());
+    }
+
+    #[test]
+    fn the_cpl_is_the_cs_selector_rpl_while_the_interpreter_runs_ring0() {
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.state_mut().cs_selector = Some(0x13);
+        let record = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 0)
+            .expect("runs");
+        assert_eq!(record.cpl, 3);
+    }
+
+    #[test]
+    fn a_clock_failure_is_run_failed_with_the_instructions_retired_before_it() {
+        // The clock is at its maximum, so the first quantum (HLT, one instruction) executes and
+        // then its 1 ns cannot be added: the error must not claim that nothing was retired.
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board
+            .advance_time_ns(u64::MAX)
+            .expect("the clock fits");
+        let error = run_linux_direct_board(&mut boot, &input(&file, &[], BLOB, board_hash()), 8)
+            .expect_err("the clock overflows");
+        assert_eq!((error.code, error.stage), ("run_failed", "run"));
+        assert!(error.detail.contains("TimeOverflow"), "{}", error.detail);
+        assert_eq!(error.retired, Some(1));
+        // A loader error never ran the guest.
+        let file = bzimage();
+        let refused = load_linux_direct_board(&input(&file[..10], &[], BLOB, board_hash()))
+            .err()
+            .expect("truncated");
+        assert_eq!(refused.retired, None);
     }
 }

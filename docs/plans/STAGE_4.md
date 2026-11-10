@@ -2025,7 +2025,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Честная верхняя граница без CPU-профиля Linux.** Runner останавливается до retirement первой CPUID с EAX ∈ {1, 0x8000_0001} (`stop = cpuid_divergence`). За границей результаты диагностические и в приёмку не засчитываются.
 - **Порядок:** L1 ∥ L2 → (D1) L3 → L4 → L5 → L6 → цикл L7 (до C7) → L8 (после L3) → L9 → L10 (L9 и L10 — блокер этапа 2).
 
-- [ ] **L1 — Первый стоп настоящего ядра на текущем пути (S, без решений пользователя).** `od-runner linux-direct --run --budget N`; Linux-плата исполняется через `run_paged_probe_2m_ram`, а не через 4 KiB walker `run`/`run_boot`. Тики linux_profile применяются как в `run_boot`.
+- [x] **L1 — Первый стоп настоящего ядра на текущем пути (S, без решений пользователя).** Принято: фактический стоп `Unsupported 0xFC` на RIP `0x100_0200`, retired 0, байты `fc fa 31 c0` (`docs/reports/data/stage4/s4-38l1-first-stop.json`). `od-runner linux-direct --run --budget N`; Linux-плата исполняется через `run_paged_probe_2m_ram`, а не через 4 KiB walker `run`/`run_boot`. Тики linux_profile применяются как в `run_boot`.
   - Stop record (общая схема для L1–L10): exit kind, RIP, 16 байт по RIP (GVA и GPA), CPL/mode, CR0/CR3/CR4/EFER, RFLAGS, GPR, retired, quanta, virtual time, байты COM1, CPUID-профиль, linux_profile, хэши входов из S4-37 L6.
   - Ожидание: `Unsupported { opcode: 0xFC }`, RIP `0x100_0200`, retired 0, байты `fc fa 31 c0`.
   - Инъекции: budget 0 → `budget_exhausted` без fetch; синтетический bzImage из smoke L5 → Halted и байт в COM1; первый байт ядра заменён на `F4` → Halted, retired 1; путь 4 KiB walker на Linux-плате → различимая ошибка walk.

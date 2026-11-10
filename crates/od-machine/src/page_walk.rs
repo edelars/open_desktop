@@ -955,6 +955,37 @@ pub fn access_long64_2m_ram(
     access_long64_4k_internal(memory, paging, request, committed_write, false, None, true)
 }
 
+/// Translates `address` through the 4 KiB / 2 MiB tracked walk WITHOUT committing anything: the
+/// table writer is a no-op, so no accessed/dirty bit changes in guest RAM. The checks are those of
+/// [`access_long64_2m_ram`] (S4-38L1: the stop record reads the bytes at RIP with the walk the
+/// guest itself fetched with, and must not alter the page tables it reports on).
+pub(crate) fn translate_long64_2m_ram_read_only(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+) -> Result<GuestPhysicalAddress, TrackedAccessError> {
+    let mut no_op_writer = |_: &mut PhysicalMemory,
+                            _: GuestPhysicalAddress,
+                            _: u64,
+                            _: &mut dyn FnMut(GuestPhysicalRange)| Ok(());
+    walk_long64_4k_with_writer(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+        &mut |_| {},
+        &mut no_op_writer,
+        true,
+    )
+    .translation
+    .map(|translation| translation.physical)
+}
+
 pub(crate) fn access_long64_4k_with_mmio(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
