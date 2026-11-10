@@ -1823,6 +1823,15 @@ impl ControlRegisterPolicy {
     }
 }
 
+/// Trap flag: kept outside the POPFQ profiles (S2-17o policy).
+const POPFQ_CPL0_TF: u64 = 1 << 8;
+
+/// RFLAGS bits loaded by POPFQ at CPL0 (S2-50): the status flags, DF, IF,
+/// IOPL, NT, AC and ID. TF is excluded (it makes the pop `Unsupported`); RF,
+/// VM, VIF, VIP, bit 1 and the reserved bits are never loaded.
+const POPFQ_CPL0_FLAGS: u64 =
+    crate::POPFQ_INTEGER_FLAGS | (1 << 9) | (3 << 12) | (1 << 14) | (1 << 18) | (1 << 21);
+
 /// CR3 values accepted by the bounded MOV CR3 profiles: no bit above the
 /// modeled 36-bit physical-address width.
 const fn cr3_within_maxphyaddr(value: u64) -> bool {
@@ -1841,6 +1850,7 @@ pub struct Cpl0ProfileSet<'a> {
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
+    popf_cpl0: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1854,6 +1864,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
+            popf_cpl0: false,
         }
     }
 
@@ -1911,6 +1922,21 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// `Unsupported` without touching a port.
     pub const fn with_pio_u8(mut self) -> Self {
         self.pio_u8 = true;
+        self
+    }
+
+    /// Admit the exact qword `POPFQ` (`9D` and `48 9D`) at CPL0 with the SDM
+    /// CPL0 rule: CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC and ID are
+    /// loaded from the stack qword; TF, RF, VM, VIF and VIP are not loaded
+    /// (VM is never changed by POPF; RF is left as modelled, a documented simplification:
+    /// SDM clears RF after the instruction, see CPU_CONTRACT S2-50), and RFLAGS bit 1 and the
+    /// reserved bits keep their current values. TF set in the current RFLAGS
+    /// or in the popped value keeps the CPL3 policy and stays `Unsupported`
+    /// (`opcode` `0x9d`), as does the word form (`66 9D`) and any pop while an
+    /// interrupt shadow is `Blocking`. A stack read fault leaves the state
+    /// unchanged. Without this call POPFQ stays `Unsupported` in the set.
+    pub const fn with_popf_cpl0(mut self) -> Self {
+        self.popf_cpl0 = true;
         self
     }
 }
@@ -2172,6 +2198,9 @@ struct ExecutionProfiles<'a> {
     /// failure is recorded by the bridge and surfaces as an `Unsupported`
     /// placeholder outcome that the caller replaces with its typed exit.
     pio_u8: Option<&'a RefCell<&'a mut dyn crate::PortIo<Error = ()>>>,
+    /// S2-50: `POPFQ` (`9D`, `48 9D`) with the CPL0 IOPL/IF rule. Set only by a
+    /// `Cpl0ProfileSet` built with `with_popf_cpl0`.
+    popf_cpl0: bool,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3301,6 +3330,7 @@ pub fn run_with_maxss_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3455,6 +3485,7 @@ pub fn run_with_minsd_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3609,6 +3640,7 @@ pub fn run_with_maxsd_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3763,6 +3795,7 @@ pub fn run_with_minpd_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3917,6 +3950,7 @@ pub fn run_with_minps_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4071,6 +4105,7 @@ pub fn run_with_maxps_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4225,6 +4260,7 @@ pub fn run_with_maxpd_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4379,6 +4415,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4533,6 +4570,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4687,6 +4725,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4841,6 +4880,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4995,6 +5035,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5149,6 +5190,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5303,6 +5345,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5457,6 +5500,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5611,6 +5655,7 @@ pub fn run_with_cvtss2si_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5765,6 +5810,7 @@ pub fn run_with_cvttss2si_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5918,6 +5964,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6105,6 +6152,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6259,6 +6307,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6448,6 +6497,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6606,6 +6656,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6793,6 +6844,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6947,6 +6999,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7101,6 +7154,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7288,6 +7342,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7443,6 +7498,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7597,6 +7653,7 @@ pub fn run_with_cvtdq2pd_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7751,6 +7808,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7904,6 +7962,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8058,6 +8117,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8245,6 +8305,7 @@ fn run_with_cvtdq2ps_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8399,6 +8460,7 @@ pub fn run_with_cvtps2dq_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8553,6 +8615,7 @@ pub fn run_with_cvttps2dq_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8740,6 +8803,7 @@ fn run_with_cvtps2dq_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8927,6 +8991,7 @@ fn run_with_cvttps2dq_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9114,6 +9179,7 @@ fn run_with_cvttpd2dq_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9301,6 +9367,7 @@ fn run_with_cvtpd2dq_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9455,6 +9522,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9609,6 +9677,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9763,6 +9832,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9917,6 +9987,7 @@ pub fn run_with_cvtss2sd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10071,6 +10142,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10261,6 +10333,7 @@ fn run_with_cvtpi2ps_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10582,6 +10655,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10736,6 +10810,7 @@ pub fn run_with_cvtps2pd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10890,6 +10965,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11044,6 +11120,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11197,6 +11274,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11351,6 +11429,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11563,6 +11642,7 @@ fn run_with_cmpss_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11717,6 +11797,7 @@ pub fn run_with_cmpsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11871,6 +11952,7 @@ pub fn run_with_cmppd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12024,6 +12106,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12177,6 +12260,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12353,6 +12437,7 @@ fn run_with_minsd_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12507,6 +12592,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12688,6 +12774,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12854,6 +12941,7 @@ fn run_with_minpd_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13043,6 +13131,7 @@ fn run_with_minps_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13197,6 +13286,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13351,6 +13441,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13504,6 +13595,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13657,6 +13749,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13810,6 +13903,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13996,6 +14090,7 @@ fn run_with_sqrtps_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14149,6 +14244,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14334,6 +14430,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14519,6 +14616,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14711,6 +14809,7 @@ fn run_with_maxpd_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14903,6 +15002,7 @@ fn run_with_maxps_memory_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15109,6 +15209,7 @@ fn run_minss_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15305,6 +15406,7 @@ fn run_maxss_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15458,6 +15560,7 @@ pub fn run_with_cmpps_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15612,6 +15715,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -15819,6 +15923,7 @@ pub fn run_with_efer_rdmsr_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -16218,6 +16323,7 @@ pub fn run_with_cr0_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16431,6 +16537,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -19529,6 +19636,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -19877,6 +19985,7 @@ fn run_cpl0_profile_set_inner(
             control_policy: Some(set.policy),
             cpu_owned_cr3: set.cpu_owned_cr3.then_some(&cr3_effect),
             pio_u8: pio_cell.as_ref().filter(|_| set.pio_u8),
+            popf_cpl0: set.popf_cpl0,
             cr4: None,
         },
         StepRuntime {
@@ -20331,6 +20440,7 @@ pub fn step_with_cr0_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -20728,6 +20838,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -20882,6 +20993,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21260,6 +21372,7 @@ fn run_with_comparison_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21416,6 +21529,7 @@ pub fn run_with_sqrtss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21570,6 +21684,7 @@ pub fn run_with_sqrtsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21724,6 +21839,7 @@ pub fn run_with_sqrtps_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21878,6 +21994,7 @@ pub fn run_with_sqrtpd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22037,6 +22154,7 @@ fn run_with_subpd_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22246,6 +22364,7 @@ pub fn run_with_mulpd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22403,6 +22522,7 @@ fn run_with_addpd_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22590,6 +22710,7 @@ fn run_with_mulpd_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22799,6 +22920,7 @@ pub fn run_with_addsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22953,6 +23075,7 @@ pub fn run_with_divpd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23140,6 +23263,7 @@ fn run_with_divpd_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23294,6 +23418,7 @@ pub fn run_with_addss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23482,6 +23607,7 @@ fn run_with_addss_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23669,6 +23795,7 @@ fn run_with_addsd_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23859,6 +23986,7 @@ fn run_with_addps_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24013,6 +24141,7 @@ pub fn run_with_divsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24203,6 +24332,7 @@ fn run_with_divps_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24357,6 +24487,7 @@ pub fn run_with_divss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24511,6 +24642,7 @@ pub fn run_with_mulsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24665,6 +24797,7 @@ pub fn run_with_mulss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24855,6 +24988,7 @@ fn run_with_mulps_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25009,6 +25143,7 @@ pub fn run_with_subsd_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25163,6 +25298,7 @@ pub fn run_with_subss_register_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25317,6 +25453,7 @@ fn run_with_scalar_float_memory_rax_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25715,6 +25852,7 @@ fn run_with_subps_profile(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25868,6 +26006,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             control_policy: None,
             cpu_owned_cr3: None,
             pio_u8: None,
+            popf_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26320,6 +26459,7 @@ fn step_configured(
         control_policy,
         cpu_owned_cr3,
         pio_u8,
+        popf_cpl0,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -48582,6 +48722,37 @@ fn step_configured(
                 return report_memory_error(error);
             }
             *state = staged;
+        }
+        Operation::PopFlags
+            if popf_cpl0
+                && control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && instruction.operand_size == OperandSize::Qword
+                && !instruction.prefixes.operand_override
+                && matches!(instruction.prefixes.rex, None | Some(0x48)) =>
+        {
+            // S2-50: POPFQ at CPL0 (Intel SDM Vol. 2, POPF/POPFD/POPFQ). IF is
+            // writable because CPL <= IOPL, and IOPL because CPL = 0. RF and VM are
+            // not changed; the layout of the loaded bits is `POPFQ_CPL0_FLAGS`.
+            if state.rflags & POPFQ_CPL0_TF != 0
+                || state.sti_shadow != Some(crate::StiShadow::Clear)
+            {
+                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
+            }
+            let old_rsp = state.gpr[Register::Rsp as usize];
+            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+                Ok(value) => value,
+                Err(error) => return report_memory_error(error),
+            };
+            if value & POPFQ_CPL0_TF != 0 {
+                return Ok(StepOutcome::Unsupported { opcode: 0x9d });
+            }
+            state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
+            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
         }
         Operation::PopFlags => {
             // This diagnostic slice follows the native user-mode fixture

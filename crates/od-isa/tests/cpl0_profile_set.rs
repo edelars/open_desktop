@@ -3586,3 +3586,262 @@ fn endbr64_outside_the_set_stays_unsupported() {
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
 }
+
+// ---- S2-50: POPFQ with the CPL0 IOPL/IF rule ----
+
+const RF: u64 = 1 << 16;
+const TF: u64 = 1 << 8;
+/// CF PF AF ZF SF DF OF, IF, IOPL, NT, AC and ID: what POPFQ loads at CPL0.
+const POPFQ_CPL0_MASK: u64 = 0x24_7ed5;
+
+fn popf_set() -> Cpl0ProfileSet<'static> {
+    base().with_popf_cpl0()
+}
+
+/// `code` at `RIP`, the popped qword `value` at `STACK`.
+fn popf_state(code: &[u8], value: u64, rflags: u64) -> (LongModeState, LretqMemory) {
+    let mut state = board_state();
+    state.rflags = rflags;
+    state.gpr[4] = STACK;
+    let mut memory = LretqMemory::new(code);
+    memory.put(STACK, value);
+    (state, memory)
+}
+
+fn run_popf(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn popfq_loads_the_cpl0_flags_and_keeps_rf_vm_and_the_reserved_bits() {
+    for prefix in [&[][..], &[0x48]] {
+        let mut code = prefix.to_vec();
+        code.extend_from_slice(&[0x9d, 0x90]);
+        // Everything but TF set in the stack qword (RF, VM, VIF, VIP and the reserved bits
+        // included); the current RFLAGS carry RF, VIF and a status flag.
+        let value = u64::MAX & !TF;
+        let old = 2 | RF | 0x1 | (1 << 19);
+        let (mut state, mut memory) = popf_state(&code, value, old);
+        let before = state.clone();
+        let result = run_popf(&mut state, &mut memory, &popf_set(), 2);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 2, "{prefix:02x?}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(state.rflags, (old & !POPFQ_CPL0_MASK) | POPFQ_CPL0_MASK);
+        // IF, IOPL = 3, AC and ID came from the stack; RF and VIF kept, VM and VIP stayed clear.
+        assert_eq!(state.rflags & (1 << 17), 0, "VM");
+        assert_ne!(state.rflags & RF, 0, "RF");
+        assert_eq!(state.rflags & (1 << 20), 0, "VIP is not loaded");
+        assert_eq!(state.rflags & (1 << 19), 1 << 19, "VIF is not touched");
+        assert_eq!(state.rflags & (3 << 12), 3 << 12);
+        assert_eq!(state.gpr[4], STACK + 8);
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(memory.reads.len(), 1);
+        assert_eq!((memory.reads[0].0, memory.reads[0].1), (STACK, 8));
+        let mut expected = before;
+        expected.rflags = state.rflags;
+        expected.gpr[4] = STACK + 8;
+        expected.rip = RIP + code.len() as u64;
+        assert_eq!(state, expected);
+    }
+}
+
+#[test]
+fn popfq_clears_if_iopl_ac_id_nt_and_does_not_set_rf_or_vm() {
+    let old = 2 | IF | (3 << 12) | (1 << 14) | (1 << 18) | (1 << 21) | 0xcd5;
+    // Stack: only RF, VM, VIF, VIP and bit 1; every loaded bit clear.
+    let value = RF | (1 << 17) | (3 << 19) | 2;
+    let (mut state, mut memory) = popf_state(&[0x9d], value, old);
+    let result = run_popf(&mut state, &mut memory, &popf_set(), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags, 2);
+    assert_eq!(state.gpr[4], STACK + 8);
+    assert_eq!(state.rip, RIP + 1);
+}
+
+#[test]
+fn popfq_keeps_rflags_bit1_when_the_value_clears_it() {
+    let (mut state, mut memory) = popf_state(&[0x9d], 0, 2 | IF);
+    run_popf(&mut state, &mut memory, &popf_set(), 1);
+    assert_eq!(state.rflags, 2);
+}
+
+#[test]
+fn popfq_status_flags_become_defined() {
+    let (mut state, mut memory) = popf_state(&[0x9d], 0x8d5, 2);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        2,
+        &popf_set(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.rflags_defined, od_isa::POPFQ_INTEGER_FLAGS | 2);
+    assert_eq!(state.rflags, 2 | 0x8d5);
+}
+
+#[test]
+fn popfq_tf_word_form_prefixes_and_shadow_stay_unsupported_without_mutation() {
+    let unsupported = RunExit::Unsupported { opcode: 0x9d };
+    // (code, stack value, rflags, shadow)
+    let cases: [(&[u8], u64, u64, StiShadow); 7] = [
+        (&[0x9d], TF, 2 | IF, StiShadow::Clear),
+        (&[0x48, 0x9d], 2 | TF, 2, StiShadow::Clear),
+        (&[0x9d], 2, 2 | IF | TF, StiShadow::Clear),
+        (&[0x66, 0x9d], 2, 2 | IF, StiShadow::Clear),
+        (&[0x66, 0x48, 0x9d], 2, 2 | IF, StiShadow::Clear),
+        (&[0x41, 0x9d], 2, 2 | IF, StiShadow::Clear),
+        // A MOV SS shadow (IF = 0) would end with the pop; the set does not model that.
+        (&[0x9d], IF | 2, 2, StiShadow::Blocking),
+    ];
+    for (code, value, rflags, shadow) in cases {
+        let (mut state, mut memory) = popf_state(code, value, rflags);
+        state.sti_shadow = Some(shadow);
+        let before = state.clone();
+        let result = run_popf(&mut state, &mut memory, &popf_set(), 1);
+        assert_eq!(exit(&result), &unsupported, "{code:02x?} {value:#x}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn popfq_stack_faults_leave_the_state_unchanged() {
+    // #PF on the stack page.
+    let (mut state, mut memory) = popf_state(&[0x9d], u64::MAX & !TF, 2 | IF);
+    memory.fault_pages.push(STACK & !0xfff);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_popf(&mut state, &mut memory, &popf_set(), 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(STACK),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.writes, 0);
+
+    // #PF on the second page of a straddling qword.
+    let (mut state, mut memory) = popf_state(&[0x48, 0x9d], 0, 2 | IF);
+    state.gpr[4] = RAM_BASE + 0x1ffc;
+    memory.fault_pages.push(RAM_BASE + 0x2000);
+    let before = state.clone();
+    let result = run_popf(&mut state, &mut memory, &popf_set(), 1);
+    assert!(matches!(
+        exit(&result),
+        RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+    ));
+    assert_eq!(state, before);
+
+    // Non-canonical RSP: #SS(0), no read.
+    let (mut state, mut memory) = popf_state(&[0x9d], 0, 2 | IF);
+    state.gpr[4] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let result = run_popf(&mut state, &mut memory, &popf_set(), 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn popfq_stays_unsupported_in_a_set_without_the_member() {
+    for set in [base(), base().with_cpuid(&CpuidProfile::DiagnosticV1)] {
+        let (mut state, mut memory) = popf_state(&[0x9d], 2, 2 | IF | (3 << 12));
+        let before = state.clone();
+        let result = run_popf(&mut state, &mut memory, &set, 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x9d });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn popfq_member_does_not_open_the_legacy_entries() {
+    // The plain entry at CPL0 stays closed (it is the CPL3 diagnostic slice).
+    let (mut state, mut memory) = popf_state(&[0x9d], 2, 2);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x9d });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+
+    // At CPL3 the old rule holds: IF and IOPL are not loaded from the stack.
+    let (mut state, mut memory) = popf_state(&[0x9d], IF | (3 << 12) | 0x1 | 2, 2);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1, "{result:?}");
+    assert_eq!(state.rflags, 2 | 0x1);
+    assert_eq!(state.gpr[4], STACK + 8);
+
+    // The set entry itself still rejects CPL3.
+    let (mut state, mut memory) = popf_state(&[0x9d], 2, 2);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &popf_set(),
+        None,
+        || false,
+    );
+    assert_eq!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege));
+}
+
+#[test]
+fn popfq_restores_if_from_a_saved_flags_value() {
+    // `arch_local_irq_restore`: the saved RFLAGS (IF set) comes back through POPFQ.
+    let (mut state, mut memory) = popf_state(&[0x9d, 0x90], 0x246, 2);
+    let result = run_popf(&mut state, &mut memory, &popf_set(), 2);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rflags, 0x246);
+    assert_eq!(state.rip, RIP + 2);
+}

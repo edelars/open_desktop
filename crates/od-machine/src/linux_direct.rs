@@ -654,6 +654,8 @@ pub struct LinuxCpl0SetMembers {
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus (COM1, PM timer, PIT).
     pub pio_u8: bool,
+    /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
+    pub popf_cpl0: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -666,15 +668,16 @@ impl LinuxCpl0SetMembers {
             msr: false,
             halt: false,
             pio_u8: false,
+            popf_cpl0: false,
         }
     }
 
-    /// The set of the Linux board run (`--set-cpl0`, S4-38L4): CLI, the CPU-owned CR3 and
-    /// CPUID (DiagnosticV1 with the divergence boundary). The first stop on the real kernel is
-    /// a `CPUID` (leaf 0x8000_0000), which the profile answers; nothing else is added.
+    /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
+    /// (DiagnosticV1 with the divergence boundary, S4-38L4) and the qword `POPFQ` (S2-50).
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
+            popf_cpl0: true,
             ..Self::minimal()
         }
     }
@@ -730,6 +733,10 @@ pub fn run_linux_direct_board_set(
     if members.pio_u8 {
         set = set.with_pio_u8();
         names.push("pio_u8".into());
+    }
+    if members.popf_cpl0 {
+        set = set.with_popf_cpl0();
+        names.push("popf_cpl0".into());
     }
     let report = boot
         .board
@@ -2471,11 +2478,12 @@ mod tests {
     }
 
     #[test]
-    fn linux_default_set_is_cli_cr3_and_cpuid() {
+    fn linux_default_set_is_cli_cr3_cpuid_and_popf() {
         assert_eq!(
             LinuxCpl0SetMembers::linux_default(),
             LinuxCpl0SetMembers {
                 cpuid: true,
+                popf_cpl0: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
         );
@@ -2483,7 +2491,7 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
         assert_eq!(
             record.set_members,
-            ["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"]
+            ["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
     }
@@ -2561,7 +2569,13 @@ mod tests {
         assert_eq!(record.virtual_ns, 3, "only the retired instructions");
         assert_eq!(
             record.set_members,
-            ["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "halt"]
+            [
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "halt",
+                "popf_cpl0"
+            ]
         );
         assert_eq!(boot.board.state().cr3, None);
         assert_eq!(boot.board.state().rip, rip);
