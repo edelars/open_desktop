@@ -1791,6 +1791,10 @@ pub enum Operation {
     /// `F3 0F 1E FA` (ENDBR64) as an architectural NOP, because the CPU does not declare
     /// CET_IBT. Execution is admitted only inside the CPL0 profile set (S2-48).
     Endbr64Nop,
+    /// `0F 1F /0` (NOP r/m16/32/64) as an architectural NOP (S4-38L4d): the ModRM/SIB/disp
+    /// bytes only contribute to the instruction length; the operand is never read, written
+    /// or translated. Execution is admitted only inside the CPL0 profile set.
+    NopModrm,
     /// Long-mode near indirect JMP through a 64-bit register or memory operand.
     IndirectJump {
         operand: Operand,
@@ -2170,6 +2174,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut prefixes = Prefixes::default();
         let mut groups = 0u8;
         let mut duplicate = false;
+        // S4-38L4d: duplicates other than a repeated 0x66 (the standard multi-byte NOP
+        // padding `66 66 2E 0F 1F 84 ...`) stay outside the slice even for `0F 1F`.
+        let mut duplicate_other_than_66 = false;
         let mut prefix_bytes = [0u8; 15];
         let mut prefix_count = 0usize;
         let first = loop {
@@ -2202,6 +2209,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             prefix_bytes[prefix_count] = byte;
             prefix_count += 1;
             duplicate |= groups & group != 0;
+            duplicate_other_than_66 |= groups & group != 0 && byte != 0x66;
             groups |= group;
             prefixes.rex = None;
         };
@@ -2229,7 +2237,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // §2.1.1 specifies useful encodings with at most one prefix per group.
         // Duplicate groups are outside this slice: do not manufacture #UD or
         // claim a universal last-prefix-wins rule.
-        if duplicate {
+        let nop_0f1f = opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x1f;
+        if duplicate && !(nop_0f1f && !duplicate_other_than_66) {
             return Err(self.unsupported(opcode));
         }
         let modeled_system_operation = match (opcode.map, opcode.byte) {
@@ -2447,6 +2456,36 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 });
             }
             return Err(self.unsupported(opcode));
+        }
+        // S4-38L4d: `0F 1F /0` is the architectural multi-byte NOP. Any ModRM form decodes
+        // (the operand is only skipped for the length); LOCK/REP prefixes and ModRM.reg != 0
+        // stay unsupported. Repeated 0x66 prefixes are admitted (see above).
+        if nop_0f1f {
+            // More than one REX byte is outside the slice (the SDM allows only one).
+            let rex_bytes = prefix_bytes[..prefix_count]
+                .iter()
+                .filter(|byte| (0x40..=0x4f).contains(*byte))
+                .count();
+            if prefixes.group1.is_some() || rex_bytes > 1 {
+                return Err(self.unsupported(opcode));
+            }
+            let modrm = self.byte()?;
+            if (modrm >> 3) & 7 != 0 {
+                return Err(self.unsupported(opcode));
+            }
+            self.rm_operand(modrm, prefixes, prefixes.operand_size())?;
+            return Ok(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: prefixes.operand_size(),
+                address_size: if prefixes.address_override {
+                    OperandSize::Dword
+                } else {
+                    OperandSize::Qword
+                },
+                operation: Operation::NopModrm,
+            });
         }
         // S2-48: only the exact `F3 0F 1E FA` form (no other prefix, no REX) decodes as
         // ENDBR64; every other `0F 1E` form stays unsupported.
@@ -23595,6 +23634,52 @@ mod tests {
             // Register operand (mod = 11): XGETBV, not an LGDT form.
             &[0x0f, 0x01, 0xd0][..],
             &[0xf0, 0x0f, 0x01, 0xd0][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nop_0f1f_length_covers_modrm_sib_disp_and_prefixes() {
+        // S4-38L4d: the length of every `0F 1F /0` form comes from the shared ModRM decoder.
+        for (bytes, length) in [
+            (&[0x0fu8, 0x1f, 0x00][..], 3u8),
+            (&[0x0f, 0x1f, 0x40, 0x00], 4),
+            (&[0x0f, 0x1f, 0x44, 0x00, 0x00], 5),
+            (&[0x0f, 0x1f, 0x80, 0, 0, 0, 0], 7),
+            (&[0x0f, 0x1f, 0x84, 0x00, 0, 0, 0, 0], 8),
+            (&[0x0f, 0x1f, 0x05, 0, 0, 0, 0], 7),
+            (&[0x0f, 0x1f, 0x04, 0x25, 0, 0, 0, 0], 8),
+            (&[0x0f, 0x1f, 0xc0], 3),
+            (&[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00], 6),
+            (&[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0], 10),
+            (&[0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0], 11),
+            (&[0x48, 0x0f, 0x1f, 0x00], 4),
+            (&[0x67, 0x0f, 0x1f, 0x00], 4),
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(decoded.operation, Operation::NopModrm, "{bytes:02x?}");
+        }
+        // The decoder stops at the instruction: trailing bytes are not consumed.
+        let decoded = Memory::new(&[0x0f, 0x1f, 0x00, 0x48, 0x89, 0xc0])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 3);
+        for bytes in [
+            &[0x0fu8, 0x1f, 0x08][..],
+            &[0x0f, 0x1f, 0xc8],
+            &[0xf0, 0x0f, 0x1f, 0x00],
+            &[0xf3, 0x0f, 0x1f, 0x00],
+            &[0x66, 0x66, 0xf3, 0x0f, 0x1f, 0x00],
+            &[0x2e, 0x2e, 0x0f, 0x1f, 0x00],
+            &[0x40, 0x41, 0x0f, 0x1f, 0x00],
         ] {
             assert!(
                 matches!(

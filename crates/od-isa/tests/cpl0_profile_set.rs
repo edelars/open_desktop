@@ -3739,6 +3739,146 @@ fn endbr64_outside_the_set_stays_unsupported() {
     assert_eq!(state, before);
 }
 
+// ---- S4-38L4d: multi-byte NOP `0F 1F /0` ----
+
+fn run_nop_0f1f(code: &[u8]) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    // Pointers that cannot be dereferenced (unmapped / non-canonical) and an unusual flag
+    // pattern: the NOP must not touch the operand, the registers or the flags.
+    let mut state = endbr_state();
+    state.gpr[0] = 0xffff_ffff_dead_0000;
+    state.gpr[1] = 0x0000_8000_0000_0000;
+    state.gpr[2] = 0x1234_5678;
+    let mut before = state.clone();
+    before.rip += code.len() as u64;
+    let mut memory = Memory::code(code);
+    let defined = 0x1 | 0x40;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        defined,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.rflags_defined, defined, "{code:02x?}");
+    (state, before, result)
+}
+
+#[test]
+fn nop_0f1f_forms_are_architectural_nops_of_their_decoded_length() {
+    for code in [
+        &[0x0fu8, 0x1f, 0x00][..],                               // NOP DWORD [RAX]
+        &[0x0f, 0x1f, 0x40, 0x00],                               // disp8
+        &[0x0f, 0x1f, 0x44, 0x00, 0x00],                         // SIB + disp8
+        &[0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00],             // disp32
+        &[0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],       // SIB + disp32
+        &[0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00], // 66 prefix
+        &[
+            0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ], // kernel pad
+        &[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00], // 66 CS
+        &[0x48, 0x0f, 0x1f, 0x00],                               // REX.W
+        &[0x4d, 0x0f, 0x1f, 0x04, 0x24],                         // REX.WRB, SIB
+        &[0x67, 0x0f, 0x1f, 0x00],                               // 67 address override
+        &[0x3e, 0x0f, 0x1f, 0x00],                               // DS
+        &[0x0f, 0x1f, 0x05, 0x00, 0x00, 0x00, 0x00],             // RIP-relative
+        &[0x0f, 0x1f, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00],       // SIB no base, disp32
+        &[0x0f, 0x1f, 0xc0],                                     // register form
+        &[0x0f, 0x1f, 0xc1],
+    ] {
+        let (state, before, result) = run_nop_0f1f(code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn nop_0f1f_then_next_instruction_continues_at_the_decoded_length() {
+    // The kernel padding followed by `mov rax, rax`-like next bytes: two retirements.
+    let mut code = vec![0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0];
+    code.extend([0x48, 0x89, 0xc0]); // mov rax, rax
+    let mut state = endbr_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &base(), 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 14);
+}
+
+#[test]
+fn nop_0f1f_lookalikes_stay_unsupported_in_the_set() {
+    for code in [
+        &[0x0fu8, 0x1f, 0x08][..],       // /1
+        &[0x0f, 0x1f, 0x38],             // /7
+        &[0x0f, 0x1f, 0xc8],             // /1 register form
+        &[0xf0, 0x0f, 0x1f, 0x00],       // LOCK
+        &[0xf3, 0x0f, 0x1f, 0x00],       // REP
+        &[0xf2, 0x0f, 0x1f, 0x00],       // REPNE
+        &[0x66, 0xf0, 0x0f, 0x1f, 0x00], // LOCK after 66
+        &[0x2e, 0x2e, 0x0f, 0x1f, 0x00], // duplicate segment
+        &[0x67, 0x67, 0x0f, 0x1f, 0x00], // duplicate address override
+        &[0x40, 0x41, 0x0f, 0x1f, 0x00], // duplicate REX
+    ] {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x1f },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn nop_0f1f_outside_the_set_stays_unsupported() {
+    let mut state = endbr_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x1f, 0x00]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x1f });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn nop_0f1f_truncated_operand_bytes_report_the_fetch_error() {
+    // `0F 1F 84` needs a SIB and disp32; the page ends after the ModRM byte.
+    let mut state = endbr_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x1f, 0x84]);
+    let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::MemoryError(MemoryError::Unmapped {
+            address: RIP + 3,
+            access: AccessKind::Fetch,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
 // ---- S2-50: POPFQ with the CPL0 IOPL/IF rule ----
 
 const RF: u64 = 1 << 16;
