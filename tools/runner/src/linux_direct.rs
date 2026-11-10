@@ -1509,10 +1509,23 @@ mod tests {
             set_cpl0: true,
         };
         let (value, exit) = evaluate(&options);
-        assert_eq!(exit, 0, "{value:#}");
         println!("{value:#}");
-        let stop = &value["stop"];
-        assert_eq!(stop["path"], "cpl0_set");
+        // S2-50 (POPFQ on CPL0 admitted): the set returns a partial REP (`RepIterationBudgetExhausted`)
+        // at 0x100_02aa, which the board does not resume yet. The run is refused (exit 4,
+        // `run_failed`) after 1385 retired instructions and writes no stop record. This assertion
+        // pins that state until the REP slice lands; it is not the kernel's boot result.
+        assert_eq!(value["status"], "refused", "{value:#}");
+        assert_eq!(exit, 4, "{value:#}");
+        assert_eq!(value["error"]["code"], "run_failed", "{value:#}");
+        assert_eq!(value["retired"], 1385, "{value:#}");
+        assert!(value.get("stop").is_none(), "{value:#}");
+        assert!(
+            value["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("the CPL0 set returned an exit the board never asks for"),
+            "{value:#}"
+        );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions
         // retire (22 in all). S2-47a: `LGDT [RAX]` (`0f 01 10`) at 0x100_0257 retires and four
@@ -1528,27 +1541,8 @@ mod tests {
         // (`0f 01 1d bd 7b 01 00`) at 0x206_647c. S2-49: `LIDT` retires; the next stop was
         // `CPUID` (`0f a2`) with EAX = 0x8000_0000 at 0x206_7b0d after 138 retired instructions.
         // S4-38L4: the set has the `cpuid` member (DiagnosticV1), which answers leaf 0x8000_0000.
-        // S4-38L4a: the one-byte read of `CMP byte [RDI+0x1EF], 0` (`80 bf ef 01 00 00 00`) at
-        // 0x206_69d7 is admitted. The run with budget 50000 stops at `POPFQ` (`9d`) on 0x100_0292
-        // after 1379 retired instructions, `Unsupported { opcode: 157 }`: the next blocker
-        // (S2-50, POPFQ on CPL0). It is not the CPUID boundary: no `cpuid_divergence` stop yet.
-        assert_eq!(
-            stop["set_members"],
-            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1"])
-        );
-        assert_eq!(value["retired"], 1379, "{value:#}");
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["rip"], "0x1000292");
-        assert!(
-            stop["rip_bytes"]
-                .as_str()
-                .unwrap()
-                .starts_with("9d 48 8d 35"),
-            "{value:#}"
-        );
-        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 157 })");
-        assert!(stop["cpuid_divergence_leaf"].is_null(), "{value:#}");
-        assert!(stop["memory_error"].is_null() && stop["page_fault"].is_null());
-        assert_eq!(stop["cr3_changes"], 0);
+        // S4-38L4a: the one-byte read of `CMP byte [RDI+0x1EF], 0` is admitted; S2-50: POPFQ on
+        // CPL0 is admitted and the members list gains `popf_cpl0`. The stop-record checks of the
+        // S2-49..S4-38L4a runs do not apply while the run is refused (see above).
     }
 }

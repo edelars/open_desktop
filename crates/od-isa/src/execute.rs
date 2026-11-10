@@ -1928,7 +1928,8 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// Admit the exact qword `POPFQ` (`9D` and `48 9D`) at CPL0 with the SDM
     /// CPL0 rule: CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC and ID are
     /// loaded from the stack qword; TF, RF, VM, VIF and VIP are not loaded
-    /// (RF and VM are never changed by POPF), and RFLAGS bit 1 and the
+    /// (VM is never changed by POPF; RF is left as modelled, a documented simplification:
+    /// SDM clears RF after the instruction, see CPU_CONTRACT S2-50), and RFLAGS bit 1 and the
     /// reserved bits keep their current values. TF set in the current RFLAGS
     /// or in the popped value keeps the CPL3 policy and stays `Unsupported`
     /// (`opcode` `0x9d`), as does the word form (`66 9D`) and any pop while an
