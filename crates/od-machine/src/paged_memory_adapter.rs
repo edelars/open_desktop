@@ -6,8 +6,10 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    InvlpgExit, InvlpgLong64V1, InvlpgResult, RunExit, RunInputError, RunResult,
-    step_invlpg as cpu_step_invlpg, step_paged_mov as cpu_step_paged_mov,
+    Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, InvlpgExit, InvlpgLong64V1,
+    InvlpgResult, RunConfig, RunExit, RunInputError, RunResult, TranslationContextChange,
+    run_with_cpl0_profile_set, step_invlpg as cpu_step_invlpg,
+    step_paged_mov as cpu_step_paged_mov,
 };
 use od_isa::execute::{
     PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordFetchLong64V1,
@@ -367,6 +369,206 @@ pub fn step_paged_mov_2m_ram(
         page_fault: memory.page_fault,
         memory_error: memory.memory_error,
     })
+}
+
+/// Final exit of [`run_cpl0_set_paged_2m_ram`].
+#[derive(Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum PagedCpl0SetExit {
+    /// The set's own exit. `InstructionBudgetExhausted` and `StopRequested` are
+    /// raised by the loop between instructions, before any fetch.
+    Run(RunExit),
+    /// Typed admission failure of the set (nothing was fetched by that step).
+    Rejected(Cpl0ProfileSetInputError),
+    /// The walker snapshot could not be built from the CPU control registers.
+    Configuration(crate::ProbeConfigError),
+    /// The retired MOV CR3 does not match the walker that executed it.
+    Cr3EffectMismatch {
+        active_cr3: u64,
+        effect_old_cr3: u64,
+        cpu_cr3: Option<u64>,
+        effect_new_cr3: u64,
+    },
+    /// The walker snapshot for the new CR3 was rejected.
+    Cr3SnapshotRejected {
+        effect: TranslationContextChange,
+        error: crate::ProbeConfigError,
+    },
+    /// The set reported a context change the board does not rebuild for.
+    UnexpectedContextChange { effect: TranslationContextChange },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct PagedCpl0SetReport {
+    pub(crate) exit: PagedCpl0SetExit,
+    pub(crate) instructions_executed: u64,
+    pub(crate) rflags_defined: u64,
+    pub(crate) page_fault: Option<PageFaultRecord>,
+    pub(crate) memory_error: Option<TrackedAccessError>,
+    /// Every `MOV CR3` the walker was rebuilt for, in order.
+    pub(crate) translation_context_changes: Vec<TranslationContextChange>,
+    /// CR3 of the walker that would execute the next instruction.
+    pub(crate) cr3: u64,
+}
+
+/// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
+/// one instruction per set call (S2-45f).
+///
+/// The adapter is built per instruction because it pins the instruction RIP
+/// (saved RIP of a `#PF`, the single code page of the large-RAM fetch window).
+/// The walker snapshot is rebuilt from the CPU control registers on every
+/// `TranslationContextChange(Cr3Write)`: the set stops right after the retired
+/// `MOV CR3, RAX` and the next fetch already walks the new CR3. `cr3` is the
+/// initial walker root; with a CPU-owned CR3 (`with_cpu_owned_cr3`) it must
+/// equal `state.cr3`. The memory profile is the one of
+/// [`step_paged_mov_2m_ram`]: qword operands inside one 4 KiB page and no MMIO;
+/// `IN`/`OUT` are not reachable (`with_pio_u8` is not served here).
+///
+/// Stop is polled and the budget is checked before each instruction, like the
+/// paged probe quantum.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn run_cpl0_set_paged_2m_ram(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    mut rdtsc: Option<&mut dyn FnMut() -> u64>,
+    mut stop: impl FnMut() -> bool,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedCpl0SetReport {
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let mut paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
+        Ok(paging) => paging,
+        Err(error) => {
+            return PagedCpl0SetReport {
+                exit: PagedCpl0SetExit::Configuration(error),
+                instructions_executed: 0,
+                rflags_defined,
+                page_fault: None,
+                memory_error: None,
+                translation_context_changes: Vec::new(),
+                cr3,
+            };
+        }
+    };
+    let mut instructions_executed = 0u64;
+    let mut current_rflags_defined = rflags_defined;
+    let mut changes = Vec::new();
+    let (exit, page_fault, memory_error) = loop {
+        if stop() {
+            break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
+        }
+        if instructions_executed >= instruction_budget {
+            break (
+                PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                None,
+                None,
+            );
+        }
+        let instruction_rip = state.rip;
+        let mut memory = PagedMovMemoryAdapter {
+            bus: &mut *bus,
+            paging,
+            instruction_rip,
+            committed_write: &mut committed_write,
+            page_fault: None,
+            memory_error: None,
+            access_error: None,
+            committed_ad_updates: None,
+            committed_writes: None,
+            capture_effects: false,
+            dword_read_profile: false,
+            word_read_profile: false,
+            ram_only: true,
+            reject_crossing_qword: false,
+            read_only_qword: false,
+            large_ram_profile: true,
+            dword_write_profile: false,
+        };
+        let result = run_with_cpl0_profile_set(
+            state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context,
+            },
+            current_rflags_defined,
+            set,
+            rdtsc
+                .as_mut()
+                .map(|source| &mut **source as &mut dyn FnMut() -> u64),
+            || false,
+        );
+        let (page_fault, memory_error) = (memory.page_fault, memory.memory_error);
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => break (PagedCpl0SetExit::Rejected(error), page_fault, memory_error),
+        };
+        instructions_executed += result.instructions_executed;
+        current_rflags_defined = result.rflags_defined;
+        match result.exit {
+            Cpl0ProfileSetExit::TranslationContextChange(
+                effect @ TranslationContextChange::Cr3Write { old_cr3, new_cr3 },
+            ) => {
+                if old_cr3 != paging.cr3() || state.cr3 != Some(new_cr3) {
+                    break (
+                        PagedCpl0SetExit::Cr3EffectMismatch {
+                            active_cr3: paging.cr3(),
+                            effect_old_cr3: old_cr3,
+                            cpu_cr3: state.cr3,
+                            effect_new_cr3: new_cr3,
+                        },
+                        page_fault,
+                        memory_error,
+                    );
+                }
+                match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
+                    Ok(candidate) => paging = candidate,
+                    Err(error) => {
+                        break (
+                            PagedCpl0SetExit::Cr3SnapshotRejected { effect, error },
+                            page_fault,
+                            memory_error,
+                        );
+                    }
+                }
+                changes.push(effect);
+            }
+            Cpl0ProfileSetExit::TranslationContextChange(effect) => {
+                break (
+                    PagedCpl0SetExit::UnexpectedContextChange { effect },
+                    page_fault,
+                    memory_error,
+                );
+            }
+            Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                if result.instructions_executed > 0 => {}
+            Cpl0ProfileSetExit::Run(exit) => {
+                break (PagedCpl0SetExit::Run(exit), page_fault, memory_error);
+            }
+            // The set has no port here, so its port exit cannot occur.
+            Cpl0ProfileSetExit::PortIo(never) => match never {},
+        }
+    };
+    PagedCpl0SetReport {
+        exit,
+        instructions_executed,
+        rflags_defined: current_rflags_defined,
+        page_fault,
+        memory_error,
+        translation_context_changes: changes,
+        cr3: paging.cr3(),
+    }
 }
 
 /// Execute the exact S4-11e AX word-read profile through the uncached RAM walker.

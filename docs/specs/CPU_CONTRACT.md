@@ -20174,3 +20174,76 @@ succeeded. See the [machine contract](MACHINE_CONTRACT.md#paged-mov-dsesfsgs-ax-
   на Ring3 первый байт `0x0F` даёт `Unsupported { opcode: 0x0f }`, на Ring0 результат —
   `Rejected(WrongPrivilege)`; до `0F 31` дело не доходит.
 - `CR4.TSD` и CPL>0 здесь не моделируются: профиль CPL0-only. `RDTSCP` и `LFENCE` не добавлены.
+
+## Набор CPL0 (S2-45)
+
+`od_isa::execute::Cpl0ProfileSet` и входы `run_with_cpl0_profile_set` /
+`run_with_cpl0_profile_set_and_pio` исполняют в одном вызове интерпретатора несколько
+принятых профилей Long64/CPL0. Назначение: плата (Linux-профиль, S4-38L3) вызывает один
+интерпретатор вместо одного профиля на вызов. Поля набора приватны; старые входы (`run`,
+`run_with_cli_profile`, `run_with_cr0_profile`, ...), paged-пробы и их `PagedCpl0ProbeV1`
+не меняются, allowlist пробы набором не расширяется (S7-03).
+
+**Политика CR0/CR4.** `ControlRegisterPolicy::Cpl0BaseLong64V1` держит CR0 и CR4 смоделированными
+в `LongModeState` без профиля на регистр. Допустимые значения — предикаты
+`Cr0Profile::FpInitLong64V1.accepts` и `Cr4Profile::FpInitLong64V1.accepts` (CR0 = `0x8001_0033`
+с произвольными EM/TS, CR4 = `0x20` с OSFXSR/OSXMMEXCPT); второго списка значений нет, новых
+вариантов `Cr0Profile`/`Cr4Profile` не добавлено. Формы `MOV r64,CRn` / `MOV CRn,r64` для CR0 и
+CR4 (`0F 20 C0`, `0F 22 C0`, `0F 20 E0`, `0F 22 E0`) исполняются только внутри политики; запись
+значения вне политики — `Unsupported { opcode: 0x22 }` без мутации, `LOCK`-форма — `#UD`.
+Значения CR4 Linux (PGE, AM, MCE) в набор не входят.
+
+**Допуск до первого fetch.** Типизированные `Cpl0ProfileSetInputError`, состояние не меняется:
+`WrongMode`, `WrongPrivilege` (только Ring0), `InvalidRflagsDefined`, `Cr0Missing` /
+`Cr0OutsidePolicy`, `Cr4Missing` / `Cr4OutsidePolicy`, `Cr3NotAdmitted` (CR3 смоделирован без
+`with_cpu_owned_cr3`), `Cr3Missing` / `InvalidInitialCr3` (с владением CR3: нет значения или
+больше 36 бит), `FpStateNotAdmitted` (x87/SSE смоделированы), `ActivityMissing`, `NotRunning`,
+`StiShadowMissing`, `StiShadowActive`, `CliPreconditionFailed` (с CLI: CR0.PE = 0, CR4.PVI = 1
+или RFLAGS.VM = 1).
+
+**Выходы** (`Cpl0ProfileSetExit<E>`): `Run(RunExit)` — обычные выходы интерпретатора, в том числе
+`Unsupported { opcode }` и `Fault`; `TranslationContextChange(Cr3Write { old_cr3, new_cr3 })` —
+`MOV CR3, RAX` (`0F 22 D8`) удалилась, прогон остановлен на следующей границе инструкции до
+следующего fetch (приоритет над STOP, запросом остановки и бюджетом на той же границе;
+`instructions_executed` считает MOV CR3); `PortIo(E)` — ошибка порта в `IN AL,DX`/`OUT DX,AL`:
+инструкция не удалилась, RIP на ней. Вход без порта использует непредставимый тип ошибки `Infallible`.
+
+**Построители.** `with_cli(&CliProfile)` — голый `FA` (PE=1, PVI=0, VM=0); `with_cpuid(&CpuidProfile)`;
+`with_rdtsc()` — голый `0F 31` с явным источником (без источника — `Unsupported { 0x31 }`, CR4.TSD
+берётся из допущенного CR4, т.е. 0); `with_msr(&MsrProfile)` — ровно один профиль MSR;
+`with_halt(&HaltProfile)` — голый `F4` без STI (HLT не может возобновиться сам);
+`with_cpu_owned_cr3(MovCr3Long64V1)` — `state.cr3` смоделирован (<= 36 бит), `0F 22 D8` через общий
+`commit_mov_cr3`, `LOCK`-формы и прочие недопустимые формы — `#UD`, значение выше 36 бит — `#GP(0)`
+без изменения CR3; `with_pio_u8()` — `EC`/`EE`, исполняются только входом
+`run_with_cpl0_profile_set_and_pio`, иначе остаются `Unsupported`, порт не вызывается. Без
+построителя форма остаётся `Unsupported` (или своим прежним `#UD`).
+
+**Интеграция с платой (S2-45f).** Адаптер плате — crate-internal
+`od_machine::paged_memory_adapter::run_cpl0_set_paged_2m_ram` (ничего не экспортируется из
+`lib.rs`): одна инструкция на вызов набора (бюджет 1) через `PagedMovMemoryAdapter` с
+`large_ram_profile` (RAM only, 4 KiB/2 MiB листья, fetch в пределах 4 KiB страницы RIP, операнды
+qword). Адаптер хранит RIP инструкции, поэтому он пересобирается на каждую инструкцию; снимок
+`Long64ProbeConfig` пересобирается из `state.cr3` на каждом `TranslationContextChange`: старое
+значение обязано совпасть с активным CR3, новое — с `state.cr3`, иначе
+`Cr3EffectMismatch`; отказ снимка — `Cr3SnapshotRejected`; любое другое изменение контекста —
+`UnexpectedContextChange`. Следующий fetch идёт уже по новому CR3. Путь `run_boot` /
+`run_linux_boot` платы набор не использует: реальное ядро по-прежнему останавливается
+`Unsupported { 0xFC }` на `0x100_0200` (переключение — S4-38L3). Состояние, которое отдаёт
+загрузчик Linux, содержит загруженные кэши DS/ES, поэтому нулевой `MOV DS, AX` не является
+допущенной legacy-загрузкой: `fc fa 31 c0 8e d8 ...` на нём останавливается на `8E` после 3
+удалившихся инструкций; с legacy-состоянием без кэшей (инвариант S2-45a) — после 5.
+
+**Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
+`MOV SS`/`MOV FS`/`MOV GS` с нулевым селектором (`8E D0`, `8E E0/E8`); `LGDT [RAX]`
+(`0F 01 10`) и общие формы LGDT/LIDT; POPFQ CPL0 (`9D`); `LEAVE` (`C9`); `F3 0F BC`
+(TZCNT/BSF по BMI1); WRMSR GS_BASE и набор MSR (в v1 один профиль); INVLPG; переключение
+CR0.WP; FP/SIMD при EM/TS/OSFXSR.
+
+**Тесты.** od-isa: `crates/od-isa/tests/cpl0_profile_set.rs` (51: допуск, политика, CLI, CPUID,
+RDTSC, MSR, HLT, CR3, PIO), `crates/od-isa/tests/pio_u8_profile.rs`,
+`paged_pio_u8_profile.rs`, `paged_probe_profile.rs`; дифференциальный набор
+`crates/od-testkit/tests/cpl0_set_differential.rs` (набор с CR = BASE и `run` без CR дают
+равные результаты). od-machine: `linux_direct::tests::cpl0_set_board_*` — пролог по точке входа
+платы, точная #PF-запись fetch, `LOCK MOV CR3` -> #UD, fetch после `MOV CR3` через новый CR3
+(разные байты на одном GVA), контроль той же записью CR3, бюджет сразу после `MOV CR3`, #PF
+в пустом новом дереве, расхождение CR3 с CPU.
