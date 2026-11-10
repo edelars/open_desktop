@@ -682,3 +682,51 @@ and classes × IM × OSXMMEXCPT × all 64 old sticky states (1,024 combinations)
 plus RC, finite boundaries, schema/result tampering, and interpreter-only
 backend enforcement. Direct ISA tests cover CPL0–3. No physical x86 execution is
 claimed; see the [standalone report](../../docs/reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md).
+
+## Linux direct boot loader (S4-37L6)
+
+`linux-direct` loads a Linux bzImage, an initramfs and the ACPI blob (version 2) onto the
+Linux-profile board and writes JSON evidence. It does NOT start the guest: `retired` is always 0
+(the first instruction runs in S4-38).
+
+```sh
+cargo run --offline -p od-runner -- linux-direct \
+  --vmlinuz work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic \
+  --initramfs work/stage4/initramfs/initramfs.cpio \
+  --acpi-blob tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin \
+  --nonce <token> --ram-mib 128 --out work/stage4/linux_direct/evidence.json \
+  --expected-vmlinuz-sha256 9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e \
+  --expected-acpi-manifest-hash 2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2 \
+  --expected-initramfs-sha256 <hex>
+```
+
+All flags are required (`--expected-initramfs-sha256` too, like the kernel hash); a flag value
+may not start with `--`. `--ram-mib` is at most 8192: the board still builds its firmware boot
+tables with 4 KiB leaves, which takes minutes and gigabytes on a larger RAM (they are dropped for
+the Linux profile; building them only for the firmware profile is a known debt).
+
+`--expected-acpi-manifest-hash` must be the manifest hash of the board this command assembles
+(ECAM, PM block and ACPI tables, no NVMe; `2bd690ae...` is the hash of the fixture blob). od-machine
+computes the board's own hash and refuses a different expected hash as `acpi_manifest_mismatch`
+before it looks at the blob; the blob is then validated against the board's hash.
+
+The command line is `console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1
+od.nonce=<nonce> nokaslr`; the nonce is whatever the operator passes (`[A-Za-z0-9._-]`, at most 64
+characters). Exit codes: 0 loaded, 3 invalid input (arguments, unreadable file or unwritable
+`--out`), 4 refused. A refusal from the loading pipeline (exit 4, and an unreadable input file
+after arguments were accepted) prints and writes `status: refused` to `--out` with `error.code`,
+`error.stage` and `error.detail`; an argument error and an unwritable `--out` (exit 3) are only
+printed, since there is no valid place to write them. Codes in order of checks:
+`invalid_input` (exit 3), `vmlinuz_sha256_mismatch`, `initrd_too_large` (file larger than RAM,
+by file size), `initramfs_sha256_mismatch`, `bzimage_truncated`, `bzimage_payload_out_of_file`,
+`bzimage_header_invalid`, `board_assembly_failed` (invalid board configuration, also later in
+assembly), `acpi_manifest_mismatch`, `acpi_blob_invalid`, `cmdline_invalid`, `cmdline_too_long`,
+`initrd_too_large` (placement), `placement_invalid`, `e820_invalid`, `boot_params_invalid`,
+`e820_handoff_mismatch`, `guest_memory_access`, `load_failed` (a sanity limit of the loader
+itself, for example page tables that do not fit the zone; not an operator input), and
+`entry_state_invalid`. `bzimage_header_invalid` also appears after placement: a protected-mode
+code size smaller than the 64-bit entry offset 0x200 is refused as `EntryOutsideKernel`. The evidence lists the input hashes and sizes, the placement plan and the entry registers. The
+E820 map, `acpi_rsdp_addr`, the command line (`cmdline_in_memory`), the RSDP signature
+(`acpi_rsdp_signature_in_memory`, `"RSD PTR "`) and the SHA-256 of the kernel code and initrd
+bytes (`memory_sha256`, with `*_matches_file`) are read back from guest memory, not copied from
+the inputs.

@@ -58,17 +58,19 @@
 // Used by L6 / S4-38; tests exercise the module now.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::acpi_blob::{ACPI_FACS_BYTES, ValidatedAcpiBlob};
+use crate::acpi_blob::{ACPI_FACS_BYTES, ValidatedAcpiBlob, sha256};
 use crate::firmware_board::{
-    FIRMWARE_EFER, FirmwareBoardConfig, FirmwareBoardError, LoadedFirmwareBoard, assemble_board,
+    FIRMWARE_CR0, FIRMWARE_CR4, FIRMWARE_EFER, FIRMWARE_LOW_RAM_LIMIT, FirmwareBoardConfig,
+    FirmwareBoardError, LoadedFirmwareBoard, assemble_board,
 };
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{
-    LinuxBootParamsError, LinuxBootParamsInput, build_linux_e820, serialize_linux_boot_params,
+    LinuxBootParamsError, LinuxBootParamsInput, LinuxE820Entry, build_linux_e820,
+    check_e820_against_handoff, parse_handoff_regions, serialize_linux_boot_params,
 };
 use crate::linux_placement::{
-    LINUX_LOW_RAM_LIMIT, LinuxPlacement, LinuxPlacementError, LinuxPlacementInput, LinuxRange,
-    LinuxZone, plan_linux_placement,
+    LinuxPlacement, LinuxPlacementError, LinuxPlacementInput, LinuxRange, LinuxZone,
+    plan_linux_placement,
 };
 use crate::{BusAccessError, GuestPhysicalAddress, PciEcam};
 use od_isa::execute::{Cr0Profile, Cr4Profile};
@@ -92,11 +94,13 @@ pub(crate) const LINUX_GDT: [u64; 4] = [
 pub(crate) const LINUX_GDT_BYTES_WRITTEN: usize = LINUX_GDT.len() * 8;
 pub(crate) const LINUX_GDT_LIMIT: u16 = (LINUX_GDT_BYTES_WRITTEN - 1) as u16;
 /// `CR0` at entry: PG|WP|NE|ET|MP|PE, the only value the base paged CPU profile admits
-/// (`Cr0Profile::BASE`; the board's private `CR0` of `firmware_board.rs` equals it).
-pub(crate) const LINUX_ENTRY_CR0: u64 = Cr0Profile::BASE;
-/// `CR4` at entry: PAE only (`Cr4Profile::BASE`). LA57 (bit 12) must be clear (S4-37L,
-/// "Состояние на входе").
-pub(crate) const LINUX_ENTRY_CR4: u64 = Cr4Profile::BASE;
+/// (`Cr0Profile::BASE`). One definition, `FIRMWARE_CR0` of `firmware_board.rs` (S4-37L6).
+pub(crate) const LINUX_ENTRY_CR0: u64 = FIRMWARE_CR0;
+const _: () = assert!(FIRMWARE_CR0 == Cr0Profile::BASE);
+/// `CR4` at entry: PAE only (`Cr4Profile::BASE`, one definition `FIRMWARE_CR4`). LA57 (bit 12)
+/// must be clear (S4-37L, "Состояние на входе").
+pub(crate) const LINUX_ENTRY_CR4: u64 = FIRMWARE_CR4;
+const _: () = assert!(FIRMWARE_CR4 == Cr4Profile::BASE);
 pub(crate) const LINUX_CR4_LA57: u64 = 1 << 12;
 const RFLAGS_IF: u64 = 1 << 9;
 const RFLAGS_ENTRY: u64 = 2;
@@ -161,6 +165,8 @@ pub(crate) enum LinuxLoadError {
     Header(LinuxHeaderError),
     Placement(LinuxPlacementError),
     BootParams(LinuxBootParamsError),
+    /// The E820 map disagrees with the handoff block of the assembled board (S4-37L6).
+    Handoff(LinuxBootParamsError),
     /// The command line contains a NUL byte at this index.
     CmdlineContainsNul {
         at: usize,
@@ -175,6 +181,9 @@ pub(crate) enum LinuxLoadError {
     AcpiBlobTooShort {
         blob_len: usize,
     },
+    /// The length of `acpi_blob` differs from the length `acpi` was validated from: the two
+    /// inputs of [`LinuxLoadInput`] do not describe the same bytes.
+    AcpiBlobMismatch,
     /// The identity map needs more bytes than the page table zone holds.
     PageTablesTooLarge {
         needed: u64,
@@ -431,6 +440,18 @@ fn check_entry_in_kernel(pm_code_size: u64) -> Result<(), LinuxLoadError> {
     Ok(())
 }
 
+/// The E820 map must agree with the handoff block the board builds for the same configuration:
+/// the ACPI and NVS entries equal handoff regions 11 and 12, and the ECAM, framebuffer and ROM
+/// regions of the handoff are reserved in E820 (S4-37L6). The block is the one of the real
+/// assembled board, so the check follows the board map and not a copy of it.
+pub(crate) fn check_e820_against_handoff_block(
+    entries: &[LinuxE820Entry],
+    handoff: &[u8],
+) -> Result<(), LinuxLoadError> {
+    let regions = parse_handoff_regions(handoff).map_err(LinuxLoadError::Handoff)?;
+    check_e820_against_handoff(entries, &regions).map_err(LinuxLoadError::Handoff)
+}
+
 /// Checked sub-slice `[offset, offset + len)`.
 fn slice(bytes: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
     bytes.get(offset..offset.checked_add(len)?)
@@ -480,6 +501,12 @@ pub(crate) fn load_linux_direct(
         slice(input.acpi_blob, acpi.payload_offset, acpi.payload_len).ok_or_else(blob_short)?;
     let acpi_facs = slice(input.acpi_blob, acpi.facs_offset, ACPI_FACS_BYTES as usize)
         .ok_or_else(blob_short)?;
+    // `acpi` and `acpi_blob` arrive separately: the description must come from these very
+    // bytes (`validate_acpi_blob` records the blob SHA-256), so a caller cannot pair a
+    // description with other bytes.
+    if acpi.blob_sha256 != sha256(input.acpi_blob) {
+        return Err(LinuxLoadError::AcpiBlobMismatch);
+    }
 
     let e820 = build_linux_e820(&plan, ram_size)?;
     let boot_params = serialize_linux_boot_params(&LinuxBootParamsInput::new(
@@ -489,7 +516,7 @@ pub(crate) fn load_linux_direct(
         &e820,
         acpi,
     ))?;
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
     let tables = build_linux_page_tables(plan.page_tables.start, low_end)?;
     if tables.len() as u64 > plan.page_tables.len() {
         return Err(LinuxLoadError::PageTablesTooLarge {
@@ -499,6 +526,7 @@ pub(crate) fn load_linux_direct(
     }
 
     let assembled = assemble_board(config, PciEcam::new(), None, None)?;
+    check_e820_against_handoff_block(&e820, assembled.handoff_block())?;
     let mut board = assembled.into_linux_board(plan.page_tables.start, tables.len() as u64)?;
     write(
         &mut board,
@@ -789,7 +817,7 @@ pub(crate) fn validate_linux_entry(
             check_identity(board, root, plan.page_tables, zone, address)?;
         }
     }
-    let low_end = ram_size.min(LINUX_LOW_RAM_LIMIT);
+    let low_end = ram_size.min(FIRMWARE_LOW_RAM_LIMIT);
     match walk(board, root, plan.page_tables, low_end)? {
         Walk::NotPresent { .. } => {}
         Walk::OutsideZone { level, target } => {
@@ -886,8 +914,14 @@ mod tests {
     }
 
     fn acpi() -> (ValidatedAcpiBlob, Vec<u8>) {
+        let mut blob = vec![0u8; 0x460 + 0x40];
+        for (i, byte) in blob.iter_mut().enumerate() {
+            *byte = (i % 241) as u8;
+        }
+        blob[0x60..0x68].copy_from_slice(b"RSD PTR ");
         let acpi = ValidatedAcpiBlob {
             version: 2,
+            blob_sha256: sha256(&blob),
             manifest_hash: [0; 32],
             load_base: 0xE_0000,
             payload_offset: 0x60,
@@ -897,11 +931,6 @@ mod tests {
             facs_offset: 0x460,
             facs_address: 0xE_F000,
         };
-        let mut blob = vec![0u8; 0x460 + 0x40];
-        for (i, byte) in blob.iter_mut().enumerate() {
-            *byte = (i % 241) as u8;
-        }
-        blob[0x60..0x68].copy_from_slice(b"RSD PTR ");
         (acpi, blob)
     }
 
@@ -1026,6 +1055,79 @@ mod tests {
         assert_eq!(state.activity, Some(CpuActivity::Halted));
         // A different byte gives a different COM1 byte: the smoke is not vacuous.
         assert_eq!(smoke(0xA5, 0).0, [0xA5]);
+    }
+
+    #[test]
+    fn e820_agrees_with_the_handoff_of_the_real_board_for_every_ram_size() {
+        // `load_linux_direct` runs the check against the handoff of the assembled board, so a
+        // successful load is the comparison. Sizes: the minimum, a mid size, one above the
+        // 256 MiB the handoff tables were first tested with, 4 GiB and 8 GiB (RAM above 4 GiB).
+        // The maximum (0xF_F400_0000) is not tried: the firmware boot tables of the handoff use
+        // 4 KiB leaves and take minutes and gigabytes at that size (a limit of the board
+        // assembly, not of this check).
+        for ram in [128 * MIB, 256 * MIB, 512 * MIB, 4096 * MIB, 8192 * MIB] {
+            let loaded = load_with(
+                &synthetic_bzimage(&com1_program(b'X')),
+                ram,
+                None,
+                b"console=ttyS0",
+            );
+            assert!(loaded.is_ok(), "ram {ram:#x}: {:?}", loaded.err());
+        }
+    }
+
+    #[test]
+    fn a_disagreeing_e820_is_refused_by_the_handoff_check() {
+        let loaded = load_smoke();
+        let e820 = build_linux_e820(&loaded.plan, 128 * MIB).expect("e820");
+        let assembled =
+            assemble_board(&config(128 * MIB), PciEcam::new(), None, None).expect("board");
+        let handoff = assembled.handoff_block().to_vec();
+        assert_eq!(check_e820_against_handoff_block(&e820, &handoff), Ok(()));
+
+        let handoff_error =
+            |entries: &[LinuxE820Entry], block: &[u8]| match check_e820_against_handoff_block(
+                entries, block,
+            ) {
+                Err(LinuxLoadError::Handoff(error)) => error,
+                other => panic!("expected a handoff error, got {other:?}"),
+            };
+        // No ECAM entry: the window of the handoff is not reserved in E820.
+        let no_ecam: Vec<_> = e820
+            .iter()
+            .copied()
+            .filter(|e| e.addr != 0xFC10_0000)
+            .collect();
+        assert!(matches!(
+            handoff_error(&no_ecam, &handoff),
+            LinuxBootParamsError::HandoffWindowNotReserved { kind: 3, .. }
+        ));
+        // No ROM entry, no framebuffer entry.
+        for (addr, kind) in [(0xFFC0_0000, 4), (0xF800_0000, 6)] {
+            let without: Vec<_> = e820.iter().copied().filter(|e| e.addr != addr).collect();
+            assert!(matches!(
+                handoff_error(&without, &handoff),
+                LinuxBootParamsError::HandoffWindowNotReserved { kind: k, .. } if k == kind
+            ));
+        }
+        // The ACPI entry shifted by a page.
+        let mut shifted = e820.clone();
+        shifted.iter_mut().find(|e| e.kind == 3).unwrap().size -= 0x1000;
+        assert!(matches!(
+            handoff_error(&shifted, &handoff),
+            LinuxBootParamsError::HandoffAcpiMismatch { .. }
+        ));
+        // A corrupted handoff block.
+        let mut bad_magic = handoff.clone();
+        bad_magic[0] ^= 0xFF;
+        assert_eq!(
+            handoff_error(&e820, &bad_magic),
+            LinuxBootParamsError::HandoffMalformed
+        );
+        assert_eq!(
+            handoff_error(&e820, &handoff[..0x20]),
+            LinuxBootParamsError::HandoffMalformed
+        );
     }
 
     #[test]
@@ -1188,7 +1290,7 @@ mod tests {
             build_linux_page_tables(0x13_0000, 1 << 30).unwrap().len(),
             3 * 0x1000
         );
-        let max = build_linux_page_tables(0x13_0000, LINUX_LOW_RAM_LIMIT).unwrap();
+        let max = build_linux_page_tables(0x13_0000, FIRMWARE_LOW_RAM_LIMIT).unwrap();
         assert_eq!(max.len(), 6 * 0x1000);
         assert!(max.len() as u64 <= 0x1_0000);
         // The last leaf is 0xF3E0_0000 (PD 3, index 415) and the one after it is empty.
@@ -1754,6 +1856,22 @@ mod tests {
         assert_eq!(
             load_linux_direct(&input).err(),
             Some(LinuxLoadError::AcpiBlobTooShort { blob_len: 0x100 })
+        );
+        // Bytes that are not the ones `acpi` was validated from (other length).
+        let mut longer = blob.clone();
+        longer.push(0);
+        input.acpi_blob = &longer;
+        assert_eq!(
+            load_linux_direct(&input).err(),
+            Some(LinuxLoadError::AcpiBlobMismatch)
+        );
+        // Same length, one byte changed (inside the FACS, which no other check covers).
+        let mut flipped = blob.clone();
+        flipped[0x460 + 1] ^= 0xff;
+        input.acpi_blob = &flipped;
+        assert_eq!(
+            load_linux_direct(&input).err(),
+            Some(LinuxLoadError::AcpiBlobMismatch)
         );
         input.acpi_blob = &blob;
         // Not a bzImage.

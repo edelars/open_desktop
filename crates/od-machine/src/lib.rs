@@ -14,6 +14,7 @@ mod interrupt_pump;
 mod io_apic;
 mod linux_boot;
 mod linux_boot_params;
+mod linux_direct;
 mod linux_load;
 mod linux_placement;
 mod local_apic;
@@ -134,6 +135,10 @@ pub use stage4_interrupt_pump_paged_probe::{
 };
 
 pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
+pub use linux_direct::{
+    LinuxDirectBoot, LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput,
+    LinuxDirectZone, load_linux_direct_board,
+};
 
 pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 

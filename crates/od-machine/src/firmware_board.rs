@@ -57,10 +57,10 @@ pub const FIRMWARE_ACPI_TABLES_BYTES: u64 = 0xF000;
 pub const FIRMWARE_ACPI_FACS_BASE: u64 = 0x000E_F000;
 pub const FIRMWARE_ACPI_FACS_BYTES: u64 = 0x1000;
 
-const CR0: u64 = 0x8001_0033;
-const CR4: u64 = 0x20;
-const LOW_RAM_LIMIT: u64 = 0xF400_0000;
-const HIGH_RAM_BASE: u64 = 0x1_0000_0000;
+pub(crate) const FIRMWARE_CR0: u64 = 0x8001_0033;
+pub(crate) const FIRMWARE_CR4: u64 = 0x20;
+pub(crate) const FIRMWARE_LOW_RAM_LIMIT: u64 = 0xF400_0000;
+pub(crate) const FIRMWARE_HIGH_RAM_BASE: u64 = 0x1_0000_0000;
 const PAGE: u64 = 0x1000;
 /// Count frequency of the LAPIC timer under `linux_profile` (S4-37a4): 100 MHz,
 /// before the divide configuration. A board choice (as in S4-27i2), not declared
@@ -514,7 +514,7 @@ fn board_map(
     config: &FirmwareBoardConfig,
     devices: &[DeviceEntry],
 ) -> Result<MachineMemoryMap, FirmwareBoardError> {
-    let low_end = config.ram_bytes.min(LOW_RAM_LIMIT);
+    let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
     let high = config.ram_bytes - low_end;
     let mut regions = vec![MemoryRegionSpec::new(
         range(0, low_end)?,
@@ -522,7 +522,7 @@ fn board_map(
     )];
     if high > 0 {
         regions.push(MemoryRegionSpec::new(
-            range(HIGH_RAM_BASE, high)?,
+            range(FIRMWARE_HIGH_RAM_BASE, high)?,
             MemoryRegionKind::Ram,
         ));
     }
@@ -1149,12 +1149,13 @@ pub(crate) fn assemble_board(
     let map = board_map(config, &devices)?;
     let table_pages = boot_page_table_count(&map);
     let page_table_bytes = table_pages * PAGE;
-    let low_end = config.ram_bytes.min(LOW_RAM_LIMIT);
+    let low_end = config.ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
     let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
     // `handoff_regions` still derives the table region from the constant and assumes the
     // tables start exactly at SHADOW_END. Moving the root requires passing it through there.
-    // This concerns the firmware path only: a Linux board builds no handoff block, and its own
-    // page table root comes from `into_linux_board`.
+    // A Linux board is assembled through this same path, so the handoff block is built too: the
+    // Linux loader compares its E820 map against it (S4-37L6) before `into_linux_board` drops
+    // the block and replaces the page table root with its own.
     debug_assert_eq!(page_table_root, FIRMWARE_BOOT_PAGE_TABLES_GPA);
     debug_assert_eq!(page_table_root, SHADOW_END);
     let tables_end = page_table_root + page_table_bytes;
@@ -1388,8 +1389,8 @@ impl AssembledBoard {
             cr3: None,
             rip: FIRMWARE_LINK_BASE + entry_offset,
             rflags: 2,
-            cr0: Some(CR0),
-            cr4: Some(CR4),
+            cr0: Some(FIRMWARE_CR0),
+            cr4: Some(FIRMWARE_CR4),
             sti_shadow: Some(StiShadow::Clear),
             activity: Some(CpuActivity::Running),
             ..LongModeState::default()
@@ -1416,6 +1417,12 @@ impl AssembledBoard {
             #[cfg(test)]
             suppress_rdtsc_tick: false,
         })
+    }
+
+    /// The handoff block of the assembled board (not written anywhere under the Linux profile);
+    /// the Linux loader compares its region table with the E820 map (S4-37L6).
+    pub(crate) fn handoff_block(&self) -> &[u8] {
+        &self.handoff
     }
 
     /// Turn the assembled board into a loaded board for the Linux direct boot (S4-37L5)
@@ -1667,14 +1674,14 @@ mod tests {
     fn page_table_count_matches_the_documented_values() {
         // FIRMWARE_BOOT.md section 4: both screens, NVRAM and TPM CRB present.
         let count = |ram_bytes: u64| {
-            let low_end = ram_bytes.min(LOW_RAM_LIMIT);
+            let low_end = ram_bytes.min(FIRMWARE_LOW_RAM_LIMIT);
             let mut specs = vec![MemoryRegionSpec::new(
                 range(0, low_end).unwrap(),
                 MemoryRegionKind::Ram,
             )];
             if ram_bytes > low_end {
                 specs.push(MemoryRegionSpec::new(
-                    range(HIGH_RAM_BASE, ram_bytes - low_end).unwrap(),
+                    range(FIRMWARE_HIGH_RAM_BASE, ram_bytes - low_end).unwrap(),
                     MemoryRegionKind::Ram,
                 ));
             }
