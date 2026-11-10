@@ -2010,6 +2010,57 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** завершить отложенную Linux-интеграцию S4-29/31: kernel обнаруживает ровно один CPU, правильные APIC/ECAM/routes; проходит timer calibration/discovery без hang; исключённые legacy устройства действительно не нужны выбранному пути. При несоответствии исправить scope/реализацию и повторить локальные regressions и boot. Не скрывать неисправность дополнительной cmdline без объяснения и не возвращать fake CPUID/MSR/device-ready.
 - **Готово:** выбранный kernel доходит до настоящего exec init без заглушек; discovery/time evidence S4-29/31 подтверждены. Сохранены точная cmdline и граница пока ещё не принятого userspace.
 
+#### S4-38L. Декомпозиция S4-38 (предложение, 2026-11-10)
+
+- **Проверено по образу и коду.**
+  - Байты на входе `0x100_0200`: `fc fa 31 c0 8e d8 8e c0 8e d0 8e e0 8e e8 48 8d 2d …` (CLD; CLI; XOR EAX,EAX; MOV DS/ES/SS/FS/GS ← 0; LEA RBP; …; compressed-head_64.S:290–316).
+  - Значения bzImage: setup_sects = 39, pm_off = 0x5000, pref = 0x100_0000, init_size = 0x44c_1000.
+  - Allowlist `PagedCpl0ProbeV1` не содержит `FC`. Первый стоп на текущем пути — CLD.
+  - `verify_cpu` (kernel-head_64.S:98) не проверяет результат `call`: DiagnosticV1 не останавливает ядро там. Честная верхняя граница — первая CPUID с EAX ∈ {1, 0x8000_0001}: CPUID(1) по phys `0x139_c287` (`verify_cpu+0x87`). До неё ответы совпадают с целевым профилем.
+  - На честном ядре этапа 2 первый стоп — `8E D0` (MOV SS) на RIP `0x100_0208`, retired = 5.
+  - Распаковщик выполняет LGDT `(%rax)`, PUSH imm + LRETQ, LIDT, чтение и запись CR4, `pushq $0; popfq` на CPL0, STD + REP MOVSQ, `jmp *%rax`, REP STOSQ. Запись распакованного ядра в `[0x100_0000, …)` вызывает #PF (ident_map_64.c:142–183), обрабатываемый `boot_page_fault`.
+  - Вход распакованного ядра: e_entry `0x3f2_53e0` (`startup_64`). PT_LOAD: `[0x100_0000, +0x286_1450)` и `[0x3a0_0000, +0x160_0000)`.
+- **Граница ответственности.** Без CPU-профиля Linux этапа 2 S4-38 не закрывается. В S4-38 делаем путь исполнения на плате, память/устройства/время в `od-machine`, checkpoints, эталоны и свидетельства. Каждая недостающая CPU-форма — задача этапа 2.
+- **Запрещено:** подставлять CPUID/MSR; распаковывать ядро в loader за гостя; патчить байты ядра или обходить `verify_cpu`; расширять allowlist `PagedCpl0ProbeV1` под ядро (правило S7-03); добавлять параметры cmdline без записанного объяснения; вводить device-ready-заглушки.
+- **Честная верхняя граница без CPU-профиля Linux.** Runner останавливается до retirement первой CPUID с EAX ∈ {1, 0x8000_0001} (`stop = cpuid_divergence`). За границей результаты диагностические и в приёмку не засчитываются.
+- **Порядок:** L1 ∥ L2 → (D1) L3 → L4 → L5 → L6 → цикл L7 (до C7) → L8 (после L3) → L9 → L10 (L9 и L10 — блокер этапа 2).
+
+- [ ] **L1 — Первый стоп настоящего ядра на текущем пути (S, без решений пользователя).** `od-runner linux-direct --run --budget N`; Linux-плата исполняется через `run_paged_probe_2m_ram`, а не через 4 KiB walker `run`/`run_boot`. Тики linux_profile применяются как в `run_boot`.
+  - Stop record (общая схема для L1–L10): exit kind, RIP, 16 байт по RIP (GVA и GPA), CPL/mode, CR0/CR3/CR4/EFER, RFLAGS, GPR, retired, quanta, virtual time, байты COM1, CPUID-профиль, linux_profile, хэши входов из S4-37 L6.
+  - Ожидание: `Unsupported { opcode: 0xFC }`, RIP `0x100_0200`, retired 0, байты `fc fa 31 c0`.
+  - Инъекции: budget 0 → `budget_exhausted` без fetch; синтетический bzImage из smoke L5 → Halted и байт в COM1; первый байт ядра заменён на `F4` → Halted, retired 1; путь 4 KiB walker на Linux-плате → различимая ошибка walk.
+  - Evidence: `docs/reports/data/stage4/s4-38l1-first-stop.json`.
+  - Ответ да/нет: fetch первой инструкции через CR3 платы работает; первый стоп — CLD.
+- [ ] **L2 — Независимые эталоны и статическая инвентаризация (M, без гостя, без решений).** `tools/build/`.
+  - (а) Распаковка host-zstd (`/opt/homebrew/bin/zstd`) payload по `payload_offset/length` без 4-байтного size trailer; PT_LOAD побайтно сверяется с vmlinux S4-35 (build-id `338e542e…`). Закрывает связку vmlinuz↔vmlinux, открытую в S4-35.
+  - (б) Таблица адресов checkpoints из symtab vmlinux-debug с sha256 файла: e_entry, `verify_cpu`, CPUID(1) (0x139_c287), `x86_64_start_kernel`, `start_kernel`, `setup_arch`, `tsc_init`, `apic_intr_mode_init`, `check_timer`, `populate_rootfs`, `run_init_process`, `kernel_execve`.
+  - (в) Статическая инвентаризация кодировок на пути до C7: опкод, ModRM, префиксы, первый адрес, статус в CPU_CONTRACT (есть точная форма / нет). Вход для планирования этапа 2, не свидетельство исполнения.
+  - (г) По исходнику `compressed/early_serial_console.c` проверить, что без `earlyprintk` распаковщик ничего не пишет в COM1 (гипотеза, подтверждается здесь).
+  - Инъекции: испорченный байт payload → падает zstd или сверка PT_LOAD; чужой vmlinux → несовпадение build-id.
+  - Evidence: `s4-38l2-oracle.json`, `s4-38l2-isa-inventory.json`.
+- [ ] **L3 — Общий CPU-путь Linux на paged-памяти машины (L; требует D1).** Вариант B: исполнение в `run_configured` этапа 2 с принятыми формами и профилями поверх page-aware `GuestMemory` (walker 4 KiB/2 MiB, A/D, точные #PF; PIO/MMIO через `MachineBus`). Системные точки входа `od-isa` (LGDT/LIDT/LRETQ/IRETQ/MOV CRn/INVLPG) — отдельным ревью как изменение этапа 2.
+  - Проверка на синтетических образах: цикл CMP/Jcc/ADD по 2 MiB; store в неотображённый GVA → точный #PF record; OUT в COM1 через bus; MOV CR3 меняет трансляцию до следующего fetch; qword через границу 4 KiB → классификация S4-11.
+  - Ответ да/нет: первый стоп сместился с CLD на первую форму, которой нет в этапе 2.
+- [ ] **L4 — Checkpoints, журнал CPUID и детерминизм (M, поверх L3).** Checkpoints — машинные предикаты на границе инструкции: C0 вход; C1 первый fetch из relocated-копии; C2 первый LIDT; C3 первая запись CR3; C4 первый доставленный #PF; C5 первый fetch с `0x3f2_53e0` и сверка RAM по PT_LOAD с L2; C6 CPUID(0); C7 CPUID(1) → стоп `cpuid_divergence`; C8–C17 из таблицы L2. Журнал CPUID: leaf, subleaf, RIP, ответ; расхождение — по листам {1, 0x8000_0001}.
+  - Проверка: два прогона дают побайтно одинаковые stop и checkpoint records. Инъекции: стоп по расхождению выключен → тест падает; недетерминированный источник времени → прогоны расходятся.
+- [ ] **L5 — Исключения в сессии Linux-платы (M, нужен для C4).** Доставка #PF через IDT гостя (S4-19), IRETQ (S4-27h), чтение CR2 обработчиком. Проверка на fixture: обработчик отображает страницу, IRETQ, retry успешен, кадр точный, CR2 точен. Негатив: шлюз IDT отсутствует → triple fault как исход `shutdown`. Чтение CR2 — блокер этапа 2, если его нет.
+- [ ] **L6 — Бюджет и производительность (S).** Измерить instr/s uncached walker; проекция до C5 (≈10⁹ инструкций, ~63 MiB вывода, REP-копирования); память платы при 128 MiB. Порог D3; превышение → решение 12 (S4-13 TLB раньше). Evidence: `s4-38l6-budget.json`.
+- [ ] **L7 — Цикл «стоп → задача этапа 2» до C7 (протокол).** На каждом стопе: stop record, минимальный repro, задача в STAGE_2.md. После принятия — повторный прогон; ранее пройденные checkpoints неизменны. Ожидаемые блокеры этапа 2 (гипотезы по исходникам, подтверждает L2): MOV SS null + тень; MOV FS/GS null на CPL0; LGDT/LIDT в общих адресных формах; LRETQ в общем цикле; PUSHFQ/POPFQ на CPL0; чтение CR3/CR2; запись CR4 с политикой reserved-битов; STD + REP MOVSQ при DF=1; `F3 0F BC` (BSF без BMI1), если используется; WRMSR GS_BASE на CPL0; ненулевые загрузки сегментов на CPL0.
+- [ ] **L8 — IRQ и время на Linux-плате (L; после L3, от CPUID не зависит; может делиться на a–d).** Доставка IRQ в сессии и общий paged pump backend; мост PIT → INTIN2 (ISO 0→2); paged APIC timer; чтение MMIO APIC гостем; STI/CLI (ISSUE-069 — семантика этапа 2); `Ring(n)` с `dropped` (ISSUE-072). Исполнимые fixtures: `quick_pit_calibrate` с MSB-циклом, UIP-цикл CMOS через RDTSC (≤ 2·10⁷ инструкций, решение 16б), PIT mode 2 IRQ0 → pin 2 → EOI → IRETQ на 1000+ периодов, STI;HLT wake. Инъекции: ISO проигнорирован → проверка падает; без EOI второй IRQ не доставлен; тик выключен → budget; Ring с лимитом → TraceLimit. Evidence: `s4-38l8-irq-time.json`.
+- [ ] **L9 — Discovery и время ядра после C7 (M, блокер этапа 2).** `CpuidProfile` по `od-x86-64-v1-neutral-v0.1` и исполнение всего, что он объявляет (x87/FXSR/SSE/SSE2, PGE, PAT, NX, SYSCALL-MSR, EFER). Проверка по dmesg через earlycon: `BIOS-e820` совпадает с S4-37 L6; ECAM reserved; `ACPI: RSDP 0x00000000000E0000`; `Command line:` точно совпадает с cmdline + `nokaslr`; один CPU; APIC/IOAPIC маршруты; TSC/PIT-калибровка без hang; `check_timer` через pin 2; legacy-устройства (0x60/0x64, PIT mode 4) не трогаются. `KASLR disabled` печатает распаковщик, он молчит — маркер переносится в checkpoint.
+- [ ] **L10 — Initramfs и exec init (M, блокер этапа 2).** `Unpacking initramfs`, `Freeing initrd memory`, `Run /init as init process`, `kernel_execve` (C17), первый CPL3 fetch на e_entry `/init` из артефакта S4-36. Это «Готово» S4-38. Негатив: initramfs без `/init` → `No working init found`, panic различима, не pass. Evidence: `s4-38l10-exec-init.json`.
+
+- **Открытые решения пользователя:**
+  - **D1.** Как ядро исполняется на paged-плате. Рекомендация — вариант B (`run_configured` этапа 2 поверх paged `GuestMemory`), расширение allowlist отклонить. Где собирать системные точки входа — в `od-isa` подсрезом S4 или отдельной задачей STAGE_2.md. Нужно для L3.
+  - **D2.** Начинать L1–L8 до приёмки S4-33 (формальная зависимость S4-38). Рекомендация — да.
+  - **D3.** Лимиты bounded run: ≤ 3·10⁹ инструкций до C7 и порог времени хоста (2 ч до C5), после которого S4-13 TLB раньше.
+  - **D4.** Диагностическое продолжение за C7 на DiagnosticV1 — только opt-in, не засчитывается. Цель — инвентаризация форм для этапа 2.
+  - **D5.** `earlyprintk` не добавлять (рекомендация): cmdline S4-29g зафиксирована, свидетельства из RIP/RAM-checkpoints.
+  - **D6.** Приоритеты этапа 2 из L7 — в плане этапа 2.
+- **Принимается самостоятельно (обоснование в срезе):** флаг `--run` и схема stop record; 2 MiB walker для Linux-платы; checkpoints как предикаты; host-zstd как оракул; стоп по расхождению CPUID; `Ring(n)` с `dropped`; статическая инвентаризация как вход планирования.
+- **Зависимости от этапа 2 (критический путь):** формы из L7 до C7; CPU-профиль Linux и объявленные им возможности (L9/L10); политика reserved-битов CR4/EFER; семантика STI/CLI (ISSUE-069). До C7 CPUID-профиль Linux не нужен.
+- **Оговорки:** формальная зависимость S4-38 → S4-33 не выполнена (S4-33 открыт); связка vmlinuz↔vmlinux не проверена (S4-35 не распаковывал zstd).
+
 ### S4-39. Подтвердить Linux userspace
 
 - [ ] Принято после ревью.
