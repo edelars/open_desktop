@@ -457,7 +457,9 @@ pub struct LinuxStopRecord {
     pub cpl: u8,
     pub cr0: Option<u64>,
     /// The board CR3 (the CPU state carries none). On the `cpl0_set` path it is the CR3 of
-    /// the last retired `MOV CR3`.
+    /// the last retired `MOV CR3` (the board CR3 when there was none), also when that
+    /// instruction ended the run in an integration error (`Cr3EffectMismatch`,
+    /// `Cr3SnapshotRejected`); see `cr3_changes`.
     pub cr3: u64,
     pub cr4: Option<u64>,
     pub efer: u64,
@@ -2111,6 +2113,7 @@ mod tests {
     #[test]
     fn set_facade_prologue_runs_the_null_segment_loads_over_the_loader_caches() {
         let (mut boot, file) = boot_with_entry(&PROLOGUE);
+        let board_cr3 = boot.board.cr3();
         let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
         // S2-46: the three null loads retire (six instructions); the stop is the filler byte
         // after the prologue.
@@ -2129,7 +2132,10 @@ mod tests {
             Some("Run(Unsupported { opcode: 122 })")
         );
         assert_eq!((record.cr3_changes, record.last_cr3_change), (0, None));
-        assert_eq!(record.cr3, boot.board.cr3());
+        assert_eq!(
+            record.cr3, board_cr3,
+            "no MOV CR3 retired: the board CR3 before the run"
+        );
         assert_eq!(boot.board.state().cr3, None, "the CPU state keeps no CR3");
         // The same board run through the base profile is the L1 control: CLD is the stop.
         let (mut boot, file) = boot_with_entry(&PROLOGUE);
@@ -2246,6 +2252,7 @@ mod tests {
         // bus refuses the port before the OUT commits: three instructions retired, RIP on the OUT.
         let (mut boot, file) =
             boot_with_entry(&[0xFA, 0xB0, 0x01, 0x66, 0xBA, 0x34, 0x12, 0xEE, 0xF4]);
+        let board_cr3 = boot.board.cr3();
         let members = LinuxCpl0SetMembers {
             halt: true,
             pio_u8: true,
@@ -2266,7 +2273,7 @@ mod tests {
         assert_eq!((record.retired, record.rip), (3, ENTRY + 7));
         assert_eq!(record.virtual_ns, 3, "only the retired instructions");
         assert!(record.com1.is_empty());
-        assert_eq!((record.cr3_changes, record.cr3), (0, boot.board.cr3()));
+        assert_eq!((record.cr3_changes, record.cr3), (0, board_cr3));
         assert_eq!(boot.board.state().cr3, None);
     }
 

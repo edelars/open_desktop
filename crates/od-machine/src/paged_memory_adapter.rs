@@ -570,9 +570,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
 /// A retired `MOV CR3` is recorded first, before any check: `reported_cr3` becomes the new
 /// CR3 and the change is appended to `changes`, so that an integration error on that very
 /// instruction (`Cr3EffectMismatch`, `Cr3SnapshotRejected`) still leaves the report with the
-/// CR3 the guest actually has (the instruction retired and was counted; only the walker
-/// is stale). The walker (`paging`) is replaced only when the snapshot for the new CR3 is
-/// accepted.
+/// CR3 of the retired instruction (the instruction retired and was counted; only the walker
+/// is stale). On `Cr3EffectMismatch` the CPU and the effect disagree: the report (`cr3` and
+/// `changes`) carries `effect_new_cr3` (the `new_cr3` of the effect), and the CPU value is
+/// exposed only in the `cpu_cr3` field of the exit. The walker (`paging`) is replaced only
+/// when the snapshot for the new CR3 is accepted.
 fn handle_set_exit(
     exit: Cpl0ProfileSetExit<crate::BusAccessError>,
     instructions_executed: u64,
@@ -1692,7 +1694,10 @@ mod tests {
             &set_loop_state(0x2000),
         );
         assert_eq!(exit, None);
-        assert_eq!(run.paging.cr3(), 0x2000);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, 0x2000, CR4, EFER).unwrap()
+        );
         assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
     }
 
@@ -1719,7 +1724,11 @@ mod tests {
                 effect_new_cr3: 0x2000,
             })
         );
-        assert_eq!(run.paging.cr3(), ROOT, "the walker was not rebuilt");
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
         assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
     }
 
@@ -1744,7 +1753,11 @@ mod tests {
                 effect_new_cr3: 0x2000,
             })
         );
-        assert_eq!(run.paging.cr3(), ROOT);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
         assert_eq!((run.reported_cr3, run.changes), (0x2000, vec![effect]));
     }
 
@@ -1772,7 +1785,11 @@ mod tests {
                 },
             })
         );
-        assert_eq!(run.paging.cr3(), ROOT, "the walker was not rebuilt");
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
         assert_eq!((run.reported_cr3, run.changes), (new_cr3, vec![effect]));
     }
 
@@ -1792,7 +1809,11 @@ mod tests {
             exit,
             Some(PagedCpl0SetExit::UnexpectedContextChange { effect })
         );
-        assert_eq!(run.paging.cr3(), ROOT);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            "the walker was not replaced"
+        );
         assert_eq!((run.reported_cr3, run.changes), (ROOT, Vec::new()));
     }
 

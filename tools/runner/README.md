@@ -777,8 +777,9 @@ continuation (the 2 MiB walker is rebuilt for the new CR3). `stop` additionally 
 - `last_cr3_change`: the last of them as `{old_cr3, new_cr3}`; `null` when there was none.
 
 `cr3` is the CR3 of the last retired `MOV CR3` (the board CR3 when there was none), also when the
-run ended in an integration error of that very instruction, so `cr3`, `cr3_changes` and the
-`rip_bytes` window (read through the current tree) agree. On the `paged_probe` path (without
+run ended in an integration error of that very instruction, so `cr3` and `cr3_changes` agree; the
+`rip_bytes` window is read through the current tree, except after `Cr3SnapshotRejected`, where the
+window is empty and `rip_bytes_error` is `InvalidCr3...`. On the `paged_probe` path (without
 `--set-cpl0`) the `stop` object got the same five fields additively (`path: "paged_probe"`, `[]`,
 `null`, `0`, `null`): `schema_version` of the evidence stays 1, because no field was removed,
 renamed or changed in meaning and a consumer that ignores unknown fields reads the old and the new
