@@ -2387,6 +2387,403 @@ fn lgdt_outside_the_set_stays_unsupported_for_general_forms() {
     );
 }
 
+// ---- S2-49: LIDT m (`0F 01 /3`) in the CPL0 profile set ----
+
+const IDT_BASE: u64 = 0x0000_0000_0013_0000;
+const OLD_IDTR: od_isa::state::Idtr = od_isa::state::Idtr {
+    base: 0x8000,
+    limit: 0x000f,
+};
+
+fn lidt_state(rax: u64) -> LongModeState {
+    let mut state = lgdt_state(rax);
+    state.idtr = Some(OLD_IDTR);
+    state
+}
+
+/// `lidt_state` without the modeling that only the set accepts: what `run` accepts.
+fn lidt_legacy_state(rax: u64) -> LongModeState {
+    LongModeState {
+        idtr: Some(OLD_IDTR),
+        ..lgdt_legacy_state(rax)
+    }
+}
+
+fn idt_ud() -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    })
+}
+
+#[test]
+fn lidt_rax_loads_idtr_from_the_pseudo_descriptor() {
+    let mut state = lidt_state(LGDT_DATA);
+    let mut before = state.clone();
+    let mut memory = LgdtMemory::new(
+        &[0x0f, 0x01, 0x18, 0x90],
+        &pseudo_descriptor(0x0fff, IDT_BASE),
+    );
+    // One instruction, then the budget ends before the NOP byte is decoded.
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.idtr,
+        Some(od_isa::state::Idtr {
+            base: IDT_BASE,
+            limit: 0x0fff
+        })
+    );
+    assert_eq!(state.rip, RIP + 3);
+    // Only RIP and IDTR changed: GDTR keeps its old value.
+    before.rip = RIP + 3;
+    before.idtr = state.idtr;
+    assert_eq!(state, before);
+    assert_eq!(state.gdtr, Some(OLD_GDTR));
+    // Two qword reads inside the ten-byte operand, no write (the IDT is not touched).
+    assert_eq!(memory.reads, vec![(LGDT_DATA, 8), (LGDT_DATA + 2, 8)]);
+}
+
+#[test]
+fn lidt_other_addressing_forms_load_idtr() {
+    // [RBX+0x10] (disp8), [RIP+disp32] (the real kernel's `0F 01 1D` form), [RAX+RCX*1],
+    // and the legacy [RSP+disp8] form.
+    let cases: [(&[u8], u64); 4] = [
+        (&[0x0f, 0x01, 0x5b, 0x10], LGDT_DATA - 0x10),
+        (&[0x0f, 0x01, 0x1d, 0xf9, 0x0f, 0x00, 0x00], 0),
+        (&[0x0f, 0x01, 0x1c, 0x08], LGDT_DATA - 5),
+        (&[0x0f, 0x01, 0x5c, 0x24, 0x10], 0),
+    ];
+    for (code, register) in cases {
+        let mut state = lidt_state(register);
+        state.gpr[3] = register; // RBX
+        state.gpr[1] = 5; // RCX
+        state.gpr[4] = LGDT_DATA - 0x10; // RSP
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x0fff, 0x0000_7fff_ffff_f000));
+        // RIP-relative: RIP + 7 + 0xff9 = 0x2000.
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(result.instructions_executed, 1, "{code:x?}");
+        assert_eq!(
+            state.idtr,
+            Some(od_isa::state::Idtr {
+                base: 0x0000_7fff_ffff_f000,
+                limit: 0x0fff
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(state.gdtr, Some(OLD_GDTR));
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn lidt_loads_idtr_when_the_entry_state_does_not_model_one() {
+    // The Linux entry state has `idtr: None`; LIDT replaces the whole register.
+    let mut state = lidt_state(LGDT_DATA);
+    state.idtr = None;
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x0fff, IDT_BASE));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.idtr,
+        Some(od_isa::state::Idtr {
+            base: IDT_BASE,
+            limit: 0x0fff
+        })
+    );
+}
+
+#[test]
+fn lidt_with_a_register_operand_is_not_lidt_and_stays_unsupported() {
+    // `0F 01 D8` (mod = 11, /3) is VMRUN, not an LIDT form: it is not decoded as
+    // one and stays Unsupported (no #UD classification invented for it).
+    let mut state = lidt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0xd8], &pseudo_descriptor(0x1f, IDT_BASE));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 4);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lock_lidt_is_ud_in_the_set_and_unsupported_elsewhere() {
+    for code in [
+        &[0xf0u8, 0x0f, 0x01, 0x18][..],
+        &[0xf0, 0x0f, 0x01, 0x5b, 0x10],
+        &[0xf0, 0x0f, 0x01, 0x1c, 0x08],
+        &[0xf0, 0x0f, 0x01, 0x1d, 0, 0, 0, 0],
+        // The legacy `LOCK LIDT [RSP+disp8]` keeps its Invalid classification: also #UD.
+        &[0xf0, 0x0f, 0x01, 0x5c, 0x24, 0x10],
+    ] {
+        let mut state = lidt_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, IDT_BASE));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 4);
+        assert_eq!(exit(&result), &idt_ud(), "{code:x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+    // Outside the set the general forms keep their previous Unsupported exit.
+    for code in [
+        &[0xf0u8, 0x0f, 0x01, 0x18][..],
+        &[0xf0, 0x0f, 0x01, 0x5b, 0x10],
+        &[0xf0, 0x0f, 0x01, 0x1c, 0x08],
+    ] {
+        let mut state = lidt_legacy_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, IDT_BASE));
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x01 },
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn lidt_with_a_non_canonical_base_is_gp0_without_mutation() {
+    for bad_base in [0x8000_0000_0000_0000u64, 0x0001_0000_0000_0000] {
+        let mut state = lidt_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, bad_base));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+    // Both canonical boundaries load.
+    for good_base in [0x0000_7fff_ffff_ffffu64, 0xffff_8000_0000_0000] {
+        let mut state = lidt_state(LGDT_DATA);
+        let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, good_base));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.idtr.unwrap().base, good_base);
+    }
+}
+
+#[test]
+fn lidt_with_a_non_canonical_operand_address_faults_by_segment() {
+    // DS-based operand: #GP(0); SS-based (RBP/RSP base): #SS(0).
+    for (code, register, vector) in [
+        (&[0x0f, 0x01, 0x18][..], 0x0001_0000_0000_0000u64, 13u8),
+        (&[0x0f, 0x01, 0x5d, 0x00], 0x0001_0000_0000_0000, 12),
+        // Canonical first byte, non-canonical last byte of the ten-byte operand.
+        (&[0x0f, 0x01, 0x18], 0x0000_7fff_ffff_fffa, 13),
+    ] {
+        let mut state = lidt_state(register);
+        state.gpr[5] = register; // RBP
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, IDT_BASE));
+        let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None
+            }),
+            "{code:x?}"
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn lidt_unmapped_operand_reports_the_page_fault_without_mutation() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(LGDT_DATA),
+    };
+    let mut state = lidt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, IDT_BASE));
+    memory.fail_page = Some((LGDT_DATA, MemoryError::Architectural(fault.clone())));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn lidt_second_read_fault_and_page_crossing_leave_idtr_unchanged() {
+    // The operand starts in a mapped page and its tail is in an unmapped one: the
+    // second qword read faults, the first one has no architectural effect.
+    let start = LGDT_DATA + 0xff8;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(LGDT_DATA + 0x1000),
+    };
+    let mut state = lidt_state(start);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, IDT_BASE));
+    memory.fail_page = Some((
+        LGDT_DATA + 0x1000,
+        MemoryError::Architectural(fault.clone()),
+    ));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.reads.len(), 2);
+
+    // The board adapter reports a 4 KiB crossing as a backend error (S4-11); the set
+    // surfaces it as MemoryError exactly as for LGDT and does not touch IDTR.
+    let mut state = lidt_state(start);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, IDT_BASE));
+    memory.fail_page = Some((
+        LGDT_DATA + 0x1000,
+        MemoryError::Backend("cross-page qword read".to_string()),
+    ));
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::MemoryError(MemoryError::Backend("cross-page qword read".to_string()))
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn lidt_below_cpl0_is_rejected_at_set_entry() {
+    let mut state = lidt_state(LGDT_DATA);
+    let before = state.clone();
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x18], &pseudo_descriptor(0x1f, IDT_BASE));
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn lidt_outside_the_set_stays_unsupported_for_general_forms() {
+    // `run` without the set: `LIDT [RAX]`, `[RBX+disp8]`, RIP-relative and a SIB form
+    // other than the legacy one keep the Unsupported exit and read nothing; the legacy
+    // `[RSP+disp8]` form still loads.
+    for code in [
+        &[0x0fu8, 0x01, 0x18][..],
+        &[0x0f, 0x01, 0x5b, 0x10],
+        &[0x0f, 0x01, 0x1d, 0xf9, 0x0f, 0x00, 0x00],
+        &[0x0f, 0x01, 0x1c, 0x24],
+        &[0x0f, 0x01, 0x5c, 0x25, 0x10],
+        &[0x0f, 0x01, 0x5c, 0xa4, 0x10],
+    ] {
+        let mut state = lidt_legacy_state(LGDT_DATA);
+        let before = state.clone();
+        let mut memory = LgdtMemory::new(code, &pseudo_descriptor(0x1f, IDT_BASE));
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x01 },
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+    let mut state = lidt_legacy_state(0);
+    state.gpr[4] = LGDT_DATA - 0x10; // RSP
+    let mut memory = LgdtMemory::new(
+        &[0x0f, 0x01, 0x5c, 0x24, 0x10],
+        &pseudo_descriptor(0x1f, IDT_BASE),
+    );
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.idtr,
+        Some(od_isa::state::Idtr {
+            base: IDT_BASE,
+            limit: 0x1f
+        })
+    );
+    // Without a modeled IDTR the legacy path stays Unsupported (the set loads it).
+    let mut state = lidt_legacy_state(0);
+    state.idtr = None;
+    state.gpr[4] = LGDT_DATA - 0x10;
+    let mut memory = LgdtMemory::new(
+        &[0x0f, 0x01, 0x5c, 0x24, 0x10],
+        &pseudo_descriptor(0x1f, IDT_BASE),
+    );
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(state.idtr, None);
+}
+
+#[test]
+fn lgdt_then_lidt_sequence_retires_two_instructions_and_loads_both_tables() {
+    // `LGDT [RAX]; LIDT [RBX]` over two descriptors in the data window.
+    let mut state = lidt_state(LGDT_DATA);
+    state.gpr[3] = LGDT_DATA + 0x20; // RBX
+    let mut data = pseudo_descriptor(0x001f, GDT_BASE);
+    data.resize(0x20, 0);
+    data.extend(pseudo_descriptor(0x0fff, IDT_BASE));
+    let mut memory = LgdtMemory::new(&[0x0f, 0x01, 0x10, 0x0f, 0x01, 0x1b], &data);
+    let result = run_lgdt_set(&mut state, &mut memory, &base(), 2);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(
+        state.gdtr,
+        Some(od_isa::state::Gdtr {
+            base: GDT_BASE,
+            limit: 0x1f
+        })
+    );
+    assert_eq!(
+        state.idtr,
+        Some(od_isa::state::Idtr {
+            base: IDT_BASE,
+            limit: 0x0fff
+        })
+    );
+    assert_eq!(state.rip, RIP + 6);
+}
+
 // ---- S2-47b: LRETQ with a CS reload from the loaded GDT ----
 
 const RAM_BASE: u64 = 0x1_0000;

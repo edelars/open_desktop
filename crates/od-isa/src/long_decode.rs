@@ -2060,6 +2060,13 @@ pub enum DecodeError {
         opcode: Opcode,
         length: u8,
     },
+    /// LOCK-prefixed `LIDT m` other than the legacy `[RSP+disp8]` form (which keeps
+    /// the `Invalid` classification), retained for profile-specific exit mapping
+    /// (#UD in the CPL0 profile set).
+    InvalidLidtLock {
+        opcode: Opcode,
+        length: u8,
+    },
     Memory(MemoryError),
 }
 
@@ -2353,42 +2360,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         operation: Operation::Swapgs,
                     });
                 }
-                if modrm == 0x5c {
-                    let sib = self.byte()?;
-                    if sib != 0x24 {
-                        return Err(self.unsupported(opcode));
-                    }
-                    let displacement = i64::from(self.byte()? as i8);
-                    return Ok(Instruction {
-                        length: self.length,
-                        opcode,
-                        prefixes,
-                        operand_size: OperandSize::Qword,
-                        address_size: OperandSize::Qword,
-                        operation: Operation::LoadIdtr {
-                            source: MemoryOperand {
-                                base: AddressBase::Register(Register::Rsp),
-                                index: None,
-                                scale: 1,
-                                displacement,
-                                address_size: OperandSize::Qword,
-                                size: OperandSize::Qword,
-                            },
-                        },
-                    });
-                }
-                // LGDT m is `0F 01 /2` with a memory operand. The register forms
-                // (mod = 11, e.g. `0F 01 D0` XGETBV) are other instructions and stay
-                // unsupported. Which memory forms execute is decided by the caller
-                // (the CPL0 profile set admits all of them, legacy paths only the
-                // `[RBP+disp8]` form).
-                if (modrm >> 3) & 7 != 2 || modrm >> 6 == 3 {
+                // LGDT m (`/2`) and LIDT m (`/3`) take a memory operand. The register
+                // forms (mod = 11, e.g. `0F 01 D0` XGETBV) are other instructions and
+                // stay unsupported. Which memory forms execute is decided by the caller
+                // (the CPL0 profile set admits all of them, legacy paths only
+                // `[RBP+disp8]` for LGDT and `[RSP+disp8]` for LIDT).
+                let reg = (modrm >> 3) & 7;
+                if (reg != 2 && reg != 3) || modrm >> 6 == 3 {
                     return Err(self.unsupported(opcode));
                 }
                 let Operand::Memory(source) =
                     self.rm_operand(modrm, prefixes, OperandSize::Qword)?
                 else {
-                    unreachable!("LGDT requires the supported memory form")
+                    unreachable!("LGDT/LIDT require the supported memory form")
                 };
                 return Ok(Instruction {
                     length: self.length,
@@ -2396,7 +2380,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     prefixes,
                     operand_size: OperandSize::Qword,
                     address_size: OperandSize::Qword,
-                    operation: Operation::LoadGdtr { source },
+                    operation: if reg == 2 {
+                        Operation::LoadGdtr { source }
+                    } else {
+                        Operation::LoadIdtr { source }
+                    },
                 });
             }
             if prefixes.group1 == Some(0xf0)
@@ -2412,14 +2400,31 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x55 => {
                         self.byte()?;
                     }
-                    0x5c if self.byte()? == 0x24 => {
+                    // Legacy `LOCK LIDT [RSP+disp8]` keeps its `Invalid` classification;
+                    // any other SIB byte is a general LOCK LIDT m (S2-49).
+                    0x5c => {
+                        let sib = self.byte()?;
                         self.byte()?;
+                        if sib != 0x24 {
+                            return Err(DecodeError::InvalidLidtLock {
+                                opcode,
+                                length: self.length,
+                            });
+                        }
                     }
                     // LOCK LGDT m (S2-47a): #UD only under the CPL0 profile set; the
                     // caller maps this to Unsupported elsewhere.
                     _ if (modrm >> 3) & 7 == 2 && modrm >> 6 != 3 => {
                         self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
                         return Err(DecodeError::InvalidLgdtLock {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
+                    // LOCK LIDT m (S2-49): #UD only under the CPL0 profile set.
+                    _ if (modrm >> 3) & 7 == 3 && modrm >> 6 != 3 => {
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                        return Err(DecodeError::InvalidLidtLock {
                             opcode,
                             length: self.length,
                         });
@@ -23776,15 +23781,60 @@ mod tests {
             &[0x67, 0x0f, 0x01, 0x5c, 0x24, 0][..],
             &[0xf2, 0x0f, 0x01, 0x5c, 0x24, 0][..],
             &[0x48, 0x0f, 0x01, 0x5c, 0x24, 0][..],
-            &[0x0f, 0x01, 0x1c, 0x24, 0][..],
-            &[0x0f, 0x01, 0x5c, 0x25, 0][..],
-            &[0x0f, 0x01, 0x9c, 0x24, 0, 0, 0, 0][..],
             &[0x0f, 0x01, 0x5c, 0x24][..],
         ] {
             assert!(
                 matches!(
                     Memory::new(bytes).decode(),
                     Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // S2-49: the other memory forms decode as general `LIDT m`; the caller decides
+        // which of them execute. The register form (mod = 11, /3) is not LIDT.
+        for (bytes, length) in [
+            (&[0x0f, 0x01, 0x1c, 0x24, 0][..], 4u8),
+            (&[0x0f, 0x01, 0x5c, 0x25, 0][..], 5),
+            (&[0x0f, 0x01, 0x9c, 0x24, 0, 0, 0, 0][..], 8),
+            (&[0x0f, 0x01, 0x1d, 0xbd, 0x7b, 0x01, 0x00][..], 7),
+            (&[0x0f, 0x01, 0x18][..], 3),
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::LoadIdtr { .. }),
+                "{bytes:02x?}"
+            );
+        }
+        let decoded = Memory::new(&[0x0f, 0x01, 0x1d, 0xbd, 0x7b, 0x01, 0x00])
+            .decode()
+            .unwrap();
+        assert!(matches!(
+            decoded.operation,
+            Operation::LoadIdtr {
+                source: MemoryOperand {
+                    base: AddressBase::NextRip,
+                    displacement: 0x17bbd,
+                    ..
+                }
+            }
+        ));
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x01, 0xd8]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        // LOCK LIDT m is a distinct classification after the full encoding is fetched;
+        // the legacy `[RSP+disp8]` form keeps `Invalid`.
+        for (bytes, length) in [
+            (&[0xf0u8, 0x0f, 0x01, 0x18][..], 4u8),
+            (&[0xf0, 0x0f, 0x01, 0x1d, 0, 0, 0, 0][..], 8),
+            (&[0xf0, 0x0f, 0x01, 0x5c, 0x25, 0][..], 6),
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::InvalidLidtLock { length: l, .. }) if l == length
                 ),
                 "{bytes:02x?}"
             );

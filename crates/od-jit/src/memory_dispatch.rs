@@ -1701,6 +1701,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         Err(DecodeError::InvalidMovCr3Lock { .. }) => return CompileAt::Unsupported,
         Err(DecodeError::InvalidMovCr0Lock { .. }) => return CompileAt::Unsupported,
         Err(DecodeError::InvalidLgdtLock { .. }) => return CompileAt::Unsupported,
+        Err(DecodeError::InvalidLidtLock { .. }) => return CompileAt::Unsupported,
         Err(DecodeError::Invalid { .. }) => return CompileAt::Invalid,
         Err(DecodeError::Memory(MemoryError::Unmapped {
             address,
