@@ -86,6 +86,7 @@ pub fn step_paged_invlpg(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -206,6 +207,7 @@ fn step_paged_state_op(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -275,6 +277,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -331,6 +334,7 @@ pub fn step_paged_mov(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -386,6 +390,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -640,6 +645,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             cpl0_set_word_read: true,
             cpl0_set_narrow_write: true,
             cpl0_set_cross_page_fetch: true,
+            cpl0_set_cross_page_store: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -785,6 +791,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -860,6 +867,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -917,6 +925,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -983,6 +992,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_word_read: false,
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
+        cpl0_set_cross_page_store: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1097,6 +1107,15 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// missing second page is a precise instruction-fetch `#PF` at the first byte on it, with
     /// the RIP of the instruction. The shared large-RAM profile keeps its one-code-page window.
     cpl0_set_cross_page_fetch: bool,
+    /// S4-38L4h: the CPL0 profile set's adapter alone performs a store that crosses a 4 KiB
+    /// boundary (word, dword or qword at a page tail). Both pages are translated for a write
+    /// first (present, reserved, user and write-protection checks, accessed bits set, no dirty
+    /// bit); only if both pass are the bytes written, each through its own write access (the
+    /// dirty bit of each touched leaf is set). A fault on either page is a precise data `#PF`
+    /// at the first linear address on the faulting page with the write bit set, and not one
+    /// byte has been stored: there is no partial store. Elsewhere a crossing store stays the
+    /// typed `CrossesPage`.
+    cpl0_set_cross_page_store: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1188,6 +1207,53 @@ impl PagedMovMemoryAdapter<'_> {
             &mut *self.committed_write,
         );
         result.map_err(|error| self.map_access_error(error))
+    }
+
+    /// S4-38L4h: a store across a 4 KiB boundary. Both pages are checked for a write before any
+    /// byte is stored (no partial store); then each byte is its own one-byte write access, which
+    /// sets the dirty bit of the leaf it lands on and stores it.
+    fn write_crossing_page(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let second_page = (address & !0xfff).wrapping_add(0x1000);
+        for check_address in [address, second_page] {
+            let result = match &mut self.bus {
+                AdapterBus::Ram(memory) => crate::page_walk::translate_long64_2m_ram_write_check(
+                    memory,
+                    &self.paging,
+                    self.instruction_rip,
+                    GuestLinearAddress::new(check_address),
+                    context,
+                    &mut *self.committed_write,
+                ),
+                AdapterBus::Machine(_) => return Err(Self::unsupported("cross-page write")),
+            };
+            if let Err(error) = result {
+                self.access_error = Some(error.clone());
+                return Err(self.map_access_error(error));
+            }
+        }
+        for (index, byte) in source.iter().enumerate() {
+            let outcome = self.access(
+                address.wrapping_add(index as u64),
+                context,
+                RamAccessOperation::Write {
+                    width: crate::AccessWidth::Byte,
+                    value: u64::from(*byte),
+                },
+            )?;
+            if outcome != TrackedAccessOutcome::Written {
+                return Err(Self::unsupported("non-write result"));
+            }
+        }
+        Ok(())
     }
 
     fn map_access_error(&mut self, error: TrackedAccessError) -> MemoryError {
@@ -1336,6 +1402,13 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         let mut bytes = [0; 8];
         bytes[..expected].copy_from_slice(source);
         let value = u64::from_le_bytes(bytes);
+        if self.cpl0_set_cross_page_store
+            && self.cpl0_set_narrow_write
+            && self.large_ram_profile
+            && (address & 0xfff) + expected as u64 > 4096
+        {
+            return self.write_crossing_page(address, context, source);
+        }
         match self.access(address, context, RamAccessOperation::Write { width, value })? {
             TrackedAccessOutcome::Written => Ok(()),
             _ => Err(Self::unsupported("non-write result")),
@@ -1462,6 +1535,7 @@ mod tests {
             cpl0_set_word_read: false,
             cpl0_set_narrow_write: false,
             cpl0_set_cross_page_fetch: false,
+            cpl0_set_cross_page_store: false,
         }
     }
 
@@ -1770,6 +1844,41 @@ mod tests {
                 scope.callback_result
             );
             assert!(scope.committed_writes.is_empty());
+        }
+    }
+
+    #[test]
+    fn cross_page_stores_belong_to_the_cpl0_set_adapter_alone() {
+        // S4-38L4h guard: without `cpl0_set_cross_page_store` every profile keeps the typed
+        // `CrossesPage` before any table or operand access, narrow stores and the large-RAM
+        // walk included; no byte is written.
+        let crossing = |len: usize| DATA_LINEAR + 0x1000 - (len as u64 - 1);
+        for (narrow, large) in [(false, false), (true, false), (true, true), (false, true)] {
+            for len in [8usize, 4, 2] {
+                if !narrow && len != 8 {
+                    continue;
+                }
+                let mut bus = bus(0x9007);
+                let mut callbacks = Vec::new();
+                let mut callback = |range| callbacks.push(range);
+                let mut memory = adapter(&mut bus, &mut callback);
+                memory.cpl0_set_narrow_write = narrow;
+                memory.large_ram_profile = large;
+                let error = memory.write(crossing(len), context(), &vec![0x5a; len]);
+                assert!(error.is_err(), "{narrow} {large} {len}: {error:?}");
+                assert_eq!(
+                    memory.access_error,
+                    Some(TrackedAccessError::CrossesPage {
+                        address: GuestLinearAddress::new(crossing(len)),
+                        width: len as u8
+                    }),
+                    "{narrow} {large} {len}"
+                );
+                assert_eq!(memory.page_fault, None);
+                drop(memory);
+                drop(callback);
+                assert!(callbacks.is_empty(), "{narrow} {large} {len}");
+            }
         }
     }
 
