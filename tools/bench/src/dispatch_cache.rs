@@ -19,18 +19,18 @@ use od_host::{PublishedArenaBackend, PublishedArenaBlock, PublishedBlockExecutor
 use od_isa::LongModeState;
 use od_isa::execute::{RunConfig, RunExit, run as interpreter_run};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
-use od_jit::block::{AdmittedInstructionBoundaries, CodeView};
+use od_jit::block::{AdmittedInstructionBoundaries, CodeView, NativeRegisterV1Admission};
 use od_jit::dispatch::{
     CacheEvictionPolicy, CodeInvalidation, DispatchControl, DispatchExit,
     MAX_MULTI_ENTRY_CACHE_CODE_BYTES, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
-    MAX_SINGLE_ENTRY_CACHE_BYTES, MultiEntryBlockCache, SingleEntryBlockCache, run as dispatch_run,
-    run_cached, run_multi_cached, run_multi_cached_controlled,
-    run_multi_cached_controlled_observed,
+    MAX_SINGLE_ENTRY_CACHE_BYTES, MultiEntryBlockCache, RegisterFlagsMode, SingleEntryBlockCache,
+    run as dispatch_run, run_cached, run_multi_cached, run_multi_cached_controlled,
+    run_multi_cached_controlled_observed, run_multi_cached_native_register_v1_controlled,
 };
 use od_jit::phase_observation::{ObservedDispatchPhase, PhaseRecorder};
 use od_jit::translation::{
     AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
-    ExecutionContextSnapshot, MappingId, MappingVersion,
+    ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
 };
 use od_testkit::case::{ExpectedExit, Fixture};
 use serde::Serialize;
@@ -88,6 +88,7 @@ struct Case {
     id: String,
     bytes: Vec<u8>,
     admission: AdmittedInstructionBoundaries,
+    native_admission: Option<NativeRegisterV1Admission>,
     initial: LongModeState,
     expected: LongModeState,
     budget: u64,
@@ -200,17 +201,53 @@ impl Variant {
                 backend,
             )
             .map_err(|e| err(format!("single cache: {e:?}"))),
-            Self::Fifo { backend, cache } | Self::Lru { backend, cache } => run_multi_cached(
-                code,
-                &case.admission,
-                crate::benchmark_execution_context(),
-                &dep,
-                state,
-                case.budget,
-                cache,
-                backend,
-            )
-            .map_err(|e| err(format!("multi cache: {e:?}"))),
+            Self::Fifo { backend, cache } | Self::Lru { backend, cache } => {
+                if let Some(admission) = &case.native_admission {
+                    let stop = AtomicU8::new(0);
+                    let result = run_multi_cached_native_register_v1_controlled(
+                        code,
+                        admission,
+                        ExecutionContextSnapshot::native_register_v1_fixture(
+                            ExecutionContextId::from_u64(1).unwrap(),
+                        ),
+                        &dep,
+                        state,
+                        case.budget,
+                        DispatchControl {
+                            stop_rip: None,
+                            stop_requested: &stop,
+                            event_requested: None,
+                        },
+                        cache,
+                        backend,
+                        RegisterFlagsMode::Eager,
+                    )
+                    .map_err(|e| err(format!("generic multi cache: {e:?}")))?;
+                    // This frozen, native-only workload must not silently turn
+                    // into an interpreter-fallback benchmark.
+                    if result.retired_interpreter != 0 {
+                        return Err(err(format!("unexpected interpreter fallback: {}", case.id)));
+                    }
+                    Ok(od_jit::dispatch::DispatchResult {
+                        exit: result.exit,
+                        remaining_budget: result.remaining_budget,
+                        retired_instructions: result.retired_native,
+                        blocks_executed: result.blocks_executed,
+                    })
+                } else {
+                    run_multi_cached(
+                        code,
+                        &case.admission,
+                        crate::benchmark_execution_context(),
+                        &dep,
+                        state,
+                        case.budget,
+                        cache,
+                        backend,
+                    )
+                    .map_err(|e| err(format!("multi cache: {e:?}")))
+                }
+            }
         }
     }
 
@@ -1133,6 +1170,24 @@ pub fn run_cold_first_execution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_cold_first_profile(case_list, trace_path, process_run, false)
+}
+
+/// S3-56: the frozen resident S3-14 corpus through the generic native path.
+pub fn run_generic_cold_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_cold_first_profile(case_list, trace_path, process_run, true)
+}
+
+fn run_cold_first_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    generic: bool,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cold-first-run measurement requires a release build"));
     }
@@ -1142,21 +1197,44 @@ pub fn run_cold_first_execution(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    let (list_hash, trace_hash, expected_inputs, expected_visits, label) = if generic {
+        (
+            BRANCH_HELPER_CASE_LIST_SHA256,
+            BRANCH_HELPER_TRACE_SHA256,
+            BRANCH_HELPER_INPUTS,
+            BRANCH_HELPER_VISITS,
+            "S3-14 branch/helper",
+        )
+    } else {
+        (
+            FROZEN_CASE_LIST_SHA256,
+            FROZEN_TRACE_SHA256,
+            MAX_INPUTS,
+            1_322,
+            "S3-17",
+        )
+    };
+    if od_testkit::sha256_hex(&list) != list_hash
+        || od_testkit::sha256_hex(&trace_raw) != trace_hash
     {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
+        return Err(err(format!(
+            "case list or trace does not match the frozen {label} corpus"
+        )));
     }
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+    if trace.inputs.len() != expected_inputs
+        || trace.visits.len() != expected_visits
+        || trace.visits.len() > MAX_TOTAL_TRACE_VISITS
+    {
         return Err(err("frozen trace visit count mismatch"));
     }
-    let cases = prepare_cases(&list, &trace, started)?;
-    if cases.len() != MAX_INPUTS {
+    let mut cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != expected_inputs {
         return Err(err("cold-first-run requires the complete frozen corpus"));
+    }
+    if generic {
+        prepare_generic_admissions(&mut cases)?;
     }
 
     // Native preflight is deliberately outside timing and the fresh engine is
@@ -1246,7 +1324,11 @@ pub fn run_cold_first_execution(
         paired_interpreter_over_fifo_ratios: ratios,
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
-    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+    annotate_generic_report(
+        serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
+        generic,
+        &cases,
+    )
 }
 
 /// Attribute a cold FIFO16 dispatcher sweep to measured boundaries on the
@@ -1506,6 +1588,27 @@ pub fn run_warm_first_execution(
         MAX_INPUTS,
         1_322,
         "S3-17",
+        false,
+    )
+}
+
+/// S3-56: warm execution of the same frozen five-case generic corpus as cold.
+pub fn run_generic_warm_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_warm_profile(
+        case_list,
+        trace_path,
+        process_run,
+        Some("s3-14-generic-register"),
+        BRANCH_HELPER_CASE_LIST_SHA256,
+        BRANCH_HELPER_TRACE_SHA256,
+        BRANCH_HELPER_INPUTS,
+        BRANCH_HELPER_VISITS,
+        "S3-14 branch/helper",
+        true,
     )
 }
 
@@ -1526,6 +1629,7 @@ pub fn run_warm_branch_helper(
         BRANCH_HELPER_INPUTS,
         BRANCH_HELPER_VISITS,
         "S3-14 branch/helper",
+        false,
     )
 }
 
@@ -2163,6 +2267,7 @@ fn run_warm_profile(
     expected_inputs: usize,
     expected_visits: usize,
     profile_label: &str,
+    generic: bool,
 ) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("warm-first-run measurement requires a release build"));
@@ -2188,13 +2293,19 @@ fn run_warm_profile(
     {
         return Err(err(format!("frozen {profile_label} trace count mismatch")));
     }
-    let all_cases = prepare_cases(&list, &trace, started)?;
+    let mut all_cases = prepare_cases(&list, &trace, started)?;
     if all_cases.len() != expected_inputs {
         return Err(err(format!(
             "warm profile requires {expected_inputs} frozen inputs"
         )));
     }
+    if generic {
+        prepare_generic_admissions(&mut all_cases)?;
+    }
     let (selected_case_count, selected_entry_budget) = select_resident_case_count(&all_cases)?;
+    if generic && selected_case_count != expected_inputs {
+        return Err(err("generic S3-14 corpus does not fit the resident cache"));
+    }
     let cases = &all_cases[..selected_case_count];
 
     // Warm the sole FIFO runtime once; the same runtime remains alive through
@@ -2325,7 +2436,11 @@ fn run_warm_profile(
         paired_interpreter_over_fifo_ratios: ratios,
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
-    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+    annotate_generic_report(
+        serde_json::to_value(report).map_err(|e| err(e.to_string()))?,
+        generic,
+        cases,
+    )
 }
 
 /// Records bounded capacity-churn counters for repeated execution of the
@@ -2961,6 +3076,7 @@ fn lifecycle_case_with_program(
         id,
         bytes: template.bytes.clone(),
         admission: template.admission.clone(),
+        native_admission: template.native_admission.clone(),
         initial: initial.clone(),
         expected,
         budget,
@@ -3199,6 +3315,9 @@ fn warm_fifo_sweep(
         let result = engine.call(case, &mut state)?;
         execution = execution.saturating_add(call_started.elapsed());
         validate_dispatch_result(case, &state, &result)?;
+        if case.native_admission.is_some() {
+            validate_full_dispatch_state(case, &state)?;
+        }
         retired = retired
             .checked_add(result.retired_instructions)
             .ok_or_else(|| err("warm FIFO retirement count overflow"))?;
@@ -3721,6 +3840,9 @@ fn cold_fifo_sweep(cases: &[Case], started: Instant) -> Result<ColdSweep, BenchE
         let result = engine.call(case, &mut state)?;
         execution = execution.saturating_add(call_started.elapsed());
         validate_dispatch_result(case, &state, &result)?;
+        if case.native_admission.is_some() {
+            validate_full_dispatch_state(case, &state)?;
+        }
         retired = retired
             .checked_add(result.retired_instructions)
             .ok_or_else(|| err("retirement count overflow"))?;
@@ -3986,6 +4108,112 @@ fn validate_interpreter_result(
     Ok(())
 }
 
+// Prepare all admissions before timing and reject bare NOP, the only current
+// NativeRegisterV1 interpreter handoff. This makes helper count zero a
+// property of the measured workload, not an extrapolation to S3-55.
+fn prepare_generic_admissions(cases: &mut [Case]) -> Result<(), BenchError> {
+    for case in cases {
+        let view = CodeView::new(0, &case.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+        let admission = NativeRegisterV1Admission::from_code(view)
+            .map_err(|e| err(format!("generic admission for {}: {e:?}", case.id)))?;
+        let mut memory = FetchMemory(&case.bytes);
+        let mut rip = 0u64;
+        while rip < view.code_end() {
+            let instruction =
+                od_isa::long_decode::decode(&mut memory, rip, AccessContext::default())
+                    .map_err(|e| err(format!("generic preflight decode for {}: {e:?}", case.id)))?;
+            if matches!(instruction.operation, od_isa::long_decode::Operation::Nop) {
+                return Err(err(format!(
+                    "generic native-only workload contains NOP: {}",
+                    case.id
+                )));
+            }
+            rip = rip
+                .checked_add(u64::from(instruction.length))
+                .ok_or_else(|| err("generic preflight RIP overflow"))?;
+            if rip > view.code_end() || instruction.length == 0 {
+                return Err(err("generic preflight instruction range invalid"));
+            }
+        }
+        case.native_admission = Some(admission);
+    }
+    Ok(())
+}
+
+fn annotate_generic_report(
+    mut value: serde_json::Value,
+    generic: bool,
+    cases: &[Case],
+) -> Result<serde_json::Value, BenchError> {
+    if !generic {
+        return Ok(value);
+    }
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| err("first-run report is not an object"))?;
+    object.insert("generic_register".into(), serde_json::json!({
+        "profile": "NativeRegisterV1",
+        "flags_mode": "eager",
+        "case_ids": cases.iter().map(|case| &case.id).collect::<Vec<_>>(),
+        "fallback_helper_calls": 0,
+        "fallback_helper_calls_basis": "preflight rejects bare NOP, the only NativeRegisterV1 interpreter handoff; each successful dispatch also verifies retired_interpreter == 0",
+        "scope": "native-only S3-14 corpus; does not exercise S3-55 mixed denied-form fallback"
+    }));
+    let variants = object
+        .get_mut("variants")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| err("first-run variants missing"))?;
+    for variant in variants {
+        let variant = variant
+            .as_object_mut()
+            .ok_or_else(|| err("first-run variant is not an object"))?;
+        let is_interpreter =
+            variant.get("variant").and_then(serde_json::Value::as_str) == Some("interpreter");
+        let samples = variant
+            .get_mut("samples")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| err("first-run samples missing"))?;
+        for sample in samples {
+            let sample = sample
+                .as_object_mut()
+                .ok_or_else(|| err("first-run sample is not an object"))?;
+            let retired = sample
+                .get("retired_guest_instructions")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| err("first-run retirement missing"))?;
+            let hits = sample
+                .get("cache_hits")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| err("first-run hits missing"))?;
+            let misses = sample
+                .get("cache_misses")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| err("first-run misses missing"))?;
+            let lookups = hits
+                .checked_add(misses)
+                .ok_or_else(|| err("first-run lookup count overflow"))?;
+            sample.insert(
+                "retired_native".into(),
+                serde_json::json!(if is_interpreter { 0 } else { retired }),
+            );
+            sample.insert(
+                "interpreter_steps".into(),
+                serde_json::json!(if is_interpreter { retired } else { 0 }),
+            );
+            sample.insert("fallback_helper_calls".into(), serde_json::json!(0));
+            sample.insert(
+                "cache_hit_rate".into(),
+                if lookups == 0 {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(hits as f64 / lookups as f64)
+                },
+            );
+        }
+    }
+    Ok(value)
+}
+
 fn prepare_cases(
     list: &[u8],
     trace: &RecordedTrace,
@@ -4125,6 +4353,7 @@ fn prepare_cases(
             id: f.case_id,
             bytes,
             admission,
+            native_admission: None,
             initial,
             expected,
             budget: f.instruction_budget,
@@ -4540,6 +4769,7 @@ mod tests {
             id: id.into(),
             bytes: bytes.to_vec(),
             admission,
+            native_admission: None,
             initial: LongModeState::default(),
             expected: LongModeState::default(),
             budget: 1,
@@ -4744,6 +4974,7 @@ mod tests {
             id: "native-mov-smoke".into(),
             bytes: bytes.to_vec(),
             admission,
+            native_admission: None,
             initial,
             expected,
             budget: 2,
@@ -4762,6 +4993,60 @@ mod tests {
             entry_count: 1,
             unique_entries: 1,
         }
+    }
+
+    #[test]
+    fn s3_56_generic_cold_and_warm_preserve_outcomes_and_cache_counters() {
+        let _guard = NATIVE_TEST_LOCK.lock().unwrap();
+        let mut cases = [native_mov_case()];
+        prepare_generic_admissions(&mut cases).unwrap();
+        let started = Instant::now();
+        let cold = cold_fifo_sweep(&cases, started).unwrap();
+        assert_eq!(
+            (cold.retired, cold.counters.hits, cold.counters.misses),
+            (1, 0, 1)
+        );
+        assert_eq!(
+            (
+                cold.counters.compiles,
+                cold.counters.publications,
+                cold.counters.evictions
+            ),
+            (1, 1, 0)
+        );
+
+        let mut engine = Variant::new(VariantName::MultiFifo16).unwrap();
+        let warmup = warm_fifo_sweep(&mut engine, &cases, started).unwrap();
+        let sample = measure_warm_fifo_sample(0, 0, 2, &cases, &mut engine, started).unwrap();
+        assert_eq!(
+            (
+                warmup.counters.misses,
+                warmup.counters.compiles,
+                warmup.counters.publications
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            (sample.retired_guest_instructions, sample.cache_hits),
+            (2, 2)
+        );
+        assert_eq!(
+            (
+                sample.cache_misses,
+                sample.successful_compiles,
+                sample.successful_publications,
+                sample.evictions
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn s3_56_native_only_preflight_rejects_interpreter_handoff() {
+        let mut case = native_mov_case();
+        case.bytes = vec![0x90];
+        let error = prepare_generic_admissions(std::slice::from_mut(&mut case)).unwrap_err();
+        assert!(error.to_string().contains("contains NOP"));
     }
 
     #[test]

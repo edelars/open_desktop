@@ -16,7 +16,8 @@
 | S3-53 — единая точка входа диспетчера | Независимое ревью Sol одобрено; коммит `8aab6f3`, Graphify обновлён |
 | S3-54 — generic путь и multi-entry cache | Проверки выполнены, независимое ревью Sol одобрено; коммит `6c438a8`, Graphify обновлён |
 | S3-55 — interpreter fallback | Заблокировано: требуется смешанный witness и уточнение границы файлов задачи |
-| S3-56…S3-57 | not_started |
+| S3-56 — измерения generic пути | Частично: Sol-ревью выполненного объёма пройдено; задача не принята из-за ISSUE-075 и отсутствующего S3-17 corpus; коммит следует |
+| S3-57 — финальное ревью линии | not_started |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -373,7 +374,26 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 ## 9. S3-56 — измерения generic пути
 
-Статус: not_started.
+**Статус (2026-11-11): частично; независимое Sol-ревью выполненного объёма пройдено, коммит следует.** Расширены существующие `cold-first-run` и `warm-first-run` флагом `--generic-register`; default поведение сохранено. Измерены interpreter, generic cold и generic warm на одном resident native-only корпусе. S3-56 не принят: для сравнения cold на исходном корпусе S3-35a отсутствуют замороженные inputs, а исторические S3-35a и S3-36b использовали разные корпуса ([ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)). Mixed denied-form fallback остаётся заблокированным в [ISSUE-074](../KNOWN_ISSUES.md#issue-074-s3-55-mixed-fallback-witness).
+
+**Методика и вход.** Пять S3-14 branch/helper fixtures, 5 visits и 14 retired guest instructions на sweep; список SHA-256 `dd590c6c8f8ae1a09f2192e47c1d019f7449c814212c87e06194bf7425dd0881`, trace SHA-256 `272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8`. Это те же hashes и case IDs, что у S3-36b. Фикстуры, запись trace, outcome, retirement и NativeRegisterV1 admission проверяются до тайминга. Native-only preflight отвергает bare NOP — единственный текущий interpreter handoff этого профиля — и каждый успешный generic dispatch проверяет `retired_interpreter == 0`. Поэтому fallback helper calls = 0 выведено из проверенной eligibility и результата, а не снято отдельным инструментированным счётчиком; машинные helpers реализации флагов эта величина не считает.
+
+Измерены три независимых release процесса для каждого режима на Apple M3 Max, arm64, macOS 26.7.1, `rustc 1.99.0 (b940084d7 2026-09-28)`, target `aarch64-apple-darwin`. Модель CPU подтверждена отдельным `sysctl -n machdep.cpu.brand_string`; JSON процесса фиксирует `unavailable` из-за sandbox sysctl. Build fingerprint `ba466b09bce22ed2e0f3edcfab93cbb9c155b235147392d8c328df24352e588c`, исходный HEAD `b41755065c7817215903aefc2b487aae976b2f96`, дерево во время сборки dirty из-за S3-56. Каждая серия имеет 20 чередующихся пар с общим sweep count и минимумом 200 ms на сторону; короткая серия сбрасывается и повторяется существующим калибратором. Cold включает fresh arena/cache initialization и dispatch, warm использует один предварительно прогретый cache; загрузка фикстур/admission, клонирование и проверки результатов вне временных интервалов. В каждом измеренном generic `Variant::call` также находятся выбор benchmark-ветки, создание `CodeView`/dependency/context и stop byte, поэтому это не latency одного лишь dispatch. Полная методика и команда — в [BENCHMARKS.md](../testing/BENCHMARKS.md).
+
+| Режим / процесс | Generic median [min–max], IQR, µs/sweep | Interpreter median [min–max], IQR, µs/sweep |
+|---|---:|---:|
+| Cold 1 | 36.995 [35.963–40.037], 1.450 | 2.964 [2.918–3.050], 0.060 |
+| Cold 2 | 39.009 [36.659–42.530], 2.540 | 3.077 [2.968–3.680], 0.089 |
+| Cold 3 | 36.319 [35.985–36.701], 0.288 | 2.993 [2.968–3.052], 0.041 |
+| Warm 1 | 5.024 [4.909–7.926], 0.040 | 2.982 [2.912–3.040], 0.029 |
+| Warm 2 | 5.019 [4.987–5.080], 0.040 | 2.978 [2.963–3.038], 0.012 |
+| Warm 3 | 5.024 [4.964–5.142], 0.056 | 2.968 [2.958–3.020], 0.020 |
+
+Диапазоны min–max трёх процессов пересекаются в каждом режиме; отдельные медианы различаются, а min–max не являются доверительным интервалом. В каждом generic cold sweep: 14 native retired, 0 interpreter steps/fallback helper calls, 0 hits и 5 misses/compiles/publications, 0 evictions. Warm prewarm: 5 misses/compiles/publications; каждый измеренный sweep: 14 native retired, 0 interpreter steps/fallback helper calls, 5 hits и 0 misses/compiles/publications/evictions, hit-rate 1.0. Interpreter выполняет 14 steps на sweep. Это подтверждено для всех записанных samples.
+
+На этой машине и этих пяти случаях generic медленнее interpreter: cold медианы примерно 12.1–12.7×, warm примерно 1.68–1.69×. Возможные причины — стоимость lookup/key, публикации и переходов через JIT; это гипотеза без фазовой атрибуции. Исторический S3-36b использовал тот же list/trace и те же единицы: warm FIFO медианы 3.736–3.959 µs против нынешних 5.019–5.024 µs; interpreter тогда 0.726–0.751 µs против нынешних 2.968–2.982 µs. Тела измерительных `interpreter_sweep`, `measure_interpreter_sample`, `summarize_first_run` идентичны historical revision `836fbfee`, но между ревизиями существенно изменились `od-isa/src/execute.rs` и decoder. Данные получены на одном CPU model/OS/toolchain, но разные revisions и текущая сборка dirty; сравнение фиксирует различие наблюдений, не устанавливает причину или регрессию самого dispatch. Исторический cold S3-35a — 6.640–6.694 ms и interpreter 0.164–0.166 ms на 1 010 случаях/1 322 visits — **несопоставим** с этими пятью случаями и не используется для вывода об изменении скорости.
+
+Сырые данные: [cold 1](data/stage3/s3-56/cold-1.json), [cold 2](data/stage3/s3-56/cold-2.json), [cold 3](data/stage3/s3-56/cold-3.json), [warm 1](data/stage3/s3-56/warm-1.json), [warm 2](data/stage3/s3-56/warm-2.json), [warm 3](data/stage3/s3-56/warm-3.json). `cargo test -p od-bench --offline`: 67 lib + 6 CLI passed; `cargo fmt --all -- --check` и `cargo check -p od-bench --all-targets --offline` прошли. `python3 tools/check_layout.py` сообщает прежние 45 ошибок и не сообщает новых ошибок изменённых документов; `git diff --check` чист. Эти результаты не принимают S3-35/S3-36 или этап 3.
 
 ## 10. S3-57 — финальное независимое ревью линии
 
