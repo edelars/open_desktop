@@ -21245,3 +21245,43 @@ GDT — исключение набора как у `LRETQ`, `state == before`.
 `mov_rax_cr4_keeps_its_result`; `long_decode::tests::mov_r64_cr4_decodes_every_destination_with_any_rex_but_r`;
 `linux_direct::tests::set_facade_mov_r64_cr4_reads_the_board_cr4`. Из тестов S4-38L5d и декодера убрана запись «CR4 в
 RBX — `Unsupported`» (теперь поддержана), а в тесте ReadCr3 — `48 0F 20 E0`.
+
+### `MOV CR4, r64` из любого регистра общего назначения на CPL0 в наборе (S4-38L7c)
+
+Диагностический прогон Linux-ядра на плате за C7 (`--diagnostic-past-c7`, не засчитывается) доходит до `0F 22 E1`
+(`MOV CR4, RCX`, RIP `0xffffffff8139c0c0`, RCX = `0x30`: PSE = бит 4, PAE = бит 5). Семантика по Intel SDM Vol.3
+§2.5 (CR4) и §4.1 (режимы страничной трансляции) **по памяти; текст SDM в репозитории отсутствует и не сверялся**.
+
+**Декодер.** `[REX] 0F 22 /4`: ModRM mod = 11, reg = 100 (`E0`–`E7`), источник = `rm | (REX.B << 3)`. Без префиксов
+или ровно один REX `40`–`4F` с `REX.R = 0`; REX.R (CR12), `mod != 11`, `LOCK`/`66`/`F2`/`F3`/`67`/сегментный префикс
+и иные регистры CR (`0F 22 /0`, `/3` остаются только RAX-формами) — `Unsupported`. Голый `0F 22 E0` остаётся
+`Operation::WriteCr4` (RAX, поведение прежнее); все прочие формы, включая `48 0F 22 E0`, — новая
+`Operation::WriteCr4From(Register)`.
+
+**Политика CR4 набора (минимальная).** Разрешённое значение: `value & !(PSE | OSFXSR | OSXMMEXCPT) == PAE`, т. е.
+PAE (`0x20`) обязателен, дополнительно допускаются PSE (`0x10`, новое в S4-38L7c), OSFXSR (`0x200`), OSXMMEXCPT
+(`0x400`). Политика вынесена в `ControlRegisterPolicy::accepts_cr4` (используется и при входе в набор, и записью
+RAX-формы `WriteCr4`, так что `0x30` теперь допустимо и для неё); `Cr4Profile::accepts` профилей по одному регистру не
+менялся. Порядок проверок `WriteCr4From`: (а) бит PAE равен 0 — #GP(0) (в long mode PAE очистить нельзя; по памяти
+SDM); (б) любой другой бит вне разрешённой маски (LA57 = бит 12, PKE, TSD, PGE, PCIDE, OSXSAVE, SMEP/SMAP,
+зарезервированные и т. д.) — `Unsupported { opcode: 0x22 }`, не принимаются молча до отдельных срезов (по SDM часть
+зарезервированных битов дала бы #GP(0); здесь консервативно `Unsupported`, как у RAX-формы); (в) иначе `state.cr4 :=
+значение` (64 бита из регистра), RIP += 3 (4 с REX), retired += 1, RFLAGS и прочие регистры не меняются, определённость
+арифметических флагов снимается; при ошибке (а)/(б) состояние не мутируется и ничего не ретайрится. Гейт: набор CPL0
+(`control_policy`), как у `WriteCr4`; вне набора — `Unsupported` без мутации; CPL ≠ 0 — #GP(0) (тот же гейт и вход
+`WrongPrivilege`).
+
+**Трансляция.** CR4.PSE не меняет трансляцию IA-32e (бит PS записи PDE/PDPT учитывается всегда); walker
+(`page_walk.rs`) CR4 не читает, только проверяет снимок. В `Long64ProbeConfig` бит PSE добавлен в допустимую маску
+снимка (`CR4_ALLOWED`), иначе плата не вошла бы повторно с `CR4 = 0x30`. Остальные места, требующие `CR4 == 0x20`
+строго (IRETQ/SYSCALL/профили CPL3 и т. п.), не менялись.
+
+**Не делалось.** CR0/CR3 записи, `PUSHFQ`, CPUID/MSR, список `PagedCpl0ProbeV1`, `LEAVE`/`IRETQ`/`LRETQ`/`MOV Sreg`,
+TLB/walker не менялись.
+
+Тесты: `cpl0_profile_set::mov_cr4_*`, `lock_mov_cr4_r64_does_not_execute`,
+`cr4_with_pse_is_admitted_on_reentry_and_by_the_rax_write`;
+`long_decode::tests::mov_cr4_r64_decodes_every_source_with_any_rex_but_r`;
+`page_walk::tests::cpu_state_snapshot_admits_cr4_pse_as_a_snapshot_only_bit`;
+`linux_direct::tests::set_facade_mov_cr4_rcx_with_pse_retires_and_the_board_reenters`. Из тестов S4-38L7b и декодера
+убраны записи «`0F 22 E2` / `41 0F 22 E0` — `Unsupported`» (теперь поддержаны).

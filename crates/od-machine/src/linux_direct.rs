@@ -2291,6 +2291,30 @@ mod tests {
         }
     }
 
+    /// S4-38L7c: `MOV CR4, RCX` (`0F 22 E1`) with RCX = 0x30 (PSE|PAE, the real kernel's value)
+    /// retires in the board's CPL0 set; the board then accepts the new CR4 on re-entry (the
+    /// walker snapshot admits PSE) and `MOV RDX, CR4` reads it back.
+    #[test]
+    fn set_facade_mov_cr4_rcx_with_pse_retires_and_the_board_reenters() {
+        let code = [
+            0xB9, 0x30, 0x00, 0x00, 0x00, // mov ecx, 0x30
+            0x0F, 0x22, 0xE1, // mov cr4, rcx
+            0x0F, 0x20, 0xE2, // mov rdx, cr4
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.state().cr4, Some(0x20));
+        let record = run_set_facade(&mut boot, &file, 2, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!((record.retired, record.rip), (2, ENTRY + 8));
+        assert_eq!(record.gpr[Register::Rcx as usize], 0x30);
+        assert_eq!(boot.board.state().cr4, Some(0x30));
+        assert_eq!(record.cr4, Some(0x30));
+        let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!((record.retired, record.rip), (1, ENTRY + 11));
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x30);
+    }
+
     #[test]
     fn set_facade_mov_cr3_is_a_continuation_that_the_record_counts() {
         let board_cr3 = boot_with_entry(&[0xF4]).0.board.cr3();

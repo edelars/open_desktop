@@ -1411,6 +1411,9 @@ pub enum Operation {
     /// the CPL0 profile set (`ControlRegisterPolicy`); read-only. The
     /// destination is `rm` extended by REX.B; REX.W carries no meaning.
     ReadCr4Into(Register),
+    /// S4-38L7c: `[REX] 0F 22 /4` with mod = 11 (MOV CR4, r64) from any GPR
+    /// except the bare `0F 22 E0`, which stays [`Operation::WriteCr4`].
+    WriteCr4From(Register),
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -2358,7 +2361,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         rex: prefixes.rex,
                         ..Prefixes::default()
                     });
-            if prefixes != Prefixes::default() && !rex_only_read {
+            let rex_only_write = opcode.byte == 0x22
+                && prefixes.rex.is_some()
+                && prefixes
+                    == (Prefixes {
+                        rex: prefixes.rex,
+                        ..Prefixes::default()
+                    });
+            if prefixes != Prefixes::default() && !rex_only_read && !rex_only_write {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
@@ -2370,9 +2380,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
             // S4-38L7b: `0F 20 /4` with mod = 11 (MOV r64, CR4) takes any REX
             // without R, like CR2. The bare `0F 20 E0` stays `ReadCr4`.
             let cr4_read = opcode.byte == 0x20 && modrm & 0xf8 == 0xe0 && rex & 0x04 == 0;
+            // S4-38L7c: `0F 22 /4` with mod = 11 (MOV CR4, r64) takes any REX
+            // without R. The bare `0F 22 E0` stays `WriteCr4`.
+            let cr4_write = opcode.byte == 0x22 && modrm & 0xf8 == 0xe0 && rex & 0x04 == 0;
             let old_cr_form = matches!(modrm, 0xc0 | 0xd8 | 0xe0)
                 && (prefixes == Prefixes::default() || rex_w_read_cr3);
-            if !(old_cr_form || cr2_read || cr4_read)
+            if !(old_cr_form || cr2_read || cr4_read || cr4_write)
                 || (rex_w_read_cr3 && modrm != 0xd8 && !cr2_read && !cr4_read)
             {
                 return Err(self.unsupported(opcode));
@@ -2386,6 +2399,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     operand_size: OperandSize::Qword,
                     address_size: OperandSize::Qword,
                     operation: Operation::ReadCr4Into(dest),
+                });
+            }
+            if cr4_write && !(prefixes.rex.is_none() && modrm == 0xe0) {
+                let src = Register::from_encoding((modrm & 7) | ((rex & 1) << 3)).unwrap();
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::WriteCr4From(src),
                 });
             }
             if cr2_read {
@@ -24343,8 +24367,6 @@ mod tests {
             &[0x4d, 0x0f, 0x20, 0xe7][..],
             &[0x0f, 0x20, 0x23][..], // memory forms
             &[0x0f, 0x20, 0x63, 0x08][..],
-            &[0x0f, 0x22, 0xe2][..], // CR4 write into RDX is not modeled
-            &[0x41, 0x0f, 0x22, 0xe0][..],
             &[0x66, 0x0f, 0x20, 0xe2][..],
             &[0xf2, 0x0f, 0x20, 0xe2][..],
             &[0xf3, 0x0f, 0x20, 0xe2][..],
@@ -24352,6 +24374,75 @@ mod tests {
             &[0x2e, 0x0f, 0x20, 0xe2][..],
             &[0xf0, 0x0f, 0x20, 0xe2][..],
             &[0x41, 0x66, 0x0f, 0x20, 0xe2][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mov_cr4_r64_decodes_every_source_with_any_rex_but_r() {
+        // S4-38L7c: the bare `0F 22 E0` keeps `WriteCr4`; every other form
+        // (any REX without R, any rm, REX.B) is `WriteCr4From`.
+        for rex in [
+            None,
+            Some(0x40u8),
+            Some(0x41),
+            Some(0x48),
+            Some(0x49),
+            Some(0x4a),
+            Some(0x4b),
+        ] {
+            for rm in 0u8..8 {
+                let mut bytes = Vec::new();
+                bytes.extend(rex);
+                bytes.extend_from_slice(&[0x0f, 0x22, 0xe0 | rm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                let src = Register::from_encoding(rm | ((rex.unwrap_or(0) & 1) << 3)).unwrap();
+                let expected = if rex.is_none() && rm == 0 {
+                    Operation::WriteCr4
+                } else {
+                    Operation::WriteCr4From(src)
+                };
+                assert_eq!(instruction.operation, expected, "{bytes:02x?}");
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(instruction.operand_size, OperandSize::Qword);
+                assert_eq!(instruction.prefixes.rex, rex);
+            }
+        }
+        assert_eq!(
+            Memory::new(&[0x0f, 0x22, 0xe1]).decode().unwrap().operation,
+            Operation::WriteCr4From(Register::Rcx)
+        );
+        assert_eq!(
+            Memory::new(&[0x41, 0x0f, 0x22, 0xe0])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::WriteCr4From(Register::R8)
+        );
+        for bytes in [
+            &[0x44, 0x0f, 0x22, 0xe1][..], // REX.R: CR12
+            &[0x4d, 0x0f, 0x22, 0xe1][..],
+            &[0x0f, 0x22, 0x21][..], // memory forms
+            &[0x0f, 0x22, 0x61, 0x08][..],
+            &[0x0f, 0x22, 0xa1, 0, 0, 0, 0][..],
+            &[0x66, 0x0f, 0x22, 0xe1][..],
+            &[0xf2, 0x0f, 0x22, 0xe1][..],
+            &[0xf3, 0x0f, 0x22, 0xe1][..],
+            &[0x67, 0x0f, 0x22, 0xe1][..],
+            &[0x2e, 0x0f, 0x22, 0xe1][..],
+            &[0xf0, 0x0f, 0x22, 0xe1][..],
+            &[0x41, 0x66, 0x0f, 0x22, 0xe1][..],
+            &[0x41, 0x0f, 0x22, 0xc0][..], // CR0 and CR3 stay RAX-only
+            &[0x0f, 0x22, 0xc1][..],
+            &[0x41, 0x0f, 0x22, 0xd8][..],
+            &[0x0f, 0x22, 0xd9][..],
         ] {
             assert!(
                 matches!(

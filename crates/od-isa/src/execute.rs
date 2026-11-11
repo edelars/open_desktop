@@ -1763,6 +1763,9 @@ impl Cr0Profile {
     }
 }
 
+/// CR4.PSE (bit 4), the only bit the CPL0 set policy adds (S4-38L7c).
+const CR4_PSE: u64 = 1 << 4;
+
 /// The bounded mutable CR4 contract used by the S2-25b FP-init composition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cr4Profile {
@@ -1803,9 +1806,12 @@ impl ControlRegisterPolicy {
         }
     }
 
+    /// CR4 values of the CPL0 set: PAE, optionally with OSFXSR/OSXMMEXCPT
+    /// (the `FpInitLong64V1` bits) and, since S4-38L7c, PSE (bit 4).
+    /// `Cr4Profile::accepts` itself is unchanged for the per-register profiles.
     const fn accepts_cr4(self, value: u64) -> bool {
         match self {
-            Self::Cpl0BaseLong64V1 => Cr4Profile::FpInitLong64V1.accepts(value),
+            Self::Cpl0BaseLong64V1 => value & !(CR4_PSE | (1 << 9) | (1 << 10)) == Cr4Profile::BASE,
         }
     }
 
@@ -27054,6 +27060,7 @@ fn step_configured(
                     | Operation::ReadCr4
                     | Operation::ReadCr4Into(_)
                     | Operation::WriteCr4
+                    | Operation::WriteCr4From(_)
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
             && instruction.operation == Operation::WriteCr3)
@@ -32384,6 +32391,53 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::WriteCr4From(src) if control_policy.is_some() => {
+            // S4-38L7c: `[REX] 0F 22 /4` MOV CR4, r64 from any GPR in the CPL0
+            // set. The decoder validated mod = 11, reg = CR4, the REX.R-free
+            // prefix and the source (`rm` + REX.B); the executor re-checks the
+            // shape. CPL > 0 was already refused with #GP(0) above.
+            let policy = control_policy.expect("guarded by the match arm");
+            let rex_only = match instruction.prefixes.rex {
+                Some(rex) => {
+                    (0x40..=0x4f).contains(&rex)
+                        && rex & 0x04 == 0
+                        && instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(rex),
+                                ..Prefixes::default()
+                            })
+                }
+                None => instruction.length == 3 && instruction.prefixes == Prefixes::default(),
+            };
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x22
+                && rex_only
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            if !exact_form {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            let value = state.gpr[src as usize];
+            // Long mode cannot clear CR4.PAE (SDM Vol. 3 §4.1.2, from memory):
+            // #GP(0), no state change.
+            if value & Cr4Profile::BASE == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            // Every other bit outside the set policy is `Unsupported` until its
+            // own slice (LA57, PKE, ...), never silently accepted.
+            if !policy.accepts_cr4(value) {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            state.cr4 = Some(value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         Operation::WriteCr0 | Operation::WriteCr4 if control_policy.is_some() => {
             let policy = control_policy.expect("guarded by the match arm");
             let value = state.gpr[Register::Rax as usize];
@@ -34487,7 +34541,7 @@ fn step_configured(
             cr4_profile.is_some() || control_policy.is_some()
         }
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
-        Operation::ReadCr4Into(_) => control_policy.is_some(),
+        Operation::ReadCr4Into(_) | Operation::WriteCr4From(_) => control_policy.is_some(),
         Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
             cpu_owned_cr3.is_some()
         }
@@ -36702,6 +36756,7 @@ fn step_configured(
         | Operation::ReadCr4
         | Operation::ReadCr4Into(_)
         | Operation::WriteCr4
+        | Operation::WriteCr4From(_)
         | Operation::WriteCr3
         | Operation::ReadCr3
         | Operation::ReadCr2
