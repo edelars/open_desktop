@@ -1763,8 +1763,10 @@ impl Cr0Profile {
     }
 }
 
-/// CR4.PSE (bit 4), the only bit the CPL0 set policy adds (S4-38L7c).
+/// CR4.PSE (bit 4), added to the CPL0 set policy in S4-38L7c.
 const CR4_PSE: u64 = 1 << 4;
+/// CR4.PGE (bit 7), added to the CPL0 set policy in S4-38L7d.
+const CR4_PGE: u64 = 1 << 7;
 
 /// The bounded mutable CR4 contract used by the S2-25b FP-init composition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1807,11 +1809,13 @@ impl ControlRegisterPolicy {
     }
 
     /// CR4 values of the CPL0 set: PAE, optionally with OSFXSR/OSXMMEXCPT
-    /// (the `FpInitLong64V1` bits) and, since S4-38L7c, PSE (bit 4).
+    /// (the `FpInitLong64V1` bits), since S4-38L7c PSE (bit 4) and since S4-38L7d PGE (bit 7).
     /// `Cr4Profile::accepts` itself is unchanged for the per-register profiles.
     const fn accepts_cr4(self, value: u64) -> bool {
         match self {
-            Self::Cpl0BaseLong64V1 => value & !(CR4_PSE | (1 << 9) | (1 << 10)) == Cr4Profile::BASE,
+            Self::Cpl0BaseLong64V1 => {
+                value & !(CR4_PSE | CR4_PGE | (1 << 9) | (1 << 10)) == Cr4Profile::BASE
+            }
         }
     }
 
