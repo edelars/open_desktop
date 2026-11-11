@@ -21448,3 +21448,31 @@ S4-38L4h без изменений); RIP += длина инструкции (с 
 (17 инструкций после записи), RDI = `0x3ffe000`, RAX = 0, RBX = `0x100000`, RSP = `0xffffffff83a03f08`, CR0 = `0x80050033`,
 CR4 = `0xb0`, EFER walker'а `0xd00`, гостевой EFER `0xd01`, `memory_error`/`page_fault` отсутствуют. Значения FS/GS base в JSON
 не выводятся. Следующий срез — выяснить, почему `MOV CR3, RDI` не принимается набором (форма с CR4 = `0xb0`).
+
+### `MOV CR3, r64` из любого регистра общего назначения на CPL0 в наборе (S4-38L7h)
+
+Граница S4-38L7g (`0f 22 df`, `MOV CR3, RDI`, RIP `0xffffffff82728f60`) показала, что набор принимал запись CR3 только
+из RAX (`0F 22 D8`). Срез добавляет запись CR3 из любого регистра по той же схеме, что `MOV CR4, r64` (S4-38L7c).
+Описание дано **по памяти SDM** (Vol. 2 «MOV—Move to/from Control Registers», Vol. 3 §4.10 «Caching Translation
+Information» и §2.5 про CR3 в IA-32e); по первоисточнику не сверялось.
+
+**Декодер.** `[REX] 0F 22 /3` с mod = 11 (`MOV CR3, r64`) порождает `Operation::WriteCr3From(src)`, где `src` = `rm` плюс
+REX.B. Допустимы любые REX без REX.R (`40`–`4F` без бита R, включая `48`), любой `rm`. Бессуффиксная форма `0F 22 D8` по-прежнему
+`Operation::WriteCr3` (RAX). Отказ (`Unsupported { opcode: 0x22 }` без мутации): память (mod ≠ 11), REX.R (CR11), `66`,
+`F2`/`F3`, `67`, `2E`/`3E`/`26`/`36`, два REX и любой префикс рядом с REX; LOCK (`F0`) с любым регистром, кроме уже
+существующей ветки `InvalidMovCr3Lock` для `F0 0F 22 D8` (без изменений). Регистры `/0`, `/2`, `/4`, `/1` и прочие
+поля reg не изменены.
+
+**Исполнение.** Общая фиксация `commit_mov_cr3(state, src, ...)`: проверка значения (≤ 36 бит, иначе `#GP(0)` без
+мутации) и `TranslationContextChange::Cr3Write`, как у записи из RAX. Выход из прогона — на границе следующей инструкции
+(`Cpl0ProfileSetExit::TranslationContextChange`), после чего плата перестраивает walker по новому CR3 и инвалидирует кэш
+трансляции выборки (S4-13). Вне набора (`cpu_owned_cr3` не задан) — `Unsupported { opcode: 0x22 }` без мутации. CPL > 0 —
+`#GP(0)` (как у остальных привилегированных; в наборе CPL3 отсекается ещё на входе, `WrongPrivilege`, как для RAX). Paged-probe (`allow_cr3`, `step_paged_cr3_probe`) и профиль
+`mov_cr3_profile` не менялись: они по-прежнему принимают только `0F 22 D8`.
+
+**Тесты.** `cpl0_profile_set::mov_cr3_r64_*` (RDI, RBX, R8, R15; все REX без R; отказы вне набора и формы с LOCK/памятью/
+префиксами без мутации; `#GP(0)` при значении ≥ 2^36 без мутации; CPL3); `long_decode::tests::mov_cr3_r64_decodes_every_source_with_any_rex_but_r`;
+`linux_direct::tests::set_facade_mov_cr3_rdi_is_a_continuation_like_the_rax_form` (через фасад платы, пять инструкций, одна
+смена CR3). Ignored-тесты `real_artifacts` ожиданий о границе не содержат и не менялись.
+
+**Диагностический прогон.** Результат прогона (`--diagnostic-past-c7`, не засчитывается) — в отдельном коммите после прогона.
