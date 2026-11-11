@@ -656,6 +656,10 @@ pub struct LinuxCpl0SetMembers {
     pub rdtsc: bool,
     /// `with_msr(EferReadOnlyV1(board EFER))`.
     pub msr: bool,
+    /// `with_msr_fs_gs_base` (S4-38L6b): `WRMSR`/`RDMSR` of IA32_FS_BASE and IA32_GS_BASE at
+    /// CPL0 (`EDX:EAX`, canonical 48-bit, stored in the CPU state); no other MSR. Independent of
+    /// [`Self::msr`] (the read-only EFER profile), which it does not replace.
+    pub msr_fs_gs_base: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus (COM1, PM timer, PIT).
@@ -679,6 +683,7 @@ impl LinuxCpl0SetMembers {
             cpuid: false,
             rdtsc: false,
             msr: false,
+            msr_fs_gs_base: false,
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
@@ -687,11 +692,13 @@ impl LinuxCpl0SetMembers {
     }
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
-    /// (DiagnosticV1 with the divergence boundary, S4-38L4) and the qword `POPFQ` (S2-50).
+    /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50) and the FS/GS
+    /// base MSRs (S4-38L6b).
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
             popf_cpl0: true,
+            msr_fs_gs_base: true,
             fetch_cache: true,
             ..Self::minimal()
         }
@@ -740,6 +747,10 @@ pub fn run_linux_direct_board_set(
     if members.msr {
         set = set.with_msr(&msr);
         names.push(format!("msr:{msr:?}"));
+    }
+    if members.msr_fs_gs_base {
+        set = set.with_msr_fs_gs_base();
+        names.push("msr:fs_gs_base".into());
     }
     if members.halt {
         set = set.with_halt(&halt);
@@ -2768,6 +2779,53 @@ mod tests {
         );
     }
 
+    // ---- S4-38L6b: WRMSR/RDMSR IA32_GS_BASE through the board facade ----
+
+    #[test]
+    fn wrmsr_gs_base_runs_through_the_board_set_and_is_gated_by_its_member() {
+        // CLI; MOV ECX,0xC0000101; XOR EAX,EAX; XOR EDX,EDX; WRMSR; RDMSR; HLT (the kernel's
+        // GS_BASE clear, then a read back).
+        let code = [
+            0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30, 0x0F, 0x32,
+            0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "CLI, MOV, XOR, XOR, WRMSR, RDMSR, HLT");
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0101);
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(boot.board.state().gs_base, 0);
+        assert!(record.set_members.contains(&"msr:fs_gs_base".to_string()));
+
+        // Without the member (`minimal`) WRMSR is the stop, after CLI, MOV, XOR and XOR.
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 4);
+        assert!(
+            !record
+                .set_members
+                .iter()
+                .any(|name| name.starts_with("msr"))
+        );
+        assert!(!LinuxCpl0SetMembers::minimal().msr_fs_gs_base);
+        assert!(LinuxCpl0SetMembers::linux_default().msr_fs_gs_base);
+    }
+
     // ---- S4-38L4: the CPUID boundary on the set path ----
 
     /// `MOV EAX, imm32` (`B8 id`).
@@ -2791,6 +2849,7 @@ mod tests {
             LinuxCpl0SetMembers {
                 cpuid: true,
                 popf_cpl0: true,
+                msr_fs_gs_base: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
@@ -2800,7 +2859,13 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
         assert_eq!(
             record.set_members,
-            ["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"]
+            [
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
+                "popf_cpl0"
+            ]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
     }
@@ -2882,6 +2947,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
                 "halt",
                 "popf_cpl0"
             ]

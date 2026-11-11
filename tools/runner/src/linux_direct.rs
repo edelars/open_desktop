@@ -1362,7 +1362,13 @@ mod tests {
         assert_eq!(stop["path"], "cpl0_set");
         assert_eq!(
             stop["set_members"],
-            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
+            json!([
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
+                "popf_cpl0"
+            ])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
         // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches
@@ -1547,7 +1553,13 @@ mod tests {
         assert!(stop["page_fault"].is_null());
         assert_eq!(
             stop["set_members"],
-            json!(["cli", "cpu_owned_cr3", "cpuid:DiagnosticV1", "popf_cpl0"])
+            json!([
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
+                "popf_cpl0"
+            ])
         );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
         // reads the dword `MOV EAX, [RSI+0x230]` (RIP 0x100_0215) and 13 more instructions

@@ -21087,3 +21087,37 @@ retired += 1; операнд не транслируется (даже неот�
 
 Тесты: `cpl0_profile_set::prefetch_0f18_*`, `long_decode::tests::prefetch_0f18_*`,
 `linux_direct::tests::cpl0_set_board_prefetcht0_is_a_nop_that_does_not_touch_memory`.
+
+### WRMSR/RDMSR `IA32_FS_BASE` и `IA32_GS_BASE` на CPL0 в наборе (S4-38L6b)
+
+Реальное ядро на плате (nonce `s4-38l4a`, бюджет 3000000000) при retired 1137474216 доходит до точки входа
+распакованного ядра (`e_entry` 0x3f2_53e0, чекпоинт C5) и останавливается на `0F 30` (WRMSR) по RIP
+`0x3f253f3`: `RCX = 0xC0000101` (`IA32_GS_BASE`), `RAX = RDX = 0` — ядро обнуляет базу GS. Набор отвечал
+`Unsupported { opcode: 0x30 }`.
+
+**Член набора.** `Cpl0ProfileSet::with_msr_fs_gs_base()` (поле платы `LinuxCpl0SetMembers::msr_fs_gs_base`,
+имя в `stop.set_members` — `msr:fs_gs_base`) добавляет MSR `0xC000_0100` (`IA32_FS_BASE`) и `0xC000_0101`
+(`IA32_GS_BASE`) рядом с профилем, выбранным `with_msr`: индексы, которые обрабатывает выбранный профиль
+(например, чтение EFER в `EferReadOnlyV1`), остаются за ним; два индекса баз, которых он не обрабатывает,
+уходят в `FsBaseV1`/`GsBaseV1`. Член выключен в `minimal()`, включён в `linux_default()`; член `msr`
+(чтение EFER) не меняется и в `linux_default()` по-прежнему выключен.
+
+**Семантика.** Индекс — `ECX` (старшая половина RCX игнорируется, как в профилях `FsBaseV1`/`GsBaseV1`).
+`WRMSR`: значение `(EDX << 32) | EAX` каноническое 48-битное (0 допустимо) записывается в
+`LongModeState.fs_base`/`gs_base`; неканоническое — `#GP(0)` без мутации. `RDMSR` возвращает сохранённое
+значение в `EDX:EAX`. RIP += 2, retired += 1, флаги и регистры, кроме EAX/EDX у `RDMSR`, не меняются.
+Только точная форма `0F 30`/`0F 32` без префиксов (с префиксом — `Unsupported`). Набор исполняется только
+на CPL0 (CPL > 0 отвергается на входе `WrongPrivilege`, до выборки). Любой другой MSR (`0x1B`, `0x174`,
+EFER на запись, `IA32_KERNEL_GS_BASE`, STAR и прочие) — `Unsupported { opcode: 0x30/0x32 }` без мутации.
+Без члена `WRMSR`/`RDMSR` баз остаются `Unsupported`.
+
+**Модель GS base — минимальная.** База хранится как значение MSR в `LongModeState` (`gs_base`, `fs_base`);
+сегментная адресация через `GS:`/`FS:` по этой базе набором не моделируется и не вводится этим срезом.
+`IA32_KERNEL_GS_BASE` и `SWAPGS` не входят: профиль `KernelGsBaseV1` требует уже заданное
+`kernel_gs_base` и не подходит для первой записи ядром, это отдельное решение.
+
+**ISSUE-073.** Статус не меняется (открыта): запись MSR базы не решает вопрос о поведении базы FS/GS при
+null-загрузке селектора (S2-46) — это разные пути.
+
+Тесты: `cpl0_profile_set::wrmsr_*`, `rdmsr_gs_and_fs_base_*`, `gs_base_member_keeps_the_selected_efer_profile`,
+`msr_index_is_ecx_only_*`; `linux_direct::tests::wrmsr_gs_base_runs_through_the_board_set_and_is_gated_by_its_member`.
