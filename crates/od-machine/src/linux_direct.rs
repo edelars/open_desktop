@@ -3377,6 +3377,51 @@ mod tests {
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
     }
 
+    // ---- S4-38L7s: LOCK OR m8, imm8 through the board facade ----
+
+    #[test]
+    fn lock_or_byte_reads_and_writes_one_guest_byte_at_disp8_of_rbx() {
+        // MOV RBX,0x0200_0000; MOV RAX,0x1122334455667741; MOV [RBX+0x38],RAX;
+        // ADD AL,0xC0 (0x41 + 0xC0 carries: CF = 1);
+        // LOCK ORB [RBX+0x3D],0x80 (`f0 80 4b 3d 80`: the byte 0x33 becomes 0xB3, CF is cleared);
+        // MOV RDX,[RBX+0x38]; HLT.
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0000u64.to_le_bytes());
+        code.extend(mov_rax_imm64(0x1122_3344_5566_7741));
+        code.extend([0x48, 0x89, 0x43, 0x38]);
+        code.extend([0x04, 0xC0]);
+        code.extend([0xF0, 0x80, 0x4B, 0x3D, 0x80]);
+        code.extend([0x48, 0x8B, 0x53, 0x38]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // Only the byte at +5 changed; its neighbours are intact.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x1122_B344_5566_7741
+        );
+        assert_eq!(state.rflags & (1 << 0), 0, "CF");
+        assert_eq!(state.rflags & (1 << 11), 0, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+        assert_eq!(state.rflags & (1 << 2), 0, "PF (0xB3 has five set bits)");
+    }
+
     // ---- S4-38L7o: FS/GS-based TEST m8, imm8 through the board facade ----
 
     #[test]
