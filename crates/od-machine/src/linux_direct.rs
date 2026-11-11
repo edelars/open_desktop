@@ -2271,6 +2271,26 @@ mod tests {
         }
     }
 
+    /// S4-38L7b: `MOV RDX, CR4` (`0F 20 E2`, the real kernel's CR4.LA57 probe) and `MOV R8, CR4`
+    /// retire in the board's CPL0 set and read the board's CR4 (0x20, LA57 = 0).
+    #[test]
+    fn set_facade_mov_r64_cr4_reads_the_board_cr4() {
+        for (code, length, dest) in [
+            (&[0x0F, 0x20, 0xE2][..], 3u64, Register::Rdx),
+            (&[0x41, 0x0F, 0x20, 0xE0][..], 4, Register::R8),
+        ] {
+            let (mut boot, file) = boot_with_entry(code);
+            boot.board.state_mut().gpr[dest as usize] = 0x1111_2222_3333_4444;
+            let board_cr4 = boot.board.state().cr4;
+            assert_eq!(board_cr4, Some(0x20));
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!((record.retired, record.rip), (1, ENTRY + length));
+            assert_eq!(record.gpr[dest as usize], 0x20, "{code:02x?}");
+            assert_eq!(boot.board.state().cr4, board_cr4);
+        }
+    }
+
     #[test]
     fn set_facade_mov_cr3_is_a_continuation_that_the_record_counts() {
         let board_cr3 = boot_with_entry(&[0xF4]).0.board.cr3();
