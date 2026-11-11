@@ -1987,8 +1987,9 @@ impl<'a> Cpl0ProfileSet<'a> {
     }
 
     /// Let the CPU own CR3 under the `MOV CR3, RAX` profile. `state.cr3` must
-    /// be modeled within 36 bits at entry. The exact form `0F 22 D8` retires
-    /// through the shared MOV CR3 commit and the run then stops at the next
+    /// be modeled within 36 bits at entry. The forms `0F 22 D8` (RAX) and, since
+    /// S4-38L7h, `[REX] 0F 22 /3` with mod = 11 from any GPR (REX.B without REX.R)
+    /// retire through the shared MOV CR3 commit and the run then stops at the next
     /// instruction boundary with
     /// [`Cpl0ProfileSetExit::TranslationContextChange`], so that the caller can
     /// rebuild its translation context before the next fetch. Without this
@@ -18004,13 +18005,17 @@ fn step_mov_cr3_with_profiles(
     })
 }
 
+/// Commit `MOV CR3, src`. The bare `0F 22 D8` passes `Register::Rax`; the S4-38L7h
+/// forms pass the decoded source. The value check and the state update are the same
+/// for every source: a value above 36 bits is #GP(0) with no state change.
 fn commit_mov_cr3(
     state: &mut LongModeState,
+    src: Register,
     next_rip: u64,
     rflags_defined: &mut u64,
 ) -> Result<TranslationContextChange, ArchitecturalFault> {
     let old_cr3 = state.cr3.expect("MOV CR3 profile admission requires CR3");
-    let new_cr3 = state.gpr[Register::Rax as usize];
+    let new_cr3 = state.gpr[src as usize];
     if new_cr3 & !((1u64 << 36) - 1) != 0 {
         return Err(ArchitecturalFault {
             vector: 13,
@@ -19105,7 +19110,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 && instruction.prefixes == Prefixes::default() =>
         {
             let mut rflags_defined = initial_rflags_defined;
-            let effect = match commit_mov_cr3(state, next_rip, &mut rflags_defined) {
+            let effect = match commit_mov_cr3(state, Register::Rax, next_rip, &mut rflags_defined) {
                 Ok(effect) => effect,
                 Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
             };
@@ -27237,7 +27242,10 @@ fn step_configured(
                     | Operation::WriteCr4From(_)
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
-            && instruction.operation == Operation::WriteCr3)
+            && matches!(
+                instruction.operation,
+                Operation::WriteCr3 | Operation::WriteCr3From(_)
+            ))
         || (cpu_owned_cr3.is_some()
             && matches!(
                 instruction.operation,
@@ -32637,7 +32645,7 @@ fn step_configured(
             return Ok(StepOutcome::Advanced);
         }
         Operation::WriteCr3 if mov_cr3_profile.is_some() => {
-            if let Err(fault) = commit_mov_cr3(state, next_rip, rflags_defined) {
+            if let Err(fault) = commit_mov_cr3(state, Register::Rax, next_rip, rflags_defined) {
                 return Ok(StepOutcome::Fault(fault));
             }
             return Ok(StepOutcome::Advanced);
@@ -32731,7 +32739,40 @@ fn step_configured(
                 return Ok(StepOutcome::Unsupported { opcode: 0x22 });
             }
             let sink = cpu_owned_cr3.expect("guarded by the match arm");
-            match commit_mov_cr3(state, next_rip, rflags_defined) {
+            match commit_mov_cr3(state, Register::Rax, next_rip, rflags_defined) {
+                Ok(effect) => sink.set(Some(effect)),
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            }
+            return Ok(StepOutcome::Advanced);
+        }
+        Operation::WriteCr3From(src) if cpu_owned_cr3.is_some() => {
+            // S4-38L7h: `[REX] 0F 22 /3` MOV CR3, r64 from any GPR in the CPL0 set that owns
+            // CR3. The decoder validated mod = 11, reg = CR3, the REX.R-free prefix and the
+            // source (`rm` + REX.B); the executor re-checks the shape. CPL > 0 was already
+            // refused with #GP(0) above. The commit is the bare RAX commit with another source.
+            let rex_only = match instruction.prefixes.rex {
+                Some(rex) => {
+                    (0x40..=0x4f).contains(&rex)
+                        && rex & 0x04 == 0
+                        && instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(rex),
+                                ..Prefixes::default()
+                            })
+                }
+                None => instruction.length == 3 && instruction.prefixes == Prefixes::default(),
+            };
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x22
+                && rex_only
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            if !exact_form {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            let sink = cpu_owned_cr3.expect("guarded by the match arm");
+            match commit_mov_cr3(state, src, next_rip, rflags_defined) {
                 Ok(effect) => sink.set(Some(effect)),
                 Err(fault) => return Ok(StepOutcome::Fault(fault)),
             }
@@ -34740,6 +34781,7 @@ fn step_configured(
             cr4_profile.is_some() || control_policy.is_some()
         }
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
+        Operation::WriteCr3From(_) => cpu_owned_cr3.is_some(),
         Operation::ReadCr4Into(_) | Operation::WriteCr4From(_) => control_policy.is_some(),
         Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
             cpu_owned_cr3.is_some()
@@ -36957,6 +36999,7 @@ fn step_configured(
         | Operation::WriteCr4
         | Operation::WriteCr4From(_)
         | Operation::WriteCr3
+        | Operation::WriteCr3From(_)
         | Operation::ReadCr3
         | Operation::ReadCr2
         | Operation::ReadCr2Into(_) => {
@@ -153224,6 +153267,87 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn mov_cr3_r64_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7h widened the CPL0-set decoder only; this profile keeps accepting
+        // `0F 22 D8` alone, so the new source forms are refused without mutation.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
+        // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rax as usize] = 0x2000;
+            bare.gpr[Register::Rdi as usize] = 0x2000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let outcome = step(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                StepOutcome::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fetch_and_input_failures_do_not_commit_or_emit_an_effect() {
         let mut state = make_state(0x1000, 0x2000);
         let before = state.clone();
@@ -153668,6 +153792,26 @@ mod paged_cr3_probe_tests {
         assert_eq!(state.rip, 6);
         assert_eq!(state.cr3, Some(0x2000));
         assert_eq!(memory.fetches, [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_mov_cr3_r64_forms_unsupported() {
+        // The allow_cr3 whitelist admits only `0F 22 D8`; the S4-38L7h source forms
+        // belong to the CPL0 set and stay refused here without mutation.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut state = state();
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
     }
 
     #[test]
