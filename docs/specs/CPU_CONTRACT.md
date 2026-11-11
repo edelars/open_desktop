@@ -21397,3 +21397,54 @@ CR0 = `0x80050033` (EFER гостя `0xd01`, EFER walker'а `0xd00`) и оста
 retired = 1137477775 (33 инструкции после `WRMSR`), RAX = `0xb0`, RCX = `0x27`, RDX = `0xffffff8000000000`, RSP =
 `0xffffffff83a03f20`, CR0 = `0x80050033`, CR4 = `0xb0`, `memory_error`/`page_fault` отсутствуют, доставлено исключений 25.
 Следующий срез — `MOV r/m64, r64` с GS-префиксом (запись по GS base).
+
+### Запись qword с префиксом FS/GS в наборе CPL0 (S4-38L7g)
+
+Диагностический прогон за C7 (`--diagnostic-past-c7`, не засчитывается) после S4-38L7f останавливался на
+`65 48 89 05 41 1b 51 00` (`mov %rax, %gs:0x511b41(%rip)`), RIP `0xffffffff83f25c0f`, `Unsupported { opcode: 0x89 }`.
+Срез добавляет запись qword `MOV r/m64, r64` (опкод `0x89`) с префиксом FS (`0x64`) или GS (`0x65`). Описание ниже дано
+**по памяти SDM** (Vol. 2 «Segment Override Prefixes», Vol. 3 §3.4.4 «Segment Loading Instructions in IA-32e Mode» и
+§3.4.5, 64-битный режим: базы CS/DS/ES/SS считаются нулевыми и префиксы к ним игнорируются; базы FS и GS берутся из
+скрытой части регистра/MSR `IA32_FS_BASE`/`IA32_GS_BASE`), по первоисточнику не сверялось.
+
+**Декодер.** `[64|65] REX.W 89 /r` с memory-формой (mod ≠ 11, любая адресация, включая RIP-relative `05`, SIB, disp)
+порождает `Operation::MovFsStore { dst, src }` / `MovGsStore`. Отказ (`Unsupported { opcode: 0x89 }` без мутации)
+для: записи без REX.W (dword/word/byte, `88`), REX без W, регистровой формы (mod = 11), любого из LOCK/REP (`F0`/`F2`/`F3`),
+`66`, `67`. Чтение (`8B`) с префиксом по-прежнему только точная форма S2-22a/b (`MovFsLoad`/`MovGsLoad`). Остальные
+опкоды с FS/GS-префиксом (в том числе `C7`, арифметика) отказываются как раньше.
+
+**Префиксы CS/DS/ES/SS (`2E`/`3E`/`26`/`36`).** Не менялись: декодер всегда принимал их на обычном `MOV` и исполнял с
+нулевой базой (SDM: в 64-битном режиме игнорируются); `2E 48 89 05 ...` исполняется как обычная запись по эффективному
+адресу, базы FS/GS не применяются. Это не отказ (формулировка задачи «остаются отказом» не соответствовала коду; код не
+трогался, поведение закреплено тестом `cs_ds_es_ss_overrides_on_a_qword_store_keep_ignoring_the_segment_base`).
+
+**Адрес.** Эффективный адрес считается как у записи без префикса (RIP-relative берёт RIP **следующей** инструкции, то есть
+с учётом байта префикса; усечение размером адреса — только 64-бит, `67` отказан), затем прибавляется
+`state.fs_base`/`state.gs_base` (`wrapping_add`). Нулевая база (в том числе не загруженная MSR: `LongModeState.gs_base` по
+умолчанию 0) даёт адрес = эффективный адрес. Каноничность проверяется для итогового начального адреса и для последнего
+байта qword (адрес + 7): иначе `#GP(0)` без мутации и без записи. Выбор `#GP(0)` вместо `#SS(0)`: `#SS` — только для
+обращений через SS (в том числе базы RSP/RBP без префикса); обращение через FS/GS — `#GP(0)` даже при базе RSP/RBP
+(тест `gs_store_through_rsp_base_is_gp0_not_ss_when_non_canonical`). Переполнение u64 диагностируется как
+`AddressOverflow` (как у чтений S4-38L5e/`MovGsLoad`). Права сегмента (лимит, тип) в long mode не проверяются; модель их не
+хранит.
+
+**Исполнение.** qword записывается одним `memory.write_integer` (путь записи через границу 4 KiB и A/D-биты — адаптер платы
+S4-38L4h без изменений); RIP += длина инструкции (с префиксом), retired + 1, регистры и RFLAGS не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0): вне набора (`run`, прочие профили) —
+`Unsupported { opcode: 0x89 }` без мутации. Прочие профили и чтения не менялись.
+
+**Не делалось.** Чтения с префиксом, прочие опкоды, `SWAPGS`/MSR (кроме чтения баз), `PUSHFQ`, CR, CPUID,
+`PagedCpl0ProbeV1`, `interrupt.rs`, запись с `66`/без REX.W.
+
+Тесты: `cpl0_profile_set::{gs,fs}_rip_relative_qword_store_*`, `gs_and_fs_stores_with_a_zero_base_*`, `gs_store_*`,
+`segment_store_*`, `cs_ds_es_ss_overrides_*`; `long_decode::tests::segment_store_decodes_fs_gs_qword_memory_forms_only`;
+`linux_direct::tests::gs_store_after_wrmsr_gs_base_writes_at_base_plus_effective_address`,
+`fs_and_gs_stores_with_a_zero_base_write_at_the_effective_address`.
+
+**Диагностический прогон (не засчитывается).** После среза прогон (`--diagnostic-past-c7`, бюджет 3e9) проходит запись
+`mov %rax, %gs:...(%rip)` и останавливается на `Unsupported { opcode: 0x22 }` (`Run(Unsupported { opcode: 34 })`) по RIP
+`0xffffffff82728f60`, байты `0f 22 df 31 ff e9 46 4d 01 00 66 0f 1f 44 00 00` (`MOV CR3, RDI`); retired = 1137477792
+(17 инструкций после записи), RDI = `0x3ffe000`, RAX = 0, RBX = `0x100000`, RSP = `0xffffffff83a03f08`, CR0 = `0x80050033`,
+CR4 = `0xb0`, EFER walker'а `0xd00`, гостевой EFER `0xd01`, `memory_error`/`page_fault` отсутствуют. Значения FS/GS base в JSON
+не выводятся. Следующий срез — выяснить, почему `MOV CR3, RDI` не принимается набором (форма с CR4 = `0xb0`).

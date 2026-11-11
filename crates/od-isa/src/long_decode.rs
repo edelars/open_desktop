@@ -430,6 +430,16 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
+    /// S4-38L7g: `64 REX.W 89 /r` (MOV m64 with the FS base, r64). Executed only in the CPL0 set.
+    MovFsStore {
+        dst: MemoryOperand,
+        src: RegisterView,
+    },
+    /// S4-38L7g: `65 REX.W 89 /r` (MOV m64 with the GS base, r64). Executed only in the CPL0 set.
+    MovGsStore {
+        dst: MemoryOperand,
+        src: RegisterView,
+    },
     /// The sole supported segment-register read in S2-22c: `48 8C E0`.
     MovFsSelectorToRax,
     MovGsSelectorToRax,
@@ -8195,7 +8205,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let rm = self.rm_operand(modrm, prefixes, size)?;
                 let reg = Operand::Register(reg);
                 let (dst, src) = if byte & 2 == 0 { (rm, reg) } else { (reg, rm) };
-                if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+                if matches!(prefixes.segment, Some(0x64 | 0x65)) && byte == 0x89 {
+                    // S4-38L7g: `[64|65] REX.W 89 /r` (MOV r/m64, r64) with a memory
+                    // destination. Qword only; LOCK/REP, 0x66 and 0x67 stay refused.
+                    if size != OperandSize::Qword
+                        || prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let (Operand::Register(src), Operand::Memory(dst)) = (src, dst) else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    if prefixes.segment == Some(0x64) {
+                        Operation::MovFsStore { dst, src }
+                    } else {
+                        Operation::MovGsStore { dst, src }
+                    }
+                } else if matches!(prefixes.segment, Some(0x64 | 0x65)) {
                     if byte != 0x8b
                         || self.length != 4
                         || size != OperandSize::Qword
@@ -8449,7 +8478,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x5e) => return Err(self.unsupported(opcode)),
             _ => unreachable!("known forms handled above"),
         };
-        // FS/GS bases are modeled only by the exact S2-22a/22b MOV loads above.
+        // FS/GS bases are modeled by the exact S2-22a/22b MOV loads and by the
+        // S4-38L7g qword store forms (MovFsStore/MovGsStore) decoded above.
         // LEA ignores segment bases and evaluates only its effective offset.
         if matches!(prefixes.segment, Some(0x64 | 0x65))
             && match operation {
@@ -8459,6 +8489,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 Operation::MovFsLoad { .. } => false,
                 Operation::MovGsLoad { .. } => false,
+                Operation::MovFsStore { .. } => false,
+                Operation::MovGsStore { .. } => false,
                 Operation::MovFsSelectorToRax => false,
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
@@ -21644,7 +21676,6 @@ mod tests {
                     && src.base == AddressBase::Register(Register::Rax)
         ));
         for bytes in [
-            &[0x65, 0x48, 0x89, 0x00][..],
             &[0x65, 0x48, 0x8b, 0x08][..],
             &[0x65, 0x48, 0x8b, 0x40, 0x00][..],
             &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
@@ -21665,6 +21696,40 @@ mod tests {
                     ..
                 }))
             ));
+        }
+    }
+
+    #[test]
+    fn segment_store_decodes_fs_gs_qword_memory_forms_only() {
+        // S4-38L7g: `[64|65] REX.W 89 /r` with a memory destination.
+        let rax = RegisterView::low(Register::Rax, OperandSize::Qword);
+        let mut memory = Memory::new(&[0x65, 0x48, 0x89, 0x05, 0x41, 0x1b, 0x51, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovGsStore { dst, src }
+                if src == rax && dst.base == AddressBase::NextRip && dst.displacement == 0x511b41
+        ));
+        let mut memory = Memory::new(&[0x64, 0x48, 0x89, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsStore { src, .. } if src == rax
+        ));
+        for bytes in [
+            &[0x65, 0x89, 0x05, 1, 0, 0, 0][..],
+            &[0x65, 0x40, 0x89, 0x05, 1, 0, 0, 0][..],
+            &[0x65, 0x48, 0x89, 0xc0][..],
+            &[0x65, 0x48, 0x88, 0x00][..],
+            &[0xf0, 0x65, 0x48, 0x89, 0x00][..],
+            &[0x66, 0x65, 0x48, 0x89, 0x00][..],
+            &[0x65, 0x67, 0x48, 0x89, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
         }
     }
 
