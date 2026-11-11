@@ -22447,3 +22447,55 @@ RSP = `0xffffffff83a03de8`, RBP = `0xffffffff83a03df0`, RFLAGS = `0x86`; CR0 = `
 `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; `set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`,
 `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`). Следующий срез — порт-ввод/вывод (`OUT DX, EAX`/`IN AX, DX`) для PCI-конфигурации в наборе
 CPL0: вопрос к решению (какие порты, ответ шины), не реализован.
+
+### Порты PCI-конфигурации, механизм №1: `OUT DX, EAX`/`OUT DX, AX`/`IN EAX, DX`/`IN AX, DX` в наборе CPL0 (S4-38L7w)
+
+Граница S4-38L7v (`ef` = `out %eax, %dx` по RIP `0xffffffff826dedb2`, RAX = `0x80001000`, RDX = `0xcf8`; далее `lea 0xcfc(%rcx),%edx`, `66 ed` = `in %dx,%ax`)
+— это обращение ядра к PCI-конфигурации через механизм №1: порт `0xCF8` (CONFIG_ADDRESS), порт `0xCFC..0xCFF` (CONFIG_DATA).
+
+**Что сказано в SDM и в справочниках по шине — по памяти, по первоисточнику НЕ сверено.** `OUT DX, EAX` (`EF`) пишет 32 бита в порт DX, `OUT DX, AX`
+(`66 EF`) — 16 бит; `IN EAX, DX` (`ED`) читает 32 бита, и запись в EAX обнуляет `RAX[63:32]` (общее правило записи 32-битного регистра в 64-битном режиме),
+`IN AX, DX` (`66 ED`) читает 16 бит и сохраняет `RAX[63:16]`. Для порта ввода-вывода размера 64 бит нет, поэтому `REX.W` отказ. Флаги не меняются.
+Допустимость обращения в CPL0 по IOPL/TSS-битмапе не моделируется: набор работает только в CPL0 (в CPL3 вход в набор отказывает ещё до исполнения).
+Поведение шины для PCI (адрес хранится, чтение отсутствующего устройства даёт все единицы) — отраслевое соглашение, не пункт SDM.
+
+**Решения по умолчанию (приняты).**
+- Адрес конфигурации хранится в регистре CONFIG_ADDRESS (порт `0xCF8`); его значение переживает вызовы набора (хранится в плате, как гостевой EFER).
+  `OUT DX, EAX` по `0xCF8` сохраняет все 32 бита (enable-бит и прочее не интерпретируются); `OUT DX, AX` по `0xCF8` заменяет только `[15:0]` и сохраняет
+  `[31:16]` (решение, не из SDM); `IN EAX, DX` по `0xCF8` возвращает сохранённое значение, `IN AX, DX` — его `[15:0]`.
+- Устройств на шине нет. `IN` по портам `0xCFC..0xCFF` возвращает все единицы для размера доступа (`0xFFFFFFFF` для dword — `RAX[63:32]` обнуляется;
+  `0xFFFF` для word — `RAX[63:16]` сохраняется) независимо от значения CONFIG_ADDRESS. `OUT` по `0xCFC..0xCFF` принимается и отбрасывается (адрес
+  не меняется), всегда.
+- Любой другой порт для dword/word-форм (`0xCF9..0xCFB`, `0x3F8`, `0xD00`, …) — `Unsupported` с точным опкодом (`0xEF`/`0xED`) без мутации; порт
+  байтового PIO и шина не вызываются.
+
+**Декодер.** Новые операции `Operation::InDx { size }`/`OutDx { size }`. Принимаются только `EF`/`ED` без префиксов и `66 EF`/`66 ED` (ровно один `66`, длина
+2). Любой другой префикс — `Unsupported` с точным опкодом (`0xEF`/`0xED`) без мутации: `F0` (LOCK), `F2`, `F3` (REP/REPNE: `REP OUTSD` — это `6F`, здесь
+не это), сегментные (`2E`/`36`/`3E`/`26`/`64`/`65`), `67`, любой `REX` (в т.ч. `REX.W`), а также `66 66 EF`. Байтовые `EC`/`EE` не менялись.
+
+**Исполнение и гейт.** Член набора `with_pci_config(&Cell<u32>)` (ячейка CONFIG_ADDRESS принадлежит вызывающему, как ячейка EFER). Формы работают только
+через `run_with_cpl0_profile_set_and_pio` (как `with_pio_u8`), только в CPL0 под `control_policy` и только при члене; CPU не вызывает `PortIo` для этих
+форм. Член независим от `with_pio_u8`: без `with_pio_u8` байтовые `EC`/`EE` остаются `Unsupported`, без `with_pci_config` формы `EF`/`ED` остаются
+`Unsupported`. Вне набора (голые `run`/`step`, прочие профили) формы не исполняются. RIP += длина, retired +1 только при успехе; адрес и RAX меняются
+только при принятом обращении. В `LinuxCpl0SetMembers` добавлен член `pci_config` (в `linux_default` — `true`, в `minimal` — `false`); в `set_members`
+его имя `pci_config` идёт последним (после `popf_cpl0`). `LinuxStopRecord.pci_config_address` и поле `stop.pci_config_address` в JSON runner'а —
+сохранённый CONFIG_ADDRESS.
+
+Тесты: `cpl0_profile_set::pci_dword_out_to_config_address_is_stored_and_read_back_by_in`, `pci_word_access_to_config_address_uses_the_low_16_bits_only`,
+`pci_config_data_in_without_a_device_returns_all_ones` (порты `0xCFC..0xCFF`, dword и word, ненулевые старшие биты RAX), `pci_config_data_out_is_discarded_and_keeps_the_address`,
+`pci_guest_sequence_address_then_data_read_is_all_ones`, `pci_other_ports_are_unsupported_without_mutation`,
+`pci_prefixed_forms_are_refused_with_the_exact_opcode_and_no_mutation` (18 форм: REP/REPNE/LOCK/REX/REX.W/67/сегментные/`66 66`), `pci_forms_are_outside_a_set_without_the_member`,
+`pci_member_does_not_admit_the_byte_forms`, `pci_member_together_with_pio_keeps_the_byte_forms_unchanged`, `pci_forms_in_ring3_are_rejected_at_entry`;
+`long_decode::tests::in_out_dword_and_word_forms_decode_with_their_size`, `in_out_dword_and_word_forms_refuse_every_other_prefix_with_the_exact_opcode`;
+`linux_direct::tests::pci_config_out_then_data_in_runs_through_the_board_set_and_the_address_is_kept` (граница: `ef` при EAX = `0x80001000`, EDX = `0xcf8`, затем
+`ed` по `0xcfc` → EAX = `0xffffffff`, retired 6), `pci_config_ports_are_outside_a_set_without_the_member`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7w-diagnostic-run.json`.
+`out %eax, %dx` по RIP `0xffffffff826dedb2` и последующие обращения к PCI-портам проходят (retired 1184860323 → 1185015387, +155064); в записи
+`stop.pci_config_address` = `0x80001000` (последний записанный адрес). Новая граница: RIP `0xffffffff81ff8a2c` (GPA `0x1ff8a2c`), байты
+`ec c9 0f b6 c0 31 d2 31 c9 31 f6 31 ff 45 31 c0` — первая инструкция `ec` = `in %dx, %al` (байтовый `IN AL, DX`, RDX = `0x3f9` — регистр IER COM1; далее `leave`,
+`movzbl %al,%eax`); `Unsupported { opcode: 0xec }` (236), `set_exit_detail` = `Run(Unsupported { opcode: 236 })`, `exit_kind` = `unsupported`, retired = 1185015387.
+Причина: член `pio_u8` не входит в `linux_default` (байтовый PIO через шину платы выключен по умолчанию). CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
+(`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x6`; RAX = RDX = `0x3f9`; RSP = `0xffffffff83a03ca8`, RBP = `0xffffffff83a03cb8`;
+`memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; `set_members` — прежние и `pci_config` последним. Следующий срез — решение: включать
+ли `pio_u8` (COM1/PIT/PM-таймер платы) в набор Linux по умолчанию (код PIO у платы уже есть), не реализовано.
