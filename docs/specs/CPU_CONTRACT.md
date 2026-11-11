@@ -21604,3 +21604,61 @@ R13 = 1, R14 = `0xffffffff82ffa783`, RFLAGS = `0x56`; CR0 = `0x80050033`, CR4 = 
 walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members`: cli, cpu_owned_cr3,
 cpuid:DiagnosticV1, msr:EferReadOnlyV1(3328), msr:fs_gs_base, popf_cpl0. Следующий срез — `LOCK CMPXCHG r/m64, r64` (`F0 48 0F B1 /r`,
 memory-форма) в наборе CPL0; решение — по этой границе, а не по предположению.
+
+### `LOCK CMPXCHG m64, r64` в наборе CPL0 (S4-38L7k)
+
+Граница S4-38L7j (`f0 48 0f b1 13`, `lock cmpxchg %rdx, (%rbx)`, RIP `0xffffffff8273441c`, `Unsupported { opcode: 0xb1 }`) показала, что
+LOCK-форма CMPXCHG отказывается декодером. Срез добавляет одну форму: `F0 REX.W 0F B1 /r` с memory-операндом (mod ≠ 11), источник = `reg`
+плюс REX.R (r0–r15), база/индекс любые (RIP-relative, SIB, disp8/disp32, REX.B). Семантика дана **по памяти SDM** (Vol. 2 «CMPXCHG»:
+RAX сравнивается с операндом назначения; при равенстве ZF = 1 и назначение = источник, иначе ZF = 0 и RAX = назначение; остальные
+флаги как у `CMP RAX, назначение`; назначение при memory-форме записывается в обоих случаях), по первоисточнику **не сверялась**.
+
+**Декодер.** `F0 REX.W 0F B1 /r` с memory-формой порождает новый `Operation::LockCmpxchgMem { destination, source }`
+(флаги: все шесть арифметических определены). Отказ (`Unsupported { opcode: 0xb1 }` без мутации): без REX.W (dword), REX без W,
+регистровая форма (mod = 11, с LOCK), `66`, `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс
+(включая FS/GS: FS/GS-вариант — отдельный срез). REX не непосредственно перед опкодом теряет W и отказывается.
+
+**Без LOCK (сознательное сужение).** Форма `48 0F B1 /r` с memory-операндом без LOCK декодируется как прежний
+`Operation::CmpxchgMemory` (бывший срез S2, исполняется через `GuestMemory::atomic_compare_exchange_integer`, которого нет у адаптеров
+платы). В наборе CPL0 она теперь явно отказывается (`Unsupported { opcode: 0xb1 }` без мутации; в `executable` добавлено условие
+`control_policy.is_none()`); вне набора поведение прежнее. Регистровая форма `48 0F B1 /r` без LOCK (`Operation::Cmpxchg`) не менялась.
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы (префикса FS/GS нет): неканоническое начало или последний байт qword
+даёт `#GP(0)` (для баз RSP/RBP — `#SS(0)`) до любого доступа, без мутации регистров, флагов и памяти.
+
+**Исполнение (один vCPU, шина не блокируется).** Источник, RAX и адрес берутся из состояния до инструкции. Читается qword
+(`memory.read_integer`), сравнивается с RAX; затем qword **записывается всегда** (`memory.write_integer`): источник при равенстве, прочитанное
+значение при неравенстве. Запись идёт через адаптер платы, поэтому A/D-биты и `#PF` на странице только для чтения возникают и при
+неравенстве. Только после успешной записи: флаги = флаги `arithmetic_result(Qword, Cmp, RAX, назначение)` (остальные биты RFLAGS
+сохраняются), при неравенстве RAX = прочитанное значение; RIP += длина, retired + 1. При `#GP`/`#SS`/`#PF` на чтении или записи RAX,
+флаги, RIP и retired не меняются. Чтение и запись — две отдельные операции адаптера (не атомарный вызов): для одного vCPU это
+эквивалентно LOCK. Ограничение (по памяти SDM, не сверено): `#PF` на неприсутствующей странице при чтении сообщит код ошибки с W = 0, тогда как
+железо для RMW-инструкций, по-видимому, сообщает W = 1; так же ведут себя прочие read-modify-write формы интерпретатора.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xb1 }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-probe, `step_paged_mov` и голые `run`/`step` форму не принимают (тесты отказа в
+каждом).
+
+**Не делалось.** FS/GS-вариант, byte/word/dword-формы, CMPXCHG8B/16B, XADD/XCHG и прочие LOCK-формы, SMP-упорядочение,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_cmpxchg_*` (равенство; неравенство с записью старого значения; флаги CMP на граничных значениях и
+отдельные пары CF/OF/SF/AF/PF; источник r8–r15; база r8–r15; RIP-relative; SIB+disp; алиасы RAX; `#GP(0)`/`#SS(0)` без мутации; `#PF` на
+записи при равенстве и неравенстве без мутации; 20 отказов с точным опкодом `0xb1`; вне набора; CPL3);
+`long_decode::tests::lock_cmpxchg_decodes_the_qword_memory_form_only`; отказ вне набора:
+`execute::tests::lock_cmpxchg_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::lock_cmpxchg_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_cmpxchg_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_lock_cmpxchg_unsupported`;
+`linux_direct::tests::lock_cmpxchg_reads_and_writes_guest_memory_for_equal_and_unequal_compares`,
+`plain_cmpxchg_memory_form_without_lock_is_refused_in_the_cpl0_set`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7k-diagnostic-run.json`. `lock cmpxchg %rdx, (%rbx)` по RIP `0xffffffff8273441c` и последующие
+инструкции проходят (retired 1137487951 → 1137488218, +267). Новая граница: RIP `0xffffffff815ad6b7`, байты
+`f0 ff 43 58` (`lock incl 0x58(%rbx)`, `FF /0` с LOCK, dword), `Unsupported { opcode: 0xff }`, `set_exit_detail` =
+`Run(Unsupported { opcode: 255 })`, `exit_kind` = `unsupported`, retired = 1137488218. Регистры на остановке: RAX = `0x46`,
+RBX = `0xffffffff83c38e00`, RCX = 0, RDX = `0xffffffff83c34300`, RSI = 0, RDI = 0, RSP = `0xffffffff83a03e10`,
+RBP = `0xffffffff83a03e30`, R12 = `0xffffffff83c38460`, RFLAGS = `0x2`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
+(`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же.
+Следующий срез — `LOCK INC m32` (`F0 FF /0`, memory-форма, dword) в наборе CPL0; решение — по этой границе, а не по предположению.
