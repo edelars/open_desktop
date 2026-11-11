@@ -34,8 +34,9 @@
 //! DiagnosticV1 answer like every other leaf (nothing substituted, no kernel patch) and the run
 //! goes on to its next stop, to inventory the forms the kernel executes past C7. The result is NOT
 //! counted: the evidence says `diagnostic_past_c7: true` (top level and in `stop`) and
-//! `acceptance: "diagnostic_not_counted"`. Without the flag `stop.diagnostic_past_c7` is false and
-//! nothing else changes.
+//! `acceptance: "diagnostic_not_counted"`. These markers are always present and set right after
+//! the arguments are parsed (also in refusals): without the flag `diagnostic_past_c7` is false
+//! and `acceptance` is `"counted"`; the marker follows the request of the flag, not its effect.
 //!
 //! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
 //! is started: their JSON says `"guest_started": false, "retired": 0`. A failure of the run
@@ -152,6 +153,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
         "nonce": options.nonce,
         "ram_mib": options.ram_mib,
     });
+    mark_acceptance(&mut evidence, options.diagnostic_past_c7);
     let io_failure = |evidence: Value, stage: &str, detail: String| {
         (refusal("invalid_input", stage, detail, evidence), 3)
     };
@@ -250,15 +252,6 @@ fn evaluate(options: &Options) -> (Value, u8) {
     match load_linux_direct_board(&machine_input) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
-            if options.diagnostic_past_c7 {
-                // Marked before the run so that a `run_failed` refusal carries it too.
-                evidence["diagnostic_past_c7"] = json!(true);
-                evidence["acceptance"] = json!("diagnostic_not_counted");
-                evidence["diagnostic_note"] = json!(
-                    "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary \
-                     off); not a profile of the target CPU, the result is NOT counted"
-                );
-            }
             if let Some(budget) = options.budget {
                 let result = if options.set_cpl0 {
                     run_linux_direct_board_set(
@@ -294,6 +287,26 @@ fn evaluate(options: &Options) -> (Value, u8) {
             (value, 0)
         }
         Err(error) => (machine_refusal(&error, evidence), 4),
+    }
+}
+
+/// S4-38L7: the acceptance marker, set right after the arguments are parsed so that every result
+/// (a refusal of an early step, of the machine or of the run included) carries it. Always
+/// present: `acceptance` is `counted` without `--diagnostic-past-c7` and `diagnostic_not_counted`
+/// with it (CPUID boundary off, DiagnosticV1 answers leaf 1 and 0x80000001, result NOT counted).
+/// The marker follows the request of the flag, not its effect.
+fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool) {
+    evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
+    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+        "diagnostic_not_counted"
+    } else {
+        "counted"
+    });
+    if diagnostic_past_c7 {
+        evidence["diagnostic_note"] = json!(
+            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); \
+             not a profile of the target CPU, the result is NOT counted"
+        );
     }
 }
 
@@ -1523,8 +1536,45 @@ mod tests {
         assert_eq!(value["stop"]["diagnostic_past_c7"], false);
         assert_eq!(value["stop"]["rip"], "0x1000206");
         assert_eq!(value["stop"]["gpr"]["rax"], "0x1");
-        assert!(value.get("diagnostic_past_c7").is_none(), "{value:#}");
-        assert!(value.get("acceptance").is_none(), "{value:#}");
+        assert_eq!(value["diagnostic_past_c7"], false, "{value:#}");
+        assert_eq!(value["acceptance"], "counted", "{value:#}");
+        assert!(value.get("diagnostic_note").is_none(), "{value:#}");
+    }
+
+    #[test]
+    fn diagnostic_markers_are_on_every_result_including_refusals_and_run_failed() {
+        // Set before anything is loaded: a run failure carries them, with and without the flag.
+        let error = LinuxDirectError {
+            code: "run_failed",
+            stage: "run",
+            detail: "Clock(TimeOverflow)".to_string(),
+            retired: Some(7),
+        };
+        for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
+            let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
+            mark_acceptance(&mut base, flag);
+            let value = run_failure(&error, base);
+            assert_eq!(value["status"], "refused");
+            assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
+            assert_eq!(value["acceptance"], acceptance, "{value:#}");
+        }
+        // An early refusal (foreign vmlinuz hash) of a run with the flag is marked too.
+        let code = [0xFA, 0xF4];
+        let mut case = Case::new(
+            "diag-refusal",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(1);
+        case.options.set_cpl0 = true;
+        case.options.diagnostic_past_c7 = true;
+        case.options.expected_vmlinuz_sha256 = "0".repeat(64);
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 4, "{value:#}");
+        assert_eq!(value["status"], "refused");
+        assert_eq!(value["diagnostic_past_c7"], true);
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
     }
 
     #[test]
