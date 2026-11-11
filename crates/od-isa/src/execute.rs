@@ -34883,6 +34883,8 @@ fn step_configured(
         | Operation::SubGsMem { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
+        | Operation::CmpFsMemImm { .. }
+        | Operation::CmpGsMemImm { .. }
         // S4-38L7o: and for the FS/GS-based TEST m8, imm8.
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
@@ -48657,6 +48659,8 @@ fn step_configured(
         | Operation::SubGsMem { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
+        | Operation::CmpFsMemImm { .. }
+        | Operation::CmpGsMemImm { .. }
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
         | Operation::TestFsMemWord { .. }
@@ -53782,6 +53786,25 @@ fn transfer(
                 state.read(src),
                 state.rflags,
             );
+            state.rflags = flags;
+        }
+        Operation::CmpFsMemImm { dst, immediate } => {
+            // S4-38L7ah: as CmpFsMem, with the sign-extended imm8 (masked to the operand width)
+            // as the right-hand side. Non-canonical (start or last byte) is #GP(0) before the
+            // read; only the flags change.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
+            state.rflags = flags;
+        }
+        Operation::CmpGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
             state.rflags = flags;
         }
         Operation::TestFsMemByte { src, immediate } => {
