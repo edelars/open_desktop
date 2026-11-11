@@ -15572,9 +15572,9 @@ fn lock_or_write_fault_leaves_flags_rip_and_memory_unchanged() {
 
 #[test]
 fn lock_or_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mutation() {
-    let cases: [(&[u8], u8); 47] = [
-        // The other group members with LOCK (ADD, ADC, SBB, AND, SUB, XOR, CMP): byte form.
-        (&[0xf0, 0x80, 0x43, 0x3d, 0x01], 0x80),
+    let cases: [(&[u8], u8); 44] = [
+        // The other group members with LOCK (ADC, SBB, AND, SUB, XOR, CMP; ADD is S4-38L7z):
+        // byte form.
         (&[0xf0, 0x80, 0x53, 0x3d, 0x01], 0x80),
         (&[0xf0, 0x80, 0x5b, 0x3d, 0x01], 0x80),
         (&[0xf0, 0x80, 0x63, 0x3d, 0x01], 0x80),
@@ -15582,10 +15582,8 @@ fn lock_or_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mut
         (&[0xf0, 0x80, 0x73, 0x3d, 0x01], 0x80),
         (&[0xf0, 0x80, 0x7b, 0x3d, 0x01], 0x80),
         // The same members in the dword/qword forms.
-        (&[0xf0, 0x81, 0x43, 0x3d, 1, 0, 0, 0], 0x81),
         (&[0xf0, 0x81, 0x63, 0x3d, 1, 0, 0, 0], 0x81),
         (&[0xf0, 0x48, 0x81, 0x73, 0x3d, 1, 0, 0, 0], 0x81),
-        (&[0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
         (&[0xf0, 0x83, 0x6b, 0x3d, 0x01], 0x83),
         (&[0xf0, 0x48, 0x83, 0x7b, 0x3d, 0x01], 0x83),
         // Register forms (mod = 11) of OR.
@@ -15722,6 +15720,579 @@ fn lock_or_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = CasMemory::new(&LOCK_ORB_RBX_3D, 5);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7z: `LOCK ADD r/m32, imm8` (`F0 83 /0 ib`, memory destination; SDM Vol.2 ADD:
+// destination + sign-extended immediate, CF/PF/AF/ZF/SF/OF from the sum; from memory, not
+// re-checked against the SDM text). The byte, dword (imm32) and qword (REX.W) forms
+// `F0 80 /0 ib`, `F0 81 /0 id`, `F0 REX.W 83 /0 ib`, `F0 REX.W 81 /0 id` are decoded and executed
+// the same way (the same branch as LOCK OR, S4-38L7s). ----
+
+/// `lock addl $0x0, -0x4(%rsp)` (the S4-38L7y diagnostic boundary bytes).
+const LOCK_ADDL_RSP_M4: [u8; 6] = [0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00];
+
+/// `lock addl $imm, 0x3d(%rbx)`.
+fn lock_addl_rbx_3d(immediate: u8) -> [u8; 5] {
+    [0xf0, 0x83, 0x43, 0x3d, immediate]
+}
+
+/// The result and arithmetic flags of a 32-bit `old + sign_extend(imm8)`, computed with host
+/// integers (an oracle independent of the interpreter's `arithmetic_result`).
+fn add32_flags(old: u32, immediate: u8) -> (u32, u64) {
+    let rhs = immediate as i8 as i32 as u32;
+    let (result, carry) = old.overflowing_add(rhs);
+    let (_, overflow) = (old as i32).overflowing_add(rhs as i32);
+    let mut flags = 0;
+    if carry {
+        flags |= FLAG_CF;
+    }
+    if (result as u8).count_ones() % 2 == 0 {
+        flags |= FLAG_PF;
+    }
+    if (old & 0xf) + (rhs & 0xf) > 0xf {
+        flags |= FLAG_AF;
+    }
+    if result == 0 {
+        flags |= FLAG_ZF;
+    }
+    if result >> 31 != 0 {
+        flags |= FLAG_SF;
+    }
+    if overflow {
+        flags |= FLAG_OF;
+    }
+    (result, flags)
+}
+
+#[test]
+fn lock_add_boundary_form_writes_the_unchanged_dword_below_rsp_and_changes_only_rip_and_flags() {
+    // `f0 83 44 24 fc 00`: RSP base without an index, disp8 -4, immediate 0. The write happens
+    // even though the sum equals the old value.
+    let mut state = board_state();
+    state.gpr[Register::Rsp as usize] = 0x20_0004;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_AF | FLAG_SF;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&LOCK_ADDL_RSP_M4, 0x1234);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 4)]);
+    assert_eq!(
+        memory.writes,
+        vec![(0x20_0000, 0x1234u32.to_le_bytes().to_vec())]
+    );
+    assert_eq!(memory.cell, 0x1234);
+    expected.rip += 6;
+    // 0x1234 + 0: the low byte 0x34 has three set bits, so PF is clear; every other flag clear.
+    expected.rflags &= !ARITH;
+    assert_eq!(
+        state, expected,
+        "only RIP and the flags change; RSP is not touched"
+    );
+}
+
+#[test]
+fn lock_add_flags_follow_the_dword_sum_with_the_sign_extended_immediate() {
+    let cases: [(u32, u8); 14] = [
+        (0x7fff_ffff, 0x01),
+        (0xffff_ffff, 0x01),
+        (0x0f, 0x01),
+        (0x00, 0x00),
+        (0x00, 0x80),
+        (0x80, 0x80),
+        (0x8000_0000, 0x80),
+        (0x7fff_ffff, 0xff),
+        (0x7fff_ff80, 0x7f),
+        (0x1234_5678, 0x7f),
+        (0xffff_fff0, 0x10),
+        (0x8000_0000, 0xff),
+        (0x0000_0001, 0xff),
+        (0xffff_ff7f, 0x81),
+    ];
+    for (old, immediate) in cases {
+        for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+            let (sum, flags) = add32_flags(old, immediate);
+            let mut state = board_state();
+            state.rflags = initial;
+            state.gpr[Register::Rbx as usize] = 0x20_0000;
+            let mut memory = CasMemory::new(&lock_addl_rbx_3d(immediate), u64::from(old));
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            let label = format!("{old:#x} + {immediate:#x} from {initial:#x}");
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert_eq!(memory.reads, vec![(0x20_003d, 4)], "{label}");
+            assert_eq!(
+                memory.writes,
+                vec![(0x20_003d, sum.to_le_bytes().to_vec())],
+                "{label}"
+            );
+            assert_eq!(state.rip, RIP + 5, "{label}");
+            // IF, DF and bit 1 survive; all six arithmetic flags come from the sum.
+            assert_eq!(state.rflags, (initial & !ARITH) | flags, "{label}");
+        }
+    }
+}
+
+#[test]
+fn lock_add_flags_on_named_boundary_values() {
+    // (old, imm8, expected result, expected flags), written out by hand.
+    let cases: [(u32, u8, u32, u64); 6] = [
+        // INT_MAX + 1: signed overflow, negative result, zero low byte (PF), nibble carry.
+        (
+            0x7fff_ffff,
+            0x01,
+            0x8000_0000,
+            FLAG_OF | FLAG_SF | FLAG_PF | FLAG_AF,
+        ),
+        // All ones + 1 wraps to zero.
+        (0xffff_ffff, 0x01, 0, FLAG_CF | FLAG_ZF | FLAG_PF | FLAG_AF),
+        (0x0f, 0x01, 0x10, FLAG_AF),
+        (0x00, 0x00, 0, FLAG_ZF | FLAG_PF),
+        // imm8 0x80 is -128: 0 + 0xffffff80 has no carry out and is negative.
+        (0x00, 0x80, 0xffff_ff80, FLAG_SF),
+        // 0x80 + (-128) carries out of bit 31 and is zero.
+        (0x80, 0x80, 0, FLAG_CF | FLAG_ZF | FLAG_PF),
+    ];
+    for (old, immediate, sum, flags) in cases {
+        let mut state = board_state();
+        state.rflags |= ARITH;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let mut memory = CasMemory::new(&lock_addl_rbx_3d(immediate), u64::from(old));
+        run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(memory.cell, u64::from(sum), "{old:#x} + {immediate:#x}");
+        assert_eq!(state.rflags & ARITH, flags, "{old:#x} + {immediate:#x}");
+    }
+}
+
+#[test]
+fn lock_add_with_rip_relative_and_sib_displacement_addresses() {
+    // `lock addl $0x1, 0x1234(%rip)`: the address is next RIP (all 8 bytes, the immediate
+    // included) + disp32.
+    let mut state = board_state();
+    let mut memory = CasMemory::new(&[0xf0, 0x83, 0x05, 0x34, 0x12, 0x00, 0x00, 0x01], 0x9);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    let at = RIP + 8 + 0x1234;
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(memory.writes, vec![(at, 10u32.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 8);
+    // `lock addl $0x4, 0x10(%rbx,%rcx,4)` = f0 83 44 8b 10 04.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x50_0000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let mut memory = CasMemory::new(&[0xf0, 0x83, 0x44, 0x8b, 0x10, 0x04], 0x9);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    let at = 0x50_0000 + 12 + 0x10;
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(memory.writes, vec![(at, 13u32.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 6);
+}
+
+#[test]
+fn lock_add_with_every_extended_base_register_r8_to_r15() {
+    // `lock addl $0x10, 0x0(%rN)` via REX.B: mod = 01 with disp8 0; R12 needs a SIB byte.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let mut code = vec![0xf0, 0x41, 0x83];
+        if i == 4 {
+            code.extend([0x44, 0x24, 0x00, 0x10]);
+        } else {
+            code.extend([0x40 | i as u8, 0x00, 0x10]);
+        }
+        let base = 0x40_0000 + (i as u64) * 0x1000;
+        let mut state = board_state();
+        state.gpr[register as usize] = base;
+        let mut memory = CasMemory::new(&code, 0x01);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "base r{}", i + 8);
+        assert_eq!(memory.reads, vec![(base, 4)], "base r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(base, 0x11u32.to_le_bytes().to_vec())],
+            "base r{}",
+            i + 8
+        );
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn lock_add_with_every_extended_index_register_r8_to_r15() {
+    // `lock addl $0x10, 0x20(%rbx,%rN)` via REX.X; scale 1.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let code = [0xf0, 0x42, 0x83, 0x44, ((i as u8) << 3) | 3, 0x20, 0x10];
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x40_0000;
+        state.gpr[register as usize] = 0x100 * (i as u64 + 1);
+        let mut memory = CasMemory::new(&code, 0x01);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "index r{}", i + 8);
+        let at = 0x40_0000 + 0x100 * (i as u64 + 1) + 0x20;
+        assert_eq!(memory.reads, vec![(at, 4)], "index r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(at, 0x11u32.to_le_bytes().to_vec())],
+            "index r{}",
+            i + 8
+        );
+        assert_eq!(state.rip, RIP + 7);
+    }
+}
+
+#[test]
+fn lock_add_rex_r_does_not_change_the_group_selector_and_writes_no_register() {
+    // REX.R (0x44) is irrelevant for a group opcode: `f0 44 83 43 3d 01` is still ADD /0.
+    for rex in [0x40u8, 0x44] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::R8 as usize] = 0x1111;
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(&[0xf0, rex, 0x83, 0x43, 0x3d, 0x01], 0x01);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rex:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_003d, 2u32.to_le_bytes().to_vec())]
+        );
+        expected.rip += 6;
+        expected.rflags &= !ARITH;
+        assert_eq!(state, expected, "{rex:#x}: no register changes");
+    }
+}
+
+#[test]
+fn lock_add_byte_dword_and_qword_forms_use_the_operand_width_and_extended_immediate() {
+    // (code, old cell, expected written bytes, expected flags, expected length).
+    let cases: [(&[u8], u64, Vec<u8>, u64, u64); 6] = [
+        // `lock addb $0x80, 0x3d(%rbx)`: 0x80 + 0x80 = 0x100 -> 0, CF/ZF/PF/OF.
+        (
+            &[0xf0, 0x80, 0x43, 0x3d, 0x80],
+            0x80,
+            vec![0x00],
+            FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_PF,
+            5,
+        ),
+        // `lock addl $0x80000000, 0x3d(%rbx)`: imm32 from 81 /0.
+        (
+            &[0xf0, 0x81, 0x43, 0x3d, 0x00, 0x00, 0x00, 0x80],
+            0x8000_0000,
+            0u32.to_le_bytes().to_vec(),
+            FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_PF,
+            8,
+        ),
+        // `lock addq $-1, 0x3d(%rbx)` from the sign-extended imm8 of REX.W 83 /0.
+        (
+            &[0xf0, 0x48, 0x83, 0x43, 0x3d, 0xff],
+            0x1_0000_0000,
+            0xffff_ffffu64.to_le_bytes().to_vec(),
+            FLAG_CF | FLAG_PF,
+            6,
+        ),
+        // `lock addq $0x80000000, 0x3d(%rbx)`: imm32 sign-extended to 64 bits.
+        (
+            &[0xf0, 0x48, 0x81, 0x43, 0x3d, 0x00, 0x00, 0x00, 0x80],
+            0x8000_0000,
+            0u64.to_le_bytes().to_vec(),
+            FLAG_CF | FLAG_ZF | FLAG_PF,
+            9,
+        ),
+        // A carry out of the low dword does not wrap the qword.
+        (
+            &[0xf0, 0x48, 0x83, 0x43, 0x3d, 0x01],
+            0xffff_ffff,
+            0x1_0000_0000u64.to_le_bytes().to_vec(),
+            FLAG_PF | FLAG_AF,
+            6,
+        ),
+        // `lock addl $0x7f, 0x3d(%rbx)` on zero: the positive imm8 stays positive.
+        (
+            &[0xf0, 0x83, 0x43, 0x3d, 0x7f],
+            0,
+            0x7fu32.to_le_bytes().to_vec(),
+            0,
+            5,
+        ),
+    ];
+    for (code, old, written, flags, length) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF;
+        let mut memory = CasMemory::new(code, old);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(
+            memory.reads,
+            vec![(0x20_003d, written.len())],
+            "{code:02x?}"
+        );
+        assert_eq!(memory.writes, vec![(0x20_003d, written)], "{code:02x?}");
+        assert_eq!(state.rip, RIP + length, "{code:02x?}");
+        assert_eq!(state.rflags & ARITH, flags, "{code:02x?}");
+    }
+}
+
+#[test]
+fn lock_add_non_canonical_address_is_gp0_without_mutation_or_access() {
+    for rbx in [
+        0x0000_8000_0000_0000u64 - 0x3d,
+        0xffff_7fff_ffff_ffffu64 - 0x3d,
+        // The start is canonical but the dword's last byte (address + 3) crosses into the hole.
+        0x0000_7fff_ffff_fffd - 0x3d,
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.rflags |= FLAG_CF;
+        let before = state.clone();
+        let mut memory = CasMemory::new(&lock_addl_rbx_3d(0x01), 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{rbx:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{rbx:#x}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{rbx:#x}"
+        );
+        assert_eq!(memory.cell, 5);
+    }
+    // The last canonical dword (address + 3 = 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_7fff_ffff_fffc - 0x3d;
+    let mut memory = CasMemory::new(&lock_addl_rbx_3d(0x01), 5);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+}
+
+#[test]
+fn lock_add_through_a_non_canonical_rsp_or_rbp_base_is_ss0() {
+    // The boundary form with RSP = 0x8000_0000_0004 resolves to the non-canonical
+    // 0x8000_0000_0000; RSP = 0x8000_0000_0002 and 0xffff_7fff_ffff_ffff do too. The RBP form is
+    // `lock addl $0x1, 0x0(%rbp)` = f0 83 45 00 01.
+    for (register, value, code) in [
+        (
+            Register::Rsp,
+            0x0000_8000_0000_0004u64,
+            &LOCK_ADDL_RSP_M4[..],
+        ),
+        (Register::Rsp, 0x0000_8000_0000_0002, &LOCK_ADDL_RSP_M4[..]),
+        (Register::Rsp, 0xffff_7fff_ffff_ffff, &LOCK_ADDL_RSP_M4[..]),
+        (
+            Register::Rbp,
+            0x0000_8000_0000_0000,
+            &[0xf0, 0x83, 0x45, 0x00, 0x01][..],
+        ),
+    ] {
+        let mut state = board_state();
+        state.gpr[register as usize] = value;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{register:?} {value:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{register:?} {value:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_add_write_fault_leaves_flags_rip_and_memory_unchanged() {
+    // A read-only page: the always-performed write faults, even for a zero addend.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x20_0000),
+    };
+    for (old, code) in [
+        (0x1234u64, &LOCK_ADDL_RSP_M4[..]),
+        (0xffff_ffff, &[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x01][..]),
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rsp as usize] = 0x20_0004;
+        state.rflags |= FLAG_CF | FLAG_OF;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, old);
+        memory.write_fault = Some(fault.clone());
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{old:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{old:#x}");
+        assert_eq!(memory.cell, old);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_add_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mutation() {
+    let cases: [(&[u8], u8); 45] = [
+        // The other group members with LOCK (ADC, SBB, AND, SUB, XOR, CMP).
+        (&[0xf0, 0x83, 0x53, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x83, 0x5b, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x83, 0x63, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x83, 0x6b, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x83, 0x73, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x83, 0x7b, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x81, 0x53, 0x3d, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x81, 0x6b, 0x3d, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x80, 0x6b, 0x3d, 0x01], 0x80),
+        // Register forms (mod = 11) of ADD.
+        (&[0xf0, 0x83, 0xc0, 0x01], 0x83),
+        (&[0xf0, 0x41, 0x83, 0xc0, 0x01], 0x83),
+        (&[0xf0, 0x48, 0x83, 0xc3, 0x01], 0x83),
+        (&[0xf0, 0x81, 0xc0, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x80, 0xc0, 0x01], 0x80),
+        // 0x66 (word) and 0x67.
+        (&[0x66, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x66, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x67, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x66, 0xf0, 0x81, 0x43, 0x3d, 1, 0], 0x81),
+        (&[0xf0, 0x66, 0x81, 0x43, 0x3d, 1, 0], 0x81),
+        (&[0xf0, 0x67, 0x81, 0x43, 0x3d, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x66, 0x80, 0x43, 0x3d, 0x01], 0x80),
+        // REP/REPNE instead of LOCK, or alongside it, and a repeated LOCK.
+        (&[0xf3, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf2, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0xf3, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf3, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0xf2, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf2, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0xf0, 0x81, 0x43, 0x3d, 1, 0, 0, 0], 0x81),
+        // Segment prefixes (LOCK with FS/GS and the others), in both orders.
+        (&[0xf0, 0x64, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x65, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x64, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x65, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x2e, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x36, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x64, 0x81, 0x43, 0x3d, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x65, 0x80, 0x43, 0x3d, 0x01], 0x80),
+        // REX before LOCK, or not directly before the opcode.
+        (&[0x48, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x41, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x40, 0xf0, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x48, 0xf0, 0x81, 0x43, 0x3d, 1, 0, 0, 0], 0x81),
+        (&[0xf0, 0x48, 0x66, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x66, 0x48, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0xf0, 0x48, 0x2e, 0x83, 0x43, 0x3d, 0x01], 0x83),
+        (&[0x41, 0xf0, 0x80, 0x43, 0x3d, 0x01], 0x80),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_add_memory_immediate_without_lock_keeps_its_existing_arithmetic_path_in_the_set() {
+    // `83 43 3d 01` (ADD m32, imm8 without LOCK) was already executed as an ordinary ADD;
+    // S4-38L7z does not touch it.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = CasMemory::new(&[0x83, 0x43, 0x3d, 0x01], 0x7fff_ffff);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.cell, 0x8000_0000);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(state.rflags & ARITH, FLAG_OF | FLAG_SF | FLAG_PF | FLAG_AF);
+
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = CasMemory::new(&[0x48, 0x83, 0x43, 0x3d, 0xff], 0x1_0000_0000);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.cell, 0xffff_ffff);
+    assert_eq!(state.rip, RIP + 5);
+}
+
+#[test]
+fn lock_add_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the LOCK form is refused without mutation.
+    for (code, opcode) in [
+        (&LOCK_ADDL_RSP_M4[..], 0x83u8),
+        (&lock_addl_rbx_3d(0x01)[..], 0x83),
+        (&[0xf0, 0x80, 0x43, 0x3d, 0x01][..], 0x80),
+        (
+            &[0xf0, 0x48, 0x81, 0x43, 0x3d, 0x00, 0x00, 0x00, 0x80][..],
+            0x81,
+        ),
+    ] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::Rsp as usize] = 0x20_0004;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_add_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gpr[Register::Rsp as usize] = 0x20_0004;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&LOCK_ADDL_RSP_M4, 5);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x83 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn lock_add_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&LOCK_ADDL_RSP_M4, 5);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,

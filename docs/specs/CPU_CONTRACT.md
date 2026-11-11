@@ -22583,3 +22583,52 @@ R12D-источник и RIP-relative; r8d–r15d источники; базы r
 CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = `0xffffffff84422440`, RBX = `0xffffffff83a03b8a`, RCX = RDX = RSI = 0,
 RDI = `0xffffffff83bb60e0`, RSP = RBP = `0xffffffff83a03b10`, R12 = `0xffffffff83a03b90`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; вывод COM1 пуст;
 `set_members` — прежние. Следующий срез — `LOCK ADD m32, imm8` (`F0 83 /0 ib`, идиома барьера памяти), по аналогии с `LockOrMem` (S4-38L7s); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK ADD m8/m32/m64, imm` (`F0 [REX] 80|81|83 /0`) в наборе CPL0 (S4-38L7z)
+
+Граница S4-38L7y: `f0 83 44 24 fc 00` = `lock addl $0x0, -0x4(%rsp)` (ModRM `0x44`: mod 01, reg 0 = ADD, rm 100 = SIB; SIB `0x24`: база RSP, без индекса; disp8 `0xfc` = −4; imm8 `0`),
+RIP `0xffffffff81537280`, `Unsupported { opcode: 0x83 }`, retired 1185027417 (идиома барьера памяти). Семантика дана **по памяти SDM** (Vol. 2 «ADD»: назначение = назначение + sign-extended
+immediate на ширине операнда; CF/PF/AF/ZF/SF/OF — по результату сложения), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: новая операция `Operation::LockAddMem { destination, immediate }` (парная к `LockOrMem` из S4-38L7s, `immediate` уже расширено до ширины операнда), но **та же ветка
+декодирования** `80|81|83` — условие принятия LOCK расширено с `group == 1` до `group ∈ {0, 1}`, внутри ветки выбор операции по `group`. Всё остальное (чтение ModRM, `rm_operand`, чтение и расширение immediate,
+проверки префиксов) общее, ничего не продублировано. Принимается `F0 [REX] 83 /0 ib` (dword; с REX.W — qword со sign-extended imm8; граница), и «бесплатно в том же коде»
+`F0 [REX] 81 /0 id` (dword; с REX.W — qword со sign-extended imm32) и `F0 [REX] 80 /0 ib` (байт) — все с memory-операндом (mod ≠ 11), любой адресацией, без сегментного префикса.
+Длина включает immediate (граничная форма — 6 байт; `f0 83 05 disp32 ib` — 8), поэтому RIP-relative считается от RIP **после** immediate.
+`flag_effects`: все шесть флагов определены (как у `Operation::Arithmetic`). Отказ (`Unsupported { opcode: 0x80|0x81|0x83 }`, опкод самой инструкции, без мутации): `/2`–`/7` с LOCK (ADC, SBB, AND, SUB, XOR, CMP),
+регистровая форма (mod = 11) с LOCK, `66` (в том числе для `81`: word-форма — консервативный отказ), `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс (FS/GS с LOCK — отказ),
+REX до LOCK или не непосредственно перед опкодом (`48 f0 83 …`, `f0 48 66 83 …`). REX.R на селектор группы не влияет. `/1` (LOCK OR) не менялся.
+
+**Без LOCK.** `83 /0` (ADD m32, imm8 без LOCK), `81 /0`, `80 /0` по-прежнему декодируются в `Operation::Arithmetic { kind: Add }` и исполняются через `binary_operation` и адаптер; не менялось (тесты
+`plain_add_memory_immediate_without_lock_keeps_its_existing_arithmetic_path_in_the_set` и декодерный).
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы: неканоническое начало или последний байт операнда (адрес + 3 для dword) даёт `#GP(0)` (для баз RSP/RBP — `#SS(0)`) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** Порядок: каноничность адреса → `read_integer(size)` → общая `arithmetic_result(size, Add, старое, immediate, RFLAGS)` (никакой новой арифметики) →
+`write_integer(size)` **всегда**, даже при нулевом слагаемом (для страницы только для чтения это `#PF`) → только после успешной записи обновляются CF/PF/AF/ZF/SF/OF (прочие биты RFLAGS сохраняются).
+RIP += длина, retired + 1 только при успехе. При `#GP`/`#SS`/`#PF` память, флаги, RIP, регистры и retired не меняются. Регистр (в том числе RSP) не меняется. Руками проверено (dword): `0x7fffffff + 1` = `0x80000000`
+→ OF, SF, PF, AF; `0xffffffff + 1` = 0 → CF, ZF, PF, AF; `0x0f + 1` → AF; `0 + 0` → ZF, PF; imm8 `0x80` = −128: `0 + 0xffffff80` → SF **без CF** (сложение не даёт переноса; в постановке среза ожидалось CF = 1,
+это перенос из вычитания и ошибка счёта), `0x80 + 0xffffff80` = 0 → CF, ZF, PF (CF = 1 здесь). Ожидаемые флаги дополнительно сверяются в тесте независимым расчётом на целых хоста (`add32_flags`).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockOrMem`. Вне набора — `Unsupported { opcode: 0x80|0x81|0x83 }` без мутации; CPL3 — `WrongPrivilege`.
+`mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `step_paged_probe` и голые `run`/`step` форму не принимают (тест отказа в каждом).
+
+**Не делалось.** LOCK ADC/SBB/AND/SUB/XOR/CMP/DEC/NEG/NOT, `LOCK ADD r/m, r` (`F0 01/00`), word-форма (`66`), FS/GS-вариант, SMP-упорядочение, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_add_*` (граница `f0 83 44 24 fc 00` на RSP-базе: адрес RSP − 4, запись неизменённого dword, только RIP и флаги; флаги на 14 парах значений при двух начальных RFLAGS по независимому
+расчёту и 6 именованных граничных значений; RIP-relative (длина 8) и SIB+disp; базы r8–r15; индексы r8–r15; REX.R; byte/dword/qword-формы с imm8/imm32; `#GP(0)` по адресу + 3 и принятие последнего канонического dword;
+`#SS(0)` для RSP (в том числе по адресу + 3) и RBP; `#PF` на записи; 45 отказов с точным опкодом; вне набора; голый `step`; CPL3), `plain_add_memory_immediate_without_lock_keeps_its_existing_arithmetic_path_in_the_set`;
+`long_decode::tests::lock_add_decodes_the_memory_immediate_forms_only`; отказ вне набора: `execute::tests::lock_add_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::mov_cr3_profile_keeps_lock_add_unsupported`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_add_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_lock_add_unsupported`,
+`paged_probe_profile::lock_add_stays_unsupported_in_the_paged_probe_profile`; фасад: `linux_direct::tests::lock_add_dword_at_minus_four_of_rsp_changes_only_that_dword` (dword −4 на RSP-базе, соседние байты целы).
+Ранее принятые отказы `LOCK ADD` в таблицах отказов S4-38L7s (`lock_or_forms_outside_the_slice_*`, `lock_or_decodes_the_memory_immediate_forms_only`) убраны, т.к. `/0` теперь принимается.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7z-diagnostic-run.json`.
+`lock addl $0x0, -0x4(%rsp)` по `0xffffffff81537280` проходит (retired 1185027417 → 1185342631, +315214). Новая граница: RIP `0xffffffff82734608` (GPA `0x2734608`), байты
+`65 48 39 15 08 8a ce 01 75 08 48 c7 43 18 00 00` — `cmp %rdx, %gs:0x1ce8a08(%rip)` (GS-префикс + REX.W + `39 /r`, CMP r/m64, r64 с memory-операндом, ModRM `0x15`: RIP-relative, disp32 `0x01ce8a08`, длина 8;
+далее `jne +8`, `movq $0, 0x18(%rbx)`); `Unsupported { opcode: 0x39 }` (57), `set_exit_detail` = `Run(Unsupported { opcode: 57 })`, `exit_kind` = `unsupported`, retired = 1185342631.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = `0x86`, RBX = `0xffffffff83bb62a0`,
+RCX = RSI = RDI = R8–R11 = R14 = 0, RDX = `0xffffffff83a134c0`, RSP = `0xffffffff83a03b28`, RBP = `0xffffffff83a03b58`, R12 = `0xffffffff83a03b30`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 28; вывод COM1 — только ранний лог (3784 hex-символов); `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `CMP r/m64, r64` с FS/GS-префиксом (`[64|65] REX.W 39 /r`, memory-операнд; по образцу `SubGsMem` из S4-38L7j/`[64|65] 2B`) в наборе CPL0 (решение — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
