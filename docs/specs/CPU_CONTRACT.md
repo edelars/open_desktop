@@ -21662,3 +21662,61 @@ RBX = `0xffffffff83c38e00`, RCX = 0, RDX = `0xffffffff83c34300`, RSI = 0, RDI = 
 RBP = `0xffffffff83a03e30`, R12 = `0xffffffff83c38460`, RFLAGS = `0x2`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
 (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же.
 Следующий срез — `LOCK INC m32` (`F0 FF /0`, memory-форма, dword) в наборе CPL0; решение — по этой границе, а не по предположению.
+
+### `LOCK INC m32/m64` в наборе CPL0 (S4-38L7l)
+
+Граница S4-38L7k (`f0 ff 43 58`, `lock incl 0x58(%rbx)`, RIP `0xffffffff815ad6b7`, `Unsupported { opcode: 0xff }`) показала, что
+LOCK-форма `FF /0` отказывается декодером. Срез добавляет `F0 [REX] FF /0` с memory-операндом (mod ≠ 11): dword (граница) и,
+дёшево в том же коде, qword (`F0 REX.W FF /0`); база/индекс любые (RIP-relative, SIB, disp8/disp32, REX.B). Семантика дана **по памяти
+SDM** (Vol. 2 «INC»: назначение = назначение + 1 на ширине операнда; OF, SF, ZF, AF, PF — по результату, CF не меняется), по
+первоисточнику **не сверялась**.
+
+**Декодер.** `F0 [REX] FF /0` с memory-формой порождает новый `Operation::LockIncMem { destination }` (размер берётся из
+`destination.size`: dword, с REX.W — qword; флаги: определены OF/SF/ZF/AF/PF, CF не определён к изменению). Отказ
+(`Unsupported { opcode: 0xff }` без мутации): `FF /1` (DEC) и `/2`–`/7` (CALL, far CALL, JMP, far JMP, PUSH, `/7`) с LOCK, регистровая
+форма с LOCK (в том числе с REX), `66` (word-форма), `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный
+префикс (включая FS/GS). REX не непосредственно перед опкодом теряет W и вместе с `66` отказывается. Байтовая форма `F0 FE /0` не
+менялась (`Unsupported { opcode: 0xfe }`).
+
+**Без LOCK.** В отличие от CMPXCHG (S4-38L7k), memory-форма `FF /0` без LOCK уже была реализована как обычная арифметика
+(`Operation::Arithmetic { Inc }`: чтение, `arithmetic_result`, запись через адаптер) и исполняется в наборе CPL0 и вне него. Это
+поведение **не сужается** и не менялось; новая операция принимается только с LOCK.
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы: неканоническое начало или последний байт операнда даёт `#GP(0)`
+(для баз RSP/RBP — `#SS(0)`) до любого доступа, без мутации регистров, флагов и памяти.
+
+**Исполнение (один vCPU, шина не блокируется).** Читается операнд (`memory.read_integer`), считается `arithmetic_result(size, Inc, …)`
+(та же общая функция, что у обычного INC: CF сохраняется), затем результат **записывается всегда** (`memory.write_integer`). Только
+после успешной записи обновляются флаги (остальные биты RFLAGS сохраняются), RIP += длина, retired + 1. При `#GP`/`#SS`/`#PF` на чтении
+или записи память, флаги, RIP и retired не меняются. Чтение и запись — две отдельные операции адаптера: для одного vCPU это эквивалентно
+LOCK. Ограничение (по памяти SDM, не сверено): `#PF` на неприсутствующей странице при чтении сообщит код ошибки с W = 0, тогда как
+железо для RMW, по-видимому, сообщает W = 1 (так же ведут себя прочие RMW-формы интерпретатора).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xff }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-probe, `step_paged_mov` и голые `run`/`step` форму не принимают (тесты отказа в
+каждом).
+
+**Не делалось.** FS/GS-вариант, byte/word-формы, LOCK DEC/ADD/SUB/OR/AND/XOR/NEG/NOT/BTS/BTR и прочие LOCK-формы, SMP-упорядочение,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_inc_*` (dword: инкремент и запись 4 байт через RBX; переполнение и перенос флагов
+(0x7fffffff → OF/SF/PF/AF, 0xffffffff → ZF/PF/AF) и граничные AF/PF при двух начальных состояниях RFLAGS; CF сохраняется (0 и 1) при
+переходе в 0; qword; RIP-relative и SIB+disp; база r8–r15; `#GP(0)` (dword и qword) и `#SS(0)` (RSP/RBP) без мутации; `#PF` на записи без
+мутации; 24 отказа с точным опкодом `0xff`; `F0 FE /0` → `0xfe`; вне набора; CPL3), `plain_inc_memory_without_lock_keeps_its_existing_arithmetic_path_in_the_set`;
+`long_decode::tests::lock_inc_decodes_the_memory_form_only`; отказ вне набора:
+`execute::tests::lock_inc_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::lock_inc_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_inc_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_lock_inc_unsupported`;
+`linux_direct::tests::lock_inc_reads_and_writes_guest_memory_at_disp8_of_rbx`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7l-diagnostic-run.json`. `lock incl 0x58(%rbx)` по RIP `0xffffffff815ad6b7` и последующие инструкции
+проходят (retired 1137488218 → 1137490261, +2043). Новая граница: RIP `0xffffffff83f52aba`, байты
+`65 8b 05 73 a5 4c 00 48 89 c3 f0 48 0f ab 05 13` (первая инструкция — `mov %gs:0x4ca573(%rip), %eax`, GS-загрузка dword, RIP-relative),
+`Unsupported { opcode: 0x8b }`, `set_exit_detail` = `Run(Unsupported { opcode: 139 })`, `exit_kind` = `unsupported`,
+retired = 1137490261. Регистры на остановке: RAX = 0, RBX = 0, RCX = 0, RDX = 0, RSI = 0, RDI = 0, RSP = `0xffffffff83a03eb8`,
+RBP = `0xffffffff83a03ec0`, R12 = `0xb0`, R13 = `0x27`, R15 = `0x100000`, RFLAGS = `0x46`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
+(`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же.
+Следующий срез — загрузка dword с сегментной базой GS (`65 8B /r`, `MOV r32, GS:[m]`; S4-38L7i покрывала только qword-загрузки FS/GS);
+следом в потоке идёт `f0 48 0f ab 05` (`LOCK BTS m64, r64`). Решение — по этой границе, а не по предположению.
