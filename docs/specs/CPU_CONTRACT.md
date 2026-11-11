@@ -22190,3 +22190,57 @@ CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой 
 `exceptions_delivered` = 26; `set_members` = `cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`,
 `popf_cpl0`. Следующий срез — `LOCK OR m8, imm8` (`F0 80 /1 ib`, memory-операнд, без сегментного префикса) в наборе CPL0 (решение — по
 этой границе).
+
+### `LOCK OR m8/m32/m64, imm` в наборе CPL0 (S4-38L7s)
+
+Граница S4-38L7r (`f0 80 4b 3d 80`, `lock orb $0x80, 0x3d(%rbx)`, RIP `0xffffffff813c0fcc`, `Unsupported { opcode: 0x80 }`) — LOCK-форма
+группы `80`. Срез добавляет `F0 [REX] 80 /1 ib` (байт; граница), и, дёшево в том же коде, `F0 [REX] 81 /1 id` (dword; с REX.W — qword с
+sign-extended imm32) и `F0 [REX] 83 /1 ib` (dword/qword с sign-extended imm8) — все с memory-операндом (mod ≠ 11) и любой адресацией
+(RIP-relative, SIB, disp8/disp32, REX.B/REX.X), без сегментного префикса. Выбор зафиксирован: одна операция на три опкода, потому что
+ширина и расширенное immediate однозначно определяются размером операнда. Семантика дана **по памяти SDM** (Vol. 2 «OR»: назначение =
+назначение | immediate на ширине операнда; CF = 0, OF = 0, SF/ZF/PF — по результату (PF — по младшему байту), AF не определён), по
+первоисточнику **не сверялась**.
+
+**Декодер.** `F0 [REX] 80|81|83 /1` с memory-формой порождает новый `Operation::LockOrMem { destination, immediate }` (`destination` —
+`MemoryOperand` размера byte/dword/qword; `immediate` уже расширено до ширины операнда, как у `binary_operation`; REX.W при `80` игнорируется,
+размер всегда byte). Длина включает immediate (для граничной формы 5 байт, для `f0 80 0d disp32 ib` — 8), поэтому RIP-relative считается
+от RIP **после** immediate. Флаги для метаданных (`flag_effects`) те же, что у `Operation::Logic`: CF/OF/SF/ZF/PF определены, AF не определён.
+Отказ (`Unsupported { opcode: 0x80|0x81|0x83 }`, опкод самой инструкции, без мутации): `/0`, `/2`–`/7` (ADD, ADC, SBB, AND, SUB, XOR, CMP) с
+LOCK (в том числе `LOCK ADD/SUB`, не реализованные в этом срезе), регистровая форма (mod = 11) с LOCK, `66` (word-форма), `67`, `F2`/`F3`
+вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс (в том числе FS/GS с LOCK), REX не непосредственно перед опкодом
+(`48 f0 80 …`, `f0 48 66 80 …`). REX.R на селектор группы не влияет (`f0 44 80 4b 3d 80` по-прежнему OR). Побочный эффект: отказ LOCK-формы
+`80/81/83` теперь возникает после чтения ModRM, поэтому `length` в `DecodeError::Unsupported` для таких отказов на один байт больше прежнего
+(на `exit`-опкод и семантику не влияет).
+
+**Без LOCK.** `80 /1`, `81 /1`, `83 /1` без LOCK и остальные члены группы (`/0`, `/2`–`/7`) уже исполнялись как `Operation::Logic`/`Arithmetic`
+через адаптер и в наборе, и вне него; принцип ревью S4-38L7l («сужать только там, где путь без LOCK опирается на операцию, которой нет у
+адаптера») здесь означает, что **ничего не сужается**: декодирование без LOCK не менялось, новая операция принимается только с LOCK (тест
+`plain_or_memory_without_lock_keeps_its_existing_logic_path_in_the_set` и декодерный тест).
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы: неканоническое начало или последний байт операнда даёт `#GP(0)` (для баз
+RSP/RBP — `#SS(0)`) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** `memory.read_integer(size)`, затем общая `logic_result(size, Or, старое, immediate, RFLAGS)`
+(никакой новой арифметики), затем `memory.write_integer` — **запись всегда**, даже если результат равен прежнему значению (для страницы
+только для чтения это `#PF`). Только после успешной записи обновляются флаги: CF = 0, OF = 0, SF — старший бит результата, ZF — результат
+равен нулю, PF — чётность младшего байта результата, **AF сохраняется**, прочие биты RFLAGS сохраняются. RIP += длина, retired + 1 только при
+успехе. При `#GP`/`#SS` и при `#PF` на чтении/записи память, флаги, RIP, регистры и retired не меняются. Руками проверено: `0x00|0x00` = 0 →
+ZF = 1, PF = 1, SF = 0; `0x80|0x80` = `0x80` → SF = 1, ZF = 0, PF = 0; `0x01|0x02` = `0x03` → PF = 1 (две единицы — чётное число; в постановке
+среза для этого случая ожидалось PF = 0, это было ошибкой счёта, тест фиксирует PF = 1 по определению PF); `0xf0|0x0f` =
+`0xff` → SF = 1, PF = 1; `0x41|0x80` = `0xc1` → SF = 1, PF = 0.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0x80|0x81|0x83 }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov` и голые `run`/`step` форму не принимают (тест отказа в
+каждом).
+
+**Не делалось.** LOCK ADD/ADC/SBB/AND/SUB/XOR/CMP/DEC/NEG/NOT/BTR и прочие LOCK-формы, word-форма (`66`), FS/GS-вариант, SMP-упорядочение,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_or_*` (граничная форма `f0 80 4b 3d 80`: адрес, чтения/записи адаптера, только RIP и флаги; флаги на граничных
+значениях байта при двух начальных состояниях RFLAGS; RIP-relative с imm8 (длина 8) и SIB+disp; база r8–r15; индекс r8–r15; REX.R; dword/qword
+с imm32 и sign-extended imm8; `#GP(0)`; `#SS(0)` (RSP/RBP); `#PF` на записи; 47 отказов с точным опкодом; вне набора; CPL3),
+`plain_or_memory_without_lock_keeps_its_existing_logic_path_in_the_set`; `long_decode::tests::lock_or_decodes_the_memory_immediate_forms_only`;
+отказ вне набора: `execute::tests::lock_or_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::lock_or_stays_unsupported_in_the_mov_cr3_profile`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_or_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_lock_or_unsupported`;
+`linux_direct::tests::lock_or_byte_reads_and_writes_one_guest_byte_at_disp8_of_rbx`.
