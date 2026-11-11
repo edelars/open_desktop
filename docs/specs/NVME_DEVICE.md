@@ -324,7 +324,7 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 
 ## 14. Постоянный backend на стороне host (S5-02)
 
-**Статус:** host contract S5-02 принят; реализация `NvmeBackend` в S5-03 подготовлена и ожидает ревью. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Он не принимает `S7-16`, не меняет его регистры/Identify/команды и не заменяет end-to-end guest storage/flush gate [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
+**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Он не принимает `S7-16`, не меняет его регистры/Identify/команды и не заменяет end-to-end guest storage/flush gate [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
 
 ### 14.1. Состав и владение
 
