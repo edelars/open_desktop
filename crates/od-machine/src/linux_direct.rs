@@ -4616,6 +4616,78 @@ mod tests {
         assert_eq!(stats.write_flushes, 1);
     }
 
+    /// The guest rewrites a PDPT entry (level 3) of the executing path to another PD: the next fetch of the same page walks the new frames.
+    #[test]
+    fn cache_a_pdpte_store_remaps_the_page_under_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The window shows the first tree's PDPT; entry 0 is at offset 0.
+            let state = table_write_case(
+                boot,
+                WINDOW_VA as u32,
+                (TREE2_PML4 + 0x2000 | 3) as u32,
+                TREE_PML4 + 0x1000,
+            );
+            // The second tree keeps A on SPLIT_PAGE0 and maps B to the alternative page.
+            write_tree(
+                boot,
+                TREE2_PML4,
+                &[
+                    (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                    (1, ALT_PAGE1 | A_PRESENT_WRITABLE),
+                ],
+                None,
+            );
+            state
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x3333);
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], 0x4444);
+        assert_eq!(stats.write_flushes, 1, "{stats:?}");
+    }
+
+    /// The guest rewrites a PML4 entry (level 4) of the executing path to another tree: the next fetch of the same page walks the new frames.
+    #[test]
+    fn cache_a_pml4e_store_remaps_the_page_under_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The window shows the first tree's PML4; entry 0 is at offset 0.
+            let state = table_write_case(
+                boot,
+                WINDOW_VA as u32,
+                (TREE2_PML4 + 0x1000 | 3) as u32,
+                TREE_PML4,
+            );
+            // The second tree keeps A on SPLIT_PAGE0 and maps B to the alternative page.
+            write_tree(
+                boot,
+                TREE2_PML4,
+                &[
+                    (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                    (1, ALT_PAGE1 | A_PRESENT_WRITABLE),
+                ],
+                None,
+            );
+            state
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x3333);
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], 0x4444);
+        assert_eq!(stats.write_flushes, 1, "{stats:?}");
+    }
+
     /// `MOV CR3` between two instructions of a cached page: the instruction after it is fetched
     /// through the NEW tree (the same linear page now maps to other bytes).
     #[test]

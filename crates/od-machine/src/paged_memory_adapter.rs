@@ -1583,12 +1583,10 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if let Some(cache) = self.fetch_cache
             && self.cpl0_set_cross_page_fetch
             && self.large_ram_profile
+            // Writes reach the cache through `committed_write`; the capture mode diverts them,
+            // so a capturing adapter never uses the cache.
+            && !self.capture_effects
         {
-            // Writes reach the cache through `committed_write`; the capture mode diverts them.
-            debug_assert!(
-                !self.capture_effects,
-                "the fetch cache needs committed_write"
-            );
             return self.fetch_through_cache(cache, address, context);
         }
         match self.access(address, context, RamAccessOperation::Fetch)? {
