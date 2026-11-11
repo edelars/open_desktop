@@ -22390,3 +22390,49 @@ RSP = `0xffffffff83a03de8`, RBP = `0xffffffff83a03df0`, RFLAGS = `0x86`; CR0 = `
 вопрос к решению: `31 C0` (XOR r/m32, r32) с повторяющимися префиксами `2E` (padding-префиксы CS, в 64-битном режиме игнорируются; ядро
 использует их для выравнивания альтернатив, `alternatives`/`nospec`); потребуется политика декодера для повторных сегментных префиксов
 `26/2E/36/3E` (SDM: допустимо, эффект игнорируется) — решение принять по этой границе.
+
+### Повторные сегментные префиксы CS/DS/ES/SS (`2E`/`3E`/`26`/`36`) перед обычным опкодом (S4-38L7v)
+
+Граница S4-38L7u (`2e 2e 2e 31 c0` = `cs cs cs xor %eax, %eax`, RIP `0xffffffff8273440d`, `Unsupported { opcode: 0x31 }`) показала, что общий
+парсер префиксов `Decoder::decode` отказывал любой повтор префикса одной группы (`duplicate`). Ядро ставит `2E` как выравнивающий padding
+(`alternatives`/`nospec`).
+
+**Что сказано в SDM — по памяти, по первоисточнику НЕ сверено.** Vol. 2 §2.1.1 «Instruction Prefixes»: полезно не более одного префикса из каждой из
+четырёх групп; поведение при нескольких префиксах одной группы SDM, насколько помнится, называет зарезервированным/непредсказуемым (явного
+`#UD` или «последний побеждает» для повторов нет), а общий предел длины инструкции — 15 байт (превышение — `#GP`). Vol. 3 «Segmentation»
+(IA-32e): в 64-битном режиме базы CS/DS/ES/SS считаются нулевыми, их override-префиксы на адрес не влияют; действуют только базы FS/GS.
+Поэтому разрешение повторов `2E/3E/26/36` — **инженерное решение**, опирающееся на реальную практику (ассемблер и ядро Linux
+используют повторные `2E`/`66` как padding, процессоры исполняют их как no-op), а не на явное разрешение в SDM.
+
+**Правило декодера.** Повтор сегментного префикса не считается `duplicate` (`redundant_null_base_segment`), если новый байт — `26`/`2E`/`36`/`3E` и
+предыдущий сегментный префикс не `64`/`65`. Любое количество таких повторов (в сумме с остальными байтами — не более 15) принимается. В
+`Prefixes.segment` остаётся **последний** из этих префиксов (как при записи одиночного префикса); операция, длина (все байты префиксов
+входят в `length`), размеры и `flag_effects` те же, что у формы без префиксов. Для memory-операнда база не прибавляется (как и у одиночного
+`2E`: путь «плоского» DS; базы FS/GS не применяются). REX сбрасывается следующим за ним legacy-префиксом, как и раньше.
+
+**Консервативные границы (не расширялось).** Остаются отказами `Unsupported` с точным опкодом (в тестах `0x31`): любой повтор `64`/`65`;
+сочетание FS/GS с CS/DS/ES/SS в любом порядке (`64 2E`, `2E 64`, `64 65`, `2E 2E 65` — приоритет не угадывается); повтор `66`, `67`, `F0`, `F2`, `F3`
+и смесь `F2`/`F3`. Исключение для `66 66` перед `0F 1F`/`0F 18` (S4-38L4d) без изменений.
+
+**Лимит длины.** `Fetch::byte` отказывает 16-й байт: `#GP(0)` (`RunExit::Fault`, vector 13, error_code 0, без мутации, retired не растёт). `31 C0` с 13
+префиксами = 15 байт — принимается; с 14, 15, 20 префиксами — `#GP(0)` (отказа «duplicate» нет). Решение: не вводить отдельного отказа по лимиту
+и не пытаться ограничивать число повторов ниже 15 байт.
+
+**Побочное изменение уже принятых тестов.** Правило общее (не только `31`): `2E 2E 0F 1F 00` и `2E 2E 0F 18 0A` раньше отказывались как
+«duplicate segment» и теперь принимаются как no-op (`NopModrm`). Тесты `nop_0f1f_lookalikes_stay_unsupported_in_the_set`,
+`prefetch_0f18_lookalikes_stay_unsupported_in_the_set` и `long_decode::tests::nop_0f1f_length_covers_modrm_sib_disp_and_prefixes` заменили пример
+повтора на `64 64` (повтор FS остаётся отказом); принятие повторов CS закреплено отдельным тестом. Прочие принятые формы не менялись (проверено
+полными прогонами `od-isa --lib`, `cpl0_profile_set`, `od-machine --lib`, `od-jit`).
+
+**Вне набора CPL0.** Декодер общий, поэтому голые `run`/`step` (и прочие профили) принимают `2E 2E 2E 31 C0` ровно тогда, когда принимают
+`2E 31 C0` (обе формы исполняются; `legacy_state`, bare `run`). Решение — не вводить отдельного запрета: политика сегментных префиксов у каждой
+операции своя и остаётся прежней, расширен только парсер.
+
+Тесты: `cpl0_profile_set::repeated_cs_ds_es_ss_overrides_before_xor_are_ignored` (`2e 2e 2e 31 c0`, `2e 2e 31 c0`, `3e 36 26 2e 31 c0`, 1–6 повторов каждого
+префикса: RAX = 0, ZF = 1, PF = 1, CF = OF = 0, RIP += длина), `..._before_a_register_mov_...` (`3e 3e 48 89 c3`), `..._before_a_memory_load_keep_a_zero_base`
+(`2e 2e 8b 03`: чтение по RBX при ненулевых FS/GS-базах), `repeated_segment_override_length_limit_is_fifteen_bytes`,
+`repeated_fs_gs_and_non_segment_prefixes_stay_unsupported_before_xor` (16 отказов с `0x31`), `repeated_segment_overrides_outside_the_set_behave_like_a_single_prefix`,
+`repeated_cs_overrides_are_also_ignored_before_nop_and_prefetch_hints`; `long_decode::tests::repeated_cs_ds_es_ss_overrides_decode_like_the_unprefixed_form`,
+`repeated_segment_overrides_respect_the_fifteen_byte_limit`,
+`repeated_fs_gs_and_other_group_prefixes_stay_unsupported_with_the_exact_opcode`;
+`linux_direct::tests::repeated_cs_ds_prefixes_before_xor_and_mov_execute_like_the_unprefixed_forms` (board facade, retired 4).
