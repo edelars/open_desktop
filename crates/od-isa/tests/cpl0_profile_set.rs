@@ -11948,6 +11948,64 @@ fn segment_inc_with_rex_b_uses_r8_to_r15_as_the_base_and_changes_no_register() {
 }
 
 #[test]
+fn segment_inc_with_rex_x_uses_r8_to_r15_as_the_index() {
+    // `incl %gs:0x10(%rbx,%rN,4)` via REX.X: 65 42 ff 44 SIB 10 with SIB = scale 4, index N, base
+    // rbx. The legacy register with the same index number holds a decoy that must not be used
+    // (index 4 would be "no index" without REX.X, so it has no decoy).
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let sib = 0x80 | ((i as u8) << 3) | 0x03;
+        let code = [0x65, 0x42, 0xff, 0x44, sib, 0x10];
+        let mut state = board_state();
+        state.gs_base = INC_GS_BASE;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[register as usize] = 3 + i as u64;
+        let legacy = [
+            Register::Rax,
+            Register::Rcx,
+            Register::Rdx,
+            Register::Rbx,
+            Register::Rsp,
+            Register::Rbp,
+            Register::Rsi,
+            Register::Rdi,
+        ][i];
+        if i != 3 && i != 4 {
+            state.gpr[legacy as usize] = 0x7000;
+        }
+        let before_gpr = state.gpr;
+        // rbx (index 3) is also the base, so keep its value and check the exact address.
+        let at = INC_GS_BASE + 0x1000 + (3 + i as u64) * 4 + 0x10;
+        let mut memory = BitsMemory::new(&code);
+        set_dword(&mut memory, at, 0x1234);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "index r{}", i + 8);
+        assert_eq!(memory.reads, vec![(at, 4)], "index r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(at, 0x1235u32.to_le_bytes().to_vec())],
+            "index r{}",
+            i + 8
+        );
+        assert_eq!(dword_at(&memory, at), 0x1235, "index r{}", i + 8);
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(state.gpr, before_gpr, "index r{}", i + 8);
+    }
+    // The qword form with REX.W+X directly before the opcode: `incq %fs:(%rbx,%r9,8)` =
+    // 64 4a ff 04 cb.
+    let mut state = board_state();
+    state.fs_base = INC_GS_BASE;
+    state.gpr[Register::Rbx as usize] = 0x2000;
+    state.gpr[Register::R9 as usize] = 5;
+    state.gpr[Register::Rcx as usize] = 0x9000;
+    let at = INC_GS_BASE + 0x2000 + 5 * 8;
+    let mut memory = BitsMemory::new(&[0x64, 0x4a, 0xff, 0x04, 0xcb]);
+    memory.set_qword(at, 0xffff_ffff);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(at), 0x1_0000_0000);
+}
+
+#[test]
 fn segment_inc_accepts_a_rex_directly_before_the_opcode_and_ignores_rex_r() {
     // REX.R does not change the opcode extension (/0 stays INC) and there is no register
     // destination: the instruction is `incl %gs:(%rbx)` for REX 0x40 and 0x44.
@@ -12140,7 +12198,7 @@ fn segment_inc_read_fault_leaves_everything_unchanged() {
 
 #[test]
 fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
-    let cases: [(&[u8], u8); 30] = [
+    let cases: [(&[u8], u8); 33] = [
         // DEC and the other FF group members with a segment base (CALL, far CALL, JMP, far JMP,
         // PUSH, /7) stay outside this slice.
         (&[0x65, 0xff, 0x0b], 0xff),
@@ -12166,11 +12224,17 @@ fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         // A second segment prefix.
         (&[0x64, 0x65, 0xff, 0x03], 0xff),
         (&[0x65, 0x65, 0xff, 0x03], 0xff),
-        // REX not immediately before the opcode (stale), for the dword and the qword form.
+        // REX not immediately before the opcode (stale), for the dword form.
         (&[0x44, 0x65, 0xff, 0x03], 0xff),
         (&[0x48, 0x64, 0xff, 0x03], 0xff),
         (&[0x41, 0x65, 0x40, 0xff, 0x03], 0xff),
         (&[0x65, 0x48, 0x67, 0xff, 0x03], 0xff),
+        // The qword form with a REX.W that is not immediately before the opcode (the REX before
+        // the segment prefix is stale, even though the final REX.W is present) is refused too, unlike
+        // the qword `8B` of S4-38L7i.
+        (&[0x48, 0x65, 0x48, 0xff, 0x03], 0xff),
+        (&[0x41, 0x65, 0x48, 0xff, 0x03], 0xff),
+        (&[0x48, 0x64, 0x48, 0xff, 0x03], 0xff),
         // The byte form (FE /0) with a segment base stays refused with its own opcode.
         (&[0x65, 0xfe, 0x03], 0xfe),
         (&[0x64, 0xfe, 0x03], 0xfe),

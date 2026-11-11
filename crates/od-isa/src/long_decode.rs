@@ -22495,6 +22495,19 @@ mod tests {
                     && destination.scale == 4
                     && destination.displacement == 0x10
         ));
+        // REX.X selects r8-r15 as the index register (the form is accepted).
+        let mut memory = Memory::new(&[0x65, 0x42, 0xff, 0x44, 0x8b, 0x10]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 6);
+        assert!(matches!(
+            decoded.operation,
+            Operation::IncGsMem { destination }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.index == Some(Register::R9)
+                    && destination.scale == 4
+                    && destination.displacement == 0x10
+                    && destination.size == OperandSize::Dword
+        ));
         // REX.W directly before the opcode selects the qword form.
         let mut memory = Memory::new(&[0x64, 0x48, 0xff, 0x43, 0x58]);
         assert!(matches!(
@@ -22546,6 +22559,10 @@ mod tests {
             &[0x64, 0x65, 0xff, 0x03][..],
             &[0x48, 0x65, 0xff, 0x03][..],
             &[0x44, 0x64, 0xff, 0x03][..],
+            // A stale REX.W/REX before the segment prefix, even with REX.W before the opcode.
+            &[0x48, 0x65, 0x48, 0xff, 0x03][..],
+            &[0x41, 0x65, 0x48, 0xff, 0x03][..],
+            &[0x48, 0x64, 0x48, 0xff, 0x03][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
