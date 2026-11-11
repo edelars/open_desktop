@@ -20894,7 +20894,7 @@ RAX. Набор CPL0 теперь исполняет `MOV r64, CR2` в любо�
 Без префиксов или ровно один REX `40`–`4F` с `REX.R = 0`. REX.W не имеет значения: в 64-битном режиме
 `MOV r64, CRn` всегда 64-битный (SDM Vol.2 `MOV CRn`), REX.X при mod = 11 не используется; поэтому
 принимаются все W/X/B. REX.R дал бы CR10 — `Unsupported`. Точные формы RAX (`0F 20 D0`, `48 0F 20 D0`) по-прежнему
-дают `Operation::ReadCr2`; остальные — новый `Operation::ReadCr2Into(Register)`. `mod != 11` (память), reg ≠ CR2
+дают `Operation::ReadCr2`; остальные — новый `Operation::ReadCr2Into(Register)`. `mod != 11` — не моделируется (по памяти SDM mod у `MOV CRn` игнорируется; здесь — `Unsupported`, консервативно), reg ≠ CR2
 (CR0/CR3/CR4 в другой регистр, CR1, CR5), запись `0F 22`, `LOCK`/`66`/`F2`/`F3`/`67`/сегментный префикс —
 `Unsupported`. ReadCr3/ReadCr4/ReadCr0 принимают прежние формы, ничего не расширено.
 

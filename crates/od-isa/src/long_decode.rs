@@ -2388,7 +2388,6 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     (0x22, 0xc0) => Operation::WriteCr0,
                     (0x22, 0xd8) => Operation::WriteCr3,
                     (0x20, 0xd8) => Operation::ReadCr3,
-                    (0x20, 0xd0) => Operation::ReadCr2,
                     (0x20, 0xe0) => Operation::ReadCr4,
                     (0x22, 0xe0) => Operation::WriteCr4,
                     _ => unreachable!("control-register opcode was validated"),

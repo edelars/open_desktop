@@ -1896,7 +1896,7 @@ fn mov_r64_cr2_other_forms_are_unsupported_without_mutation() {
         &[0x41, 0x0f, 0x20, 0xd8][..],       // CR3 into R8 (REX.B)
         &[0x44, 0x0f, 0x20, 0xd3][..],       // REX.R: CR10
         &[0x4d, 0x0f, 0x20, 0xdf][..],       // REX.W+R+B: CR10 into R15
-        &[0x0f, 0x20, 0x13][..],             // mod 00: memory form
+        &[0x0f, 0x20, 0x13][..],             // mod 00: not modeled (SDM ignores mod; conservative)
         &[0x0f, 0x20, 0x53, 0x08][..],       // mod 01
         &[0x0f, 0x20, 0x93, 0, 0, 0, 0][..], // mod 10
         &[0x0f, 0x22, 0xd3][..],             // MOV CR2, RBX: write is not modeled
@@ -1911,6 +1911,8 @@ fn mov_r64_cr2_other_forms_are_unsupported_without_mutation() {
         &[0x2e, 0x0f, 0x20, 0xd3][..],
         &[0x64, 0x0f, 0x20, 0xd3][..],
         &[0x41, 0x66, 0x0f, 0x20, 0xd3][..], // REX before another prefix is ignored
+        &[0x40, 0x41, 0x0f, 0x20, 0xd3][..], // several REX
+        &[0x41, 0x40, 0x0f, 0x20, 0xd3][..],
     ] {
         let mut state = cr2_state(Some(CR2_DISTINCT));
         let before = state.clone();

@@ -1279,6 +1279,7 @@ mod tests {
         assert_eq!(record.virtual_ns, 2 + 1_000);
         assert_eq!(record.rip, 0x0100_0200 + 3);
         // RDTSC read the clock at the start of the run (0): EDX:EAX = 0.
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
         assert_eq!(record.gpr[Register::Rdx as usize], 0);
         assert!(record.linux_profile);
         // The same code without RDTSC (MOV AL, 1; HLT) moves the clock only by the retired instructions.
@@ -2812,6 +2813,7 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 64, halting_default());
         assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
         assert_eq!(record.retired, 4);
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
     }
 
     /// CLI; MOV EBX, 0x1234; MOV EAX, `leaf`; CPUID; HLT.
