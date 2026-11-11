@@ -17094,3 +17094,205 @@ fn segment_cmp_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L7ab: `INVLPG m` (`0F 01 /7`, memory operand) in the CPL0 set. Decision (reviewable,
+// from memory of SDM Vol.2 INVLPG, not checked against the primary source): the model has no
+// architecturally visible TLB, so the instruction is a no-op. The operand address is not
+// evaluated, read, written or translated (so no #GP for a non-canonical address); only RIP and
+// the retirement count change. Registers, flags and memory are untouched. ----
+
+/// `invlpg (%rdi)` (the S4-38L7aa diagnostic boundary bytes).
+const INVLPG_RDI: [u8; 3] = [0x0f, 0x01, 0x3f];
+
+fn invlpg_state() -> LongModeState {
+    let mut state = board_state();
+    state.rflags |= ARITH | (1 << 10);
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_1111_0000;
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x0101_0101_0101_0101u64.wrapping_mul(index as u64 + 1);
+    }
+    state
+}
+
+#[test]
+fn invlpg_boundary_form_is_a_noop_that_touches_nothing() {
+    let mut state = invlpg_state();
+    state.gpr[Register::Rdi as usize] = 0xffff_ffff_8141_d590;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&INVLPG_RDI, 0x1234);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.reads.is_empty(), "the operand is not read");
+    assert!(memory.writes.is_empty(), "nothing is written");
+    assert_eq!(memory.cell, 0x1234);
+    expected.rip += 3;
+    assert_eq!(state, expected, "only RIP changes");
+}
+
+#[test]
+fn invlpg_with_a_non_canonical_address_is_not_a_fault() {
+    for rdi in [
+        0xffff_ffff_ffff_ffffu64,
+        0x0000_8000_0000_0000,
+        0x8000_0000_0000_0000,
+        0,
+    ] {
+        let mut state = invlpg_state();
+        state.gpr[Register::Rdi as usize] = rdi;
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(&INVLPG_RDI, 0);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{rdi:#x}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{rdi:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        expected.rip += 3;
+        assert_eq!(state, expected, "{rdi:#x}");
+    }
+}
+
+#[test]
+fn invlpg_forms_with_segment_rex_sib_and_displacements_advance_by_their_length() {
+    let forms: [&[u8]; 17] = [
+        &[0x65, 0x0f, 0x01, 0x3f],                         // %gs:(%rdi)
+        &[0x64, 0x0f, 0x01, 0x3f],                         // %fs:(%rdi)
+        &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00],       // 0x1234(%rip): RIP + 7
+        &[0x65, 0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00], // %gs:0x1234(%rip)
+        &[0x0f, 0x01, 0x7f, 0x08],                         // 8(%rdi)
+        &[0x0f, 0x01, 0xbf, 0x00, 0x00, 0x00, 0x80],       // disp32
+        &[0x0f, 0x01, 0x3c, 0x24],                         // (%rsp)
+        &[0x0f, 0x01, 0x7c, 0x88, 0x10],                   // 0x10(%rax,%rcx,4)
+        &[0x0f, 0x01, 0x3c, 0x25, 0xf8, 0xff, 0xff, 0xff], // SIB, no base, disp32
+        &[0x41, 0x0f, 0x01, 0x38],                         // (%r8)
+        &[0x41, 0x0f, 0x01, 0x3f],                         // (%r15)
+        &[0x41, 0x0f, 0x01, 0x7f, 0x10],                   // 0x10(%r15)
+        &[0x42, 0x0f, 0x01, 0x3c, 0x20],                   // (%rax,%r12)
+        &[0x43, 0x0f, 0x01, 0x3c, 0xe7],                   // (%r15,%r12,8)
+        &[0x44, 0x0f, 0x01, 0x3f],                         // REX.R (ignored)
+        &[0x40, 0x0f, 0x01, 0x3f],                         // bare REX
+        &[0x65, 0x41, 0x0f, 0x01, 0x3f],                   // %gs:(%r15)
+    ];
+    for code in forms {
+        let mut state = invlpg_state();
+        for register in 0..16 {
+            // Non-canonical everywhere, so that any evaluation of the address would fault.
+            state.gpr[register] = 0xdead_beef_dead_beef;
+        }
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(code, 7);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn invlpg_does_not_consume_the_following_instruction() {
+    // The boundary stream: `invlpg (%rdi); jmp rel32`. One instruction retires, RIP is at the jmp.
+    let code = [0x0f, 0x01, 0x3f, 0xe9, 0x2b, 0x1a, 0xbb, 0x02];
+    let mut state = invlpg_state();
+    let mut memory = CasMemory::new(&code, 0);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+}
+
+#[test]
+fn invlpg_forms_outside_the_slice_are_refused_with_0x01_without_mutation() {
+    let cases: [&[u8]; 17] = [
+        &[0xf0, 0x0f, 0x01, 0x3f],       // LOCK
+        &[0xf3, 0x0f, 0x01, 0x3f],       // REP
+        &[0xf2, 0x0f, 0x01, 0x3f],       // REPNE
+        &[0x66, 0x0f, 0x01, 0x3f],       // 0x66
+        &[0x67, 0x0f, 0x01, 0x3f],       // 0x67
+        &[0x65, 0x64, 0x0f, 0x01, 0x3f], // a second segment prefix
+        &[0x65, 0x65, 0x0f, 0x01, 0x3f],
+        &[0x2e, 0x0f, 0x01, 0x3f], // CS/DS/ES/SS overrides stay refused
+        &[0x48, 0x0f, 0x01, 0x3f], // REX.W
+        &[0x49, 0x0f, 0x01, 0x3f],
+        &[0x65, 0x48, 0x0f, 0x01, 0x3f],
+        &[0x41, 0x65, 0x0f, 0x01, 0x3f], // REX not directly before the opcode
+        &[0x0f, 0x01, 0xff],             // register form of /7
+        &[0x0f, 0x01, 0xfe],
+        &[0x0f, 0x01, 0xf9], // RDTSCP (register form, unchanged)
+        &[0x65, 0x0f, 0x01, 0xff],
+        &[0x41, 0x0f, 0x01, 0xff],
+    ];
+    for code in cases {
+        let mut state = invlpg_state();
+        state.gpr[Register::Rdi as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x01 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn invlpg_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): refused without mutation.
+    for code in [
+        &INVLPG_RDI[..],
+        &[0x65, 0x0f, 0x01, 0x3f][..],
+        &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x01 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn invlpg_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = invlpg_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&INVLPG_RDI, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

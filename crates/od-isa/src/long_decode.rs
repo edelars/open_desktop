@@ -1980,6 +1980,12 @@ pub enum Operation {
     /// bytes only contribute to the instruction length; the operand is never read, written
     /// or translated. Execution is admitted only inside the CPL0 profile set.
     NopModrm,
+    /// `0F 01 /7` with a memory operand (INVLPG m, S4-38L7ab). The model has no TLB, so the
+    /// instruction is a no-op: the operand is never evaluated, read, written or translated.
+    /// The ModRM/SIB/disp bytes only contribute to the length. A review-able model decision
+    /// (SDM Vol.2 INVLPG, from memory, not checked against the primary source). Executed only
+    /// in the CPL0 profile set.
+    Invlpg,
     /// Long-mode near indirect JMP through a 64-bit register or memory operand.
     IndirectJump {
         operand: Operand,
@@ -2702,6 +2708,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // (the CPL0 profile set admits all of them, legacy paths only
                 // `[RBP+disp8]` for LGDT and `[RSP+disp8]` for LIDT).
                 let reg = (modrm >> 3) & 7;
+                // S4-38L7ab: INVLPG m (`/7`, memory operand only). The register forms
+                // (`0F 01 F8` SWAPGS handled above, `F9` RDTSCP, ...) stay as before.
+                if reg == 7 && modrm >> 6 != 3 {
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Qword,
+                        address_size: OperandSize::Qword,
+                        operation: Operation::Invlpg,
+                    });
+                }
                 if (reg != 2 && reg != 3) || modrm >> 6 == 3 {
                     return Err(self.unsupported(opcode));
                 }
@@ -2721,6 +2740,38 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     } else {
                         Operation::LoadIdtr { source }
                     },
+                });
+            }
+            // S4-38L7ab: INVLPG m with an FS/GS override and/or a REX byte (no REX.W). The
+            // forms with LOCK/REP, 0x66, 0x67, a CS/DS/ES/SS override or a REX byte that is not
+            // directly before the opcode stay unsupported (the other `0F 01` forms with such
+            // prefixes are not decoded either).
+            if prefixes.group1.is_none()
+                && matches!(prefixes.segment, None | Some(0x64 | 0x65))
+                && !prefixes.operand_override
+                && !prefixes.address_override
+                && (prefixes.segment.is_some() || prefixes.rex.is_some())
+            {
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let modrm = self.byte()?;
+                if stale_rex
+                    || prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    || (modrm >> 3) & 7 != 7
+                    || modrm >> 6 == 3
+                {
+                    return Err(self.unsupported(opcode));
+                }
+                self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::Invlpg,
                 });
             }
             if prefixes.group1 == Some(0xf0)
@@ -26103,6 +26154,80 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn invlpg_decodes_memory_forms_only() {
+        // S4-38L7ab: `[64|65] [REX.RXB] 0F 01 /7` with a memory operand.
+        for (bytes, length) in [
+            (&[0x0fu8, 0x01, 0x3f][..], 3u8),     // invlpg (%rdi): the boundary
+            (&[0x0f, 0x01, 0x38], 3),             // (%rax)
+            (&[0x0f, 0x01, 0x7b, 0x08], 4),       // disp8
+            (&[0x0f, 0x01, 0xbb, 0, 0, 0, 0], 7), // disp32
+            (&[0x0f, 0x01, 0x3d, 0x34, 0x12, 0, 0], 7), // RIP-relative
+            (&[0x0f, 0x01, 0x3c, 0x24], 4),       // SIB
+            (&[0x0f, 0x01, 0x7c, 0x88, 0x10], 5), // SIB + disp8
+            (&[0x0f, 0x01, 0x3c, 0x25, 0, 0, 0, 0], 8), // SIB, no base, disp32
+            (&[0x41, 0x0f, 0x01, 0x38], 4),       // REX.B (r8)
+            (&[0x42, 0x0f, 0x01, 0x3c, 0x20], 5), // REX.X
+            (&[0x44, 0x0f, 0x01, 0x3f], 4),       // REX.R (ignored)
+            (&[0x40, 0x0f, 0x01, 0x3f], 4),       // bare REX
+            (&[0x65, 0x0f, 0x01, 0x3f], 4),       // GS
+            (&[0x64, 0x0f, 0x01, 0x3f], 4),       // FS
+            (&[0x65, 0x41, 0x0f, 0x01, 0x3f], 5), // GS + REX.B
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(decoded.operation, Operation::Invlpg, "{bytes:02x?}");
+        }
+        // Trailing bytes are not consumed (the next instruction is a jmp).
+        let decoded = Memory::new(&[0x0f, 0x01, 0x3f, 0xe9, 0x2b, 0x1a, 0xbb, 0x02])
+            .decode()
+            .unwrap();
+        assert_eq!((decoded.length, decoded.operation), (3, Operation::Invlpg));
+        for bytes in [
+            &[0xf0u8, 0x0f, 0x01, 0x3f][..], // LOCK
+            &[0xf3, 0x0f, 0x01, 0x3f],       // REP
+            &[0xf2, 0x0f, 0x01, 0x3f],       // REPNE
+            &[0x66, 0x0f, 0x01, 0x3f],
+            &[0x67, 0x0f, 0x01, 0x3f],
+            &[0x65, 0x64, 0x0f, 0x01, 0x3f], // two segment prefixes
+            &[0x64, 0x64, 0x0f, 0x01, 0x3f],
+            &[0x2e, 0x0f, 0x01, 0x3f], // CS/DS/ES/SS stay refused
+            &[0x3e, 0x0f, 0x01, 0x3f],
+            &[0x48, 0x0f, 0x01, 0x3f], // REX.W
+            &[0x49, 0x0f, 0x01, 0x3f],
+            &[0x65, 0x48, 0x0f, 0x01, 0x3f],
+            &[0x41, 0x65, 0x0f, 0x01, 0x3f], // stale REX before the segment prefix
+            &[0x0f, 0x01, 0xf8 + 1],         // RDTSCP register form
+            &[0x0f, 0x01, 0xff],             // register form of /7
+            &[0x0f, 0x01, 0xfe],
+            &[0x65, 0x0f, 0x01, 0xf9],
+            &[0x41, 0x0f, 0x01, 0xf8],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}: {:?}",
+                Memory::new(bytes).decode()
+            );
+        }
+        // `0F 01 F8` stays SWAPGS.
+        assert_eq!(
+            Memory::new(&[0x0f, 0x01, 0xf8]).decode().unwrap().operation,
+            Operation::Swapgs
+        );
+        // LGDT/LIDT keep decoding as before.
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x01, 0x10]).decode().unwrap().operation,
+            Operation::LoadGdtr { .. }
+        ));
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x01, 0x18]).decode().unwrap().operation,
+            Operation::LoadIdtr { .. }
+        ));
     }
 
     #[test]
