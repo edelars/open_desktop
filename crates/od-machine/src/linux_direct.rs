@@ -3421,6 +3421,126 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
+
+    /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
+    /// disp32 being the one of the Linux boundary bytes, 0x02e97995); MOV RAX,`cell`; store it at
+    /// `BASE + 0x10`; `prefix` `83 3d disp32 imm8`; HLT. Returns the board, the run record and the
+    /// base that was written.
+    fn run_segment_cmp_imm8(
+        msr: u32,
+        prefix: &[u8],
+        cell: u64,
+        imm: u8,
+    ) -> (LinuxDirectBoot, LinuxStopRecord, u64) {
+        const BASE: u64 = 0x0200_0000;
+        const DISP: u64 = 0x02e9_7995;
+        // CLI(1) + MOV ECX(5) + MOV EAX(5) + MOV EDX(5) + WRMSR(2) + MOV RAX imm64(10) + store(8).
+        let before_cmp = 1 + 5 + 5 + 5 + 2 + 10 + 8;
+        let next_rip = ENTRY + before_cmp + prefix.len() as u64 + 6 + 1;
+        let segment_base = (BASE + 0x10).wrapping_sub(next_rip).wrapping_sub(DISP);
+        let mut code = vec![0xFA, 0xB9];
+        code.extend(msr.to_le_bytes());
+        code.extend(mov_eax(segment_base as u32));
+        code.extend([0xBA]);
+        code.extend(((segment_base >> 32) as u32).to_le_bytes());
+        code.extend([0x0F, 0x30]);
+        code.extend(mov_rax_imm64(cell));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        assert_eq!(code.len() as u64, before_cmp);
+        code.extend(prefix);
+        code.extend([0x83, 0x3d]);
+        code.extend((DISP as u32).to_le_bytes());
+        code.push(imm);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        (boot, record, segment_base)
+    }
+
+    #[test]
+    fn gs_cmpl_imm8_boundary_bytes_set_flags_and_do_not_write_guest_memory() {
+        // The Linux boundary form `65 83 3d 95 79 e9 02 01` (cmpl $1, %gs:0x2e97995(%rip)).
+        // The cell's low dword is 1 (the upper dword is ignored): ZF and PF.
+        let cell = 0xdead_beef_0000_0001;
+        let (mut boot, record, gs_base) = run_segment_cmp_imm8(0xC000_0101, &[0x65], cell, 0x01);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 9,
+            "CLI, MOV, MOV, MOV, WRMSR, MOV, store, CMP, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, gs_base);
+        assert_eq!(state.fs_base, 0);
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 6) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+        assert_eq!(
+            guest_qword(&mut boot, 0x0200_0010),
+            cell,
+            "CMP does not write"
+        );
+
+        // Other cell: 0 - 1 sets CF, SF, PF, AF (the upper dword is ignored again).
+        let (mut boot, record, _) =
+            run_segment_cmp_imm8(0xC000_0101, &[0x65], 0x1234_5678_0000_0000, 0x01);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            boot.board.state().rflags & 0x8d5,
+            (1 << 0) | (1 << 7) | (1 << 2) | (1 << 4)
+        );
+        assert_eq!(
+            guest_qword(&mut boot, 0x0200_0010),
+            0x1234_5678_0000_0000,
+            "CMP does not write"
+        );
+    }
+
+    #[test]
+    fn fs_cmpq_negative_imm8_through_the_set_loop_compares_sign_extended() {
+        // `cmpq $-1, %fs:disp(%rip)` (`64 48 83 3d ... ff`) with an all-ones cell: ZF and PF.
+        let (mut boot, record, fs_base) =
+            run_segment_cmp_imm8(0xC000_0100, &[0x64, 0x48], u64::MAX, 0xff);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 9);
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(boot.board.state().fs_base, fs_base);
+        assert_eq!(boot.board.state().gs_base, 0);
+        assert_eq!(boot.board.state().rflags & 0x8d5, (1 << 6) | (1 << 2));
+        assert_eq!(guest_qword(&mut boot, 0x0200_0010), u64::MAX);
+
+        // INT64_MIN - (-1): 0x8000_0000_0000_0000 - 0xffff_ffff_ffff_ffff = 0x8000_0000_0000_0001
+        // modulo 2^64: CF (borrow), SF, no OF; the low byte 0x01 has odd parity (no PF); AF.
+        let (mut boot, record, _) =
+            run_segment_cmp_imm8(0xC000_0100, &[0x64, 0x48], 0x8000_0000_0000_0000, 0xff);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            boot.board.state().rflags & 0x8d5,
+            (1 << 0) | (1 << 7) | (1 << 4),
+            "{:#x}",
+            boot.board.state().rflags
+        );
+        assert_eq!(guest_qword(&mut boot, 0x0200_0010), 0x8000_0000_0000_0000);
+    }
+
     // ---- S4-38L7ab: INVLPG m (no-op) through the board facade ----
 
     #[test]
