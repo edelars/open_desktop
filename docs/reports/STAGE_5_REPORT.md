@@ -4,13 +4,13 @@
 
 ## 1. Сводка задач
 
-S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). Методика S5-01 подготовлена исполнителем, ожидает ревью; числовые повторы и soak duration заблокированы недостающими измерениями (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`. Host-side backend и тесты S5-03 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d63595d1b7df241e83288eb43a79703fde8`. Process-exit quarantine gap остаётся открытым (ISSUE-077). Предварительный host-side headless профиль и no-guest runner S5-04 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`; S5-05…S5-21 остаются `not_started`. Ни один сценарий A–G не принят, этап 5 не принят.
+S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). Методика S5-01 подготовлена исполнителем, ожидает ревью; числовые повторы и soak duration заблокированы недостающими измерениями (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`. Host-side backend и тесты S5-03 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d63595d1b7df241e83288eb43a79703fde8`. Process-exit quarantine gap остаётся открытым (ISSUE-077). Предварительный host-side headless профиль и no-guest runner S5-04 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`. Для S5-05 принятый prerequisite `e62b6c1` добавил `od-image-tool create-raw`, использующий общую Rust creation policy/helper в od-host; C ABI wrapper и CLI переиспользуют policy, CLI не вызывает C ABI напрямую (3 targeted CLI tests passed); RAW creation не заблокировано. Заблокирован только последующий импорт полного rootfs в ext4. Подробности, archive identity и сохранённые команды/логи: [ISSUE-078](../KNOWN_ISSUES.md#issue-078-s5-05-rootfs-extraction-toolchain-blocked), [container extraction evidence](data/stage5/s5-05-container-extract.log), [mke2fs tar probe](data/stage5/s5-05-mke2fs-tar-probe.log). S5-06…S5-21 остаются `not_started`. Ни один сценарий A–G не принят, этап 5 не принят.
 
 | Задача | Статус | Задача | Статус |
 |---|---|---|---|
 | S5-00 | `accepted` | S5-01 | `blocked` |
 | S5-02 | `accepted` | S5-03 | `accepted` |
-| S5-04 | `accepted` | S5-05 | `not_started` |
+| S5-04 | `accepted` | S5-05 | `blocked` |
 | S5-06 | `not_started` | S5-07 | `not_started` |
 | S5-08 | `not_started` | S5-09 | `not_started` |
 | S5-10 | `not_started` | S5-11 | `not_started` |

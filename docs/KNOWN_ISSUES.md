@@ -12,6 +12,16 @@
 
 ## Записи
 
+<a id="issue-078-s5-05-rootfs-extraction-toolchain-blocked"></a>
+
+### ISSUE-078 — S5-05: воспроизводимый rootfs заблокирован extraction toolchain
+
+- **Дата обнаружения:** 2026-11-11, при проверке сборки Stage 5.
+- **Компонент:** импорт полного rootfs в ext4 для `S5-05`. Безопасное создание нового zeroed RAW уже реализовано принятым prerequisite-коммитом `e62b6c1`: `od-image-tool create-raw` использует общую Rust creation policy/helper в od-host; CLI не вызывает экспортированный C ABI напрямую, а C ABI wrapper использует ту же policy. Команда проверена `cargo test -p od-image-tool --offline --test cli create_raw -- --nocapture` (3 passed: create-new/zeroed, refuse overwrite, FIFO path fail-fast). Это закрывает только RAW file creation; импорт rootfs остаётся заблокированным.
+- **Статус:** открыта; rootfs, raw disk image и initramfs для S5-05 не собраны.
+- **Основание и последствия:** вход — официальный Ubuntu Base 26.04.1 amd64, `ubuntu-base-26.04.1-base-amd64.tar.gz` ([release URL](https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-amd64.tar.gz)), SHA256 `a496a960472ce474a59590b8987d3a1135d3cbef1991f3b1abe8cacfea8bf85a` (сверен с подписанным checksum manifest). Extraction внутри pinned `ubuntu@sha256:157dc3d6e4a3e4f2c68d12df9df9ed6e808b59af6d4c3757b432b4f519916725` завершилась exit 2 даже на container-native `/tmp`; GNU tar получил `Function not implemented` при mkdir/open операциях. Точная команда и сохранённый вывод: [container extraction log](reports/data/stage5/s5-05-container-extract.log); полный 6,551-line log остаётся в ignored `work/stage5/diagnostics/docker-base-extract.log`. Установленный локально `mke2fs 1.47.4` принимает `-d root-directory|tarball`, но собран с `--without-libarchive`; synthetic tarball probe завершился `Operation not supported`. Воспроизводимая команда и вывод: [mke2fs tar probe log](reports/data/stage5/s5-05-mke2fs-tar-probe.log). macOS SDK содержит libarchive library stub, но не `archive.h`; Homebrew libarchive отсутствует. Поэтому детерминированный импорт сохранённых guest UID/GID/modes пока не доказан. Существующие черновые recipe/lock удалены; ext4 rootfs, initramfs и хеши сборок не созданы.
+- **Следующий шаг:** принять и зафиксировать воспроизводимый способ предоставить libarchive headers/library для локальной пересборки pinned e2fsprogs либо выбрать уже доступный официальный file-set import tool. Затем повторить проверку полного Ubuntu Base + package overlay, доказать guest UID/GID/modes, собрать и сравнить два RAW image SHA-256, и отдельно получить kernel modules/initramfs artifact. Не добавлять собственный RAW/ext4 writer и не объявлять S5-05 выполненным до этих проверок.
+
 <a id="issue-077-s5-03-raw-quarantine-not-persistent-across-process-exit"></a>
 
 ### ISSUE-077 — S5-03: quarantine RAW не переживает завершение host-процесса

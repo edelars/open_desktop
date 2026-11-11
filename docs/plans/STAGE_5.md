@@ -285,7 +285,7 @@
 ### S5-05. Сделать воспроизводимую сборку rootfs и зафиксировать хеши
 
 - [ ] Принято после ревью.
-- **Где:** `tools/build/build_stage5_rootfs.py` и парный `tools/build/test_build_stage5_rootfs.py` (новые, по образцу [build_stage4_initramfs.py](../../tools/build/build_stage4_initramfs.py) и [stage_linux_artifact.py](../../tools/build/stage_linux_artifact.py)), `tests/fixtures/guest/stage5/README.md` (новый), образ — в игнорируемом `work/stage5/`; контейнер образа — через `tools/image-tool/` или `od_storage_create_raw_v1` (`S11-07`).
+- **Где:** `tools/build/build_stage5_rootfs.py` и парный `tools/build/test_build_stage5_rootfs.py` (новые, по образцу [build_stage4_initramfs.py](../../tools/build/build_stage4_initramfs.py) и [stage_linux_artifact.py](../../tools/build/stage_linux_artifact.py)), `tests/fixtures/guest/stage5/README.md` (новый), образ — в игнорируемом `work/stage5/`; новый RAW — через `od-image-tool create-raw`, использующий общую Rust creation policy/helper в `od-host` (C ABI wrapper и CLI используют одну policy; CLI не вызывает C ABI напрямую; границы `S11-07` остаются в [STORAGE_HOST_ABI_V1.md](../specs/STORAGE_HOST_ABI_V1.md)).
 - **Сделать:**
   1. Выбрать и записать решения, без которых задача неисполнима: файловую систему rootfs; размер сектора 512 байт (контроллер 4 KiB не поддерживает); размер образа; значение `root=` в cmdline; стратегию загрузки модулей `nvme` и ФС — у generic-ядра Ubuntu они модули, поэтому root на NVMe требует initramfs, который их загружает, тогда как `S4-36` собирает минимальный initramfs с собственным `/init`.
   2. Назвать точную цепочку инструментов создания ФС. На ARM64 macOS нет `mke2fs`/`mkfs.ext4`, а `hdiutil` ext4 не создаёт: если нужен внешний инструмент или сборка ФС своими средствами, принять решение по [политике зависимостей](../policies/DEPENDENCIES.md) и записать его. Рецепт остаётся на стандартной библиотеке Python; создание контейнера переиспользует `image-tool`/`S11-07`.
@@ -295,6 +295,8 @@
 - **Проверить:** двойной прогон рецепта даёт одинаковые хеши; парный тест проходит; `git status` не показывает больших файлов; в образе нет host-путей и секретов; `python3 tools/check_layout.py` без новых ошибок.
 - **Готово:** любой исполнитель собирает тот же образ теми же инструментами и получает те же хеши, а выбор ФС, сектора, `root=` и модулей записан.
 - **Не делать:** не тащить образ в Git; не добавлять внешние Python-пакеты без решения по политике зависимостей; не писать третий способ создания RAW-образа; не оставлять выбор ФС и `root=` исполнителю следующей задачи; не выдавать content hash за подтверждённую подлинность.
+
+Текущий статус (2026-11-11): `blocked` только на импорте полного guest rootfs в ext4. Принятый prerequisite-коммит `e62b6c1` добавил безопасный `od-image-tool create-raw`, использующий общую Rust creation policy/helper в `od-host` (CLI не вызывает C ABI напрямую); он создаёт новый zeroed RAW, но не заполняет файловую систему. Container-native extraction из pinned Ubuntu image завершилась `Function not implemented`; локальный `mke2fs 1.47.4` собран без libarchive и не импортирует tarball. Команды, полный identity архива, компактные сохранённые логи и следующий шаг записаны в [ISSUE-078](../KNOWN_ISSUES.md#issue-078-s5-05-rootfs-extraction-toolchain-blocked) и [evidence](../reports/data/stage5/s5-05-container-extract.log). Rootfs, парный hash build и companion initramfs не созданы; checkbox остаётся пустым.
 
 ### S5-06. Написать гостевой набор сценариев A–G
 

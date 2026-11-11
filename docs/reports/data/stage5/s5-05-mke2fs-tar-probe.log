@@ -1,0 +1,18 @@
+S5-05 mke2fs tar-import capability probe
+Date: 2026-11-11
+Tool: locally built e2fsprogs mke2fs 1.47.4 (6-Mar-2025)
+Configure command from toolchain source config.log:
+  ./configure --prefix=.../work/stage5/toolchain/prefix --disable-nls --disable-fuse2fs --disable-uuidd --enable-libuuid --without-libarchive
+Configure result: “Disabling libarchive support”.
+Probe:
+  create a temporary directory containing root/file (“hi”)
+  tar --numeric-owner --owner=0 --group=0 -cf root.tar -C root .
+  truncate -s 16M test.raw
+  E2FSPROGS_FAKE_TIME=1 mke2fs -F -t ext4 -b 4096 \
+    -U 5a5e5a05-0000-4000-8000-000000000005 \
+    -E lazy_itable_init=0,lazy_journal_init=0,root_owner=0:0 \
+    -d root.tar test.raw
+Result: exit 1. mke2fs created the temporary ext4 filesystem, then reported:
+  __populate_fs_from_tar: you need to compile e2fsprogs without --without-libarchive be able to process tarballs
+  mke2fs: Operation not supported while populating file system
+The temporary directory and image were removed after the probe.
