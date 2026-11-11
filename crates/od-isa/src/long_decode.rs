@@ -694,6 +694,13 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
+    /// S4-38L7ai: `F0 [REX] 01 /r` (LOCK ADD m32, r32, or m64, r64 with REX.W), memory
+    /// destination and a general-purpose register source only; the arithmetic is the shared ADD.
+    /// Executed only in the CPL0 set; the destination is always written back.
+    LockAddMemReg {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// S4-38L7ag: `F0 [REX] 80 /4 ib` (LOCK AND m8, imm8), memory destination only; the same decode
     /// branch as `LockOrMem`, byte size only (`81 /4` and `83 /4` stay refused). Executed only in
     /// the CPL0 set; the destination is always written back.
@@ -2163,7 +2170,7 @@ impl Instruction {
                 undefined: 0,
             },
             // S4-38L7z: as the plain ADD (`Operation::Arithmetic`): all six flags defined.
-            Operation::LockAddMem { .. } => FlagEffects {
+            Operation::LockAddMem { .. } | Operation::LockAddMemReg { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -2999,6 +3006,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // below with the same opcode.
         let locked_memory_or_candidate = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0x80 | 0x81 | 0x83)
+            && prefixes.group1 == Some(0xf0);
+        // S4-38L7ai: and for the memory ADD with a register source (`F0 [REX] 01 /r`); the
+        // executor admits it only in the CPL0 set. The other direct ALU opcodes (`F0 00`, `F0 03`,
+        // ...) keep the refusal.
+        let locked_memory_add_reg_candidate = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0x01
             && prefixes.group1 == Some(0xf0);
         // S4-38L7n/S4-38L7t: and for the qword memory BTS/BTR (`F0 REX.W 0F AB|B3 /r`); the
         // executor admits them only in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and
@@ -5373,6 +5386,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_qword_memory_cmpxchg_candidate
                 && !locked_memory_inc_candidate
                 && !locked_memory_or_candidate
+                && !locked_memory_add_reg_candidate
                 && !locked_qword_memory_bts_candidate
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
@@ -8306,6 +8320,33 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             Operation::CmpFsMem { dst, src }
                         } else {
                             Operation::CmpGsMem { dst, src }
+                        }
+                    } else if byte == 0x01 && prefixes.group1 == Some(0xf0) {
+                        // S4-38L7ai: `F0 [REX] 01 /r` (LOCK ADD m32, r32, or m64, r64 with
+                        // REX.W) with a memory destination. The register form (mod = 11), the
+                        // 0x66 (word) and 0x67 forms, a segment prefix and a REX byte that is not
+                        // immediately before the opcode keep the refusal with this opcode.
+                        // Repeated LOCK/REP prefixes are refused by the shared check above; the
+                        // other direct ALU opcodes with LOCK never reach this arm.
+                        let stale_rex = prefix_bytes[..prefix_count]
+                            .iter()
+                            .enumerate()
+                            .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                        if stale_rex
+                            || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                            || prefixes.segment.is_some()
+                            || prefixes.operand_override
+                            || prefixes.address_override
+                        {
+                            return Err(self.unsupported(opcode));
+                        }
+                        let (Operand::Memory(destination), Operand::Register(source)) = (dst, src)
+                        else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        Operation::LockAddMemReg {
+                            destination,
+                            source,
                         }
                     } else {
                         binary_operation(byte >> 3, dst, src)
@@ -23211,6 +23252,85 @@ mod tests {
     }
 
     #[test]
+    fn lock_add_register_source_decodes_the_memory_destination_forms_only() {
+        // S4-38L7ai: `F0 [REX] 01 /r`. The S4-38L7ah diagnostic boundary
+        // `lock add %rdi, 0x2dc028f(%rip)` is eight bytes long (a disp32, no immediate).
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(decoded.operand_size, OperandSize::Qword);
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert_eq!(decoded.flag_effects().undefined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockAddMemReg { destination, source }
+                if destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x02dc_028f
+                    && destination.size == OperandSize::Qword
+                    && source == RegisterView::low(Register::Rdi, OperandSize::Qword)
+        ));
+        // The dword form without REX.W, and REX.R selecting R8-R15 as the source.
+        let mut memory = Memory::new(&[0xf0, 0x01, 0x43, 0x3d]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockAddMemReg { destination, source }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.displacement == 0x3d
+                    && destination.size == OperandSize::Dword
+                    && source == RegisterView::low(Register::Rax, OperandSize::Dword)
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x4c, 0x01, 0x4b, 0x3d]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockAddMemReg { destination, source }
+                if destination.size == OperandSize::Qword
+                    && source == RegisterView::low(Register::R9, OperandSize::Qword)
+        ));
+        // Without LOCK the pre-existing arithmetic ADD is decoded unchanged.
+        let mut memory = Memory::new(&[0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                ..
+            }
+        ));
+        // Everything else with LOCK keeps the refusal with its own opcode.
+        for (bytes, byte) in [
+            (&[0xf0, 0x48, 0x01, 0xc3][..], 0x01),
+            (&[0xf0, 0x01, 0xc3][..], 0x01),
+            (&[0xf0, 0x66, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0x66, 0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf0, 0x67, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf0, 0x64, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0x65, 0xf0, 0x48, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf0, 0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf3, 0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf2, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0x48, 0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf0, 0x48, 0x66, 0x01, 0x43, 0x3d][..], 0x01),
+            (&[0xf0, 0x00, 0x43, 0x3d][..], 0x00),
+            (&[0xf0, 0x03, 0x43, 0x3d][..], 0x03),
+            (&[0xf0, 0x48, 0x03, 0x43, 0x3d][..], 0x03),
+            (&[0xf0, 0x02, 0x43, 0x3d][..], 0x02),
+            (&[0xf0, 0x05, 1, 0, 0, 0][..], 0x05),
+            (&[0xf0, 0x29, 0x43, 0x3d][..], 0x29),
+            (&[0xf0, 0x09, 0x43, 0x3d][..], 0x09),
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. })
+                        if opcode.map == OpcodeMap::Primary && opcode.byte == byte
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn lock_add_decodes_the_memory_immediate_forms_only() {
         // S4-38L7z: `F0 [REX] 80|81|83 /0` with a memory destination. The S4-38L7y diagnostic
         // boundary `lock addl $0x0, -0x4(%rsp)` is six bytes long (the immediate included).
@@ -25440,7 +25560,10 @@ mod tests {
         for code in [
             &[0xfe, 0xd0][..],
             &[0x82, 0xc0, 1],
-            &[0xf0, 0x48, 0x01, 0x03],
+            // S4-38L7ai decodes `F0 [REX] 01 /r` with a memory operand; the other LOCK ALU forms
+            // (here SUB m64, r64) and the register form stay refused.
+            &[0xf0, 0x48, 0x29, 0x03],
+            &[0xf0, 0x48, 0x01, 0xc8],
             &[0xf3, 0x48, 0x01, 0xc8],
             &[0x64, 0x48, 0x01, 0x03],
             &[0x65, 0x48, 0x03, 0x03],

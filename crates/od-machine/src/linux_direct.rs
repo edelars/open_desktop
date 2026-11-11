@@ -4033,6 +4033,62 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7ai: LOCK ADD m64, r64 through the board facade ----
+
+    #[test]
+    fn lock_add_qword_register_source_rip_relative_adds_to_guest_memory() {
+        const DATA: u64 = 0x0010_0010;
+        const VALUE: u64 = 0x7FFF_FFFF_FFFF_FFF0;
+        const ADDEND: u64 = 0x20;
+        // MOV RAX,VALUE; MOV [DATA],RAX (`48 89 04 25 disp32`); MOV RDI,ADDEND;
+        // LOCK ADD %rdi,DATA(%rip) (`f0 48 01 3d disp32`, the S4-38L7ah boundary shape: the
+        // displacement is negative and the next RIP is the end of these eight bytes);
+        // MOV RBX,[DATA] (the read back); HLT.
+        let mut code = mov_rax_imm64(VALUE);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x10, 0x00]);
+        code.extend([0x48, 0xBF]);
+        code.extend(ADDEND.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (DATA.wrapping_sub(next_rip)) as u32;
+        assert!(disp >> 31 == 1, "the displacement is negative");
+        code.extend([0xF0, 0x48, 0x01, 0x3D]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x48, 0x8B, 0x1C, 0x25, 0x10, 0x00, 0x10, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, store, MOV, LOCK ADD, load, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // 0x7fff_ffff_ffff_fff0 + 0x20 = 0x8000_0000_0000_0010.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            0x8000_0000_0000_0010
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], ADDEND);
+        assert_eq!(guest_qword(&mut boot, DATA), 0x8000_0000_0000_0010);
+        let state = boot.board.state();
+        // Signed overflow into a negative result; no carry, no zero, odd parity, no nibble carry.
+        assert_eq!(state.rflags & (1 << 11), 1 << 11, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+        assert_eq!(state.rflags & 1, 0, "CF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+        assert_eq!(state.rflags & (1 << 2), 0, "PF");
+        assert_eq!(state.rflags & (1 << 4), 0, "AF");
+    }
+
     // ---- S4-38L7af: CALL rel32 with a CS override through the board facade ----
 
     #[test]
