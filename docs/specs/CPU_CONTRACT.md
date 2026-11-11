@@ -22257,3 +22257,68 @@ CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой 
 `exceptions_delivered` = 26; `set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`,
 `popf_cpl0`). Следующий срез — `LOCK BTR m64, r64` (`F0 REX.W 0F B3 /r`, memory-операнд; парная к LOCK BTS из S4-38L7n) в наборе CPL0 (решение —
 по этой границе).
+
+### `LOCK BTR m64, r64` в наборе CPL0 (S4-38L7t)
+
+Граница S4-38L7s (`f0 4d 0f b3 65 30`, `lock btr %r12, 0x30(%r13)`, RIP `0xffffffff813c584d`, `Unsupported { opcode: 0xb3 }`) показала, что
+LOCK-форма `0F B3` отказывается декодером. Срез добавляет `F0 REX.W 0F B3 /r` с memory-операндом (mod ≠ 11); адресация, порядок
+доступа и гейт те же, что у LOCK BTS (S4-38L7n), отличие одно — бит **сбрасывается**, а не устанавливается. Семантика дана **по памяти
+SDM** (Vol. 2 «BTR»: регистровое смещение — знаковое битовое смещение в битовой строке, начинающейся с memory-операнда; CF = прежнее
+значение бита; бит сбрасывается в 0; OF, SF, AF, PF не определены, ZF не затрагивается), по первоисточнику **не сверялась**.
+
+**Решение по реализации: одна общая операция вместо парной.** `Operation::LockBtsMem { base, source }` переименована в
+`Operation::LockBitMem { kind: BitKind, base, source }`; `kind` — существующий `BitKind`, декодер выдаёт только `Set` (`0F AB`, LOCK BTS)
+и `Reset` (`0F B3`, LOCK BTR); остальные значения (`Test`, `Complement`) в исполнителе — `unreachable!`. Адрес битовой строки, проверки
+каноничности, чтение, запись, обновление CF, `flag_effects` и гейт общие, расхождение — одна строка `old | mask` / `old & !mask`. Поведение
+LOCK BTS не менялось (все его тесты остаются; меняется только форма шаблона операции в декодерном тесте).
+
+**Декодер.** Общая проверка «LOCK допускается» теперь пропускает `0F AB` и `0F B3`; ветка `0F A3/AB/B3/BB` с LOCK отказывает во всех
+остальных случаях тем же условием. Отказ (`Unsupported { opcode: 0xb3 }` без мутации): без REX.W (dword), REX без W, регистровая форма
+(mod = 11), `66`, `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс. REX не непосредственно перед
+опкодом теряет W и отказывается. Другие LOCK-формы битовых операций не менялись и отказываются со своим опкодом: `F0 REX.W 0F A3/BB`
+(BT/BTC), `F0 REX.W 0F BA /4..7 ib` (immediate-форма) → `Unsupported { opcode: 0xa3/0xbb/0xba }`.
+
+**Без LOCK.** `0F B3` без LOCK (и `0F BA /6`) остаётся `Operation::Bit { kind: Reset }` и исполняется как раньше в любом профиле (не
+сужалось, как и для BTS в S4-38L7n; тест `plain_btr_without_lock_keeps_its_existing_path_in_the_set`).
+
+**Адрес, каноничность, исполнение, флаги, гейт** — как в разделе S4-38L7n: смещение — знаковое значение r64; байтовое смещение qword =
+`(offset >> 6) * 8` (арифметический сдвиг, wrapping), бит = `offset & 63`; неканоническое вычисленное начало или последний байт qword
+→ `#GP(0)` (для баз RSP/RBP — `#SS(0)`) до любого доступа; читается qword, результат `old & !(1 << bit)` **записывается всегда**, даже
+если бит уже был 0 (значение не меняется, но запись даёт A/D-биты и `#PF`); CF = прежний бит только после успешной записи; RIP и retired
+— только при успехе; при `#GP`/`#SS`/`#PF` память, CF, RIP, регистры не меняются. OF/SF/AF/PF/ZF не меняются (решение среза, как у
+BTS и не-LOCK `Operation::Bit`). Гейт: `control_policy` задан и CPL0; вне набора — `Unsupported { opcode: 0xb3 }` без мутации; CPL3
+в набор не допускается (`WrongPrivilege`); `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`, `step_paged_mov` и голые `run`/`step`
+форму не принимают.
+
+**Ограничение (по памяти SDM, не сверено).** Как у LOCK BTS: `#PF` на неприсутствующей странице при чтении сообщит код ошибки с W = 0,
+тогда как железо для RMW, по-видимому, сообщает W = 1.
+
+**Не делалось.** Dword-форма `F0 0F B3`, immediate-форма `0F BA /6`, LOCK BTC/BT, FS/GS-вариант, SMP-упорядочение,
+`PagedCpl0ProbeV1` как профиль исполнения, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_btr_*` (каждый бит 0..63 первого qword, прежний бит 1 и 0, с проверкой соседних qword; запись при уже
+сброшенном бите; прочие флаги не меняются; отрицательные смещения и смещения через несколько qword (−1, −64, −65, −129, 64, 64·5+3,
+±64000…) при прежнем бите 1 и 0; источник r8–r15; база r8–r15; граничная форма `f0 4d 0f b3 65 30` (r12 = `0x191`, база r13 + 0x30);
+RIP-relative, отрицательный disp32 и SIB+disp; `#GP(0)` и `#SS(0)` без мутации и без доступа; `#PF` на записи без мутации; 22 отказа с
+точным опкодом (`0xb3`/`0xba`/`0xa3`/`0xbb`); вне набора; CPL3), `plain_btr_without_lock_keeps_its_existing_path_in_the_set`;
+`long_decode::tests::lock_btr_decodes_the_qword_memory_form_only`; в тесте отказов LOCK BTS убрана запись `f0 48 0f b3 03` (теперь это
+принятая форма); отказ вне набора: `execute::tests::lock_btr_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::lock_btr_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_btr_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_lock_btr_unsupported`,
+`paged_probe_profile::lock_btr_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::lock_btr_clears_a_bit_in_a_bit_string_in_guest_memory_and_leaves_neighbours_alone`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7t-diagnostic-run.json`. `lock btr %r12, 0x30(%r13)` по RIP `0xffffffff813c584d` и последующие инструкции
+проходят (retired 1137540943 → 1180654930, +43113987). Новая граница: RIP `0xffffffff813adf2c`, байты
+`8c d0 50 54 48 83 04 24 08 9c 8c c8 50 68 40 df` (первая инструкция — `mov %ss, %eax`: `MOV r/m16/r32, Sreg`, `8C /r`, ModRM `d0` =
+mod 11, reg SS, rm eax, длина 2; далее `push %rax`, `push %rsp`, `addq $8, (%rsp)`, `pushf`, `mov %cs, %eax`, `push %rax`, `push $…` —
+построение кадра прерывания руками), `Unsupported { opcode: 0x8c }`, `set_exit_detail` = `Run(Unsupported { opcode: 140 })`,
+`exit_kind` = `unsupported`, retired = 1180654930. Регистры на остановке: RAX = RDI = R9 = `0xffffffff8133dd72`, RBX = `0x96`,
+RCX = `0xfff399e8`, RDX = R13 = `0x5`, RSI = R10 = R12 = `0xffffffff8445eed4`, R8 = `0xfffff399`, R11 = R14 = R15 = 0,
+RSP = `0xffffffff83a03d88`, RBP = `0xffffffff83a03da8`, RFLAGS = `0x46`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
+(`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 26;
+`set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`). Следующий срез —
+`MOV r32, Sreg` (`8C /r`, чтение селектора SS; семантику и состояние селекторов проверить по `LongModeState`) в наборе CPL0 (решение — по этой
+границе).
