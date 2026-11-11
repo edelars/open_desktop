@@ -1,8 +1,11 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
+use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
+use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
 use crate::{
-    GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
-    TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
+    GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
+    MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
+    TrackedAccessRequest,
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
@@ -94,6 +97,7 @@ pub fn step_paged_invlpg(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -216,6 +220,7 @@ fn step_paged_state_op(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -287,6 +292,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -345,6 +351,7 @@ pub fn step_paged_mov(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -402,6 +409,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -510,9 +518,17 @@ fn cpuid_leaf_at_rip(
     bus: &mut MachineBus,
     paging: &Long64ProbeConfig,
     context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
 ) -> Option<u32> {
     let (memory, _) = bus.split_for_pio_step();
     let mut byte_at = |offset: u64| -> Option<u8> {
+        let linear = state.rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
         let physical = crate::page_walk::translate_long64_2m_ram_read_only(
             memory,
             paging,
@@ -550,9 +566,17 @@ fn iretq_at_rip(
     bus: &mut MachineBus,
     paging: &Long64ProbeConfig,
     context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
 ) -> bool {
     let (memory, _) = bus.split_for_pio_step();
     let mut byte_at = |offset: u64| -> Option<u8> {
+        let linear = state.rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
         let physical = crate::page_walk::translate_long64_2m_ram_read_only(
             memory,
             paging,
@@ -584,6 +608,8 @@ pub(crate) struct PagedCpl0SetReport {
     /// `#PF` exceptions the loop delivered through the guest IDT (S4-38L5c). A delivery is not
     /// a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
+    /// S4-13: the counters of the call's fetch translation cache (`None` without one).
+    pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -631,6 +657,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
         stop,
         committed_write,
         false,
+        false,
     )
 }
 
@@ -654,10 +681,21 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
+    fetch_cache: bool,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context
+    };
+    // S4-13: the translation cache of the instruction fetch lives in this call only. Every
+    // committed RAM write of the loop (guest stores, walker A/D commits, exception frames) passes
+    // through `watch`, which lets the cache drop entries whose tables were written.
+    let cache = fetch_cache.then(FetchTranslationCache::new);
+    let mut watch = |range: GuestPhysicalRange| {
+        if let Some(cache) = &cache {
+            cache.note_write(range);
+        }
+        committed_write(range);
     };
     let mut paging = match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
         Ok(paging) => paging,
@@ -671,6 +709,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 translation_context_changes: Vec::new(),
                 cr3,
                 delivered_exceptions: 0,
+                fetch_cache_stats: None,
             };
         }
     };
@@ -695,7 +734,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             );
         }
         if cpuid_boundary
-            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context)
+            && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
             && is_cpuid_divergence_leaf(leaf)
         {
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
@@ -706,13 +745,14 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         // when that instruction is itself an `IRETQ`: it loads RF from its own frame (SDM, from
         // memory) and the loaded value stays.
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
-        let clear_resume_flag = resume_flag_before && !iretq_at_rip(state, bus, &paging, context);
+        let clear_resume_flag =
+            resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
         let (ram, mut port) = bus.split_for_pio_step();
         let mut memory = PagedMovMemoryAdapter {
             bus: AdapterBus::Ram(ram),
             paging,
             instruction_rip,
-            committed_write: &mut committed_write,
+            committed_write: &mut watch,
             page_fault: None,
             memory_error: None,
             access_error: None,
@@ -733,6 +773,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             cpl0_set_cross_page_fetch: true,
             cpl0_set_cross_page_store: true,
             cpl0_set_cross_page_read: true,
+            fetch_cache: cache.as_ref(),
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -811,6 +852,13 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         };
         instructions_executed += result.instructions_executed;
         current_rflags_defined = result.rflags_defined;
+        // S4-13: a retired `MOV CR3` (or any other translation context change) invalidates
+        // every cached fetch translation.
+        if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
+            && let Some(cache) = &cache
+        {
+            cache.flush();
+        }
         if let Some(exit) = handle_set_exit(
             result.exit,
             result.instructions_executed,
@@ -832,6 +880,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         translation_context_changes: changes,
         cr3: reported_cr3,
         delivered_exceptions,
+        fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
     }
 }
 
@@ -935,6 +984,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -1012,6 +1062,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -1071,6 +1122,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -1139,6 +1191,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
         cpl0_set_cross_page_read: false,
+        fetch_cache: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1282,6 +1335,10 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// (`firmware_board.rs`), and it covers every explicit dword/qword read of the set (`MOV`,
     /// `POP`, the `IRETQ` frame, ALU source operands, the read of an RMW).
     cpl0_set_cross_page_read: bool,
+    /// S4-13: the CPL0 set loop's opt-in translation cache of the instruction fetch (see
+    /// `fetch_translation_cache`). Used by `fetch` only, and only with the set's cross-page
+    /// fetch; `None` everywhere else, which keeps the byte-per-walk behaviour.
+    fetch_cache: Option<&'a FetchTranslationCache>,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1350,6 +1407,60 @@ impl PagedMovMemoryAdapter<'_> {
                 Err(self.map_access_error(error))
             }
         }
+    }
+
+    /// S4-13: one instruction byte through the fetch translation cache. A hit reads the byte at
+    /// the cached physical address and walks nothing. A miss is the ordinary tracked fetch (full
+    /// walk, accessed bits, faults and their records exactly as without the cache); only after it
+    /// succeeded is the translation remembered, from a second walk that writes nothing and reads
+    /// the same tables (the byte read does not change them).
+    fn fetch_through_cache(
+        &mut self,
+        cache: &FetchTranslationCache,
+        address: u64,
+        context: AccessContext,
+    ) -> Result<u8, MemoryError> {
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        if let Some(frame) = cache.lookup(address, &self.paging, context)
+            && let AdapterBus::Ram(memory) = &self.bus
+            && let Some(byte) = memory.read_ram_frame_u8(frame, address)
+        {
+            return Ok(byte);
+        }
+        let byte = match self.access(address, context, RamAccessOperation::Fetch)? {
+            TrackedAccessOutcome::Fetched(value) => value,
+            _ => return Err(Self::unsupported("non-fetch result")),
+        };
+        if let AdapterBus::Ram(memory) = &mut self.bus
+            && let Ok((physical, tables)) = translate_long64_2m_ram_read_only_with_tables(
+                memory,
+                &self.paging,
+                self.instruction_rip,
+                GuestLinearAddress::new(address),
+                context,
+                od_isa::memory::AccessKind::Fetch,
+            )
+        {
+            // Only plain RAM is cached: a write to it always notifies the cache, and the byte of
+            // the frame reads exactly as the walk's fetch read it.
+            let is_ram = |base: u64| {
+                matches!(
+                    memory.locate_region_kind(GuestPhysicalAddress::new(base), 0x1000),
+                    Ok(MemoryRegionKind::Ram)
+                )
+            };
+            let tables = tables.map(|table| table.map(GuestPhysicalAddress::get));
+            if let Some(frame) =
+                memory.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))
+                && tables.iter().flatten().all(|table| is_ram(*table & !0xfff))
+            {
+                cache.insert(address, &self.paging, context, frame, tables);
+            }
+        }
+        Ok(byte)
     }
 
     fn access_cross_page_read(
@@ -1468,6 +1579,17 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             };
             self.access_error = Some(error.clone());
             return Err(self.map_access_error(error));
+        }
+        if let Some(cache) = self.fetch_cache
+            && self.cpl0_set_cross_page_fetch
+            && self.large_ram_profile
+        {
+            // Writes reach the cache through `committed_write`; the capture mode diverts them.
+            debug_assert!(
+                !self.capture_effects,
+                "the fetch cache needs committed_write"
+            );
+            return self.fetch_through_cache(cache, address, context);
         }
         match self.access(address, context, RamAccessOperation::Fetch)? {
             TrackedAccessOutcome::Fetched(value) => Ok(value),
@@ -1726,6 +1848,7 @@ mod tests {
             cpl0_set_cross_page_fetch: false,
             cpl0_set_cross_page_store: false,
             cpl0_set_cross_page_read: false,
+            fetch_cache: None,
         }
     }
 

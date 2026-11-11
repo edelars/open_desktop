@@ -8,6 +8,7 @@ mod bus;
 mod diagnostic_vcpu;
 mod display_device;
 mod event_queue;
+mod fetch_translation_cache;
 mod firmware_board;
 mod identity_memory_adapter;
 mod interrupt_pump;

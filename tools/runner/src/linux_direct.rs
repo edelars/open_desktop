@@ -246,7 +246,12 @@ fn evaluate(options: &Options) -> (Value, u8) {
                         &mut boot,
                         &machine_input,
                         budget,
-                        LinuxCpl0SetMembers::linux_default(),
+                        LinuxCpl0SetMembers {
+                            // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
+                            // translation cache (same results, more page walks).
+                            fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
+                            ..LinuxCpl0SetMembers::linux_default()
+                        },
                     )
                 } else {
                     run_linux_direct_board(&mut boot, &machine_input, budget)

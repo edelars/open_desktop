@@ -662,6 +662,13 @@ pub struct LinuxCpl0SetMembers {
     pub pio_u8: bool,
     /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
     pub popf_cpl0: bool,
+    /// S4-13: the opt-in translation cache of the instruction fetch (one cache per call of the
+    /// set loop, invalidated on every guest write to a table of a cached translation and on
+    /// every translation context change). It is not a member of the CPU profile (it adds no
+    /// instruction and is not in `set_members`) and changes no result: only the number of page
+    /// walks. `false` in [`Self::minimal`], `true` in [`Self::linux_default`]; a diagnostic run
+    /// turns it off to compare.
+    pub fetch_cache: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -675,6 +682,7 @@ impl LinuxCpl0SetMembers {
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
+            fetch_cache: false,
         }
     }
 
@@ -684,6 +692,7 @@ impl LinuxCpl0SetMembers {
         Self {
             cpuid: true,
             popf_cpl0: true,
+            fetch_cache: true,
             ..Self::minimal()
         }
     }
@@ -746,7 +755,7 @@ pub fn run_linux_direct_board_set(
     }
     let report = boot
         .board
-        .run_linux_boot_cpl0_set(instruction_budget, &set, members.cpuid)
+        .run_linux_boot_cpl0_set(instruction_budget, &set, members.cpuid, members.fetch_cache)
         .map_err(|failure| {
             let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
             error.retired = Some(failure.retired);
@@ -2762,9 +2771,11 @@ mod tests {
             LinuxCpl0SetMembers {
                 cpuid: true,
                 popf_cpl0: true,
+                fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
         );
+        assert!(!LinuxCpl0SetMembers::minimal().fetch_cache);
         let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
         let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
         assert_eq!(
@@ -4260,5 +4271,584 @@ mod tests {
         let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
         assert_eq!(report.instructions_executed, 1, "{report:?}");
         assert_eq!(state.rflags & (1 << 16), 0);
+    }
+
+    // ---- S4-13: the fetch translation cache of the set loop ----
+
+    use crate::fetch_translation_cache::FetchCacheStats;
+    use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cpuid_boundary;
+
+    /// The page the remapped page B points to.
+    const ALT_PAGE1: u64 = 0x0500_9000;
+    /// A second tree (PML4, PDPT, PD, PT) for the `MOV CR3` and the PDE-write cases.
+    const TREE2_PML4: u64 = TREE_PML4 + 0x10000;
+    const TREE2_PT: u64 = TREE2_PML4 + 0x3000;
+    /// GVA of the data window onto a table frame: PD index 9, PT index 0.
+    const WINDOW_VA: u64 = SPLIT_VA + 0x20_0000;
+    const A_PRESENT_WRITABLE: u64 = 0x23;
+    const A_D_PRESENT_WRITABLE: u64 = 0x63;
+
+    /// `MOV r64, imm32` (REX.W C7 /0, sign-extended): RAX=0, RCX=1, RDX=2, RBX=3.
+    fn mov_imm32(register: u8, value: u32) -> Vec<u8> {
+        let mut code = vec![0x48, 0xC7, 0xC0 + register];
+        code.extend_from_slice(&value.to_le_bytes());
+        code
+    }
+
+    /// A page-table tree with the accessed bit set on every entry it needs, so that no walk
+    /// commits a write unless the guest changed an entry: PML4 -> PDPT -> PD -> PT. `pt_entries`
+    /// are `(index, value)` of the PT behind PD index 8 (GVA `SPLIT_VA`); `window` maps
+    /// `WINDOW_VA` (PD index 9) to the given physical frame (accessed and dirty already set).
+    fn write_tree(
+        boot: &mut LinuxDirectBoot,
+        pml4: u64,
+        pt_entries: &[(u64, u64)],
+        window: Option<u64>,
+    ) {
+        let table = |address: u64| (address | A_PRESENT_WRITABLE).to_le_bytes();
+        write_phys(boot, pml4, &table(pml4 + 0x1000));
+        write_phys(boot, pml4 + 0x1000, &table(pml4 + 0x2000));
+        write_phys(boot, pml4 + 0x2000 + 8 * 8, &table(pml4 + 0x3000));
+        for &(index, value) in pt_entries {
+            write_phys(boot, pml4 + 0x3000 + index * 8, &value.to_le_bytes());
+        }
+        if let Some(frame) = window {
+            write_phys(boot, pml4 + 0x2000 + 9 * 8, &table(pml4 + 0x4000));
+            write_phys(
+                boot,
+                pml4 + 0x4000,
+                &(frame | A_D_PRESENT_WRITABLE).to_le_bytes(),
+            );
+        }
+    }
+
+    struct CacheOutcome {
+        state: LongModeState,
+        report: PagedCpl0SetReport,
+        writes: Vec<(u64, u64)>,
+        memory: Vec<u8>,
+    }
+
+    /// Builds a fresh board, lets `build` lay out a tree and code and return the state to run
+    /// from, and runs the set loop (CPUID boundary on, like the Linux board) with the fetch
+    /// translation cache `cache`. Returns the end state, the report, every committed write in
+    /// order and the bytes of the page-table and code frames.
+    fn run_cache_case(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+        cache: bool,
+    ) -> CacheOutcome {
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let mut state = build(&mut boot);
+        let efer = boot.board.efer();
+        let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+        let mut writes = Vec::new();
+        let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+            &mut state,
+            boot.board.bus_mut(),
+            cr3,
+            efer,
+            long64(),
+            budget,
+            INTEGER_FLAGS,
+            set,
+            None,
+            || false,
+            |range| writes.push((range.start().get(), range.len())),
+            true,
+            cache,
+        );
+        let mut memory = Vec::new();
+        for (start, len) in [
+            (TREE_PML4, 0x5000usize),
+            (TREE2_PML4, 0x4000),
+            (SPLIT_PAGE0, 0x1000),
+            (SPLIT_PAGE1, 0x1000),
+            (ALT_PAGE1, 0x1000),
+        ] {
+            let mut bytes = vec![0u8; len];
+            read(&mut boot.board, start, &mut bytes).expect("frames are RAM");
+            memory.extend(bytes);
+        }
+        CacheOutcome {
+            state,
+            report,
+            writes,
+            memory,
+        }
+    }
+
+    /// The differential check: the cached and the uncached run must agree on everything the
+    /// guest or a device can see (CPU state, the report with its exit, fault record and context
+    /// changes, every committed RAM write in order, the bytes of the frames). Returns the
+    /// outcome of the cached run, with its cache counters, for the case's own assertions.
+    fn assert_cache_is_invisible(
+        build: &dyn Fn(&mut LinuxDirectBoot) -> LongModeState,
+        set: &Cpl0ProfileSet<'_>,
+        budget: u64,
+    ) -> (CacheOutcome, FetchCacheStats) {
+        let plain = run_cache_case(build, set, budget, false);
+        let mut cached = run_cache_case(build, set, budget, true);
+        assert_eq!(plain.report.fetch_cache_stats, None);
+        let stats = cached.report.fetch_cache_stats.take().expect("cache stats");
+        assert_eq!(cached.report, plain.report);
+        assert_eq!(cached.state, plain.state);
+        assert_eq!(cached.writes, plain.writes);
+        assert!(cached.memory == plain.memory, "frame bytes differ");
+        (cached, stats)
+    }
+
+    fn tree_state(boot: &LinuxDirectBoot, pml4: u64, rip: u64) -> LongModeState {
+        let mut state = boot.board.state().clone();
+        state.cr3 = Some(pml4);
+        state.rip = rip;
+        state
+    }
+
+    /// 40 `MOV RAX, imm32` and a `HLT` on one page: one real walk, then hits only.
+    #[test]
+    fn cache_straight_line_code_takes_one_walk_and_changes_nothing() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The leaf has no accessed bit: the first (real) walk sets it, the cache is filled
+            // after it and no later fetch writes anything.
+            write_tree(boot, TREE_PML4, &[(0, SPLIT_PAGE0 | 3)], None);
+            let mut code = Vec::new();
+            for value in 0..40u32 {
+                code.extend(mov_imm32(0, value));
+            }
+            code.push(0xF4);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 100);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.report.instructions_executed, 41);
+        assert_eq!(outcome.state.gpr[Register::Rax as usize], 39);
+        assert_eq!(stats.inserts, 1, "{stats:?}");
+        assert!(stats.hits > 41 * 3, "{stats:?}");
+        assert_eq!(outcome.writes.len(), 1, "{:?}", outcome.writes);
+    }
+
+    /// The stream of the table-write cases: `MOV RBX, store_va; MOV RAX, value; MOV [RBX], RAX`
+    /// is cut so that the store crosses from page A to page B (two bytes on A, its last byte on
+    /// B). Returns the 17 bytes and how many of them end page A.
+    fn table_write_stream(store_va: u32, value: u32) -> (Vec<u8>, usize) {
+        let mut head = mov_imm32(3, store_va);
+        head.extend(mov_imm32(0, value));
+        head.extend([0x48, 0x89, 0x03]);
+        assert_eq!(head.len(), 17);
+        (head, 16)
+    }
+
+    fn tail(first: u32, second: u32) -> Vec<u8> {
+        let mut tail = mov_imm32(1, first);
+        tail.extend(mov_imm32(2, second));
+        tail.push(0xF4);
+        tail
+    }
+
+    /// Lays out the first tree (A -> `SPLIT_PAGE0`, B -> `SPLIT_PAGE1`, a window onto
+    /// `window_frame`) and the stream; page B has the tail `0x1111/0x2222`, `ALT_PAGE1` holds
+    /// the same bytes with the tail `0x3333/0x4444`.
+    fn table_write_case(
+        boot: &mut LinuxDirectBoot,
+        store_va: u32,
+        value: u32,
+        window_frame: u64,
+    ) -> LongModeState {
+        write_tree(
+            boot,
+            TREE_PML4,
+            &[
+                (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                (1, SPLIT_PAGE1 | A_PRESENT_WRITABLE),
+            ],
+            Some(window_frame),
+        );
+        let (head, on_first) = table_write_stream(store_va, value);
+        write_phys(
+            boot,
+            SPLIT_PAGE0 + 0x1000 - on_first as u64,
+            &head[..on_first],
+        );
+        for (page, tail) in [
+            (SPLIT_PAGE1, tail(0x1111, 0x2222)),
+            (ALT_PAGE1, tail(0x3333, 0x4444)),
+        ] {
+            let mut bytes = head[on_first..].to_vec();
+            bytes.extend(tail);
+            write_phys(boot, page, &bytes);
+        }
+        tree_state(boot, TREE_PML4, SPLIT_VA + 0x1000 - on_first as u64)
+    }
+
+    /// The guest rewrites the PTE of the page it is executing on and the next instruction is
+    /// fetched through the new translation: the cache must have dropped the old one.
+    #[test]
+    fn cache_a_pte_store_remaps_the_page_under_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        // PTE 1 of the tree's PT is at PT + 8, seen through the window at WINDOW_VA + 8.
+        let build = |boot: &mut LinuxDirectBoot| {
+            table_write_case(
+                boot,
+                (WINDOW_VA + 8) as u32,
+                (ALT_PAGE1 | 3) as u32,
+                TREE_PML4 + 0x3000,
+            )
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        // The tail of the NEW page ran, not the cached old one.
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x3333);
+        assert_eq!(outcome.state.gpr[Register::Rdx as usize], 0x4444);
+        assert_eq!(
+            stats.write_flushes, 1,
+            "only the PTE store hits a watched table"
+        );
+        assert_eq!(stats.context_flushes, 0);
+        assert!(stats.hits > 0, "{stats:?}");
+    }
+
+    /// Rewriting the PTE with its accessed bit clear: the next fetch walks again and sets it
+    /// again, as without the cache (the committed writes are compared in order).
+    #[test]
+    fn cache_a_pte_store_that_clears_accessed_sets_it_again_on_the_next_fetch() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            table_write_case(
+                boot,
+                (WINDOW_VA + 8) as u32,
+                (SPLIT_PAGE1 | 3) as u32,
+                TREE_PML4 + 0x3000,
+            )
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x1111);
+        assert_eq!(stats.write_flushes, 1);
+        // The accessed bit is on PTE 1 again after the run.
+        let pte = u64::from_le_bytes(outcome.memory[0x3008..0x3010].try_into().unwrap());
+        assert_eq!(pte, SPLIT_PAGE1 | A_PRESENT_WRITABLE);
+        // The last committed write is that A-bit commit on the PT entry.
+        assert_eq!(
+            outcome.writes.last().copied(),
+            Some((TREE_PML4 + 0x3000 + 8, 8))
+        );
+    }
+
+    /// The guest clears the present bit of the PTE it is executing on: the next fetch is the
+    /// same precise `#PF` (error code, linear address, saved RIP) as without the cache; a failure
+    /// is never served from the cache.
+    #[test]
+    fn cache_a_pte_store_that_unmaps_the_page_is_the_same_page_fault() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            table_write_case(boot, (WINDOW_VA + 8) as u32, 0, TREE_PML4 + 0x3000)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &outcome.report.exit else {
+            panic!("{:?}", outcome.report);
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(SPLIT_VA + 0x1001))
+        );
+        assert_eq!(
+            outcome.report.page_fault.as_ref().map(|r| r.saved_rip()),
+            Some(SPLIT_VA + 0x1001)
+        );
+        assert_eq!(stats.write_flushes, 1);
+        // The three instructions of the stream retired, the fault is at the fourth.
+        assert_eq!(outcome.report.instructions_executed, 3);
+    }
+
+    /// The guest rewrites a page DIRECTORY entry of the executing path to another PT (the
+    /// watch covers every level, not just the leaf table).
+    #[test]
+    fn cache_a_pde_store_remaps_the_page_under_the_cached_translation() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The window shows the first tree's PD; PD index 8 is at offset 0x40.
+            let state = table_write_case(
+                boot,
+                (WINDOW_VA + 0x40) as u32,
+                (TREE2_PT | 3) as u32,
+                TREE_PML4 + 0x2000,
+            );
+            // The new PT keeps A on SPLIT_PAGE0 and maps B to the alternative page.
+            write_phys(
+                boot,
+                TREE2_PT,
+                &(SPLIT_PAGE0 | A_PRESENT_WRITABLE).to_le_bytes(),
+            );
+            write_phys(
+                boot,
+                TREE2_PT + 8,
+                &(ALT_PAGE1 | A_PRESENT_WRITABLE).to_le_bytes(),
+            );
+            state
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x3333);
+        assert_eq!(stats.write_flushes, 1);
+    }
+
+    /// `MOV CR3` between two instructions of a cached page: the instruction after it is fetched
+    /// through the NEW tree (the same linear page now maps to other bytes).
+    #[test]
+    fn cache_mov_cr3_drops_the_translations_of_the_old_tree() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            // The first instruction (MOV RAX, TREE2_PML4) crosses A -> B, so B is cached under
+            // the first CR3; MOV CR3 and the MOV RCX of the old/new page follow on B.
+            let mut stream = mov_imm32(0, TREE2_PML4 as u32);
+            stream.extend([0x0F, 0x22, 0xD8]);
+            let on_first = 3;
+            write_tree(
+                boot,
+                TREE_PML4,
+                &[
+                    (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                    (1, SPLIT_PAGE1 | A_PRESENT_WRITABLE),
+                ],
+                None,
+            );
+            write_tree(
+                boot,
+                TREE2_PML4,
+                &[
+                    (0, SPLIT_PAGE0 | A_PRESENT_WRITABLE),
+                    (1, ALT_PAGE1 | A_PRESENT_WRITABLE),
+                ],
+                None,
+            );
+            write_phys(
+                boot,
+                SPLIT_PAGE0 + 0x1000 - on_first as u64,
+                &stream[..on_first],
+            );
+            for (page, marker) in [(SPLIT_PAGE1, 0x1111), (ALT_PAGE1, 0x3333)] {
+                let mut bytes = stream[on_first..].to_vec();
+                bytes.extend(mov_imm32(1, marker));
+                bytes.push(0xF4);
+                write_phys(boot, page, &bytes);
+            }
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x1000 - on_first as u64)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x3333);
+        assert_eq!(outcome.report.cr3, TREE2_PML4);
+        assert_eq!(outcome.report.translation_context_changes.len(), 1);
+        assert_eq!(stats.context_flushes, 1, "{stats:?}");
+        assert!(stats.hits > 0, "{stats:?}");
+    }
+
+    /// An instruction across a page boundary whose second page is not mapped: the first page is
+    /// cached, the second byte run walks and faults exactly as without the cache.
+    #[test]
+    fn cache_a_crossing_fetch_onto_an_unmapped_page_is_the_same_page_fault() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            write_tree(
+                boot,
+                TREE_PML4,
+                &[(0, SPLIT_PAGE0 | A_PRESENT_WRITABLE)],
+                None,
+            );
+            let code = mov_imm32(0, 7);
+            write_phys(boot, SPLIT_PAGE0 + 0x1000 - 3, &code[..3]);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x1000 - 3)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 4);
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &outcome.report.exit else {
+            panic!("{:?}", outcome.report);
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0x10), Some(SPLIT_VA + 0x1000))
+        );
+        assert_eq!(
+            outcome.report.page_fault.as_ref().map(|r| r.saved_rip()),
+            Some(SPLIT_VA + 0x1000 - 3)
+        );
+        assert_eq!(outcome.report.instructions_executed, 0);
+        assert_eq!(
+            stats.inserts, 1,
+            "only page A; the failed page is not cached"
+        );
+        assert!(stats.hits >= 2, "{stats:?}");
+    }
+
+    /// The CPUID boundary peeks through the cache too: a `CPUID` of leaf 1 still stops the run
+    /// before it executes, with the same record.
+    #[test]
+    fn cache_cpuid_boundary_peek_through_the_cache_stops_before_leaf_1() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let cpuid = CpuidProfile::DiagnosticV1;
+        let set = switch_set(&cli, &halt).with_cpuid(&cpuid);
+        let build = |boot: &mut LinuxDirectBoot| {
+            write_tree(
+                boot,
+                TREE_PML4,
+                &[(0, SPLIT_PAGE0 | A_PRESENT_WRITABLE)],
+                None,
+            );
+            let mut code = vec![0xFA, 0x31, 0xC0, 0x0F, 0xA2];
+            code.extend(mov_eax(1));
+            code.extend([0x66, 0x0F, 0xA2, 0xF4]);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &set, 32);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::CpuidDivergence { leaf: 1 },
+            "{:?}",
+            outcome.report
+        );
+        // CLI, XOR, CPUID(0), MOV EAX,1 retired; the prefixed CPUID did not.
+        assert_eq!(outcome.report.instructions_executed, 4);
+        assert!(stats.hits > 0, "{stats:?}");
+    }
+
+    /// Self-modifying code: the guest stores over the immediate of the next instruction on the
+    /// cached code page. The cache holds the translation, never the byte, so the patched
+    /// immediate runs, as without the cache.
+    #[test]
+    fn cache_self_modifying_code_runs_the_patched_bytes() {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            write_tree(
+                boot,
+                TREE_PML4,
+                &[(0, SPLIT_PAGE0 | A_PRESENT_WRITABLE)],
+                None,
+            );
+            // MOV RBX, patch address; MOV RAX, 0x5555; MOV [RBX], EAX; MOV RCX, 0x1111; HLT.
+            let mut code = mov_imm32(3, (SPLIT_VA + 0x213) as u32);
+            code.extend(mov_imm32(0, 0x5555));
+            code.extend([0x89, 0x03]);
+            code.extend(mov_imm32(1, 0x1111));
+            code.push(0xF4);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, &code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        let (outcome, stats) = assert_cache_is_invisible(&build, &switch_set(&cli, &halt), 16);
+        assert_eq!(
+            outcome.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            outcome.report
+        );
+        assert_eq!(outcome.state.gpr[Register::Rcx as usize], 0x5555);
+        assert!(stats.hits > 0, "{stats:?}");
+    }
+
+    /// The flag: off in the minimal set, on in the Linux default, and the run through the facade
+    /// gives the same record with it on or off.
+    #[test]
+    fn cache_flag_changes_no_field_of_the_stop_record() {
+        let mut code = vec![0xFA];
+        for value in 0..64u32 {
+            code.extend(mov_imm32(0, value));
+        }
+        code.push(0xF4);
+        let mut records = Vec::new();
+        for fetch_cache in [true, false] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let members = LinuxCpl0SetMembers {
+                fetch_cache,
+                ..halting_default()
+            };
+            records.push(run_set_facade(&mut boot, &file, 1000, members));
+        }
+        let (cached, plain) = (&records[0], &records[1]);
+        assert_eq!(cached.exit_kind, "halted");
+        assert_eq!(cached.retired, 66);
+        // `LinuxStopRecord` has no `PartialEq`: its Debug text carries every field.
+        assert_eq!(format!("{cached:?}"), format!("{plain:?}"));
+    }
+
+    /// The same check on the real kernel: the 2M-instruction prefix of the Linux board run ends
+    /// with the same stop record and leaves byte-identical guest RAM (hence identical page-table
+    /// accessed/dirty bits) with the fetch translation cache on and off.
+    /// `OD_REAL_ARTIFACTS_ROOT` names the checkout that holds `work/stage4` (default: this one).
+    #[test]
+    #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
+    fn cache_real_kernel_prefix_leaves_identical_ram_and_record() {
+        let root = std::env::var_os("OD_REAL_ARTIFACTS_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let load = |relative: &str| std::fs::read(root.join(relative)).expect(relative);
+        let vmlinuz = load("work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic");
+        let initramfs = load("work/stage4/initramfs/initramfs.cpio");
+        let blob = load("tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin");
+        // The runner's command line for the nonce of the evidence.
+        let cmdline = "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 \
+                       od.nonce=s4-38l4a nokaslr";
+        let machine_input = LinuxDirectInput {
+            bzimage: &vmlinuz,
+            initrd: &initramfs,
+            cmdline: cmdline.as_bytes(),
+            acpi_blob: &blob,
+            expected_acpi_manifest_hash: board_hash(),
+            ram_bytes: 128 * MIB,
+        };
+        let mut runs = Vec::new();
+        for fetch_cache in [false, true] {
+            let mut boot = load_linux_direct_board(&machine_input).expect("loads");
+            let record = run_linux_direct_board_set(
+                &mut boot,
+                &machine_input,
+                2_000_000,
+                LinuxCpl0SetMembers {
+                    fetch_cache,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+            )
+            .expect("runs");
+            // A hash of the hashes of the whole guest RAM, 1 MiB at a time.
+            let mut chunk_hashes = Vec::new();
+            let mut chunk = vec![0u8; MIB as usize];
+            for start in (0..128 * MIB).step_by(MIB as usize) {
+                read(&mut boot.board, start, &mut chunk).expect("RAM");
+                chunk_hashes.extend(crate::acpi_blob::sha256(&chunk));
+            }
+            runs.push((
+                format!("{record:?}"),
+                crate::acpi_blob::sha256(&chunk_hashes),
+            ));
+        }
+        assert_eq!(runs[0].0, runs[1].0, "stop records differ");
+        assert_eq!(runs[0].1, runs[1].1, "guest RAM differs");
     }
 }
