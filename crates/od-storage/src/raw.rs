@@ -143,6 +143,23 @@ impl<B: StorageBackend> RawImage<B> {
         Self::open_checked(storage, expected_size, block_size)
     }
 
+    /// Revalidates an existing checked writer as a RAW image without
+    /// consuming its storage on failure. This is intended for operations that
+    /// consume a `RawImage` to request a durable flush and then rebuild the
+    /// view over the same locked backend. On validation or size errors the
+    /// original `CheckedStorage` is returned so its writer lock and sticky
+    /// reconcile state cannot be dropped accidentally.
+    pub fn reopen_read_write_checked(
+        storage: CheckedStorage<B>,
+        expected_size: Option<u64>,
+        block_size: u64,
+    ) -> Result<Self, (CheckedStorage<B>, RawError)> {
+        if let Err(error) = require_writer(&storage.capabilities()) {
+            return Err((storage, error));
+        }
+        Self::open_checked_retaining(storage, expected_size, block_size)
+    }
+
     /// Opens an existing image for reading only. The backend must be
     /// read-only; see [`RawImage::open_read_write`] for the size rules.
     pub fn open_read_only(
@@ -162,13 +179,29 @@ impl<B: StorageBackend> RawImage<B> {
         expected_size: Option<u64>,
         block_size: u64,
     ) -> Result<Self, RawError> {
-        let actual = storage.size()?;
+        match Self::open_checked_retaining(storage, expected_size, block_size) {
+            Ok(image) => Ok(image),
+            Err((_storage, error)) => Err(error),
+        }
+    }
+
+    fn open_checked_retaining(
+        storage: CheckedStorage<B>,
+        expected_size: Option<u64>,
+        block_size: u64,
+    ) -> Result<Self, (CheckedStorage<B>, RawError)> {
+        let actual = match storage.size() {
+            Ok(actual) => actual,
+            Err(error) => return Err((storage, error.into())),
+        };
         if let Some(expected) = expected_size
             && actual != expected
         {
-            return Err(size_mismatch(expected, actual));
+            return Err((storage, size_mismatch(expected, actual)));
         }
-        check_geometry(actual, block_size)?;
+        if let Err(error) = check_geometry(actual, block_size) {
+            return Err((storage, error));
+        }
         Ok(Self {
             storage,
             logical_size: actual,
@@ -570,6 +603,59 @@ mod tests {
         // Without metadata the size is the object size.
         let image = RawImage::open_read_write(writer(&longer), None, BS).unwrap();
         assert_eq!(image.logical_size(), SIZE as u64 + 512);
+    }
+
+    #[test]
+    fn checked_reopen_returns_the_same_storage_when_size_validation_fails() {
+        let checked = CheckedStorage::new(writer(&[0; SIZE])).unwrap();
+        let (checked, error) = match RawImage::reopen_read_write_checked(
+            checked,
+            Some((SIZE + BS as usize) as u64),
+            BS,
+        ) {
+            Ok(_) => panic!("mismatched size unexpectedly reopened"),
+            Err(owner) => owner,
+        };
+        assert_eq!(
+            error,
+            RawError::Truncated {
+                expected: (SIZE + BS as usize) as u64,
+                actual: SIZE as u64,
+            }
+        );
+        assert_eq!(checked.size(), Ok(SIZE as u64));
+        assert!(checked.into_backend().is_ok());
+    }
+
+    #[test]
+    fn checked_reopen_failure_does_not_clear_sticky_reconcile_state() {
+        use crate::testing::fault::{Fault, FaultHandle, FlushFault};
+
+        let handle = FaultHandle::new(&[0; SIZE], 0x503);
+        let mut checked = CheckedStorage::new(handle.open()).unwrap();
+        handle.script_next(Fault::Flush(FlushFault::IoNotDurable));
+        assert!(matches!(
+            checked.flush_file_durable(),
+            Err(StorageError::Io {
+                op: crate::io::IoOp::FlushFile,
+                ..
+            })
+        ));
+
+        let (mut checked, error) = match RawImage::reopen_read_write_checked(
+            checked,
+            Some((SIZE + BS as usize) as u64),
+            BS,
+        ) {
+            Ok(_) => panic!("mismatched size unexpectedly reopened"),
+            Err(owner) => owner,
+        };
+        assert!(matches!(error, RawError::Truncated { .. }));
+        assert_eq!(
+            checked.flush_file_durable(),
+            Err(StorageError::ReconcileRequired)
+        );
+        assert!(checked.into_backend().is_err());
     }
 
     #[test]

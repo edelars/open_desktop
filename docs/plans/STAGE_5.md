@@ -255,6 +255,7 @@
 ### S5-03. Реализовать постоянный backend диска в host-слое
 
 - [ ] Принято после ревью. Заявление об интеграции с контроллером — только после приёмки `S7-16`; до неё задача доказывает host-сторону и прогон через `attach_backend` как prerequisite.
+- **Текущий статус (2026-11-11):** host backend и тесты подготовлены, ожидают независимого ревью; checkbox не отмечен. Runtime write/flush failure terminally fails adapter без retry/reopen; SIGKILL test доказывает только отсутствие успешного возврата до durable flush, не состояние image после kill. In-memory quarantine/lock исчезает при process exit, поэтому повторный open после неопределённой мутации пока не блокируется между процессами (см. [ISSUE-077](../KNOWN_ISSUES.md#issue-077-s5-03-raw-quarantine-not-persistent-across-process-exit)). `S7-16` остаётся не принят, guest/controller acceptance и disk scenarios не заявляются.
 - **Где:** `crates/od-host/src/` — новый модуль рядом с [storage_io.rs](../../crates/od-host/src/storage_io.rs) и `storage_policy.rs`. `crates/od-machine` **не трогать**: у него нет и не должно быть файлового I/O и зависимости от `od-storage`.
 - **Сделать:**
   1. Реализовать `NvmeBackend` (`sector_count`, `read_sectors`, `write_sectors`, `flush`) поверх `RawImage<B>` и `HostFileStorage`, с политикой write-through из `S5-02`.

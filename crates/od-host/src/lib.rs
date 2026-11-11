@@ -1,6 +1,8 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 mod display;
+#[cfg(unix)]
+pub mod persistent_nvme;
 #[cfg(all(unix, test))]
 mod raw_file_tests;
 pub mod session;

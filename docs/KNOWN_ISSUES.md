@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-077-s5-03-raw-quarantine-not-persistent-across-process-exit"></a>
+
+### ISSUE-077 — S5-03: quarantine RAW не переживает завершение host-процесса
+
+- **Дата обнаружения:** 2026-11-11, при реализации и проверке S5-03.
+- **Компонент:** `crates/od-host/src/persistent_nvme.rs`, lifecycle persistent RAW backend.
+- **Владелец:** Stage 5 host integration; inspection/reconcile procedure принадлежит Stage 9.
+- **Статус:** открыта; текущий adapter хранит terminal/quarantine state только в памяти процесса. On-disk sidecar или durable quarantine registry не задан и не добавлялся.
+- **Основание и последствия:** runtime write/flush failure переводит adapter в terminal state и удерживает `HostFileStorage` lock до закрытия adapter; `CheckedStorage::ReconcileRequired` не сбрасывается обычным переоборачиванием. SIGKILL в окне после фактического host write и до durable acknowledgement освобождает OS `flock`, а процессная quarantine state исчезает. Следующий процесс может открыть тот же RAW path без проверки, что неизвестные bytes inspected/reconciled. Изолированный process-kill тест проверяет только отсутствие успешного возврата backend до flush и намеренно не делает утверждений о состоянии/долговечности bytes после kill.
+- **Следующий шаг:** до разрешения повторного использования после process death определить согласованный inspection/reconcile и host lifecycle gate. Не добавлять sidecar marker, пока не задана и не испытана его атомарность, cleanup и поведение при crash.
+
 <a id="issue-076-s5-01-run-duration-inputs-missing"></a>
 
 ### ISSUE-076 — S5-01: неизвестны inputs для повторяемой серии и soak duration
