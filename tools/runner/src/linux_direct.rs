@@ -573,6 +573,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
+    // S4-38L7w: the guest PCI CONFIG_ADDRESS (port 0xCF8).
+    stop["pci_config_address"] = json!(hex64(u64::from(record.pci_config_address)));
     stop
 }
 
@@ -1425,7 +1427,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
@@ -1468,6 +1471,25 @@ mod tests {
         let value = run_case("efer-control", &[0xF4], 10);
         assert_eq!(value["stop"]["guest_efer"], "0xd00");
         assert_eq!(value["stop"]["efer"], "0xd00");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
+        // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
+        let code = [
+            0xB8, 0x00, 0x10, 0x00, 0x80, 0xBA, 0xF8, 0x0C, 0x00, 0x00, 0xEF,
+        ];
+        let mut case = Case::new("set-pci", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(3);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 3, "{value:#}");
+        assert_eq!(stop["pci_config_address"], "0x80001000");
+        // Without the set nothing writes CONFIG_ADDRESS.
+        let value = run_case("pci-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["pci_config_address"], "0x0");
     }
 
     #[test]
@@ -1537,7 +1559,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         // Leaf 0x80000001 as well.
@@ -1822,7 +1845,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter

@@ -1904,6 +1904,7 @@ pub struct Cpl0ProfileSet<'a> {
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
+    pci_config: Option<&'a Cell<u32>>,
     popf_cpl0: bool,
 }
 
@@ -1920,6 +1921,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
+            pci_config: None,
             popf_cpl0: false,
         }
     }
@@ -2005,6 +2007,20 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// `Unsupported` without touching a port.
     pub const fn with_pio_u8(mut self) -> Self {
         self.pio_u8 = true;
+        self
+    }
+
+    /// S4-38L7w: admit the PCI configuration mechanism #1 ports through the dword and word forms
+    /// `OUT DX, EAX` (`EF`), `OUT DX, AX` (`66 EF`), `IN EAX, DX` (`ED`) and `IN AX, DX`
+    /// (`66 ED`). `cell` holds the caller's CONFIG_ADDRESS register (port `0xCF8`) between
+    /// runs. Port `0xCF8` stores/returns it (a word access reads/replaces its low 16 bits);
+    /// ports `0xCFC..=0xCFF` have no device behind them: `IN` returns all ones for the access
+    /// size and `OUT` is discarded. Any other port, and any other prefix combination, stays
+    /// `Unsupported` without a state change. The CPU never calls the byte port for these
+    /// forms. Like `with_pio_u8` they run only through [`run_with_cpl0_profile_set_and_pio`].
+    /// The byte forms `EC`/`EE` are not changed by this member.
+    pub const fn with_pci_config(mut self, cell: &'a Cell<u32>) -> Self {
+        self.pci_config = Some(cell);
         self
     }
 
@@ -2282,7 +2298,7 @@ struct ExecutionProfiles<'a> {
     /// Port bridge for the exact `IN AL, DX` / `OUT DX, AL` forms. A port
     /// failure is recorded by the bridge and surfaces as an `Unsupported`
     /// placeholder outcome that the caller replaces with its typed exit.
-    pio_u8: Option<&'a RefCell<&'a mut dyn crate::PortIo<Error = ()>>>,
+    pio_u8: Option<PioBridge<'a>>,
     /// S2-50: `POPFQ` (`9D`, `48 9D`) with the CPL0 IOPL/IF rule. Set only by a
     /// `Cpl0ProfileSet` built with `with_popf_cpl0`.
     popf_cpl0: bool,
@@ -19462,6 +19478,64 @@ fn execute_pio_u8<P: crate::PortIo>(
     }
 }
 
+/// Port bridge of the CPL0 set: the byte forms (`byte`) and the S4-38L7w PCI configuration
+/// forms (`pci_config`) are admitted independently.
+#[derive(Clone, Copy)]
+struct PioBridge<'a> {
+    port: &'a RefCell<&'a mut dyn crate::PortIo<Error = ()>>,
+    byte: bool,
+    pci_config: Option<&'a Cell<u32>>,
+}
+
+enum PciConfigCommit {
+    Retired,
+    Unsupported { opcode: u8 },
+}
+
+/// S4-38L7w commit of the dword/word `IN`/`OUT` forms for the PCI configuration mechanism #1
+/// ports. The register file and the address cell change only on an admitted access.
+fn commit_pci_config_port(
+    state: &mut LongModeState,
+    instruction: &long_decode::Instruction,
+    size: OperandSize,
+    address: &Cell<u32>,
+) -> PciConfigCommit {
+    const CONFIG_ADDRESS: u16 = 0xcf8;
+    const CONFIG_DATA: core::ops::RangeInclusive<u16> = 0xcfc..=0xcff;
+    let opcode = instruction.opcode.byte;
+    let word = size == OperandSize::Word;
+    // The opcode is one byte; the word form carries exactly one `66` byte.
+    if instruction.length != 1 + u8::from(word) {
+        return PciConfigCommit::Unsupported { opcode };
+    }
+    let port = state.gpr[Register::Rdx as usize] as u16;
+    let all_ones: u64 = if word { 0xffff } else { 0xffff_ffff };
+    let reads = matches!(instruction.operation, Operation::InDx { .. });
+    let value = if port == CONFIG_ADDRESS {
+        // Only the dword form is admitted: the word form of CONFIG_ADDRESS has no
+        // hardware-confirmed semantics here, so it is refused without mutation.
+        if word {
+            return PciConfigCommit::Unsupported { opcode };
+        }
+        if reads {
+            u64::from(address.get())
+        } else {
+            address.set(state.gpr[Register::Rax as usize] as u32);
+            0
+        }
+    } else if CONFIG_DATA.contains(&port) {
+        all_ones
+    } else {
+        return PciConfigCommit::Unsupported { opcode };
+    };
+    if reads {
+        // A dword write zero-extends into RAX; a word write keeps RAX[63:16].
+        state.write(RegisterView::low(Register::Rax, size), value);
+    }
+    state.rip = state.rip.wrapping_add(u64::from(instruction.length));
+    PciConfigCommit::Retired
+}
+
 enum PioU8Commit<E> {
     Retired,
     Unsupported { opcode: u8 },
@@ -20233,7 +20307,14 @@ fn run_cpl0_profile_set_inner(
             mov_cr3: None,
             control_policy: Some(set.policy),
             cpu_owned_cr3: set.cpu_owned_cr3.then_some(&cr3_effect),
-            pio_u8: pio_cell.as_ref().filter(|_| set.pio_u8),
+            pio_u8: pio_cell
+                .as_ref()
+                .filter(|_| set.pio_u8 || set.pci_config.is_some())
+                .map(|port| PioBridge {
+                    port,
+                    byte: set.pio_u8,
+                    pci_config: set.pci_config,
+                }),
             popf_cpl0: set.popf_cpl0,
             cr4: None,
         },
@@ -32778,8 +32859,21 @@ fn step_configured(
             }
             return Ok(StepOutcome::Advanced);
         }
-        Operation::InAlDx | Operation::OutDxAl if pio_u8.is_some() => {
-            let bridge = pio_u8.expect("guarded by the match arm");
+        Operation::InDx { size } | Operation::OutDx { size }
+            if pio_u8.is_some_and(|bridge| bridge.pci_config.is_some()) =>
+        {
+            let cell = pio_u8
+                .and_then(|bridge| bridge.pci_config)
+                .expect("guarded by the match arm");
+            return Ok(
+                match commit_pci_config_port(state, &instruction, size, cell) {
+                    PciConfigCommit::Retired => StepOutcome::Advanced,
+                    PciConfigCommit::Unsupported { opcode } => StepOutcome::Unsupported { opcode },
+                },
+            );
+        }
+        Operation::InAlDx | Operation::OutDxAl if pio_u8.is_some_and(|bridge| bridge.byte) => {
+            let bridge = pio_u8.expect("guarded by the match arm").port;
             return Ok(
                 match commit_pio_u8(state, &instruction, &mut **bridge.borrow_mut()) {
                     PioU8Commit::Retired => StepOutcome::Advanced,
@@ -34765,7 +34859,9 @@ fn step_configured(
         | Operation::Sti
         | Operation::Hlt
         | Operation::InAlDx
-        | Operation::OutDxAl => false,
+        | Operation::OutDxAl
+        | Operation::InDx { .. }
+        | Operation::OutDx { .. } => false,
         Operation::Swapgs => true,
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
@@ -37024,7 +37120,10 @@ fn step_configured(
         return Ok(StepOutcome::Advanced);
     }
     match instruction.operation {
-        Operation::InAlDx | Operation::OutDxAl => {
+        Operation::InAlDx
+        | Operation::OutDxAl
+        | Operation::InDx { .. }
+        | Operation::OutDx { .. } => {
             unreachable!("PIO operations are rejected outside the explicit PIO entry")
         }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),

@@ -2931,6 +2931,331 @@ fn pio_entry_admission_is_unchanged() {
     assert!(pio.writes.is_empty());
 }
 
+// ---- S4-38L7w: PCI configuration mechanism #1 ports (dword/word IN/OUT) ----
+
+const PCI_RAX: u64 = 0x1111_2222_3333_4444;
+
+fn pci_set<'a>(cli: &'a CliProfile, cell: &'a Cell<u32>) -> Cpl0ProfileSet<'a> {
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(cli)
+        .with_pci_config(cell)
+}
+
+type PciRun = (
+    LongModeState,
+    LongModeState,
+    Cpl0ProfileSetResult<&'static str>,
+    TestPio,
+);
+
+/// Runs `code` with RAX/RDX preset through the PIO entry. Returns the state before the run too.
+fn run_pci(code: &[u8], rax: u64, rdx: u64, cell: &Cell<u32>, budget: u64) -> PciRun {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let mut pio = TestPio::default();
+    let result = run_pio(
+        &mut state,
+        &mut memory,
+        &pci_set(&cli, cell),
+        &mut pio,
+        budget,
+    );
+    (before, state, result, pio)
+}
+
+fn budget_exhausted() -> Cpl0ProfileSetExit<&'static str> {
+    Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+}
+
+#[test]
+fn pci_dword_out_to_config_address_is_stored_and_read_back_by_in() {
+    let cell = Cell::new(0);
+    // Non-zero high RAX bits: OUT leaves RAX alone, IN EAX zero-extends into RAX.
+    let (before, state, result, pio) =
+        run_pci(&[0xef, 0xed], 0xaaaa_bbbb_8000_1000, 0xcf8, &cell, 2);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(cell.get(), 0x8000_1000);
+    assert_eq!(state.gpr[0], 0x0000_0000_8000_1000);
+    assert_eq!(state.gpr[2], 0xcf8);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags, before.rflags);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+
+    // The OUT alone leaves RAX and everything but RIP and the cell untouched.
+    let cell = Cell::new(0);
+    let (before, state, result, _) = run_pci(&[0xef], 0xaaaa_bbbb_8000_1000, 0xcf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x8000_1000);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(state.rip, RIP + 1);
+}
+
+#[test]
+fn pci_word_access_to_config_address_is_refused_without_mutation() {
+    // The word form of CONFIG_ADDRESS has no hardware-confirmed semantics: both 66 EF and
+    // 66 ED are refused with the exact opcode, with no change to the registers or the address.
+    for (code, opcode) in [(&[0x66, 0xef][..], 0xef), (&[0x66, 0xed][..], 0xed)] {
+        let cell = Cell::new(0xdead_beef);
+        let (before, state, result, pio) = run_pci(code, PCI_RAX, 0xcf8, &cell, 8);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xdead_beef);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn pci_port_is_truncated_to_dx() {
+    // RDX[63:16] is ignored: the port is DX.
+    let cell = Cell::new(0);
+    let (_, state, result, _) = run_pci(&[0xef], 0x8000_1000, 0xffff_0000_0001_0cf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(cell.get(), 0x8000_1000);
+    assert_eq!(state.rip, RIP + 1);
+    let (_, state, result, _) = run_pci(&[0xed], PCI_RAX, 0xffff_0000_0001_0cf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0x8000_1000);
+    // The same for the data port.
+    let (_, state, result, _) = run_pci(&[0xed], PCI_RAX, 0xffff_0000_0001_0cfc, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0xffff_ffff);
+}
+
+#[test]
+fn pci_config_address_is_kept_between_runs_on_the_same_cell() {
+    let cell = Cell::new(0);
+    let (_, _, result, _) = run_pci(&[0xef], 0x8000_1000, 0xcf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    let (_, state, result, _) = run_pci(&[0xed], 0xaaaa_bbbb_cccc_dddd, 0xcf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0x8000_1000);
+}
+
+#[test]
+fn pci_config_data_in_without_a_device_returns_all_ones() {
+    for port in [0xcfc_u64, 0xcfd, 0xcfe, 0xcff] {
+        // Dword: EAX = 0xffff_ffff, RAX[63:32] cleared.
+        let cell = Cell::new(0x8000_0000);
+        let (before, state, result, pio) = run_pci(&[0xed], 0xaaaa_bbbb_cccc_dddd, port, &cell, 1);
+        assert_eq!(result.exit, budget_exhausted(), "{port:#x}");
+        assert_eq!(state.gpr[0], 0x0000_0000_ffff_ffff, "{port:#x}");
+        assert_eq!(state.rip, RIP + 1);
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(cell.get(), 0x8000_0000);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        // Word: AX = 0xffff, RAX[63:16] kept.
+        let (_, state, result, _) = run_pci(&[0x66, 0xed], PCI_RAX, port, &cell, 1);
+        assert_eq!(result.exit, budget_exhausted(), "{port:#x}");
+        assert_eq!(state.gpr[0], 0x1111_2222_3333_ffff, "{port:#x}");
+        assert_eq!(state.rip, RIP + 2);
+    }
+}
+
+#[test]
+fn pci_config_data_out_is_discarded_and_keeps_the_address() {
+    for (code, length) in [(&[0xef][..], 1u64), (&[0x66, 0xef][..], 2)] {
+        for port in [0xcfc_u64, 0xcfe] {
+            let cell = Cell::new(0x8000_1000);
+            let (before, state, result, pio) = run_pci(code, PCI_RAX, port, &cell, 1);
+            assert_eq!(result.exit, budget_exhausted());
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(cell.get(), 0x8000_1000);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.rip, RIP + length);
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pci_guest_sequence_address_then_data_read_is_all_ones() {
+    let cell = Cell::new(0);
+    let code = [
+        0xef, // out dx, eax
+        0xba, 0xfc, 0x0c, 0x00, 0x00, // mov edx, 0xcfc
+        0xed, // in eax, dx
+    ];
+    let (_, state, result, _) = run_pci(&code, 0x8000_1000, 0xcf8, &cell, 3);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(cell.get(), 0x8000_1000);
+    assert_eq!(state.gpr[0], 0xffff_ffff);
+    assert_eq!(state.rip, RIP + 7);
+}
+
+#[test]
+fn pci_other_ports_are_unsupported_without_mutation() {
+    for (code, opcode) in [
+        (&[0xef][..], 0xef),
+        (&[0x66, 0xef][..], 0xef),
+        (&[0xed][..], 0xed),
+        (&[0x66, 0xed][..], 0xed),
+    ] {
+        for port in [0x3f8_u64, 0xcf9, 0xcfa, 0xcfb, 0xd00, 0xcf0, 0x0] {
+            let cell = Cell::new(0x1234_5678);
+            let (before, state, result, pio) = run_pci(code, PCI_RAX, port, &cell, 8);
+            assert_eq!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+                "{code:x?} {port:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(cell.get(), 0x1234_5678);
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pci_prefixed_forms_are_refused_with_the_exact_opcode_and_no_mutation() {
+    for (code, opcode) in [
+        (&[0xf3, 0xef][..], 0xef), // REP OUTSD is not this instruction
+        (&[0xf3, 0xed][..], 0xed),
+        (&[0xf2, 0xef][..], 0xef),
+        (&[0xf2, 0xed][..], 0xed),
+        (&[0xf0, 0xef][..], 0xef),
+        (&[0xf0, 0xed][..], 0xed),
+        (&[0x48, 0xef][..], 0xef), // REX.W
+        (&[0x48, 0xed][..], 0xed),
+        (&[0x66, 0x48, 0xef][..], 0xef),
+        (&[0x48, 0x66, 0xef][..], 0xef), // REX before 66: refused, not an ignored REX
+        (&[0x40, 0x66, 0xed][..], 0xed),
+        (&[0x40, 0xef][..], 0xef), // any REX
+        (&[0x67, 0xef][..], 0xef),
+        (&[0x67, 0xed][..], 0xed),
+        (&[0x2e, 0xef][..], 0xef), // segment overrides
+        (&[0x64, 0xed][..], 0xed),
+        (&[0x65, 0xef][..], 0xef),
+        (&[0x66, 0xf3, 0xef][..], 0xef),
+        (&[0x66, 0x66, 0xef][..], 0xef), // two operand-size bytes: not the exact word form
+        (&[0x66, 0x67, 0xed][..], 0xed),
+    ] {
+        for port in [0xcf8_u64, 0xcfc] {
+            let cell = Cell::new(0x1234_5678);
+            let (before, state, result, pio) = run_pci(code, PCI_RAX, port, &cell, 8);
+            assert_eq!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+                "{code:x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{code:x?}");
+            assert_eq!(state, before, "{code:x?}");
+            assert_eq!(cell.get(), 0x1234_5678);
+            assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pci_forms_are_outside_a_set_without_the_member() {
+    let cli = CliProfile::NonPviLong64V1;
+    for code in [
+        &[0xef][..],
+        &[0x66, 0xef][..],
+        &[0xed][..],
+        &[0x66, 0xed][..],
+        &[0x48, 0x66, 0xef][..],
+        &[0x40, 0x66, 0xed][..],
+    ] {
+        let opcode = *code.last().unwrap();
+        // The byte PIO member alone does not admit the PCI forms.
+        let mut state = board_state();
+        state.gpr[2] = 0xcf8;
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 8);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode })
+        );
+        assert_eq!(state, before);
+        // The PCI member through an entry without a port bridge stays Unsupported.
+        let cell = Cell::new(0);
+        let mut state = board_state();
+        state.gpr[2] = 0xcf8;
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &pci_set(&cli, &cell), 8).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0);
+    }
+}
+
+#[test]
+fn pci_member_does_not_admit_the_byte_forms() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0);
+    for (code, opcode) in [(&[0xee][..], 0xee), (&[0xec][..], 0xec)] {
+        let mut state = board_state();
+        state.gpr[2] = 0x3f8;
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pci_set(&cli, &cell), &mut pio, 8);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode })
+        );
+        assert_eq!(state, before);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn pci_member_together_with_pio_keeps_the_byte_forms_unchanged() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0);
+    let set = pio_set(&cli).with_pci_config(&cell);
+    let mut state = board_state();
+    let mut memory = Memory::code(&pio_code(OUT_DX_AL));
+    let mut pio = TestPio::default();
+    let result = run_pio(&mut state, &mut memory, &set, &mut pio, 3);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(pio.writes, [(0x3f8, 0x58)]);
+}
+
+#[test]
+fn pci_forms_in_ring3_are_rejected_at_entry() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0x55);
+    let mut state = board_state();
+    state.gpr[2] = 0xcf8;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xef]);
+    let mut pio = TestPio::default();
+    let error = run_with_cpl0_profile_set_and_pio(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 8),
+        od_isa::INTEGER_FLAGS,
+        &pci_set(&cli, &cell),
+        None,
+        &mut pio,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert_eq!(cell.get(), 0x55);
+    assert_eq!(memory.fetches, 0);
+}
+
 // ---- S2-46: null segment loads over loaded hidden caches ----
 
 const DATA_CACHE: DataSegmentDescriptorCache = DataSegmentDescriptorCache {
