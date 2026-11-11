@@ -777,3 +777,5 @@ target profile's, so they are neither supplied nor is the kernel patched. Whatev
 (`0xa2`). The set executes only a bare `0F A2`: a prefixed `CPUID` (`66`, `48`, `F3`, ...) with a leaf
 other than the two above stays `unsupported` (`0xa2`); the boundary still sees a prefixed leaf 1 or
 0x80000001 and stops there. `schema_version` stays 1 (`cpuid_divergence_leaf` and the new `exit_kind` are additive).
+
+`--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode: the boundary above is off, `CPUID` leaf 1 and 0x80000001 execute with the DiagnosticV1 answer like every other leaf (nothing substituted, no kernel patch) and the run goes on to its next stop, to inventory the forms the kernel executes past C7. The result is NOT counted: the JSON carries `diagnostic_past_c7: true` (top level and in `stop`), `acceptance: "diagnostic_not_counted"` and a `diagnostic_note`; `stop.diagnostic_past_c7` is `false` without the flag. `set_members` and the other leaves do not change; `schema_version` stays 1.

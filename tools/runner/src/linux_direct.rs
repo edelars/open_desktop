@@ -29,6 +29,14 @@
 //! in `set_exit_detail`. The `paged_probe` path carries the same fields with empty
 //! values; `schema_version` stays 1 (the fields are additive).
 //!
+//! `--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode:
+//! the `cpuid_divergence` boundary is off, `CPUID` leaf 1 and 0x8000_0001 execute with the
+//! DiagnosticV1 answer like every other leaf (nothing substituted, no kernel patch) and the run
+//! goes on to its next stop, to inventory the forms the kernel executes past C7. The result is NOT
+//! counted: the evidence says `diagnostic_past_c7: true` (top level and in `stop`) and
+//! `acceptance: "diagnostic_not_counted"`. Without the flag `stop.diagnostic_past_c7` is false and
+//! nothing else changes.
+//!
 //! Order of checks (an earlier failure hides a later one). Steps 1-8 all happen before the guest
 //! is started: their JSON says `"guest_started": false, "retired": 0`. A failure of the run
 //! itself (`run_failed`, after step 8, only with `--run`) is reported separately: its evidence
@@ -69,7 +77,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -100,6 +108,8 @@ struct Options {
     budget: Option<u64>,
     /// `--set-cpl0`: run through the CPL0 profile set instead of the base probe profile.
     set_cpl0: bool,
+    /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
+    diagnostic_past_c7: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -240,6 +250,15 @@ fn evaluate(options: &Options) -> (Value, u8) {
     match load_linux_direct_board(&machine_input) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
+            if options.diagnostic_past_c7 {
+                // Marked before the run so that a `run_failed` refusal carries it too.
+                evidence["diagnostic_past_c7"] = json!(true);
+                evidence["acceptance"] = json!("diagnostic_not_counted");
+                evidence["diagnostic_note"] = json!(
+                    "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary \
+                     off); not a profile of the target CPU, the result is NOT counted"
+                );
+            }
             if let Some(budget) = options.budget {
                 let result = if options.set_cpl0 {
                     run_linux_direct_board_set(
@@ -250,6 +269,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // S4-13 diagnostics: `OD_NO_FETCH_CACHE=1` runs without the fetch
                             // translation cache (same results, more page walks).
                             fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
+                            diagnostic_past_c7: options.diagnostic_past_c7,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -516,6 +536,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         // hex, or null. The CPUID did not execute and nothing was answered for it.
         "cpuid_divergence_leaf": record.cpuid_divergence_leaf.map(|leaf| hex64(u64::from(leaf))),
         "exceptions_delivered": record.exceptions_delivered,
+        // S4-38L7: the run had the CPUID boundary off (`--diagnostic-past-c7`): diagnostic only,
+        // not counted.
+        "diagnostic_past_c7": record.diagnostic_past_c7,
         "cr3_changes": record.cr3_changes,
         "last_cr3_change": record.last_cr3_change.map(|(old, new)| json!({
             "old_cr3": hex64(old),
@@ -555,6 +578,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut out = None;
     let mut run = false;
     let mut set_cpl0 = false;
+    let mut diagnostic_past_c7 = false;
     let mut budget = None;
     let mut index = 0;
     while index < args.len() {
@@ -570,6 +594,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
         if name == "--set-cpl0" {
             if std::mem::replace(&mut set_cpl0, true) {
                 return Err(format!("duplicate option --set-cpl0; usage: {USAGE}"));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--diagnostic-past-c7" {
+            if std::mem::replace(&mut diagnostic_past_c7, true) {
+                return Err(format!(
+                    "duplicate option --diagnostic-past-c7; usage: {USAGE}"
+                ));
             }
             index += 1;
             continue;
@@ -617,6 +650,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if set_cpl0 && !run {
         return Err(format!("--set-cpl0 needs --run; usage: {USAGE}"));
     }
+    if diagnostic_past_c7 && !set_cpl0 {
+        return Err(format!(
+            "--diagnostic-past-c7 needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -662,6 +700,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         out: required(out, "--out")?,
         budget,
         set_cpl0,
+        diagnostic_past_c7,
     })
 }
 
@@ -783,6 +822,7 @@ mod tests {
                 out: dir.join("out.json").to_string_lossy().into_owned(),
                 budget: None,
                 set_cpl0: false,
+                diagnostic_past_c7: false,
             };
             Self { dir, options }
         }
@@ -1416,6 +1456,148 @@ mod tests {
         assert_eq!(stop["set_exit_detail"], "CpuidDivergence { leaf: 1 }");
     }
 
+    fn cpuid_leaf_case(name: &str, leaf: u8, diagnostic: bool) -> (Value, u8) {
+        // CLI; MOV EAX, leaf; CPUID; HLT.
+        let code = [0xFA, 0xB8, leaf, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let mut case = Case::new(name, &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.diagnostic_past_c7 = diagnostic;
+        evaluate(&case.options)
+    }
+
+    #[test]
+    fn diagnostic_past_c7_runs_leaf_1_and_marks_the_result_as_not_counted() {
+        let (value, exit) = cpuid_leaf_case("diag-c7", 1, true);
+        assert_eq!(exit, 0, "{value:#}");
+        // The flag is visible, at the top level and in `stop`, and the result is not counted.
+        assert_eq!(value["diagnostic_past_c7"], true);
+        assert_eq!(value["acceptance"], "diagnostic_not_counted");
+        assert_eq!(value["schema_version"], 1);
+        let stop = &value["stop"];
+        assert_eq!(stop["diagnostic_past_c7"], true);
+        // The CPUID executed: no boundary, the DiagnosticV1 tuple of leaf 1 is in the registers.
+        assert_ne!(stop["exit_kind"], "cpuid_divergence", "{value:#}");
+        assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        assert_eq!(stop["gpr"]["rax"], "0x600");
+        assert_eq!(stop["gpr"]["rbx"], "0x100");
+        assert_eq!(stop["gpr"]["rcx"], "0x0");
+        assert_eq!(stop["gpr"]["rdx"], "0x0");
+        // CLI, MOV, CPUID retired (RIP+2) and the run went on to the next stop: the HLT, which
+        // the runner set does not admit.
+        assert_eq!(stop["retired"], 3, "{value:#}");
+        assert_eq!(stop["rip"], "0x1000208");
+        assert_eq!(stop["exit_kind"], "unsupported");
+        // Same members as without the flag.
+        assert_eq!(
+            stop["set_members"],
+            json!([
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
+                "popf_cpl0"
+            ])
+        );
+        // Leaf 0x80000001 as well.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x80, 0x0F, 0xA2, 0xF4];
+        let mut case = Case::new(
+            "diag-c7-ext",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.diagnostic_past_c7 = true;
+        let (value, _) = evaluate(&case.options);
+        assert_ne!(value["stop"]["exit_kind"], "cpuid_divergence", "{value:#}");
+        assert_eq!(value["stop"]["gpr"]["rax"], "0x0");
+    }
+
+    #[test]
+    fn without_the_flag_leaf_1_still_stops_at_c7_and_is_not_marked() {
+        let (value, exit) = cpuid_leaf_case("no-diag-c7", 1, false);
+        assert_eq!(exit, 0, "{value:#}");
+        assert_eq!(value["stop"]["exit_kind"], "cpuid_divergence");
+        assert_eq!(value["stop"]["diagnostic_past_c7"], false);
+        assert_eq!(value["stop"]["rip"], "0x1000206");
+        assert_eq!(value["stop"]["gpr"]["rax"], "0x1");
+        assert!(value.get("diagnostic_past_c7").is_none(), "{value:#}");
+        assert!(value.get("acceptance").is_none(), "{value:#}");
+    }
+
+    #[test]
+    fn diagnostic_past_c7_does_not_change_other_cpuid_leaves() {
+        // Leaf 0 (vendor "OpenDesktop"): the same registers with and without the flag.
+        let (plain, _) = cpuid_leaf_case("leaf0-plain", 0, false);
+        let (diag, _) = cpuid_leaf_case("leaf0-diag", 0, true);
+        assert_eq!(plain["stop"]["exit_kind"], diag["stop"]["exit_kind"]);
+        assert_eq!(plain["stop"]["gpr"], diag["stop"]["gpr"]);
+        assert_eq!(plain["stop"]["retired"], diag["stop"]["retired"]);
+        assert_eq!(plain["stop"]["set_members"], diag["stop"]["set_members"]);
+        assert_eq!(diag["stop"]["gpr"]["rbx"], "0x6e65704f");
+    }
+
+    #[test]
+    fn diagnostic_past_c7_needs_run_and_set_cpl0() {
+        let base = |extra: &[&str]| -> Vec<String> {
+            let mut args: Vec<String> = [
+                "--vmlinuz",
+                "k",
+                "--initramfs",
+                "i",
+                "--acpi-blob",
+                "a",
+                "--nonce",
+                "n",
+                "--expected-vmlinuz-sha256",
+                &"0".repeat(64),
+                "--expected-acpi-manifest-hash",
+                &"0".repeat(64),
+                "--expected-initramfs-sha256",
+                &"0".repeat(64),
+                "--ram-mib",
+                "128",
+                "--out",
+                "o",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            args
+        };
+        let ok = parse(&base(&[
+            "--run",
+            "--budget",
+            "1",
+            "--set-cpl0",
+            "--diagnostic-past-c7",
+        ]))
+        .unwrap();
+        assert!(ok.diagnostic_past_c7);
+        assert!(
+            !parse(&base(&["--run", "--budget", "1", "--set-cpl0"]))
+                .unwrap()
+                .diagnostic_past_c7
+        );
+        for bad in [
+            vec!["--diagnostic-past-c7"],
+            vec!["--run", "--budget", "1", "--diagnostic-past-c7"],
+            vec![
+                "--run",
+                "--budget",
+                "1",
+                "--set-cpl0",
+                "--diagnostic-past-c7",
+                "--diagnostic-past-c7",
+            ],
+        ] {
+            assert!(parse(&base(&bad)).is_err(), "{bad:?}");
+        }
+    }
+
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
     /// instruction runs. Run with `-- --ignored` on a machine that has `work/stage4`.
     #[test]
@@ -1437,6 +1619,7 @@ mod tests {
             out: String::new(),
             budget: None,
             set_cpl0: false,
+            diagnostic_past_c7: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1477,6 +1660,7 @@ mod tests {
             out: String::new(),
             budget: Some(1000),
             set_cpl0: false,
+            diagnostic_past_c7: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1524,6 +1708,7 @@ mod tests {
             out: String::new(),
             budget: Some(30_000_000),
             set_cpl0: true,
+            diagnostic_past_c7: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

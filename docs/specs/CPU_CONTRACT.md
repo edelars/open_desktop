@@ -21186,3 +21186,29 @@ GDT — исключение набора как у `LRETQ`, `state == before`.
 
 Тесты: `cpl0_profile_set::leave_*`; `long_decode::tests::leave_decodes_only_the_bare_form`;
 `linux_direct::tests::leave_runs_through_the_board_set`.
+
+### Диагностический режим за C7 (S4-38L7)
+
+Чекпоинт C7 (S4-38L4): `CPUID` листа 1 или 0x80000001 даёт честный стоп `cpuid_divergence`, потому что `DiagnosticV1`
+не является профилем целевого CPU. По решению D4 плана диагностическое продолжение за C7 разрешено только как opt-in
+и **результат НЕ засчитывается**.
+
+**Что делается.** Флаг раннера `--diagnostic-past-c7` (только вместе с `--run --set-cpl0`) выставляет
+`LinuxCpl0SetMembers::diagnostic_past_c7`. Граница `cpuid_divergence` отключается: на плате `run_linux_boot_cpl0_set`
+получает `cpuid_boundary = members.cpuid && !diagnostic_past_c7`, поэтому `CPUID` листов 1 и 0x80000001 исполняется
+набором как любой другой лист: ответ `DiagnosticV1` (лист 1: `EAX=0x600`, `EBX=0x100`, `ECX=EDX=0`; лист 0x80000001: все
+нули), RIP += 2, retired += 1, прогон продолжается до следующего стопа. Никаких «лучших» значений не подставляется,
+ядро не патчится, профиль `DiagnosticV1` и набор не менялись.
+
+**Пометка.** Запись остановки (`LinuxStopRecord.diagnostic_past_c7`, JSON `stop.diagnostic_past_c7`) — `true` при
+флаге, иначе `false`. В JSON раннера при флаге дополнительно верхний уровень `diagnostic_past_c7: true`,
+`acceptance: "diagnostic_not_counted"` и `diagnostic_note`; они ставятся до запуска, поэтому есть и в `run_failed`.
+Поля аддитивны, `schema_version` остаётся 1. `status` остаётся `loaded`; признак «не засчитывается» несёт `acceptance`.
+`set_members` и поведение остальных листов CPUID не меняются. Без члена `cpuid` флаг ничего не делает (`CPUID` остаётся
+`Unsupported`). Без флага поведение прежнее (стоп на C7).
+
+**Назначение.** Инвентаризация форм инструкций, которые ядро исполняет дальше C7, для этапа 2. Это не вклад в
+принятие этапа и не результат загрузки.
+
+Тесты: `linux_direct::tests::diagnostic_past_c7_*` (od-machine) и `linux_direct::tests::diagnostic_past_c7_*`,
+`without_the_flag_leaf_1_still_stops_at_c7_and_is_not_marked` (раннер).
