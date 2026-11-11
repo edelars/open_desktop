@@ -21533,3 +21533,13 @@ disp, 4 байта) по-прежнему даёт старые `MovFsLoad`/`Mov
 `paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_qword_load_forms_unsupported`;
 `linux_direct::tests::gs_load_after_wrmsr_gs_base_reads_guest_memory_at_base_plus_effective_address`,
 `fs_and_gs_loads_with_a_zero_base_read_at_the_effective_address`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7i-diagnostic-run.json`. Загрузка `65 4c 8b 25 dc 1a 51 00` и последующие инструкции проходят
+(retired 1137478548 → 1137478689, +141). Новая граница: RIP `0xffffffff83f25fd7`, байты `65 48 2b 05 29 70 4f 00`
+(`sub %gs:0x4f7029(%rip), %rax`, `2B /r` с GS-префиксом), `Unsupported { opcode: 0x2b }`, `set_exit_detail` =
+`Run(Unsupported { opcode: 43 })`, `exit_kind` = `unsupported`, retired = 1137478689. Регистры на остановке: RAX = 0,
+RBX = `0xffffffff83a03ee8`, RSP = `0xffffffff83a03e88`, RBP = `0xffffffff83a03ec0`, R12 = `0xffffffff83f25459`,
+R15 = `0x100000`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER
+`0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же. Следующий срез — `SUB r64, m64` с префиксом GS (RIP-relative)
+в наборе CPL0 (арифметика с FS/GS-префиксом; решение — по этой границе).
