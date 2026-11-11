@@ -1527,3 +1527,44 @@ fn paged_probe_rdtsc_lock_form_is_ud_in_base_profile() {
     assert_eq!(cpu, before);
     assert_eq!(calls, 0);
 }
+
+#[test]
+fn cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_paged_probe_profile() {
+    // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile treats the two spellings the same way (both
+    // are refused with opcode 0xe8 and without mutation).
+    for (prefixed, plain) in [
+        (
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ),
+        (
+            &[0x3e, 0xe8, 0x10, 0x00, 0x00, 0x00][..],
+            &[0xe8, 0x10, 0x00, 0x00, 0x00][..],
+        ),
+    ] {
+        let mut outcomes = Vec::new();
+        for bytes in [prefixed, plain] {
+            let mut memory = Memory::new(bytes);
+            let mut cpu = state();
+            cpu.gpr[Register::Rsp as usize] = DATA + 0x100;
+            let before = cpu.clone();
+            let mut pio = Pio::default();
+            let result = step(
+                &mut cpu,
+                &mut memory,
+                &mut pio,
+                context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xe8 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(cpu, before, "{bytes:02x?}");
+            assert_eq!((memory.reads, memory.writes), (0, 0));
+            outcomes.push(result.exit);
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
+    }
+}
