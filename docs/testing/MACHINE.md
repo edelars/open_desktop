@@ -1,5 +1,7 @@
 # Методика проверки машины: текущий срез
 
+Методика сбора evidence и критерии гостевых Linux-сценариев этапа 5 вынесены в [LINUX_STAND.md](LINUX_STAND.md). Документ ниже остаётся методикой ограниченных machine/CPU slices и сам по себе не подтверждает Linux guest workloads.
+
 S4-00a evidence capture 2026-11-05 сверяет binary hashes по
 [S2-40d](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md), фиксирует recovered
 Ubuntu 7.0.0-38.38 source/config hashes, совпадающие Build IDs и равенство 38

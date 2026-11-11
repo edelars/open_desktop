@@ -12,6 +12,18 @@
 
 ## Записи
 
+<a id="issue-076-s5-01-run-duration-inputs-missing"></a>
+
+### ISSUE-076 — S5-01: неизвестны inputs для повторяемой серии и soak duration
+
+- **Дата обнаружения:** 2026-11-11, при подготовке методики S5-01.
+- **Компонент:** методика этапа 5, критерии S5-15/S5-16; зависимости от `S4-39`, `S5-10`, `S5-11`, `S5-14`.
+- **Владелец:** Stage 5; входы Linux userspace зависят от Stage 4/S4-39, workload — от сценариев этапа 5.
+- **Статус:** открыта; методика и проекция до исторической C5 checkpoint записаны, но числовые `N` и `D_soak_estimate` не определены и не являются acceptance criteria.
+- **Основание и последствия:** [S4-13](plans/STAGE_4.md#s4-13-выбрать-простой-программный-tlb-по-замерам) измерил 200,000,000 retired instructions за 554 s user CPU (runner evidence: [s4-13-fetch-cache-200m-run.json](reports/data/stage4/s4-13-fetch-cache-200m-run.json)), то есть `R = 200,000,000 / 554 = 361,010.8303` retired instructions/user-CPU-s. Сохранённые JSON и строка отчёта не содержат host/build для этого замера; конфигурация неизвестна, и rate не приписывается одной из машин стенда. C5 1,137,474,216 — историческая checkpoint; `I_C5_historical/R = 3,150.8036` user-CPU-s (примерно 52 min 31 s) — только проекция при этой rate, не wall time и не completed Linux boot. Stage 4 позднее достиг C7, а диагностический S4-38L7w (не засчитывается) достиг retired 1,185,015,387 и остановился на `IN AL, DX` ([план этапа 4](plans/STAGE_4.md), [evidence](reports/data/stage4/s4-38l7w-diagnostic-run.json)). Отдельный release sample сообщает ≈2.8M instr/s на 1.1B run; это иной прогон и профиль, не смешиваемый с S4-13 rate. `S4-39` остаётся открытым, поэтому фактические `I_boot`/`W_boot` до гостевого success marker отсутствуют. Сценарии C/D/G ещё не имеют измеренного `I_cycle`/`W_cycle`, и в документах стенда не задан целевой `B_soak`. Без этих входов формулы `N = floor(B_series/W_boot)` и `D_soak_estimate = ceil(B_soak/W_cycle)*W_cycle` не дают защищаемых значений; произвольные числа нарушили бы S5-01 и не доказывали бы S5-15/S5-16.
+- **Условия и границы:** reduced checkpoint 200,000,000 instructions соответствует 554 s user CPU на измеренном S4-13 profile; он может проверить bounded diagnostic evidence path, но не завершает Linux boot, не удовлетворяет repeatability и не является soak. Основной Apple M3 Max/macOS и физический Intel Mac mini/Ubuntu — разные machines, их времена не смешиваются. Estimate `D_soak_estimate` не является фактическим elapsed: time gate фиксирует фактические завершённые cycles и elapsed после достижения `elapsed >= B_soak`.
+- **Следующий шаг:** после закрытия S4-39 определить success marker и измерить `I_boot` и wall `W_boot` на зафиксированном host/build; после готовности C/D/G измерить instruction count и wall time одной полной mixed cycle; зафиксировать обоснованный series/soak budget, затем вычислить `N` и `D_soak_estimate`. При принятом S5-16 time gate останавливается после текущего цикла при `elapsed >= B_soak`, с записью фактических cycles и elapsed. До этих measurements S5-15/S5-16 остаются blocked/incomplete; не переносить сюда release/D3 budgets другого профиля и не называть `user CPU` wall time.
+
 <a id="issue-075-s3-56-historical-corpus-comparability"></a>
 
 ### ISSUE-075 — S3-56: исторические cold и warm измерения используют разные корпуса

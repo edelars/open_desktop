@@ -1,0 +1,113 @@
+# Методика стенда Linux (этап 5)
+
+Статус: **методика подготовлена, ожидает ревью; S5-01 пока неполон.** Срез задаёт формат и критерии будущих доказательств, но не сообщает о принятой загрузке или гостевом сценарии. Число повторов S5-15 и длительность S5-16 пока заблокированы недостающими измеренными входами; см. [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing).
+
+Связанные документы: [план этапа 5](../plans/STAGE_5.md), [методика машины](MACHINE.md), [инвентаризация стенда](STAND.md), [базовая методика измерений](BENCHMARKS.md), [отчёт этапа 5](../reports/STAGE_5_REPORT.md).
+
+## 1. Область и стенд
+
+Эта методика описывает сбор evidence для Linux guest workloads этапа 5: уровни unit/contract/scenario/repeatability/soak/measurement, формат одного прогона, правила сравнения результатов и границы временных оценок. Она не утверждает, что сценарий выполнен, и не переносит проверки с одного host или build на другой.
+
+По [инвентаризации стенда](STAND.md#основной-host) основной host — MacBook Pro с Apple M3 Max под macOS 26.7.1, arm64. Физический x86 oracle — отдельный Mac mini с Intel Core i5-3210M под Ubuntu 25.10. Это разные машины, ОС и цели проверки: результаты нельзя объединять в одну временную baseline. Каждая запись evidence фиксирует реальный host, ОС, архитектуру CPU, сборку runner, исходную ревизию и параметры guest machine.
+
+До готовности полного Linux userspace `S4-39` guest-scenario уровень остаётся заблокированным. Измерение ISA-разрыва `S5-21` отдельно определяет, какие workloads могут быть запущены. Предварительный runner load/diagnostic stop не является успешной загрузкой или завершением гостевого сценария.
+
+Сырые runner JSON, UART logs и гостевые artifacts хранятся в игнорируемом `work/stage5/<run_id>/`; в Git попадают только компактный отчёт и необходимые малые manifests. Evidence не должен содержать секреты, серийные номера, учётные данные или пользовательские файлы.
+
+## 2. Шесть уровней доказательств
+
+| Уровень | Что проверяется | Условие pass |
+|---|---|---|
+| Unit | Локальные unit tests `od-host`, `od-storage`, `od-machine` и их отрицательные ветви | Все применимые tests проходят; ожидаемые отказы проверяются конкретными значениями и отсутствием запрещённых побочных эффектов. Каркас или тест отсутствующей функции не считается pass. |
+| Контрактные проверки диска | Host backend и профиль NVMe без гостя: write/readback, write-through/durability contract, close/reopen, повторный read, FaultBackend и исчерпание места | Каждый вызов имеет ожидаемый completion/error; повторное открытие возвращает точные bytes; failure не превращён в успешный ack. Эти проверки сами по себе не доказывают Linux driver или guest filesystem. |
+| Один гостевой сценарий | Один run ID и nonce, ожидаемые guest markers, machine observations, UART transcript и хеши файлов | Гость запущен, точная последовательность markers и сценарные assertions совпали, input/guest/host hashes проверены; `linux-direct.status = loaded` отдельно не считается гостевым pass. |
+| Повторяемость | Один и тот же сценарий и конфигурация в N отдельных прогонах; nonce новый в каждом прогоне | Серия завершена с заранее выведенным N; все semantic fields совпали или каждое различие заранее классифицировано и объяснено. Неудачные прогоны не усредняются и не отбрасываются. Пока N заблокировано; формула в §5. |
+| Длительный прогон | Смешанный цикл сценариев C, D и G с контролем данных и ресурсов процесса | Прогон достигает заранее обоснованной длительности; hashes проверены до, во время и после; каждый рост памяти/дескрипторов измерен и укладывается в заранее заданный предел либо записан как дефект. Сейчас цикл и целевая длительность не измерены. |
+| Измерения | Скорость/задержка на явно описанном workload и одной host/build конфигурации | Зафиксированы interpreter/JIT profile, cache mode, workload и host/build. Отдельно записаны disjoint числа retired instructions для interpreter, JIT и fallback; доля fallback вычислена относительно общего числа либо отмечена `not_applicable` с причиной. Их сумма согласуется с общим числом по контракту счётчиков; повторы и user-CPU/wall time приведены раздельно. Пропущенные счётчики дают `blocked`, а не успешный замер. Само измерение не означает ускорение или поддержку. |
+
+Для каждой операции применимы одновременно уровни, относящиеся к её границам. Например, успешный гостевой сценарий с диском требует предварительно проверенного host disk contract, но положительный unit test не доказывает guest discovery или filesystem behavior.
+
+## 3. Запись одного прогона
+
+Одна запись связывает run ID, входы, фактически запущенную конфигурацию и результат. `run_id` уникален для одного запуска; `series_id` при наличии связывает несколько таких записей серии. `nonce` уникален для гостевого прогона и должен быть виден в guest marker. Для `failed`, `not_run` и `blocked` поле `reason` обязательно.
+
+| Поле записи | Источник и требование |
+|---|---|
+| `run_id`, `series_id`, `scenario_id`, `nonce` | Orchestrator/evidence manifest. `nonce` точно соответствует `--nonce` и проверяется в гостевом выводе. Не помещать секреты. |
+| `host` | Host name/model, ОС/version, архитектура, CPU, RAM/page size если доступны, Rust/toolchain, runner build/profile, git revision и dirty state. Не переносить данные M3 Max на Mac mini или наоборот. |
+| `configuration` | Профиль board, RAM MiB, command line, ACPI manifest hash и остальные явно используемые параметры сценария. Сохранять фактические значения из `linux-direct`, а не только ожидаемые. |
+| `artifacts` | Path и SHA-256 kernel, initramfs, ACPI blob/manifest, guest script/rootfs и disk image до запуска, где применимо. Runner JSON сохраняется без редактирования и хешируется отдельно. |
+| `runner` | Команда и аргументы, код завершения, путь и SHA-256 JSON от `--out`; ключевые наблюдения: `status`, `guest_started`, `retired`, `entry`, `stop.exit_kind`, `stop.rip`, registers, `stop.com1_hex/text`, а также `inputs`, `memory_sha256`, `cmdline_in_memory_matches`, `acpi` и `e820`. У runner нет отдельных полей для run ID, guest markers, полного host inventory или wall/user-CPU elapsed; они записываются в manifest вокруг сырого JSON. |
+| `execution_measurement` | Interpreter/JIT/mixed profile и конфигурация cache. Для измерительного сценария: общее число retired instructions и раздельные, неперекрывающиеся `interpreter_retired`, `jit_retired`, `fallback_retired`; `fallback_share = fallback_retired / total_retired` либо `not_applicable` с причиной, когда fallback невозможен или не используется. Записать доступные elapsed значения отдельно. Если профиль или счётчики не наблюдаются, outcome не может быть `passed` для measurement level. |
+| `guest_markers` | Упорядоченные строки гостя с run ID/nonce и ожидаемыми scenario markers; приложить путь и SHA-256 исходного UART transcript. Runner COM1 bytes в JSON не заменяют полный transcript. |
+| `guest_files` / `host_verification` | Для каждого проверяемого файла: guest path, byte length, guest SHA-256, способ получения тех же bytes host-стороной, host byte length/SHA-256 и `matches`. Если host не может получить тот же byte stream, результат — `blocked`, а не inferred pass. |
+| `timing` | Отдельно user-CPU seconds и wall elapsed, способ измерения, start/end и build. Текущий `linux-direct` JSON не записывает эти elapsed values. |
+| `outcome` | Ровно `passed`, `failed`, `not_run` или `blocked`; для последних трёх требуется проверяемая причина и ссылка на точное наблюдение/предусловие. Это поле manifest, а не `linux-direct.status`. |
+
+`linux-direct` уже пишет JSON в `--out` и stdout. Успешная загрузка возвращает top-level `status: "loaded"`; ранний отказ — `status: "refused"` с `error.code`, `error.stage`, `error.detail`. Запуск гостя дополнительно отражается в `guest_started` и `retired`; `--run` добавляет `stop`. Входные hashes находятся в `inputs.vmlinuz`, `inputs.initramfs`, `inputs.acpi_blob`; machine-side readback kernel/initramfs — в `memory_sha256`. `ram_mib`, `cmdline`, `acpi.manifest_hash`, `e820`, `entry` и `stop` являются источником machine observations. `status: loaded` означает успешную загрузку образа в board, но не успешное завершение guest workload.
+
+Текущий `od-runner --compare-results` принимает fixture `--case` и два `RunResult`; raw JSON `linux-direct` не является таким fixture result. Этап `S5-07` должен расширить/связать существующий путь сравнения для канонических Stage 5 observations, сохранив прежнюю fixture-семантику. Не запускать raw `linux-direct` JSON через текущую fixture-команду и не утверждать, что сравнение уже реализовано.
+
+## 4. Расхождения, pass/fail и целостность
+
+До сравнения фиксируются неизменные входы: artifact hashes, runner/build revision, board profile, RAM, command line, scenario script и профиль CPU. В одной series намеренно различаются `run_id`, `nonce`, пути каталога evidence и host wall-time/resource observations. Если guest marker или создаваемый файл включает nonce, ожидаемое различие объявляется заранее и проверяется внутри соответствующего прогона; его нельзя молча исключать из сравнения.
+
+При одинаковых входах необъяснённое расхождение — любое отличие в status/guest_started, ожидаемом exit/stop, retired count, semantic machine state, guest markers, ожидаемых file bytes/hashes или повторно читаемых durable data, если оно не перечислено как допустимое для данного сценария. Каждому иному отличию нужны причина и evidence; иначе прогон `failed`, а известный дефект записывается в `KNOWN_ISSUES.md`. Нельзя вводить допуск «в пределах разумного».
+
+Повреждение данных подтверждено, если длина/хеш проверяемого файла не совпадает с ожидаемым значением, гостевой и host SHA-256 одного и того же byte stream расходятся, либо последующий ожидаемо clean mount сообщает, что нужна filesystem recovery. До/после теста сравниваются именно одинаковые файлы по их bytes. SHA-256 файла из гостя нельзя сравнивать с SHA-256 всего raw disk image: это разные объекты. Изменение whole-image hash после ожидаемых guest writes само по себе не доказывает порчу или целостность файла.
+
+При `VWC = 0` успешный write проверяется согласно write-through контракту. Остановка процесса и host-side fault injection не называются доказательством потери питания; power-loss claim остаётся отдельной областью этапа 9/S9-39.
+
+## 5. Временные оценки, повторы и длительный прогон
+
+### Измеренный темп и текущий frontier
+
+По [плану этапа 4, записи S4-13](../plans/STAGE_4.md#s4-13-выбрать-простой-программный-tlb-по-замерам) 200,000,000 retired instructions заняли 554 seconds **user CPU** на ускоренном профиле; исходный runner result — [S4-13 200M evidence](../reports/data/stage4/s4-13-fetch-cache-200m-run.json). Сохранённые JSON и строка отчёта не записывают host или build для этого замера, поэтому эта конфигурация неизвестна; rate не приписывается Apple M3 Max/macOS runner или физическому Intel Mac mini/Ubuntu oracle. Воспроизводимая арифметика для отдельной исторической контрольной точки C5:
+
+```text
+R = 200,000,000 instructions / 554 user-CPU-s
+  = 361,010.8303 retired instructions per user-CPU-second
+
+I_C5_historical = 1,137,474,216 retired instructions
+T_C5_projection_at_R = I_C5_historical / R
+                     = 3,150.8036 user-CPU-s
+                     = 52 min 30.8 s user CPU (about 52 min 31 s)
+```
+
+Число C5 — **историческая** baseline checkpoint, не текущий frontier. Stage 4 позднее достиг C7 на настоящем ядре; затем диагностический S4-38L7w прогон (DiagnosticV1, не засчитывается) достиг retired 1,185,015,387 и остановился на `IN AL, DX` ([план S4-38L7w](../plans/STAGE_4.md) и [raw evidence](../reports/data/stage4/s4-38l7w-diagnostic-run.json)). Это diagnostic progress, не подтверждённая загрузка Linux userspace. Отдельный release sample в Stage 4 сообщает около 2.8M instructions/s на 1.1B run; это другая сборка/измерение и его нельзя смешивать с S4-13 user-CPU rate или использовать как замену измерению целевого workload. C5 projection выше — только user-CPU estimate на historical checkpoint, не измеренный wall time и не время завершённой загрузки. Для масштаба уменьшенного diagnostic profile checkpoint 200,000,000 retired instructions соответствует 554 user-CPU-s (9 min 14 s). Он проверяет только bounded diagnostic evidence; **не** удовлетворяет S5-15, не подтверждает полный boot и не является soak для S5-16.
+
+Число одной завершённой загрузки не выводится из historical C5 checkpoint или более позднего diagnostic run. После подтверждения целевого guest path нужно измерить `I_boot` до заранее заданного гостевого success marker и wall time `W_boot` в выбранной host/build конфигурации. `I_boot / R` даёт лишь user-CPU estimate при сопоставимой скорости; runner обязан отдельно записать фактический wall elapsed.
+
+### S5-15: число повторов
+
+Пусть `B_series` — выделенный budget wall time серии, а `W_boot` — измеренный wall time одной и той же завершённой S5-15 загрузки при зафиксированных host/build/guest inputs. Тогда:
+
+```text
+N = floor(B_series / W_boot), with N >= 2 for a comparison
+```
+
+На дату этого документа числовой N не назначается: `I_boot`/`W_boot` отсутствуют, потому что S4-39 ещё не подтвердил целевой userspace marker, а budget серии не задан в планах стенда. Значит, серия S5-15 остаётся blocked/incomplete; сокращать N до произвольного числа нельзя.
+
+### S5-16: длительность soak
+
+Сначала S5-10/S5-11/S5-14 фиксируют повторяемый mixed C+D+G cycle. После этого измеряются `I_cycle` (retired guest instructions) и `W_cycle` (wall time одной полной итерации) на выбранных host/build/inputs. Отдельно должен быть задан целевой soak budget `B_soak` с обоснованием и временным окном стенда. Тогда допустимо вычислить число циклов, покрывающее budget, и фактическую продолжительность:
+
+```text
+K_estimate = ceil(B_soak / W_cycle)
+D_soak_estimate = K_estimate * W_cycle
+T_cycle_user_estimate = I_cycle / R   # только user-CPU projection, не wall time
+```
+
+`K_estimate` и `D_soak_estimate` — плановые оценки, а не фактические elapsed. Во время принятого soak time gate проверяет фактический wall elapsed и прекращает прогон после завершения текущего цикла, когда `elapsed >= B_soak`; записываются фактические `K_actual`, `elapsed_actual` и завершённые/незавершённые циклы. Они могут отличаться от estimate из-за разброса `W_cycle`; estimate нельзя выдавать за runtime evidence.
+
+Числовые `I_cycle`, `W_cycle`, `B_soak`, `K_estimate` и `D_soak_estimate` отсутствуют: сценарии C/D/G ещё не готовы, target budget не задан. Поэтому длительность S5-16 остаётся blocked/incomplete до измерения и обоснования этих входов; длительность нельзя назначать как круглое «overnight» число.
+
+Точный блокер и next step занесены в [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing). Его устранение требует результата S4-39, измеренного S5-15 guest path и отдельно заданного/измеренного C+D+G cycle + soak budget. Предварительные числа не объявляются приёмкой.
+
+## 6. Сопоставление guest и host hashes
+
+Для input artifacts host фиксирует SHA-256 файла до запуска. `linux-direct` уже пишет фактические hashes `vmlinuz`, initramfs и ACPI blob; `memory_sha256` и поля `*_matches_file` подтверждают, что kernel protected-mode bytes и initrd в guest memory совпадают с прочитанными host inputs. Эти поля подтверждают load/readback boundary и не заменяют guest workload.
+
+Для guest-created file гость после завершения записи сообщает path, exact byte length и SHA-256 файла с конкретным nonce/run ID. После clean shutdown и повторного открытия storage host получает те же file bytes документированным способом, считает длину и SHA-256 независимо, затем сравнивает pair `(length, digest)`. Метод получения guest file на host и путь к сырым bytes записываются в manifest. Если такого пути пока нет, результат не подменяется сравнением всего disk image и остаётся `blocked` до предусмотренного этапом канала/инструмента.
+
+Disk-image before/after hashes могут быть полезным дополнительным наблюдением для точного RAW artifact, но guest file SHA-256 относится к одному файлу внутри filesystem. Не выводить равенство или целостность гостевого файла из сравнения этих разных уровней.

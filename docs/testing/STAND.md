@@ -2,6 +2,8 @@
 
 Состояние на 22 октября 2026 года. Это инвентаризация доступного окружения, а не подтверждение прохождения тестов.
 
+Методика Linux guest scenarios, run evidence, сравнения результатов и временных оценок этапа 5 находится в [LINUX_STAND.md](LINUX_STAND.md). Основной host и физический x86 oracle ниже описаны отдельно; их результаты не объединяются.
+
 ## S2-09: Linux native v2 проверен на Mac mini
 
 Подготовлены native v2 ptrace path, Python harness и три hardware-layout
