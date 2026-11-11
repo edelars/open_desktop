@@ -661,7 +661,9 @@ pub struct LinuxCpl0SetMembers {
     /// `with_rdtsc`: the source is the board clock, which also queues the 1 us RDTSC tick like
     /// `run_boot`; admitted only under the board's Linux profile.
     pub rdtsc: bool,
-    /// `with_msr(EferReadOnlyV1(board EFER))`.
+    /// `with_msr(EferReadOnlyV1(board EFER))` (S4-38L7e: in [`Self::linux_default`]): `RDMSR` of
+    /// IA32_EFER at CPL0 gives the board EFER (`EDX:EAX`); `WRMSR` of it and every other MSR
+    /// stay `Unsupported` (the EFER value is not changed by the run).
     pub msr: bool,
     /// `with_msr_fs_gs_base` (S4-38L6b): `WRMSR`/`RDMSR` of IA32_FS_BASE and IA32_GS_BASE at
     /// CPL0 (`EDX:EAX`, canonical 48-bit, stored in the CPU state); no other MSR. Independent of
@@ -707,12 +709,13 @@ impl LinuxCpl0SetMembers {
     }
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
-    /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50) and the FS/GS
-    /// base MSRs (S4-38L6b).
+    /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
+    /// base MSRs (S4-38L6b) and the read-only EFER (S4-38L7e).
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
             popf_cpl0: true,
+            msr: true,
             msr_fs_gs_base: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
@@ -2918,6 +2921,85 @@ mod tests {
         assert!(LinuxCpl0SetMembers::linux_default().msr_fs_gs_base);
     }
 
+    // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
+
+    #[test]
+    fn rdmsr_efer_runs_through_the_board_set_and_is_gated_by_its_member() {
+        // MOV ECX,0xC0000080; RDMSR; HLT (no CLI: the first stop is the RDMSR itself).
+        let code = [0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32, 0xF4];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 3, "MOV, RDMSR, HLT");
+        assert_eq!(record.gpr[Register::Rax as usize], 0xD00);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0080);
+        assert!(
+            record
+                .set_members
+                .contains(&format!("msr:{:?}", MsrProfile::EferReadOnlyV1(0xD00)))
+        );
+        // The EFER of the board model is unchanged by the read.
+        assert_eq!(boot.board.efer(), 0xD00);
+        assert!(LinuxCpl0SetMembers::linux_default().msr);
+        assert!(!LinuxCpl0SetMembers::minimal().msr);
+
+        // RIP advances by 2 over the RDMSR and RFLAGS is not touched: stop right after it.
+        let rdmsr_only = [0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32];
+        let (mut boot, file) = boot_with_entry(&rdmsr_only);
+        let rip0 = boot.board.state().rip;
+        let flags0 = boot.board.state().rflags;
+        let record = run_set_facade(&mut boot, &file, 2, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 2, "{record:?}");
+        assert_eq!(record.gpr[Register::Rax as usize], 0xD00);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.rip, rip0 + 7);
+        assert_eq!(record.rflags, flags0);
+
+        // WRMSR of EFER is Unsupported without mutation: MOV ECX; XOR EAX; XOR EDX; WRMSR.
+        let wr = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let (mut boot, file) = boot_with_entry(&wr);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(boot.board.efer(), 0xD00);
+
+        // Another MSR (STAR) is Unsupported at RDMSR.
+        let star = [0xB9, 0x81, 0x00, 0x00, 0xC0, 0x0F, 0x32];
+        let (mut boot, file) = boot_with_entry(&star);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+
+        // `minimal()` has no member: RDMSR EFER is the stop.
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+    }
+
     // ---- S4-38L6c: MOV Sreg, AX with a nonzero selector through the board facade ----
 
     #[test]
@@ -3000,6 +3082,7 @@ mod tests {
             LinuxCpl0SetMembers {
                 cpuid: true,
                 popf_cpl0: true,
+                msr: true,
                 msr_fs_gs_base: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
@@ -3014,6 +3097,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "popf_cpl0"
             ]
@@ -3098,6 +3182,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
                 "popf_cpl0"
@@ -3266,6 +3351,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
                 "popf_cpl0"

@@ -6869,6 +6869,76 @@ fn gs_base_member_keeps_the_selected_efer_profile() {
     assert_eq!(state.gs_base, 0);
 }
 
+// ---- S4-38L7e: RDMSR IA32_EFER in the set under the set CR4 policy (PSE/PGE) ----
+
+/// Like `run_msr_base`, but with an explicit CR4 and CR0 in the state.
+fn run_efer_with_cr(
+    set: &Cpl0ProfileSet<'_>,
+    code: &[u8],
+    rcx: u64,
+    cr4: u64,
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let mut state = board_state();
+    state.cr4 = Some(cr4);
+    state.gpr[1] = rcx;
+    state.gpr[0] = 0x1111_2222_3333_4444;
+    state.gpr[2] = 0x5555_6666_7777_8888;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap();
+    (state, before, result)
+}
+
+#[test]
+fn rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base().with_msr(&efer).with_msr_fs_gs_base();
+    // CR4 of the Linux board after the kernel's PSE and PGE writes: PAE | PSE | PGE.
+    for cr4 in [
+        CR4_BASE,
+        CR4_BASE | (1 << 4),
+        CR4_BASE | (1 << 4) | (1 << 7),
+    ] {
+        let (state, before, result) = run_efer_with_cr(&set, &[0x0f, 0x32], 0xc000_0080, cr4);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gpr[0], 0xd00);
+        assert_eq!(state.gpr[2], 0);
+        assert_eq!(state.rip, before.rip + 2);
+        let mut expected = before.clone();
+        expected.gpr[0] = 0xd00;
+        expected.gpr[2] = 0;
+        expected.rip += 2;
+        assert_eq!(state, expected, "only RAX, RDX and RIP change");
+    }
+    // WRMSR of EFER and other MSRs stay Unsupported without mutation.
+    for (code, rcx) in [
+        ([0x0f, 0x30], 0xc000_0080u64),
+        ([0x0f, 0x32], 0xc000_0081),
+        ([0x0f, 0x32], 0x1b),
+        ([0x0f, 0x32], 0x174),
+        ([0x0f, 0x30], 0xc000_0081),
+    ] {
+        let (state, before, result) =
+            run_efer_with_cr(&set, &code, rcx, CR4_BASE | (1 << 4) | (1 << 7));
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: code[1] },
+            "rcx={rcx:#x}"
+        );
+        assert_eq!(state, before);
+    }
+}
+
 // ---- S4-38L6c: MOV Sreg, AX with a nonzero GDT selector (checks per SDM, from memory) ----
 
 /// Data, writable, DPL0, present, A = 0, base 0x1234_5678, 4 KiB granularity, limit 0xfffff.

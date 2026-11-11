@@ -1419,6 +1419,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "popf_cpl0"
             ])
@@ -1508,6 +1509,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "popf_cpl0"
             ])
@@ -1792,6 +1794,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "popf_cpl0"
             ])

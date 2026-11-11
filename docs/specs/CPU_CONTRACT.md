@@ -21311,3 +21311,33 @@ snapshot-only бит, иначе плата не вошла бы повторн�
 `mov_cr4_r64_accepts_exactly_the_policy_masks`; `page_walk::tests::cpu_state_snapshot_admits_cr4_pge_as_a_snapshot_only_bit`;
 `linux_direct::tests::set_facade_mov_cr4_rcx_with_pge_retires_and_the_board_reenters`. Из тестов политики убрано «PGE —
 вне политики» (прежние значения `0xa0` заменены на `0x1020`, бит 7 исключён из списка запрещённых битов).
+
+### RDMSR IA32_EFER (только чтение) в наборе платы (S4-38L7e)
+
+Диагностический прогон за C7 (`--diagnostic-past-c7`, не засчитывается) после записей CR4 доходит до `RDMSR` (`0F 32`,
+RIP `0xffffffff8139c1b4`) с ECX = `0xC0000080` (IA32_EFER) и останавливался на `Unsupported { opcode: 0x32 }`: набор платы
+не содержал члена чтения EFER.
+
+**Выбранный член (вариант А).** Существующий член `LinuxCpl0SetMembers.msr` (`with_msr(MsrProfile::EferReadOnlyV1(EFER платы))`)
+был выключен и не использовался ни для чего другого, поэтому отдельный член не нужен: `msr: true` в
+`LinuxCpl0SetMembers::linux_default()`; `minimal()` остаётся без члена. Значение — `boot.board.efer()` (на плате `0xD00` =
+LME | LMA | NXE). Имя в `set_members`: `msr:EferReadOnlyV1(3328)` (перед `msr:fs_gs_base`). Профиль EFER и
+`msr_fs_gs_base` сосуществуют: выбранный профиль сохраняет свои индексы, FS/GS base добавляются для двух своих индексов
+(S4-38L6b, без изменений).
+
+**Гарантии (CPL0, Long64, без префиксов, длина 2).** `RDMSR` с ECX = `0xC0000080`: EDX:EAX = EFER модели
+(`0x0000_0000_0000_0D00`: EDX = 0, EAX = `0xD00`), RIP + 2, retired + 1; RFLAGS и все регистры, кроме RAX/RDX, не меняются.
+`WRMSR` с ECX = `0xC0000080` — `Unsupported { opcode: 0x30 }` без мутации (запись EFER — отдельный срез). Любой другой MSR
+(`0x1B`, `0x174`, `0xC0000081` STAR, ...) — `Unsupported` без мутации. EFER в модели не меняется этим срезом.
+
+**Изменение в od-isa.** Ветка `RDMSR`/`WRMSR` для `EferReadOnlyV1` требовала, чтобы CR0/CR4 проходили предикаты
+`Cr0Profile/Cr4Profile::FpInitLong64V1` (CR4 без PSE/PGE). Под политикой набора CPL0 (`control_policy`) CR0/CR4 уже
+допущены политикой (с PSE и PGE, S4-38L7c/d), поэтому проверка FpInit теперь действует только вне набора; режим Long64 и
+остальные проверки не менялись. Без этого `RDMSR` EFER на плате после записи CR4 = `0xb0` оставался бы `Unsupported`.
+
+**Не делалось.** Политика EFER в walker (изменение длинного режима, NXE/LME при записи), CR0/CR3/CR4, `PUSHFQ`, CPUID,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone`;
+`linux_direct::tests::rdmsr_efer_runs_through_the_board_set_and_is_gated_by_its_member`; обновлены ожидания `set_members`
+в `linux_default_set_is_cli_cr3_cpuid_and_popf` и тестах runner.
