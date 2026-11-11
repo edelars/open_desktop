@@ -3120,6 +3120,74 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7j: FS/GS-based qword SUB through the board facade ----
+
+    #[test]
+    fn gs_sub_after_wrmsr_gs_base_subtracts_guest_memory_at_base_plus_effective_address() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,58;
+        // MOV [BASE+0x10],RAX (plain, no override); MOV R12,100; SUB %gs:disp(%rip),%r12 landing
+        // on effective address 0x10 (the Linux boundary form `65 4c 2b 25`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(58));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x49, 0xBC]);
+        code.extend(100u64.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x4C, 0x2B, 0x25]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, MOV r12, SUB, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(boot.board.state().gs_base, BASE);
+        assert_eq!(boot.board.state().gpr[od_isa::Register::R12 as usize], 42);
+    }
+
+    #[test]
+    fn fs_and_gs_sub_with_a_zero_base_subtract_at_the_effective_address() {
+        // MOV RAX,5; MOV [0x0200_0020],RAX; MOV RAX,100; SUB %gs:0x0200_0020,%rax;
+        // SUB %fs:0x0200_0020,%rax; HLT (no CLI).
+        let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend(mov_rax_imm64(100));
+        code.extend([0x65, 0x48, 0x2B, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x64, 0x48, 0x2B, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6);
+        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 90);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
