@@ -52,6 +52,7 @@ use od_isa::execute::{
 };
 use od_isa::msr::MsrProfile;
 use od_isa::{CliProfile, HaltProfile, Register};
+use std::cell::Cell;
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -465,6 +466,9 @@ pub struct LinuxStopRecord {
     pub cr3: u64,
     pub cr4: Option<u64>,
     pub efer: u64,
+    /// The guest-visible IA32_EFER (`efer` plus the `SCE` a guest `WRMSR` may have set,
+    /// S4-38L7f); `efer` stays the walker's EFER.
+    pub guest_efer: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -606,6 +610,7 @@ fn stop_record(
         cr3: boot.board.cr3(),
         cr4: state.cr4,
         efer: boot.board.efer(),
+        guest_efer: boot.board.guest_efer(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -751,7 +756,11 @@ pub fn run_linux_direct_board_set(
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let cli = CliProfile::NonPviLong64V1;
     let cpuid = CpuidProfile::DiagnosticV1;
+    // The profile only names the member and seeds nothing under the cell, so it carries the
+    // constant board EFER: `set_members` keeps `msr:EferReadOnlyV1(3328)` on every run.
     let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
+    // S4-38L7f: the guest-visible EFER; the set writes it, the board keeps it between runs.
+    let efer_cell = Cell::new(boot.board.guest_efer());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -768,7 +777,7 @@ pub fn run_linux_direct_board_set(
         names.push("rdtsc".into());
     }
     if members.msr {
-        set = set.with_msr(&msr);
+        set = set.with_msr(&msr).with_msr_efer_write(&efer_cell);
         names.push(format!("msr:{msr:?}"));
     }
     if members.msr_fs_gs_base {
@@ -787,19 +796,19 @@ pub fn run_linux_direct_board_set(
         set = set.with_popf_cpl0();
         names.push("popf_cpl0".into());
     }
-    let report = boot
-        .board
-        .run_linux_boot_cpl0_set(
-            instruction_budget,
-            &set,
-            members.cpuid && !members.diagnostic_past_c7,
-            members.fetch_cache,
-        )
-        .map_err(|failure| {
-            let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
-            error.retired = Some(failure.retired);
-            error
-        })?;
+    let result = boot.board.run_linux_boot_cpl0_set(
+        instruction_budget,
+        &set,
+        members.cpuid && !members.diagnostic_past_c7,
+        members.fetch_cache,
+    );
+    // The EFER the guest left stays whatever way the run ended.
+    boot.board.set_guest_efer(efer_cell.get());
+    let report = result.map_err(|failure| {
+        let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
+        error.retired = Some(failure.retired);
+        error
+    })?;
     Ok(stop_record(
         boot,
         input,
@@ -2998,6 +3007,156 @@ mod tests {
             "{record:?}"
         );
         assert_eq!(record.retired, 1);
+    }
+
+    // ---- S4-38L7f: WRMSR IA32_EFER (SCE) and CR0.AM through the board facade ----
+
+    #[test]
+    fn wrmsr_efer_sce_runs_through_the_board_set_and_rdmsr_reads_it_back() {
+        // MOV ECX,0xC0000080; MOV EAX,0xD01; XOR EDX,EDX; WRMSR; XOR EAX,EAX; RDMSR; HLT.
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x0D, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0x31, 0xC0, 0x0F, 0x32, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_efer(), 0xD00);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "MOV, MOV, XOR, WRMSR, XOR, RDMSR, HLT");
+        assert_eq!(record.gpr[Register::Rax as usize], 0xD01);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0080);
+        // The guest-visible EFER carries SCE; the walker EFER (LME|LMA|NXE) is unchanged.
+        assert_eq!(record.guest_efer, 0xD01);
+        assert_eq!(boot.board.guest_efer(), 0xD01);
+        assert_eq!(record.efer, 0xD00);
+        assert_eq!(boot.board.efer(), 0xD00);
+
+        // The value survives into the next run of the same board: RDMSR starts from 0xD01.
+        let rdmsr = [0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32];
+        let (mut boot, file) = boot_with_entry(&rdmsr);
+        boot.board.set_guest_efer(0xD01);
+        let record = run_set_facade(&mut boot, &file, 2, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 2, "{record:?}");
+        assert_eq!(record.gpr[Register::Rax as usize], 0xD01);
+
+        // Without the msr member WRMSR is the stop (after MOV, MOV, XOR) and EFER is unchanged.
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(boot.board.guest_efer(), 0xD00);
+    }
+
+    #[test]
+    fn guest_efer_chains_between_two_runs_on_one_board_and_the_member_name_is_stable() {
+        // MOV ECX,0xC0000080; MOV EAX,0xD01; XOR EDX,EDX; WRMSR | XOR EAX,EAX; RDMSR; HLT.
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x0D, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0x31, 0xC0, 0x0F, 0x32, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let name = format!("msr:{:?}", MsrProfile::EferReadOnlyV1(0xD00));
+        assert_eq!(name, "msr:EferReadOnlyV1(3328)");
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        // Run 1 stops by budget right after the WRMSR.
+        let first = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(first.retired, 4, "{first:?}");
+        assert_eq!(first.guest_efer, 0xD01);
+        assert_eq!(boot.board.guest_efer(), 0xD01);
+        assert!(first.set_members.contains(&name), "{:?}", first.set_members);
+        // Run 2 on the same board seeds the cell from the board: RDMSR returns 0xD01.
+        let second = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 3, "XOR, RDMSR, HLT");
+        assert_eq!(second.gpr[Register::Rax as usize], 0xD01);
+        assert_eq!(second.guest_efer, 0xD01);
+        assert_eq!(second.efer, 0xD00);
+        assert!(
+            second.set_members.contains(&name),
+            "{:?}",
+            second.set_members
+        );
+    }
+
+    #[test]
+    fn wrmsr_efer_outside_the_sce_change_stays_the_stop_without_mutation() {
+        // MOV ECX,0xC0000080; XOR EAX,EAX (EFER = 0: LME/LMA cleared); XOR EDX,EDX; WRMSR.
+        let wr = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let (mut boot, file) = boot_with_entry(&wr);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(boot.board.guest_efer(), 0xD00);
+        assert_eq!(record.guest_efer, 0xD00);
+        // STAR is not EFER: MOV ECX,0xC0000081; WRMSR is the stop as well.
+        let star = [0xB9, 0x81, 0x00, 0x00, 0xC0, 0x0F, 0x30];
+        let (mut boot, file) = boot_with_entry(&star);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        assert_eq!(boot.board.guest_efer(), 0xD00);
+    }
+
+    #[test]
+    fn mov_cr0_with_am_runs_through_the_board_set() {
+        // MOV EAX,0x80050033; MOV CR0,RAX; XOR EAX,EAX; MOV RAX,CR0; HLT. The fetch after the
+        // CR0 write goes through the walker snapshot, which must carry AM.
+        let code = [
+            0xB8, 0x33, 0x00, 0x05, 0x80, 0x0F, 0x22, 0xC0, 0x31, 0xC0, 0x0F, 0x20, 0xC0, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5);
+        assert_eq!(record.cr0, Some(0x8005_0033));
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8005_0033);
+
+        // A CR0 value outside the policy (CD, bit 30) stays the stop, without mutation.
+        let bad = [0xB8, 0x33, 0x00, 0x01, 0xC0, 0x0F, 0x22, 0xC0];
+        let (mut boot, file) = boot_with_entry(&bad);
+        let cr0_before = boot.board.state().cr0;
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x22 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        assert_eq!(record.cr0, cr0_before);
     }
 
     // ---- S4-38L6c: MOV Sreg, AX with a nonzero selector through the board facade ----

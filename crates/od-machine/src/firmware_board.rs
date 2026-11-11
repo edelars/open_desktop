@@ -956,6 +956,10 @@ pub struct LoadedFirmwareBoard {
     /// took (a guest write of CR2, should the set ever model it). Fed back as CR2 on entry the way
     /// `page_table_root` is for CR3. `None` until the first CPL0-set run.
     guest_cr2: Option<u64>,
+    /// The guest-visible `IA32_EFER` (S4-38L7f): `FIRMWARE_EFER` until a guest `WRMSR` of EFER
+    /// changed `SCE` (the only bit the set lets change). The walkers keep using the constant
+    /// [`FIRMWARE_EFER`] (LME/LMA/NXE never change), so [`Self::efer`] stays the walker's EFER.
+    guest_efer: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1026,8 +1030,20 @@ impl LoadedFirmwareBoard {
         self.page_table_root
     }
 
+    /// The EFER of the translation walkers (LME|LMA|NXE); the guest's `SCE` is not part of it.
     pub const fn efer(&self) -> u64 {
         FIRMWARE_EFER
+    }
+
+    /// The guest-visible `IA32_EFER`: the walker EFER, plus `SCE` once the guest wrote it
+    /// through the CPL0 set (S4-38L7f).
+    pub const fn guest_efer(&self) -> u64 {
+        self.guest_efer
+    }
+
+    /// Stores the guest-visible EFER a CPL0-set run left (S4-38L7f).
+    pub(crate) fn set_guest_efer(&mut self, value: u64) {
+        self.guest_efer = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1880,6 +1896,7 @@ impl AssembledBoard {
             page_table_bytes,
             page_table_root,
             guest_cr2: None,
+            guest_efer: FIRMWARE_EFER,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -1933,6 +1950,7 @@ impl AssembledBoard {
             page_table_bytes,
             page_table_root,
             guest_cr2: None,
+            guest_efer: FIRMWARE_EFER,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]

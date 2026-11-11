@@ -11,6 +11,7 @@ use od_isa::{
     LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, Register, StiShadow,
     TranslationContextChange, cpuid::CpuidProfile, msr::MsrProfile,
 };
+use std::cell::Cell;
 
 const RIP: u64 = 0x1000;
 const CR0_BASE: u64 = 0x8001_0033;
@@ -6937,6 +6938,341 @@ fn rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone() {
         );
         assert_eq!(state, before);
     }
+}
+
+// ---- S4-38L7f: WRMSR IA32_EFER (SCE) and CR0.AM (EFER bits per SDM, from memory) ----
+
+const EFER_MSR: u64 = 0xc000_0080;
+const CR0_AM: u64 = 1 << 18;
+const WRMSR: [u8; 2] = [0x0f, 0x30];
+const RDMSR: [u8; 2] = [0x0f, 0x32];
+
+/// Runs `code` in a set with the read-only EFER profile seeded with `initial` and its write
+/// member on `cell`; ECX, EAX, EDX are given.
+fn run_efer_write(
+    cell: &Cell<u64>,
+    initial: u64,
+    code: &[u8],
+    (rcx, rax, rdx): (u64, u64, u64),
+    budget: u64,
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let profile = MsrProfile::EferReadOnlyV1(initial);
+    let set = base().with_msr(&profile).with_msr_efer_write(cell);
+    let mut state = board_state();
+    state.cr4 = Some(CR4_BASE | (1 << 4) | (1 << 7));
+    state.gpr[1] = rcx;
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+    .unwrap();
+    (state, before, result)
+}
+
+#[test]
+fn wrmsr_efer_sce_is_stored_and_rdmsr_returns_it() {
+    let cell = Cell::new(0xd00);
+    let (state, before, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, 0xd01, 0), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0xd01);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+
+    // WRMSR then RDMSR in one run: the read returns the written value (EAX=0xd01, EDX=0).
+    let mut code = WRMSR.to_vec();
+    code.extend_from_slice(&RDMSR);
+    let cell = Cell::new(0xd00);
+    let (state, _, result) = run_efer_write(&cell, 0xd00, &code, (EFER_MSR, 0xd01, 0), 2);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[0], 0xd01);
+    assert_eq!(state.gpr[2], 0);
+    assert_eq!(state.rip, RIP + 4);
+
+    // SCE can be cleared again; 0xd00 is accepted from 0xd01.
+    let cell = Cell::new(0xd01);
+    let (_, _, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, 0xd00, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0xd00);
+    // The same value is a no-op write.
+    let cell = Cell::new(0xd00);
+    let (_, _, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, 0xd00, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0xd00);
+    // A long-mode-disabled model value keeps working too: 0x500 -> 0x501.
+    let cell = Cell::new(0x500);
+    let (_, _, result) = run_efer_write(&cell, 0x500, &WRMSR, (EFER_MSR, 0x501, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x501);
+    // RDMSR reads the cell, not the profile seed.
+    let cell = Cell::new(0xd01);
+    let (state, _, _) = run_efer_write(&cell, 0xd00, &RDMSR, (EFER_MSR, 0, 0), 1);
+    assert_eq!(state.gpr[0], 0xd01);
+}
+
+#[test]
+fn wrmsr_efer_ignores_the_upper_halves_of_rax_rdx_like_edx_eax() {
+    // EDX:EAX is the value: RAX[63:32] and RDX[63:32] are not part of it.
+    let cell = Cell::new(0xd00);
+    let (_, _, result) = run_efer_write(
+        &cell,
+        0xd00,
+        &WRMSR,
+        (
+            EFER_MSR | (1 << 32),
+            0xffff_ffff_0000_0d01,
+            0xffff_ffff_0000_0000,
+        ),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0xd01);
+}
+
+#[test]
+fn wrmsr_efer_changing_lme_lma_or_nxe_is_unsupported_without_mutation() {
+    for value in [
+        0x001u64, 0x000, 0x500, 0x501, 0x900, 0x901, 0xc00, 0xc01, 0x101,
+    ] {
+        let cell = Cell::new(0xd00);
+        let (state, before, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, value, 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{value:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{value:#x}");
+        assert_eq!(state, before, "{value:#x}");
+        assert_eq!(cell.get(), 0xd00, "{value:#x}");
+    }
+}
+
+#[test]
+fn wrmsr_efer_reserved_bits_are_gp0_and_cpuid_dependent_bits_unsupported() {
+    // Reserved: bits 1..=7, 9, 16..=63 (including EDX bits).
+    for (eax, edx) in [
+        (0xd02u64, 0u64),
+        (0xd04, 0),
+        (0xd80, 0),
+        (0xf00, 0),
+        (0x1_0d00, 0),
+        (0x8000_0d00, 0),
+        (0xd00, 1),
+        (0xd01, 0x8000_0000),
+    ] {
+        let cell = Cell::new(0xd00);
+        let (state, before, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, eax, edx), 1);
+        assert_eq!(exit(&result), &gp0(), "{eax:#x}:{edx:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xd00);
+    }
+    // Bits 12..=15 (SVME, LMSLE, FFXSR, TCE) depend on CPUID features the model lacks.
+    for bit in 12..=15 {
+        let cell = Cell::new(0xd00);
+        let (state, before, result) =
+            run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, 0xd00 | (1 << bit), 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{bit}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xd00);
+    }
+}
+
+#[test]
+fn wrmsr_efer_without_the_write_member_or_for_other_msrs_is_unsupported() {
+    // Read-only profile without the cell: WRMSR EFER stays Unsupported (S4-38L7e).
+    let profile = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base().with_msr(&profile);
+    let mut state = board_state();
+    state.gpr[1] = EFER_MSR;
+    state.gpr[0] = 0xd01;
+    state.gpr[2] = 0;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+
+    // With the member, other MSRs (STAR, APIC_BASE) stay Unsupported and the cell is untouched.
+    for msr in [0xc000_0081u64, 0x1b, 0xc000_0082] {
+        let cell = Cell::new(0xd00);
+        let (state, before, result) = run_efer_write(&cell, 0xd00, &WRMSR, (msr, 0xd01, 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{msr:#x}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xd00);
+    }
+
+    // A set with the member but no MSR profile has no MSR to write.
+    let cell = Cell::new(0xd00);
+    let set = base().with_msr_efer_write(&cell);
+    let mut state = board_state();
+    state.gpr[1] = EFER_MSR;
+    state.gpr[0] = 0xd01;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+    assert_eq!(cell.get(), 0xd00);
+}
+
+#[test]
+fn wrmsr_efer_with_prefixes_or_a_cell_outside_the_domain_is_unsupported() {
+    // 66 0F 30 / F3 0F 30 / 48 0F 30: prefixed forms stay Unsupported without mutation.
+    for code in [
+        &[0x66u8, 0x0f, 0x30][..],
+        &[0xf3, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+    ] {
+        let cell = Cell::new(0xd00);
+        let (state, before, result) = run_efer_write(&cell, 0xd00, code, (EFER_MSR, 0xd01, 0), 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xd00);
+    }
+    // A cell value outside the S2-25e domain (no LME) closes both RDMSR and WRMSR.
+    for code in [WRMSR, RDMSR] {
+        let cell = Cell::new(0x000);
+        let (state, before, result) = run_efer_write(&cell, 0xd00, &code, (EFER_MSR, 0xd01, 0), 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: code[1] });
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x000);
+    }
+}
+
+#[test]
+fn wrmsr_efer_at_cpl3_never_reaches_the_member() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch or write.
+    let cell = Cell::new(0xd00);
+    let profile = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base().with_msr(&profile).with_msr_efer_write(&cell);
+    let mut state = board_state();
+    state.gpr[1] = EFER_MSR;
+    state.gpr[0] = 0xd01;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(cell.get(), 0xd00);
+}
+
+#[test]
+fn cr0_am_is_accepted_by_the_set_policy() {
+    let set = cr_set();
+    // The kernel's CR0 write (PG|WP|AM|NE|ET|MP|PE): MOV RAX, imm; MOV CR0, RAX; MOV RAX, CR0.
+    let value = 0x8005_0033u64;
+    assert_eq!(value, CR0_BASE | CR0_AM);
+    let mut code = movabs_rax(value);
+    code.extend_from_slice(&MOV_CR0_RAX);
+    code.extend_from_slice(&[0x48, 0x31, 0xc0]); // xor rax, rax
+    code.extend_from_slice(&MOV_RAX_CR0);
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state.cr0, Some(value));
+    assert_eq!(state.gpr[0], value);
+    assert_eq!(state.cr4, Some(CR4_BASE));
+    // AM together with EM/TS, and a state that already carries AM, are admitted too.
+    for cr0 in [value | 0xc, value | 4, value | 8] {
+        let mut code = movabs_rax(cr0);
+        code.extend_from_slice(&MOV_CR0_RAX);
+        let mut state = board_state();
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &set, 2).unwrap();
+        assert_eq!(result.instructions_executed, 2, "{cr0:#x}");
+        assert_eq!(state.cr0, Some(cr0));
+    }
+    let mut state = board_state();
+    state.cr0 = Some(value);
+    let mut memory = Memory::code(&MOV_RAX_CR0);
+    let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], value);
+    // AM is not admitted by the per-register profile (only the set policy gained it).
+    assert!(!od_isa::execute::Cr0Profile::FpInitLong64V1.accepts(value));
+}
+
+#[test]
+fn cr0_am_does_not_widen_the_policy_to_other_bits() {
+    let set = cr_set();
+    // Bit 17 (reserved), bit 19, bit 29 (NW), bit 30 (CD), bit 32; PG/PE/WP cleared with AM set.
+    for value in [
+        CR0_BASE | CR0_AM | (1 << 17),
+        CR0_BASE | CR0_AM | (1 << 19),
+        CR0_BASE | CR0_AM | (1 << 29),
+        CR0_BASE | CR0_AM | (1 << 30),
+        CR0_BASE | CR0_AM | (1 << 32),
+        (CR0_BASE | CR0_AM) & !1,
+        (CR0_BASE | CR0_AM) & !(1 << 16),
+        CR0_AM,
+    ] {
+        let mut code = movabs_rax(value);
+        code.extend_from_slice(&MOV_CR0_RAX);
+        let mut state = board_state();
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        let label = format!("cr0 value {value:#x}");
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{label}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{label}");
+        assert_eq!(state.cr0, Some(CR0_BASE), "{label}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{label}");
+    }
+}
+
+#[test]
+fn cr0_am_state_is_admitted_at_entry_and_a_stray_bit_is_not() {
+    let set = cr_set();
+    let mut state = board_state();
+    state.cr0 = Some(CR0_BASE | CR0_AM);
+    let mut memory = Memory::code(&[0x90]);
+    assert!(run_set(&mut state, &mut memory, &set, 1).is_ok());
+    let mut state = board_state();
+    state.cr0 = Some(CR0_BASE | CR0_AM | (1 << 17));
+    let mut memory = Memory::code(&[0x90]);
+    assert_eq!(
+        run_set(&mut state, &mut memory, &set, 1).unwrap_err(),
+        Cpl0ProfileSetInputError::Cr0OutsidePolicy {
+            value: CR0_BASE | CR0_AM | (1 << 17)
+        }
+    );
 }
 
 // ---- S4-38L6c: MOV Sreg, AX with a nonzero GDT selector (checks per SDM, from memory) ----

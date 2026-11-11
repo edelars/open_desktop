@@ -512,7 +512,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         gpr.insert((*name).to_string(), json!(hex64(value)));
     }
     let inputs = &record.inputs;
-    json!({
+    let mut stop = json!({
         "budget": budget,
         "exit_kind": record.exit_kind,
         "exit_detail": record.exit_detail,
@@ -569,7 +569,11 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
             "initramfs_sha256_in_memory":
                 inputs.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash)),
         },
-    })
+    });
+    // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
+    // literal above to stay under the `json!` macro recursion limit.
+    stop["guest_efer"] = json!(hex64(record.guest_efer));
+    stop
 }
 
 /// The protected-mode code of the bzImage file: the bytes the loader copies to the kernel zone.
@@ -1442,6 +1446,28 @@ mod tests {
         assert_eq!(value["stop"]["path"], "paged_probe");
         assert_eq!(value["stop"]["unsupported_opcode"], "0xfc");
         assert_eq!(value["stop"]["set_members"], json!([]));
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_efer_after_a_wrmsr_of_sce() {
+        // MOV ECX,0xC0000080; MOV EAX,0xD01; XOR EDX,EDX; WRMSR (S4-38L7f).
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x0D, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-efer", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_efer"], "0xd01");
+        // `efer` stays the walker's EFER.
+        assert_eq!(stop["efer"], "0xd00");
+        // Without the set nothing writes EFER: both read 0xd00.
+        let value = run_case("efer-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_efer"], "0xd00");
+        assert_eq!(value["stop"]["efer"], "0xd00");
     }
 
     #[test]

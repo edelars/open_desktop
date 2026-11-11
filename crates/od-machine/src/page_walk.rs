@@ -16,8 +16,12 @@ const CR0_TS: u64 = 1 << 3;
 const CR0_ET: u64 = 1 << 4;
 const CR0_NE: u64 = 1 << 5;
 const CR0_WP: u64 = 1 << 16;
+const CR0_AM: u64 = 1 << 18;
 const CR0_PG: u64 = 1 << 31;
-const CR0_ALLOWED: u64 = CR0_PE | CR0_MP | CR0_EM | CR0_TS | CR0_ET | CR0_NE | CR0_WP | CR0_PG;
+// CR0.AM only gates the alignment check of CPL3 accesses (together with EFLAGS.AC), which the model
+// does not perform, and the walker never reads it: a snapshot-only bit (S4-38L7f).
+const CR0_ALLOWED: u64 =
+    CR0_PE | CR0_MP | CR0_EM | CR0_TS | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
 const CR4_PAE: u64 = 1 << 5;
 const CR4_PSE: u64 = 1 << 4;
 const CR4_PGE: u64 = 1 << 7;
