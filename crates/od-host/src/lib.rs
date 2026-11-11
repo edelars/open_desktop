@@ -69138,6 +69138,384 @@ pub(crate) mod tests {
         assert!(cache.resident_code_bytes() <= cache.max_bytes());
     }
 
+    #[test]
+    fn s3_54_native_multi_cache_reuses_published_handle() {
+        use od_jit::dispatch::{
+            CacheEvictionPolicy, DispatchControl, DispatchExit, MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES, MultiBlockCachedBackend, MultiEntryBlockCache,
+            RegisterFlagsMode,
+        };
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+            ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        struct TracingArena {
+            inner: PublishedArenaBackend,
+            published: Vec<(usize, u64)>,
+            executed: Vec<(usize, u64)>,
+        }
+
+        impl CachedBlockBackend for TracingArena {
+            type Error = PublishedArenaError;
+            type Published = PublishedArenaBlock;
+
+            fn publish_cached_block(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+            ) -> Result<Self::Published, Self::Error> {
+                let handle = self.inner.publish_cached_block(block)?;
+                self.published.push((handle.slot_index, handle.generation));
+                Ok(handle)
+            }
+
+            fn execute_cached_block(
+                &mut self,
+                published: &Self::Published,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                incoming_budget: u64,
+                control: DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                self.executed
+                    .push((published.slot_index, published.generation));
+                self.inner
+                    .execute_cached_block(published, block, state, incoming_budget, control)
+            }
+        }
+
+        impl MultiBlockCachedBackend for TracingArena {
+            fn published_block_capacity(&self) -> usize {
+                self.inner.published_block_capacity()
+            }
+        }
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+
+        impl od_isa::memory::GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| self.bytes.get(offset))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Fetch,
+                    })
+            }
+            fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+                unreachable!("register-only ADD has no data read")
+            }
+            fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+                unreachable!("register-only ADD has no data write")
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!("register-only ADD has no atomic memory operation")
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!("register-only ADD has no atomic memory operation")
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!("register-only ADD has no atomic memory operation")
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                unreachable!("register-only ADD has no fence")
+            }
+        }
+
+        let _guard = jit_test_lock();
+        let base = 0x7ce0;
+        // ADD RAX, sign-extended imm8; two executions use distinct inputs.
+        let code = [0x48, 0x83, 0xc0, 0x01];
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        let dependencies = [CodeDependencySpan {
+            start_rip: base,
+            end_rip: view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(61)),
+                mapping: MappingId::new(nz(62)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(63)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let context = ExecutionContextSnapshot::native_register_v1_fixture(
+            ExecutionContextId::from_u64(1).unwrap(),
+        );
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            for flags in [
+                RegisterFlagsMode::Eager,
+                RegisterFlagsMode::DemandFlagsCandidate,
+            ] {
+                let mut backend = TracingArena {
+                    inner: PublishedArenaBackend::new(2).unwrap(),
+                    published: Vec::new(),
+                    executed: Vec::new(),
+                };
+                let mut cache = MultiEntryBlockCache::with_policy(
+                    2,
+                    MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                    policy,
+                )
+                .unwrap();
+                for (iteration, input) in [41, u64::MAX].into_iter().enumerate() {
+                    let mut state = od_isa::LongModeState {
+                        rip: base,
+                        rflags: 0x203,
+                        ..od_isa::LongModeState::default()
+                    };
+                    state.gpr[0] = input;
+                    let mut expected = state.clone();
+                    let mut interpreter_memory = CodeOnly { base, bytes: &code };
+                    od_isa::execute::step(
+                        &mut expected,
+                        &mut interpreter_memory,
+                        AccessContext::default(),
+                    )
+                    .unwrap();
+                    assert_eq!(expected.gpr[0], input.wrapping_add(1));
+                    assert_eq!(expected.rip, view.code_end());
+                    let result = od_jit::dispatch::run_multi_cached_native_register_v1_controlled(
+                        view,
+                        &admission,
+                        context,
+                        &dependencies,
+                        &mut state,
+                        4,
+                        control,
+                        &mut cache,
+                        &mut backend,
+                        flags,
+                    )
+                    .unwrap();
+                    assert_eq!(result.exit, DispatchExit::CodeEnd);
+                    assert_eq!(result.retired_native, 1);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(result.blocks_executed, 1);
+                    assert_eq!(state, expected);
+                    assert_eq!(backend.published.len(), 1);
+                    assert_eq!(backend.executed.len(), iteration + 1);
+                    assert_eq!(backend.executed[iteration], backend.published[0]);
+                }
+                let counters = cache.counters();
+                assert_eq!(
+                    (
+                        counters.misses,
+                        counters.hits,
+                        counters.successful_compiles,
+                        counters.successful_publications,
+                        counters.evictions,
+                    ),
+                    (1, 1, 1, 1, 0)
+                );
+            }
+        }
+        // Mixed native and helper sites use the same arena and retain cache entries.
+        let code = [0x48, 0x83, 0xc0, 1, 0x90, 0xfc, 0xfd, 0x48, 0x83, 0xc0, 2];
+        let view = CodeView::new(base, &code).unwrap();
+        let mixed = od_jit::block::MixedRegisterV1Admission::from_code(view).unwrap();
+        let dependencies = [CodeDependencySpan {
+            end_rip: view.code_end(),
+            ..dependencies[0]
+        }];
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            for flags in [
+                RegisterFlagsMode::Eager,
+                RegisterFlagsMode::DemandFlagsCandidate,
+            ] {
+                let mut backend = TracingArena {
+                    inner: PublishedArenaBackend::new(2).unwrap(),
+                    published: Vec::new(),
+                    executed: Vec::new(),
+                };
+                let mut cache = MultiEntryBlockCache::with_policy(
+                    2,
+                    MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                    policy,
+                )
+                .unwrap();
+                for iteration in 0..2 {
+                    let mut state = od_isa::LongModeState {
+                        rip: base,
+                        rflags: 0x603,
+                        ..od_isa::LongModeState::default()
+                    };
+                    state.gpr[0] = 40;
+                    let mut expected = state.clone();
+                    let mut memory = CodeOnly { base, bytes: &code };
+                    for _ in 0..5 {
+                        assert_eq!(
+                            od_isa::execute::step(
+                                &mut expected,
+                                &mut memory,
+                                AccessContext::default()
+                            )
+                            .unwrap(),
+                            od_isa::execute::StepOutcome::Advanced
+                        );
+                    }
+                    let result = od_jit::dispatch::run_multi_cached_mixed_register_v1_controlled(
+                        view,
+                        &mixed,
+                        context,
+                        &dependencies,
+                        &mut state,
+                        10,
+                        control,
+                        &mut cache,
+                        &mut backend,
+                        flags,
+                    )
+                    .unwrap();
+                    assert_eq!(state, expected);
+                    assert_eq!(result.dispatch.exit, DispatchExit::CodeEnd);
+                    assert_eq!(
+                        (
+                            result.dispatch.retired_native,
+                            result.dispatch.retired_interpreter
+                        ),
+                        (2, 3)
+                    );
+                    assert_eq!(
+                        (
+                            result.counters.helper_calls,
+                            result.counters.interpreter_steps
+                        ),
+                        (3, 3)
+                    );
+                    assert_eq!(
+                        result.counters.compiled_instructions,
+                        if iteration == 0 { 2 } else { 0 }
+                    );
+                }
+                assert_eq!((cache.counters().misses, cache.counters().hits), (2, 2));
+                assert_eq!(backend.executed[0..2], backend.executed[2..4]);
+            }
+        }
+
+        // Native blocks end directly at each witnessed direction helper.
+        let code = [
+            0x48, 0x83, 0xc0, 1, 0xfc, 0x48, 0x83, 0xc0, 2, 0xfd, 0x48, 0x83, 0xc0, 3,
+        ];
+        let view = CodeView::new(base, &code).unwrap();
+        let mixed = od_jit::block::MixedRegisterV1Admission::from_code(view).unwrap();
+        let dependencies = [CodeDependencySpan {
+            end_rip: view.code_end(),
+            ..dependencies[0]
+        }];
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            for flags in [
+                RegisterFlagsMode::Eager,
+                RegisterFlagsMode::DemandFlagsCandidate,
+            ] {
+                let mut backend = TracingArena {
+                    inner: PublishedArenaBackend::new(3).unwrap(),
+                    published: Vec::new(),
+                    executed: Vec::new(),
+                };
+                let mut cache = MultiEntryBlockCache::with_policy(
+                    3,
+                    MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                    policy,
+                )
+                .unwrap();
+                for iteration in 0..2 {
+                    let mut state = od_isa::LongModeState {
+                        rip: base,
+                        rflags: 0x603,
+                        ..od_isa::LongModeState::default()
+                    };
+                    state.gpr[0] = 40;
+                    let mut expected = state.clone();
+                    let mut memory = CodeOnly { base, bytes: &code };
+                    for _ in 0..5 {
+                        assert_eq!(
+                            od_isa::execute::step(
+                                &mut expected,
+                                &mut memory,
+                                AccessContext::default()
+                            )
+                            .unwrap(),
+                            od_isa::execute::StepOutcome::Advanced
+                        );
+                    }
+                    let result = od_jit::dispatch::run_multi_cached_mixed_register_v1_controlled(
+                        view,
+                        &mixed,
+                        context,
+                        &dependencies,
+                        &mut state,
+                        10,
+                        control,
+                        &mut cache,
+                        &mut backend,
+                        flags,
+                    )
+                    .unwrap();
+                    assert_eq!(state, expected);
+                    assert_eq!(result.dispatch.exit, DispatchExit::CodeEnd);
+                    assert_eq!(
+                        (
+                            result.dispatch.retired_native,
+                            result.dispatch.retired_interpreter
+                        ),
+                        (3, 2)
+                    );
+                    assert_eq!(
+                        (
+                            result.counters.helper_calls,
+                            result.counters.interpreter_steps
+                        ),
+                        (2, 2)
+                    );
+                    assert_eq!(
+                        result.counters.compiled_instructions,
+                        if iteration == 0 { 3 } else { 0 }
+                    );
+                }
+                assert_eq!((cache.counters().misses, cache.counters().hits), (3, 3));
+                assert_eq!(backend.executed[0..3], backend.executed[3..6]);
+            }
+        }
+    }
+
     fn cached_native_register_v1_branch_loop_and_nop_handoff_retire_exactly() {
         use od_jit::translation::{
             AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,

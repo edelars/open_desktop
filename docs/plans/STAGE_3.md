@@ -751,6 +751,12 @@ repeat comparisons дали 0 differences. Локальный и удалённ�
 
 **Готово:** multi-block program даёт состояние interpreter при том же budget; ошибочный target или невозможный exit не зацикливает runtime.
 
+**S3-50…S3-55, bounded generic path:** регистровые dispatch-обёртки
+используют общий механизм; проверены budget, STOP и совпадение состояний на
+поддержанных смесях native и helper. Это fixture-level данные, не полный
+обязательный corpus этапа 1 с physical oracle. S3-15 остаётся открытой;
+границы и проверки приведены в [отчёте Core](../reports/STAGE_3_CORE_REPORT.md).
+
 **Локальная partial реализация:** `od-jit` теперь имеет отдельный
 `compile_block_for_dispatch`/`lower_for_dispatch` путь, который принимает
 boundary witness только из полного непрерывного fixture-v1 decode, повторно
@@ -910,6 +916,13 @@ machine-readable summary записаны в
 
 **Готово:** смесь native blocks и interpreter instructions совпадает с чистым interpreter. Новые S2 формы используются только после их проверки; all-fallback workload не называется JIT-ускорением.
 
+**S3-55, bounded generic fallback:** opt-in mixed путь передаёт существующему
+`od_isa::execute::step` точные bare CLD/STD и NOP, отдельно учитывает compile,
+helper и успешные interpreter steps, проверяет progress и повторно проверяет
+источник, CR3, context и зависимости после helper. Смеси с native blocks
+проверены против интерпретатора. Общий Stage 2, profile-required и data-memory
+fallback, а также production owner остаются открытыми; S3-16 не принята целиком.
+
 **Локальная partial реализация (S3-16):** добавлены отдельные
 `S0_09NopAdmission` и `run_with_nop_fallback`. Admission строит полные
 instruction boundaries по immutable `CodeView`, допускает S0-09 и только exact
@@ -1005,6 +1018,12 @@ S3-16 and its production owner/MMU integration remain open. See the
 
 **Готово:** stale или несовместимый block не считается hit. Выбор структуры поиска предварительно сравнен на representative key/workload; простой вариант допустим как измеренный baseline.
 
+**S3-54/S3-55, bounded generic cache:** compile flavor разделяет strict и
+mixed eager/demand пути; generic cache проверяет предоставленные владельцем
+snapshot зависимостей и отклоняет несовместимый ввод. Production mapping и
+backing identity/version, их связь с MMU и представительный выбор lookup не
+подтверждены этой линией. S3-17 остаётся открытой.
+
 **Локальная partial реализация:** `od_jit::translation::TranslationKey`
 требует typed compile flavor, entry RIP, полные bytes/base/end `CodeView`,
 terminal classification, actual block instruction ranges и caller-provided
@@ -1052,6 +1071,12 @@ owner-provided identity/version guarantees, production cache/invalidation и
 3. Считать hit/miss/compile/publication и bytes. До S3-25 освобождать только заведомо неактивные entries; активные сохранять до безопасной точки.
 
 **Готово:** повтор программы использует block без новой compile/publication, capacity корректен, изменённый dependency не попадает в execution.
+
+**S3-54, bounded generic cache:** FIFO/LRU, capacity и проверка зависимостей
+используют существующий multi-entry cache. На ARM64 повторный вызов выполняет
+тот же опубликованный handle без новой компиляции и публикации; проверены
+инвалидация и смена контекста между синхронными вызовами. Production owner,
+MMU, memory-путь и полная этапная приёмка остаются открытыми; S3-18 не принята.
 
 **S3-18a local partial:** `od_jit::dispatch::run_cached` adds one resident
 fixture-dispatch block with an opaque published handle supplied by a generic

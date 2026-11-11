@@ -12,6 +12,30 @@
 
 ## Записи
 
+<a id="issue-075-s3-56-historical-corpus-comparability"></a>
+
+### ISSUE-075 — S3-56: исторические cold и warm измерения используют разные корпуса
+
+- **Дата обнаружения:** 2026-11-11, при выполнении S3-56 в worktree `codex`.
+- **Компонент:** `tools/bench` first-run benchmarks и [отчёт S3 Core](reports/STAGE_3_CORE_REPORT.md).
+- **Владелец:** компонент `tools/bench`, задача S3-56.
+- **Статус:** открыта; native-only измерение на пяти S3-14 fixtures выполнено, полное сопоставление с S3-35a на его входе не подтверждено.
+- **Основание и последствия:** S3-35a cold использовал замороженные 1 010 S3-17 cases и 1 322 visits; S3-36b warm — пять S3-14 cases и пять visits. План S3-56 одновременно требует один корпус и прямое сравнение с обоими историческими диапазонами. S3-17 `work/tmp/stage3/s3-17/cases.txt` и `dispatch-trace.json` отсутствуют в `codex` и основном checkout; их ожидаемые SHA-256 задокументированы в [S3-35a](reports/STAGE_3_S3-35a_2026-10-30.md). Числа, полученные на пяти случаях, нельзя использовать как прямое сравнение с cold 1 010-case sweep.
+- **Поиск восстановления (2026-11-11):** при исходной проверке каталог `work/tmp/stage3` отсутствовал во всех 52 зарегистрированных worktree; stash был пуст. При повторной проверке ревьюера worktree было 53, каталог отсутствовал во всех. `git rev-list --all --objects` не обнаружил исходных путей `cases.txt` и `dispatch-trace.json`. Проверены SHA-256 1 561 недостижимого Git blob размером до 4 MiB и все 13 blob размером около 574 KiB во всём локальном Git object store: совпадений с ожидаемыми SHA-256 list и trace нет. Это ограниченный локальный поиск, а не доказательство отсутствия других копий.
+- **Возможность восстановления:** исторический commit `b94171bf` доступен и содержит 1 895 файлов `tests/fixtures/x86`, но сохранённые отчёты дают агрегаты и хэши, а не перечень 1 010 выбранных путей и последовательность 1 322 visits. Повторный [`record`](../tools/bench/src/record.rs) записывает время исполнения и capture metadata; он не гарантирует побайтовое совпадение и исходный замороженный SHA-256 trace. Новый воспроизводимый corpus с новыми cold/warm baseline возможен, но не восстанавливает исторический вход и не делает измерения напрямую сопоставимыми с S3-35a.
+- **Следующий шаг:** искать исходные S3-17 list и trace в резервной копии, архиве или на другой машине, проверить их по сохранённым SHA-256, выполнить generic cold на этом же corpus и сохранить raw результаты; для требования одного общего corpus отдельно уточнить план либо получить cold/warm baseline на идентичном наборе. Не подменять исторический вход новым корпусом и не приписывать измерению native-only выполнение mixed fallback S3-55.
+
+<a id="issue-074-s3-55-mixed-fallback-witness"></a>
+
+### ISSUE-074 — S3-55: строгий witness не представляет смешанный native/fallback поток
+
+- **Дата обнаружения:** 2026-11-11, архитектурный анализ S3-55.
+- **Компонент:** `od-jit` register admission и interpreter fallback ([`block.rs`](../crates/od-jit/src/block.rs), [`dispatch.rs`](../crates/od-jit/src/dispatch.rs)).
+- **Статус:** исправлена для ограниченного mixed witness: точные bare CLD/STD и NOP; строгий witness не изменён. Общий Stage 2 fallback остаётся вне этого исправления.
+- **Суть и последствия:** `NativeRegisterV1Admission::from_code` сканирует весь `CodeView` и возвращает `UnsupportedInstruction` на первой форме, которой отказал register classifier (`block.rs:399–455, 1087–1094`). Поэтому для смешанного потока native → bare CLD/STD → native строгий witness не создаётся и текущий generic dispatcher не получает вход для требуемого fallback. При этом `step_admitted_fallback` допускает для `NativeRegisterV1` только уже допущенный NOP (`dispatch.rs:4145–4185`); снятие этого guard само по себе не создаёт смешанный witness.
+- **Основание и условия:** анализ действующих исходников в `codex` на `6c438a8`, подробно в [отчёте S3 Core](reports/STAGE_3_CORE_REPORT.md#8-s3-55--interpreter-fallback). `CodeMemory::one_instruction` ограничивает fetch одним байтом и запрещает data-memory access (`block.rs:8033–8076`); существующий admitted fallback для выбранных известных форм использует `bounded_range` с известной длиной и `od_isa::execute::step` (`dispatch.rs:4194–4215`). Это описание границ кода, а не результат выполнения mixed-корпуса. Формы, требующие отдельного execution profile или иного входа, в таком fallback остаются неподдержанными.
+- **Результат и следующий шаг:** реализован opt-in witness и повторная проверка context/source/dependencies, mixed-корпус совпадает с интерпретатором на ARM64; команды и ограничения приведены в [отчёте S3 Core](reports/STAGE_3_CORE_REPORT.md#8-s3-55--interpreter-fallback). Независимое Sol-ревью кода, тестов и документации пройдено.
+
 <a id="issue-055-s9-host-durability-guarantee-unconfirmed"></a>
 
 ### ISSUE-055 — Host durability guarantee for macOS/APFS is unconfirmed

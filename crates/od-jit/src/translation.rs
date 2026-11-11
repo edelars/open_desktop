@@ -167,6 +167,9 @@ pub enum CompileFlavor {
     S0_09FixtureDispatch,
     /// Eager composed NativeRegisterV1 cached dispatch; separate from S0-09.
     S3_38bNativeRegisterV1Cached,
+    /// Mixed register route has different interpreter handoff assumptions.
+    S3_55MixedRegisterV1Cached,
+    S3_55MixedRegisterV1DemandFlagsCached,
     /// Demand-flags NativeRegisterV1 cache candidate; never aliases eager code.
     S3_38cNativeRegisterV1DemandFlagsCachedCandidate,
     S0_09NopFallback,
@@ -576,7 +579,7 @@ fn classify_terminal(block: &BasicBlock) -> Result<TerminalClassification, Trans
     Ok(TerminalClassification { stop_rip, kind })
 }
 
-fn validate_dependencies(
+pub(crate) fn validate_dependencies(
     code: CodeView<'_>,
     spans: &[CodeDependencySpan],
 ) -> Result<Vec<CodeDependencySpan>, TranslationKeyError> {

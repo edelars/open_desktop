@@ -2922,3 +2922,70 @@ slice only: it does not integrate `od-machine`, production MMU/writers, active
 SMC retirement, or SMP reclamation. Static independent review and broader
 Stage 3/Mini checks remain separate gates. See the
 [S3-23b report](../reports/STAGE_3_S3-23b_2026-11-03.md).
+
+## S3-52: register admission equivalence
+
+Run the bounded equivalence corpus from the repository root:
+
+```sh
+cargo test -p od-jit --lib --offline s3_52_admission_equivalence -- --nocapture
+```
+
+Pass requires the test to complete successfully and print `mismatches=0`.
+The test retains the pre-S3-52 admission loops and register builder decision
+as test-only oracles. It compares all 16 wrapper results, error payloads and
+RIP/value projections, as well as complete builder outcomes across all 20
+profiles. It checks the native form classes and source binding against fixed
+bytes, the 13-by-13 single-profile rejection matrix, S0-09, NOP handoff,
+S3-32a marker, signed immediate/displacement boundaries, prefix and operand
+rejections, LEA disp8 encoding aliases, branch-boundary/error ordering and
+both valid and invalid block limits. `InvalidLength` and `RangeOverflow` are
+also checked through the internal next-RIP validation seam with explicit
+synthetic inputs; a normal checked `CodeView` and decoder cannot reliably
+produce those defensive states. The frozen loops and new mechanism share the
+unchanged exact-form predicates; fixed byte/class assertions exercise those
+predicates separately rather than computing all expected outcomes from the
+new classifier.
+
+This is a bounded equivalence check, not a performance result or Stage 3
+acceptance. The local `od-host` full library baseline additionally depends on
+ignored corpus observations and cache trace under `work/`; when they are
+absent, its three missing-artifact failures must be reported separately.
+
+For the separate full-CodeView scanner microbenchmark, run the following four
+times after other builds and tests have finished:
+
+```sh
+cargo test -p od-jit --lib --release --offline s3_52_admission_microbench -- --ignored --nocapture
+```
+
+Each run checks old/new result equality and then measures nine paired samples,
+alternating their order; each sample performs 200 scans. Inputs are 128 S0-09
+ADD instructions, 64 ADD plus 64 INC, 64 ADD plus 64 LEA disp8, and ten
+repetitions of the 13 exact native forms. Output is median and min–max elapsed
+nanoseconds for each group of 200 scans. This warms code and input caches and
+does not execute generated code or measure memory. Machine, compiler, results
+and observed variability are recorded in the [S3 Core report](../reports/STAGE_3_CORE_REPORT.md#5-s3-52--один-механизм-допуска).
+
+### S3-55 mixed register and interpreter handoff
+
+`MixedRegisterV1Admission` accepts the existing strict NativeRegisterV1 forms,
+its bare NOP handoff, and the exact bare one-byte `FC` (CLD) / `FD` (STD)
+helper sites. Prefixes and other denied forms remain rejected. The opt-in
+multi-entry route executes these helper sites with `od_isa::execute::step`
+and a one-byte fetch-only view. It tracks compiled instructions on cache
+miss, helper invocations, and successful interpreter retirements separately.
+After a successful helper it rechecks the code witness, CR3, execution context,
+and dependency coverage. `InterpreterProgressMismatch` rejects non-advancing
+steps; a helper-only entry is stepped directly without native compilation.
+This does not cover profile-required instructions or data-memory fallback.
+
+`cargo test -p od-jit --lib --offline` covers strict versus mixed witness,
+helper-only dispatch, STOP, budget including zero, event, non-advancing native
+and interpreter paths, injected interpreter failures, and post-helper rejection
+of changed source, invalid dependencies, CR3 and stale context generation. The ARM64 host test
+`s3_54_native_multi_cache_reuses_published_handle` also executes
+ADD → NOP → CLD → STD → ADD and ADD → CLD → ADD → STD → ADD with
+full-state interpreter comparison, eager and demand flags, FIFO and LRU, cold
+and warm cache. The latter exercises the native terminal at both CLD and STD. The test is part of
+`cargo test -p od-host --lib --offline`.

@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut process_run = 1u8;
     let mut preflight_only = false;
     let mut calibration_only = false;
+    let mut generic_register = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--case-list" => {
@@ -64,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--preflight-only" => preflight_only = true,
             "--calibration-only" => calibration_only = true,
+            "--generic-register" => generic_register = true,
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -73,6 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     validate_mode_flags(&mode, preflight_only, calibration_only)
         .map_err(|message| message.to_owned())?;
+
+    validate_generic_register(&mode, generic_register)?;
 
     match mode.as_str() {
         "record" => {
@@ -163,11 +167,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cold-first-run requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value = od_bench::dispatch_cache::run_cold_first_execution(
-                    &case_list,
-                    &trace,
-                    process_run,
-                )?;
+                let value = if generic_register {
+                    od_bench::dispatch_cache::run_generic_cold_first_execution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_cold_first_execution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -201,11 +213,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("warm-first-run requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value = od_bench::dispatch_cache::run_warm_first_execution(
-                    &case_list,
-                    &trace,
-                    process_run,
-                )?;
+                let value = if generic_register {
+                    od_bench::dispatch_cache::run_generic_warm_first_execution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_warm_first_execution(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -784,9 +804,9 @@ fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
+        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
-  od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
@@ -808,6 +828,13 @@ fn print_usage() {
   od-bench two-site-memory-cache [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing. `page-walk-compare` uses a deterministic synthetic Long64 fixture."
     );
+}
+
+fn validate_generic_register(mode: &str, generic_register: bool) -> Result<(), &'static str> {
+    if generic_register && !matches!(mode, "cold-first-run" | "warm-first-run") {
+        return Err("--generic-register is only valid for cold-first-run or warm-first-run");
+    }
+    Ok(())
 }
 
 fn validate_mode_flags(
@@ -837,10 +864,27 @@ fn validate_mode_flags(
 mod tests {
     use super::{
         two_site_memory_cache_journal_path, two_site_memory_cold_journal_path,
-        two_site_memory_warm_journal_path, validate_mode_flags,
+        two_site_memory_warm_journal_path, validate_generic_register, validate_mode_flags,
     };
     use od_bench::calibration_report::calibration_only_report_succeeded;
     use std::path::PathBuf;
+
+    #[test]
+    fn generic_register_is_limited_to_first_run_commands() {
+        for mode in ["cold-first-run", "warm-first-run"] {
+            assert!(validate_generic_register(mode, true).is_ok());
+        }
+        for mode in [
+            "record",
+            "synthetic",
+            "cold-phases",
+            "warm-dispatch-phases",
+            "unknown",
+        ] {
+            assert!(validate_generic_register(mode, true).is_err(), "{mode}");
+            assert!(validate_generic_register(mode, false).is_ok(), "{mode}");
+        }
+    }
 
     #[test]
     fn calibration_only_is_rejected_for_other_commands() {

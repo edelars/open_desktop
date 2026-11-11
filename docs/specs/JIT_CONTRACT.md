@@ -1967,6 +1967,83 @@ shape, establish physical Mac mini equivalence, or imply performance; S3-21
 remains `not_run` for this slice. See the
 [S3-34a report](../reports/STAGE_3_S3-34a_2026-10-27.md).
 
+## 3a. Единые правила допуска регистрового набора
+
+Этот раздел задаёт **действующее** множество для регистровых admission-профилей S0-09, S3-32a и S3-33a–m одним описанием. Он не добавляет инструкции или кодировки и не делает все строки доступными каждому существующему API: профиль выбирается явно по таблице ниже. Ранее описанные ограниченные срезы и их условия исполнения сохраняются. Здесь определяется только допуск; наличие правила само по себе не доказывает готовность JIT или этапа 3.
+
+### Вход и привязка свидетельства
+
+Вход — неизменяемый `CodeView { base_rip, code_end, bytes }`: допустимый диапазон байтов — `[base_rip, code_end)`, а `code_end` указывает на адрес сразу после последнего байта и вычисляется проверенно при создании view. Для каждой инструкции декодер `od_isa::long_decode` получает **эти же** байты на гостевом `rip` и возвращает `Instruction`: `operation` с классом и операндами, `opcode.map`/`opcode.byte`, `operand_size`, `address_size`, поля префиксов (`group1`, `segment`, `operand_override`, `address_override`, конкретный `rex`) и точную `length`. Свидетельство фиксирует байты, `base_rip`, `code_end`, начала всех декодированных инструкций и исключительный `code_end`; оно применимо только к совпадающему view. Для каждой инструкции проверяется `[rip, next_rip)`, где `next_rip = rip + length` без переполнения; цели допустимых переходов проверяются после полного сканирования view, не только построенного впоследствии блока.
+
+Обозначения в таблицах: **P48** — `group1 == None`, `segment == None`, `operand_override == false`, `address_override == false`, `rex == Some(0x48)`, `opcode.map == Primary`, `operand_size == Qword`, `address_size == Qword`. Это условия на поля результата декодирования, включая конкретный последний REX, а не разрешение пропускать приведённые ниже byte guards. **P0** — `prefixes == Default::default()` и `opcode.map == Primary`. `R0`…`R3` — qword `RAX`, `RCX`, `RDX`, `RBX`; `ib` — один байт, `id` — четыре байта little-endian. Указанная длина точная. В каждой строке с byte guard все перечисленные байты и их связь с декодированным операндом обязательны для существующего профиля.
+
+### Положительные правила форм
+
+| Правило | Декодированная операция, поля и длина | Дополнительная сверка исходных байтов |
+|---|---|---|
+| `B-MOV` | P48; `MovImmediate`, destination — qword `R0`…`R3`; opcode `B8`…`BB`; imm64; длина 10 | Отдельной сверки формы нет. |
+| `B-ALU` | P48; `Arithmetic` с двумя qword register operands `R0`…`R3`: opcode `03` только для `Add`, `2B` только для `Sub`, `3B` только для `Cmp`; длина 3 | Отдельной сверки формы нет. |
+| `B-JCC` | P0; `Branch`: opcode `74` с `Equal` или `75` с `NotEqual`; `operand_size` и `address_size` — Qword; signed rel8; длина 2 | Отдельной сверки формы нет; цель проверяется по границам ниже. |
+| `NOP` | P0; `Operation::Nop`, opcode `90`, длина 1. Helper не вводит отдельной проверки `operand_size` или `address_size`: текущий decoder для `90` возвращает Dword/Qword. | Первый байт равен `90`. |
+| `INC` | P48; `Arithmetic::Inc`, dst qword RAX, src `Immediate(1)`; opcode `FF`; длина 3 | `48 FF C0`. |
+| `DEC` | P48; `Arithmetic::Dec`, dst qword RAX, src `Immediate(1)`; opcode `FF`; длина 3 | `48 FF C8`. |
+| `NEG` | P48; `Arithmetic::Neg`, dst qword RAX, src `Immediate(0)`; opcode `F7`; длина 3 | `48 F7 D8`. |
+| `NOT` | P48; `Logic::Not`, dst qword RAX, src `Immediate(0)`; opcode `F7`; длина 3 | `48 F7 D0`. |
+| `LEA-RBX` | P48; `Lea`, dst qword RAX, src: base RBX, нет index, scale 1, displacement 0, src size/address size Qword; opcode `8D`; длина 3 | `48 8D 03`. |
+| `LEA-D8` | P48; `Lea`, dst qword RAX, src: base RBX, нет index, scale 1, displacement равен `i64(ib as i8)`, src size/address size Qword; opcode `8D`; длина 4 | `48 8D 43 ib`; byte guard обязателен для различения disp8 от других кодировок с теми же decoded-полями и длиной. |
+| `LEA-SIB` | P48; `Lea`, dst qword RAX, src: base RBX, index RCX, scale 1, displacement 0, src size/address size Qword; opcode `8D`; длина 4 | `48 8D 04 0B`. |
+| `LEA-RIP` | P48; `Lea`, dst qword RAX, src: base `NextRip`, нет index, scale 1, displacement равен sign-extended `id` как `i32` в `i64`, src size/address size Qword; opcode `8D`; длина 7 | `48 8D 05 id`. |
+| `XCHG` | P48; `Xchg` с decoded left qword RBX и right qword RAX; opcode `87`; длина 3 | `48 87 D8`. |
+| `ADD-I8` | P48; `Arithmetic::Add`, dst qword RAX, src `Immediate(value)`; opcode `83`; длина 4 | `48 83 C0 ib`; `value` равен sign-extension `ib` из `i8` до `u64`. |
+| `CMP-I8` | P48; `Arithmetic::Cmp`, dst qword RAX, src `Immediate(value)`; opcode `83`; длина 4 | `48 83 F8 ib`; `value` равен sign-extension `ib` из `i8` до `u64`. |
+| `SUB-I8` | P48; `Arithmetic::Sub`, dst qword RAX, src `Immediate(value)`; opcode `83`; длина 4 | `48 83 E8 ib`; `value` равен sign-extension `ib` из `i8` до `u64`. |
+| `MOV-I32` | P48; `MovImmediate`, dst qword RAX; opcode `C7`; длина 7 | `48 C7 C0 id`; decoded value равен sign-extension little-endian `id` из `i32` до `u64`. |
+| `ADD-RAX` | P48; `Arithmetic::Add`, dst и src — qword RAX; opcode `03`; длина 3 | `48 03 C0`. Форма уже входит в `B-ALU`; это дополнительное точное свидетельство S3-32a. |
+
+Сохранение всех указанных byte guards требуется для эквивалентности существующим helper-предикатам, в том числе если вызывающий код передаёт несогласованные `Instruction` и байты. Для пары, полученной декодированием тех же байтов, S3-50 установил различающую необходимость `LEA-D8`: `48 8D 43 00`, `48 8D 04 23` и `40 48 8D 03` дают одинаковые decoded-поля и длину, но только первая форма допускается как disp8. Для остальных перечисленных exact helpers и bare NOP анализ S3-50 установил избыточность guard для такой связанной пары; этот вывод не разрешает удалять действующие проверки. Основания и граница вывода приведены в [инвентаре S3-50](../reports/STAGE_3_CORE_REPORT.md).
+
+### Явный выбор профиля
+
+`Base = {B-MOV, B-ALU, B-JCC, NOP}`. Для каждого из 13 отдельных `S0_09Nop<Form>Admission` допустим `Base` и **только** одна указанная строка:
+
+| Admission / профиль сборки | Дополнительное правило |
+|---|---|
+| `S0_09NopIncRaxAdmission` / `S0_09NativeIncRax` | `INC` |
+| `S0_09NopDecRaxAdmission` / `S0_09NativeDecRax` | `DEC` |
+| `S0_09NopNegRaxAdmission` / `S0_09NativeNegRax` | `NEG` |
+| `S0_09NopNotRaxAdmission` / `S0_09NativeNotRax` | `NOT` |
+| `S0_09NopLeaRaxRbxAdmission` / `S0_09NativeLeaRaxRbx` | `LEA-RBX` |
+| `S0_09NopLeaRaxRbxDisp8Admission` / `S0_09NativeLeaRaxRbxDisp8` | `LEA-D8` |
+| `S0_09NopLeaRaxRbxRcxAdmission` / `S0_09NativeLeaRaxRbxRcx` | `LEA-SIB` |
+| `S0_09NopLeaRaxRipDisp32Admission` / `S0_09NativeLeaRaxRipDisp32` | `LEA-RIP` |
+| `S0_09NopXchgRaxRbxAdmission` / `S0_09NativeXchgRaxRbx` | `XCHG` |
+| `S0_09NopAddRaxImm8Admission` / `S0_09NativeAddRaxImm8` | `ADD-I8` |
+| `S0_09NopCmpRaxImm8Admission` / `S0_09NativeCmpRaxImm8` | `CMP-I8` |
+| `S0_09NopSubRaxImm8Admission` / `S0_09NativeSubRaxImm8` | `SUB-I8` |
+| `S0_09NopMovRaxImm32Admission` / `S0_09NativeMovRaxImm32` | `MOV-I32` |
+
+`S0_09NopAdmission` использует только `Base`; `NativeRegisterV1Admission` использует `Base` и объединение всех 13 дополнительных правил. В таблице каждому расширенному свидетельству сопоставлен **native opt-in** `BlockBuildProfile`; выбор свидетельства сам по себе не выбирает builder. Например, legacy `run_with_nop_inc_rax_fallback` использует `Base + INC` admission, но компилирует через обычный `S0_09` builder и при передаче управления fallback исполняет допущенный `INC` интерпретатором. Только `run_with_native_inc_rax` выбирает `S0_09NativeIncRax` builder для native INC. Ни один из этих builder-профилей не превращает `NOP` в native-форму: builder допускает `B-MOV`, `B-ALU`, `B-JCC` и дополнительные строки выбранного native-профиля, а на bare NOP останавливается с `UnsupportedDecoded`; при продолжении исполнения допущенный NOP передаётся interpreter fallback с действующими проверками STOP и budget. `S3_32aAddRaxRaxAdmission` сначала получает полное `S0_09NopAdmission`-свидетельство и затем требует хотя бы один `ADD-RAX` на декодированной границе; при отсутствии такой формы возвращается `UnsupportedInstruction { rip: code.base_rip() }`. Этот тест наличия не разрешает инструкции вне `Base`.
+
+### Отказы, границы и лимиты
+
+Для выбранного профиля применяется отказ по умолчанию. Полный immutable view сканируется по порядку RIP: декодирование, проверка длины, диапазона и правила формы; затем по собранным инструкциям проверяются цели переходов. Ошибки admission с указанными payload и порядком обнаружения сохраняются:
+
+| `S0_09NopAdmissionError` | Условие |
+|---|---|
+| `Decode { rip, error }` | Декодер не возвращает инструкцию; исходный `DecodeError` сохраняется. |
+| `InvalidLength { rip, length }` | Декодированная длина вне `1..=15`. |
+| `RangeOverflow { rip, length }` | Невозможно преобразовать offset (тогда `length: 0`), `rip + length` переполняется либо `next_rip > code_end`. |
+| `UnsupportedInstruction { rip }` | Успешно декодированная форма не соответствует выбранному профилю; для S3-32a также отсутствие обязательного `ADD-RAX` после base-проверки. |
+| `BranchTargetNotBoundary { rip, target }` | После полного scan цель `next_rip.wrapping_add_signed(rel8)` не совпадает с началом декодированной инструкции или `code_end`. |
+
+Сегментные префиксы, `LOCK`, `REP` и `0x66`/`0x67` вне положительных правил, любая не перечисленная комбинация операции, операндов, размера, REX, длины или байтов отвергаются. Регистровый набор не допускает data-memory `MOV` и не содержит data-memory sites: один такой site, а значит и несколько, вне данного допуска. `LEA` вычисляет адрес и не считается data-memory site. Существующий exact fallback `NOT RCX` относится к отдельному memory-dispatch пути; ни `NativeRegisterV1`, ни этот раздел не добавляют ему native register admission. Memory-формы `MOV`, `Checked*` и ограниченные двухсайтовые memory-профили остаются в своих разделах и отдельном механизме; данный отказ не меняет их правила.
+
+`BlockLimits { instructions, bytes }` применяется отдельно к построению одного блока, а не к полному admission view. Каждый предел должен быть положительным: `instructions <= 32`, `bytes <= 256`; иначе builder возвращает `BuildError::InvalidLimits { limits }`. Достижение допустимого предела завершает корректный префикс как `BlockStopReason::InstructionLimit` или `ByteLimit` (в том числе когда байтовый предел прерывает fetch инструкции), а не как `S0_09NopAdmissionError` или гостевое исключение. Проверенное создание `CodeView` может отдельно вернуть `BuildError::AddressOverflow`; entry вне view и другие ошибки builder сохраняют собственные существующие типы. Полное свидетельство границ нельзя заменять ограниченным одним блоком scan.
+
+### Обязательная эквивалентность
+
+Единый механизм, который впоследствии реализует эти правила, обязан при каждом соответствующем профиле принимать ровно действующее множество форм и кодировок, отказывать на тех же входах с той же причиной и payload и сохранять IR, машинный код, состояние регистров и флагов и retirement. Параметризованный корпус должен проверить каждую форму и каждое правило отказа; одна новая разрешённая кодировка или одно расхождение означает невыполнение инварианта. Правила положительные и не грубее существующих предикатов; память и отдельный memory-path сохраняют своё поведение. Этот раздел не является расширением поддержки.
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

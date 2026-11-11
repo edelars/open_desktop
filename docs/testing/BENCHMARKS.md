@@ -903,6 +903,61 @@ in the [S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is
 bounded branch/helper evidence; it does not cover memory, fallback or
 invalidation workloads and does not complete S3-36.
 
+### S3-56: generic register cold and warm on the same resident corpus
+
+The existing `cold-first-run` and `warm-first-run` commands accept
+`--generic-register` on Apple Silicon macOS release builds. This opt-in
+selects the same frozen five S3-14 cases and trace used by S3-36b and runs
+`NativeRegisterV1Admission` through `run_multi_cached_native_register_v1_controlled`
+with eager flags and FIFO(16). Without the flag both commands retain their
+existing S3-17 profiles and output. Other commands reject the flag.
+
+Both list and trace SHA-256 values, each fixture/program hash, trace visits,
+interpreter outcome and retirement are validated before timing. The generic
+admission is built before timing. Preflight rejects a bare NOP: it is the only
+current NativeRegisterV1 interpreter handoff, and each successful measured
+generic dispatch also requires `retired_interpreter == 0`. Thus the recorded
+zero fallback-helper calls are inferred from this checked eligibility and
+successful dispatch, not from an instrumented helper-call counter. This is a
+native-only workload; it does not exercise the blocked S3-55 mixed fallback.
+
+Cold samples sum fresh FIFO arena/cache initialization and calls over all five
+cases; warm samples use one prewarmed resident FIFO cache and reject any
+measured miss, compilation, publication or eviction. The interpreter runs the
+same cases and reset states. State cloning, fixture/trace loading, admission,
+oracle preparation and result validation remain outside timed call intervals.
+Each timed generic `Variant::call` includes benchmark-wrapper selection,
+`CodeView`/dependency and fixture-context construction, and initialization of
+the stop byte as well as the dispatch itself; it is not a bare dispatcher-only
+latency. The generic/legacy comparison therefore includes these harness costs.
+Each process uses the existing common-sweep calibration: 20 alternating pairs,
+at least 200 ms for each side; an under-duration sample discards and restarts
+the series. Reports include raw sample times, retirement split, cache counters,
+derived hit rate, median/range/IQR, source fingerprint and host configuration.
+
+For example, from the repository root, use fresh output paths:
+
+```sh
+mkdir -p work/tmp/s3-56-repro
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- cold-first-run --generic-register \
+    --case-list tests/fixtures/x86/stage3/s3_14_branch_helper_case_list.txt \
+    --trace docs/reports/data/stage3/s3-36b/trace.json --process-run "$run" \
+    --output "work/tmp/s3-56-repro/cold-$run.json"
+  cargo run --release -p od-bench --offline -- warm-first-run --generic-register \
+    --case-list tests/fixtures/x86/stage3/s3_14_branch_helper_case_list.txt \
+    --trace docs/reports/data/stage3/s3-36b/trace.json --process-run "$run" \
+    --output "work/tmp/s3-56-repro/warm-$run.json"
+done
+```
+
+The [S3 Core report](../reports/STAGE_3_CORE_REPORT.md)
+records the six process runs and their limitations. S3-35a's 1,010-case cold
+corpus differs from this five-case workload; its numbers are context, not a
+direct comparison. S3-36b uses the same five-case digests and is comparable as
+a bounded historical warm observation, with the source-revision difference
+reported. Neither comparison accepts Stage 3 as a whole.
+
 ### S3-36c: resident warm NOP-fallback comparison
 
 `od-bench warm-native-fallback` selects 19 seed/index identities from the
