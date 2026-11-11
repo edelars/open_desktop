@@ -35474,7 +35474,8 @@ fn step_configured(
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
-        Operation::FarReturn | Operation::IretQ => {
+        // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
+        Operation::Leave | Operation::FarReturn | Operation::IretQ => {
             control_policy.is_some()
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
@@ -49543,6 +49544,23 @@ fn step_configured(
             return Ok(StepOutcome::Branched);
         }
         Operation::Endbr64Nop | Operation::NopModrm => {}
+        Operation::Leave => {
+            // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
+            // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
+            // address, #PF otherwise) and only then are RSP and RBP committed; a fault
+            // leaves the state unchanged. RFLAGS and every other register are untouched.
+            let old_rbp = state.gpr[Register::Rbp as usize];
+            let stack_address = match stack_access_address(old_rbp, false, OperandSize::Qword) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+                Ok(value) => value,
+                Err(error) => return report_memory_error(error),
+            };
+            state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
+            state.gpr[Register::Rbp as usize] = value;
+        }
         Operation::FarReturn => {
             return match far_return_cpl0(state, memory, context) {
                 Ok(true) => Ok(StepOutcome::Branched),
