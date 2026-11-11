@@ -1496,7 +1496,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_the_cross_page_qword_read_after_mov_rbx_cr2() {
+    fn real_artifacts_checkpoint_at_budget_30m_past_the_qword_read() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1511,41 +1511,34 @@ mod tests {
                 "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588".to_string(),
             ram_mib: 128,
             out: String::new(),
-            budget: Some(3_000_000),
+            budget: Some(30_000_000),
             set_cpl0: true,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
-        // S4-38L5c: the guest `#PF` at 0x102_0020 (from `MOV [RDI-4], R15B` on 0x541_f236) is
-        // delivered through the guest IDT; the boot page-fault handler maps the page, returns with
-        // `IRETQ`, and the instruction restarts (`exceptions_delivered` = 1, 24 handler instructions).
-        // S4-38L5d: `MOV RBX, CR2` (`0f 20 d3`) is executed by the set. With budget 3000000 the run
-        // stops `backend` at `MOV RCX, [RAX]` (`48 8b 08`) on 0x543_5ca0 after 399735 retired
-        // instructions: an 8-byte read whose linear address 0x100_0ffa crosses the 4 KiB boundary,
-        // and the set has no cross-page qword read yet (S4-38L5e). Evidence:
-        // `docs/reports/data/stage4/s4-38l5d-cr2-any-reg-run.json`.
+        // S4-38L6: the qword read across the 4 KiB boundary (`MOV RCX, [RAX]`, S4-38L5e) and the
+        // `#PF` delivery (S4-38L5c) are passed. The budget checkpoint is deterministic: with budget
+        // 30000000 the run is `budget_exhausted` at `MOV [RSP+0x18], RAX` (`48 89 44 24 18`) on
+        // 0x543_4d78 (retired 30000000, no architectural stop). The 200M run stops at 0x543_4e32
+        // (`budget_exhausted`, 2030 s user CPU: about 98k instructions/s, see STAGE_4 L6). Evidence:
+        // `docs/reports/data/stage4/s4-38l5e-cross-page-read-run.json` (30M) and
+        // `docs/reports/data/stage4/s4-38l6-budget-200m-run.json` (200M).
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 399735, "{value:#}");
+        assert_eq!(value["retired"], 30_000_000, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
-        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
-        assert_eq!(stop["rip"], "0x5435ca0");
+        assert_eq!(stop["exit_kind"], "budget_exhausted", "{value:#}");
+        assert_eq!(stop["rip"], "0x5434d78");
         assert!(
-            stop["rip_bytes"].as_str().unwrap().starts_with("48 8b 08"),
-            "{value:#}"
-        );
-        assert!(
-            stop["set_exit_detail"]
+            stop["rip_bytes"]
                 .as_str()
                 .unwrap()
-                .contains("CrossesPage { address: GuestLinearAddress(16781306), width: 8 }"),
+                .starts_with("48 89 44 24 18"),
             "{value:#}"
         );
-        assert_eq!(
-            stop["memory_error"],
-            "CrossesPage { address: GuestLinearAddress(16781306), width: 8 }"
-        );
+        assert_eq!(stop["set_exit_detail"], "Run(InstructionBudgetExhausted)");
+        assert!(stop["memory_error"].is_null());
         assert!(stop["page_fault"].is_null());
         assert_eq!(
             stop["set_members"],
