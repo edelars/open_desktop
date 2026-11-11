@@ -22461,17 +22461,22 @@ CPL0: вопрос к решению (какие порты, ответ шины
 
 **Решения по умолчанию (приняты).**
 - Адрес конфигурации хранится в регистре CONFIG_ADDRESS (порт `0xCF8`); его значение переживает вызовы набора (хранится в плате, как гостевой EFER).
-  `OUT DX, EAX` по `0xCF8` сохраняет все 32 бита (enable-бит и прочее не интерпретируются); `OUT DX, AX` по `0xCF8` заменяет только `[15:0]` и сохраняет
-  `[31:16]` (решение, не из SDM); `IN EAX, DX` по `0xCF8` возвращает сохранённое значение, `IN AX, DX` — его `[15:0]`.
+  `OUT DX, EAX` по `0xCF8` сохраняет все 32 бита (enable-бит и прочее не интерпретируются); `IN EAX, DX` по `0xCF8` возвращает сохранённое значение.
+  Word-доступ к `0xCF8` (`66 EF`/`66 ED`) не поддержан: семантика не подтверждена железом, поэтому это отказ — `Unsupported` с точным опкодом
+  (`0xEF` для `OUT`, `0xED` для `IN`) без мутации (регистры, RIP и адрес не меняются), как доступ к `0xCF9..0xCFB`. Порт — это `DX` (`RDX[15:0]`);
+  старшие биты RDX игнорируются.
 - Устройств на шине нет. `IN` по портам `0xCFC..0xCFF` возвращает все единицы для размера доступа (`0xFFFFFFFF` для dword — `RAX[63:32]` обнуляется;
   `0xFFFF` для word — `RAX[63:16]` сохраняется) независимо от значения CONFIG_ADDRESS. `OUT` по `0xCFC..0xCFF` принимается и отбрасывается (адрес
-  не меняется), всегда.
-- Любой другой порт для dword/word-форм (`0xCF9..0xCFB`, `0x3F8`, `0xD00`, …) — `Unsupported` с точным опкодом (`0xEF`/`0xED`) без мутации; порт
+  не меняется), всегда. Dword-доступ к `0xCFD..0xCFF` (не выровненный по границе dword окна CONFIG_DATA) возвращает все единицы по тому же соглашению
+  проекта (соглашение, не пункт SDM; поведение невыровненного доступа к окну не сверялось с первоисточником).
+- Любой другой порт для dword/word-форм (`0xCF9..0xCFB`, `0x3F8`, `0xD00`, …) и word-доступ к `0xCF8` — `Unsupported` с точным опкодом (`0xEF`/`0xED`) без мутации; порт
   байтового PIO и шина не вызываются.
 
 **Декодер.** Новые операции `Operation::InDx { size }`/`OutDx { size }`. Принимаются только `EF`/`ED` без префиксов и `66 EF`/`66 ED` (ровно один `66`, длина
 2). Любой другой префикс — `Unsupported` с точным опкодом (`0xEF`/`0xED`) без мутации: `F0` (LOCK), `F2`, `F3` (REP/REPNE: `REP OUTSD` — это `6F`, здесь
-не это), сегментные (`2E`/`36`/`3E`/`26`/`64`/`65`), `67`, любой `REX` (в т.ч. `REX.W`), а также `66 66 EF`. Байтовые `EC`/`EE` не менялись.
+не это), сегментные (`2E`/`36`/`3E`/`26`/`64`/`65`), `67`, любой `REX` (в т.ч. `REX.W`), а также `66 66 EF`. Любой REX перед `66` (`48 66 EF`,
+`40 66 ED`) — тоже отказ: декодер отказывает, если REX не стоит непосредственно перед опкодом (как для `0F`-форм; архитектурно такой REX игнорируется, но
+эта форма его не принимает); голая форма `66 EF` без REX не изменилась. Исполнитель дополнительно проверяет длину инструкции (1 или 2 байта). Байтовые `EC`/`EE` не менялись.
 
 **Исполнение и гейт.** Член набора `with_pci_config(&Cell<u32>)` (ячейка CONFIG_ADDRESS принадлежит вызывающему, как ячейка EFER). Формы работают только
 через `run_with_cpl0_profile_set_and_pio` (как `with_pio_u8`), только в CPL0 под `control_policy` и только при члене; CPU не вызывает `PortIo` для этих
@@ -22481,14 +22486,15 @@ CPL0: вопрос к решению (какие порты, ответ шины
 его имя `pci_config` идёт последним (после `popf_cpl0`). `LinuxStopRecord.pci_config_address` и поле `stop.pci_config_address` в JSON runner'а —
 сохранённый CONFIG_ADDRESS.
 
-Тесты: `cpl0_profile_set::pci_dword_out_to_config_address_is_stored_and_read_back_by_in`, `pci_word_access_to_config_address_uses_the_low_16_bits_only`,
+Тесты: `cpl0_profile_set::pci_dword_out_to_config_address_is_stored_and_read_back_by_in`, `pci_word_access_to_config_address_is_refused_without_mutation`, `pci_port_is_truncated_to_dx`, `pci_config_address_is_kept_between_runs_on_the_same_cell`,
 `pci_config_data_in_without_a_device_returns_all_ones` (порты `0xCFC..0xCFF`, dword и word, ненулевые старшие биты RAX), `pci_config_data_out_is_discarded_and_keeps_the_address`,
 `pci_guest_sequence_address_then_data_read_is_all_ones`, `pci_other_ports_are_unsupported_without_mutation`,
-`pci_prefixed_forms_are_refused_with_the_exact_opcode_and_no_mutation` (18 форм: REP/REPNE/LOCK/REX/REX.W/67/сегментные/`66 66`), `pci_forms_are_outside_a_set_without_the_member`,
+`pci_prefixed_forms_are_refused_with_the_exact_opcode_and_no_mutation` (20 форм: REP/REPNE/LOCK/REX/REX.W/REX перед `66`/67/сегментные/`66 66`), `pci_forms_are_outside_a_set_without_the_member`,
 `pci_member_does_not_admit_the_byte_forms`, `pci_member_together_with_pio_keeps_the_byte_forms_unchanged`, `pci_forms_in_ring3_are_rejected_at_entry`;
 `long_decode::tests::in_out_dword_and_word_forms_decode_with_their_size`, `in_out_dword_and_word_forms_refuse_every_other_prefix_with_the_exact_opcode`;
 `linux_direct::tests::pci_config_out_then_data_in_runs_through_the_board_set_and_the_address_is_kept` (граница: `ef` при EAX = `0x80001000`, EDX = `0xcf8`, затем
-`ed` по `0xcfc` → EAX = `0xffffffff`, retired 6), `pci_config_ports_are_outside_a_set_without_the_member`.
+`ed` по `0xcfc` → EAX = `0xffffffff`, retired 6), `pci_config_ports_are_outside_a_set_without_the_member`, `pci_config_address_chains_between_two_runs_on_one_board`;
+`od-runner` `linux_direct::tests::set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8` (JSON `stop.pci_config_address` = `0x80001000`).
 
 **Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7w-diagnostic-run.json`.
 `out %eax, %dx` по RIP `0xffffffff826dedb2` и последующие обращения к PCI-портам проходят (retired 1184860323 → 1185015387, +155064); в записи
