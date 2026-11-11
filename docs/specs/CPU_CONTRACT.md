@@ -22436,3 +22436,14 @@ RSP = `0xffffffff83a03de8`, RBP = `0xffffffff83a03df0`, RFLAGS = `0x86`; CR0 = `
 `repeated_segment_overrides_respect_the_fifteen_byte_limit`,
 `repeated_fs_gs_and_other_group_prefixes_stay_unsupported_with_the_exact_opcode`;
 `linux_direct::tests::repeated_cs_ds_prefixes_before_xor_and_mov_execute_like_the_unprefixed_forms` (board facade, retired 4).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7v-diagnostic-run.json`.
+`cs cs cs xor %eax, %eax` по RIP `0xffffffff8273440d` и последующие инструкции проходят (retired 1181834729 → 1184860323, +3025594). Новая
+граница: RIP `0xffffffff826dedb2` (GPA `0x26dedb2`), байты `ef 83 e1 02 8d 91 fc 0c 00 00 66 ed 5d 31 d2 31` — первая инструкция `ef` = `out %eax, %dx`
+(OUT DX, EAX; RAX = `0x80001000`, RDX = `0xcf8`, то есть запись адреса конфигурационного пространства PCI в порт `0xCF8`), далее `and $2,%ecx`,
+`lea 0xcfc(%rcx),%edx`, `in %dx,%ax` (`66 ed`), `pop %rbp`…; `Unsupported { opcode: 0xef }` (239), `set_exit_detail` = `Run(Unsupported { opcode: 239 })`,
+`exit_kind` = `unsupported`, retired = 1184860323. CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER
+`0xd01`; RFLAGS = `0x86`; RSP = RBP = `0xffffffff83a03e60`; RBX = `0x7ffe000`, RCX = 0, RSI = RDI = `0x1000`, R12 = `0xb0`, R15 = `0x100000`;
+`memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; `set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`,
+`msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`). Следующий срез — порт-ввод/вывод (`OUT DX, EAX`/`IN AX, DX`) для PCI-конфигурации в наборе
+CPL0: вопрос к решению (какие порты, ответ шины), не реализован.
