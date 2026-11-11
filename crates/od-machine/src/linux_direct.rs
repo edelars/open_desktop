@@ -3726,6 +3726,64 @@ mod tests {
         assert_eq!(state.rflags & 1, 0);
     }
 
+    // ---- S4-38L7t: LOCK BTR m64, r64 through the board facade ----
+
+    #[test]
+    fn lock_btr_clears_a_bit_in_a_bit_string_in_guest_memory_and_leaves_neighbours_alone() {
+        // MOV R13,0x0200_0100; MOV RDI,-1; MOV [R13+0x28],RDI; MOV [R13+0x30],RDI;
+        // MOV [R13+0x38],RDI; MOV [R13+0x40],RDI; MOV R12,64*1+5;
+        // LOCK BTR [R13+0x30],R12 (bit 69: qword R13+0x38, bit 5; the bit was set, CF = 1);
+        // MOV R12,-1; LOCK BTR [R13+0x30],R12 (bit -1: qword R13+0x28, bit 63);
+        // MOV RDX,[R13+0x38]; MOV RCX,[R13+0x40]; MOV RSI,[R13+0x30]; MOV R8,[R13+0x28]; HLT.
+        let mut code = vec![0x49, 0xBD];
+        code.extend(0x0200_0100u64.to_le_bytes());
+        code.extend([0x48, 0xBF]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0x49, 0x89, 0x7D, 0x28]);
+        code.extend([0x49, 0x89, 0x7D, 0x30]);
+        code.extend([0x49, 0x89, 0x7D, 0x38]);
+        code.extend([0x49, 0x89, 0x7D, 0x40]);
+        code.extend([0x49, 0xBC]);
+        code.extend((64u64 + 5).to_le_bytes());
+        code.extend([0xF0, 0x4D, 0x0F, 0xB3, 0x65, 0x30]);
+        code.extend([0x49, 0xBC]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0xF0, 0x4D, 0x0F, 0xB3, 0x65, 0x30]);
+        code.extend([0x49, 0x8B, 0x55, 0x38]);
+        code.extend([0x49, 0x8B, 0x4D, 0x40]);
+        code.extend([0x49, 0x8B, 0x75, 0x30]);
+        code.extend([0x4D, 0x8B, 0x45, 0x28]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 15, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // Bit 69 of the string cleared R13+0x38 bit 5 only; R13+0x40 and R13+0x30 stay all ones.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            u64::MAX & !(1 << 5)
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], u64::MAX);
+        assert_eq!(state.gpr[od_isa::Register::Rsi as usize], u64::MAX);
+        // Bit -1 cleared bit 63 of the qword at R13+0x28.
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], u64::MAX >> 1);
+        // Both bits were set: CF = 1.
+        assert_eq!(state.rflags & 1, 1);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]

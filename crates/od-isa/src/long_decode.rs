@@ -597,10 +597,13 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
-    /// S4-38L7n: `F0 REX.W 0F AB /r` (LOCK BTS m64, r64), memory operand only. The register is a
-    /// signed bit offset into a bit string that starts at the memory operand; executed only in
-    /// the CPL0 set, and the qword that holds the bit is always written back.
-    LockBtsMem {
+    /// S4-38L7n/S4-38L7t: `F0 REX.W 0F AB /r` (LOCK BTS m64, r64, `kind` = `BitKind::Set`) and
+    /// `F0 REX.W 0F B3 /r` (LOCK BTR m64, r64, `kind` = `BitKind::Reset`), memory operand only. The
+    /// register is a signed bit offset into a bit string that starts at the memory operand;
+    /// executed only in the CPL0 set, and the qword that holds the bit is always written back.
+    /// No other `kind` is ever decoded.
+    LockBitMem {
+        kind: BitKind,
         base: MemoryOperand,
         source: RegisterView,
     },
@@ -2041,9 +2044,9 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS & !crate::CF,
                 undefined: 0,
             },
-            // S4-38L7n: as the plain BTS (`Operation::Bit`): CF defined, OF/SF/AF/PF undefined (and
-            // left unchanged by the executor), ZF not affected.
-            Operation::LockBtsMem { .. } => FlagEffects {
+            // S4-38L7n/S4-38L7t: as the plain BTS/BTR (`Operation::Bit`): CF defined, OF/SF/AF/PF
+            // undefined (and left unchanged by the executor), ZF not affected.
+            Operation::LockBitMem { .. } => FlagEffects {
                 defined: crate::CF,
                 undefined: crate::PF | crate::AF | crate::SF | crate::OF,
             },
@@ -2816,10 +2819,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_memory_or_candidate = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0x80 | 0x81 | 0x83)
             && prefixes.group1 == Some(0xf0);
-        // S4-38L7n: and for the qword memory BTS (`F0 REX.W 0F AB /r`); the executor admits it only
-        // in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and `0F BA` forms are unchanged.
+        // S4-38L7n/S4-38L7t: and for the qword memory BTS/BTR (`F0 REX.W 0F AB|B3 /r`); the
+        // executor admits them only in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and
+        // `0F BA` forms are unchanged.
         let locked_qword_memory_bts_candidate = opcode.map == OpcodeMap::Escape0f
-            && opcode.byte == 0xab
+            && matches!(opcode.byte, 0xab | 0xb3)
             && prefixes.group1 == Some(0xf0);
         let locked_qword_memory_xchg_candidate = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0x87
@@ -7942,11 +7946,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let offset_encoding = ((modrm >> 3) & 7) | ((rex & 4) << 1);
                 if prefixes.group1 == Some(0xf0) {
-                    // S4-38L7n: LOCK is admitted for the qword memory BTS alone (the shared check
-                    // above lets only `0F AB` through with LOCK, and refuses duplicates). The
-                    // dword form, the register form, 0x66, 0x67 and segment prefixes keep the
-                    // refusal.
-                    if byte != 0xab
+                    // S4-38L7n/S4-38L7t: LOCK is admitted for the qword memory BTS and BTR alone
+                    // (the shared check above lets only `0F AB` and `0F B3` through with LOCK, and
+                    // refuses duplicates). BTC/BT (`0F BB`/`0F A3`), the dword form, the register
+                    // form, 0x66, 0x67 and segment prefixes keep the refusal.
+                    if !matches!(byte, 0xab | 0xb3)
                         || size != OperandSize::Qword
                         || prefixes.rex.is_none_or(|rex| rex & 8 == 0)
                         || modrm >> 6 == 3
@@ -7969,7 +7973,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         prefixes,
                         operand_size: size,
                         address_size: OperandSize::Qword,
-                        operation: Operation::LockBtsMem { base, source },
+                        operation: Operation::LockBitMem {
+                            kind: if byte == 0xab {
+                                BitKind::Set
+                            } else {
+                                BitKind::Reset
+                            },
+                            base,
+                            source,
+                        },
                     });
                 }
                 let dst = self.rm_operand(modrm, prefixes, size)?;
@@ -23052,7 +23064,7 @@ mod tests {
         );
         assert!(matches!(
             decoded.operation,
-            Operation::LockBtsMem { base, source }
+            Operation::LockBitMem { kind: BitKind::Set, base, source }
                 if source == rax
                     && base.base == AddressBase::NextRip
                     && base.displacement == -0x883ed
@@ -23062,20 +23074,20 @@ mod tests {
         let mut memory = Memory::new(&[0xf0, 0x4c, 0x0f, 0xab, 0x23]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::LockBtsMem { base, source }
+            Operation::LockBitMem { kind: BitKind::Set, base, source }
                 if source == r12 && base.base == AddressBase::Register(Register::Rbx)
         ));
         // REX.B base and SIB + disp8.
         let mut memory = Memory::new(&[0xf0, 0x49, 0x0f, 0xab, 0x10]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::LockBtsMem { base, .. }
+            Operation::LockBitMem { kind: BitKind::Set, base, .. }
                 if base.base == AddressBase::Register(Register::R8)
         ));
         let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xab, 0x54, 0x8b, 0x10]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::LockBtsMem { base, .. }
+            Operation::LockBitMem { kind: BitKind::Set, base, .. }
                 if base.index == Some(Register::Rcx)
                     && base.scale == 4
                     && base.displacement == 0x10
@@ -23127,7 +23139,118 @@ mod tests {
             // The immediate form and the other LOCK bit-test forms stay outside the slice.
             (&[0xf0, 0x48, 0x0f, 0xba, 0x2b, 0x05][..], 0xba),
             (&[0xf0, 0x48, 0x0f, 0xa3, 0x13][..], 0xa3),
-            (&[0xf0, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x48, 0x0f, 0xbb, 0x13][..], 0xbb),
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_btr_decodes_the_qword_memory_form_only() {
+        // S4-38L7t: `F0 REX.W 0F B3 /r` with a memory operand (the bit string base).
+        let r12 = RegisterView::low(Register::R12, OperandSize::Qword);
+        let rax = RegisterView::low(Register::Rax, OperandSize::Qword);
+        // The S4-38L7s diagnostic boundary: `lock btr %r12, 0x30(%r13)`.
+        let mut memory = Memory::new(&[0xf0, 0x4d, 0x0f, 0xb3, 0x65, 0x30]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 6);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(decoded.flag_effects().defined, crate::CF);
+        assert_eq!(
+            decoded.flag_effects().undefined,
+            crate::PF | crate::AF | crate::SF | crate::OF
+        );
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockBitMem { kind: BitKind::Reset, base, source }
+                if source == r12
+                    && base.base == AddressBase::Register(Register::R13)
+                    && base.displacement == 0x30
+                    && base.size == OperandSize::Qword
+        ));
+        // RIP-relative, no REX.R/B.
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xb3, 0x05, 0x13, 0x7c, 0xf7, 0xff]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 9);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockBitMem { kind: BitKind::Reset, base, source }
+                if source == rax
+                    && base.base == AddressBase::NextRip
+                    && base.displacement == -0x883ed
+        ));
+        // SIB + disp8.
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xb3, 0x54, 0x8b, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockBitMem { kind: BitKind::Reset, base, .. }
+                if base.index == Some(Register::Rcx)
+                    && base.scale == 4
+                    && base.displacement == 0x10
+        ));
+        // LOCK BTS keeps its kind.
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xab, 0x13]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockBitMem {
+                kind: BitKind::Set,
+                ..
+            }
+        ));
+        // Without LOCK the pre-existing plain BTR (register and immediate offsets) is unchanged.
+        let mut memory = Memory::new(&[0x48, 0x0f, 0xb3, 0x13]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Bit {
+                kind: BitKind::Reset,
+                dst: Operand::Memory(_),
+                offset: BitOffset::Register(_),
+            }
+        ));
+        let mut memory = Memory::new(&[0x48, 0x0f, 0xba, 0x33, 0x05]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Bit {
+                kind: BitKind::Reset,
+                dst: Operand::Memory(_),
+                offset: BitOffset::Immediate(5),
+            }
+        ));
+        for (bytes, refused_opcode) in [
+            // No REX.W (dword), REX without W, REX.R without W.
+            (&[0xf0, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x40, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x44, 0x0f, 0xb3, 0x13][..], 0xb3),
+            // Register forms (mod = 11).
+            (&[0xf0, 0x48, 0x0f, 0xb3, 0xd3][..], 0xb3),
+            (&[0xf0, 0x4d, 0x0f, 0xb3, 0xc8][..], 0xb3),
+            // 0x66 and 0x67.
+            (&[0x66, 0xf0, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x66, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x67, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            // REP/REPNE instead of LOCK, or alongside it, and a repeated LOCK.
+            (&[0xf3, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf2, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0xf3, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf3, 0xf0, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0xf0, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            // Segment prefixes.
+            (&[0xf0, 0x64, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x65, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0x65, 0xf0, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            (&[0xf0, 0x2e, 0x48, 0x0f, 0xb3, 0x13][..], 0xb3),
+            // REX not directly before the opcode.
+            (&[0xf0, 0x48, 0x66, 0x0f, 0xb3, 0x13][..], 0xb3),
+            // The immediate form and the other LOCK bit-test forms stay outside the slice.
+            (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05][..], 0xba),
+            (&[0xf0, 0x48, 0x0f, 0xa3, 0x13][..], 0xa3),
             (&[0xf0, 0x48, 0x0f, 0xbb, 0x13][..], 0xbb),
         ] {
             let mut memory = Memory::new(bytes);
