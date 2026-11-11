@@ -269,8 +269,8 @@
 
 ### S5-04. Собрать профиль платы со диском и прогнать диск без гостя
 
-- [ ] Принято после ревью. Опора на непринятый `S7-16` — по решению `S5-00` п.4(б).
-- **Текущий статус (2026-11-11):** headless board profile and no-guest persistent-backend runner prepared, pending independent review; checkbox remains unchecked. The runner uses existing `NvmeHandle::doorbell_pending`/`service` with 32-bit doorbells; existing `run_boot_executes_commands_submitted_before_the_guest_starts` checks pending doorbell service between guest quanta. S7-16 remains unaccepted; no PCI discovery, IRQ delivery, or Linux guest claim.
+- [x] Принято после ревью. Опора на непринятый `S7-16` — по решению `S5-00` п.4(б).
+- **Текущий статус (2026-11-11):** S5-04 принят после независимого ревью кода и контрактов (gpt-6.1-sol, high); проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`. Приняты только предварительный host-side headless профиль и no-guest прогон через persistent backend; факты и границы — в [отчёте этапа 5](../reports/STAGE_5_REPORT.md#11-статус-s5-04-2026-11-11). Проверены 32-bit doorbell, остановка кванта по pending predicate, host `service` и CQE; таймер профиля — только `PM_TMR`. `S7-16` не принят, ISSUE-077 открыта; PCI discovery, IRQ delivery и Linux guest behavior не заявлены. Этап 5 не принят.
 - **Где:** [firmware_board.rs](../../crates/od-machine/src/firmware_board.rs) (`nvme: Option<NvmeConfig>`, окно `NVME_MMIO_BASE`, handoff), профиль стенда в `tools/runner/src/`.
 - **Сделать:**
   1. Завести профиль платы стенда: RAM, UART как консоль, APIC/IOAPIC и таймер, PM-блок, NVMe с backend из `S5-03`.
