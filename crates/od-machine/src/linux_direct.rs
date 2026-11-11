@@ -3860,6 +3860,68 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7ae: FS/GS-based MOV m8, imm8 through the board facade ----
+
+    #[test]
+    fn gs_mov_byte_immediate_after_wrmsr_gs_base_stores_one_byte_and_reads_back_through_gs() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0x0123_4567_89AB_CDEF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); SUB DL,1 (0 - 1 borrows: CF = 1);
+        // MOV BYTE %gs:0x10,0x01 (`65 c6 04 25 10 00 00 00 01`: only the low byte changes);
+        // MOV BYTE %gs:disp(%rip),0xff (`65 c6 05 disp32 ff`, effective address 0x11: the
+        // S4-38L7ad boundary shape, the next RIP is after the immediate);
+        // MOV RBX,%gs:0x10 (`65 48 8b 1c 25 10 00 00 00`: the read back through the same base);
+        // MOV RDX,[BASE+0x10] (plain); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0x65, 0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, 0x01]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x11u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0xC6, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xFF);
+        code.extend([0x65, 0x48, 0x8B, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x48, 0x8B, 0x14, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 13,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, SUB, MOV m8 x2, load, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // Bytes 0 and 1 of the qword were replaced; the rest stayed.
+        let expected = 0x0123_4567_89AB_FF01u64;
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            expected,
+            "via GS"
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], expected, "plain");
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE);
+        // MOV changes no flag: the CF set by SUB DL,1 is still set.
+        assert_eq!(state.rflags & 1, 1, "CF");
+    }
+
     // ---- S4-38L7ad: FS/GS-based MOVZX r32/r64, m16 through the board facade ----
 
     #[test]

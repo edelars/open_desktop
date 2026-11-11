@@ -34875,6 +34875,9 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
@@ -48638,6 +48641,8 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
         | Operation::CmpFsMem { .. }
@@ -53693,6 +53698,20 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
+        }
+        Operation::MovFsMemByteImm { dst, immediate } => {
+            // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
+            // instruction, immediate included, as `next_rip` is). A non-canonical address (a single
+            // byte is stored) is #GP(0) before the write. Only the byte is stored; flags and
+            // registers are untouched.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
+        }
+        Operation::MovGsMemByteImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
         }
         Operation::SubFsMem { dst, src } => {
             // S4-38L7j: base + effective address; non-canonical (start or last byte) is #GP(0)

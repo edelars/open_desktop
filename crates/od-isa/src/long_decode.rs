@@ -487,6 +487,19 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
+    /// S4-38L7ae: `64 [REX] C6 /0 ib` (MOV m8, imm8 with the FS base), memory operand only. The
+    /// immediate byte is stored at base + effective address; flags are kept. Executed only in the
+    /// CPL0 set.
+    MovFsMemByteImm {
+        dst: MemoryOperand,
+        immediate: u8,
+    },
+    /// S4-38L7ae: `65 [REX] C6 /0 ib` (MOV m8, imm8 with the GS base), memory operand only.
+    /// Executed only in the CPL0 set.
+    MovGsMemByteImm {
+        dst: MemoryOperand,
+        immediate: u8,
+    },
     /// S4-38L7o: `64 [REX] F6 /0 ib` (TEST m8, imm8 with the FS base), memory operand only. The
     /// byte is read, ANDed with the immediate and only the flags change. Executed only in the CPL0
     /// set.
@@ -8691,7 +8704,40 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     raw
                 };
-                Operation::MovImmediate { dst, value }
+                if let (0xc6, Some(0x64 | 0x65), Operand::Memory(dst)) =
+                    (byte, prefixes.segment, dst)
+                {
+                    // S4-38L7ae: `[64|65] [REX] C6 /0 ib` (MOV m8, imm8 with the FS/GS base),
+                    // memory operand only. LOCK/REP, 0x66 and 0x67 stay refused; a REX byte that
+                    // is not immediately before the opcode is refused (ambiguous spelling, as in
+                    // S4-38L7o); a REX directly before it is accepted (REX.W/R do not change the
+                    // byte store, REX.B/X reach the base/index). The register form (mod = 11) and
+                    // `C7` with a segment prefix are not touched here.
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if stale_rex
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    if prefixes.segment == Some(0x64) {
+                        Operation::MovFsMemByteImm {
+                            dst,
+                            immediate: value as u8,
+                        }
+                    } else {
+                        Operation::MovGsMemByteImm {
+                            dst,
+                            immediate: value as u8,
+                        }
+                    }
+                } else {
+                    Operation::MovImmediate { dst, value }
+                }
             }
             (OpcodeMap::Primary, byte @ 0xa0..=0xa3) => {
                 if byte & 1 == 0 {
@@ -9223,6 +9269,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if matches!(prefixes.segment, Some(0x64 | 0x65))
             && match operation {
                 Operation::MovImmediate { dst, .. } => matches!(dst, Operand::Memory(_)),
+                Operation::MovFsMemByteImm { .. } => false,
+                Operation::MovGsMemByteImm { .. } => false,
                 Operation::Mov { dst, src } => {
                     matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_))
                 }
@@ -23449,6 +23497,78 @@ mod tests {
     }
 
     #[test]
+    fn segment_mov_byte_immediate_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7ae: `[64|65] [REX] C6 /0 ib` with a memory operand. The S4-38L7ad diagnostic
+        // boundary: `movb $0x1, %gs:0x301a268(%rip)`, 8 bytes.
+        let mut memory = Memory::new(&[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        // MOV changes no flag.
+        assert_eq!(decoded.flag_effects().defined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovGsMemByteImm { dst, immediate: 1 }
+                if dst.base == AddressBase::NextRip
+                    && dst.displacement == 0x0301_a268
+                    && dst.size == OperandSize::Byte
+        ));
+        // FS with REX.W + REX.R (ignored by the byte store): `movb $0xff, %fs:0x1234(%rip)`.
+        let mut memory = Memory::new(&[0x64, 0x4c, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsMemByteImm { dst, immediate: 0xff }
+                if dst.size == OperandSize::Byte && dst.displacement == 0x1234
+        ));
+        // REX.B base r8: `movb $0x80, %gs:0x8(%r8)`.
+        let mut memory = Memory::new(&[0x65, 0x41, 0xc6, 0x40, 0x08, 0x80]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovGsMemByteImm { dst, immediate: 0x80 }
+                if dst.base == AddressBase::Register(Register::R8) && dst.displacement == 8
+        ));
+        // The register form, the plain form and CS/DS/ES/SS forms keep decoding as the plain
+        // `MovImmediate`.
+        for bytes in [
+            &[0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0x01][..],
+            &[0x65, 0xc6, 0xc3, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0xc3, 0x01][..],
+            &[0x2e, 0xc6, 0x03, 0x01][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::MovImmediate { .. }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // LOCK/REP, 0x66, 0x67, a second segment prefix, a stale REX, /1 and `C7` are refused.
+        for (bytes, byte) in [
+            (&[0xf0u8, 0x65, 0xc6, 0x03, 0x01][..], 0xc6u8),
+            (&[0xf3, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x66, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x65, 0x66, 0x48, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x65, 0x67, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x64, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x41, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x65, 0x41, 0x48, 0xc6, 0x03, 0x01][..], 0xc6),
+            (&[0x65, 0xc6, 0x0b, 0x01][..], 0xc6),
+            (&[0x65, 0xc7, 0x03, 0x01, 0, 0, 0][..], 0xc7),
+            (&[0x64, 0x48, 0xc7, 0x03, 0x01, 0, 0, 0][..], 0xc7),
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == byte
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn segment_movzx_word_decodes_fs_gs_memory_forms_only() {
         // S4-38L7ad: `[64|65] [REX] 0F B7 /r` with a memory source. The S4-38L7ac diagnostic
         // boundary: `movzwl %gs:0x301a005(%rip), %edi`, 8 bytes.
@@ -25039,7 +25159,8 @@ mod tests {
             assert_eq!(memory.fetched.len(), bytes.len());
         }
         for bytes in [
-            &[0x64, 0xc6, 0x03, 1][..],
+            // S4-38L7ae decodes `[64|65] C6 /0 ib`; `C7` with a segment prefix stays refused.
+            &[0x64, 0xc7, 0x03, 1, 0, 0, 0][..],
             &[0x65, 0x48, 0xc7, 0x03, 1, 2, 3, 4],
             &[0x64, 0x0f, 0xbe, 0x03],
         ] {
