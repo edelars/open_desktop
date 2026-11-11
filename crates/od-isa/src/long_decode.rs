@@ -589,6 +589,14 @@ pub enum Operation {
     LockIncMem {
         destination: MemoryOperand,
     },
+    /// S4-38L7s: `F0 [REX] 80 /1 ib`, `F0 [REX] 81 /1 id` and `F0 [REX] 83 /1 ib` (LOCK OR m8,
+    /// imm8 / m32, imm32 / m64, imm32 with REX.W / m32 or m64, sign-extended imm8), memory
+    /// destination only. `immediate` is already extended to the operand width. Executed only in
+    /// the CPL0 set; the destination is always written back.
+    LockOrMem {
+        destination: MemoryOperand,
+        immediate: u64,
+    },
     /// S4-38L7n: `F0 REX.W 0F AB /r` (LOCK BTS m64, r64), memory operand only. The register is a
     /// signed bit offset into a bit string that starts at the memory operand; executed only in
     /// the CPL0 set, and the qword that holds the bit is always written back.
@@ -2083,7 +2091,7 @@ impl Instruction {
                 kind: LogicKind::Not,
                 ..
             } => FlagEffects::default(),
-            Operation::Logic { .. } => FlagEffects {
+            Operation::Logic { .. } | Operation::LockOrMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::AF,
                 undefined: crate::AF,
             },
@@ -2801,6 +2809,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // CPL0 set. Every other LOCK + 0xff form is refused in the opcode arm below.
         let locked_memory_inc_candidate = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0xff
+            && prefixes.group1 == Some(0xf0);
+        // S4-38L7s: and for the memory OR with an immediate (`F0 [REX] 80|81|83 /1`); the other
+        // group members (ADD, ADC, SBB, AND, SUB, XOR, CMP) with LOCK are refused in the opcode arm
+        // below with the same opcode.
+        let locked_memory_or_candidate = opcode.map == OpcodeMap::Primary
+            && matches!(opcode.byte, 0x80 | 0x81 | 0x83)
             && prefixes.group1 == Some(0xf0);
         // S4-38L7n: and for the qword memory BTS (`F0 REX.W 0F AB /r`); the executor admits it only
         // in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and `0F BA` forms are unchanged.
@@ -5173,6 +5187,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_qword_memory_xadd_candidate
                 && !locked_qword_memory_cmpxchg_candidate
                 && !locked_memory_inc_candidate
+                && !locked_memory_or_candidate
                 && !locked_qword_memory_bts_candidate
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
@@ -8059,6 +8074,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // REX.R does not extend a group opcode selector. All eight
                 // scalar arithmetic/logical group1 selectors are now supported.
                 let group = (modrm >> 3) & 7;
+                if prefixes.group1 == Some(0xf0) {
+                    // S4-38L7s: LOCK is admitted for the memory OR (/1) alone, as the dword and
+                    // qword (REX.W) forms and the byte form. ADD/ADC/SBB/AND/SUB/XOR/CMP, the
+                    // register form, 0x66, 0x67, a segment prefix and a REX byte that is not
+                    // immediately before the opcode keep the refusal with this opcode. Repeated
+                    // LOCK/REP prefixes are refused by the shared check above.
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if group != 1
+                        || modrm >> 6 == 3
+                        || stale_rex
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                        || prefixes.segment.is_some()
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                }
                 let dst = self.rm_operand(modrm, prefixes, size)?;
                 let imm_size = if byte == 0x83 {
                     OperandSize::Byte
@@ -8075,7 +8110,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     immediate
                 };
-                binary_operation(group, dst, Operand::Immediate(immediate))
+                if let (Some(0xf0), Operand::Memory(destination)) = (prefixes.group1, dst) {
+                    Operation::LockOrMem {
+                        destination,
+                        immediate,
+                    }
+                } else {
+                    binary_operation(group, dst, Operand::Immediate(immediate))
+                }
             }
             (OpcodeMap::Primary, byte @ (0xc0 | 0xc1 | 0xd0 | 0xd1 | 0xd2 | 0xd3)) => {
                 if byte == 0xc0 || byte == 0xd0 || byte == 0xd2 {
@@ -22395,6 +22437,138 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(
                 matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_or_decodes_the_memory_immediate_forms_only() {
+        // S4-38L7s: `F0 [REX] 80|81|83 /1` with a memory destination. The S4-38L7r diagnostic
+        // boundary `lock orb $0x80, 0x3d(%rbx)` is five bytes long (the immediate included).
+        let mut memory = Memory::new(&[0xf0, 0x80, 0x4b, 0x3d, 0x80]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(decoded.operand_size, OperandSize::Byte);
+        assert_eq!(
+            decoded.flag_effects().defined,
+            crate::ARITHMETIC_FLAGS & !crate::AF
+        );
+        assert_eq!(decoded.flag_effects().undefined, crate::AF);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockOrMem { destination, immediate: 0x80 }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.displacement == 0x3d
+                    && destination.size == OperandSize::Byte
+        ));
+        // RIP-relative: the length counts the immediate, so the next RIP is after it.
+        let mut memory = Memory::new(&[0xf0, 0x80, 0x0d, 0x34, 0x12, 0x00, 0x00, 0x80]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockOrMem { destination, .. }
+                if destination.base == AddressBase::NextRip && destination.displacement == 0x1234
+        ));
+        // REX.B base, REX.X index (REX.R is irrelevant for the group selector).
+        let mut memory = Memory::new(&[0xf0, 0x41, 0x80, 0x48, 0x00, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockOrMem { destination, immediate: 0x10 }
+                if destination.base == AddressBase::Register(Register::R8)
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x42, 0x80, 0x4c, 0x0b, 0x20, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockOrMem { destination, .. } if destination.index == Some(Register::R9)
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x44, 0x80, 0x4b, 0x3d, 0x80]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockOrMem { .. }
+        ));
+        // The dword/qword forms: imm32 (sign-extended for REX.W) and sign-extended imm8.
+        let mut memory = Memory::new(&[0xf0, 0x81, 0x4b, 0x3d, 0x00, 0x00, 0x00, 0x80]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockOrMem { destination, immediate: 0x8000_0000 }
+                if destination.size == OperandSize::Dword
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x81, 0x4b, 0x3d, 0x00, 0x00, 0x00, 0x80]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockOrMem { destination, immediate: 0xffff_ffff_8000_0000 }
+                if destination.size == OperandSize::Qword
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x83, 0x4b, 0x3d, 0xff]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 6);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockOrMem { destination, immediate: u64::MAX }
+                if destination.size == OperandSize::Qword
+        ));
+        // Without LOCK the pre-existing logic OR is decoded unchanged.
+        for bytes in [
+            &[0x80, 0x4b, 0x3d, 0x80][..],
+            &[0x81, 0x4b, 0x3d, 0x80, 0x00, 0x00, 0x00][..],
+            &[0x83, 0x4b, 0x3d, 0x80][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::Logic {
+                        kind: LogicKind::Or,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // Every other form keeps the refusal, with the group opcode.
+        for (bytes, byte) in [
+            // ADD, ADC, SBB, AND, SUB, XOR, CMP with LOCK.
+            (&[0xf0, 0x80, 0x43, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x53, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x5b, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x63, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x6b, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x73, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x80, 0x7b, 0x3d, 0x01][..], 0x80),
+            (&[0xf0, 0x83, 0x63, 0x3d, 0x01][..], 0x83),
+            (&[0xf0, 0x81, 0x43, 0x3d, 1, 0, 0, 0][..], 0x81),
+            // Register forms.
+            (&[0xf0, 0x80, 0xcb, 0x01][..], 0x80),
+            (&[0xf0, 0x41, 0x83, 0xc8, 0x01][..], 0x83),
+            // 0x66, 0x67, REP/REPNE, a repeated LOCK.
+            (&[0x66, 0xf0, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0x67, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf3, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf2, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0xf3, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf3, 0xf0, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0xf0, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            // Segment prefixes.
+            (&[0xf0, 0x64, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0x65, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0x65, 0xf0, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0x2e, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            // REX not directly before the opcode.
+            (&[0x48, 0xf0, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0x48, 0x66, 0x80, 0x4b, 0x3d, 0x80][..], 0x80),
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. })
+                        if opcode.map == OpcodeMap::Primary && opcode.byte == byte
+                ),
                 "{bytes:02x?}"
             );
         }
