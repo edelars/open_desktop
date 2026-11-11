@@ -1766,6 +1766,8 @@ impl Cr0Profile {
 /// IA32_EFER bits (SDM Vol. 3 §2.2.1, from memory). `SCE` enables SYSCALL; `LME`/`LMA`/`NXE`
 /// are the walker's long-mode and no-execute bits; bits 12..=15 (SVME, LMSLE, FFXSR, TCE) exist
 /// only with CPUID features the model does not report.
+/// Bits 12..=15 are `Unsupported` here conservatively (from memory: architecturally `#GP(0)` when the
+/// CPUID feature is absent).
 const EFER_SCE: u64 = 1;
 const EFER_FEATURE_BITS: u64 = 0xf << 12;
 const EFER_WRITABLE_KNOWN: u64 = EFER_SCE | (1 << 8) | (1 << 10) | (1 << 11) | EFER_FEATURE_BITS;
@@ -1783,6 +1785,8 @@ enum EferWrite {
 /// Reserved bits (1..=7, 9, 16..=63) raise `#GP(0)`; the CPUID-dependent bits 12..=15 and any
 /// change of `LME`, `LMA` or `NXE` (the walker's EFER is kept separately and must stay valid;
 /// at active paging LME/LMA cannot change anyway) are `Unsupported`. Only `SCE` may differ.
+/// A change of LME while PG=1 is architecturally `#GP(0)` (from memory); it stays a conservative
+/// `Unsupported` here.
 const fn efer_write_decision(current: u64, value: u64) -> EferWrite {
     if value & !EFER_WRITABLE_KNOWN != 0 {
         EferWrite::Reserved
@@ -1838,6 +1842,8 @@ pub enum ControlRegisterPolicy {
 impl ControlRegisterPolicy {
     /// CR0 values of the CPL0 set: the `FpInitLong64V1` values, since S4-38L7f optionally with
     /// AM (bit 18). `Cr0Profile::accepts` itself is unchanged for the per-register profiles.
+    /// Clearing PE or PG while PG=1 in long mode is architecturally `#GP(0)` (from memory); the
+    /// policy keeps it a conservative `Unsupported` (out-of-policy value, no state change).
     const fn accepts_cr0(self, value: u64) -> bool {
         match self {
             Self::Cpl0BaseLong64V1 => Cr0Profile::FpInitLong64V1.accepts(value & !CR0_AM),

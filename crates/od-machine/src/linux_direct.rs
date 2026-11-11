@@ -756,7 +756,9 @@ pub fn run_linux_direct_board_set(
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let cli = CliProfile::NonPviLong64V1;
     let cpuid = CpuidProfile::DiagnosticV1;
-    let msr = MsrProfile::EferReadOnlyV1(boot.board.guest_efer());
+    // The profile only names the member and seeds nothing under the cell, so it carries the
+    // constant board EFER: `set_members` keeps `msr:EferReadOnlyV1(3328)` on every run.
+    let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
     // S4-38L7f: the guest-visible EFER; the set writes it, the board keeps it between runs.
     let efer_cell = Cell::new(boot.board.guest_efer());
     let halt = HaltProfile::Long64V1;
@@ -3056,6 +3058,40 @@ mod tests {
         );
         assert_eq!(record.retired, 3);
         assert_eq!(boot.board.guest_efer(), 0xD00);
+    }
+
+    #[test]
+    fn guest_efer_chains_between_two_runs_on_one_board_and_the_member_name_is_stable() {
+        // MOV ECX,0xC0000080; MOV EAX,0xD01; XOR EDX,EDX; WRMSR | XOR EAX,EAX; RDMSR; HLT.
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x0D, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0x31, 0xC0, 0x0F, 0x32, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let name = format!("msr:{:?}", MsrProfile::EferReadOnlyV1(0xD00));
+        assert_eq!(name, "msr:EferReadOnlyV1(3328)");
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        // Run 1 stops by budget right after the WRMSR.
+        let first = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(first.retired, 4, "{first:?}");
+        assert_eq!(first.guest_efer, 0xD01);
+        assert_eq!(boot.board.guest_efer(), 0xD01);
+        assert!(first.set_members.contains(&name), "{:?}", first.set_members);
+        // Run 2 on the same board seeds the cell from the board: RDMSR returns 0xD01.
+        let second = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 3, "XOR, RDMSR, HLT");
+        assert_eq!(second.gpr[Register::Rax as usize], 0xD01);
+        assert_eq!(second.guest_efer, 0xD01);
+        assert_eq!(second.efer, 0xD00);
+        assert!(
+            second.set_members.contains(&name),
+            "{:?}",
+            second.set_members
+        );
     }
 
     #[test]
