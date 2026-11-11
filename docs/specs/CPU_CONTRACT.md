@@ -22544,3 +22544,42 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER wa
 RBX = RDI = `0xffffffff83bb62a0`, RSP = `0xffffffff83a03b28`, RBP = `0xffffffff83a03b38`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28;
 вывод COM1 пуст (`com1_hex` = ""); `set_members` — прежние с `pio_u8`. Следующий срез — расширение S4-38L7k (`LOCK CMPXCHG`, см. выше) на dword-форму `LOCK CMPXCHG r/m32, r32` (без REX.W): семантика LOCK на одноядерной плате и
 флаги уже решены в S4-38L7k, dword-форма отмечена там как «Не делалось»; не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK CMPXCHG m32, r32` (`F0 [REX] 0F B1 /r`) в наборе CPL0 (S4-38L7y)
+
+Расширение S4-38L7k (`LOCK CMPXCHG m64, r64`, см. выше) на dword-форму; в S4-38L7k она числилась как «Не делалось». Граница S4-38L7x:
+`f0 0f b1 13` = `lock cmpxchg %edx, (%rbx)` (ModRM `0x13`: reg = EDX, rm = `[rbx]`), RIP `0xffffffff81501ee7`, `Unsupported { opcode: 0xb1 }`.
+Семантика дана **по памяти SDM** (Vol. 2 «CMPXCHG»: EAX сравнивается с dword-назначением; при равенстве ZF = 1 и назначение = r32, иначе ZF = 0 и EAX = назначение;
+остальные флаги как у `CMP EAX, назначение`; назначение при memory-форме записывается в обоих случаях), по первоисточнику **не сверялась**.
+
+**Декодер.** Та же операция `Operation::LockCmpxchgMem { destination, source }`, размер берётся из `destination.size` (Dword). Ветка `0F B1` расширена, не продублирована.
+Принимается `F0 [REX без W] 0F B1 /r` с memory-операндом (mod ≠ 11): REX без W допустим и действует (пустой `0x40`; `REX.R` выбирает источник r8d–r15d, `REX.B`/`REX.X` — базу и индекс).
+Отказ (`Unsupported { opcode: 0xb1 }` без мутации): регистровая форма (mod = 11) с LOCK, `66`, `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс
+(включая FS/GS), REX не непосредственно перед опкодом (в dword-форме любой такой REX, включая `48`, отказывается, чтобы он не декодировался молча как обычная dword-форма; qword-форма S4-38L7k без изменений,
+в том числе её принятие REX.W до другого префикса). **Без LOCK** dword-форма (`0F B1`, memory и регистровая) отказывается (как и qword memory-форма в наборе S4-38L7k); `CmpxchgMemory`/`Cmpxchg` не менялись и остаются qword-only.
+
+**Адрес.** Без сегментной базы; неканоническое начало или адрес + 3 даёт `#GP(0)` (`#SS(0)` для баз RSP/RBP) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** Ширина — `destination.size`. Порядок: адрес (каноничность) → `read_integer(4)` → сравнение EAX с прочитанным → `write_integer(4)` **всегда**
+(источник при равенстве, прочитанное при неравенстве) → только после успешной записи: флаги = флаги `arithmetic_result(Dword, Cmp, EAX, назначение)` (остальные биты RFLAGS сохраняются);
+при неравенстве EAX = прочитанное значение через `state.write` для Dword, который **обнуляет RAX[63:32]** (поведение записи 32-битного регистра в 64-битном режиме, проверено по коду `LongModeState::write`);
+при равенстве RAX не меняется (старшие 32 бита сохраняются). RIP += длина, retired + 1 только при успехе. При `#GP`/`#SS`/`#PF` на чтении или записи RAX, флаги, RIP, retired и память не меняются.
+Сравнение берёт только младшие 32 бита RAX и источника. Ограничения те же, что в S4-38L7k (две отдельные операции адаптера вместо атомарного вызова; код ошибки `#PF` на чтении без W = 1).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockCmpxchgMem`. Вне набора — `Unsupported { opcode: 0xb1 }` без мутации; CPL3 — `WrongPrivilege`.
+
+**Не делалось.** FS/GS-вариант, byte/word-формы, CMPXCHG8B/16B, XADD/XCHG и прочие LOCK-формы, SMP-упорядочение.
+
+Тесты: `cpl0_profile_set::lock_cmpxchg_dword_*` (равенство; неравенство с обнулением RAX[63:32]; флаги на 0x7fffffff/0x80000000/0xffffffff/0 и мусор в RAX[63:32];
+R12D-источник и RIP-relative; r8d–r15d источники; базы r8–r15; SIB+disp; `#GP(0)` по адресу + 3 и принятие последнего канонического dword; `#SS(0)` RSP/RBP; `#PF` на записи при равенстве и неравенстве;
+21 отказ с точным опкодом `0xb1`; вне набора; CPL3); `long_decode::tests::lock_cmpxchg_decodes_the_dword_memory_form_with_lock_only`; отказ вне набора: dword-байты добавлены в
+`execute::tests::lock_cmpxchg_stays_unsupported_in_bare_run_and_step`, `lock_cmpxchg_stays_unsupported_in_the_mov_cr3_profile`, `paged_cr3_probe_keeps_lock_cmpxchg_unsupported`,
+`paged_mov_profile_keeps_lock_cmpxchg_unsupported`; фасад: `linux_direct::tests::lock_cmpxchg_dword_equal_*`, `lock_cmpxchg_dword_unequal_*`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7y-diagnostic-run.json`.
+`lock cmpxchg %edx, (%rbx)` по `0xffffffff81501ee7` проходит (retired 1185026844 → 1185027417, +573). Новая граница: RIP `0xffffffff81537280` (GPA `0x1537280`), байты
+`f0 83 44 24 fc 00 48 39 47 08 5d 0f 95 c0 0f b6` — `lock addl $0x0, -0x4(%rsp)` (LOCK + `83 /0 ib`, ModRM `0x44` + SIB `0x24`, disp8 `0xfc`, imm8 `0`; далее `cmp %rax, 0x8(%rdi)`, `pop %rbp`, `setne %al`);
+`Unsupported { opcode: 0x83 }` (131), `set_exit_detail` = `Run(Unsupported { opcode: 131 })`, `exit_kind` = `unsupported`, retired = 1185027417.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = `0xffffffff84422440`, RBX = `0xffffffff83a03b8a`, RCX = RDX = RSI = 0,
+RDI = `0xffffffff83bb60e0`, RSP = RBP = `0xffffffff83a03b10`, R12 = `0xffffffff83a03b90`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; вывод COM1 пуст;
+`set_members` — прежние. Следующий срез — `LOCK ADD m32, imm8` (`F0 83 /0 ib`, идиома барьера памяти), по аналогии с `LockOrMem` (S4-38L7s); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.

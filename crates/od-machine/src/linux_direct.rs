@@ -3431,6 +3431,70 @@ mod tests {
         assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
     }
 
+    // ---- S4-38L7y: LOCK CMPXCHG m32, r32 through the board facade ----
+
+    /// `MOV RBX,0x0200_0000; MOV RAX,<rax>; MOV [RBX+0x58],EAX;`
+    /// `MOV RAX,<eax_before_cmpxchg>; MOV RDX,0x1_0000_0009;`
+    /// `LOCK CMPXCHG [RBX+0x58],EDX (f0 0f b1 53 58); MOV ECX,[RBX+0x58]; HLT`.
+    fn run_lock_cmpxchg_dword(stored: u64, rax: u64) -> (LinuxDirectBoot, LinuxStopRecord) {
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0000u64.to_le_bytes());
+        code.extend(mov_rax_imm64(stored));
+        code.extend([0x89, 0x43, 0x58]);
+        code.extend(mov_rax_imm64(rax));
+        code.extend([0x48, 0xBA]);
+        code.extend(0x1_0000_0009u64.to_le_bytes());
+        code.extend([0xF0, 0x0F, 0xB1, 0x53, 0x58]);
+        code.extend([0x8B, 0x4B, 0x58]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        (boot, record)
+    }
+
+    #[test]
+    fn lock_cmpxchg_dword_equal_writes_the_source_and_keeps_rax_at_disp8_of_rbx() {
+        let (boot, record) = run_lock_cmpxchg_dword(0x77, 0xaaaa_bbbb_0000_0077);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 8, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // EAX == [m]: the memory takes EDX (9), RAX is untouched, ZF = 1.
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 9);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xaaaa_bbbb_0000_0077
+        );
+        assert_eq!(state.rflags & (1 << 6), 1 << 6, "ZF");
+    }
+
+    #[test]
+    fn lock_cmpxchg_dword_unequal_loads_eax_zero_extended_and_writes_the_old_value_back() {
+        let (boot, record) = run_lock_cmpxchg_dword(0x77, 0xaaaa_bbbb_0000_0005);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 8, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // EAX != [m]: EAX = 0x77 (upper half of RAX zeroed), memory keeps 0x77, ZF = 0.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x77);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x77);
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+    }
+
     // ---- S4-38L7l: LOCK INC m32 through the board facade ----
 
     #[test]
