@@ -2966,3 +2966,26 @@ repetitions of the 13 exact native forms. Output is median and min–max elapsed
 nanoseconds for each group of 200 scans. This warms code and input caches and
 does not execute generated code or measure memory. Machine, compiler, results
 and observed variability are recorded in the [S3 Core report](../reports/STAGE_3_CORE_REPORT.md#5-s3-52--один-механизм-допуска).
+
+### S3-55 mixed register and interpreter handoff
+
+`MixedRegisterV1Admission` accepts the existing strict NativeRegisterV1 forms,
+its bare NOP handoff, and the exact bare one-byte `FC` (CLD) / `FD` (STD)
+helper sites. Prefixes and other denied forms remain rejected. The opt-in
+multi-entry route executes these helper sites with `od_isa::execute::step`
+and a one-byte fetch-only view. It tracks compiled instructions on cache
+miss, helper invocations, and successful interpreter retirements separately.
+After a successful helper it rechecks the code witness, CR3, execution context,
+and dependency coverage. `InterpreterProgressMismatch` rejects non-advancing
+steps; a helper-only entry is stepped directly without native compilation.
+This does not cover profile-required instructions or data-memory fallback.
+
+`cargo test -p od-jit --lib --offline` covers strict versus mixed witness,
+helper-only dispatch, STOP, budget including zero, event, non-advancing native
+and interpreter paths, injected interpreter failures, and post-helper rejection
+of changed source, invalid dependencies, CR3 and stale context generation. The ARM64 host test
+`s3_54_native_multi_cache_reuses_published_handle` also executes
+ADD → NOP → CLD → STD → ADD and ADD → CLD → ADD → STD → ADD with
+full-state interpreter comparison, eager and demand flags, FIFO and LRU, cold
+and warm cache. The latter exercises the native terminal at both CLD and STD. The test is part of
+`cargo test -p od-host --lib --offline`.

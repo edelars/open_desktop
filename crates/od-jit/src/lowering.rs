@@ -795,8 +795,10 @@ fn lower_with_admission_and_lea_s32a(
                                 && value == expected)
                     })
             }) || native_register_v1_admission.is_some_and(|admission| {
-                admission.admits_nop(*guest_rip)
-                    && matches!(decoded.operation, DecodedOperation::Nop)
+                (admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop))
+                    || (admission.admits_direction_helper(*guest_rip)
+                        && admission.validates_decoded(*guest_rip, *decoded))
             }) =>
         {
             (

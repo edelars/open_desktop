@@ -10,7 +10,8 @@ use od_isa::memory::{AccessContext, MemoryError};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::block::{
-    AdmittedInstructionBoundaries, CodeMemory, CodeView, NativeRegisterV1Admission,
+    AdmittedInstructionBoundaries, CodeMemory, CodeView, MixedRegisterV1Admission,
+    NativeRegisterV1Admission,
 };
 use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
@@ -213,6 +214,20 @@ pub struct FallbackDispatchResult {
     pub retired_native: u64,
     pub retired_interpreter: u64,
     pub blocks_executed: u64,
+}
+
+/// Counters for one invocation of the opt-in mixed register route.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MixedRegisterCounters {
+    pub compiled_instructions: u64,
+    pub helper_calls: u64,
+    pub interpreter_steps: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MixedRegisterDispatchResult {
+    pub dispatch: FallbackDispatchResult,
+    pub counters: MixedRegisterCounters,
 }
 
 /// Executes one block and returns only after all resources for it are released.
@@ -1053,6 +1068,7 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
         &mut observer,
         NativeRegisterV1CacheStrategy::Eager,
         None,
+        None,
     )
 }
 
@@ -1083,6 +1099,7 @@ pub fn run_cached_native_register_v1_controlled_observed<B: CachedBlockBackend>(
         backend,
         observer,
         NativeRegisterV1CacheStrategy::Eager,
+        None,
         None,
     )
 }
@@ -1148,6 +1165,55 @@ pub fn run_multi_cached_native_register_v1_controlled<B: MultiBlockCachedBackend
     )
 }
 
+/// Dispatch the exact native register set and one-byte CLD/STD helpers.
+/// The dependency snapshot and code view remain borrowed for the whole call.
+pub fn run_multi_cached_mixed_register_v1_controlled<B: MultiBlockCachedBackend>(
+    code: CodeView<'_>,
+    admission: &MixedRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+    flags: RegisterFlagsMode,
+) -> Result<MixedRegisterDispatchResult, DispatchError<B::Error>> {
+    let available = backend.published_block_capacity();
+    if cache.max_entries() > available {
+        return Err(DispatchError::MultiCacheConfig(
+            MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                requested: cache.max_entries(),
+                available,
+            },
+        ));
+    }
+    let strategy = match flags {
+        RegisterFlagsMode::Eager => NativeRegisterV1CacheStrategy::Eager,
+        RegisterFlagsMode::DemandFlagsCandidate => {
+            NativeRegisterV1CacheStrategy::DemandFlagsCandidate
+        }
+    };
+    let mut observer = NoopObserver;
+    let mut counters = MixedRegisterCounters::default();
+    let dispatch = run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+        code,
+        admission.evidence(),
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        &mut observer,
+        strategy,
+        None,
+        Some(&mut counters),
+    )?;
+    Ok(MixedRegisterDispatchResult { dispatch, counters })
+}
+
 /// Run the eager NativeRegisterV1 cache path with a single last-RIP prepared
 /// block/key memo scoped to this call. The cache lookup and all snapshot
 /// validation still run on every iteration; this only skips rebuilding the
@@ -1176,6 +1242,7 @@ pub fn run_cached_native_register_v1_prepared_key_candidate_controlled<B: Cached
         backend,
         &mut observer,
         NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate,
+        None,
         None,
     )
 }
@@ -1210,6 +1277,7 @@ pub fn run_cached_native_register_v1_prepared_key_candidate_controlled_counted<
         &mut observer,
         NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate,
         Some(counts),
+        None,
     )
 }
 
@@ -1250,6 +1318,7 @@ fn run_cached_native_register_v1_strategy_controlled<
     observer: &mut O,
     strategy: NativeRegisterV1CacheStrategy,
     mut reuse_counts: Option<&mut PreparedKeyReuseCounts>,
+    mut mixed_counters: Option<&mut MixedRegisterCounters>,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     if let Some(value) = state.cr3 {
         return Err(DispatchError::ExecutionContext(
@@ -1277,6 +1346,10 @@ fn run_cached_native_register_v1_strategy_controlled<
         .bind_execution_context(execution_context)
         .map_err(DispatchError::ExecutionContext)?;
 
+    if mixed_counters.is_some() {
+        crate::translation::validate_dependencies(code, dependencies)
+            .map_err(DispatchError::TranslationKey)?;
+    }
     let mut remaining = total_budget;
     let mut retired_native = 0u64;
     let mut retired_interpreter = 0u64;
@@ -1306,7 +1379,7 @@ fn run_cached_native_register_v1_strategy_controlled<
                 blocks_executed,
             );
         }
-        if admission.admits_nop(state.rip) {
+        if admission.admits_nop(state.rip) || admission.admits_direction_helper(state.rip) {
             prepared_key = None;
             if let Some(exit) = step_admitted_fallback::<B::Error>(
                 code,
@@ -1317,6 +1390,7 @@ fn run_cached_native_register_v1_strategy_controlled<
                 total_budget,
                 retired_native,
                 control,
+                mixed_counters.as_deref_mut(),
             )? {
                 return fallback_result(
                     exit,
@@ -1326,6 +1400,16 @@ fn run_cached_native_register_v1_strategy_controlled<
                     retired_interpreter,
                     blocks_executed,
                 );
+            }
+            if mixed_counters.is_some() {
+                validate_mixed_after_helper(
+                    code,
+                    admission,
+                    execution_context,
+                    dependencies,
+                    state,
+                    cache,
+                )?;
             }
             validate_fallback_retirement_total(
                 total_budget,
@@ -1399,6 +1483,14 @@ fn run_cached_native_register_v1_strategy_controlled<
                     code,
                     block,
                     match strategy {
+                        NativeRegisterV1CacheStrategy::Eager if mixed_counters.is_some() => {
+                            CompileFlavor::S3_55MixedRegisterV1Cached
+                        }
+                        NativeRegisterV1CacheStrategy::DemandFlagsCandidate
+                            if mixed_counters.is_some() =>
+                        {
+                            CompileFlavor::S3_55MixedRegisterV1DemandFlagsCached
+                        }
                         NativeRegisterV1CacheStrategy::Eager
                         | NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate => {
                             CompileFlavor::S3_38bNativeRegisterV1Cached
@@ -1466,6 +1558,12 @@ fn run_cached_native_register_v1_strategy_controlled<
                 }
             };
             cache.record_compile().map_err(DispatchError::Cache)?;
+            if let Some(counters) = mixed_counters.as_deref_mut() {
+                counters.compiled_instructions = counters
+                    .compiled_instructions
+                    .checked_add(u64::from(compiled.emitted().pc_map().instruction_count()))
+                    .ok_or(DispatchError::AggregateOverflow)?;
+            }
             let logical_bytes = cache
                 .size_for_candidate(key, &compiled)
                 .map_err(DispatchError::Cache)?;
@@ -1568,6 +1666,27 @@ fn run_cached_native_register_v1_strategy_controlled<
         match report.exit {
             RuntimeExitTag::NeedInterpreter => {
                 prepared_key = None;
+                if mixed_counters.is_some() {
+                    if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control)
+                        .or_else(|| event_exit(control))
+                    {
+                        return fallback_result(
+                            exit,
+                            total_budget,
+                            remaining,
+                            retired_native,
+                            retired_interpreter,
+                            blocks_executed,
+                        );
+                    }
+                    if !admission.admits_nop(state.rip)
+                        && !admission.admits_direction_helper(state.rip)
+                    {
+                        return Err(DispatchError::InterpreterInstructionNotAdmitted {
+                            rip: state.rip,
+                        });
+                    }
+                }
                 let Some(exit) = step_admitted_fallback::<B::Error>(
                     code,
                     FallbackAdmission::NativeRegisterV1(admission),
@@ -1577,8 +1696,19 @@ fn run_cached_native_register_v1_strategy_controlled<
                     total_budget,
                     retired_native,
                     control,
+                    mixed_counters.as_deref_mut(),
                 )?
                 else {
+                    if mixed_counters.is_some() {
+                        validate_mixed_after_helper(
+                            code,
+                            admission,
+                            execution_context,
+                            dependencies,
+                            state,
+                            cache,
+                        )?;
+                    }
                     validate_fallback_retirement_total(
                         total_budget,
                         remaining,
@@ -3187,6 +3317,7 @@ impl<'admission, B: CachedBlockBackend> RegisterDispatchPath<'admission>
             &mut observer,
             strategy,
             None,
+            None,
         )
     }
 }
@@ -3241,6 +3372,7 @@ impl<'admission, B: MultiBlockCachedBackend> RegisterDispatchPath<'admission>
             self.backend,
             &mut observer,
             strategy,
+            None,
             None,
         )
     }
@@ -3949,6 +4081,7 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     total_budget,
                     retired_native,
                     control,
+                    None,
                 )? {
                     return fallback_result(
                         exit,
@@ -4045,6 +4178,7 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     total_budget,
                     retired_native,
                     control,
+                    None,
                 )? {
                     return fallback_result(
                         exit,
@@ -4142,6 +4276,30 @@ fn event_exit(control: DispatchControl<'_>) -> Option<DispatchExit> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn validate_mixed_after_helper<E, H>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &LongModeState,
+    cache: &mut impl CachedEntryStore<H>,
+) -> Result<(), DispatchError<E>> {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
+    if !admission.matches_code(code) {
+        return Err(DispatchError::NopAdmissionDoesNotMatchCode);
+    }
+    crate::translation::validate_dependencies(code, dependencies)
+        .map_err(DispatchError::TranslationKey)?;
+    cache
+        .bind_execution_context(execution_context)
+        .map_err(DispatchError::ExecutionContext)?;
+    Ok(())
+}
+
 fn step_admitted_fallback<E>(
     code: CodeView<'_>,
     admission: FallbackAdmission<'_>,
@@ -4151,9 +4309,41 @@ fn step_admitted_fallback<E>(
     total_budget: u64,
     retired_native: u64,
     control: DispatchControl<'_>,
+    mixed_counters: Option<&mut MixedRegisterCounters>,
+) -> Result<Option<DispatchExit>, DispatchError<E>> {
+    step_admitted_fallback_with(
+        code,
+        admission,
+        state,
+        remaining,
+        retired_interpreter,
+        total_budget,
+        retired_native,
+        control,
+        mixed_counters,
+        |state, memory, context| od_isa::execute::step(state, memory, context),
+    )
+}
+
+fn step_admitted_fallback_with<E>(
+    code: CodeView<'_>,
+    admission: FallbackAdmission<'_>,
+    state: &mut LongModeState,
+    remaining: &mut u64,
+    retired_interpreter: &mut u64,
+    total_budget: u64,
+    retired_native: u64,
+    control: DispatchControl<'_>,
+    mut mixed_counters: Option<&mut MixedRegisterCounters>,
+    step: impl FnOnce(
+        &mut LongModeState,
+        &mut CodeMemory<'_>,
+        AccessContext,
+    ) -> Result<StepOutcome, MemoryError>,
 ) -> Result<Option<DispatchExit>, DispatchError<E>> {
     let rip = state.rip;
     let is_nop = admission.admits_nop(rip);
+    let is_direction = matches!(admission, FallbackAdmission::NativeRegisterV1(proof) if proof.admits_direction_helper(rip));
     let is_inc_rax = admission.admits_inc_rax(rip);
     let is_dec_rax = admission.admits_dec_rax(rip);
     let is_neg_rax = admission.admits_neg_rax(rip);
@@ -4165,11 +4355,12 @@ fn step_admitted_fallback<E>(
     let is_add_rax_imm8 = admission.admits_add_rax_imm8(rip);
     let is_cmp_rax_imm8 = admission.admits_cmp_rax_imm8(rip);
     let is_mov_rax_imm32 = admission.admits_mov_rax_imm32(rip);
-    if matches!(admission, FallbackAdmission::NativeRegisterV1(_)) && !is_nop {
+    if matches!(admission, FallbackAdmission::NativeRegisterV1(_)) && !is_nop && !is_direction {
         return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
     }
     if !admission.matches_code(code)
         || !(is_nop
+            || is_direction
             || is_inc_rax
             || is_dec_rax
             || is_neg_rax
@@ -4203,16 +4394,25 @@ fn step_admitted_fallback<E>(
     let end_rip = rip
         .checked_add(length)
         .ok_or(DispatchError::InterpreterInstructionNotAdmitted { rip })?;
-    let mut memory = CodeMemory::bounded_range(code, rip, end_rip).ok_or(
-        DispatchError::InterpreterMemoryError {
-            rip,
-            error: MemoryError::Unmapped {
-                address: rip,
-                access: od_isa::memory::AccessKind::Fetch,
-            },
+    let memory = if length == 1 {
+        CodeMemory::one_instruction(code, rip)
+    } else {
+        CodeMemory::bounded_range(code, rip, end_rip)
+    };
+    let mut memory = memory.ok_or(DispatchError::InterpreterMemoryError {
+        rip,
+        error: MemoryError::Unmapped {
+            address: rip,
+            access: od_isa::memory::AccessKind::Fetch,
         },
-    )?;
-    match od_isa::execute::step(state, &mut memory, AccessContext::default()) {
+    })?;
+    if let Some(counters) = mixed_counters.as_deref_mut() {
+        counters.helper_calls = counters
+            .helper_calls
+            .checked_add(1)
+            .ok_or(DispatchError::AggregateOverflow)?;
+    }
+    match step(state, &mut memory, AccessContext::default()) {
         Ok(StepOutcome::Advanced) => {
             let expected_rip = end_rip;
             if state.rip != expected_rip {
@@ -4233,6 +4433,12 @@ fn step_admitted_fallback<E>(
                 retired_native,
                 *retired_interpreter,
             )?;
+            if let Some(counters) = mixed_counters {
+                counters.interpreter_steps = counters
+                    .interpreter_steps
+                    .checked_add(1)
+                    .ok_or(DispatchError::AggregateOverflow)?;
+            }
             Ok(None)
         }
         Ok(outcome) => Err(DispatchError::InterpreterStepFailure { rip, outcome }),
@@ -9443,6 +9649,7 @@ mod tests {
                     NativeRegisterV1CacheStrategy::Eager
                 },
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(wrapper, direct);
@@ -9844,6 +10051,7 @@ mod tests {
                     &mut observer,
                     NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
                     None,
+                    None,
                 )
                 .unwrap(),
             );
@@ -9882,6 +10090,303 @@ mod tests {
             paired!("nop", round, 10_000, old_nop, new_nop);
             paired!("uncached_inc", round, 250, old_inc, new_inc);
             paired!("cached_demand", round, 1_000, old_cached, new_cached);
+        }
+    }
+    #[test]
+    fn s3_55_helper_only_budget_stop_event_and_zero_progress() {
+        let bytes = [0xfc, 0xfd];
+        let view = CodeView::new(0xd000, &bytes).unwrap();
+        let admission = MixedRegisterV1Admission::from_code(view).unwrap();
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let stop = AtomicU8::new(0);
+        let event = AtomicBool::new(false);
+        let mut cache = MultiEntryBlockCache::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let (tracker, mut backend) = s3_54_backend(2);
+        for (budget, stop_rip, pending, expected_exit, expected_steps) in [
+            (0, None, false, DispatchExit::BudgetExhausted, 0),
+            (2, None, false, DispatchExit::CodeEnd, 2),
+            (1, None, false, DispatchExit::BudgetExhausted, 1),
+            (
+                2,
+                Some(0xd001),
+                false,
+                DispatchExit::Runtime(RuntimeExitTag::StopAddress),
+                1,
+            ),
+            (2, None, true, DispatchExit::EventPending, 0),
+        ] {
+            event.store(pending, Ordering::Release);
+            let mut state = LongModeState {
+                rip: view.base_rip(),
+                ..LongModeState::default()
+            };
+            let control = DispatchControl {
+                stop_rip,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            };
+            let result = run_multi_cached_mixed_register_v1_controlled(
+                view,
+                &admission,
+                context,
+                &dependencies,
+                &mut state,
+                budget,
+                control,
+                &mut cache,
+                &mut backend,
+                RegisterFlagsMode::Eager,
+            )
+            .unwrap();
+            assert_eq!(result.dispatch.exit, expected_exit);
+            assert_eq!(
+                result.counters,
+                MixedRegisterCounters {
+                    compiled_instructions: 0,
+                    helper_calls: expected_steps,
+                    interpreter_steps: expected_steps
+                }
+            );
+        }
+        assert_eq!(
+            (
+                tracker.borrow().publishes,
+                cache.counters().successful_compiles
+            ),
+            (0, 0)
+        );
+
+        let bytes = [0x48, 0x83, 0xc0, 1, 0xfc];
+        let view = CodeView::new(0xd100, &bytes).unwrap();
+        let admission = MixedRegisterV1Admission::from_code(view).unwrap();
+        let dependencies = dependency(view, 1);
+        tracker.borrow_mut().scripted_replies.push((
+            view.base_rip(),
+            RuntimeExitTag::BlockComplete,
+            0,
+        ));
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let error = run_multi_cached_mixed_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            3,
+            control,
+            &mut cache,
+            &mut backend,
+            RegisterFlagsMode::Eager,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DispatchError::ZeroProgress {
+                rip: view.base_rip()
+            }
+        );
+    }
+    #[test]
+    fn s3_55_post_helper_validation_rejects_changed_source_and_invalid_dependencies() {
+        let bytes = [0xfc];
+        let view = CodeView::new(0xd200, &bytes).unwrap();
+        let mixed = MixedRegisterV1Admission::from_code(view).unwrap();
+        let context = native_test_context_with_generation(1);
+        let deps = dependency(view, 1);
+        let state = LongModeState {
+            rip: view.code_end(),
+            ..LongModeState::default()
+        };
+        let mut cache = MultiEntryBlockCache::<MockPublished>::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let altered = [0xfd];
+        let changed = CodeView::new(view.base_rip(), &altered).unwrap();
+        assert_eq!(
+            validate_mixed_after_helper::<&str, MockPublished>(
+                changed,
+                mixed.evidence(),
+                context,
+                &deps,
+                &state,
+                &mut cache
+            ),
+            Err(DispatchError::NopAdmissionDoesNotMatchCode)
+        );
+        assert!(matches!(
+            validate_mixed_after_helper::<&str, MockPublished>(
+                view,
+                mixed.evidence(),
+                context,
+                &[],
+                &state,
+                &mut cache
+            ),
+            Err(DispatchError::TranslationKey(
+                TranslationKeyError::NoDependencySpans
+            ))
+        ));
+        let mut changed_state = state.clone();
+        changed_state.cr3 = Some(0x1000);
+        assert_eq!(
+            validate_mixed_after_helper::<&str, MockPublished>(
+                view,
+                mixed.evidence(),
+                context,
+                &deps,
+                &changed_state,
+                &mut cache
+            ),
+            Err(DispatchError::ExecutionContext(
+                ExecutionContextError::UnsupportedCr3State { value: 0x1000 }
+            ))
+        );
+        cache
+            .bind_execution_context(native_test_context_with_generation(2))
+            .unwrap();
+        assert!(matches!(
+            validate_mixed_after_helper::<&str, MockPublished>(
+                view,
+                mixed.evidence(),
+                context,
+                &deps,
+                &state,
+                &mut cache
+            ),
+            Err(DispatchError::ExecutionContext(
+                ExecutionContextError::GenerationNotAdvanced {
+                    current: 2,
+                    requested: 1
+                }
+            ))
+        ));
+    }
+    #[test]
+    fn s3_55_interpreter_zero_progress_is_typed_and_not_retired() {
+        let bytes = [0xfc];
+        let code = CodeView::new(0xd300, &bytes).unwrap();
+        let mixed = MixedRegisterV1Admission::from_code(code).unwrap();
+        let mut state = LongModeState {
+            rip: code.base_rip(),
+            ..LongModeState::default()
+        };
+        let mut remaining = 1;
+        let mut retired = 0;
+        let mut counters = MixedRegisterCounters::default();
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let result = step_admitted_fallback_with::<&str>(
+            code,
+            FallbackAdmission::NativeRegisterV1(mixed.evidence()),
+            &mut state,
+            &mut remaining,
+            &mut retired,
+            1,
+            0,
+            control,
+            Some(&mut counters),
+            |_, _, _| Ok(StepOutcome::Advanced),
+        );
+        assert_eq!(
+            result,
+            Err(DispatchError::InterpreterProgressMismatch {
+                expected_rip: code.code_end(),
+                actual_rip: code.base_rip()
+            })
+        );
+        assert_eq!(
+            (
+                remaining,
+                retired,
+                counters.helper_calls,
+                counters.interpreter_steps
+            ),
+            (1, 0, 1, 0)
+        );
+    }
+    #[test]
+    fn s3_55_interpreter_failure_does_not_retire() {
+        let bytes = [0xfc];
+        let code = CodeView::new(0xd400, &bytes).unwrap();
+        let mixed = MixedRegisterV1Admission::from_code(code).unwrap();
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        for memory_failure in [false, true] {
+            let mut state = LongModeState {
+                rip: code.base_rip(),
+                ..LongModeState::default()
+            };
+            let mut remaining = 1;
+            let mut retired = 0;
+            let mut counters = MixedRegisterCounters::default();
+            let fault = MemoryError::Unmapped {
+                address: code.base_rip(),
+                access: od_isa::memory::AccessKind::Fetch,
+            };
+            let result = step_admitted_fallback_with::<&str>(
+                code,
+                FallbackAdmission::NativeRegisterV1(mixed.evidence()),
+                &mut state,
+                &mut remaining,
+                &mut retired,
+                1,
+                0,
+                control,
+                Some(&mut counters),
+                |_, _, _| {
+                    if memory_failure {
+                        Err(fault.clone())
+                    } else {
+                        Ok(StepOutcome::Unsupported { opcode: 0xfc })
+                    }
+                },
+            );
+            let expected = if memory_failure {
+                DispatchError::InterpreterMemoryError {
+                    rip: code.base_rip(),
+                    error: fault,
+                }
+            } else {
+                DispatchError::InterpreterStepFailure {
+                    rip: code.base_rip(),
+                    outcome: StepOutcome::Unsupported { opcode: 0xfc },
+                }
+            };
+            assert_eq!(result, Err(expected));
+            assert_eq!(
+                (
+                    remaining,
+                    retired,
+                    counters.helper_calls,
+                    counters.interpreter_steps
+                ),
+                (1, 0, 1, 0)
+            );
         }
     }
 }

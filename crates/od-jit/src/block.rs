@@ -380,6 +380,16 @@ fn classify_register_instruction(
     None
 }
 
+fn is_exact_direction_helper(instruction: Instruction, first_byte: u8) -> bool {
+    matches!(
+        (instruction.operation, first_byte),
+        (Operation::ClearDirectionFlag, 0xfc) | (Operation::SetDirectionFlag, 0xfd)
+    ) && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == first_byte
+        && instruction.prefixes == Default::default()
+        && instruction.length == 1
+}
+
 fn admission_next_rip(rip: u64, length: u8, code_end: u64) -> Result<u64, S0_09NopAdmissionError> {
     if !(1..=15).contains(&length) {
         return Err(S0_09NopAdmissionError::InvalidLength { rip, length });
@@ -406,6 +416,20 @@ fn scan_register_code(
     ),
     S0_09NopAdmissionError,
 > {
+    scan_register_code_with_helpers(code, profile, false)
+}
+
+fn scan_register_code_with_helpers(
+    code: CodeView<'_>,
+    profile: BlockBuildProfile,
+    allow_helpers: bool,
+) -> Result<
+    (
+        AdmittedInstructionBoundaries,
+        Vec<NativeRegisterV1AdmittedInstruction>,
+    ),
+    S0_09NopAdmissionError,
+> {
     let mut rip = code.base_rip();
     let mut boundaries = Vec::new();
     let mut instructions = Vec::new();
@@ -419,6 +443,10 @@ fn scan_register_code(
         let bytes = &code.bytes()[offset..];
         let (native, is_nop, is_s3_32a_add) =
             classify_register_instruction(decoded, bytes, profile, true)
+                .or_else(|| {
+                    (allow_helpers && is_exact_direction_helper(decoded, bytes[0]))
+                        .then_some((None, false, false))
+                })
                 .ok_or(S0_09NopAdmissionError::UnsupportedInstruction { rip })?;
         let source_range = offset..offset + usize::from(decoded.length);
         boundaries.push(rip);
@@ -1084,6 +1112,32 @@ impl S0_09NopMovRaxImm32Admission {
     }
 }
 
+/// Opt-in witness for strict native forms plus exact one-byte direction helpers.
+/// Helper instructions are never classified as native instructions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MixedRegisterV1Admission {
+    evidence: NativeRegisterV1Admission,
+}
+
+impl MixedRegisterV1Admission {
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let (boundaries, instructions) =
+            scan_register_code_with_helpers(code, BlockBuildProfile::S0_09NativeRegisterV1, true)?;
+        let nop_rips = admitted_nop_rips(&instructions);
+        Ok(Self {
+            evidence: NativeRegisterV1Admission {
+                boundaries,
+                instructions,
+                nop_rips,
+            },
+        })
+    }
+
+    pub(crate) fn evidence(&self) -> &NativeRegisterV1Admission {
+        &self.evidence
+    }
+}
+
 impl NativeRegisterV1Admission {
     /// Admit one complete immutable view in a single decoder pass. The stored
     /// records bind each boundary to its decoder result, source-byte range in
@@ -1113,6 +1167,19 @@ impl NativeRegisterV1Admission {
 
     pub(crate) fn admits_nop(&self, rip: u64) -> bool {
         self.nop_rips.contains(&rip)
+    }
+
+    pub(crate) fn admits_direction_helper(&self, rip: u64) -> bool {
+        self.instructions
+            .iter()
+            .find(|instruction| instruction.rip == rip)
+            .and_then(|instruction| {
+                self.boundaries
+                    .code_bytes
+                    .get(instruction.source_range.clone())
+                    .and_then(|bytes| bytes.first().map(|first| (instruction.decoded, *first)))
+            })
+            .is_some_and(|(decoded, first)| is_exact_direction_helper(decoded, first))
     }
 
     pub(crate) fn instruction(&self, rip: u64) -> Option<NativeRegisterV1Instruction> {
@@ -9806,5 +9873,28 @@ mod s3_52_admission_equivalence_tests {
             || NativeRegisterV1Admission::legacy_from_code(black_box(union_view)),
             || NativeRegisterV1Admission::from_code(black_box(union_view))
         );
+    }
+    #[test]
+    fn s3_55_mixed_witness_preserves_strict_admission_and_exact_helper_forms() {
+        for byte in [0xfc, 0xfd] {
+            let bytes = [byte];
+            let view = CodeView::new(0x1100, &bytes).unwrap();
+            assert!(matches!(
+                NativeRegisterV1Admission::from_code(view),
+                Err(S0_09NopAdmissionError::UnsupportedInstruction { .. })
+            ));
+            let mixed = MixedRegisterV1Admission::from_code(view).unwrap();
+            assert!(mixed.evidence().admits_direction_helper(0x1100));
+            assert_eq!(mixed.evidence().instruction(0x1100), None);
+        }
+        for bytes in [
+            &[0x66, 0xfc][..],
+            &[0x48, 0xfd][..],
+            &[0xf3, 0xfc][..],
+            &[0xcc][..],
+        ] {
+            let view = CodeView::new(0x1100, bytes).unwrap();
+            assert!(MixedRegisterV1Admission::from_code(view).is_err());
+        }
     }
 }
