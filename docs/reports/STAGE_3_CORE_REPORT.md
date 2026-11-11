@@ -11,7 +11,8 @@
 | Задача | Статус на этой ревизии |
 |---|---|
 | S3-50 — отчёт и инвентарь дублирования | Ревью пройдено; коммит `80a0fe6`, Graphify обновлён |
-| S3-51…S3-57 | not_started |
+| S3-51 — единые правила допуска | Независимое архитектурное ревью Sol пройдено; коммит будет зафиксирован следующим шагом |
+| S3-52…S3-57 | not_started |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -206,7 +207,35 @@ PY
 
 ## 4. S3-51 — единые правила допуска
 
-Статус: not_started.
+Статус: **независимое архитектурное ревью Sol пройдено, замечания исправлены**; коммит будет зафиксирован следующим шагом. В [§3a JIT_CONTRACT](../specs/JIT_CONTRACT.md#3a-единые-правила-допуска-регистрового-набора) записаны положительные правила выбранного профиля, привязка к полному `CodeView`, действующие byte guards, все пять `S0_09NopAdmissionError` и оба предела `BlockLimits`. Memory-path и exact fallback `NOT RCX` оставлены отдельно; NOP в admission не объявлен native-формой builder. Код и действующее множество форм не менялись.
+
+### Построчная сверка с инвентарём S3-50
+
+В следующей таблице `Base` означает `B-MOV`, `B-ALU`, `B-JCC`, `NOP` из §3a контракта. Для колонок dispatcher запись `f{, demand}` обозначает **обе** строки таблицы S3-50: `f` и `f_demand_flags_candidate`. Для каждой из 15 строк `Type::admits_nop` правило — `NOP`; второй метод строки ссылается на указанное дополнительное правило. Одна admission-структура INC показана двумя строками из-за разных builder-путей. Таким образом перечислены все 16 admission-структур, 15 register `BlockBuildProfile`, 32 функции register dispatcher (16 пар) и 29 объявлений `admits_*`; последний столбец показывает правило или границу, а не заявляет нового допуска.
+
+| Строка admission S3-50 | Register build profile | Dispatcher S3-50 | `admits_*` S3-50 | Правило §3a |
+|---|---|---|---|---|
+| `S0_09NopAdmission` | `S0_09` | `run_with_nop_fallback{, demand}` | `S0_09NopAdmission::admits_nop` | `Base`; builder останавливается на `NOP` для fallback |
+| `S3_32aAddRaxRaxAdmission` | собственной разновидности нет; `S0_09` | отдельной `run_with_native_*` пары нет | `admits_add_rax_rax` | `Base` и обязательное наличие `ADD-RAX` |
+| `S0_09NopIncRaxAdmission` (legacy fallback) | `S0_09` | `run_with_nop_inc_rax_fallback{, demand}` | `S0_09NopIncRaxAdmission::admits_nop`; `admits_inc_rax` | `Base` + `INC` admission; обычный builder, допущенный INC исполняется интерпретатором при переходе в fallback |
+| `S0_09NopIncRaxAdmission` (native opt-in) | `S0_09NativeIncRax` | `run_with_native_inc_rax{, demand}` | те же `admits_nop`; `admits_inc_rax` | `Base` + `INC` admission; native INC builder |
+| `S0_09NopDecRaxAdmission` | `S0_09NativeDecRax` | `run_with_native_dec_rax{, demand}` | `S0_09NopDecRaxAdmission::admits_nop`; `admits_dec_rax` | `Base` + `DEC` |
+| `S0_09NopNegRaxAdmission` | `S0_09NativeNegRax` | `run_with_native_neg_rax{, demand}` | `S0_09NopNegRaxAdmission::admits_nop`; `admits_neg_rax` | `Base` + `NEG` |
+| `S0_09NopNotRaxAdmission` | `S0_09NativeNotRax` | `run_with_native_not_rax{, demand}` | `S0_09NopNotRaxAdmission::admits_nop`; `admits_not_rax` | `Base` + `NOT` |
+| `S0_09NopLeaRaxRbxAdmission` | `S0_09NativeLeaRaxRbx` | `run_with_native_lea_rax_rbx{, demand}` | `S0_09NopLeaRaxRbxAdmission::admits_nop`; `admits_lea_rax_rbx` | `Base` + `LEA-RBX` |
+| `S0_09NopLeaRaxRbxDisp8Admission` | `S0_09NativeLeaRaxRbxDisp8` | `run_with_native_lea_rax_rbx_disp8{, demand}` | `S0_09NopLeaRaxRbxDisp8Admission::admits_nop`; `admits_lea_rax_rbx_disp8` | `Base` + `LEA-D8`, в том числе обязательный byte guard |
+| `S0_09NopLeaRaxRbxRcxAdmission` | `S0_09NativeLeaRaxRbxRcx` | `run_with_native_lea_rax_rbx_rcx{, demand}` | `S0_09NopLeaRaxRbxRcxAdmission::admits_nop`; `admits_lea_rax_rbx_rcx` | `Base` + `LEA-SIB` |
+| `S0_09NopLeaRaxRipDisp32Admission` | `S0_09NativeLeaRaxRipDisp32` | `run_with_native_lea_rax_rip_disp32{, demand}` | `S0_09NopLeaRaxRipDisp32Admission::admits_nop`; `admits_lea_rax_rip_disp32` | `Base` + `LEA-RIP` |
+| `S0_09NopXchgRaxRbxAdmission` | `S0_09NativeXchgRaxRbx` | `run_with_native_xchg_rax_rbx{, demand}` | `S0_09NopXchgRaxRbxAdmission::admits_nop`; `admits_xchg_rax_rbx` | `Base` + `XCHG` |
+| `S0_09NopAddRaxImm8Admission` | `S0_09NativeAddRaxImm8` | `run_with_native_add_rax_imm8{, demand}` | `S0_09NopAddRaxImm8Admission::admits_nop`; `admits_add_rax_imm8` | `Base` + `ADD-I8` |
+| `S0_09NopCmpRaxImm8Admission` | `S0_09NativeCmpRaxImm8` | `run_with_native_cmp_rax_imm8{, demand}` | `S0_09NopCmpRaxImm8Admission::admits_nop`; `admits_cmp_rax_imm8` | `Base` + `CMP-I8` |
+| `S0_09NopSubRaxImm8Admission` | `S0_09NativeSubRaxImm8` | `run_with_native_sub_rax_imm8{, demand}` | `S0_09NopSubRaxImm8Admission::admits_nop`; `admits_sub_rax_imm8` | `Base` + `SUB-I8` |
+| `S0_09NopMovRaxImm32Admission` | `S0_09NativeMovRaxImm32` | `run_with_native_mov_rax_imm32{, demand}` | `S0_09NopMovRaxImm32Admission::admits_nop`; `admits_mov_rax_imm32` | `Base` + `MOV-I32` |
+| `NativeRegisterV1Admission` | `S0_09NativeRegisterV1` | `run_with_native_register_v1{, demand}` | `NativeRegisterV1Admission::admits_nop` | `Base` + все 13 дополнительных правил |
+
+Остальные пять строк `BlockBuildProfile` из таблицы S3-50 сверены отдельно: `CheckedQwordLoad`, `CheckedDwordLoad`, `CheckedDwordStore`, `CheckedQwordStore` и `CheckedQwordMemoryPair` относятся к отдельному memory-path и не принимаются этим register-контрактом. Это не отказ их собственных memory API. Таблица положительных форм контракта перечисляет только имевшиеся в S3-50 predicates с теми же условиями и byte guards; остальные формы, в том числе `NOT RCX` на native register пути и data-memory sites, получают явный отказ. По именам механически сверены 16/16 admission-структур, 20/20 профилей, 32/32 функций и 29/29 методов без пропусков; затем условия строк сопоставлены с predicates. Это документальная сверка, а не параметризованный корпус эквивалентности, который остаётся задачей S3-52.
+
+Проверки и ограничения: `python3 tools/check_layout.py` из worktree `codex` после изменений завершился с 45 `ERROR` (baseline S3-50 — 45), без ошибок для изменённых документов; `git diff --check` чист. CPU-тесты для документационного среза не запускались. Независимое архитектурное ревью выполнено Sol; коммит ещё не создан.
 
 ## 5. S3-52 — один механизм допуска
 
