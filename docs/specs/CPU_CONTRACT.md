@@ -22858,3 +22858,58 @@ R15 = `0x63`, RSP = RBP = `0xffffffff83a03d08`; `memory_error`/`page_fault` от
 `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `MOV r/m8, imm8` (`[64|65] [REX] C6 /0 ib`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (запись byte-константы в память; новый класс — store с immediate); не реализован (решение — по этой границе).
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOV r/m8, imm8` (`C6 /0 ib`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7ae)
+
+Граница S4-38L7ad (`65 c6 05 68 a2 01 03 01`, `movb $0x1, %gs:0x301a268(%rip)`, RIP `0xffffffff8141d4e4`, `Unsupported { opcode: 0xc6 }`) — запись byte-константы в память
+с сегментным префиксом GS. Срез добавляет `[64|65] [REX] C6 /0 ib` с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB
+без базы и индекса, REX.B/REX.X база/индекс). REX допустим только непосредственно перед `C6`; REX.W и REX.R на байтовую запись не влияют (как у S4-38L7o).
+Семантика дана **по памяти SDM** (Vol. 2 «MOV»: непосредственный байт записывается в r/m8; флаги не меняются; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4:
+в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер (выбор пути).** Не расширяется `Operation::MovImmediate` (у неё нет поля сегмента, а общая проверка в конце `decode` отказывает всем `MovImmediate` с памятью и
+префиксом FS/GS), а добавляются две операции по образцу S4-38L7o: `Operation::MovFsMemByteImm { dst, immediate }` и `MovGsMemByteImm { dst, immediate }`
+(`dst: MemoryOperand` размера byte, `immediate: u8`). Они порождаются в существующей ветке `C6 | C7` (ModRM/SIB/disp и imm8 читаются прежним кодом, дублирования нет)
+только для `C6`, `/0`, сегмента `0x64`/`0x65` и memory-операнда. `flag_effects` — без флагов. Длина: префикс + REX? + `C6` + ModRM + SIB? + disp + imm8; RIP-relative disp32 считается
+от конца **всей** инструкции, immediate включительно (граничная форма — 8 байт; `next_rip` — тот же, что у `LockOrMem`/`TestFsMemByte`).
+
+**Отказы без мутации (`Unsupported { opcode: 0xc6 }`).** LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` (в том числе `66` с REX.W: приоритет не сверен); `67`; второй
+сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед опкодом (`44 65 c6 03 01`, `65 41 48 c6 …`); `C6 /1…/7` с сегментом
+(`/7` и `/0` с mod = 11 — XABORT/регистровая форма — прежним путём). Тест `segment_movb_forms_outside_the_slice_are_refused_with_the_exact_opcode` (25 кодировок) и декодерный тест.
+
+**Не менялось.** Регистровая форма (mod = 11) **не отказывается**: `65 c6 c3 7f` (`movb $0x7f, %bl`), `64 c6 c3 7f`, `65 48 c6 c3 7f` исполняются как обычный `MOV r8, imm8`
+(сегментный префикс на форме без memory-операнда игнорируется, как в S4-38L7o/p/q/r/aa/ac/ad; тест `movb_register_form_and_plain_form_keep_their_old_behavior`). Беспрефиксная
+`C6 /0` с memory и формы с CS/DS/ES/SS (база игнорируется) исполняются прежним путём `MovImmediate`. `MOV r/m32|r/m64, imm32` (`C7 /0`) с FS/GS и memory-операндом по-прежнему
+отказывает с опкодом `0xc7` (в тесте — `65 c7 03 …`, `64 c7 …`, `65 48 c7 …`, `65 66 c7 …`); `MOV r/m8, r8` (`88`) с FS/GS — с опкодом `0x88`. LOCK-варианта нет.
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Записывается один байт, поэтому
+каноничность проверяется для одного адреса: иначе `#GP(0)` без мутации и без записи (для баз RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`). Последний канонический байт `0x00007fffffffffff`
+допустим; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Одна запись `memory.write_integer` размером 1 значением immediate; память читается ни разу. Регистры и флаги не меняются (`rflags_defined` без изменений). RIP += длина
+(с префиксами), retired + 1 только при успехе. При `#GP(0)` и `#PF` на записи регистры, флаги, RIP и retired не меняются, память не изменена.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xc6 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`).
+`mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`) и голые `run`/`step` форму не принимают (по одному тесту).
+
+**Тесты.** Декодер: `long_decode::tests::segment_mov_byte_immediate_decodes_fs_gs_memory_forms_only`; в `transfer_neighbors_stay_unsupported_and_lea_register_source_is_invalid`
+кодировка `64 c6 03 01` заменена на `64 c7 03 01 00 00 00` (первая теперь декодируется). Исполнение (`cpl0_profile_set`, `*movb*`): граничная форма (`0x01`, `0xff`, `0x00`, `0x80`;
+соседние байты, регистры и флаги не затронуты, `memory.reads` пуст, одна запись в `GS_BASE + RIP + 8 + 0x0301a268`), FS RIP-relative, нулевая база, база+индекс·масштаб+disp8,
+база без смещения/disp8/disp32, абсолютная SIB, REX.B (r8–r15, R12 через SIB), REX.X, REX с любыми W/R, чтение обратно (`testb` по той же базе видит записанный байт),
+неканоничность (`#GP(0)`, последний допустимый байт), RSP/RBP (`#GP(0)`), `#PF` на записи (память, регистры, флаги, RIP не изменены), отказы, регистровая и беспрефиксная формы,
+CS/DS/ES/SS, вне набора, CPL3. Отказ вне набора для `PagedCpl0ProbeV1`: `paged_probe_profile::fs_gs_mov_byte_immediate_stays_unsupported_in_the_paged_probe_profile`.
+Фасад: `linux_direct::tests::gs_mov_byte_immediate_after_wrmsr_gs_base_stores_one_byte_and_reads_back_through_gs` (`GS_BASE` через WRMSR, абсолютная SIB и RIP-relative формы
+пишут байты 0 и 1 qword'а, чтение обратно `MOV RBX, %gs:0x10` и обычным `MOV RDX, [BASE+0x10]` даёт `0x0123456789ABFF01`, CF от `SUB DL,1` сохранён, retired 13).
+
+**Не делалось.** `MOV r/m16|r/m32|r/m64, imm` (`C7`, `66 C7`) с FS/GS, `MOV r/m8, r8` (`88`) с FS/GS, LOCK-форма, регистровая форма с сегментным префиксом как отдельная операция.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ae-diagnostic-run.json`.
+`movb $0x1, %gs:0x301a268(%rip)` по `0xffffffff8141d4e4` проходит (retired 1201785902 → 1202200805, +414903 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f94dd4` (GPA `0x3f94dd4`), байты `2e e8 46 84 7a fe 48 8b 7d d8 e8 5d 97 f7 fd eb` — `cs call rel32` (`E8 cd` с префиксом CS `2e`: rel32 `0xfe7a8446`,
+длина 6; далее `mov -0x28(%rbp),%rdi`, `call …`); `Unsupported { opcode: 0xe8 }` (232), `set_exit_detail` = `Run(Unsupported { opcode: 232 })`, `exit_kind` = `unsupported`, retired = 1202200805.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x82`; RAX = RBX = RCX = RDX = RSI = R8–R11 = R14 = 0, RDI = `0xffffffffff200140`,
+R12 = `0xffffffff82fe1b64`, R13 = `0xffffffff83f39070`, R15 = `0x100000`, RSP = `0xffffffff83a03e48`, RBP = `0xffffffff83a03e70`; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `CALL rel32` с префиксом CS (`2E E8 cd`, в objdump `cs call`, длина 6) в наборе CPL0 (в 64-битном режиме префикс CS игнорируется, ожидается поведение обычного `E8`; решение,
+расширять ли существующий путь `E8` или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
