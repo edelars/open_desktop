@@ -18025,3 +18025,480 @@ fn invlpg_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L7ad: FS/GS-based `MOVZX r32, r/m16` (`[64|65] [REX] 0F B7 /r`, memory source) and
+// `MOVZX r64, r/m16` (`[64|65] REX.W 0F B7 /r`). SDM Vol.2 MOVZX: a word is read and zero-extended
+// into the destination (a 32-bit destination also zeroes bits 63:32), flags are unchanged; Vol.3
+// 3.4.4 FS/GS base; from memory, not re-checked against the primary source. The register form
+// (mod = 11) ignores the segment prefix and executes as the plain MOVZX. Nothing is written to
+// memory. 0x66 (a word destination), LOCK/REP, 0x67, a second segment prefix and a stale REX are
+// refused with opcode 0xb7. ----
+
+/// `movzwl %gs:0x301a005(%rip), %edi` (the S4-38L7ac diagnostic boundary, 8 bytes).
+const GS_MOVZXW_BOUNDARY: [u8; 8] = [0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03];
+const GS_MOVZXW_DISP: u64 = 0x0301_a005;
+/// `movzwq %gs:0x301a005(%rip), %rax` (9 bytes, REX.W).
+const GS_MOVZXW_Q_RIP: [u8; 9] = [0x65, 0x48, 0x0f, 0xb7, 0x05, 0x05, 0xa0, 0x01, 0x03];
+/// `movzwl %fs:0x1234(%rip), %r8d` (9 bytes, REX.R).
+const FS_MOVZXW_R8_RIP: [u8; 9] = [0x64, 0x44, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00];
+
+#[test]
+fn gs_movzx_word_boundary_form_loads_edi_zero_extended_and_keeps_flags() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 8 + GS_MOVZXW_DISP;
+    for (value, expected_edi) in [
+        (0x8001u16, 0x8001u64),
+        (0xffff, 0x0000_ffff),
+        (0x0000, 0),
+        (0x1234, 0x1234),
+        (0x00ff, 0xff),
+    ] {
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        state.fs_base = 0xffff_8880_9999_0000;
+        state.gpr[Register::Rdi as usize] = 0xdead_beef_cafe_f00d;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_AF | FLAG_PF;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&GS_MOVZXW_BOUNDARY);
+        set_word(&mut memory, at, value);
+        // Neighbouring bytes must stay unread and must not leak into the result.
+        memory.data.insert(at - 1, 0xff);
+        memory.data.insert(at + 2, 0xff);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(at, 2)], "{value:#x}");
+        assert!(memory.writes.is_empty());
+        expected.gpr[Register::Rdi as usize] = expected_edi;
+        expected.rip += 8;
+        assert_eq!(state, expected, "{value:#x}: only RDI and RIP change");
+        assert_eq!(state.gpr[Register::Rdi as usize] >> 32, 0);
+    }
+}
+
+#[test]
+fn movzx_word_with_rex_w_zero_extends_to_64_bits() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 9 + GS_MOVZXW_DISP;
+    for value in [0x8001u16, 0xffff, 0x0001] {
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        assert_eq!(state.gpr[Register::Rax as usize] >> 32, 0x1111_2222);
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&GS_MOVZXW_Q_RIP);
+        set_word(&mut memory, at, value);
+        memory.data.insert(at + 2, 0xff);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(at, 2)]);
+        assert!(memory.writes.is_empty());
+        expected.gpr[Register::Rax as usize] = u64::from(value);
+        expected.rip += 9;
+        assert_eq!(state, expected, "{value:#x}");
+    }
+}
+
+#[test]
+fn fs_movzx_word_with_rex_r_loads_r8d_and_reads_at_fs_base_plus_effective_address() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::R8 as usize] = u64::MAX;
+    let mut expected = state.clone();
+    let at = fs_base + RIP + 9 + 0x1234;
+    let mut memory = BitsMemory::new(&FS_MOVZXW_R8_RIP);
+    set_word(&mut memory, at, 0xbeef);
+    let result = run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 2)]);
+    expected.gpr[Register::R8 as usize] = 0xbeef;
+    expected.rip += 9;
+    assert_eq!(state, expected);
+    // Every REX.R destination r8..r15: `65 44 0f b7 /r` with mod 00 reg=n rm=rbx.
+    for n in 0u8..8 {
+        let code = [0x65, 0x44, 0x0f, 0xb7, (n << 3) | 0x03];
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        for r in 8..16 {
+            state.gpr[r] = u64::MAX;
+        }
+        let mut memory = BitsMemory::new(&code);
+        set_word(&mut memory, 0xffff_8880_0020_0000, 0x8123);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "r{}", 8 + n);
+        for r in 8..16 {
+            let want = if r == 8 + usize::from(n) {
+                0x8123
+            } else {
+                u64::MAX
+            };
+            assert_eq!(state.gpr[r], want, "dst r{} reg r{r}", 8 + n);
+        }
+    }
+}
+
+#[test]
+fn movzx_word_with_a_zero_base_uses_the_effective_address() {
+    for code in [&GS_MOVZXW_BOUNDARY[..], &FS_MOVZXW_R8_RIP[..]] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        let disp = if code[0] == 0x65 {
+            GS_MOVZXW_DISP
+        } else {
+            0x1234
+        };
+        let at = RIP + code.len() as u64 + disp;
+        let mut memory = BitsMemory::new(code);
+        set_word(&mut memory, at, 0x9abc);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(at, 2)]);
+    }
+}
+
+#[test]
+fn gs_movzx_word_with_rex_b_rex_x_base_index_scale_and_displacement() {
+    // `movzwl %gs:0x10(%r11,%r9,4), %r9d` = 65 47 0f b7 4c 8b 10 (REX.R, REX.X, REX.B).
+    let code = [0x65, 0x47, 0x0f, 0xb7, 0x4c, 0x8b, 0x10];
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R11 as usize] = 0x1000;
+    state.gpr[Register::R9 as usize] = 3;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&code);
+    // The address uses the pre-state R9 (3 * 4); R9 is then replaced.
+    let at = 0xffff_8880_0000_0000 + 0x1000 + 12 + 0x10;
+    set_word(&mut memory, at, 0x8002);
+    run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 2)]);
+    expected.gpr[Register::R9 as usize] = 0x8002;
+    expected.rip += 7;
+    assert_eq!(state, expected);
+    // REX.B alone: `movzwl %gs:(%r8), %edi` = 65 41 0f b7 38.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R8 as usize] = 0x2000;
+    state.gpr[Register::Rdi as usize] = u64::MAX;
+    let mut memory = BitsMemory::new(&[0x65, 0x41, 0x0f, 0xb7, 0x38]);
+    set_word(&mut memory, 0xffff_8880_0000_2000, 0xfffe);
+    run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_2000, 2)]);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0xfffe);
+}
+
+#[test]
+fn fs_movzx_word_absolute_sib_disp32_without_base_or_index_adds_only_the_fs_base() {
+    // `movzwl %fs:0x20, %edx` = 64 0f b7 14 25 20 00 00 00.
+    let code = [0x64, 0x0f, 0xb7, 0x14, 0x25, 0x20, 0, 0, 0];
+    let mut state = board_state();
+    state.fs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rdx as usize] = u64::MAX;
+    let mut memory = BitsMemory::new(&code);
+    set_word(&mut memory, 0xffff_8880_0000_0020, 0x8000);
+    run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0020, 2)]);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x8000);
+}
+
+#[test]
+fn gs_movzx_word_with_a_base_register_aliasing_the_destination() {
+    // `movzwl %gs:0x8(%rax), %eax` = 65 0f b7 40 08.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rax as usize] = 0x100;
+    let mut memory = BitsMemory::new(&[0x65, 0x0f, 0xb7, 0x40, 0x08]);
+    set_word(&mut memory, 0xffff_8880_0000_0108, 0xabcd);
+    run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0108, 2)]);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xabcd);
+}
+
+#[test]
+fn movzx_word_non_canonical_address_is_gp0_without_mutation_or_read() {
+    let canon_end = 0x0000_8000_0000_0000u64;
+    for code in [
+        &GS_MOVZXW_BOUNDARY[..],
+        &GS_MOVZXW_Q_RIP[..],
+        &FS_MOVZXW_R8_RIP[..],
+    ] {
+        let disp = if code[0] == 0x64 {
+            0x1234
+        } else {
+            GS_MOVZXW_DISP
+        };
+        let effective = RIP + code.len() as u64 + disp;
+        for start in [
+            // The start itself is the first non-canonical byte.
+            canon_end,
+            // The start is canonical, but the last byte (start + 1) is not.
+            canon_end - 1,
+        ] {
+            let base = start - effective;
+            let mut state = board_state();
+            state.gs_base = base;
+            state.fs_base = base;
+            state.rflags |= FLAG_CF | FLAG_ZF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run_test32_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(GP0),
+                "{code:02x?} {start:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "{code:02x?} {start:#x}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+        // The word at canon_end - 2 has every byte canonical and is read.
+        let mut state = board_state();
+        state.gs_base = canon_end - 2 - effective;
+        state.fs_base = canon_end - 2 - effective;
+        let mut memory = BitsMemory::new(code);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(canon_end - 2, 2)]);
+    }
+}
+
+#[test]
+fn gs_movzx_word_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `movzwl %gs:(%rsp), %eax` = 65 0f b7 04 24 and `movzwl %gs:0x0(%rbp), %eax` = 65 0f b7 45 00.
+    for (code, register) in [
+        (&[0x65u8, 0x0f, 0xb7, 0x04, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0x0f, 0xb7, 0x45, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn plain_movzx_word_through_rsp_non_canonical_stays_ss0() {
+    // Without a segment prefix the RSP base keeps raising #SS(0) (existing behavior, unchanged).
+    let mut state = board_state();
+    state.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&[0x0f, 0xb7, 0x04, 0x24]);
+    let result = run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn movzx_word_read_fault_leaves_flags_rip_and_registers_unchanged() {
+    for code in [&GS_MOVZXW_BOUNDARY[..], &GS_MOVZXW_Q_RIP[..]] {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x0),
+            linear_address: Some(0xffff_8880_0000_0000 + RIP + code.len() as u64 + GS_MOVZXW_DISP),
+        };
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdi as usize] = 0x5555_5555_5555_5555;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.read_fault = Some(fault.clone());
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_movzx_word_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
+    let cases: [&[u8]; 16] = [
+        // LOCK, REP, REPNE (several positions).
+        &[0xf0, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0xf0, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0xf3, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0xf3, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0xf2, 0x64, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        // 0x66 (a word destination), also together with REX.W.
+        &[0x66, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0x66, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0x66, 0x48, 0x0f, 0xb7, 0x05, 0x05, 0xa0, 0x01, 0x03],
+        // 0x67.
+        &[0x67, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0x67, 0x48, 0x0f, 0xb7, 0x05, 0x05, 0xa0, 0x01, 0x03],
+        // A second segment prefix.
+        &[0x64, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x65, 0x64, 0x48, 0x0f, 0xb7, 0x05, 0x05, 0xa0, 0x01, 0x03],
+        // REX not immediately before the opcode (stale).
+        &[0x41, 0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03],
+        &[0x48, 0x64, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x65, 0x41, 0x48, 0x0f, 0xb7, 0x05, 0x05, 0xa0, 0x01, 0x03],
+    ];
+    for code in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xb7 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_movzx_byte_and_movsx_memory_forms_stay_refused_with_their_own_opcodes() {
+    // S4-38L7ad touches only `0F B7`: MOVZX r, m8 (`0F B6`) and MOVSX (`0F BE/BF`, `63`) with a
+    // segment prefix and a memory source keep their old refusal.
+    for (code, opcode) in [
+        (
+            &[0x65u8, 0x0f, 0xb6, 0x3d, 0x05, 0xa0, 0x01, 0x03][..],
+            0xb6u8,
+        ),
+        (
+            &[0x64, 0x48, 0x0f, 0xb6, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            0xb6,
+        ),
+        (&[0x65, 0x0f, 0xbe, 0x3d, 0x05, 0xa0, 0x01, 0x03][..], 0xbe),
+        (&[0x65, 0x0f, 0xbf, 0x3d, 0x05, 0xa0, 0x01, 0x03][..], 0xbf),
+        (
+            &[0x65, 0x48, 0x0f, 0xbf, 0x05, 0x05, 0xa0, 0x01, 0x03][..],
+            0xbf,
+        ),
+        (&[0x65, 0x48, 0x63, 0x05, 0x05, 0xa0, 0x01, 0x03][..], 0x63),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn movzx_word_register_form_and_plain_form_keep_their_old_behavior() {
+    // The register form (mod = 11) ignores the segment prefix: `65 0f b7 c3` = movzwl %bx, %eax.
+    for code in [
+        &[0x0fu8, 0xb7, 0xc3][..],
+        &[0x65, 0x0f, 0xb7, 0xc3][..],
+        &[0x64, 0x0f, 0xb7, 0xc3][..],
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0xdead_beef_8001;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        expected.gpr[Register::Rax as usize] = 0x8001;
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+    // REX.W register form: `65 48 0f b7 c3` = movzwq %bx, %rax.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0xdead_beef_ffff;
+    let mut memory = BitsMemory::new(&[0x65, 0x48, 0x0f, 0xb7, 0xc3]);
+    run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(state.gpr[Register::Rax as usize], 0xffff);
+
+    // The memory form without a segment prefix keeps ignoring the FS/GS bases.
+    let mut state = bts_state(0);
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    let mut memory = BitsMemory::new(&[0x0f, 0xb7, 0x03]);
+    set_word(&mut memory, 0x20_0000, 0x8001);
+    let result = run_test32_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 2)]);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x8001);
+    // CS/DS/ES/SS overrides keep ignoring the segment base.
+    for prefix in [0x2eu8, 0x3e, 0x36, 0x26] {
+        let mut state = bts_state(0);
+        state.gs_base = 0xffff_8880_0000_0000;
+        let mut memory = BitsMemory::new(&[prefix, 0x0f, 0xb7, 0x03]);
+        set_word(&mut memory, 0x20_0000, 0x1);
+        let result = run_test32_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 2)], "{prefix:#x}");
+    }
+}
+
+#[test]
+fn segment_movzx_word_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS forms are refused without mutation.
+    for code in [
+        &GS_MOVZXW_BOUNDARY[..],
+        &GS_MOVZXW_Q_RIP[..],
+        &FS_MOVZXW_R8_RIP[..],
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb7 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_movzx_word_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVZXW_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

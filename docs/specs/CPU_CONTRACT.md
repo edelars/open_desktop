@@ -22796,3 +22796,65 @@ R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault`
 `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `MOVZX r32, r/m16` (`[64|65] 0F B7 /r`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0; не реализован (решение — по этой границе).
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOVZX r32, r/m16` и `MOVZX r64, r/m16` (`0F B7 /r`) с префиксом FS/GS в наборе CPL0 (S4-38L7ad)
+
+Граница S4-38L7ac (`65 0f b7 3d 05 a0 01 03`, `movzwl %gs:0x301a005(%rip), %edi`, RIP `0xffffffff8141d743`, `Unsupported { opcode: 0xb7 }`) — MOVZX из
+word в памяти с сегментным префиксом GS. Срез добавляет `[64|65] [REX] 0F B7 /r` (dword-приёмник, REX без W) и `[64|65] REX.W 0F B7 /r` (qword-приёмник)
+с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB без базы и индекса, REX.R приёмник r8–r15,
+REX.B/REX.X база/индекс). Тот же `REX.W`-путь, что у dword-формы: отдельного кода для `REX.W` нет, различие только в `RegisterView` приёмника.
+Семантика дана **по памяти SDM** (Vol. 2 «MOVZX»: читается r/m16, нулевое расширение до r32/r64; запись в r32 в 64-битном режиме обнуляет биты 63:32;
+флаги не меняются; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4: в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер (выбор пути).** Не расширяется `Operation::Extend` (у неё нет поля сегмента, а общая проверка в конце `decode` отказывает всем `Extend` с памятью
+и префиксом FS/GS), а добавляются две операции по образцу S4-38L7m: `Operation::MovzxFsLoadW { dst, src }` и `MovzxGsLoadW { dst, src }`
+(`dst: RegisterView` размера dword или qword, `src: MemoryOperand` размера word). Они порождаются в той же ветке `0x63 | 0F B6/B7/BE/BF`, в которой
+декодируется `Extend`, только для `0F B7`, сегмента `0x64`/`0x65` и memory-источника; для остальных кодировок ветка прежняя, дублирования декодирования
+ModRM/SIB/disp нет (`rm_operand` общий). `flag_effects` — без флагов. Длина: префикс + REX? + `0F B7` + ModRM + SIB? + disp; RIP-relative — от конца
+инструкции (граничная форма — 8 байт). REX допустим только непосредственно перед `0F` (REX.W — qword, REX.R — приёмник, REX.B/X — база/индекс);
+REX не последним — устаревший, отказ (как у S4-38L7m/o/r/ac; по SDM Vol. 2 §2.2.1 такой REX игнорируется, здесь консервативно).
+
+**Отказы без мутации (`Unsupported { opcode: 0xb7 }`).** LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` (приёмник word — консервативно, в том числе
+`66` с REX.W: приоритет по первоисточнику не сверен); `67`; второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед опкодом
+(`41 65 0f b7 …`, `65 41 48 0f b7 …`). Тест `segment_movzx_word_forms_outside_the_slice_are_refused_with_the_exact_opcode` (16 кодировок) и декодерный тест.
+
+**Не менялось.** Регистровая форма (mod = 11) **не отказывается**: `65 0f b7 c3` (`movzwl %bx, %eax`), `64 0f b7 c3`, `65 48 0f b7 c3` исполняются как
+обычный `MOVZX r, r16` (сегментный префикс на форме без memory-операнда не имеет смысла и игнорируется, как в S4-38L7o/p/q/r/aa/ac; тест
+`movzx_word_register_form_and_plain_form_keep_their_old_behavior`). Беспрефиксная `0F B7` (регистровая и memory, в том числе RSP-база с `#SS(0)` при
+неканоничном адресе, тест `plain_movzx_word_through_rsp_non_canonical_stays_ss0`) и формы с CS/DS/ES/SS (база игнорируется) исполняются прежним путём `Extend`.
+`MOVZX r, r/m8` (`0F B6`), `MOVSX` (`0F BE/BF`) и `MOVSXD` (`63`) с FS/GS и memory-источником по-прежнему отказывают со своим опкодом
+(тест `segment_movzx_byte_and_movsx_memory_forms_stay_refused_with_their_own_opcodes`).
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`).
+Читаются 2 байта, поэтому каноничность проверяется и для начала, и для последнего байта (`адрес + 1`): иначе `#GP(0)` без мутации и без чтения (для баз
+RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`; без префикса — `#SS(0)`). Последний допустимый word начинается с `0x00007ffffffffffe`; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Значение читается одним `memory.read_integer` размером 2, затем `state.write(dst, значение)`: запись dword-представления обнуляет биты 63:32
+(как в S4-38L7m), qword-представление записывается целиком; значение word не расширяется знаком (`0x8001` → `0x00008001`, `0xffff` → `0x0000ffff`).
+Флаги не меняются, запись в память не выполняется. RIP += длина (с префиксами), retired + 1 только при успехе. При `#GP(0)` и `#PF` на чтении регистры,
+флаги, RIP и retired не меняются. Адрес считается по значениям регистров до записи (приёмник может совпадать с базой или индексом).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xb7 }` без мутации; в набор CPL3 не допускается
+(`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и голые `run`/`step`
+форму не принимают (тест отказа в каждом, с точным опкодом `0xb7`).
+
+**Тесты.** Декодер: `long_decode::tests::segment_movzx_word_decodes_fs_gs_memory_forms_only`. Исполнение (`cpl0_profile_set`): граничная форма
+(`0x8001`, `0xffff`, `0`, `0x1234`, `0xff`; верхняя половина RDI обнулена, флаги и соседние байты не затронуты, `memory.writes` пуст), REX.W, FS с REX.R
+(все r8–r15), нулевая база, SIB+REX.B/REX.X, абсолютная SIB, совпадение приёмника с базой, неканоничность (`#GP(0)`, начало/последний байт, последнее
+допустимое), RSP/RBP (`#GP(0)`), беспрефиксная RSP (`#SS(0)`), `#PF` на чтении, отказы, `0F B6`/`BE`/`BF`/`63` с сегментом, регистровая и беспрефиксная формы,
+вне набора, CPL3. Отказ вне набора: bare `run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `paged_probe_profile` — по одному тесту
+(`*_movzx_word_*`). Фасад: `linux_direct::tests::gs_movzx_word_after_wrmsr_gs_base_zero_extends_and_leaves_memory_and_flags_alone` (`GS_BASE` через WRMSR,
+абсолютная SIB, RIP-relative и REX.W; RDI/RCX/RBX = `0x8001`, память и CF не изменились, retired 14).
+
+**Не делалось.** `MOVZX`/`MOVSX` из byte с FS/GS и memory, `MOVSX r, r/m16`, `MOVSXD`, `66`-форма, регистровая форма с сегментным префиксом как отдельная операция.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ad-diagnostic-run.json`.
+`movzwl %gs:0x301a005(%rip), %edi` по `0xffffffff8141d743` проходит (retired 1201748037 → 1201785902, +37865 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8141d4e4` (GPA `0x141d4e4`), байты `65 c6 05 68 a2 01 03 01 5d 31 c0 31 d2 31 c9 31` — `movb $0x1, %gs:0x301a268(%rip)` (`C6 /0 ib` MOV r/m8, imm8 с GS:
+ModRM `0x05` = mod 00, reg 000, rm 101 = RIP-relative, disp32 `0x0301a268`, imm8 `0x01`; длина 8; далее `pop %rbp`, `xor %eax,%eax`, …); `Unsupported { opcode: 0xc6 }` (198),
+`set_exit_detail` = `Run(Unsupported { opcode: 198 })`, `exit_kind` = `unsupported`, retired = 1201785902.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = RCX = RDX = RSI = RDI = R8–R12 = 0, RBX = `0xffffffffff200000`, R13 = `0x5ff`, R14 = `0x1`,
+R15 = `0x63`, RSP = RBP = `0xffffffff83a03d08`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOV r/m8, imm8` (`[64|65] [REX] C6 /0 ib`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (запись byte-константы в память; новый класс — store с immediate); не реализован (решение — по этой границе).
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
