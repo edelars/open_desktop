@@ -22244,3 +22244,16 @@ ZF = 1, PF = 1, SF = 0; `0x80|0x80` = `0x80` → SF = 1, ZF = 0, PF = 0; `0x01|0
 `mov_cr3_profile_tests::lock_or_stays_unsupported_in_the_mov_cr3_profile`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_or_unsupported`,
 `paged_mov_profile_tests::paged_mov_profile_keeps_lock_or_unsupported`;
 `linux_direct::tests::lock_or_byte_reads_and_writes_one_guest_byte_at_disp8_of_rbx`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7s-diagnostic-run.json`. `lock orb $0x80, 0x3d(%rbx)` по RIP `0xffffffff813c0fcc` и последующие инструкции
+проходят (retired 1137534094 → 1137540943, +6849). Новая граница: RIP `0xffffffff813c584d`, байты
+`f0 4d 0f b3 65 30 b9 0c 00 00 00 31 c0 48 89 df` (первая инструкция — `lock btr %r12, 0x30(%r13)`: `LOCK BTR m64, r64`, `F0 REX.WRB 0F B3 /r`,
+ModRM `65` = mod 01, reg r12, rm r13, disp8 `0x30`, длина 6; далее `mov $0xc, %ecx`, `xor %eax, %eax`, `mov %rbx, %rdi`),
+`Unsupported { opcode: 0xb3 }`, `set_exit_detail` = `Run(Unsupported { opcode: 179 })`, `exit_kind` = `unsupported`, retired = 1137540943.
+Регистры на остановке: RAX = RCX = RDX = R8–R11 = R15 = 0, RBX = RSP = `0xffffffff83a03c60`, RSI = R12 = `0x191`, RDI = `0xffffffff83a03cc0`,
+RBP = `0xffffffff83a03ce8`, R13 = `0xffffffff83ec7be0`, R14 = `0xffffffff8280aba0`, RFLAGS = `0x92`; CR0 = `0x80050033`, CR4 = `0xb0`,
+CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 26; `set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`,
+`popf_cpl0`). Следующий срез — `LOCK BTR m64, r64` (`F0 REX.W 0F B3 /r`, memory-операнд; парная к LOCK BTS из S4-38L7n) в наборе CPL0 (решение —
+по этой границе).
