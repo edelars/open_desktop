@@ -1773,33 +1773,29 @@ mod tests {
     }
 
     #[test]
-    fn cpl0_set_board_dword_crossing_a_4k_boundary_is_the_typed_cross_page_stop() {
+    fn cpl0_set_board_dword_crossing_a_4k_boundary_is_read_byte_by_byte() {
         let cli = CliProfile::NonPviLong64V1;
-        // S4-11: the walker admits no split access; a crossing dword is `CrossesPage` before any
-        // table or operand access, a backend error of the adapter (nothing retires, RAX stays).
+        // S4-38L5e: it was the typed `CrossesPage` stop (S4-11). The set's adapter now reads each
+        // byte through its own translation. The pages here lie in one identity-mapped 2 MiB
+        // leaf: the bytes are contiguous, RAX gets the dword and the data is not touched.
         for offset in [0xFFD, 0xFFE, 0xFFF] {
             let (mut boot, _) = boot_with_entry(&[0x8B, 0x03]);
+            write_phys(&mut boot, DATA + 0xFFC, &[0xA1, 0xA2, 0xA3, 0xA4]);
+            write_phys(&mut boot, DATA + 0x1000, &[0xB1, 0xB2, 0xB3, 0xB4]);
             let state = boot.board.state_mut();
-            state.gpr[Register::Rax as usize] = 0x55;
+            state.gpr[Register::Rax as usize] = 0x5555_5555_5555_5555;
             state.gpr[Register::Rbx as usize] = DATA + offset;
-            let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
-            assert!(
-                matches!(report.exit, PagedCpl0SetExit::Run(RunExit::MemoryError(_))),
-                "{report:?}"
-            );
-            assert_eq!(report.instructions_executed, 0);
-            assert_eq!(
-                report.memory_error,
-                Some(crate::TrackedAccessError::CrossesPage {
-                    address: crate::GuestLinearAddress::new(DATA + offset),
-                    width: 4
-                })
-            );
-            assert_eq!(
-                (state.rip, state.gpr[Register::Rax as usize]),
-                (ENTRY, 0x55)
-            );
-            assert_eq!(report.page_fault, None);
+            let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+            assert_eq!(report.instructions_executed, 1, "{offset:#x}: {report:?}");
+            assert_eq!((report.page_fault, report.memory_error), (None, None));
+            let mut window = [0u8; 8];
+            read(&mut boot.board, DATA + 0xFFC, &mut window).expect("read");
+            assert_eq!(window, [0xA1, 0xA2, 0xA3, 0xA4, 0xB1, 0xB2, 0xB3, 0xB4]);
+            let skip = (offset - 0xFFC) as usize;
+            let expected = u32::from_le_bytes(window[skip..skip + 4].try_into().unwrap());
+            // MOV r32 zero-extends into the whole register.
+            assert_eq!(state.gpr[Register::Rax as usize], u64::from(expected));
+            assert_eq!(state.rip, ENTRY + 2);
         }
     }
 
@@ -3633,6 +3629,212 @@ mod tests {
             read_qword(&mut boot, TREE_PT + 16),
             SPLIT_PAGE2 | 3 | (1 << 63) | PTE_A | PTE_D
         );
+    }
+
+    // ---- S4-38L5e: dword and qword reads across a 4 KiB page boundary through the set's adapter ----
+
+    /// `MOV RCX, [RAX]`, the kernel's read at 0x0543_5ca0.
+    const MOV_RCX_RAX_QWORD: [u8; 3] = [0x48, 0x8B, 0x08];
+    /// `MOV ECX, [RAX]`.
+    const MOV_ECX_RAX_DWORD: [u8; 2] = [0x8B, 0x08];
+
+    /// The bytes of the two data pages (A then B) a read test lays down: all different.
+    fn read_pattern() -> Vec<u8> {
+        (0..0x2000usize)
+            .map(|index| (index * 7 + 3) as u8 ^ 0x5A)
+            .collect()
+    }
+
+    /// The split tree with the read at the end of the code page, the first data page mapped with
+    /// `first_pte` and the second with `second_pte` (absent when `None`), both holding
+    /// `read_pattern()`, RAX = `at` and RCX = `MOVZX_SEED`.
+    fn read_state(
+        boot: &mut LinuxDirectBoot,
+        code: &[u8],
+        at: u64,
+        first_pte: u64,
+        second_pte: Option<u64>,
+    ) -> LongModeState {
+        let mut state = split_code_state(boot, code, code.len(), Some(first_pte));
+        if let Some(pte) = second_pte {
+            write_phys(boot, TREE_PT + 16, &pte.to_le_bytes());
+        }
+        let pattern = read_pattern();
+        write_phys(boot, SPLIT_PAGE1, &pattern[..0x1000]);
+        write_phys(boot, SPLIT_PAGE2, &pattern[0x1000..]);
+        state.gpr[Register::Rax as usize] = at;
+        state.gpr[Register::Rcx as usize] = MOVZX_SEED;
+        state
+    }
+
+    /// The value the little-endian read of `width` bytes at `at` must give.
+    fn expected_read(at: u64, width: usize) -> u64 {
+        let pattern = read_pattern();
+        let start = (at - STORE_PAGE_A) as usize;
+        let mut bytes = [0u8; 8];
+        bytes[..width].copy_from_slice(&pattern[start..start + width]);
+        u64::from_le_bytes(bytes)
+    }
+
+    fn assert_read_pages_unchanged(boot: &mut LinuxDirectBoot) {
+        let pattern = read_pattern();
+        assert_eq!(phys_bytes(boot, SPLIT_PAGE1, 0x1000), pattern[..0x1000]);
+        assert_eq!(phys_bytes(boot, SPLIT_PAGE2, 0x1000), pattern[0x1000..]);
+    }
+
+    #[test]
+    fn cpl0_set_board_qword_and_dword_reads_across_a_page_boundary_for_every_split() {
+        let cli = CliProfile::NonPviLong64V1;
+        let cases: [(&[u8], usize); 2] = [(&MOV_RCX_RAX_QWORD, 8), (&MOV_ECX_RAX_DWORD, 4)];
+        for (code, width) in cases {
+            for on_first in 1..width as u64 {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let at = STORE_PAGE_B - on_first;
+                let mut state =
+                    read_state(&mut boot, code, at, SPLIT_PAGE1 | 3, Some(SPLIT_PAGE2 | 3));
+                let start = state.rip;
+                let rflags = state.rflags;
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                assert_eq!(
+                    report.exit,
+                    PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+                    "{width} {on_first}: {report:?}"
+                );
+                assert_eq!(report.instructions_executed, 1, "{width} {on_first}");
+                assert_eq!((report.page_fault, report.memory_error), (None, None));
+                // The lowest byte is the one at the operand address; a dword zero-extends.
+                assert_eq!(
+                    state.gpr[Register::Rcx as usize],
+                    expected_read(at, width),
+                    "{width} {on_first}"
+                );
+                assert_eq!(state.gpr[Register::Rax as usize], at);
+                assert_eq!(
+                    (state.rip, state.rflags),
+                    (start + code.len() as u64, rflags)
+                );
+                // A read: accessed on the leaf of each page it touches, never dirty, and no
+                // byte of either page changed.
+                assert_eq!(read_qword(&mut boot, TREE_PT), SPLIT_PAGE0 | 3 | PTE_A);
+                assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+                assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 3 | PTE_A);
+                assert_read_pages_unchanged(&mut boot);
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_qword_and_dword_reads_inside_one_page_walk_that_page_only() {
+        let cli = CliProfile::NonPviLong64V1;
+        let cases: [(&[u8], usize); 2] = [(&MOV_RCX_RAX_QWORD, 8), (&MOV_ECX_RAX_DWORD, 4)];
+        for (code, width) in cases {
+            // One read ending exactly on the page end, one in the middle: one page each, and the
+            // next (absent) page is not walked.
+            for at in [STORE_PAGE_B - width as u64, STORE_PAGE_A + 0x100] {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let mut state = read_state(&mut boot, code, at, SPLIT_PAGE1 | 3, None);
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                assert_eq!(
+                    report.instructions_executed, 1,
+                    "{width} {at:#x}: {report:?}"
+                );
+                assert_eq!(state.gpr[Register::Rcx as usize], expected_read(at, width));
+                assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+                assert_eq!(read_qword(&mut boot, TREE_PT + 16), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_cross_page_read_with_a_missing_second_page_is_a_precise_page_fault() {
+        let cli = CliProfile::NonPviLong64V1;
+        let cases: [(&[u8], u64); 2] = [(&MOV_RCX_RAX_QWORD, 8), (&MOV_ECX_RAX_DWORD, 4)];
+        for (code, width) in cases {
+            for on_first in 1..width {
+                let (mut boot, _) = boot_with_entry(&[0xF4]);
+                let at = STORE_PAGE_B - on_first;
+                let mut state = read_state(&mut boot, code, at, SPLIT_PAGE1 | 3, None);
+                let before = state.clone();
+                let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+                let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+                    panic!("{width} {on_first}: {report:?}");
+                };
+                // Read of a not-present page at CPL0: P = 0, W = 0, U = 0; CR2 is the first byte
+                // on the missing page.
+                assert_eq!(
+                    (fault.vector, fault.error_code, fault.linear_address),
+                    (14, Some(0), Some(STORE_PAGE_B)),
+                    "{width} {on_first}"
+                );
+                assert_eq!(report.instructions_executed, 0);
+                assert_eq!(report.memory_error, None);
+                let record = report.page_fault.expect("the walker's record");
+                assert_eq!(record.saved_rip(), before.rip);
+                assert_eq!(record.access(), od_isa::memory::AccessKind::Read);
+                // Nothing retired: RCX (the destination), RIP and RFLAGS are as before.
+                assert_eq!(state, before, "{width} {on_first}: the state is unchanged");
+                assert_read_pages_unchanged(&mut boot);
+                // The walk of the first page set its accessed bit; no page is dirty.
+                assert_eq!(read_qword(&mut boot, TREE_PT + 8), SPLIT_PAGE1 | 3 | PTE_A);
+                assert_eq!(read_qword(&mut boot, TREE_PT + 16), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_cross_page_read_with_a_faulting_first_page_reports_the_read_address() {
+        let cli = CliProfile::NonPviLong64V1;
+        // The first data page is not present, the second is: CR2 is the operand address.
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let at = STORE_PAGE_B - 3;
+        let mut state = read_state(
+            &mut boot,
+            &MOV_RCX_RAX_QWORD,
+            at,
+            SPLIT_PAGE1 & !1,
+            Some(SPLIT_PAGE2 | 3),
+        );
+        let before = state.clone();
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0), Some(at))
+        );
+        assert_eq!(state, before);
+        // The second page was not walked.
+        assert_eq!(read_qword(&mut boot, TREE_PT + 16), SPLIT_PAGE2 | 3);
+    }
+
+    #[test]
+    fn cpl0_set_board_cross_page_read_of_read_only_non_executable_pages_succeeds() {
+        // Neither W = 0 nor NX restricts a read: it completes, both leaves get only Accessed.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        assert_ne!(boot.board.efer() & (1 << 11), 0, "the board runs with NXE");
+        let at = STORE_PAGE_B - 3;
+        let nx = 1u64 << 63;
+        let mut state = read_state(
+            &mut boot,
+            &MOV_RCX_RAX_QWORD,
+            at,
+            SPLIT_PAGE1 | 1 | nx,
+            Some(SPLIT_PAGE2 | 1 | nx),
+        );
+        let report = run_split(&mut boot, &mut state, &minimal_set(&cli));
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.gpr[Register::Rcx as usize], expected_read(at, 8));
+        assert_eq!(
+            read_qword(&mut boot, TREE_PT + 8),
+            SPLIT_PAGE1 | 1 | nx | PTE_A
+        );
+        assert_eq!(
+            read_qword(&mut boot, TREE_PT + 16),
+            SPLIT_PAGE2 | 1 | nx | PTE_A
+        );
+        assert_read_pages_unchanged(&mut boot);
     }
 
     // ---- S4-38L4g: `F3 0F BC /r` (REP BSF) as BSF through the set's facade ----

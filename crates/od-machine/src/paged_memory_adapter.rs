@@ -93,6 +93,7 @@ pub fn step_paged_invlpg(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -214,6 +215,7 @@ fn step_paged_state_op(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -284,6 +286,7 @@ pub fn with_paged_mov_memory<R>(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -341,6 +344,7 @@ pub fn step_paged_mov(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -397,6 +401,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -727,6 +732,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             cpl0_set_narrow_write: true,
             cpl0_set_cross_page_fetch: true,
             cpl0_set_cross_page_store: true,
+            cpl0_set_cross_page_read: true,
         };
         let result = run_with_cpl0_profile_set_and_pio(
             state,
@@ -928,6 +934,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -1004,6 +1011,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -1062,6 +1070,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -1129,6 +1138,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_narrow_write: false,
         cpl0_set_cross_page_fetch: false,
         cpl0_set_cross_page_store: false,
+        cpl0_set_cross_page_read: false,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -1257,6 +1267,18 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// page is checked). A later slice may translate once and write by the physical addresses
     /// of the check. Elsewhere a crossing store stays the typed `CrossesPage`.
     cpl0_set_cross_page_store: bool,
+    /// S4-38L5e: the CPL0 profile set's adapter alone performs a dword or qword read that
+    /// crosses a 4 KiB boundary (`MOV r64, m64` / `MOV r32, m32` at a page tail). Each byte is
+    /// its own one-byte read access with its own translation (accessed bit on the leaf of each
+    /// page, never a dirty bit; present, reserved, user and NX-irrelevant read checks per page);
+    /// the bytes are assembled little-endian (the byte at the operand address is the lowest) and
+    /// handed to the destination only after every byte was read, so a fault leaves the
+    /// destination untouched. A fault on a page is a precise data `#PF` with W = 0 at the first
+    /// linear address on the faulting page (the operand address when it is the first page).
+    /// Accessed bits set by earlier bytes stay set after the fault. Elsewhere (and for a word,
+    /// see `cpl0_set_word_read`) a crossing read keeps its previous behaviour (the typed
+    /// `CrossesPage`).
+    cpl0_set_cross_page_read: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -1469,7 +1491,29 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         {
             return Err(Self::unsupported("cross-page qword read"));
         }
-        let value = if width == crate::AccessWidth::Word
+        let value = if matches!(width, crate::AccessWidth::Dword | crate::AccessWidth::Qword)
+            && self.cpl0_set_cross_page_read
+            && self.large_ram_profile
+            && (address & 0xfff) + u64::from(width.bytes()) > 4096
+        {
+            // S4-38L5e: a dword or qword across a page boundary, one translation per byte; the
+            // destination is written below, only once every byte has been read.
+            let mut bytes = [0u8; 8];
+            for (index, byte) in bytes[..destination.len()].iter_mut().enumerate() {
+                let access = self.access(
+                    address.wrapping_add(index as u64),
+                    context,
+                    RamAccessOperation::Read {
+                        width: crate::AccessWidth::Byte,
+                    },
+                )?;
+                match access {
+                    TrackedAccessOutcome::Read(value) => *byte = value as u8,
+                    _ => return Err(Self::unsupported("non-read result")),
+                }
+            }
+            u64::from_le_bytes(bytes)
+        } else if width == crate::AccessWidth::Word
             && self.cpl0_set_word_read
             && !self.word_read_profile
             && self.large_ram_profile
@@ -1678,6 +1722,7 @@ mod tests {
             cpl0_set_narrow_write: false,
             cpl0_set_cross_page_fetch: false,
             cpl0_set_cross_page_store: false,
+            cpl0_set_cross_page_read: false,
         }
     }
 
@@ -2298,6 +2343,59 @@ mod tests {
             memory.memory_error,
             Some(TrackedAccessError::CrossesPage { .. })
         ));
+    }
+
+    #[test]
+    fn cross_page_dword_and_qword_reads_belong_to_the_cpl0_set_adapter_alone() {
+        // S4-38L5e guard: without `cpl0_set_cross_page_read` (or without the large-RAM
+        // profile) a dword or qword across a 4 KiB boundary keeps the typed `CrossesPage`,
+        // and the destination is untouched. With the flag and a missing second page it is a
+        // precise data `#PF` (W = 0) at the first byte of that page, destination untouched.
+        for len in [8usize, 4] {
+            let at = DATA_LINEAR + 0x1000 - 3;
+            for (flag, large) in [(false, true), (true, false), (false, false)] {
+                let mut bus = bus(0x9007);
+                let mut callback = |_| {};
+                let mut memory = adapter(&mut bus, &mut callback);
+                memory.large_ram_profile = large;
+                memory.cpl0_set_dword_read = true;
+                memory.cpl0_set_cross_page_read = flag;
+                let mut destination = vec![0x77; len];
+                let result = memory.read(at, context(), &mut destination);
+                assert!(
+                    !matches!(result, Ok(())),
+                    "{len} {flag} {large}: a crossing read must not succeed here"
+                );
+                if large {
+                    assert!(
+                        matches!(
+                            memory.memory_error,
+                            Some(TrackedAccessError::CrossesPage { .. })
+                        ),
+                        "{len} {flag} {large}: {:?}",
+                        memory.memory_error
+                    );
+                }
+                assert_eq!(destination, vec![0x77; len]);
+            }
+            let mut bus = bus(0x9007);
+            let mut callback = |_| {};
+            let mut memory = adapter(&mut bus, &mut callback);
+            memory.large_ram_profile = true;
+            memory.cpl0_set_dword_read = true;
+            memory.cpl0_set_cross_page_read = true;
+            let mut destination = vec![0x77; len];
+            let result = memory.read(at, context(), &mut destination);
+            assert!(
+                matches!(result, Err(MemoryError::Architectural(_))),
+                "{len}: {result:?}"
+            );
+            assert_eq!(memory.memory_error, None);
+            assert_eq!(destination, vec![0x77; len]);
+            let record = memory.page_fault.take().expect("data fault");
+            assert_eq!(record.fault().linear_address, Some(DATA_LINEAR + 0x1000));
+            assert_eq!(record.fault().error_code, Some(0));
+        }
     }
 
     // ---- S4-38L3: the exits of the CPL0 set loop (`handle_set_exit`) ----
