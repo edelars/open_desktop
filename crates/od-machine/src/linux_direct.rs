@@ -1708,6 +1708,26 @@ mod tests {
     }
 
     #[test]
+    fn cpl0_set_board_prefetcht0_is_a_nop_that_does_not_touch_memory() {
+        // S4-38L6a: PREFETCHT0 [RDX] with RDX at an unmapped address: no #PF, RIP + 3.
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = boot_with_entry(&[0x0F, 0x18, 0x0A]);
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+        state.gpr[Register::Rdx as usize] = 0x0000_7fff_0000_0000;
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
     fn cpl0_set_board_mov_eax_from_rbx_reads_a_dword_and_zero_extends() {
         let cli = CliProfile::NonPviLong64V1;
         // MOV EAX, [RBX]; the bytes after it are the filler, not executed (budget 1).
