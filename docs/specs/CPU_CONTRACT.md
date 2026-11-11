@@ -21475,4 +21475,13 @@ REX.B. Допустимы любые REX без REX.R (`40`–`4F` без бит
 `linux_direct::tests::set_facade_mov_cr3_rdi_is_a_continuation_like_the_rax_form` (через фасад платы, пять инструкций, одна
 смена CR3). Ignored-тесты `real_artifacts` ожиданий о границе не содержат и не менялись.
 
-**Диагностический прогон.** Результат прогона (`--diagnostic-past-c7`, не засчитывается) — в отдельном коммите после прогона.
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7h-diagnostic-run.json`. `MOV CR3, RDI` (`0f 22 df`) и последующие инструкции
+проходят (retired 1137477792 → 1137478548, +756). Новая граница: RIP `0xffffffff83f25c74`, байты
+`65 4c 8b 25 dc 1a 51 00` (`mov %gs:0x511adc(%rip), %r12`, REX.WR `8B /r` с GS-префиксом), `Unsupported { opcode: 0x8b }`,
+`set_exit_detail` = `Run(Unsupported { opcode: 139 })`, `exit_kind` = `unsupported`. Регистры на остановке: RAX = 0,
+RBX = `0x100000`, RDI = `0xffffffff83a45000`, RSP = `0xffffffff83a03f20`, RBP = `0xffffffff83a03f38`; CR0 = `0x80050033`,
+CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3, последняя смена `0x3ffe000` → `0x3ffe000`), EFER walker'а `0xd00`,
+гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members`: cli, cpu_owned_cr3, cpuid:DiagnosticV1,
+msr:EferReadOnlyV1(3328), msr:fs_gs_base, popf_cpl0. Следующий срез — загрузка с префиксом GS (`8B` /r, REX.WR, RIP-relative)
+в наборе CPL0; решение — по этой границе, а не по предположению.
