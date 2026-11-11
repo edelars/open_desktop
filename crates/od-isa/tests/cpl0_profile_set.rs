@@ -1889,7 +1889,6 @@ fn mov_r64_cr2_writes_the_full_64_bits() {
 fn mov_r64_cr2_other_forms_are_unsupported_without_mutation() {
     for bytes in [
         &[0x0f, 0x20, 0xc9][..],             // CR1
-        &[0x0f, 0x20, 0xe3][..],             // CR4 into RBX
         &[0x0f, 0x20, 0xdb][..],             // CR3 into RBX
         &[0x0f, 0x20, 0xc3][..],             // CR0 into RBX
         &[0x48, 0x0f, 0x20, 0xc3][..],       // REX.W CR0 into RBX
@@ -2027,6 +2026,236 @@ fn mov_r64_cr0_cr3_cr4_keep_their_results() {
     let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
+}
+
+// ---- S4-38L7b: MOV r64, CR4 into any general register ----------------------
+
+/// A CR4 inside the CPL0 policy that differs from `CR4_BASE` (OSFXSR|OSXMMEXCPT).
+const CR4_DISTINCT: u64 = CR4_BASE | 0x600;
+
+fn cr4_any_reg_state(cr4: u64) -> LongModeState {
+    let mut state = board_state();
+    state.cr4 = Some(cr4);
+    state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+    for (index, gpr) in state.gpr.iter_mut().enumerate() {
+        *gpr = 0x1111_0000_0000_0000 + index as u64;
+    }
+    state.gpr[Register::Rsp as usize] = 0x7000;
+    state
+}
+
+#[test]
+fn mov_rdx_cr4_is_the_real_kernel_form() {
+    // `0F 20 E2` at RIP 0x3f13352 in the real kernel (CR4.LA57 probe).
+    for cr4 in [CR4_BASE, CR4_DISTINCT] {
+        let mut state = cr4_any_reg_state(cr4);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x0f, 0x20, 0xe2]);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+        assert_eq!(state.gpr[Register::Rdx as usize], cr4);
+        assert_eq!(
+            state,
+            cr2_any_reg_expected(&before, Register::Rdx as usize, cr4, 3)
+        );
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(state.cr4, Some(cr4));
+    }
+}
+
+#[test]
+fn mov_r64_cr4_writes_every_low_register_and_touches_nothing_else() {
+    for rm in 0u8..8 {
+        for rex in [None, Some(0x40u8), Some(0x48), Some(0x42), Some(0x4a)] {
+            let mut bytes = Vec::new();
+            bytes.extend(rex);
+            bytes.extend_from_slice(&[0x0f, 0x20, 0xe0 | rm]);
+            let mut state = cr4_any_reg_state(CR4_DISTINCT);
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+            assert_eq!(
+                state,
+                cr2_any_reg_expected(&before, rm as usize, CR4_DISTINCT, bytes.len() as u64),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state.rflags, before.rflags, "{bytes:02x?}");
+        }
+    }
+}
+
+#[test]
+fn mov_r64_cr4_with_rex_b_writes_r8_to_r15() {
+    for rm in 0u8..8 {
+        for rex in [0x41u8, 0x49, 0x43, 0x4b] {
+            let bytes = [rex, 0x0f, 0x20, 0xe0 | rm];
+            let mut state = cr4_any_reg_state(CR4_DISTINCT);
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_eq!(
+                state,
+                cr2_any_reg_expected(&before, 8 + rm as usize, CR4_DISTINCT, 4),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state.gpr[rm as usize], before.gpr[rm as usize]);
+        }
+    }
+    // `41 0F 20 E0` is MOV R8, CR4.
+    let mut state = cr4_any_reg_state(CR4_BASE);
+    let mut memory = Memory::code(&[0x41, 0x0f, 0x20, 0xe0]);
+    run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+    assert_eq!(state.gpr[Register::R8 as usize], CR4_BASE);
+}
+
+#[test]
+fn mov_r64_cr4_works_in_the_cr3_owning_set_too() {
+    let mut state = cr2_state(Some(CR2_DISTINCT));
+    state.cr4 = Some(CR4_DISTINCT);
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xe2]);
+    run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(state.gpr[Register::Rdx as usize], CR4_DISTINCT);
+    assert_eq!(state.rip, RIP + 3);
+}
+
+#[test]
+fn mov_r64_cr4_other_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0x44, 0x0f, 0x20, 0xe0][..],       // REX.R: CR12
+        &[0x4d, 0x0f, 0x20, 0xe7][..],       // REX.W+R+B: CR12 into R15
+        &[0x0f, 0x20, 0x23][..],             // mod 00
+        &[0x0f, 0x20, 0x63, 0x08][..],       // mod 01
+        &[0x0f, 0x20, 0xa3, 0, 0, 0, 0][..], // mod 10
+        &[0x0f, 0x22, 0xe2][..],             // MOV CR4, RDX: only the RAX write is modeled
+        &[0x41, 0x0f, 0x22, 0xe0][..],
+        &[0x66, 0x0f, 0x20, 0xe2][..],
+        &[0x66, 0x41, 0x0f, 0x20, 0xe2][..],
+        &[0xf3, 0x0f, 0x20, 0xe2][..],
+        &[0xf2, 0x0f, 0x20, 0xe2][..],
+        &[0x67, 0x0f, 0x20, 0xe2][..],
+        &[0x2e, 0x0f, 0x20, 0xe2][..],
+        &[0x64, 0x0f, 0x20, 0xe2][..],
+        &[0x41, 0x66, 0x0f, 0x20, 0xe2][..],
+        &[0x40, 0x41, 0x0f, 0x20, 0xe2][..],
+        &[0x0f, 0x20, 0xea][..], // CR5: not a modeled register
+    ] {
+        let mut state = cr4_any_reg_state(CR4_DISTINCT);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert!(
+            matches!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                    opcode: 0x20 | 0x22
+                })
+            ),
+            "{bytes:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn lock_mov_r64_cr4_does_not_execute() {
+    // LOCK before MOV CR is `#UD` for the RAX forms and closed for the others;
+    // either way nothing retires and nothing is mutated.
+    for bytes in [
+        &[0xf0, 0x0f, 0x20, 0xe2][..],
+        &[0xf0, 0x41, 0x0f, 0x20, 0xe0][..],
+    ] {
+        let mut state = cr4_any_reg_state(CR4_DISTINCT);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{bytes:02x?}"
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_r64_cr4_with_unmodeled_cr4_is_rejected_without_mutation() {
+    // The set refuses a missing CR4 at entry (nothing is fetched).
+    let mut state = cr4_any_reg_state(CR4_BASE);
+    state.cr4 = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xe2]);
+    let error = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::Cr4Missing);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+#[test]
+fn mov_r64_cr4_stays_unsupported_outside_the_set() {
+    for bytes in [&[0x0f, 0x20, 0xe2][..], &[0x41, 0x0f, 0x20, 0xe0][..]] {
+        let mut state = LongModeState {
+            rip: RIP,
+            rflags: 2 | IF,
+            cr4: None,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_r64_cr4_is_not_reachable_from_cpl3() {
+    let mut state = cr4_any_reg_state(CR4_BASE);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xe2]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+#[test]
+fn mov_rax_cr4_keeps_its_result() {
+    let mut state = cr4_any_reg_state(CR4_DISTINCT);
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_RAX_CR4);
+    let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, cr2_any_reg_expected(&before, 0, CR4_DISTINCT, 3));
 }
 
 // ---- S2-45e: PIO u8 in the set -------------------------------------------

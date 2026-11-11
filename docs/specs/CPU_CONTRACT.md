@@ -21215,3 +21215,33 @@ GDT — исключение набора как у `LRETQ`, `state == before`.
 
 Тесты: `linux_direct::tests::diagnostic_past_c7_*` (od-machine) и `linux_direct::tests::diagnostic_past_c7_*`,
 `without_the_flag_leaf_1_still_stops_at_c7_and_is_not_marked` (раннер).
+
+### `MOV r64, CR4` в любой регистр общего назначения на CPL0 в наборе (S4-38L7b)
+
+Реальное ядро на плате (набор CPL0) за точкой C7 доходит до `MOV RDX, CR4` (`0F 20 E2`, RIP `0x3f13352`) и далее до
+`XOR EAX, EAX; BT EDX, 12` (проверка `CR4.LA57`). Ранее набор знал только `0F 20 E0` (`ReadCr4`, RAX). Семантика
+по Intel SDM Vol.2 «MOV — Move to/from Control Registers» **по памяти; текст SDM в репозитории отсутствует и не
+сверялся**.
+
+**Декодер.** `[REX] 0F 20 /4`: ModRM mod = 11, reg = 100 (`E0`–`E7`), назначение = `rm | (REX.B << 3)`. Без префиксов
+или ровно один REX `40`–`4F` с `REX.R = 0`; REX.W/X не имеют значения (в 64-битном режиме `MOV r64, CRn` всегда
+64-битный), как у `ReadCr2Into` (S4-38L5d). REX.R дал бы CR12 — `Unsupported`. `mod != 11` (по памяти SDM mod
+игнорируется; здесь консервативно `Unsupported`), запись `0F 22` в иной регистр, `LOCK`/`66`/`F2`/`F3`/`67`/сегментный
+префикс — `Unsupported`. Голый `0F 20 E0` остаётся `Operation::ReadCr4` (без изменений для профилей CR4 и политики);
+все остальные формы, включая `48 0F 20 E0` (раньше `Unsupported`), — новый `Operation::ReadCr4Into(Register)`.
+
+**Исполнение.** Назначение получает `state.cr4` целиком (64 бита, без маски; модель CR4 набора: `0x20` на плате,
+`LA57 = 0`); RSP и RBP — обычные регистры; RIP += 3 (4 с REX), retired += 1; RFLAGS не меняется, определённость
+арифметических флагов снимается. Допускается только в наборе CPL0 (`control_policy` задан — тот же гейт, что у
+`ReadCr4`; владение CR3 не требуется); вне набора — `Unsupported` без мутации; CPL ≠ 0 — #GP(0) через админ набора.
+`state.cr4 == None` набор отвергает на входе (`Cr4Missing`) без выборки; в самой операции `None` — `Unsupported
+{ opcode: 0x20 }` без мутации.
+
+**Не делалось.** Запись CR4 в иной регистр (`0F 22 /4`), CR0/CR3 записи, `PUSHFQ`, CPUID/MSR, список
+`PagedCpl0ProbeV1`, `LEAVE`/`IRETQ`/`LRETQ`/`MOV Sreg` не менялись; `ReadCr0`/`ReadCr2`/`ReadCr2Into`/`ReadCr3` дают
+прежние результаты.
+
+Тесты: `cpl0_profile_set::mov_rdx_cr4_is_the_real_kernel_form`, `mov_r64_cr4_*`, `lock_mov_r64_cr4_does_not_execute`,
+`mov_rax_cr4_keeps_its_result`; `long_decode::tests::mov_r64_cr4_decodes_every_destination_with_any_rex_but_r`;
+`linux_direct::tests::set_facade_mov_r64_cr4_reads_the_board_cr4`. Из тестов S4-38L5d и декодера убрана запись «CR4 в
+RBX — `Unsupported`» (теперь поддержана), а в тесте ReadCr3 — `48 0F 20 E0`.

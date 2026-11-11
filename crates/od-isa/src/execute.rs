@@ -27049,7 +27049,11 @@ fn step_configured(
         || (control_policy.is_some()
             && matches!(
                 instruction.operation,
-                Operation::ReadCr0 | Operation::WriteCr0 | Operation::ReadCr4 | Operation::WriteCr4
+                Operation::ReadCr0
+                    | Operation::WriteCr0
+                    | Operation::ReadCr4
+                    | Operation::ReadCr4Into(_)
+                    | Operation::WriteCr4
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
             && instruction.operation == Operation::WriteCr3)
@@ -32349,6 +32353,37 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::ReadCr4Into(dest) if control_policy.is_some() => {
+            // S4-38L7b: `[REX] 0F 20 /4` MOV r64, CR4 into any GPR in the CPL0
+            // set. The decoder validated mod = 11, reg = CR4, the REX.R-free
+            // prefix and the destination (`rm` + REX.B); the executor
+            // re-checks the shape. RSP/RBP are ordinary registers here.
+            let rex_only = match instruction.prefixes.rex {
+                Some(rex) => {
+                    (0x40..=0x4f).contains(&rex)
+                        && rex & 0x04 == 0
+                        && instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(rex),
+                                ..Prefixes::default()
+                            })
+                }
+                None => instruction.length == 3 && instruction.prefixes == Prefixes::default(),
+            };
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x20
+                && rex_only
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            let Some(value) = state.cr4.filter(|_| exact_form) else {
+                return Ok(StepOutcome::Unsupported { opcode: 0x20 });
+            };
+            state.write(RegisterView::low(dest, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         Operation::WriteCr0 | Operation::WriteCr4 if control_policy.is_some() => {
             let policy = control_policy.expect("guarded by the match arm");
             let value = state.gpr[Register::Rax as usize];
@@ -34452,6 +34487,7 @@ fn step_configured(
             cr4_profile.is_some() || control_policy.is_some()
         }
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
+        Operation::ReadCr4Into(_) => control_policy.is_some(),
         Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
             cpu_owned_cr3.is_some()
         }
@@ -36664,6 +36700,7 @@ fn step_configured(
         Operation::ReadCr0
         | Operation::WriteCr0
         | Operation::ReadCr4
+        | Operation::ReadCr4Into(_)
         | Operation::WriteCr4
         | Operation::WriteCr3
         | Operation::ReadCr3
