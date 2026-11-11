@@ -3860,6 +3860,59 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7ag: LOCK AND m8, imm8 through the board facade ----
+
+    #[test]
+    fn lock_and_byte_rip_relative_with_a_negative_displacement_changes_only_that_byte() {
+        const DATA: u64 = 0x0010_0010;
+        const VALUE: u64 = 0x0123_4567_89AB_CD37;
+        // MOV RAX,VALUE; MOV [DATA],RAX (`48 89 04 25 disp32`); SUB DL,1 (0 - 1 borrows: CF = 1);
+        // LOCK ANDB $0xfe,DATA(%rip) (`f0 80 25 disp32 fe`, the S4-38L7af boundary shape: the
+        // displacement is negative and the next RIP is after the immediate; 0x37 & 0xfe = 0x36);
+        // MOV RBX,[DATA] (the read back); HLT.
+        let mut code = mov_rax_imm64(VALUE);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x10, 0x00]);
+        code.extend([0x80, 0xEA, 0x01]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (DATA.wrapping_sub(next_rip)) as u32;
+        assert!(disp >> 31 == 1, "the displacement is negative");
+        code.extend([0xF0, 0x80, 0x25]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xFE);
+        code.extend([0x48, 0x8B, 0x1C, 0x25, 0x10, 0x00, 0x10, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, store, SUB, LOCK AND, load, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // Only the low byte of the qword changed: 0x37 & 0xfe = 0x36.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            0x0123_4567_89AB_CD36
+        );
+        assert_eq!(guest_qword(&mut boot, DATA), 0x0123_4567_89AB_CD36);
+        let state = boot.board.state();
+        // AND clears CF (set by SUB DL,1); 0x36 has four set bits: PF = 1, ZF = SF = 0.
+        assert_eq!(state.rflags & 1, 0, "CF");
+        assert_eq!(state.rflags & (1 << 11), 0, "OF");
+        assert_eq!(state.rflags & (1 << 2), 1 << 2, "PF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+        assert_eq!(state.rflags & (1 << 7), 0, "SF");
+    }
+
     // ---- S4-38L7af: CALL rel32 with a CS override through the board facade ----
 
     #[test]
