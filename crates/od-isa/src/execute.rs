@@ -53778,21 +53778,20 @@ fn transfer(
             // pre-instruction state. The destination is written on both branches (SDM: a failed
             // compare still writes the old value back), so a read-only page faults either way;
             // RAX and the flags commit only after that write succeeded.
-            let accumulator = RegisterView::low(Register::Rax, OperandSize::Qword);
+            // S4-38L7y: the width follows the destination (dword: EAX, a dword source; the
+            // compare uses the dword flags). On inequality EAX is written through the dword
+            // register write, which zero-extends into RAX; on equality RAX is not touched.
+            let size = destination.size;
+            let accumulator = RegisterView::low(Register::Rax, size);
             let expected = state.read(accumulator);
             let replacement = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
-            let observed = memory.read_integer(address, context, destination.size)?;
+            let observed = memory.read_integer(address, context, size)?;
             let equal = expected == observed;
             let stored = if equal { replacement } else { observed };
-            memory.write_integer(address, context, destination.size, stored)?;
-            let (_, flags) = arithmetic_result(
-                OperandSize::Qword,
-                ArithmeticKind::Cmp,
-                expected,
-                observed,
-                state.rflags,
-            );
+            memory.write_integer(address, context, size, stored)?;
+            let (_, flags) =
+                arithmetic_result(size, ArithmeticKind::Cmp, expected, observed, state.rflags);
             if !equal {
                 state.write(accumulator, observed);
             }
@@ -64449,6 +64448,8 @@ mod tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rbx as usize] = 0x1000;
@@ -154368,6 +154369,8 @@ mod mov_cr3_profile_tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = make_state(0x1000, 0x2000);
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -155281,6 +155284,8 @@ mod paged_cr3_probe_tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = state();
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -157136,6 +157141,8 @@ mod paged_mov_profile_tests {
         for code in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = state_with_control_registers();
             state.gpr[Register::Rbx as usize] = 0x1000;

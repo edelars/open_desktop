@@ -598,8 +598,9 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
-    /// S4-38L7k: `F0 REX.W 0F B1 /r` (LOCK CMPXCHG m64, r64), memory destination only. Executed
-    /// only in the CPL0 set; the destination is always written back.
+    /// S4-38L7k: `F0 REX.W 0F B1 /r` (LOCK CMPXCHG m64, r64), memory destination only; S4-38L7y
+    /// adds `F0 [REX] 0F B1 /r` (m32, r32, no REX.W). Executed only in the CPL0 set; the
+    /// destination is always written back.
     LockCmpxchgMem {
         destination: MemoryOperand,
         source: RegisterView,
@@ -7594,8 +7595,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0xb1) => {
-                if size != OperandSize::Qword
-                    || !prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                let qword =
+                    size == OperandSize::Qword && prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+                // S4-38L7y: the dword form is LOCK + memory only. A REX without W (R/X/B bits)
+                // is effective; a REX byte that is not immediately before the opcode is refused
+                // (it would otherwise silently decode as the plain dword form).
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let dword =
+                    size == OperandSize::Dword && prefixes.group1 == Some(0xf0) && !stale_rex;
+                if !(qword || dword)
                     || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
                     || prefixes.segment.is_some()
                     || prefixes.operand_override
@@ -7606,24 +7617,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let source = view(((modrm >> 3) & 7) | ((rex & 4) << 1), size, true);
                 match self.rm_operand(modrm, prefixes, size)? {
-                    Operand::Register(destination) if prefixes.group1.is_none() => {
+                    Operand::Register(destination) if qword && prefixes.group1.is_none() => {
                         Operation::Cmpxchg {
                             destination,
                             source,
                         }
                     }
                     Operand::Memory(destination)
-                        if destination.size == OperandSize::Qword
-                            && prefixes.group1 == Some(0xf0) =>
+                        if destination.size == size && prefixes.group1 == Some(0xf0) =>
                     {
-                        // S4-38L7k: LOCK is a memory-destination form only; `duplicate` prefixes
-                        // are refused by the shared check above.
+                        // S4-38L7k/S4-38L7y: LOCK is a memory-destination form only (qword, or
+                        // dword without REX.W); `duplicate` prefixes are refused by the shared
+                        // check above.
                         Operation::LockCmpxchgMem {
                             destination,
                             source,
                         }
                     }
-                    Operand::Memory(destination) if destination.size == OperandSize::Qword => {
+                    Operand::Memory(destination)
+                        if qword && destination.size == OperandSize::Qword =>
+                    {
                         Operation::CmpxchgMemory {
                             destination,
                             source,
@@ -22430,9 +22443,6 @@ mod tests {
             Operation::CmpxchgMemory { .. }
         ));
         for bytes in [
-            &[0xf0, 0x0f, 0xb1, 0x13][..],
-            &[0xf0, 0x40, 0x0f, 0xb1, 0x13][..],
-            &[0xf0, 0x44, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x48, 0x0f, 0xb1, 0xd3][..],
             &[0xf0, 0x4d, 0x0f, 0xb1, 0xc8][..],
             &[0x66, 0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
@@ -22451,6 +22461,92 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(
                 matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_cmpxchg_decodes_the_dword_memory_form_with_lock_only() {
+        // S4-38L7y: `F0 [REX] 0F B1 /r` without REX.W, memory destination.
+        let edx = RegisterView::low(Register::Rdx, OperandSize::Dword);
+        let r12d = RegisterView::low(Register::R12, OperandSize::Dword);
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0xb1, 0x13]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockCmpxchgMem { destination, source }
+                if source == edx
+                    && destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.size == OperandSize::Dword
+        ));
+        // REX.R (no W) selects R12D; the destination is RIP-relative and a dword.
+        let mut memory = Memory::new(&[0xf0, 0x44, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 9);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockCmpxchgMem { destination, source }
+                if source == r12d
+                    && destination.base == AddressBase::NextRip
+                    && destination.size == OperandSize::Dword
+        ));
+        // An empty REX (0x40) and REX.B (base R8) are effective.
+        let mut memory = Memory::new(&[0xf0, 0x40, 0x0f, 0xb1, 0x13]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockCmpxchgMem { destination, .. }
+                if destination.size == OperandSize::Dword
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x41, 0x0f, 0xb1, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockCmpxchgMem { destination, .. }
+                if destination.base == AddressBase::Register(Register::R8)
+                    && destination.size == OperandSize::Dword
+        ));
+        // REX.W keeps the S4-38L7k qword form.
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xb1, 0x13]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockCmpxchgMem { destination, .. }
+                if destination.size == OperandSize::Qword
+        ));
+        // Without LOCK the dword form (memory or register) stays refused; nothing is added.
+        // With LOCK the register form, 0x66/0x67, REP/F2, a repeated LOCK, any segment prefix
+        // and a stale REX are refused.
+        for bytes in [
+            &[0x0f, 0xb1, 0x13][..],
+            &[0x40, 0x0f, 0xb1, 0x13][..],
+            &[0x44, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x0f, 0xb1, 0xd3][..],
+            &[0xf0, 0x0f, 0xb1, 0xd3][..],
+            &[0xf0, 0x41, 0x0f, 0xb1, 0xc8][..],
+            &[0x66, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x66, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x67, 0x0f, 0xb1, 0x13][..],
+            &[0xf3, 0x0f, 0xb1, 0x13][..],
+            &[0xf2, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0xf3, 0x0f, 0xb1, 0x13][..],
+            &[0xf3, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x64, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x65, 0x0f, 0xb1, 0x13][..],
+            &[0x65, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x2e, 0x0f, 0xb1, 0x13][..],
+            &[0x41, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0x44, 0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0x48, 0xf0, 0x0f, 0xb1, 0x13][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xb1
+                ),
                 "{bytes:02x?}"
             );
         }
