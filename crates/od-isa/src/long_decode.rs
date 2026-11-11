@@ -8160,11 +8160,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         } else {
                             Operation::SubGsMem { dst, src }
                         }
-                    } else if matches!(prefixes.segment, Some(0x64 | 0x65)) && byte == 0x39 {
+                    } else if matches!(prefixes.segment, Some(0x64 | 0x65))
+                        && byte == 0x39
+                        && modrm >> 6 != 3
+                    {
                         // S4-38L7aa: `[64|65] [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W)
-                        // with a memory destination. The register form (mod = 11) with a segment
-                        // prefix, LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte
-                        // that is not immediately before the opcode (the dword rule of S4-38L7m).
+                        // with a memory destination. The register form (mod = 11) is not touched:
+                        // it takes the plain `binary_operation` path below, the prefix ignored.
+                        // LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte that
+                        // is not immediately before the opcode (the dword rule of S4-38L7m).
                         let stale_rex = prefix_bytes[..prefix_count]
                             .iter()
                             .enumerate()
@@ -23759,10 +23763,23 @@ mod tests {
                 ..
             }
         ));
+        // The register form (mod = 11) is not touched: the prefix is ignored, plain CMP.
+        for bytes in [&[0x65, 0x48, 0x39, 0xd0][..], &[0x64, 0x39, 0xd0][..]] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Arithmetic {
+                        kind: ArithmeticKind::Cmp,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
         for (bytes, refused_opcode) in [
-            // Register form with a segment prefix.
-            (&[0x65, 0x48, 0x39, 0xd0][..], 0x39),
-            (&[0x64, 0x39, 0xd0][..], 0x39),
             // 0x66, 0x67, LOCK, REP, REPNE.
             (&[0x66, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
             (&[0x65, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),

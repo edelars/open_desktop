@@ -16910,11 +16910,7 @@ fn gs_cmp_page_fault_on_the_read_changes_nothing() {
 fn segment_cmp_forms_outside_the_slice_are_refused_without_mutation() {
     // (code, expected refused opcode): the 0x39 forms refuse with 0x39; the neighbouring ALU
     // forms with a FS/GS memory operand refuse with their own opcode.
-    let cases: [(&[u8], u8); 17] = [
-        // Register form (mod = 11) with a segment prefix, dword and qword.
-        (&[0x65, 0x48, 0x39, 0xd0], 0x39),
-        (&[0x64, 0x48, 0x39, 0xc2], 0x39),
-        (&[0x65, 0x39, 0xd0], 0x39),
+    let cases: [(&[u8], u8); 14] = [
         // 0x66 (word), in both orders, and 0x67.
         (&[0x66, 0x65, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
         (&[0x65, 0x66, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
@@ -16951,6 +16947,57 @@ fn segment_cmp_forms_outside_the_slice_are_refused_without_mutation() {
         assert_eq!(state, before, "{code:02x?}");
         assert!(memory.reads.is_empty(), "{code:02x?}");
         assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_prefixed_register_cmp_is_unchanged_and_ignores_the_prefix() {
+    // S4-38L7aa regression: the register form (mod = 11) with FS/GS is not touched; the prefix is
+    // ignored and the instruction is the plain `cmp`: same flags as the unprefixed form, no
+    // register change, no memory access, RIP advances by the full length (prefix included).
+    // (prefixed code, the same instruction without the prefix)
+    let cases: [(&[u8], &[u8]); 4] = [
+        (&[0x65, 0x48, 0x39, 0xd0], &[0x48, 0x39, 0xd0]),
+        (&[0x64, 0x48, 0x39, 0xc2], &[0x48, 0x39, 0xc2]),
+        (&[0x64, 0x39, 0xc8], &[0x39, 0xc8]),
+        (&[0x65, 0x39, 0xd0], &[0x39, 0xd0]),
+    ];
+    for (prefixed, plain) in cases {
+        for (rax, rdx, rcx) in [
+            (5u64, 7u64, 0x1_0000_0003u64),
+            (7, 7, 3),
+            (0x8000_0000_0000_0000, 1, 0x8000_0000),
+        ] {
+            let seed = |code: &[u8]| {
+                let mut state = board_state();
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8880_0000_0000;
+                state.gpr[Register::Rax as usize] = rax;
+                state.gpr[Register::Rdx as usize] = rdx;
+                state.gpr[Register::Rcx as usize] = rcx;
+                let before = state.clone();
+                let mut memory = CasMemory::new(code, 1);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                (state, before, memory, result)
+            };
+            let (state, before, memory, result) = seed(prefixed);
+            let (plain_state, _, _, plain_result) = seed(plain);
+            assert_eq!(result.instructions_executed, 1, "{prefixed:02x?}");
+            assert_eq!(plain_result.instructions_executed, 1, "{plain:02x?}");
+            assert!(memory.reads.is_empty(), "{prefixed:02x?}");
+            assert!(memory.writes.is_empty(), "{prefixed:02x?}");
+            assert_eq!(
+                state.gpr, before.gpr,
+                "{prefixed:02x?}: registers unchanged"
+            );
+            assert_eq!(state.rip, RIP + prefixed.len() as u64, "{prefixed:02x?}");
+            assert_eq!(state.rflags, plain_state.rflags, "{prefixed:02x?}");
+            assert_eq!(
+                state.rip - RIP,
+                plain_state.rip - RIP + 1,
+                "{prefixed:02x?}"
+            );
+        }
     }
 }
 
