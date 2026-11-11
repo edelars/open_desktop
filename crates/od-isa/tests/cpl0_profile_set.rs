@@ -8021,3 +8021,331 @@ fn mov_cr4_pge_stays_unsupported_outside_the_set_and_gp_at_cpl3() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!((memory.fetches, &state), (0, &before));
 }
+
+// ---- S4-38L7g: FS/GS-based qword store `MOV m64, r64` (SDM Vol.2 segment override prefixes,
+// Vol.3 3.4.4: in 64-bit mode only the FS/GS base is added; from memory, not re-checked) ----
+
+/// Code at `RIP` plus a log of every write; reads are not expected.
+struct StoreMemory {
+    code: Vec<u8>,
+    writes: Vec<(u64, Vec<u8>)>,
+}
+
+impl StoreMemory {
+    fn code(bytes: &[u8]) -> Self {
+        Self {
+            code: bytes.to_vec(),
+            writes: Vec::new(),
+        }
+    }
+}
+
+impl GuestMemory for StoreMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Fetch,
+        })
+    }
+
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(format!(
+            "unexpected read {address:#x}"
+        )))
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, bytes: &[u8]) -> Result<(), MemoryError> {
+        self.writes.push((address, bytes.to_vec()));
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+/// `mov %rax, %gs:0x1234(%rip)`.
+const GS_STORE_RIP: [u8; 8] = [0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00];
+/// `mov %rax, %fs:0x1234(%rip)`.
+const FS_STORE_RIP: [u8; 8] = [0x64, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00];
+const STORE_RAX: u64 = 0x1111_2222_3333_4444;
+const GP0: ArchitecturalFault = ArchitecturalFault {
+    vector: 13,
+    error_code: Some(0),
+    linear_address: None,
+};
+
+fn run_store_set(
+    state: &mut LongModeState,
+    memory: &mut StoreMemory,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+}
+
+#[test]
+fn gs_rip_relative_qword_store_writes_at_gs_base_plus_effective_address() {
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let mut memory = StoreMemory::code(&GS_STORE_RIP);
+    let result = run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    // RIP-relative: next RIP (after all 8 bytes, the prefix included) + disp32, plus the base.
+    let at = gs_base + RIP + 8 + 0x1234;
+    assert_eq!(memory.writes, vec![(at, STORE_RAX.to_le_bytes().to_vec())]);
+    expected.rip += 8;
+    assert_eq!(state, expected, "only RIP changes");
+}
+
+#[test]
+fn fs_rip_relative_qword_store_writes_at_fs_base_plus_effective_address() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let mut memory = StoreMemory::code(&FS_STORE_RIP);
+    let result = run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    let at = fs_base + RIP + 8 + 0x1234;
+    assert_eq!(memory.writes, vec![(at, STORE_RAX.to_le_bytes().to_vec())]);
+    expected.rip += 8;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_and_fs_stores_with_a_zero_base_use_the_effective_address() {
+    for code in [GS_STORE_RIP, FS_STORE_RIP] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        let mut memory = StoreMemory::code(&code);
+        let result = run_store_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            memory.writes,
+            vec![(RIP + 8 + 0x1234, STORE_RAX.to_le_bytes().to_vec())]
+        );
+    }
+}
+
+#[test]
+fn gs_store_with_base_register_index_and_extended_source_register() {
+    // `mov %r8, %gs:0x10(%rbx,%rcx,4)` = 65 4c 89 44 8b 10.
+    let code = [0x65, 0x4c, 0x89, 0x44, 0x8b, 0x10];
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::Rcx as usize] = 3;
+    state.gpr[Register::R8 as usize] = 0xdead_beef_cafe_f00d;
+    let mut expected = state.clone();
+    let mut memory = StoreMemory::code(&code);
+    run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(
+            0xffff_8880_0000_0000 + 0x1000 + 12 + 0x10,
+            0xdead_beef_cafe_f00du64.to_le_bytes().to_vec()
+        )]
+    );
+    expected.rip += 6;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_store_hands_the_whole_qword_to_the_backend_across_a_page_boundary() {
+    // Splitting across pages is the backend's (the S4-38L4h adapter's) job: the executor issues
+    // one 8-byte write at the 4 KiB-straddling address.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0ffc;
+    state.gpr[Register::Rbx as usize] = STORE_RAX;
+    state.gpr[Register::Rax as usize] = 0;
+    // mov %rbx, %gs:(%rax)
+    let mut memory = StoreMemory::code(&[0x65, 0x48, 0x89, 0x18]);
+    run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_0000_0ffc, STORE_RAX.to_le_bytes().to_vec())]
+    );
+}
+
+#[test]
+fn gs_store_non_canonical_result_is_gp0_without_mutation_or_write() {
+    // base + effective address (or its last byte) lands in the non-canonical hole.
+    for base in [
+        0x0000_8000_0000_0000u64,
+        0x7fff_ffff_ffff_fff0,
+        // The start is canonical but the qword's last byte crosses into the hole.
+        0x0000_7fff_ffff_ffff - 0x1234 - 8 - RIP - 3,
+    ] {
+        let mut state = board_state();
+        state.gs_base = base;
+        let before = state.clone();
+        let mut memory = StoreMemory::code(&GS_STORE_RIP);
+        let result = run_store_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{base:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn gs_store_through_rsp_base_is_gp0_not_ss_when_non_canonical() {
+    // `mov %rax, %gs:(%rsp)`: the GS segment is the one referenced, so #GP(0), not #SS.
+    let mut state = board_state();
+    state.gs_base = 0x0000_8000_0000_0000;
+    state.gpr[Register::Rsp as usize] = 0;
+    let before = state.clone();
+    let mut memory = StoreMemory::code(&[0x65, 0x48, 0x89, 0x04, 0x24]);
+    let result = run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn segment_store_forms_outside_the_slice_are_refused_without_mutation() {
+    let cases: [&[u8]; 9] = [
+        // No REX.W (dword store) and REX without W.
+        &[0x65, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x64, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x65, 0x40, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        // Byte store.
+        &[0x65, 0x88, 0x05, 0x34, 0x12, 0x00, 0x00],
+        // Register destination (mod = 11).
+        &[0x65, 0x48, 0x89, 0xc3],
+        // LOCK, 0x66 and 0x67.
+        &[0xf0, 0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x66, 0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x65, 0x67, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        // REP.
+        &[0xf3, 0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+    ];
+    for code in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = StoreMemory::code(code);
+        let result = run_store_set(&mut state, &mut memory).unwrap();
+        assert!(
+            matches!(
+                exit(&result),
+                RunExit::Unsupported { .. } | RunExit::Fault(_)
+            ),
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn unsupported_segment_store_forms_report_the_store_opcode() {
+    for code in [
+        &[0x65, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x66, 0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut state = board_state();
+        let mut memory = StoreMemory::code(code);
+        let result = run_store_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x89 });
+    }
+}
+
+#[test]
+fn plain_unprefixed_qword_store_still_writes_at_the_effective_address_in_the_set() {
+    // Regression: `mov %rax, 0x1234(%rip)` without a segment override ignores the bases.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    let mut memory = StoreMemory::code(&[0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00]);
+    run_store_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(RIP + 7 + 0x1234, STORE_RAX.to_le_bytes().to_vec())]
+    );
+}
+
+#[test]
+fn segment_store_stays_unsupported_outside_the_set() {
+    for code in [GS_STORE_RIP, FS_STORE_RIP] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = StoreMemory::code(&code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x89 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cs_ds_es_ss_overrides_on_a_qword_store_keep_ignoring_the_segment_base() {
+    // Unchanged by S4-38L7g: in 64-bit mode the CS/DS/ES/SS bases are ignored (SDM Vol.3 3.4.4),
+    // and the decoder always accepted these prefixes on a plain MOV. The FS/GS bases do not apply.
+    for prefix in [0x2eu8, 0x3e, 0x36, 0x26] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let mut memory = StoreMemory::code(&[prefix, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00]);
+        let result = run_store_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(RIP + 8 + 0x1234, STORE_RAX.to_le_bytes().to_vec())],
+            "{prefix:#x}"
+        );
+    }
+}

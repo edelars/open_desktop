@@ -34726,6 +34726,11 @@ fn step_configured(
         | Operation::InAlDx
         | Operation::OutDxAl => false,
         Operation::Swapgs => true,
+        // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
+        // the set's mark).
+        Operation::MovFsStore { .. } | Operation::MovGsStore { .. } => {
+            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
         Operation::ReadCr0 | Operation::WriteCr0 => {
@@ -48432,6 +48437,8 @@ fn step_configured(
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
         | Operation::MovGsLoad { .. }
+        | Operation::MovFsStore { .. }
+        | Operation::MovGsStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53425,6 +53432,20 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
+        }
+        Operation::MovFsStore { dst, src } => {
+            // Validate the whole access before the store (SDM Vol.3 3.4.4: the FS base replaces
+            // the zero base; a non-canonical result is #GP(0)).
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = state.read(src);
+            memory.write_integer(address, context, dst.size, value)?;
+        }
+        Operation::MovGsStore { dst, src } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = state.read(src);
+            memory.write_integer(address, context, dst.size, value)?;
         }
         Operation::MovFsSelectorToRax => {
             state.gpr[Register::Rax as usize] = u64::from(state.fs_selector);
