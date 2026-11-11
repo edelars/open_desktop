@@ -19,9 +19,12 @@ const CR0_WP: u64 = 1 << 16;
 const CR0_PG: u64 = 1 << 31;
 const CR0_ALLOWED: u64 = CR0_PE | CR0_MP | CR0_EM | CR0_TS | CR0_ET | CR0_NE | CR0_WP | CR0_PG;
 const CR4_PAE: u64 = 1 << 5;
+const CR4_PSE: u64 = 1 << 4;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
-const CR4_ALLOWED: u64 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
+// CR4.PSE does not change IA-32e translation (the PS bit of a PDE is always honored), so it is
+// admitted as a snapshot-only bit (S4-38L7c); the walker never reads it.
+const CR4_ALLOWED: u64 = CR4_PAE | CR4_PSE | CR4_OSFXSR | CR4_OSXMMEXCPT;
 const EFER_SCE: u64 = 1;
 const EFER_LME: u64 = 1 << 8;
 const EFER_LMA: u64 = 1 << 10;
@@ -4809,6 +4812,26 @@ mod tests {
             Err(ProbeConfigError::Cr3Mismatch {
                 cpu_cr3: ROOT | 0x18 | 0x7e0,
                 snapshot_cr3: ROOT,
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_state_snapshot_admits_cr4_pse_as_a_snapshot_only_bit() {
+        // S4-38L7c: PSE (bit 4) is admitted with PAE; it does not change IA-32e translation.
+        let mut state = od_isa::state::LongModeState::default();
+        state.cr0 = Some(0x8001_0033);
+        state.cr4 = Some(CR4_PAE | (1 << 4));
+        let snapshot =
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA).unwrap();
+        assert_eq!(snapshot.cr4(), 0x30);
+        // PSE without PAE is still rejected.
+        state.cr4 = Some(1 << 4);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::RequiredBits {
+                register: "CR4",
+                bits: CR4_PAE,
             })
         );
     }
