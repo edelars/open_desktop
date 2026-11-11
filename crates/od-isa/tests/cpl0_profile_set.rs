@@ -6368,3 +6368,423 @@ fn gs_base_member_keeps_the_selected_efer_profile() {
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.gs_base, 0);
 }
+
+// ---- S4-38L6c: MOV Sreg, AX with a nonzero GDT selector (checks per SDM, from memory) ----
+
+/// Data, writable, DPL0, present, A = 0, base 0x1234_5678, 4 KiB granularity, limit 0xfffff.
+const SREG_DATA: u64 = 0x12cf_9234_5678_ffff;
+const SREG_DATA_ACCESSED: u64 = 0x12cf_9334_5678_ffff;
+const SREG_INDEX3: u64 = LRETQ_GDT + 0x18;
+
+fn sreg_state(selector: u16) -> (LongModeState, LretqMemory) {
+    let mut state = LongModeState {
+        rip: RIP,
+        rflags: 2,
+        gdtr: Some(od_isa::state::Gdtr {
+            base: LRETQ_GDT,
+            limit: 0x1f,
+        }),
+        ..loaded_state()
+    };
+    state.gpr[0] = u64::from(selector);
+    let mut memory = LretqMemory::new(&[0x8e, 0xd0]);
+    memory.put(SREG_INDEX3, SREG_DATA);
+    (state, memory)
+}
+
+fn run_sreg(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    modrm: u8,
+) -> Cpl0ProfileSetResult {
+    memory.code = vec![0x8e, modrm];
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+const SS_MODRM: u8 = 0xd0;
+const DS_MODRM: u8 = 0xd8;
+const ES_MODRM: u8 = 0xc0;
+const FS_MODRM: u8 = 0xe0;
+const GS_MODRM: u8 = 0xe8;
+const ALL_SREG_MODRM: [u8; 5] = [SS_MODRM, DS_MODRM, ES_MODRM, FS_MODRM, GS_MODRM];
+const NON_SS_SREG_MODRM: [u8; 4] = [DS_MODRM, ES_MODRM, FS_MODRM, GS_MODRM];
+
+fn sreg_loaded_cache() -> DataSegmentDescriptorCache {
+    DataSegmentDescriptorCache {
+        base: 0x1234_5678,
+        limit: 0xffff_ffff,
+        access: 0x93,
+        flags: 0xc,
+    }
+}
+
+#[test]
+fn mov_ss_nonnull_loads_the_cache_sets_accessed_and_opens_the_shadow() {
+    let (mut state, mut memory) = sreg_state(0x18);
+    let mut expected = state.clone();
+    let result = run_sreg(&mut state, &mut memory, SS_MODRM);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip = RIP + 2;
+    expected.ss_selector = Some(0x18);
+    expected.ss_cache = Some(sreg_loaded_cache());
+    expected.ss_unusable = false;
+    expected.sti_shadow = Some(StiShadow::Blocking);
+    assert_eq!(state, expected);
+    assert_eq!(
+        memory.write_log,
+        vec![(
+            SREG_INDEX3,
+            SREG_DATA_ACCESSED.to_le_bytes().to_vec(),
+            AccessOrigin::DescriptorTable
+        )]
+    );
+    assert_eq!(
+        memory.reads,
+        vec![(SREG_INDEX3, 8, AccessOrigin::DescriptorTable)]
+    );
+}
+
+#[test]
+fn mov_ss_nonnull_with_the_accessed_bit_set_writes_nothing_and_clears_unusable() {
+    let (mut state, mut memory) = sreg_state(0x18);
+    memory.put(SREG_INDEX3, SREG_DATA_ACCESSED);
+    state.ss_unusable = true;
+    let result = run_sreg(&mut state, &mut memory, SS_MODRM);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ss_selector, Some(0x18));
+    assert_eq!(state.ss_cache, Some(sreg_loaded_cache()));
+    assert!(!state.ss_unusable);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn mov_ds_es_fs_gs_nonnull_load_data_segments() {
+    for modrm in NON_SS_SREG_MODRM {
+        let (mut state, mut memory) = sreg_state(0x18);
+        let mut expected = state.clone();
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(result.instructions_executed, 1, "{modrm:#x}");
+        expected.rip = RIP + 2;
+        let fs_gs = FsDescriptorCache {
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        match modrm {
+            DS_MODRM => {
+                expected.ds_selector = 0x18;
+                expected.ds_cache = Some(sreg_loaded_cache());
+            }
+            ES_MODRM => {
+                expected.es_selector = 0x18;
+                expected.es_cache = Some(sreg_loaded_cache());
+            }
+            FS_MODRM => {
+                expected.fs_selector = 0x18;
+                expected.fs_cache = Some(fs_gs);
+                expected.fs_base = 0x1234_5678;
+            }
+            _ => {
+                expected.gs_selector = 0x18;
+                expected.gs_cache = Some(fs_gs);
+                expected.gs_base = 0x1234_5678;
+            }
+        }
+        // MOV DS/ES/FS/GS open no interrupt shadow; RFLAGS and the registers are untouched.
+        assert_eq!(state, expected, "{modrm:#x}");
+        assert_eq!(memory.writes, 1, "{modrm:#x}");
+    }
+}
+
+#[test]
+fn mov_data_sreg_nonnull_clears_only_its_own_null_mark() {
+    for (loaded, modrm) in NON_SS_SREG_MODRM.into_iter().enumerate() {
+        let (mut state, mut memory) = sreg_state(0x18);
+        state.ds_unusable = true;
+        state.es_unusable = true;
+        state.fs_unusable = true;
+        state.gs_unusable = true;
+        run_sreg(&mut state, &mut memory, modrm);
+        let unusable = [
+            state.ds_unusable,
+            state.es_unusable,
+            state.fs_unusable,
+            state.gs_unusable,
+        ];
+        for (index, flag) in unusable.into_iter().enumerate() {
+            assert_eq!(flag, index != loaded, "{modrm:#x} {index}");
+        }
+    }
+}
+
+#[test]
+fn mov_ds_es_fs_gs_accept_a_readable_code_segment_but_ss_refuses_it() {
+    // Code, readable, non-conforming, DPL0, present, A = 0.
+    let code_readable = 0x00cf_9a00_0000_ffffu64;
+    for modrm in NON_SS_SREG_MODRM {
+        let (mut state, mut memory) = sreg_state(0x18);
+        memory.put(SREG_INDEX3, code_readable);
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(result.instructions_executed, 1, "{modrm:#x}");
+        assert_eq!(state.rip, RIP + 2);
+        assert_eq!(
+            memory.write_log[0].1,
+            0x00cf_9b00_0000_ffffu64.to_le_bytes().to_vec()
+        );
+    }
+    assert_sreg_refused(SS_MODRM, 0x18, code_readable, selector_fault_exit(13, 0x18));
+}
+
+/// Run a load that must fail with `expected`, `state == before`, no memory write.
+fn assert_sreg_refused(modrm: u8, selector: u16, descriptor: u64, expected: RunExit) {
+    let (mut state, mut memory) = sreg_state(selector);
+    memory.put(SREG_INDEX3, descriptor);
+    let before = state.clone();
+    let result = run_sreg(&mut state, &mut memory, modrm);
+    assert_eq!(
+        exit(&result),
+        &expected,
+        "{modrm:#x} {selector:#x} {descriptor:#x}"
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn mov_ds_es_fs_gs_refuse_bad_descriptors_with_exact_faults() {
+    let gp = selector_fault_exit(13, 0x18);
+    for modrm in NON_SS_SREG_MODRM {
+        // Execute-only code: #GP(selector).
+        assert_sreg_refused(modrm, 0x18, 0x00cf_9800_0000_ffff, gp.clone());
+        // System descriptor (S = 0): #GP(selector).
+        assert_sreg_refused(modrm, 0x18, 0x00cf_8900_0000_ffff, gp.clone());
+        // Not present data: #NP(selector).
+        assert_sreg_refused(
+            modrm,
+            0x18,
+            0x00cf_1200_0000_ffff,
+            selector_fault_exit(11, 0x18),
+        );
+        // Not present, execute-only: the type check wins, #GP.
+        assert_sreg_refused(modrm, 0x18, 0x00cf_1800_0000_ffff, gp.clone());
+        // DPL 0 data with RPL 3: DPL < RPL, #GP(selector) (error code without RPL bits).
+        assert_sreg_refused(modrm, 0x1b, SREG_DATA, gp.clone());
+        // Index beyond the GDT limit (0x1f): #GP(selector).
+        assert_sreg_refused(modrm, 0x20, SREG_DATA, selector_fault_exit(13, 0x20));
+    }
+    // DPL 3 data with RPL 3 is legal.
+    let (mut state, mut memory) = sreg_state(0x1b);
+    memory.put(SREG_INDEX3, 0x12cf_f234_5678_ffff);
+    let result = run_sreg(&mut state, &mut memory, DS_MODRM);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ds_selector, 0x1b);
+    // Conforming readable code with DPL 0 and RPL 3 is legal (the DPL check is skipped).
+    let (mut state, mut memory) = sreg_state(0x1b);
+    memory.put(SREG_INDEX3, 0x00cf_9e00_0000_ffff);
+    let result = run_sreg(&mut state, &mut memory, ES_MODRM);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.es_selector, 0x1b);
+}
+
+#[test]
+fn mov_ss_refuses_bad_selectors_and_descriptors_with_exact_faults() {
+    let gp = selector_fault_exit(13, 0x18);
+    // RPL != CPL: #GP(selector), even with a valid descriptor.
+    assert_sreg_refused(SS_MODRM, 0x19, SREG_DATA, gp.clone());
+    assert_sreg_refused(SS_MODRM, 0x1b, SREG_DATA, gp.clone());
+    // DPL != CPL (DPL 3 data, RPL 0): #GP(selector).
+    assert_sreg_refused(SS_MODRM, 0x18, 0x12cf_f234_5678_ffff, gp.clone());
+    // Read-only data: #GP(selector).
+    assert_sreg_refused(SS_MODRM, 0x18, 0x12cf_9034_5678_ffff, gp.clone());
+    // Code: #GP(selector).
+    assert_sreg_refused(SS_MODRM, 0x18, 0x00cf_9a00_0000_ffff, gp.clone());
+    // System descriptor: #GP(selector).
+    assert_sreg_refused(SS_MODRM, 0x18, 0x00cf_8900_0000_ffff, gp);
+    // Not present writable data: #SS(selector).
+    assert_sreg_refused(
+        SS_MODRM,
+        0x18,
+        0x00cf_1200_0000_ffff,
+        selector_fault_exit(12, 0x18),
+    );
+    // Index beyond the GDT limit: #GP(selector).
+    assert_sreg_refused(SS_MODRM, 0x20, SREG_DATA, selector_fault_exit(13, 0x20));
+    assert_sreg_refused(SS_MODRM, 0x100, SREG_DATA, selector_fault_exit(13, 0x100));
+}
+
+#[test]
+fn mov_sreg_nonnull_ti_one_and_null_with_rpl_are_unsupported_without_mutation() {
+    for modrm in ALL_SREG_MODRM {
+        for selector in [0x1c_u16, 0x04, 0x01, 0x03] {
+            assert_sreg_refused(
+                modrm,
+                selector,
+                SREG_DATA,
+                RunExit::Unsupported { opcode: 0x8e },
+            );
+        }
+    }
+}
+
+#[test]
+fn mov_sreg_nonnull_without_a_gdtr_or_cache_is_unsupported_without_mutation() {
+    for modrm in ALL_SREG_MODRM {
+        let (mut state, mut memory) = sreg_state(0x18);
+        state.gdtr = None;
+        let before = state.clone();
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes == 0);
+
+        let (mut state, mut memory) = sreg_state(0x18);
+        match modrm {
+            SS_MODRM => state.ss_cache = None,
+            DS_MODRM => state.ds_cache = None,
+            ES_MODRM => state.es_cache = None,
+            FS_MODRM => state.fs_cache = None,
+            _ => state.gs_cache = None,
+        }
+        let before = state.clone();
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes == 0);
+    }
+}
+
+#[test]
+fn mov_ss_nonnull_keeps_the_if_gate() {
+    // IF = 1: refused without mutation, descriptor not read.
+    let (mut state, mut memory) = sreg_state(0x18);
+    state.rflags |= IF;
+    let before = state.clone();
+    let result = run_sreg(&mut state, &mut memory, SS_MODRM);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes == 0);
+}
+
+#[test]
+fn mov_sreg_nonnull_outside_the_set_stays_unsupported_for_ss_fs_gs() {
+    // The legacy `run` entry has no CPL0 set: SS, FS and GS nonnull loads at CPL0 are refused.
+    for modrm in [SS_MODRM, FS_MODRM, GS_MODRM] {
+        let (mut state, mut memory) = sreg_state(0x18);
+        state.cr0 = None;
+        state.cr4 = None;
+        state.activity = None;
+        state.sti_shadow = None;
+        memory.code = vec![0x8e, modrm];
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8e });
+        assert_eq!(state, before, "{modrm:#x}");
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn mov_sreg_nonnull_descriptor_read_and_accessed_write_errors_leave_the_cpu_untouched() {
+    for modrm in ALL_SREG_MODRM {
+        // Faulting GDT page on read.
+        let (mut state, mut memory) = sreg_state(0x18);
+        memory.fault_pages.push(LRETQ_GDT);
+        let before = state.clone();
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(SREG_INDEX3),
+            }),
+            "{modrm:#x}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+        // Accessed-bit write fault.
+        let (mut state, mut memory) = sreg_state(0x18);
+        memory.write_fault_pages.push(LRETQ_GDT);
+        let before = state.clone();
+        let ram = memory.ram.clone();
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(SREG_INDEX3),
+            }),
+            "{modrm:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.ram, ram);
+    }
+}
+
+#[test]
+fn mov_sreg_null_loads_still_behave_as_s2_46_and_read_no_descriptor() {
+    for modrm in ALL_SREG_MODRM {
+        let (mut state, mut memory) = sreg_state(0);
+        let result = run_sreg(&mut state, &mut memory, modrm);
+        assert_eq!(result.instructions_executed, 1, "{modrm:#x}");
+        assert_eq!(state.rip, RIP + 2);
+        assert!(memory.reads.is_empty() && memory.writes == 0);
+        let unusable = match modrm {
+            SS_MODRM => state.ss_unusable,
+            DS_MODRM => state.ds_unusable,
+            ES_MODRM => state.es_unusable,
+            FS_MODRM => state.fs_unusable,
+            _ => state.gs_unusable,
+        };
+        assert!(unusable, "{modrm:#x}");
+        let shadow = if modrm == SS_MODRM {
+            StiShadow::Blocking
+        } else {
+            StiShadow::Clear
+        };
+        assert_eq!(state.sti_shadow, Some(shadow));
+    }
+}
+
+#[test]
+fn mov_fs_gs_at_cpl3_never_reaches_the_cpl0_loader() {
+    // The set is rejected at CPL3 on entry, before any fetch; the loader additionally
+    // dispatches only at Ring0, so a CPL3 load can never take the CPL0 checks.
+    for modrm in [FS_MODRM, GS_MODRM] {
+        let (mut state, mut memory) = sreg_state(0x18);
+        memory.put(SREG_INDEX3, SREG_DATA_ACCESSED);
+        memory.code = vec![0x8e, modrm];
+        let before = state.clone();
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        );
+        assert_eq!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege));
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes == 0);
+    }
+}

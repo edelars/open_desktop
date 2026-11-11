@@ -2826,6 +2826,39 @@ mod tests {
         assert!(LinuxCpl0SetMembers::linux_default().msr_fs_gs_base);
     }
 
+    // ---- S4-38L6c: MOV Sreg, AX with a nonzero selector through the board facade ----
+
+    #[test]
+    fn mov_ss_and_es_with_the_boot_data_selector_run_through_the_board_set() {
+        // CLI; MOV EAX,0x18; MOV SS,AX; MOV ES,AX; the stop is the filler byte after the code.
+        let code = [0xFA, 0xB8, 0x18, 0x00, 0x00, 0x00, 0x8E, 0xD0, 0x8E, 0xC0];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x7A },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 4, "CLI, MOV, MOV SS, MOV ES");
+        assert_eq!(record.rip, ENTRY + 10);
+        let state = boot.board.state();
+        let data = od_isa::DataSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        assert_eq!(state.ss_selector, Some(0x18));
+        assert_eq!(state.ss_cache, Some(data));
+        assert_eq!(state.es_selector, 0x18);
+        assert_eq!(state.es_cache, Some(data));
+        assert!(!state.ss_unusable && !state.es_unusable);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x18);
+        assert_eq!(record.rflags & (1 << 9), 0, "IF stays clear");
+        // The shadow MOV SS opened was consumed by the MOV ES that followed it.
+        assert_eq!(state.sti_shadow, Some(od_isa::StiShadow::Clear));
+    }
+
     // ---- S4-38L4: the CPUID boundary on the set path ----
 
     /// `MOV EAX, imm32` (`B8 id`).
