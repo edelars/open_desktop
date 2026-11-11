@@ -21341,3 +21341,8 @@ LME | LMA | NXE). Имя в `set_members`: `msr:EferReadOnlyV1(3328)` (пере�
 Тесты: `cpl0_profile_set::rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone`;
 `linux_direct::tests::rdmsr_efer_runs_through_the_board_set_and_is_gated_by_its_member`; обновлены ожидания `set_members`
 в `linux_default_set_is_cli_cr3_cpuid_and_popf` и тестах runner.
+
+**Диагностический прогон (не засчитывается).** После среза прогон (`--diagnostic-past-c7`, бюджет 3e9) проходит `RDMSR` EFER
+(RAX = `0xd00` → ядро затем пишет EFER) и останавливается на `Unsupported { opcode: 0x30 }` (`WRMSR`, `0F 30`) по RIP
+`0xffffffff8139c1d5`, RCX = `0xc0000080`, RAX = `0xd01` (EFER | SCE), RDX = 0; retired = 1137477742, CR4 = `0xb0`,
+EFER модели `0xd00`. Следующий срез — запись EFER (SCE, возможно NXE/LME) и её политика в walker.
