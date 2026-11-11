@@ -34901,6 +34901,8 @@ fn step_configured(
         | Operation::LockOrMem { .. }
         // S4-38L7z: and for LOCK ADD m8/m32/m64, imm.
         | Operation::LockAddMem { .. }
+        // S4-38L7ag: and for LOCK AND m8, imm8.
+        | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
@@ -48667,6 +48669,7 @@ fn step_configured(
         | Operation::LockIncMem { .. }
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
+        | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
@@ -53962,6 +53965,29 @@ fn transfer(
             let (result, flags) = arithmetic_result(
                 destination.size,
                 ArithmeticKind::Add,
+                old,
+                immediate,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockAndMem {
+            destination,
+            immediate,
+        } => {
+            // S4-38L7ag: as LockOrMem, with the shared AND (`logic_result`: CF = OF = 0, SF/ZF/PF
+            // from the byte result, AF kept). One vCPU, so read -> write needs no bus lock. The
+            // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
+            // resolved before any access (a RIP-relative operand is relative to the end of the
+            // instruction, immediate included). The result is written back even when it equals
+            // the old value; the flags commit only after the write succeeded, so a faulting write
+            // leaves memory and flags untouched.
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = logic_result(
+                destination.size,
+                LogicKind::And,
                 old,
                 immediate,
                 state.rflags,
@@ -65245,6 +65271,10 @@ mod tests {
                 &[0xf0, 0x48, 0x81, 0x43, 0x3d, 0x00, 0x00, 0x00, 0x80][..],
                 0x81,
             ),
+            // S4-38L7ag: `LOCK AND m8, imm8` is a CPL0-set form too, including the RIP-relative
+            // boundary bytes.
+            (&[0xf0, 0x80, 0x63, 0x3d, 0xfe][..], 0x80),
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
         ] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rbx as usize] = 0x1000;
@@ -154565,6 +154595,8 @@ mod mov_cr3_profile_tests {
         for (bytes, opcode) in [
             (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83),
             (&[0xf0, 0x81, 0x43, 0x58, 1, 0, 0, 0][..], 0x81),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
         ] {
             let mut state = make_state(0x1000, 0x2000);
             state.gpr[Register::Rsp as usize] = 0x1004;
@@ -156354,6 +156386,8 @@ mod paged_cr3_probe_tests {
             (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83u8),
             (&[0xf0, 0x83, 0x43, 0x3d, 0x80][..], 0x83),
             (&[0xf0, 0x80, 0x43, 0x3d, 0x80][..], 0x80),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
         ] {
             let mut state = state();
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -158051,6 +158085,8 @@ mod paged_mov_profile_tests {
             (&[0xf0, 0x83, 0x43, 0x58, 0x01][..], 0x83),
             (&[0xf0, 0x81, 0x43, 0x58, 1, 0, 0, 0][..], 0x81),
             (&[0xf0, 0x48, 0x83, 0x43, 0x58, 0x01][..], 0x83),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
         ] {
             let mut state = state_with_control_registers();
             state.gpr[Register::Rbx as usize] = 0x1000;
