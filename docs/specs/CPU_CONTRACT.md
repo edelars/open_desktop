@@ -23021,3 +23021,65 @@ RCX = RDX = RSI = RDI = R8 = R10 = R11 = R13 = R14 = 0, RSP = RBP = `0xffffffff8
 Следующий срез — `CMP r/m32, imm8` с префиксом FS/GS (`[64|65] 83 /7 ib`, memory-операнд RIP-relative) в наборе CPL0 (по аналогии с FS/GS-формами S4-38L7aa/S4-38L7ac; решение, расширять ли существующий
 путь или завести отдельную форму, — по этой границе); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `CMP r/m32, imm8` и `CMP r/m64, imm8` (`[64|65] [REX] 83 /7 ib`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7ah)
+
+Граница S4-38L7ag: `65 83 3d 95 79 e9 02 01` = `cmpl $0x1, %gs:0x2e97995(%rip)` (ModRM `0x3d`: mod 00, reg 111 = /7 CMP, rm 101 = RIP-relative; disp32 `0x02e97995`, imm8 `0x01`; длина 8),
+RIP `0xffffffff8158f69b`, `Unsupported { opcode: 0x83 }`, retired 1205413825; далее `sete %r8b`, `test`. Срез повторяет схему S4-38L7aa (`CMP m, r` с FS/GS, см. выше) с непосредственным операндом вместо регистра;
+результат не записывается. Семантика дана **по памяти SDM** (Vol. 2 «CMP»: флаги CF/PF/AF/ZF/SF/OF по результату `назначение − источник` на ширине операнда; imm8 в форме `83` знаково расширяется до ширины
+операнда; назначение не меняется), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::CmpFsMemImm { dst: MemoryOperand, immediate: u64 }` / `CmpGsMemImm` (парные к `CmpFsMem`/`CmpGsMem` из S4-38L7aa; не расширение
+`CmpFsMem`, потому что у неё источник — `RegisterView`), в той же ветке декодирования `80|81|83`, что и обычный `CMP m, imm`. Новая ветка срабатывает при `опкод == 0x83`, `group == 7`, сегментном префиксе
+FS/GS и memory-операнде (mod ≠ 11); `immediate` — imm8, уже знаково расширенный до 64 бит декодером (как у обычной формы), ширина сравнения берётся из `dst.size` (общая `arithmetic_result` маскирует
+`immediate` по ширине). Принимается любая адресация (RIP-relative, SIB, disp8/disp32, REX.B/REX.X). С REX.W — qword (`CMP r/m64, imm8`), **без REX.W — dword** (`CMP r/m32, imm8`, граница; допустим пустой REX
+`0x40` и REX.R/B/X без W). Длина включает imm8, поэтому RIP-relative считается от RIP **после** imm8 (следующий RIP = адрес + 8 для граничных байтов). `flag_effects`: все шесть флагов определены (как у
+`Operation::Arithmetic` и `CmpFsMem`). Без префикса FS/GS `83 /7` по-прежнему даёт `Operation::Arithmetic { kind: Cmp, .. }` (не менялось).
+
+**Отказы без мутации (`Unsupported { opcode }`, опкод самой инструкции).** С префиксом FS/GS: `66` (word, в любом порядке с сегментным префиксом), `67`, `F0` (LOCK) / `F2` / `F3`, второй сегментный префикс (в том числе
+`64 65`, `65 64`, `65 65`, `2E 65`), REX не непосредственно перед опкодом (`48 65 83 …`, `65 48 66 83 …`, `41 65 48 83 …`; правило S4-38L7aa) — все с `0x83`; другие селекторы `83 /n` с FS/GS и memory-операндом
+(`/0` ADD, `/1` OR, `/2` ADC, `/3` SBB, `/4` AND, `/5` SUB, `/6` XOR) — `0x83`; `80 /7 ib` и `81 /7 id` с FS/GS и memory-операндом **не расширялись** — по-прежнему отказывают с `0x80` и `0x81`. Принять `81 /7`
+было бы небольшой правкой семейства (тот же `CmpFsMemImm`, immediate уже расширяется декодером, но для `81` — из imm32), но срез намеренно ограничен формой `83 /7`; `80 /7` — байтовая форма, другая ширина. LOCK с CMP (без сегментного префикса и с ним) отказывает с `0x83`: LOCK допускается только для OR/ADD и байтового AND (S4-38L7s, S4-38L7z, S4-38L7ag). Регистровая форма (mod = 11) **не тронута**:
+префикс FS/GS у операции без memory-операнда игнорируется, как в S4-38L7aa; исполняется как обычный `CMP r, imm8` (регистры не меняются, памяти нет; тест
+`segment_prefixed_register_cmp_imm8_is_unchanged_and_ignores_the_prefix`). Усечённый imm8/disp/ModRM — разбор отказывает, ничего не исполняется. Префиксы CS/DS/ES/SS не менялись (нулевая база, обычный `CMP`).
+
+**Адрес.** Как у S4-38L7aa: `MemoryOperand::access_address_48_with_segment_base` — эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом байта префикса и imm8; адрес только 64-бит)
+плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Каноничность проверяется для начального адреса и последнего байта операнда (адрес + 7 для qword, адрес + 3 для dword): иначе `#GP(0)` до чтения, без
+мутации. Для баз RSP/RBP с префиксом FS/GS тоже `#GP(0)`, не `#SS` (правило взято у S4-38L7aa; без префикса для RSP/RBP остаётся `#SS(0)` — не менялось).
+
+**Исполнение.** Один `memory.read_integer(address, context, size)` (4 или 8 байт), затем флаги считает существующая `arithmetic_result(size, Cmp, прочитанное, immediate, RFLAGS)` — та же функция, что у
+не-префиксной формы и у `CmpFsMem`, никакой новой арифметики; результат вычитания отбрасывается. `state.rflags = flags` только после успешного чтения (прочие биты RFLAGS сохраняются); регистры не меняются;
+**записи в память нет** (в тестах журнал записей пуст, взведённая ошибка записи не срабатывает). Для dword сравниваются только младшие 32 бита ячейки. RIP += длина инструкции (с префиксом и imm8),
+retired + 1 только при успехе. При `#GP(0)` или `#PF` на чтении состояние, память и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `CmpFsMem`. Вне набора — `Unsupported { opcode: 0x83 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа для каждого из трёх входов; отдельных тестов для `mov_cr3_profile`, paged-cr3-probe и `step_paged_mov` в этом срезе нет и поведение там не проверялось).
+
+**Тесты.** `cpl0_profile_set`: `gs_cmpl_imm8_boundary_form_*` (граничные байты `65 83 3d 95 79 e9 02 01`: адрес = база GS + RIP + 8 + disp32, читается 4 байта, записи нет, меняются только RIP и флаги, пять
+значений ячейки, верхний dword ячейки игнорируется), `segment_cmp_imm8_matches_the_oracle_for_both_segments_and_widths` (FS и GS × dword и qword × 9 значений imm8 × 23 значения ячейки на границах ширины × два
+начальных RFLAGS, по независимому расчёту `cmp_imm8_oracle` на 128-битной арифметике; чтение по адресу `база + RIP + длина + disp`, записи нет), `segment_cmp_imm8_sign_extends_a_negative_immediate_*`,
+`segment_cmp_imm8_flags_equal_the_non_prefixed_cmp`, `segment_cmp_imm8_with_a_rex_without_w_*` (dword), `gs_cmp_imm8_with_every_extended_base_register_r8_to_r15` (dword и qword, R12 через SIB),
+`segment_cmp_imm8_with_disp8_sib_index_scale_and_displacement` (также mod 00 без смещения и disp32), `segment_cmp_imm8_does_not_modify_its_base_register`, `segment_cmp_imm8_non_canonical_address_is_gp0_*`
+(qword и dword на границе дыры, принятие последнего канонического байта), `gs_cmp_imm8_through_rsp_or_rbp_base_is_gp0_*`, `gs_cmp_imm8_page_fault_on_the_read_*`,
+`segment_cmp_imm8_is_read_only_even_with_a_write_fault_armed`, `segment_cmp_imm8_forms_outside_the_slice_are_refused_*` (29 отказов с точным опкодом: `66`/`67`/LOCK/REP/REPNE, второй сегментный префикс,
+устаревший REX, `80 /7`, `81 /7`, остальные `83 /n`, LOCK CMP), `segment_cmp_imm8_with_a_truncated_immediate_*`, `segment_prefixed_register_cmp_imm8_*`,
+`plain_unprefixed_cmp_imm8_memory_still_reads_*`, `segment_cmp_imm8_stays_unsupported_outside_the_set`, `segment_cmp_imm8_is_refused_by_the_bare_step_entry_point`,
+`segment_cmp_imm8_is_not_reachable_from_cpl3`; `paged_probe_profile::fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile`; декодер:
+`long_decode::tests::segment_cmp_imm8_decodes_fs_gs_memory_forms_only`; фасад: `linux_direct::tests::gs_cmpl_imm8_boundary_bytes_set_flags_and_do_not_write_guest_memory` (граничные байты с исходным disp32
+после `WRMSR IA32_GS_BASE` с отрицательной базой, чтение по расчётному адресу, qword ячейки не меняется, ZF/PF при равенстве, CF/SF/PF/AF при `0 − 1`, retired 9) и
+`fs_cmpq_negative_imm8_through_the_set_loop_compares_sign_extended` (`64 48 83 3d … ff` после `WRMSR IA32_FS_BASE`).
+
+**Не делалось.** `81 /7 id` и `80 /7 ib` с FS/GS, word-форма (`66`), регистровая форма с проверкой префикса, другие `83 /n` с FS/GS (ADD/OR/ADC/SBB/AND/SUB/XOR), LOCK с CMP, тесты отказа в `mov_cr3_profile`,
+paged-cr3-probe и `step_paged_mov`, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ah-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`cmpl $0x1, %gs:…` по `0xffffffff8158f69b` проходит (retired 1205413825 → 1205772058, +358233 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff817caaa9` (GPA `0x17caaa9`), байты `f0 48 01 3d 8f 02 dc 02 5d 31 ff e9 f7 31 f7 00` — `lock add %rdi, 0x2dc028f(%rip)` (LOCK + REX.W + `01 /r`, ADD r/m64, r64 с memory-назначением,
+ModRM `0x3d`: RIP-relative, reg 111 = RDI, disp32 `0x02dc028f`; длина 8; далее `pop %rbp`, `xor %edi, %edi`, `jmp`); `Unsupported { opcode: 0x01 }` (1), `set_exit_detail` = `Run(Unsupported { opcode: 1 })`,
+`exit_kind` = `unsupported`, retired = 1205772058.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x86`; RAX = R12 = `0xffffea0000000000`, RDI = `0x200`, R15 = `0xffffffffffffffff`,
+RSP = RBP = `0xffffffff83a03d90`, прочие регистры (RBX, RCX, RDX, RSI, R8–R11, R13, R14) = 0; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`,
+`cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `LOCK ADD m64, r64` (`F0 [REX.W] 01 /r`, memory-назначение RIP-relative) в наборе CPL0 (по аналогии с `LOCK ADD m, imm` S4-38L7z и `LOCK CMPXCHG m64, r64` S4-38L7k; решение, расширять ли
+существующие пути или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
