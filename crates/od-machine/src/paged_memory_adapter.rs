@@ -1277,7 +1277,10 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// linear address on the faulting page (the operand address when it is the first page).
     /// Accessed bits set by earlier bytes stay set after the fault. Elsewhere (and for a word,
     /// see `cpl0_set_word_read`) a crossing read keeps its previous behaviour (the typed
-    /// `CrossesPage`).
+    /// `CrossesPage`). The flag is `true` for every board that runs the set through
+    /// `run_cpl0_set_paged_2m_ram_with_cpuid_boundary`: the Linux board and the firmware board
+    /// (`firmware_board.rs`), and it covers every explicit dword/qword read of the set (`MOV`,
+    /// `POP`, the `IRETQ` frame, ALU source operands, the read of an RMW).
     cpl0_set_cross_page_read: bool,
 }
 
@@ -2369,6 +2372,18 @@ mod tests {
                 if large {
                     assert!(
                         matches!(
+                            memory.memory_error,
+                            Some(TrackedAccessError::CrossesPage { .. })
+                        ),
+                        "{len} {flag} {large}: {:?}",
+                        memory.memory_error
+                    );
+                } else {
+                    // Without the large-RAM profile the old two-page path runs, not the byte-wise
+                    // read: its error is never the large-RAM `CrossesPage` of the shared walk.
+                    assert!(result.is_err(), "{len} {flag} {large}: {result:?}");
+                    assert!(
+                        !matches!(
                             memory.memory_error,
                             Some(TrackedAccessError::CrossesPage { .. })
                         ),
