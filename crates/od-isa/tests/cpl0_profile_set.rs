@@ -4920,7 +4920,7 @@ fn nop_0f1f_lookalikes_stay_unsupported_in_the_set() {
         &[0xf3, 0x0f, 0x1f, 0x00],       // REP
         &[0xf2, 0x0f, 0x1f, 0x00],       // REPNE
         &[0x66, 0xf0, 0x0f, 0x1f, 0x00], // LOCK after 66
-        &[0x2e, 0x2e, 0x0f, 0x1f, 0x00], // duplicate segment
+        &[0x64, 0x64, 0x0f, 0x1f, 0x00], // duplicate FS (S4-38L7v: repeated CS is accepted)
         &[0x67, 0x67, 0x0f, 0x1f, 0x00], // duplicate address override
         &[0x40, 0x41, 0x0f, 0x1f, 0x00], // duplicate REX
     ] {
@@ -5044,7 +5044,7 @@ fn prefetch_0f18_lookalikes_stay_unsupported_in_the_set() {
         &[0xf0, 0x0f, 0x18, 0x0a],       // LOCK
         &[0xf3, 0x0f, 0x18, 0x0a],       // REP
         &[0xf2, 0x0f, 0x18, 0x0a],       // REPNE
-        &[0x2e, 0x2e, 0x0f, 0x18, 0x0a], // duplicate segment
+        &[0x64, 0x64, 0x0f, 0x18, 0x0a], // duplicate FS (S4-38L7v: repeated CS is accepted)
         &[0x40, 0x41, 0x0f, 0x18, 0x0a], // duplicate REX
     ] {
         let mut state = endbr_state();
@@ -15030,4 +15030,210 @@ fn lock_or_is_not_reachable_from_cpl3() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7v: repeated CS/DS/ES/SS segment overrides (`26`/`2E`/`36`/`3E`) before an ordinary
+// opcode. In 64-bit mode these bases are zero, so a repeat is redundant padding (the kernel pads
+// alternatives with `2E 2E 2E 31 C0`). SDM Vol.2 2.1.1 / Vol.3 3.4.4 cited from memory, not
+// checked against the primary source. Repeats involving FS/GS, and any repeat of 66/67/LOCK/REP,
+// stay refused. ----
+
+const NOOP_SEGMENT_PREFIXES: [u8; 4] = [0x2e, 0x3e, 0x26, 0x36];
+const XOR_EAX_EAX: [u8; 2] = [0x31, 0xc0];
+
+fn run_one_in_set(
+    state: &mut LongModeState,
+    memory: &mut Memory,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_set(state, memory, &base(), 1)
+}
+
+fn assert_xor_eax_eax_executed(code: &[u8]) {
+    let mut state = board_state();
+    state.rflags |= 0x1 | 0x800 | 0x10; // CF, OF and AF set beforehand
+    state.gpr[Register::Rax as usize] = 0xdead_beef_1111_2222;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    let mut expected = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_one_in_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{code:02x?}"
+    );
+    assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+    expected.gpr[Register::Rax as usize] = 0;
+    expected.rip = RIP + code.len() as u64;
+    assert_eq!(state.rip, expected.rip, "{code:02x?}");
+    assert_eq!(state.gpr, expected.gpr, "{code:02x?}");
+    // ZF = 1, PF = 1, CF = 0, OF = 0 (and SF = 0); the other flag bits are untouched.
+    assert_eq!(
+        state.rflags & (ARITHMETIC & !0x10),
+        0x40 | 0x4,
+        "{code:02x?}"
+    );
+    assert_eq!(state.rflags & !ARITHMETIC, expected.rflags & !ARITHMETIC);
+}
+
+#[test]
+fn repeated_cs_ds_es_ss_overrides_before_xor_are_ignored() {
+    // The kernel's boundary instruction: `cs cs cs xor %eax, %eax`.
+    assert_xor_eax_eax_executed(&[0x2e, 0x2e, 0x2e, 0x31, 0xc0]);
+    assert_xor_eax_eax_executed(&[0x2e, 0x2e, 0x31, 0xc0]);
+    // A single prefix keeps working as before, and so does none.
+    assert_xor_eax_eax_executed(&[0x2e, 0x31, 0xc0]);
+    assert_xor_eax_eax_executed(&XOR_EAX_EAX);
+    // Mixed CS/DS/ES/SS repeats.
+    assert_xor_eax_eax_executed(&[0x3e, 0x36, 0x26, 0x2e, 0x31, 0xc0]);
+    for prefix in NOOP_SEGMENT_PREFIXES {
+        for count in 1..=6usize {
+            let mut code = vec![prefix; count];
+            code.extend_from_slice(&XOR_EAX_EAX);
+            assert_xor_eax_eax_executed(&code);
+        }
+    }
+}
+
+#[test]
+fn repeated_segment_overrides_before_a_register_mov_do_not_change_the_operation() {
+    // `ds ds mov %rax, %rbx` = `3e 3e 48 89 c3`.
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0x0123_4567_89ab_cdef;
+    state.gpr[Register::Rbx as usize] = 0x5555;
+    let flags = state.rflags;
+    let mut memory = Memory::code(&[0x3e, 0x3e, 0x48, 0x89, 0xc3]);
+    let result = run_one_in_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x0123_4567_89ab_cdef);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x0123_4567_89ab_cdef);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(state.rflags, flags);
+}
+
+#[test]
+fn repeated_segment_overrides_before_a_memory_load_keep_a_zero_base() {
+    // `cs cs mov (%rbx), %eax`: the FS/GS bases must not be added; the address is rbx.
+    for code in [
+        &[0x2e, 0x2e, 0x8b, 0x03][..],
+        &[0x3e, 0x36, 0x26, 0x2e, 0x8b, 0x03][..],
+        &[0x2e, 0x8b, 0x03][..],
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_1234_0000;
+        state.fs_base = 0xffff_8880_4321_0000;
+        let mut memory = LoadMemory::with_value(code, 0xaabb_ccdd_1122_3344);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 4)], "{code:02x?}");
+        assert_eq!(
+            state.gpr[Register::Rax as usize],
+            0x1122_3344,
+            "{code:02x?}"
+        );
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+    }
+}
+
+#[test]
+fn repeated_segment_override_length_limit_is_fifteen_bytes() {
+    // 13 prefixes + `31 C0` = 15 bytes: accepted. 14 or more prefixes push the instruction
+    // past 15 bytes: the 16th byte fetch is #GP(0), as for any over-long instruction.
+    let mut code = vec![0x2e; 13];
+    code.extend_from_slice(&XOR_EAX_EAX);
+    assert_eq!(code.len(), 15);
+    assert_xor_eax_eax_executed(&code);
+    for count in [14usize, 15, 20] {
+        let mut code = vec![0x2e; count];
+        code.extend_from_slice(&XOR_EAX_EAX);
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&code);
+        let result = run_one_in_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{count}");
+        match exit(&result) {
+            RunExit::Fault(fault) => {
+                assert_eq!((fault.vector, fault.error_code), (13, Some(0)), "{count}")
+            }
+            other => panic!("{count}: expected #GP(0), got {other:?}"),
+        }
+        assert_eq!(state, before, "{count}");
+    }
+}
+
+#[test]
+fn repeated_fs_gs_and_non_segment_prefixes_stay_unsupported_before_xor() {
+    let cases: &[&[u8]] = &[
+        &[0x64, 0x64, 0x31, 0xc0],
+        &[0x65, 0x65, 0x31, 0xc0],
+        &[0x64, 0x65, 0x31, 0xc0],
+        &[0x64, 0x2e, 0x31, 0xc0],
+        &[0x2e, 0x64, 0x31, 0xc0],
+        &[0x2e, 0x2e, 0x65, 0x31, 0xc0],
+        &[0x65, 0x3e, 0x3e, 0x31, 0xc0],
+        &[0x66, 0x66, 0x31, 0xc0],
+        &[0x67, 0x67, 0x31, 0xc0],
+        &[0xf0, 0xf0, 0x31, 0xc0],
+        &[0xf3, 0xf3, 0x31, 0xc0],
+        &[0xf2, 0xf2, 0x31, 0xc0],
+        &[0xf2, 0xf3, 0x31, 0xc0],
+        &[0x2e, 0x2e, 0x66, 0x66, 0x31, 0xc0],
+        &[0x2e, 0x2e, 0x67, 0x67, 0x31, 0xc0],
+        &[0x66, 0x2e, 0x2e, 0x66, 0x31, 0xc0],
+    ];
+    for code in cases {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_one_in_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x31 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn repeated_segment_overrides_outside_the_set_behave_like_a_single_prefix() {
+    for code in [&[0x2e, 0x31, 0xc0][..], &[0x2e, 0x2e, 0x2e, 0x31, 0xc0][..]] {
+        let mut state = legacy_state();
+        let mut memory = Memory::code(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rax as usize], 0, "{code:02x?}");
+    }
+}
+
+#[test]
+fn repeated_cs_overrides_are_also_ignored_before_nop_and_prefetch_hints() {
+    // S4-38L7v: the shared prefix policy changed `2E 2E 0F 1F 00` and `2E 2E 0F 18 0A` from
+    // refused (duplicate segment) to accepted; both stay no-ops.
+    for code in [
+        &[0x2eu8, 0x2e, 0x0f, 0x1f, 0x00][..],
+        &[0x2e, 0x2e, 0x0f, 0x18, 0x0a][..],
+    ] {
+        let mut state = endbr_state();
+        let mut expected = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
 }

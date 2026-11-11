@@ -2358,6 +2358,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut prefix_count = 0usize;
         let first = loop {
             let byte = self.byte()?;
+            let previous_segment = prefixes.segment;
             let group = match byte {
                 0xf0 | 0xf2 | 0xf3 => {
                     prefixes.group1 = Some(byte);
@@ -2385,8 +2386,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
             };
             prefix_bytes[prefix_count] = byte;
             prefix_count += 1;
-            duplicate |= groups & group != 0;
-            duplicate_other_than_66 |= groups & group != 0 && byte != 0x66;
+            // S4-38L7v: a repeated CS/DS/ES/SS override (`26`/`2E`/`36`/`3E`) after another
+            // such override is redundant padding (the bases are zero in 64-bit mode); it is not
+            // a duplicate. Any repeat that involves FS/GS (`64`/`65`) stays a duplicate, so
+            // `64 2E`, `2E 64` and `64 64` are still refused (conservative, no precedence guess).
+            let redundant_null_base_segment = group == 2
+                && byte != 0x64
+                && byte != 0x65
+                && !matches!(previous_segment, Some(0x64 | 0x65));
+            if !redundant_null_base_segment {
+                duplicate |= groups & group != 0;
+                duplicate_other_than_66 |= groups & group != 0 && byte != 0x66;
+            }
             groups |= group;
             prefixes.rex = None;
         };
@@ -25698,7 +25709,7 @@ mod tests {
             &[0xf0, 0x0f, 0x1f, 0x00],
             &[0xf3, 0x0f, 0x1f, 0x00],
             &[0x66, 0x66, 0xf3, 0x0f, 0x1f, 0x00],
-            &[0x2e, 0x2e, 0x0f, 0x1f, 0x00],
+            &[0x64, 0x64, 0x0f, 0x1f, 0x00], // S4-38L7v: repeated CS is accepted, FS is not
             &[0x40, 0x41, 0x0f, 0x1f, 0x00],
         ] {
             assert!(
@@ -27316,6 +27327,98 @@ mod tests {
             &[0x62, 0xf1, 0x7e, 0x08, 0x58, 0x00][..], // EVEX
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+    #[test]
+    fn repeated_cs_ds_es_ss_overrides_decode_like_the_unprefixed_form() {
+        // S4-38L7v: `2E 2E 2E 31 C0` is the diagnostic boundary (kernel alignment padding).
+        let plain = Memory::new(&[0x31, 0xc0]).decode().unwrap();
+        for (bytes, length) in [
+            (&[0x2eu8, 0x2e, 0x2e, 0x31, 0xc0][..], 5u8),
+            (&[0x2e, 0x2e, 0x31, 0xc0], 4),
+            (&[0x2e, 0x31, 0xc0], 3),
+            (&[0x3e, 0x36, 0x26, 0x2e, 0x31, 0xc0], 6),
+            (&[0x26, 0x26, 0x31, 0xc0], 4),
+            (&[0x36, 0x36, 0x36, 0x31, 0xc0], 5),
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(decoded.opcode, plain.opcode, "{bytes:02x?}");
+            assert_eq!(decoded.operation, plain.operation, "{bytes:02x?}");
+            assert_eq!(decoded.operand_size, plain.operand_size, "{bytes:02x?}");
+            // The last CS/DS/ES/SS prefix is the one retained (all are no-ops in 64-bit mode).
+            assert_eq!(
+                decoded.prefixes.segment,
+                bytes
+                    .iter()
+                    .copied()
+                    .filter(|b| *b != 0x31 && *b != 0xc0)
+                    .last(),
+                "{bytes:02x?}"
+            );
+        }
+        // REX after the repeated prefixes, and a memory operand.
+        let plain = Memory::new(&[0x48, 0x89, 0xc3]).decode().unwrap();
+        let decoded = Memory::new(&[0x3e, 0x3e, 0x48, 0x89, 0xc3])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(decoded.operation, plain.operation);
+        let plain = Memory::new(&[0x8b, 0x03]).decode().unwrap();
+        let decoded = Memory::new(&[0x2e, 0x2e, 0x8b, 0x03]).decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.operation, plain.operation);
+        // A repeat across a REX: the legacy prefix after REX cancels it exactly as before.
+        let decoded = Memory::new(&[0x2e, 0x48, 0x2e, 0x31, 0xc0])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.prefixes.rex, None);
+    }
+
+    #[test]
+    fn repeated_segment_overrides_respect_the_fifteen_byte_limit() {
+        let mut bytes = vec![0x2e; 13];
+        bytes.extend_from_slice(&[0x31, 0xc0]);
+        assert_eq!(Memory::new(&bytes).decode().unwrap().length, 15);
+        for count in [14usize, 15, 20] {
+            let mut bytes = vec![0x2e; count];
+            bytes.extend_from_slice(&[0x31, 0xc0]);
+            // The 16th byte fetch is #GP(0); the repeat is not refused for being a duplicate.
+            assert_eq!(
+                Memory::new(&bytes).decode(),
+                Err(DecodeError::Memory(general_protection())),
+                "{count}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_fs_gs_and_other_group_prefixes_stay_unsupported_with_the_exact_opcode() {
+        for bytes in [
+            &[0x64u8, 0x64, 0x31, 0xc0][..],
+            &[0x65, 0x65, 0x31, 0xc0],
+            &[0x64, 0x65, 0x31, 0xc0],
+            &[0x64, 0x2e, 0x31, 0xc0],
+            &[0x2e, 0x64, 0x31, 0xc0],
+            &[0x2e, 0x2e, 0x65, 0x31, 0xc0],
+            &[0x66, 0x66, 0x31, 0xc0],
+            &[0x67, 0x67, 0x31, 0xc0],
+            &[0xf0, 0xf0, 0x31, 0xc0],
+            &[0xf3, 0xf3, 0x31, 0xc0],
+            &[0xf2, 0xf2, 0x31, 0xc0],
+            &[0xf2, 0xf3, 0x31, 0xc0],
+        ] {
+            assert_eq!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported {
+                    opcode: Opcode {
+                        map: OpcodeMap::Primary,
+                        byte: 0x31
+                    },
+                    length: 3 + (bytes.len() as u8 - 4)
+                }),
+                "{bytes:02x?}"
+            );
         }
     }
 }
