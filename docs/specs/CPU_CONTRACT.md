@@ -21458,17 +21458,21 @@ Information» и §2.5 про CR3 в IA-32e); по первоисточнику 
 
 **Декодер.** `[REX] 0F 22 /3` с mod = 11 (`MOV CR3, r64`) порождает `Operation::WriteCr3From(src)`, где `src` = `rm` плюс
 REX.B. Допустимы любые REX без REX.R (`40`–`4F` без бита R, включая `48`), любой `rm`. Бессуффиксная форма `0F 22 D8` по-прежнему
-`Operation::WriteCr3` (RAX). Отказ (`Unsupported { opcode: 0x22 }` без мутации): память (mod ≠ 11), REX.R (CR11), `66`,
+`Operation::WriteCr3` (RAX). Отказ (`Unsupported { opcode: 0x22 }` без мутации): REX.R (CR11), `66`,
 `F2`/`F3`, `67`, `2E`/`3E`/`26`/`36`, два REX и любой префикс рядом с REX; LOCK (`F0`) с любым регистром, кроме уже
 существующей ветки `InvalidMovCr3Lock` для `F0 0F 22 D8` (без изменений). Регистры `/0`, `/2`, `/4`, `/1` и прочие
 поля reg не изменены.
+
+Отказ для mod ≠ 11 консервативный (`Unsupported` без мутации); поведение аппаратуры для mod ≠ 11 по первоисточнику SDM
+не сверялось.
 
 **Исполнение.** Общая фиксация `commit_mov_cr3(state, src, ...)`: проверка значения (≤ 36 бит, иначе `#GP(0)` без
 мутации) и `TranslationContextChange::Cr3Write`, как у записи из RAX. Выход из прогона — на границе следующей инструкции
 (`Cpl0ProfileSetExit::TranslationContextChange`), после чего плата перестраивает walker по новому CR3 и инвалидирует кэш
 трансляции выборки (S4-13). Вне набора (`cpu_owned_cr3` не задан) — `Unsupported { opcode: 0x22 }` без мутации. CPL > 0 —
 `#GP(0)` (как у остальных привилегированных; в наборе CPL3 отсекается ещё на входе, `WrongPrivilege`, как для RAX). Paged-probe (`allow_cr3`, `step_paged_cr3_probe`) и профиль
-`mov_cr3_profile` не менялись: они по-прежнему принимают только `0F 22 D8`.
+`mov_cr3_profile` не менялись: они по-прежнему принимают только `0F 22 D8`. Отказ новых форм в этих профилях и в голых `run`/`step` закреплён тестами
+`mov_cr3_profile_tests::mov_cr3_r64_forms_stay_unsupported_*` и `paged_cr3_probe_tests::paged_cr3_probe_keeps_mov_cr3_r64_forms_unsupported`.
 
 **Тесты.** `cpl0_profile_set::mov_cr3_r64_*` (RDI, RBX, R8, R15; все REX без R; отказы вне набора и формы с LOCK/памятью/
 префиксами без мутации; `#GP(0)` при значении ≥ 2^36 без мутации; CPL3); `long_decode::tests::mov_cr3_r64_decodes_every_source_with_any_rex_but_r`;
