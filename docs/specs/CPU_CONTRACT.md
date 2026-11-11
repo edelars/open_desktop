@@ -21346,3 +21346,54 @@ LME | LMA | NXE). Имя в `set_members`: `msr:EferReadOnlyV1(3328)` (пере�
 (RAX = `0xd00` → ядро затем пишет EFER) и останавливается на `Unsupported { opcode: 0x30 }` (`WRMSR`, `0F 30`) по RIP
 `0xffffffff8139c1d5`, RCX = `0xc0000080`, RAX = `0xd01` (EFER | SCE), RDX = 0; retired = 1137477742, CR4 = `0xb0`,
 EFER модели `0xd00`. Следующий срез — запись EFER (SCE, возможно NXE/LME) и её политика в walker.
+
+### WRMSR IA32_EFER (SCE) и CR0.AM в наборе платы (S4-38L7f)
+
+Диагностический прогон за C7 (`--diagnostic-past-c7`, не засчитывается) после `RDMSR` EFER (S4-38L7e) останавливался на
+`WRMSR` (`0F 30`, RIP `0xffffffff8139c1d5`), ECX = `0xC0000080`, EDX:EAX = `0:0xD01` (SCE | LME | LMA | NXE); следом ядро
+пишет CR0 = `0x80050033` (к базе `0x80010033` добавлен AM, бит 18). Срез закрывает обе границы. Расшифровка битов EFER и CR0
+ниже дана **по памяти SDM** (Vol. 3, §2.2.1 IA32_EFER, §2.5 CR0, §4.1.2), по первоисточнику не сверялась.
+
+**Состояние EFER (минимальное решение).** `LongModeState` EFER не хранит (поле добавило бы правку ~120 литералов в 8 файлах).
+Набор не владеет значением: новый член `Cpl0ProfileSet::with_msr_efer_write(&Cell<u64>)` получает от вызывающего ячейку с
+гостевым EFER; для `RDMSR` и как база проверок записи значение ячейки заменяет значение профиля `EferReadOnlyV1(v)` (оно
+только засевает ячейку). Без члена EFER по-прежнему только для чтения (`WRMSR` — `Unsupported`, S4-38L7e). Плата хранит
+`LoadedFirmwareBoard.guest_efer` (старт `FIRMWARE_EFER` = `0xD00`, `guest_efer()`), `run_linux_direct_board_set` строит ячейку
+из него, подключает член вместе с `msr` и после прогона (в том числе при ошибке) возвращает значение в плату. `board.efer()`
+остаётся EFER walker'а (`0xD00`: LME|LMA|NXE; walker EFER SCE не использует и не меняется); `LinuxStopRecord.guest_efer` и
+поле `stop.guest_efer` в JSON runner'а — гостевой EFER. Имя в `set_members` не менялось (`msr:EferReadOnlyV1(3328)`).
+
+**Решение `WRMSR` EFER (CPL0, Long64, без префиксов, длина 2).** Значение = `(EDX << 32) | EAX` (старшие половины RAX/RDX
+не участвуют). По порядку:
+1. CPL > 0 — `#GP(0)` (как у остальных привилегированных; в наборе CPL3 отсекается ещё на входе, `WrongPrivilege`).
+2. Установлен зарезервированный бит (1..=7, 9, 16..=63, в том числе любой бит EDX) — `#GP(0)` без мутации (SDM: запись
+   зарезервированного бита MSR — `#GP(0)`).
+3. Установлен бит 12..=15 (SVME, LMSLE, FFXSR, TCE; существуют только при соответствующих CPUID-признаках, которых модель не
+   сообщает) — `Unsupported { opcode: 0x30 }` без мутации.
+4. Значение отличается от текущего гостевого EFER в LME (8), LMA (10) или NXE (11) — `Unsupported` без мутации. Консервативный
+   выбор вместо `#GP(0)`: по SDM LME/LMA нельзя менять при активной странице (PG=1), а модель walker'а предполагает постоянные
+   LME|LMA|NXE (`FIRMWARE_EFER`); смена NXE меняла бы семантику walker'а, которую срез не трогает.
+5. Иначе (меняться может только SCE, бит 0) — ячейка := значение; RIP + 2, retired + 1; RFLAGS и регистры не меняются.
+Значение ячейки вне области `accepts_efer_value` (`0x500/0x501/0xD00/0xD01`) закрывает и `RDMSR`, и `WRMSR` (`Unsupported`).
+Другие MSR (`0x1B`, `0x174`, `0xC0000081` STAR, ...) — `Unsupported` без мутации. `RDMSR` EFER после записи возвращает
+записанное значение.
+
+**CR0.AM.** Политика CR0 набора (`ControlRegisterPolicy::accepts_cr0`) принимает значения `FpInitLong64V1` (база
+`0x80010033`, опционально EM/TS) с необязательным AM (бит 18); `Cr0Profile::accepts` и per-register профили не менялись. `MOV
+CR0, RAX` с `0x80050033` — допустимо; прочие биты (17, 19, CD, NW, бит 32, сброс PE/PG/WP) — `Unsupported` без мутации. В
+`CR0_ALLOWED` снимка walker'а (page_walk.rs) AM добавлен как «только снимок»: AM вместе с EFLAGS.AC управляет проверкой
+выравнивания при CPL3, модель её не выполняет, walker бит не читает. EFLAGS.AC — отдельная тема, не менялась.
+
+**Не делалось.** CR3/CR4-логика, `PUSHFQ`, CPUID, `PagedCpl0ProbeV1`, `interrupt.rs`, смена LME/LMA/NXE, SYSCALL/STAR/LSTAR
+(SCE только хранится, `SYSCALL` не включается).
+
+Тесты: `cpl0_profile_set::wrmsr_efer_*`, `cpl0_profile_set::cr0_am_*`;
+`linux_direct::tests::wrmsr_efer_sce_runs_through_the_board_set_and_rdmsr_reads_it_back`,
+`wrmsr_efer_outside_the_sce_change_stays_the_stop_without_mutation`, `mov_cr0_with_am_runs_through_the_board_set`.
+
+**Диагностический прогон (не засчитывается).** После среза прогон (`--diagnostic-past-c7`, бюджет 3e9) проходит `WRMSR` EFER и запись
+CR0 = `0x80050033` (EFER гостя `0xd01`, EFER walker'а `0xd00`) и останавливается на `Unsupported { opcode: 0x89 }`
+по RIP `0xffffffff83f25c0f`, байты `65 48 89 05 41 1b 51 00` (`mov %rax, %gs:0x511b41(%rip)`: запись qword с префиксом GS);
+retired = 1137477775 (33 инструкции после `WRMSR`), RAX = `0xb0`, RCX = `0x27`, RDX = `0xffffff8000000000`, RSP =
+`0xffffffff83a03f20`, CR0 = `0x80050033`, CR4 = `0xb0`, `memory_error`/`page_fault` отсутствуют, доставлено исключений 25.
+Следующий срез — `MOV r/m64, r64` с GS-префиксом (запись по GS base).

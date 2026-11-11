@@ -512,7 +512,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         gpr.insert((*name).to_string(), json!(hex64(value)));
     }
     let inputs = &record.inputs;
-    json!({
+    let mut stop = json!({
         "budget": budget,
         "exit_kind": record.exit_kind,
         "exit_detail": record.exit_detail,
@@ -569,7 +569,11 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
             "initramfs_sha256_in_memory":
                 inputs.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash)),
         },
-    })
+    });
+    // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
+    // literal above to stay under the `json!` macro recursion limit.
+    stop["guest_efer"] = json!(hex64(record.guest_efer));
+    stop
 }
 
 /// The protected-mode code of the bzImage file: the bytes the loader copies to the kernel zone.
