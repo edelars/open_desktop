@@ -22505,3 +22505,31 @@ CPL0: вопрос к решению (какие порты, ответ шины
 (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x6`; RAX = RDX = `0x3f9`; RSP = `0xffffffff83a03ca8`, RBP = `0xffffffff83a03cb8`;
 `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; `set_members` — прежние и `pci_config` последним. Следующий срез — решение: включать
 ли `pio_u8` (COM1/PIT/PM-таймер платы) в набор Linux по умолчанию (код PIO у платы уже есть), не реализовано.
+
+### Байтовый PIO (`pio_u8`) в наборе Linux по умолчанию (S4-38L7x)
+
+Граница S4-38L7w (`ec` = `in %dx, %al` по RIP `0xffffffff81ff8a2c`, RDX = `0x3f9` — IER COM1) — это байтовый порт-ввод, а член набора `pio_u8`
+(`IN AL, DX`/`OUT DX, AL` через `PortIo` платы: COM1 `0x3f8..`, PIT, PM-таймер) в `linux_default` не входил.
+
+**Решение (принято как решение по умолчанию; пересматриваемое).** `pio_u8` включён в `LinuxCpl0SetMembers::linux_default()` (`true`); `minimal()` остаётся без него
+(`false`). Довод: без COM1 и таймера ядро не продвинется дальше; код PIO у платы уже есть и покрыт тестами od-isa (`pio_u8_profile`, `cpl0_profile_set`) и
+фасада (`set_facade_com1_through_the_bus_needs_the_pio_member`). Если решение пересмотрят, достаточно убрать поле из `linux_default` (код члена не меняется).
+Семантика `IN AL, DX`/`OUT DX, AL` (по памяти, по SDM НЕ сверено): порт — `DX[15:0]`, `IN AL, DX` пишет только `AL` и сохраняет `RAX[63:8]`, флаги не меняются;
+ответ — ответ шины платы (свежий COM1 по IER даёт 0), порт без устройства — `PortIo`-ошибка (выход `port_io`, RIP на инструкции).
+
+**Порядок в `set_members`.** Имя `pio_u8` стоит после `msr:fs_gs_base` (и после `halt`, если он включён) и до `popf_cpl0`: порядок по умолчанию —
+`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`.
+
+Тесты: `linux_direct::tests::linux_default_set_is_cli_cr3_cpuid_and_popf` (`linux_default().pio_u8`, `!minimal().pio_u8`, новый список `set_members`),
+`set_facade_in_al_dx_on_com1_ier_runs_through_the_bus_in_the_linux_default` (`MOV EAX,0x12345600; MOV EDX,0x3f9; IN AL,DX; HLT` → RAX = `0x12345600`, т.е. IER = 0,
+старшие биты сохранены, retired 4), `set_facade_in_al_dx_is_unsupported_without_the_pio_member` (без члена и в `minimal` — `Unsupported { opcode: 0xec }`, RIP на `ec`,
+retired 2); ожидания `set_members` обновлены в od-machine и `od-runner`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7x-diagnostic-run.json`.
+`in %dx, %al` по `0xffffffff81ff8a2c` проходит (retired 1185015387 → 1185026844, +11457). Новая граница: RIP `0xffffffff81501ee7` (GPA `0x1501ee7`), байты
+`f0 0f b1 13 75 20 4c 89 e0 5b 41 5c 5d 31 d2 31` — `lock cmpxchg %edx, (%rbx)` (LOCK-префикс `f0` + `0f b1`; далее `jne`, `mov %r12,%rax`, `pop %rbx`);
+`Unsupported { opcode: 0xb1 }` (177), `set_exit_detail` = `Run(Unsupported { opcode: 177 })`, `exit_kind` = `unsupported`, retired = 1185026844.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = 0, RCX = 0, RDX = 1,
+RBX = RDI = `0xffffffff83bb62a0`, RSP = `0xffffffff83a03b28`, RBP = `0xffffffff83a03b38`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28;
+вывод COM1 пуст (`com1_hex` = ""); `set_members` — прежние с `pio_u8`. Следующий срез — `LOCK CMPXCHG r/m32, r32` (атомарное сравнение с обменом) в наборе CPL0: вопрос к решению
+(одноядерная плата, семантика LOCK, ZF/флаги), не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
