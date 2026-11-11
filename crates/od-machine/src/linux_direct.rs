@@ -3120,6 +3120,92 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7m: FS/GS-based dword load through the board facade ----
+
+    #[test]
+    fn gs_dword_load_after_wrmsr_gs_base_reads_four_bytes_and_zero_extends() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0x0123_4567_89AB_CDEF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); MOV R12,-1; MOV %gs:disp(%rip),%eax landing
+        // on effective address 0x10 (the Linux boundary form `65 8b 05`); MOV %gs:0x10,%r12d
+        // (`65 44 8b 24 25`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x49, 0xBC]);
+        code.extend(u64::MAX.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 7;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x8B, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x65, 0x44, 0x8B, 0x24, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 11,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, MOV r12, load, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // Only the low dword of the qword at the effective address is read; the upper 32 bits
+        // of both destinations are zero (RAX held VALUE, R12 held all ones).
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x89AB_CDEF);
+        assert_eq!(state.gpr[od_isa::Register::R12 as usize], 0x89AB_CDEF);
+    }
+
+    #[test]
+    fn fs_and_gs_dword_loads_with_a_zero_base_read_at_the_effective_address() {
+        const VALUE: u64 = 0x0FED_CBA9_8765_4321;
+        // MOV RAX,VALUE; MOV [0x0200_0020],RAX; MOV R13,-1; MOV R14,-1;
+        // MOV %gs:0x0200_0020,%r13d; MOV %fs:0x0200_0020,%r14d; HLT (no CLI).
+        let mut code = mov_rax_imm64(VALUE);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x49, 0xBD]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0x49, 0xBE]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0x65, 0x44, 0x8B, 0x2C, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x64, 0x44, 0x8B, 0x34, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7);
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::R13 as usize],
+            0x8765_4321
+        );
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::R14 as usize],
+            0x8765_4321
+        );
+    }
+
     // ---- S4-38L7j: FS/GS-based qword SUB through the board facade ----
 
     #[test]

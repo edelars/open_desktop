@@ -21720,3 +21720,64 @@ RBP = `0xffffffff83a03ec0`, R12 = `0xb0`, R13 = `0x27`, R15 = `0x100000`, RFLAGS
 (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же.
 Следующий срез — загрузка dword с сегментной базой GS (`65 8B /r`, `MOV r32, GS:[m]`; S4-38L7i покрывала только qword-загрузки FS/GS);
 следом в потоке идёт `f0 48 0f ab 05` (`LOCK BTS m64, r64`). Решение — по этой границе, а не по предположению.
+
+### Загрузка dword `MOV r32, m32` с префиксом FS/GS в наборе CPL0 (S4-38L7m)
+
+Граница S4-38L7l (`65 8b 05 73 a5 4c 00`, `mov %gs:0x4ca573(%rip), %eax`, RIP `0xffffffff83f52aba`, `Unsupported { opcode: 0x8b }`)
+показала, что загрузка dword с префиксом FS/GS отказывается декодером (S4-38L7i принимала только qword, `REX.W 8B`). Срез добавляет
+`[64|65] [REX без W] 8B /r` с memory-операндом (mod ≠ 11) для любого приёмника r0–r15 (REX.R) и любой адресации (RIP-relative, SIB,
+disp8/disp32, абсолютная SIB без базы и индекса, REX.B/REX.X). Семантика дана **по памяти SDM** (Vol. 2 «MOV»: `MOV r32, r/m32` читает
+4 байта; запись в 32-битный регистр обнуляет старшие 32 бита 64-битного регистра; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4: в
+64-битном режиме добавляется только база FS/GS; флаги `MOV` не меняет), по первоисточнику **не сверялась**.
+
+**Декодер.** Ветка `0x8B` с сегментным префиксом `0x64`/`0x65` теперь принимает и размер dword (без REX.W): новые
+`Operation::MovFsLoadD { dst, src }` / `MovGsLoadD` (приёмник `RegisterView` размера dword, `src.size` = dword). Qword-формы
+(`REX.W`) по-прежнему `MovFsLoadQ`/`MovGsLoadQ`; точная старая форма `64|65 48 8B 00` по-прежнему `MovFsLoad`/`MovGsLoad`. Отказ
+(`Unsupported { opcode: 0x8b }` без мутации): регистровая форма (mod = 11), любой из LOCK/REP (`F0`/`F2`/`F3`), `66` (16-битный размер, в
+том числе с REX), `67`, второй сегментный префикс, dword-форма с REX не непосредственно перед опкодом (по SDM Vol. 2 §2.2.1 такой REX
+игнорируется, то есть `48 65 8b …` на железе — dword-загрузка; здесь это сознательное консервативное сужение: dword-форма с устаревшим
+REX отказывается, чтобы не исполнять неоднозначную запись). Qword-форма с устаревшим REX (`48 65 48 8b …`, `44 64 4c 8b …`)
+принимается как `MovGsLoadQ`/`MovFsLoadQ`, как в S4-38L7i. Байтовая загрузка (`8A`)
+отказывается со своим опкодом `0x8a`, как раньше.
+
+**Префиксы CS/DS/ES/SS.** Не менялись: по-прежнему игнорируются на обычном `MOV` (нулевая база); без префикса `MOV r32, m32` исполняется
+прежним путём.
+
+**Адрес.** Как у S4-38L7g/S4-38L7i: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом байта
+префикса; только 64-бит), плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Каноничность проверяется для начального адреса и
+последнего байта dword (адрес + 3): иначе `#GP(0)` без мутации и без чтения (для баз RSP/RBP тоже `#GP(0)`, не `#SS`).
+
+**Исполнение.** Dword читается одним `memory.read_integer` размером 4 (граница 4 KiB и A-бит — адаптер платы без изменений), затем
+пишется в приёмник через `state.write` dword-вида (старшие 32 бита приёмника обнуляются, в том числе когда приёмник совпадает с базой
+адреса: адрес берётся из состояния до инструкции). RIP += длина (с префиксом), retired + 1, RFLAGS и прочие регистры не меняются. При
+отказе (`#GP(0)`, ошибка памяти) состояние и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0x8b }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-probe, `step_paged_mov` и голые `run`/`step` форму не принимают (тесты отказа в
+каждом, с точным опкодом `0x8b`).
+
+**Не делалось.** Байтовая/словная загрузка с FS/GS, прочие опкоды с префиксом, `LOCK BTS` (следующая граница), `SWAPGS`/MSR, CR, CPUID,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::{gs,fs}_rip_relative_dword_load_*`, `gs_dword_load_*` (граничная форма `65 8b 05`, база+индекс+масштаб+disp, база
+RAX = приёмник, `#GP(0)` для RSP/RBP), `fs_dword_load_*`, `gs_and_fs_dword_loads_with_a_zero_base_*`, `dword_load_leaves_every_flag_unchanged`,
+`dword_load_ending_exactly_at_the_canonical_boundary_is_read`, `segment_dword_load_forms_outside_the_slice_are_refused_with_the_exact_opcode`
+(11 отказов с точным опкодом), `segment_dword_load_stays_unsupported_outside_the_set`, `segment_dword_load_is_not_reachable_from_cpl3`,
+`cs_ds_es_ss_overrides_on_a_dword_load_*`; из старых тестов S4-38L7i убраны три случая «dword отказывается»;
+`long_decode::tests::segment_load_decodes_fs_gs_dword_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_dword_load_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_dword_load_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_dword_load_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_dword_load_forms_unsupported`;
+`linux_direct::tests::gs_dword_load_after_wrmsr_gs_base_reads_four_bytes_and_zero_extends`,
+`fs_and_gs_dword_loads_with_a_zero_base_read_at_the_effective_address`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7m-diagnostic-run.json`. `mov %gs:0x4ca573(%rip), %eax` по RIP `0xffffffff83f52aba` и следующая
+`48 89 c3` (`mov %rax, %rbx`) проходят (retired 1137490261 → 1137490263, +2). Новая граница: RIP `0xffffffff83f52ac4`, байты
+`f0 48 0f ab 05 13 7c f7 ff` (`lock bts %rax, -0x883ed(%rip)`: `LOCK BTS m64, r64`, `F0 REX.W 0F AB /r`, RIP-relative),
+`Unsupported { opcode: 0xab }`, `set_exit_detail` = `Run(Unsupported { opcode: 171 })`, `exit_kind` = `unsupported`, retired = 1137490263.
+Регистры на остановке: RAX = 0, RBX = 0, RCX = 0, RDX = 0, RSI = 0, RDI = 0, RSP = `0xffffffff83a03eb8`, RBP = `0xffffffff83a03ec0`,
+R12 = `0xb0`, R13 = `0x27`, R15 = `0x100000`, RFLAGS = `0x46`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER
+walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же. Следующий срез — `LOCK BTS m64, r64`
+в наборе CPL0 (решение — по этой границе).
