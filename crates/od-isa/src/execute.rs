@@ -32828,8 +32828,18 @@ fn step_configured(
     let null_fs_gs_load = control_policy.is_some()
         && context.privilege == PrivilegeLevel::Ring0
         && state.gpr[Register::Rax as usize] as u16 == 0;
+    // S4-38L6c: a nonzero GDT selector is admitted under the CPL0 profile set at CPL0 over a
+    // modeled FS/GS cache with a present GDTR; TI = 1 stays refused and null selectors with
+    // RPL bits are answered `Ok(false)` by the loader.
+    let nonnull_fs_gs_selector = state.gpr[Register::Rax as usize] as u16;
+    let cpl0_nonnull_gdt_load = control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring0
+        && nonnull_fs_gs_selector != 0
+        && nonnull_fs_gs_selector & 4 == 0
+        && state.gdtr.is_some();
     if matches!(instruction.operation, Operation::LoadFsSelector)
         && !null_fs_gs_load
+        && !(cpl0_nonnull_gdt_load && state.fs_cache.is_some())
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
             || state.fs_cache.is_none()
@@ -32844,6 +32854,7 @@ fn step_configured(
     }
     if matches!(instruction.operation, Operation::LoadGsSelector)
         && !null_fs_gs_load
+        && !(cpl0_nonnull_gdt_load && state.gs_cache.is_some())
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
             || state.gs_cache.is_none()
@@ -32892,10 +32903,12 @@ fn step_configured(
         // S2-46: MOV SS, AX with AX = 0 is legal at CPL0 (RPL 0) in Long64. It is admitted
         // only under the CPL0 profile set, over a loaded SS cache, with the interrupt
         // shadow clear and IF = 0 so that the one-instruction shadow it opens is not
-        // observable through maskable interrupts. Nonzero selectors are not modeled.
+        // observable through maskable interrupts. S4-38L6c: a nonzero GDT selector (TI = 0,
+        // present GDTR) is admitted too and checked by `load_sreg_cpl0`.
+        let selector = state.gpr[Register::Rax as usize] as u16;
         let admitted = control_policy.is_some()
             && context.privilege == PrivilegeLevel::Ring0
-            && state.gpr[Register::Rax as usize] as u16 == 0
+            && (selector == 0 || (selector & 4 == 0 && state.gdtr.is_some()))
             && state.ss_cache.is_some()
             && state.ss_selector.is_some()
             && state.sti_shadow == Some(crate::StiShadow::Clear)
@@ -48158,7 +48171,13 @@ fn step_configured(
                 state.ds_selector = 0;
                 state.ds_unusable = true;
             } else {
-                match load_ds_gdt_selector(state, memory, context, selector) {
+                let loaded =
+                    if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector)
+                    } else {
+                        load_ds_gdt_selector(state, memory, context, selector)
+                    };
+                match loaded {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(StepOutcome::Unsupported {
@@ -48178,7 +48197,13 @@ fn step_configured(
                 state.es_selector = 0;
                 state.es_unusable = true;
             } else {
-                match load_es_gdt_selector(state, memory, context, selector) {
+                let loaded =
+                    if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
+                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector)
+                    } else {
+                        load_es_gdt_selector(state, memory, context, selector)
+                    };
+                match loaded {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(StepOutcome::Unsupported {
@@ -48193,10 +48218,27 @@ fn step_configured(
             }
         }
         Operation::LoadNullSsSelector => {
-            // Admission guarantees AX = 0 and a loaded SS cache. The cache stays as
-            // the unusable descriptor; Long64 ignores SS base and limit.
-            state.ss_selector = Some(0);
-            state.ss_unusable = true;
+            // Admission guarantees a loaded SS cache. A null selector leaves the cache as the
+            // unusable descriptor (Long64 ignores SS base and limit); a nonzero one is loaded
+            // from the GDT (S4-38L6c) and a fault or refusal changes nothing.
+            let selector = state.gpr[Register::Rax as usize] as u16;
+            if selector == 0 {
+                state.ss_selector = Some(0);
+                state.ss_unusable = true;
+            } else {
+                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Ok(StepOutcome::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        });
+                    }
+                    Err(MemoryError::Architectural(fault)) => {
+                        return Ok(StepOutcome::Fault(fault));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             // MOV SS opens a one-instruction interrupt shadow.
             state.sti_shadow = Some(crate::StiShadow::Blocking);
         }
@@ -48253,7 +48295,12 @@ fn step_configured(
         }
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
-            match load_fs_gdt_selector(state, memory, context, selector) {
+            let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector)
+            } else {
+                load_fs_gdt_selector(state, memory, context, selector)
+            };
+            match loaded {
                 Ok(true) => {}
                 Ok(false) => {
                     return Ok(StepOutcome::Unsupported {
@@ -48268,7 +48315,12 @@ fn step_configured(
         }
         Operation::LoadGsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
-            match load_gs_gdt_selector(state, memory, context, selector) {
+            let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
+                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector)
+            } else {
+                load_gs_gdt_selector(state, memory, context, selector)
+            };
+            match loaded {
                 Ok(true) => {}
                 Ok(false) => {
                     return Ok(StepOutcome::Unsupported {
@@ -52090,6 +52142,153 @@ fn load_idtr(
     let (base, limit) = read_pseudo_descriptor(state, memory, context, next_rip, source)?;
     state.idtr = Some(crate::state::Idtr { base, limit });
     Ok(())
+}
+
+/// Segment register loaded by [`load_sreg_cpl0`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Cpl0Sreg {
+    Ss,
+    Ds,
+    Es,
+    Fs,
+    Gs,
+}
+
+/// `MOV Sreg, AX` (`8E /r`) with a nonzero GDT selector inside the CPL0 profile set (S4-38L6c),
+/// at CPL0 in 64-bit mode. Checks follow SDM Vol.2 "MOV - Move to Segment Register" and Vol.3
+/// 3.4.3 / 5.5 from memory (the SDM text is not in the repository):
+///
+/// * SS: RPL must equal CPL (0) and the descriptor must be a writable data segment with
+///   DPL = CPL, otherwise #GP(selector); a not-present descriptor is #SS(selector).
+/// * DS/ES/FS/GS: the descriptor must be a data segment or a readable code segment (#GP(selector)
+///   otherwise); data and non-conforming code need DPL >= max(CPL, RPL) (#GP(selector)); a
+///   not-present descriptor is #NP(selector). Base and limit are not checked in long mode.
+/// * An index beyond the GDT limit or a non-canonical descriptor address is #GP(selector).
+///
+/// Returns `Ok(true)` after committing the selector, the cache (and the FS/GS base, which a
+/// selector load takes from the 32-bit descriptor base), and the "usable" mark. `Ok(false)` is
+/// a form the set does not model (no GDTR or cache, TI = 1, null selector with RPL bits); an
+/// error is a guest fault or a memory error. In every non-`Ok(true)` case the CPU state is
+/// untouched. The only memory write is the accessed bit, written back as one qword after every
+/// check has passed (the board adapter writes only whole qwords).
+fn load_sreg_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    register: Cpl0Sreg,
+    selector: u16,
+) -> Result<bool, MemoryError> {
+    let Some(gdtr) = state.gdtr else {
+        return Ok(false);
+    };
+    let cache_modeled = match register {
+        Cpl0Sreg::Ss => state.ss_cache.is_some() && state.ss_selector.is_some(),
+        Cpl0Sreg::Ds => state.ds_cache.is_some(),
+        Cpl0Sreg::Es => state.es_cache.is_some(),
+        Cpl0Sreg::Fs => state.fs_cache.is_some(),
+        Cpl0Sreg::Gs => state.gs_cache.is_some(),
+    };
+    if !cache_modeled || selector & 0xfffc == 0 || selector & 4 != 0 {
+        return Ok(false);
+    }
+    // CPL is 0 inside the set; the SS selector must carry RPL = CPL.
+    let rpl = (selector & 3) as u8;
+    if register == Cpl0Sreg::Ss && rpl != 0 {
+        return Err(selector_fault(13, selector));
+    }
+    let (address, raw) = read_gdt_raw_descriptor(gdtr, memory, context, selector)?;
+    let access = raw[5];
+    let system = access & 0x10 == 0;
+    let code = access & 0x08 != 0;
+    let conforming = code && access & 0x04 != 0;
+    let dpl = (access >> 5) & 3;
+    let present = access & 0x80 != 0;
+    if system {
+        return Err(selector_fault(13, selector));
+    }
+    if register == Cpl0Sreg::Ss {
+        // Writable data segment with DPL = CPL = 0.
+        if code || access & 0x02 == 0 || dpl != 0 {
+            return Err(selector_fault(13, selector));
+        }
+        if !present {
+            return Err(selector_fault(12, selector));
+        }
+    } else {
+        // Data or readable code; execute-only code is #GP.
+        if code && access & 0x02 == 0 {
+            return Err(selector_fault(13, selector));
+        }
+        if !conforming && dpl < rpl {
+            return Err(selector_fault(13, selector));
+        }
+        if !present {
+            return Err(selector_fault(11, selector));
+        }
+    }
+    if access & 0x01 == 0 {
+        let mut accessed = raw;
+        accessed[5] |= 0x01;
+        memory.write_integer(
+            address,
+            context.descriptor_table(),
+            OperandSize::Qword,
+            u64::from_le_bytes(accessed),
+        )?;
+    }
+    let limit20 = u32::from(raw[0]) | (u32::from(raw[1]) << 8) | (u32::from(raw[6] & 0x0f) << 16);
+    let flags = raw[6] >> 4;
+    let limit = if flags & 8 != 0 {
+        (limit20 << 12) | 0x0fff
+    } else {
+        limit20
+    };
+    let base = u32::from(raw[2])
+        | (u32::from(raw[3]) << 8)
+        | (u32::from(raw[4]) << 16)
+        | (u32::from(raw[7]) << 24);
+    let access = access | 0x01;
+    let data_cache = crate::state::DataSegmentDescriptorCache {
+        base,
+        limit,
+        access,
+        flags,
+    };
+    let fs_gs_cache = FsDescriptorCache {
+        limit,
+        access,
+        flags,
+    };
+    match register {
+        Cpl0Sreg::Ss => {
+            state.ss_selector = Some(selector);
+            state.ss_cache = Some(data_cache);
+            state.ss_unusable = false;
+        }
+        Cpl0Sreg::Ds => {
+            state.ds_selector = selector;
+            state.ds_cache = Some(data_cache);
+            state.ds_unusable = false;
+        }
+        Cpl0Sreg::Es => {
+            state.es_selector = selector;
+            state.es_cache = Some(data_cache);
+            state.es_unusable = false;
+        }
+        Cpl0Sreg::Fs => {
+            state.fs_selector = selector;
+            state.fs_base = u64::from(base);
+            state.fs_cache = Some(fs_gs_cache);
+            state.fs_unusable = false;
+        }
+        Cpl0Sreg::Gs => {
+            state.gs_selector = selector;
+            state.gs_base = u64::from(base);
+            state.gs_cache = Some(fs_gs_cache);
+            state.gs_unusable = false;
+        }
+    }
+    Ok(true)
 }
 
 fn load_fs_gdt_selector(
