@@ -34773,7 +34773,10 @@ fn step_configured(
         Operation::MovFsStore { .. }
         | Operation::MovGsStore { .. }
         | Operation::MovFsLoadQ { .. }
-        | Operation::MovGsLoadQ { .. } => {
+        | Operation::MovGsLoadQ { .. }
+        // S4-38L7j: and for the FS/GS-based qword SUB.
+        | Operation::SubFsMem { .. }
+        | Operation::SubGsMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
@@ -48488,6 +48491,8 @@ fn step_configured(
         | Operation::MovGsStore { .. }
         | Operation::MovFsLoadQ { .. }
         | Operation::MovGsLoadQ { .. }
+        | Operation::SubFsMem { .. }
+        | Operation::SubGsMem { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53495,6 +53500,37 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
+        }
+        Operation::SubFsMem { dst, src } => {
+            // S4-38L7j: base + effective address; non-canonical (start or last byte) is #GP(0)
+            // before the read, so before any register or flag write. Result and flags come from
+            // the shared SUB arithmetic of the non-prefixed form.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Sub,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::SubGsMem { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Sub,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
+            state.rflags = flags;
         }
         Operation::MovFsStore { dst, src } => {
             // Validate the whole access before the store (SDM Vol.3 3.4.4: the FS base replaces
@@ -64028,6 +64064,53 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x8b }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn segment_sub_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7j widened the CPL0-set decoder path only: without the set (no control policy)
+        // bare `run` and `step` refuse the FS/GS SUB r64, m64 forms without mutation.
+        for bytes in [
+            &[0x65, 0x4c, 0x2b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x2b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x2b, 0x04, 0x08][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x2b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x2b }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -153396,6 +153479,39 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn fs_gs_sub_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7j widened the CPL0-set decoder path only; this profile refuses the forms.
+        for bytes in [
+            &[0x65, 0x4c, 0x2b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x2b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x2b, 0x04, 0x08][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x2b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
         // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
         for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
@@ -153910,6 +154026,29 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0x8b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_sub_forms_unsupported() {
+        for bytes in [
+            &[0x65, 0x4c, 0x2b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x2b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x2b, 0x04, 0x08][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x2b },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -155493,6 +155632,33 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8b });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_sub_forms_unsupported() {
+        // S4-38L7j belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0x4c, 0x2b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x2b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x2b, 0x04, 0x08][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x2b });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

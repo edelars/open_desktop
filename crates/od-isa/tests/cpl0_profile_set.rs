@@ -8530,6 +8530,8 @@ fn cs_ds_es_ss_overrides_on_a_qword_store_keep_ignoring_the_segment_base() {
 struct LoadMemory {
     code: Vec<u8>,
     reads: Vec<(u64, usize)>,
+    /// When set, every read returns this little-endian value instead of the address pattern.
+    fixed: Option<u64>,
 }
 
 impl LoadMemory {
@@ -8537,6 +8539,14 @@ impl LoadMemory {
         Self {
             code: bytes.to_vec(),
             reads: Vec::new(),
+            fixed: None,
+        }
+    }
+
+    fn with_value(bytes: &[u8], value: u64) -> Self {
+        Self {
+            fixed: Some(value),
+            ..Self::code(bytes)
         }
     }
 }
@@ -8566,7 +8576,10 @@ impl GuestMemory for LoadMemory {
     ) -> Result<(), MemoryError> {
         self.reads.push((address, bytes.len()));
         for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = (address.wrapping_add(i as u64) & 0xff) as u8;
+            *byte = match self.fixed {
+                Some(value) => value.to_le_bytes()[i],
+                None => (address.wrapping_add(i as u64) & 0xff) as u8,
+            };
         }
         Ok(())
     }
@@ -8931,6 +8944,415 @@ fn cs_ds_es_ss_overrides_on_a_qword_load_keep_ignoring_the_segment_base() {
         state.gs_base = 0xffff_8880_0000_0000;
         state.fs_base = 0xffff_8880_0000_0000;
         let mut memory = LoadMemory::code(&[prefix, 0x4c, 0x8b, 0x25, 0x34, 0x12, 0x00, 0x00]);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+        assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 8)], "{prefix:#x}");
+    }
+}
+
+// ---- S4-38L7j: FS/GS-based qword `SUB r64, m64` (opcode 2B /r with REX.W; SDM Vol.2 SUB,
+// segment override prefixes, Vol.3 3.4.4: in 64-bit mode only the FS/GS base is added) ----
+
+const FLAG_CF: u64 = 1;
+const FLAG_PF: u64 = 1 << 2;
+const FLAG_AF: u64 = 1 << 4;
+const FLAG_ZF: u64 = 1 << 6;
+const FLAG_SF: u64 = 1 << 7;
+const FLAG_OF: u64 = 1 << 11;
+const ARITH: u64 = FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF;
+
+/// `sub %gs:0x1234(%rip), %r12`.
+const GS_SUB_R12_RIP: [u8; 8] = [0x65, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00];
+/// `sub %fs:0x1234(%rip), %r12`.
+const FS_SUB_R12_RIP: [u8; 8] = [0x64, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00];
+
+#[test]
+fn gs_rip_relative_qword_sub_into_r12_reads_at_gs_base_plus_effective_address() {
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::R12 as usize] = 0x1000;
+    let mut expected = state.clone();
+    let mut memory = LoadMemory::with_value(&GS_SUB_R12_RIP, 0x0234);
+    let result = run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    // RIP-relative: next RIP (after all 8 bytes, the prefix included) + disp32, plus the base.
+    assert_eq!(memory.reads, vec![(gs_base + RIP + 8 + 0x1234, 8)]);
+    expected.gpr[Register::R12 as usize] = 0x1000 - 0x0234;
+    expected.rip += 8;
+    // 0x1000 - 0x234 = 0xdcc: PF (0xcc has four set bits), AF (low bytes 0x00, 0x34, 0xcc).
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_PF | FLAG_AF;
+    assert_eq!(
+        state, expected,
+        "only R12, RIP and the arithmetic flags change"
+    );
+}
+
+#[test]
+fn fs_rip_relative_qword_sub_reads_at_fs_base_plus_effective_address() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::R12 as usize] = 0x1000;
+    let mut expected = state.clone();
+    let mut memory = LoadMemory::with_value(&FS_SUB_R12_RIP, 0x0234);
+    let result = run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(fs_base + RIP + 8 + 0x1234, 8)]);
+    expected.gpr[Register::R12 as usize] = 0x1000 - 0x0234;
+    expected.rip += 8;
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_PF | FLAG_AF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_and_fs_sub_with_a_zero_base_use_the_effective_address() {
+    for code in [GS_SUB_R12_RIP, FS_SUB_R12_RIP] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        state.gpr[Register::R12 as usize] = 10;
+        let mut memory = LoadMemory::with_value(&code, 3);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 8)]);
+        assert_eq!(state.gpr[Register::R12 as usize], 7);
+    }
+}
+
+#[test]
+fn gs_sub_with_base_register_index_scale_and_displacement() {
+    // `sub %gs:0x10(%rbx,%rcx,4), %r8` = 65 4c 2b 44 8b 10.
+    let code = [0x65, 0x4c, 0x2b, 0x44, 0x8b, 0x10];
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::Rcx as usize] = 3;
+    state.gpr[Register::R8 as usize] = 100;
+    let mut expected = state.clone();
+    let mut memory = LoadMemory::with_value(&code, 58);
+    run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.reads,
+        vec![(0xffff_8880_0000_0000 + 0x1000 + 12 + 0x10, 8)]
+    );
+    expected.gpr[Register::R8 as usize] = 42;
+    expected.rip += 6;
+    // 100 - 58 = 0x2a: odd parity (PF clear), nibble borrow (AF).
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_AF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn fs_sub_absolute_sib_disp32_without_base_or_index_adds_only_the_fs_base() {
+    // `sub %fs:0x20, %rdx` = 64 48 2b 14 25 20 00 00 00.
+    let code = [0x64, 0x48, 0x2b, 0x14, 0x25, 0x20, 0, 0, 0];
+    let mut state = board_state();
+    state.fs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rdx as usize] = 9;
+    let mut memory = LoadMemory::with_value(&code, 4);
+    run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0020, 8)]);
+    assert_eq!(state.gpr[Register::Rdx as usize], 5);
+}
+
+#[test]
+fn gs_sub_into_rax_with_a_base_register_aliasing_the_destination() {
+    // `sub %gs:0x8(%rax), %rax` = 65 48 2b 40 08: the address uses the pre-state RAX.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rax as usize] = 0x100;
+    let mut memory = LoadMemory::with_value(&[0x65, 0x48, 0x2b, 0x40, 0x08], 0x20);
+    run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0108, 8)]);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xe0);
+}
+
+#[test]
+fn gs_sub_the_diagnostic_boundary_form_decodes_and_executes() {
+    // The S4-38L7i boundary bytes `65 48 2b 05 29 70 4f 00`: SUB RAX, %gs:disp32(%rip).
+    let code = [0x65, 0x48, 0x2b, 0x05, 0x29, 0x70, 0x4f, 0x00];
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rax as usize] = 0x5000;
+    let mut memory = LoadMemory::with_value(&code, 0x1000);
+    run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.reads,
+        vec![(0xffff_8880_0000_0000 + RIP + 8 + 0x4f7029, 8)]
+    );
+    assert_eq!(state.gpr[Register::Rax as usize], 0x4000);
+    assert_eq!(state.rip, RIP + 8);
+}
+
+/// (minuend, subtrahend, result, expected arithmetic flags).
+const SUB_FLAG_CASES: [(u64, u64, u64, u64); 7] = [
+    // Equal operands: ZF and PF.
+    (5, 5, 0, FLAG_ZF | FLAG_PF),
+    // Borrow out of zero: CF, SF, PF, AF.
+    (0, 1, u64::MAX, FLAG_CF | FLAG_SF | FLAG_PF | FLAG_AF),
+    // Signed overflow, positive result from INT_MIN - 1: OF, PF, AF.
+    (
+        0x8000_0000_0000_0000,
+        1,
+        0x7fff_ffff_ffff_ffff,
+        FLAG_OF | FLAG_PF | FLAG_AF,
+    ),
+    // Signed overflow, negative result from INT_MAX - (-1): OF, CF, SF, PF.
+    (
+        0x7fff_ffff_ffff_ffff,
+        u64::MAX,
+        0x8000_0000_0000_0000,
+        FLAG_OF | FLAG_CF | FLAG_SF | FLAG_PF,
+    ),
+    // Low-nibble borrow only: PF, AF.
+    (0x10, 1, 0x0f, FLAG_PF | FLAG_AF),
+    // Subtracting zero from 7: no flag (odd parity, no borrow).
+    (7, 0, 7, 0),
+    // Negative minus a larger negative: CF, SF, PF, AF.
+    (
+        0xffff_ffff_ffff_fff0,
+        0xffff_ffff_ffff_fff1,
+        u64::MAX,
+        FLAG_CF | FLAG_SF | FLAG_PF | FLAG_AF,
+    ),
+];
+
+#[test]
+fn gs_and_fs_sub_flags_and_results_on_boundary_values() {
+    for code in [GS_SUB_R12_RIP, FS_SUB_R12_RIP] {
+        for (lhs, rhs, result_value, arithmetic) in SUB_FLAG_CASES {
+            for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                let mut state = board_state();
+                state.rflags = initial;
+                state.gpr[Register::R12 as usize] = lhs;
+                let mut memory = LoadMemory::with_value(&code, rhs);
+                let result = run_load_set(&mut state, &mut memory).unwrap();
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(
+                    state.gpr[Register::R12 as usize],
+                    result_value,
+                    "{lhs:#x}-{rhs:#x}"
+                );
+                // Non-arithmetic bits (IF, DF, bit 1) are preserved.
+                assert_eq!(
+                    state.rflags,
+                    (initial & !ARITH) | arithmetic,
+                    "{lhs:#x}-{rhs:#x} from {initial:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn gs_sub_flags_equal_the_non_prefixed_sub_r64_m64() {
+    // The prefixed form shares the arithmetic of `sub 0x1234(%rip), %r12` (4c 2b 25 ...).
+    let plain = [0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00];
+    for (lhs, rhs) in [
+        (0u64, 0u64),
+        (1, 2),
+        (0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffff),
+        (0xffff_ffff_0000_0000, 0x0000_0000_ffff_ffff),
+        (0x1234_5678_9abc_def0, 0x0fed_cba9_8765_4321),
+        (u64::MAX, u64::MAX),
+    ] {
+        let mut prefixed = board_state();
+        prefixed.gpr[Register::R12 as usize] = lhs;
+        let mut plain_state = prefixed.clone();
+        let mut memory = LoadMemory::with_value(&GS_SUB_R12_RIP, rhs);
+        run_load_set(&mut prefixed, &mut memory).unwrap();
+        let mut memory = LoadMemory::with_value(&plain, rhs);
+        run_load_set(&mut plain_state, &mut memory).unwrap();
+        assert_eq!(prefixed.gpr, plain_state.gpr, "{lhs:#x}-{rhs:#x}");
+        assert_eq!(prefixed.rflags, plain_state.rflags, "{lhs:#x}-{rhs:#x}");
+    }
+}
+
+#[test]
+fn gs_sub_non_canonical_result_is_gp0_without_mutation_or_read() {
+    for base in [
+        0x0000_8000_0000_0000u64,
+        0x7fff_ffff_ffff_fff0,
+        // The start is canonical but the qword's last byte crosses into the hole.
+        0x0000_7fff_ffff_ffff - 0x1234 - 8 - RIP - 3,
+    ] {
+        let mut state = board_state();
+        state.gs_base = base;
+        state.rflags |= FLAG_CF;
+        state.gpr[Register::R12 as usize] = 77;
+        let before = state.clone();
+        let mut memory = LoadMemory::with_value(&GS_SUB_R12_RIP, 1);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{base:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn fs_sub_non_canonical_result_is_gp0_without_mutation_or_read() {
+    let mut state = board_state();
+    state.fs_base = 0x0000_8000_0000_0000;
+    state.gpr[Register::R12 as usize] = 77;
+    let before = state.clone();
+    let mut memory = LoadMemory::with_value(&FS_SUB_R12_RIP, 1);
+    let result = run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn gs_sub_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `sub %gs:(%rsp), %rax` = 65 48 2b 04 24 and `sub %gs:0x0(%rbp), %rax` = 65 48 2b 45 00.
+    for (code, register) in [
+        (&[0x65u8, 0x48, 0x2b, 0x04, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0x48, 0x2b, 0x45, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = LoadMemory::with_value(code, 1);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_sub_forms_outside_the_slice_are_refused_without_mutation() {
+    // (code, expected refused opcode): the SUB r64, m64 forms refuse with 0x2b; the other ALU
+    // opcodes with a FS/GS memory operand refuse with their own opcode.
+    let cases: [(&[u8], u8); 20] = [
+        // Dword (no REX.W) and REX without W.
+        (&[0x65, 0x2b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x2b),
+        (&[0x64, 0x2b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x2b),
+        (&[0x65, 0x44, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x2b),
+        // Byte SUB r8, m8.
+        (&[0x65, 0x4c, 0x2a, 0x25, 0x34, 0x12, 0x00, 0x00], 0x2a),
+        // Register source (mod = 11).
+        (&[0x65, 0x4c, 0x2b, 0xe3], 0x2b),
+        (&[0x65, 0x48, 0x2b, 0xc0], 0x2b),
+        (&[0x64, 0x48, 0x2b, 0xc0], 0x2b),
+        // LOCK, 0x66, 0x67 and REP.
+        (
+            &[0xf0, 0x65, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            0x2b,
+        ),
+        (
+            &[0x66, 0x65, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            0x2b,
+        ),
+        (
+            &[0x65, 0x67, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            0x2b,
+        ),
+        (
+            &[0xf3, 0x65, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            0x2b,
+        ),
+        (
+            &[0xf2, 0x64, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            0x2b,
+        ),
+        // Memory destination SUB m64, r64 (29) and the neighbouring ALU forms stay refused.
+        (&[0x65, 0x4c, 0x29, 0x25, 0x34, 0x12, 0x00, 0x00], 0x29),
+        (&[0x65, 0x4c, 0x03, 0x25, 0x34, 0x12, 0x00, 0x00], 0x03),
+        (&[0x65, 0x4c, 0x3b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x3b),
+        (&[0x64, 0x4c, 0x1b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x1b),
+        (&[0x64, 0x4c, 0x13, 0x25, 0x34, 0x12, 0x00, 0x00], 0x13),
+        (&[0x64, 0x4c, 0x23, 0x25, 0x34, 0x12, 0x00, 0x00], 0x23),
+        (&[0x64, 0x4c, 0x0b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x0b),
+        (&[0x64, 0x4c, 0x33, 0x25, 0x34, 0x12, 0x00, 0x00], 0x33),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = LoadMemory::with_value(code, 1);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_unprefixed_qword_sub_still_reads_at_the_effective_address_in_the_set() {
+    // Regression: `sub 0x1234(%rip), %r12` without a segment override ignores the bases.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R12 as usize] = 10;
+    let mut memory = LoadMemory::with_value(&[0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00], 4);
+    run_load_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(RIP + 7 + 0x1234, 8)]);
+    assert_eq!(state.gpr[Register::R12 as usize], 6);
+}
+
+#[test]
+fn segment_sub_stays_unsupported_outside_the_set() {
+    for code in [GS_SUB_R12_RIP, FS_SUB_R12_RIP] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = LoadMemory::with_value(&code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x2b });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+    }
+}
+
+#[test]
+fn segment_sub_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = LoadMemory::with_value(&GS_SUB_R12_RIP, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn cs_ds_es_ss_overrides_on_a_qword_sub_keep_ignoring_the_segment_base() {
+    for prefix in [0x2eu8, 0x3e, 0x36, 0x26] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let mut memory =
+            LoadMemory::with_value(&[prefix, 0x4c, 0x2b, 0x25, 0x34, 0x12, 0x00, 0x00], 1);
         let result = run_load_set(&mut state, &mut memory).unwrap();
         assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
         assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 8)], "{prefix:#x}");
