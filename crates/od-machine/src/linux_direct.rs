@@ -3254,6 +3254,43 @@ mod tests {
         assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
     }
 
+    // ---- S4-38L7l: LOCK INC m32 through the board facade ----
+
+    #[test]
+    fn lock_inc_reads_and_writes_guest_memory_at_disp8_of_rbx() {
+        // MOV RBX,0x0200_0000; MOV RAX,0x7fffffff; MOV [RBX+0x58],EAX;
+        // LOCK INC DWORD [RBX+0x58] (0x7fffffff -> 0x80000000: OF and SF set);
+        // MOV ECX,[RBX+0x58]; HLT.
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0000u64.to_le_bytes());
+        code.extend(mov_rax_imm64(0x7fff_ffff));
+        code.extend([0x89, 0x43, 0x58]);
+        code.extend([0xF0, 0xFF, 0x43, 0x58]);
+        code.extend([0x8B, 0x4B, 0x58]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x8000_0000);
+        assert_eq!(state.rflags & (1 << 11), 1 << 11, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
