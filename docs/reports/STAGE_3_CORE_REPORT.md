@@ -13,8 +13,9 @@
 | S3-50 — отчёт и инвентарь дублирования | Ревью пройдено; коммит `80a0fe6`, Graphify обновлён |
 | S3-51 — единые правила допуска | Независимое архитектурное ревью Sol пройдено; коммит `8dcaac8`, Graphify обновлён |
 | S3-52 — один механизм допуска | Независимое ревью Sol одобрено; коммит `dd9c9bb`, Graphify обновлён |
-| S3-53 — единая точка входа диспетчера | Проверки выполнены, независимое ревью Sol одобрено; коммит следует |
-| S3-54…S3-57 | not_started |
+| S3-53 — единая точка входа диспетчера | Независимое ревью Sol одобрено; коммит `8aab6f3`, Graphify обновлён |
+| S3-54 — generic путь и multi-entry cache | Проверки выполнены, независимое ревью Sol одобрено; коммит следует |
+| S3-55…S3-57 | not_started |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -292,7 +293,7 @@ PY
 
 ## 6. S3-53 — единая точка входа диспетчера
 
-Статус: независимое ревью Sol одобрено; коммит следует. Проверены все 31 wrapper, 33 целевых теста, форматирование и сборка; полный `od-jit` — 446 passed/2 ignored, `od-host` — 361 passed при наличии локальных artifacts, layout — 45 baseline ошибок. Измерение с mock backend не является проверкой производительности полного JIT.
+Статус: независимое ревью Sol одобрено; коммит `8aab6f3` в `codex`, Graphify обновлён. Проверены все 31 wrapper, 33 целевых теста, форматирование и сборка; полный `od-jit` — 446 passed/2 ignored, `od-host` — 361 passed при наличии локальных artifacts, layout — 45 baseline ошибок. Измерение с mock backend не является проверкой производительности полного JIT.
 
 В `dispatch.rs` частная `run_register_dispatch` принимает профиль и режим flags отдельно. `RegisterDispatchProfile` связывает существующий тип admission с режимом исполнения формы; `InterpretedIncRax` сохраняет обычный S0-09 builder и interpreter fallback, а `NativeIncRax` выбирает native builder. `UncachedRegisterPath` передаёт профиль и mode существующему циклу; `SingleEntryRegisterPath` типизированно передаёт `NativeRegisterV1` в прежний single-entry cache loop. Публичные сигнатуры 31 обёртки сохранены. Оставшиеся cached/multi/memory точки входа не переводились на этот путь.
 
@@ -345,7 +346,20 @@ cargo test -p od-jit --lib --release --offline s3_53_dispatch_entry_microbench -
 
 ## 7. S3-54 — generic путь и multi-entry cache
 
-Статус: not_started.
+Статус: независимое ревью Sol одобрено; коммит следует. Добавлен `run_multi_cached_native_register_v1_controlled` через общую точку `run_register_dispatch`, `MultiEntryRegisterPath` и существующие `MultiEntryBlockCache`/`MultiBlockCachedBackend`. Состав `TranslationKey`, алгоритмы FIFO/LRU и существующие memory/fixture entrypoints не изменены. Существующий native cached loop обобщён на `CachedEntryStore`; после `record_hit` он заново находит ключ, поскольку LRU может переместить запись. `reset_for_execution_context` принимает native cached fixture; legacy fixture dispatcher по-прежнему отвергает native profile.
+
+Тест `s3_54_register_corpus_cold_warm_counters_and_flag_isolation` прогоняет 15 отдельных bounded code views (baseline, S3-32a и 13 native форм) в каждом режиме флагов; mock backend отслеживает опубликованные handles. Счётчики на каждый режим:
+
+| Прогон | hits | misses | successful_compiles | successful_publications | evictions |
+|---|---:|---:|---:|---:|---:|
+| Cold | 0 | 15 | 15 | 15 | 0 |
+| После warm | 15 | 15 | 15 | 15 | 0 |
+
+Отдельные тесты проверяют изоляцию eager/demand ключей; FIFO/LRU последовательность A→B→A→C и идентичность исполненного handle после перемещения LRU; capacity по entries, code bytes и metadata, oversized candidate, backend capacity mismatch и отказ публикации; смену dependency version, `CodeInvalidation::BackingContentChanged` и `reset_for_execution_context`. Новая версия dependency даёт другой ключ и miss; старая запись остаётся resident до явной invalidation или eviction. Удаление и reset вызываются между синхронными dispatch-вызовами.
+
+ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выполняется на macOS arm64 с реальным `PublishedArenaBackend`: для FIFO/LRU и eager/demand cold вызов публикует handle, warm исполняет тот же `(slot_index, generation)` без новой публикации, а полное состояние сверяется с `od_isa::execute::step`. Для каждого из четырёх сочетаний cold/warm дают суммарно 1 hit, 1 miss, 1 compile, 1 publication, 0 evictions. Целевой host-тест прошёл.
+
+Проверки в worktree `codex`: `cargo fmt --all -- --check` и `cargo check -p od-jit -p od-host --all-targets --offline` прошли; `cargo test -p od-jit --lib --offline` — 450 passed, 2 ignored; целевые четыре S3-54 unit tests — 4 passed; `cargo test -p od-host --lib --offline` — 362 passed; `python3 tools/check_layout.py` — 45 прежних ошибок локальных ссылок. Hit-rate не является оценкой ускорения; производительность и cold/warm измерения полного generic JIT остаются задачей S3-56. Production owner и MMU integration остаются открыты в S3-18.
 
 ## 8. S3-55 — interpreter fallback
 

@@ -725,7 +725,7 @@ impl<H> MultiEntryBlockCache<H> {
         &mut self,
         context: ExecutionContextSnapshot,
     ) -> Result<(), ExecutionContextError> {
-        if !context.profile.is_supported_fixture() {
+        if !context.profile.is_supported_cached_fixture() {
             return Err(ExecutionContextError::UnsupportedProfile(context.profile));
         }
         let Some(current) = self.execution_context else {
@@ -1117,6 +1117,37 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
     )
 }
 
+/// Run the bounded NativeRegisterV1 fixture through the existing multi-entry
+/// cache. The caller supplies an immutable code view, dependency snapshot and
+/// execution context for each synchronous dispatch invocation.
+pub fn run_multi_cached_native_register_v1_controlled<B: MultiBlockCachedBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+    flags: RegisterFlagsMode,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    run_register_dispatch(
+        code,
+        admission,
+        flags,
+        state,
+        total_budget,
+        control,
+        MultiEntryRegisterPath {
+            execution_context,
+            dependencies,
+            cache,
+            backend,
+        },
+    )
+}
+
 /// Run the eager NativeRegisterV1 cache path with a single last-RIP prepared
 /// block/key memo scoped to this call. The cache lookup and all snapshot
 /// validation still run on every iteration; this only skips rebuilding the
@@ -1214,7 +1245,7 @@ fn run_cached_native_register_v1_strategy_controlled<
     state: &mut LongModeState,
     total_budget: u64,
     control: DispatchControl<'_>,
-    cache: &mut SingleEntryBlockCache<B::Published>,
+    cache: &mut impl CachedEntryStore<B::Published>,
     backend: &mut B,
     observer: &mut O,
     strategy: NativeRegisterV1CacheStrategy,
@@ -1411,7 +1442,9 @@ fn run_cached_native_register_v1_strategy_controlled<
             .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.key))
             .expect("key or prepared memo exists");
         let cached_index = if hit_index.is_some() {
-            hit_index.expect("hit index exists")
+            // LRU hits can move the matched entry. Resolve its index again
+            // after recording the hit before borrowing the published handle.
+            cache.find(key).expect("hit remains resident")
         } else {
             let compilation = match strategy {
                 NativeRegisterV1CacheStrategy::Eager => {
@@ -2881,10 +2914,11 @@ pub fn run_with_native_mov_rax_imm32_demand_flags_candidate<E: ControlledBlockEx
     )
 }
 
+/// Flag computation mode for the bounded register dispatcher.
 // A profile identifies the admission and whether its extra form is interpreted
 // or compiled natively. Flag policy is independent of that choice.
 #[derive(Clone, Copy)]
-enum RegisterFlagsMode {
+pub enum RegisterFlagsMode {
     Eager,
     DemandFlagsCandidate,
 }
@@ -3140,6 +3174,61 @@ impl<'admission, B: CachedBlockBackend> RegisterDispatchPath<'admission>
                 NativeRegisterV1CacheStrategy::DemandFlagsCandidate
             }
         };
+        run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+            code,
+            admission,
+            self.execution_context,
+            self.dependencies,
+            state,
+            total_budget,
+            control,
+            self.cache,
+            self.backend,
+            &mut observer,
+            strategy,
+            None,
+        )
+    }
+}
+
+struct MultiEntryRegisterPath<'a, B: MultiBlockCachedBackend> {
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &'a [CodeDependencySpan],
+    cache: &'a mut MultiEntryBlockCache<B::Published>,
+    backend: &'a mut B,
+}
+
+impl<'admission, B: MultiBlockCachedBackend> RegisterDispatchPath<'admission>
+    for MultiEntryRegisterPath<'_, B>
+{
+    type Error = B::Error;
+    type Profile = &'admission NativeRegisterV1Admission;
+
+    fn dispatch(
+        self,
+        code: CodeView<'_>,
+        admission: Self::Profile,
+        flags: RegisterFlagsMode,
+        state: &mut LongModeState,
+        total_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<FallbackDispatchResult, DispatchError<Self::Error>> {
+        let available = self.backend.published_block_capacity();
+        if self.cache.max_entries() > available {
+            return Err(DispatchError::MultiCacheConfig(
+                MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                    requested: self.cache.max_entries(),
+                    available,
+                },
+            ));
+        }
+        let strategy = match flags {
+            RegisterFlagsMode::Eager => NativeRegisterV1CacheStrategy::Eager,
+            RegisterFlagsMode::DemandFlagsCandidate => {
+                NativeRegisterV1CacheStrategy::DemandFlagsCandidate
+            }
+        };
+        let mut observer = NoopObserver;
         run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
             code,
             admission,
@@ -4652,6 +4741,428 @@ mod tests {
         NativeRegisterV1Admission::from_code(code).expect("fixture code is admitted")
     }
 
+    fn s3_54_run(
+        bytes: &[u8],
+        base: u64,
+        dependency_version: u64,
+        generation: u64,
+        flags: RegisterFlagsMode,
+        cache: &mut MultiEntryBlockCache<MockPublished>,
+        backend: &mut MockCachedBackend,
+    ) -> Result<(FallbackDispatchResult, LongModeState), DispatchError<&'static str>> {
+        let view = CodeView::new(base, bytes).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, dependency_version);
+        let mut state = LongModeState {
+            cr3: None,
+            rip: base,
+            ..LongModeState::default()
+        };
+        let stop = AtomicU8::new(0);
+        let result = run_multi_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(generation),
+            &dependencies,
+            &mut state,
+            1,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: None,
+            },
+            cache,
+            backend,
+            flags,
+        )?;
+        Ok((result, state))
+    }
+
+    fn s3_54_backend(capacity: usize) -> (Rc<RefCell<PublishedTracker>>, MockCachedBackend) {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            capacity,
+            ..PublishedTracker::default()
+        }));
+        (tracker.clone(), MockCachedBackend(tracker))
+    }
+
+    #[test]
+    fn s3_54_register_corpus_cold_warm_counters_and_flag_isolation() {
+        let corpus: &[&[u8]] = &[
+            &[0x48, 0xb8, 0x2a, 0, 0, 0, 0, 0, 0, 0],
+            &[0x48, 0x03, 0xc0],
+            &[0x48, 0xff, 0xc0],
+            &[0x48, 0xff, 0xc8],
+            &[0x48, 0xf7, 0xd8],
+            &[0x48, 0xf7, 0xd0],
+            &[0x48, 0x8d, 0x03],
+            &[0x48, 0x8d, 0x43, 0x7f],
+            &[0x48, 0x8d, 0x04, 0x0b],
+            &[0x48, 0x8d, 0x05, 0, 0, 0, 0],
+            &[0x48, 0x87, 0xd8],
+            &[0x48, 0x83, 0xc0, 0x01],
+            &[0x48, 0x83, 0xf8, 0x01],
+            &[0x48, 0x83, 0xe8, 0x01],
+            &[0x48, 0xc7, 0xc0, 1, 0, 0, 0],
+        ];
+        for flags in [
+            RegisterFlagsMode::Eager,
+            RegisterFlagsMode::DemandFlagsCandidate,
+        ] {
+            let (tracker, mut backend) = s3_54_backend(16);
+            let mut cache = MultiEntryBlockCache::new(
+                16,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            for pass in 0..2 {
+                for (index, bytes) in corpus.iter().enumerate() {
+                    let base = 0x9000 + (index as u64) * 0x100;
+                    let (result, state) =
+                        s3_54_run(bytes, base, 1, 1, flags, &mut cache, &mut backend).unwrap();
+                    assert_eq!(result.retired_native, 1);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(result.blocks_executed, 1);
+                    assert_eq!(state.rip, base + bytes.len() as u64);
+                }
+                let c = cache.counters();
+                assert_eq!(
+                    (
+                        c.misses,
+                        c.successful_compiles,
+                        c.successful_publications,
+                        c.evictions
+                    ),
+                    (15, 15, 15, 0)
+                );
+                assert_eq!(c.hits, if pass == 0 { 0 } else { 15 });
+            }
+            assert_eq!(tracker.borrow().publishes, 15);
+            assert_eq!(tracker.borrow().executions, 30);
+        }
+
+        let (tracker, mut backend) = s3_54_backend(2);
+        let mut cache = MultiEntryBlockCache::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let code = [0x48, 0xff, 0xc0];
+        for flags in [
+            RegisterFlagsMode::Eager,
+            RegisterFlagsMode::DemandFlagsCandidate,
+            RegisterFlagsMode::Eager,
+            RegisterFlagsMode::DemandFlagsCandidate,
+        ] {
+            s3_54_run(&code, 0xb000, 1, 1, flags, &mut cache, &mut backend).unwrap();
+        }
+        let c = cache.counters();
+        assert_eq!(
+            (
+                c.misses,
+                c.hits,
+                c.successful_compiles,
+                c.successful_publications
+            ),
+            (2, 2, 2, 2)
+        );
+        assert_eq!(tracker.borrow().executed_ids, [1, 2, 1, 2]);
+    }
+
+    #[test]
+    fn s3_54_fifo_lru_hit_executes_the_matched_published_handle() {
+        let code = [0x48, 0xff, 0xc0];
+        for policy in [CacheEvictionPolicy::Fifo, CacheEvictionPolicy::Lru] {
+            let (tracker, mut backend) = s3_54_backend(2);
+            let mut cache = MultiEntryBlockCache::with_policy(
+                2,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+                policy,
+            )
+            .unwrap();
+            for base in [0xc000, 0xc100, 0xc000, 0xc200] {
+                s3_54_run(
+                    &code,
+                    base,
+                    1,
+                    1,
+                    RegisterFlagsMode::Eager,
+                    &mut cache,
+                    &mut backend,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                tracker.borrow().executed_ids,
+                [1, 2, 1, 3],
+                "LRU hit must not use the old index"
+            );
+            assert_eq!(
+                (
+                    cache.counters().hits,
+                    cache.counters().misses,
+                    cache.counters().evictions
+                ),
+                (1, 3, 1)
+            );
+            let (resident, evicted) = if policy == CacheEvictionPolicy::Fifo {
+                (0xc100, 0xc000)
+            } else {
+                (0xc000, 0xc100)
+            };
+            s3_54_run(
+                &code,
+                resident,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+            assert_eq!(cache.counters().hits, 2);
+            s3_54_run(
+                &code,
+                evicted,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+            assert_eq!(
+                (cache.counters().misses, cache.counters().evictions),
+                (4, 2)
+            );
+        }
+    }
+
+    #[test]
+    fn s3_54_capacity_and_publication_failures_are_explicit() {
+        let code = [0x48, 0xff, 0xc0];
+        let (_, mut backend) = s3_54_backend(2);
+        let mut probe = MultiEntryBlockCache::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        s3_54_run(
+            &code,
+            0xd000,
+            1,
+            1,
+            RegisterFlagsMode::Eager,
+            &mut probe,
+            &mut backend,
+        )
+        .unwrap();
+        let one_code = probe.counters().resident_code_bytes;
+        let one_metadata = probe.counters().resident_logical_metadata_bytes;
+        assert!(one_code > 1 && one_metadata > 1);
+        drop(probe);
+
+        for (entries, code_limit, metadata_limit) in [
+            (
+                1,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            ),
+            (2, one_code, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES),
+            (2, MAX_MULTI_ENTRY_CACHE_CODE_BYTES, one_metadata),
+        ] {
+            let (tracker, mut backend) = s3_54_backend(2);
+            let mut cache = MultiEntryBlockCache::new(entries, code_limit, metadata_limit).unwrap();
+            for base in [0xd100, 0xd200] {
+                s3_54_run(
+                    &code,
+                    base,
+                    1,
+                    1,
+                    RegisterFlagsMode::Eager,
+                    &mut cache,
+                    &mut backend,
+                )
+                .unwrap();
+            }
+            assert_eq!(cache.resident_entries(), 1);
+            assert_eq!(cache.counters().evictions, 1);
+            assert!(cache.counters().resident_code_bytes <= code_limit);
+            assert!(cache.counters().resident_logical_metadata_bytes <= metadata_limit);
+            assert_eq!(tracker.borrow().drops, 1);
+        }
+
+        let (tracker, mut backend) = s3_54_backend(1);
+        let mut too_many = MultiEntryBlockCache::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        assert!(matches!(
+            s3_54_run(
+                &code,
+                0xd300,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut too_many,
+                &mut backend
+            ),
+            Err(DispatchError::MultiCacheConfig(
+                MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                    requested: 2,
+                    available: 1
+                }
+            ))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+
+        let (tracker, mut backend) = s3_54_backend(1);
+        let mut short_code =
+            MultiEntryBlockCache::new(1, 1, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        assert!(matches!(
+            s3_54_run(
+                &code,
+                0xd400,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut short_code,
+                &mut backend
+            ),
+            Err(DispatchError::Cache(CacheError::EntryTooLarge { .. }))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+        let mut short_metadata =
+            MultiEntryBlockCache::new(1, MAX_MULTI_ENTRY_CACHE_CODE_BYTES, 1).unwrap();
+        assert!(matches!(
+            s3_54_run(
+                &code,
+                0xd400,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut short_metadata,
+                &mut backend
+            ),
+            Err(DispatchError::Cache(
+                CacheError::MinimumEntryTooLarge { .. } | CacheError::EntryTooLarge { .. }
+            ))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+
+        tracker.borrow_mut().fail_publish = true;
+        let mut cache = MultiEntryBlockCache::new(
+            1,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        assert!(matches!(
+            s3_54_run(
+                &code,
+                0xd400,
+                1,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut cache,
+                &mut backend
+            ),
+            Err(DispatchError::CachePublish("publish failed"))
+        ));
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(cache.counters().successful_publications, 0);
+    }
+
+    #[test]
+    fn s3_54_dependency_invalidation_and_context_reset_prevent_stale_hits() {
+        let code = [0x48, 0xff, 0xc0];
+        let base = 0xe000;
+        let view = CodeView::new(base, &code).unwrap();
+        let old = dependency(view, 1);
+        let current = dependency(view, 2);
+        let (tracker, mut backend) = s3_54_backend(2);
+        let mut cache = MultiEntryBlockCache::new(
+            2,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        for version in [1, 1, 2] {
+            s3_54_run(
+                &code,
+                base,
+                version,
+                1,
+                RegisterFlagsMode::Eager,
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            (
+                cache.counters().hits,
+                cache.counters().misses,
+                cache.resident_entries()
+            ),
+            (1, 2, 2)
+        );
+        assert_eq!(tracker.borrow().executed_ids, [1, 1, 2]);
+        assert_eq!(
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: old[0].identity.backing,
+                current_version: current[0].identity.backing_version,
+            }),
+            1
+        );
+        s3_54_run(
+            &code,
+            base,
+            2,
+            1,
+            RegisterFlagsMode::Eager,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().executed_ids, [1, 1, 2, 2]);
+        assert!(matches!(
+            cache.reset_for_execution_context(native_test_context_with_generation(1)),
+            Err(ExecutionContextError::GenerationNotAdvanced { .. })
+        ));
+        cache
+            .reset_for_execution_context(native_test_context_with_generation(2))
+            .unwrap();
+        assert_eq!(cache.resident_entries(), 0);
+        s3_54_run(
+            &code,
+            base,
+            2,
+            2,
+            RegisterFlagsMode::Eager,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().executed_ids, [1, 1, 2, 2, 3]);
+        assert_eq!(
+            (
+                cache.counters().hits,
+                cache.counters().misses,
+                cache.counters().successful_publications
+            ),
+            (2, 3, 3)
+        );
+        assert_eq!(tracker.borrow().drops, 2);
+    }
+
     #[test]
     fn native_cached_demand_candidate_strategy_key_isolated() {
         let code = [0x48, 0x83, 0xC0, 0x01];
@@ -5459,10 +5970,10 @@ mod tests {
             "failed entry is safely released after return"
         );
         assert_eq!(tracker.borrow().live, 0);
-        multi_entry_cache_rejects_native_register_v1_context_before_and_after_binding();
+        multi_entry_fixture_dispatch_rejects_native_context_after_binding();
     }
 
-    fn multi_entry_cache_rejects_native_register_v1_context_before_and_after_binding() {
+    fn multi_entry_fixture_dispatch_rejects_native_context_after_binding() {
         let mut cache = MultiEntryBlockCache::<MockPublished>::new(
             1,
             4096,
@@ -5470,10 +5981,6 @@ mod tests {
         )
         .unwrap();
         let native = native_test_context_with_generation(2);
-        assert!(matches!(
-            cache.reset_for_execution_context(native),
-            Err(ExecutionContextError::UnsupportedProfile(_))
-        ));
         let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
         let view = CodeView::new(0x7C00, &code).unwrap();
         let admission = AdmittedInstructionBoundaries::from_fixture_decode(
@@ -5506,13 +6013,25 @@ mod tests {
         ));
         assert_eq!(cache.counters().misses, 0);
         assert_eq!(cache.counters().successful_compiles, 0);
-        cache
-            .reset_for_execution_context(test_context_with_generation(1))
-            .unwrap();
+        cache.reset_for_execution_context(native).unwrap();
         assert!(matches!(
-            cache.reset_for_execution_context(native),
-            Err(ExecutionContextError::UnsupportedProfile(_))
+            run_multi_cached(
+                view,
+                &admission,
+                native,
+                &dependencies,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::ExecutionContext(
+                ExecutionContextError::UnsupportedProfile(_)
+            ))
         ));
+        cache
+            .reset_for_execution_context(test_context_with_generation(3))
+            .unwrap();
         assert_eq!(cache.resident_entries(), 0);
     }
 
