@@ -684,8 +684,9 @@ pub struct LinuxCpl0SetMembers {
     /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
     pub popf_cpl0: bool,
     /// `with_pci_config` (S4-38L7w): the dword/word `OUT DX, EAX`/`IN EAX, DX` (`EF`/`ED`, `66 EF`/
-    /// `66 ED`) for PCI mechanism #1: CONFIG_ADDRESS (`0xCF8`) is stored in the board, CONFIG_DATA
-    /// (`0xCFC..=0xCFF`) has no device (`IN` gives all ones, `OUT` is discarded). Independent of
+    /// `66 ED`) for PCI mechanism #1: CONFIG_ADDRESS (`0xCF8`, dword access only; the word form is
+    /// refused) is stored in the board, CONFIG_DATA (`0xCFC..=0xCFF`) has no device (`IN` gives all
+    /// ones, `OUT` is discarded). Independent of
     /// [`Self::pio_u8`].
     pub pci_config: bool,
     /// S4-13: the opt-in translation cache of the instruction fetch (one cache per call of the
@@ -724,7 +725,8 @@ impl LinuxCpl0SetMembers {
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
     /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
-    /// base MSRs (S4-38L6b) and the read-only EFER (S4-38L7e).
+    /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e) and the PCI configuration ports
+    /// (S4-38L7w).
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
@@ -3956,6 +3958,29 @@ mod tests {
         assert_eq!(record.rip, rip_out);
         assert_eq!(record.pci_config_address, 0);
         assert!(!record.set_members.contains(&"pci_config".to_string()));
+    }
+
+    #[test]
+    fn pci_config_address_chains_between_two_runs_on_one_board() {
+        // MOV EAX,0x80001000; MOV EDX,0xcf8; OUT DX,EAX | XOR EAX,EAX; IN EAX,DX; HLT.
+        let mut code = Vec::new();
+        code.extend(mov_eax(0x8000_1000));
+        code.extend(mov_edx(0xcf8));
+        code.push(0xEF);
+        code.extend([0x31, 0xC0, 0xED, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = halting_default();
+        // Run 1 stops by budget right after the OUT.
+        let first = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(first.retired, 3, "{first:?}");
+        assert_eq!(first.pci_config_address, 0x8000_1000);
+        assert_eq!(boot.board.pci_config_address(), 0x8000_1000);
+        // Run 2 on the same board seeds the cell from the board: IN EAX returns the address.
+        let second = run_set_facade(&mut boot, &file, 3, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 3, "XOR, IN, HLT");
+        assert_eq!(second.gpr[Register::Rax as usize], 0x8000_1000);
+        assert_eq!(second.pci_config_address, 0x8000_1000);
     }
 
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----

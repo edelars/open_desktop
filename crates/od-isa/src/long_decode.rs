@@ -7875,13 +7875,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Primary, 0xed | 0xef) => {
                 // S4-38L7w: only the bare dword form and the bare `66` word form. LOCK, REP/REPNE,
                 // segment overrides, 67 and every REX prefix (REX.W included: there is no 64-bit
-                // port I/O) are refused with the exact opcode.
+                // port I/O; a REX before `66` too) are refused with the exact opcode.
                 let word_form = prefixes
                     == (Prefixes {
                         operand_override: true,
                         ..Prefixes::default()
                     });
-                if prefixes != Prefixes::default() && !word_form {
+                // A REX byte that is not immediately before the opcode (`48 66 EF`) is
+                // architecturally ignored, but this form refuses it like the `0F` forms.
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if (prefixes != Prefixes::default() && !word_form) || stale_rex {
                     return Err(self.unsupported(opcode));
                 }
                 size = if word_form {
@@ -27417,7 +27423,8 @@ mod tests {
 
     #[test]
     fn in_out_dword_and_word_forms_refuse_every_other_prefix_with_the_exact_opcode() {
-        // S4-38L7w: REP/REPNE/LOCK, segment overrides, 67, any REX (REX.W included).
+        // S4-38L7w: REP/REPNE/LOCK, segment overrides, 67, any REX (REX.W included; a REX before 66
+        // too).
         for (bytes, opcode) in [
             (&[0xf3u8, 0xef][..], 0xefu8),
             (&[0xf3, 0xed], 0xed),
@@ -27433,6 +27440,9 @@ mod tests {
             (&[0x48, 0xef], 0xef),
             (&[0x48, 0xed], 0xed),
             (&[0x66, 0x48, 0xef], 0xef),
+            // REX before 66 (not immediately before the opcode) is refused, not ignored.
+            (&[0x48, 0x66, 0xef], 0xef),
+            (&[0x40, 0x66, 0xed], 0xed),
             (&[0x66, 0xf3, 0xed], 0xed),
             (&[0x66, 0x67, 0xef], 0xef),
         ] {

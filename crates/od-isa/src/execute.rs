@@ -19512,16 +19512,15 @@ fn commit_pci_config_port(
     let all_ones: u64 = if word { 0xffff } else { 0xffff_ffff };
     let reads = matches!(instruction.operation, Operation::InDx { .. });
     let value = if port == CONFIG_ADDRESS {
-        let current = address.get();
+        // Only the dword form is admitted: the word form of CONFIG_ADDRESS has no
+        // hardware-confirmed semantics here, so it is refused without mutation.
+        if word {
+            return PciConfigCommit::Unsupported { opcode };
+        }
         if reads {
-            u64::from(if word { current & 0xffff } else { current })
+            u64::from(address.get())
         } else {
-            let rax = state.gpr[Register::Rax as usize] as u32;
-            address.set(if word {
-                (current & 0xffff_0000) | (rax & 0xffff)
-            } else {
-                rax
-            });
+            address.set(state.gpr[Register::Rax as usize] as u32);
             0
         }
     } else if CONFIG_DATA.contains(&port) {

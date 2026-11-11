@@ -1474,6 +1474,25 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
+        // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
+        let code = [
+            0xB8, 0x00, 0x10, 0x00, 0x80, 0xBA, 0xF8, 0x0C, 0x00, 0x00, 0xEF,
+        ];
+        let mut case = Case::new("set-pci", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(3);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 3, "{value:#}");
+        assert_eq!(stop["pci_config_address"], "0x80001000");
+        // Without the set nothing writes CONFIG_ADDRESS.
+        let value = run_case("pci-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["pci_config_address"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_stops_before_a_divergent_cpuid_leaf() {
         // CLI; MOV EAX, 1; CPUID; HLT: the CPUID boundary is the stop, before the instruction.
         let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];

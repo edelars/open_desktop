@@ -2998,23 +2998,49 @@ fn pci_dword_out_to_config_address_is_stored_and_read_back_by_in() {
 }
 
 #[test]
-fn pci_word_access_to_config_address_uses_the_low_16_bits_only() {
-    // 66 EF replaces CONFIG_ADDRESS[15:0] and keeps the upper half.
-    let cell = Cell::new(0xdead_beef);
-    let (before, state, result, _) = run_pci(&[0x66, 0xef], PCI_RAX, 0xcf8, &cell, 1);
+fn pci_word_access_to_config_address_is_refused_without_mutation() {
+    // The word form of CONFIG_ADDRESS has no hardware-confirmed semantics: both 66 EF and
+    // 66 ED are refused with the exact opcode, with no change to the registers or the address.
+    for (code, opcode) in [(&[0x66, 0xef][..], 0xef), (&[0x66, 0xed][..], 0xed)] {
+        let cell = Cell::new(0xdead_beef);
+        let (before, state, result, pio) = run_pci(code, PCI_RAX, 0xcf8, &cell, 8);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xdead_beef);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn pci_port_is_truncated_to_dx() {
+    // RDX[63:16] is ignored: the port is DX.
+    let cell = Cell::new(0);
+    let (_, state, result, _) = run_pci(&[0xef], 0x8000_1000, 0xffff_0000_0001_0cf8, &cell, 1);
     assert_eq!(result.exit, budget_exhausted());
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(cell.get(), 0xdead_4444);
-    assert_eq!(state.gpr, before.gpr);
-    assert_eq!(state.rip, RIP + 2);
-    // 66 ED reads the low 16 bits and keeps RAX[63:16].
-    let cell = Cell::new(0xdead_beef);
-    let (before, state, result, _) = run_pci(&[0x66, 0xed], PCI_RAX, 0xcf8, &cell, 1);
+    assert_eq!(cell.get(), 0x8000_1000);
+    assert_eq!(state.rip, RIP + 1);
+    let (_, state, result, _) = run_pci(&[0xed], PCI_RAX, 0xffff_0000_0001_0cf8, &cell, 1);
     assert_eq!(result.exit, budget_exhausted());
-    assert_eq!(state.gpr[0], 0x1111_2222_3333_beef);
-    assert_eq!(cell.get(), 0xdead_beef);
-    assert_eq!(state.rip, RIP + 2);
-    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(state.gpr[0], 0x8000_1000);
+    // The same for the data port.
+    let (_, state, result, _) = run_pci(&[0xed], PCI_RAX, 0xffff_0000_0001_0cfc, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0xffff_ffff);
+}
+
+#[test]
+fn pci_config_address_is_kept_between_runs_on_the_same_cell() {
+    let cell = Cell::new(0);
+    let (_, _, result, _) = run_pci(&[0xef], 0x8000_1000, 0xcf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    let (_, state, result, _) = run_pci(&[0xed], 0xaaaa_bbbb_cccc_dddd, 0xcf8, &cell, 1);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0x8000_1000);
 }
 
 #[test]
@@ -3106,6 +3132,8 @@ fn pci_prefixed_forms_are_refused_with_the_exact_opcode_and_no_mutation() {
         (&[0x48, 0xef][..], 0xef), // REX.W
         (&[0x48, 0xed][..], 0xed),
         (&[0x66, 0x48, 0xef][..], 0xef),
+        (&[0x48, 0x66, 0xef][..], 0xef), // REX before 66: refused, not an ignored REX
+        (&[0x40, 0x66, 0xed][..], 0xed),
         (&[0x40, 0xef][..], 0xef), // any REX
         (&[0x67, 0xef][..], 0xef),
         (&[0x67, 0xed][..], 0xed),
@@ -3140,6 +3168,8 @@ fn pci_forms_are_outside_a_set_without_the_member() {
         &[0x66, 0xef][..],
         &[0xed][..],
         &[0x66, 0xed][..],
+        &[0x48, 0x66, 0xef][..],
+        &[0x40, 0x66, 0xed][..],
     ] {
         let opcode = *code.last().unwrap();
         // The byte PIO member alone does not admit the PCI forms.
