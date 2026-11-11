@@ -231,6 +231,13 @@ struct Region {
     page_generations: Vec<u64>,
 }
 
+/// Handle to one plain-RAM 4 KiB frame of a [`PhysicalMemory`] (see `PhysicalMemory::ram_frame`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RamFrame {
+    region: usize,
+    offset: usize,
+}
+
 /// The sole owner of production RAM backing in this crate.
 pub struct PhysicalMemory {
     regions: Vec<Region>,
@@ -525,6 +532,34 @@ impl PhysicalMemory {
     ) -> Result<(&Region, usize), MemoryAccessError> {
         let (index, offset) = self.locate_index(address, len)?;
         Ok((&self.regions[index], offset))
+    }
+
+    /// S4-13: a handle to the plain-RAM 4 KiB frame at `base` (4 KiB aligned), or `None` unless
+    /// the whole frame lies inside one `Ram` region with backing. The region list is fixed after
+    /// construction, so a handle stays valid for the life of this memory; the fetch translation
+    /// cache keeps one per entry and reads instruction bytes through it without a region search.
+    pub(crate) fn ram_frame(&self, base: GuestPhysicalAddress) -> Option<RamFrame> {
+        if base.0 & 0xfff != 0 {
+            return None;
+        }
+        let (index, offset) = self.locate_index(base, 0x1000).ok()?;
+        let region = &self.regions[index];
+        (region.spec.kind == MemoryRegionKind::Ram && region.backing.is_some()).then_some(
+            RamFrame {
+                region: index,
+                offset,
+            },
+        )
+    }
+
+    /// One byte of a frame from [`Self::ram_frame`]. `in_frame` is below 4096. `None` is not
+    /// expected for a handle of this memory; the caller then takes the ordinary read.
+    pub(crate) fn read_ram_frame_u8(&self, frame: RamFrame, in_frame: u64) -> Option<u8> {
+        let region = self.regions.get(frame.region)?;
+        let at = frame
+            .offset
+            .checked_add(usize::try_from(in_frame & 0xfff).ok()?)?;
+        region.backing.as_ref()?.get(at).copied()
     }
 
     pub(crate) fn locate_region_kind(

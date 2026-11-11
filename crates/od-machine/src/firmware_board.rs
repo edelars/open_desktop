@@ -1256,11 +1256,16 @@ impl LoadedFirmwareBoard {
     /// With `cpuid_boundary` the run stops before a `CPUID` whose EAX is 1 or 0x8000_0001
     /// (S4-38L4, `cpuid_divergence`): the instruction does not execute and the report carries
     /// its leaf. Nothing is answered in its place.
+    ///
+    /// With `fetch_cache` (S4-13) each call of the set loop keeps an opt-in translation cache for
+    /// the instruction fetch (see `fetch_translation_cache`); results are identical to the run
+    /// without it, only the number of page walks differs.
     pub(crate) fn run_linux_boot_cpl0_set(
         &mut self,
         instruction_budget: u64,
         set: &Cpl0ProfileSet<'_>,
         cpuid_boundary: bool,
+        fetch_cache: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -1337,6 +1342,7 @@ impl LoadedFirmwareBoard {
                 stop,
                 |_| {},
                 cpuid_boundary,
+                fetch_cache,
             );
             quanta += 1;
             // The walker of the next quantum starts from the CR3 the guest left.

@@ -967,6 +967,28 @@ pub(crate) fn translate_long64_2m_ram_read_only(
     context: AccessContext,
     access: AccessKind,
 ) -> Result<GuestPhysicalAddress, TrackedAccessError> {
+    translate_long64_2m_ram_read_only_with_tables(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+    )
+    .map(|(physical, _)| physical)
+}
+
+/// [`translate_long64_2m_ram_read_only`] that also returns the physical bases of the tables the
+/// walk visited (PML4 first; `None` past a 2 MiB leaf). S4-13: the fetch translation cache
+/// watches exactly those frames for guest writes.
+pub(crate) fn translate_long64_2m_ram_read_only_with_tables(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+) -> Result<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4]), TrackedAccessError> {
     let mut no_op_writer = |_: &mut PhysicalMemory,
                             _: GuestPhysicalAddress,
                             _: u64,
@@ -983,7 +1005,7 @@ pub(crate) fn translate_long64_2m_ram_read_only(
         true,
     )
     .translation
-    .map(|translation| translation.physical)
+    .map(|translation| (translation.physical, translation.table_pages))
 }
 
 /// S4-38L4h: the translation half of a data write through the 4 KiB / 2 MiB tracked walk, with no
