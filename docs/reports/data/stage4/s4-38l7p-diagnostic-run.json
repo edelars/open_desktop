@@ -1,0 +1,285 @@
+{
+  "acceptance": "diagnostic_not_counted",
+  "acpi": {
+    "facs_address": "0xef000",
+    "load_base": "0xe0000",
+    "manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "payload_len": 832,
+    "rsdp_address": "0xe0000",
+    "tables": [
+      {
+        "address": "0xe0040",
+        "length": 245,
+        "signature": "DSDT"
+      },
+      {
+        "address": "0xe0140",
+        "length": 84,
+        "signature": "APIC"
+      },
+      {
+        "address": "0xe01a0",
+        "length": 276,
+        "signature": "FACP"
+      },
+      {
+        "address": "0xe02c0",
+        "length": 60,
+        "signature": "MCFG"
+      },
+      {
+        "address": "0xe0300",
+        "length": 60,
+        "signature": "XSDT"
+      }
+    ],
+    "version": 2
+  },
+  "acpi_rsdp_addr": "0xe0000",
+  "acpi_rsdp_signature_in_memory": "RSD PTR ",
+  "acpi_rsdp_signature_matches": true,
+  "cmdline": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s4-38l4a nokaslr",
+  "cmdline_in_memory": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s4-38l4a nokaslr",
+  "cmdline_in_memory_matches": true,
+  "command": "linux-direct",
+  "diagnostic_note": "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a profile of the target CPU, the result is NOT counted",
+  "diagnostic_past_c7": true,
+  "e820": [
+    {
+      "addr": "0x0",
+      "end": "0x9f000",
+      "size": "0x9f000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0x9f000",
+      "end": "0xe0000",
+      "size": "0x41000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xe0000",
+      "end": "0xef000",
+      "size": "0xf000",
+      "type": 3,
+      "type_name": "acpi"
+    },
+    {
+      "addr": "0xef000",
+      "end": "0xf0000",
+      "size": "0x1000",
+      "type": 4,
+      "type_name": "nvs"
+    },
+    {
+      "addr": "0xf0000",
+      "end": "0x150000",
+      "size": "0x60000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0x150000",
+      "end": "0x8000000",
+      "size": "0x7eb0000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0xf8000000",
+      "end": "0xfa400000",
+      "size": "0x2400000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xfc100000",
+      "end": "0xfc200000",
+      "size": "0x100000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xffc00000",
+      "end": "0x100000000",
+      "size": "0x400000",
+      "type": 2,
+      "type_name": "reserved"
+    }
+  ],
+  "e820_count": 9,
+  "entry": {
+    "cr0": "0x80010033",
+    "cr3": "0x130000",
+    "cr4": "0x20",
+    "cs": "0x10",
+    "ds": "0x18",
+    "efer": "0xd00",
+    "es": "0x18",
+    "gdtr_base": "0x120000",
+    "gdtr_limit": "0x1f",
+    "rflags": "0x2",
+    "rip": "0x1000200",
+    "rsi": "0x100000",
+    "rsp": "0x150000",
+    "ss": "0x18"
+  },
+  "guest_started": true,
+  "header": {
+    "cmdline_size": 2047,
+    "init_size": "0x44c1000",
+    "initrd_addr_max": "0x7fffffff",
+    "kernel_alignment": "0x200000",
+    "payload_length": "0x10456ea",
+    "payload_offset": "0x2cc",
+    "pm_code_size": "0x107f200",
+    "pref_address": "0x1000000",
+    "protected_mode_offset": "0x5000",
+    "relocatable": 1,
+    "version": "0x020f",
+    "xloadflags": "0x007f"
+  },
+  "inputs": {
+    "acpi_blob": {
+      "bytes": 1072,
+      "expected_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "path": "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin",
+      "sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf"
+    },
+    "initramfs": {
+      "bytes": 4688,
+      "expected_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "path": "/Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio",
+      "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588"
+    },
+    "vmlinuz": {
+      "bytes": 17320328,
+      "expected_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "path": "/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+      "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  },
+  "memory_sha256": {
+    "initrd": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "initrd_matches_file": true,
+    "kernel_pm_code": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+    "kernel_pm_code_matches_file": true
+  },
+  "nonce": "s4-38l4a",
+  "plan": {
+    "acpi_facs": {
+      "end": "0xef040",
+      "start": "0xef000"
+    },
+    "acpi_tables": {
+      "end": "0xe0340",
+      "start": "0xe0000"
+    },
+    "boot_params": {
+      "end": "0x101000",
+      "start": "0x100000"
+    },
+    "cmdline": {
+      "end": "0x101800",
+      "start": "0x101000"
+    },
+    "gdt": {
+      "end": "0x121000",
+      "start": "0x120000"
+    },
+    "initrd": {
+      "end": "0x7fff250",
+      "start": "0x7ffe000"
+    },
+    "kernel": {
+      "end": "0x54c1000",
+      "start": "0x1000000"
+    },
+    "page_tables": {
+      "end": "0x140000",
+      "start": "0x130000"
+    },
+    "stack": {
+      "end": "0x150000",
+      "start": "0x140000"
+    }
+  },
+  "ram_mib": 128,
+  "retired": 1137490741,
+  "schema_version": 1,
+  "status": "loaded",
+  "stop": {
+    "budget": 3000000000,
+    "com1_hex": "",
+    "com1_text": "",
+    "cpl": 0,
+    "cpu_profile": "Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+    "cpuid_divergence_leaf": null,
+    "cr0": "0x80050033",
+    "cr3": "0x3ffe000",
+    "cr3_changes": 3,
+    "cr4": "0xb0",
+    "diagnostic_past_c7": true,
+    "efer": "0xd00",
+    "exceptions_delivered": 26,
+    "exit_detail": "Unsupported { opcode: 255 }",
+    "exit_kind": "unsupported",
+    "gpr": {
+      "r10": "0x0",
+      "r11": "0x0",
+      "r12": "0xffffffff83a03e70",
+      "r13": "0x0",
+      "r14": "0x0",
+      "r15": "0x0",
+      "r8": "0x0",
+      "r9": "0x0",
+      "rax": "0x0",
+      "rbp": "0xffffffff83a03ce8",
+      "rbx": "0xffffffff844b775a",
+      "rcx": "0x0",
+      "rdi": "0x0",
+      "rdx": "0x0",
+      "rsi": "0x0",
+      "rsp": "0xffffffff83a03ce8"
+    },
+    "guest_efer": "0xd01",
+    "inputs": {
+      "acpi_blob_sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf",
+      "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "initramfs_sha256_in_memory": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "kernel_pm_code_sha256_in_memory": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+      "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    },
+    "last_cr3_change": {
+      "new_cr3": "0x3ffe000",
+      "old_cr3": "0x3ffe000"
+    },
+    "linux_profile": true,
+    "memory_error": null,
+    "mode": "long64",
+    "page_fault": null,
+    "path": "cpl0_set",
+    "quanta": 16161,
+    "retired": 1137490741,
+    "rflags": "0x46",
+    "rip": "0xffffffff814f6cc5",
+    "rip_bytes": "65 ff 0d 64 63 f2 02 74 06 5d e9 dc 6f 24 01 e8",
+    "rip_bytes_error": null,
+    "rip_gpa": "0x14f6cc5",
+    "set_exit_detail": "Run(Unsupported { opcode: 255 })",
+    "set_members": [
+      "cli",
+      "cpu_owned_cr3",
+      "cpuid:DiagnosticV1",
+      "msr:EferReadOnlyV1(3328)",
+      "msr:fs_gs_base",
+      "popf_cpl0"
+    ],
+    "tsc_hz": 1000000000,
+    "unsupported_opcode": "0xff",
+    "virtual_ns": 1137490741
+  }
+}

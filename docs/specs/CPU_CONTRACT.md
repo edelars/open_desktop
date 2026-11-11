@@ -21933,3 +21933,85 @@ R8 = R12 = `0xffffffff83a03e70`, R10 = `0xffffffff82fd9a06`, RFLAGS = `0x2`; CR0
 (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` = `cli`,
 `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `INC m32` с префиксом GS
 (`65 FF /0`, без LOCK; S4-38L7l покрывала только `LOCK INC`) в наборе CPL0 (решение — по этой границе).
+
+### `INC m32/m64` с префиксом FS/GS в наборе CPL0 (S4-38L7p)
+
+Граница S4-38L7o (`65 ff 05 73 63 f2 02`, `incl %gs:0x2f26373(%rip)`, RIP `0xffffffff814f6cb6`, `Unsupported { opcode: 0xff }`)
+показала, что `INC r/m32` с memory-операндом и префиксом FS/GS отказывается декодером (S4-38L7l покрывала только `LOCK INC`, а
+беспрефиксный `FF /0` исполняется адаптером как `Operation::Arithmetic { Inc }`, который для сегментных баз memory-операнд не принимает).
+Срез добавляет `[64|65] [REX] FF /0` с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB без
+базы и индекса, REX.B/REX.X). Семантика дана **по памяти SDM** (Vol. 2 «INC»: `dest = dest + 1`; OF/SF/ZF/AF/PF — по результату, **CF не
+меняется**; операнд читается и записывается всегда; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4: в 64-битном режиме добавляется
+только база FS/GS), по первоисточнику **не сверялась**.
+
+**Qword-форма (решение).** `[64|65] REX.W FF /0` (`INC m64`) реализована тем же кодом: операция одна, размер берётся из `MemoryOperand.size`
+(dword без REX.W, qword с REX.W), общая арифметика `arithmetic_result(size, Inc, …)` уже умеет оба размера, лишней работы нет. Диагностическая
+граница qword-формы не требует, но форма добавлена, чтобы не получить следующую границу на соседнем `incq %gs:...`.
+
+**Декодер.** Ветка `0xFF /0` с сегментным префиксом `0x64`/`0x65` и memory-операндом порождает новые
+`Operation::IncFsMem { destination }` / `IncGsMem` (`destination` — `MemoryOperand` размера dword или qword). `flag_effects` — как у
+`LockIncMem`: определены OF/SF/ZF/AF/PF, CF не определён и не меняется, неопределённых флагов нет. Отказ (`Unsupported { opcode: 0xff }` без
+мутации): `FF /1..7` с FS/GS и memory (DEC, CALL, far CALL, JMP, far JMP, PUSH, `/7`) — прежним путём, любой из LOCK/REP (`F0`/`F2`/`F3`; форма с
+`LOCK` + сегментный префикс остаётся отказом S4-38L7l), `66` (word), `67`, второй сегментный префикс, **REX не непосредственно перед
+опкодом — для обеих ширин** (консервативное сужение, как у dword-форм S4-38L7m/o; по SDM Vol. 2 §2.2.1 такой REX игнорируется, поэтому
+dword-запись `48 65 ff 03` исполнилась бы как dword — неоднозначную запись не исполняем). Для qword (REX.W) отказ при REX не перед
+опкодом — осознанное расхождение с S4-38L7i, где qword-`8B` с таким REX принимается: `48 65 48 ff 03`, `41 65 48 ff 03` и
+`48 64 48 ff 03` — отказ `Unsupported { opcode: 0xff }`, хотя REX.W стоит прямо перед опкодом (устаревший REX до сегментного префикса
+делает запись неоднозначной; закреплено тестами). Байтовая форма `FE /0` с FS/GS остаётся отказом с опкодом `0xfe`.
+
+**REX.** REX непосредственно перед `FF`: REX.W выбирает qword, REX.R не влияет (поле reg — расширение опкода `/0`; регистра-приёмника
+нет, регистры не меняются), REX.B расширяет базовый регистр (r8–r15), REX.X — индекс.
+
+**Регистровая форма (mod = 11) и беспрефиксная форма не менялись.** `65 ff c3` продолжает декодироваться как обычный `INC r32`
+(сегментный префикс на регистровой форме не имеет смысла и исполняется как раньше, без отказа и вне набора); `FF /0` с memory без
+префикса, а также с CS/DS/ES/SS (база игнорируется), исполняется прежним путём `Arithmetic { Inc }`. Это отклонение от задания среза
+(«регистровая форма — отказ с опкодом 0xff»): отказ сузил бы уже принятое поведение вне набора без причины (так же решено в S4-38L7o).
+
+**Адрес.** Как у S4-38L7j/m/o: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, длина — с префиксом) плюс
+`state.fs_base`/`state.gs_base` (`wrapping_add`), функция `access_address_48_with_segment_base`. Каноничность начала и последнего байта
+(`адрес + 3` для dword, `+ 7` для qword) проверяется **до доступа**: иначе `#GP(0)` без чтения, без записи и без мутации (для баз RSP/RBP
+тоже `#GP(0)`, не `#SS` — в отличие от `LOCK INC`, который использует `access_address_48`).
+
+**Исполнение.** Операнд читается одним `memory.read_integer` размера 4/8, результат и флаги даёт **общая** `arithmetic_result(size, Inc, old, 1,
+rflags)` (новой арифметики нет), результат записывается `memory.write_integer` того же размера, и только после успешной записи
+фиксируются флаги (OF/SF/ZF/AF/PF по результату, CF сохраняется, остальные биты RFLAGS сохраняются). Соседние байты не меняются, регистры
+не меняются. RIP += длина, retired + 1 — только при успехе. При `#GP(0)`, `#PF` на чтении и `#PF` на записи (read-only страница) память,
+флаги, RIP, регистры и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xff }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и
+голые `run`/`step` форму не принимают (тест отказа в каждом, с точным опкодом `0xff`).
+
+**Не делалось.** `FF /1..7` с FS/GS, `FE /0` с FS/GS, прочие опкоды с префиксом, `SWAPGS`/MSR, CR, CPUID, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::` — `gs_inc_dword_boundary_form_*` (граничная форма `65 ff 05 73 63 f2 02`: адрес = база + RIP + 7 + disp, чтение и
+запись 4 байт, соседние байты, флаги), `fs_inc_dword_rip_relative_*`, `segment_inc_with_a_zero_base_*`,
+`segment_inc_dword_overflow_and_wraparound_flags` (8 значений: `0x7fffffff` → OF+SF, `0xffffffff` → ZF, `0x0f` → AF, `0` → ни одного
+флага, и др.; FS и GS; 2 набора начальных флагов), `segment_inc_keeps_cf_clear_and_set_on_the_wrap_to_zero`,
+`segment_inc_matches_the_non_prefixed_inc_on_the_same_value`, `segment_inc_with_base_register_index_scale_and_displacement`,
+`segment_inc_with_rex_b_uses_r8_to_r15_*`, `segment_inc_accepts_a_rex_directly_before_the_opcode_and_ignores_rex_r`,
+`segment_inc_qword_form_increments_all_eight_bytes`, `segment_inc_non_canonical_address_is_gp0_without_mutation_or_access`,
+`segment_inc_last_canonical_dword_is_accessible`, `segment_inc_through_a_non_canonical_rsp_or_rbp_base_is_gp0_not_ss`,
+`segment_inc_write_fault_leaves_flags_rip_registers_and_memory_unchanged`, `segment_inc_read_fault_leaves_everything_unchanged`,
+`segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode` (30 отказов с точным опкодом),
+`segment_inc_register_form_and_plain_form_keep_their_old_behavior`, `segment_inc_stays_unsupported_outside_the_set`,
+`segment_inc_is_not_reachable_from_cpl3`; `long_decode::tests::segment_inc_decodes_fs_gs_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_inc_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_inc_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_inc_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_inc_forms_unsupported`,
+`paged_probe_profile::fs_gs_inc_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::gs_inc_dword_after_wrmsr_gs_base_increments_four_bytes_and_keeps_cf_and_the_neighbour`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7p-diagnostic-run.json`. `incl %gs:0x2f26373(%rip)` по RIP `0xffffffff814f6cb6` и последующие
+инструкции (`mov %rsp, %rbp`, `call`, ...) проходят (retired 1137490688 → 1137490741, +53). Новая граница: RIP `0xffffffff814f6cc5`, байты
+`65 ff 0d 64 63 f2 02 74 06 5d e9 dc 6f 24 01 e8` (первая инструкция — `decl %gs:0x2f26364(%rip)`: `DEC m32`, `FF /1`, с префиксом GS,
+RIP-relative, без REX.W, без LOCK; далее `je +6`, `pop %rbp`, `jmp`), `Unsupported { opcode: 0xff }`, `set_exit_detail` =
+`Run(Unsupported { opcode: 255 })`, `exit_kind` = `unsupported`, retired = 1137490741. Регистры на остановке: RAX = RCX = RDX = RSI = RDI = 0,
+RBX = `0xffffffff844b775a`, RSP = RBP = `0xffffffff83a03ce8`, R12 = `0xffffffff83a03e70`, R8–R11, R13–R15 = 0, RFLAGS = `0x46`;
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`;
+`memory_error`/`page_fault` отсутствуют; `set_members` = `cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `DEC m32` с префиксом GS (`65 FF /1`, без LOCK) в наборе CPL0: тот же путь
+read → `arithmetic_result(size, Dec, …)` → write, что у `IncGsMem` (решение — по этой границе; расширять `IncFsMem`/`IncGsMem` до
+`/0|/1` либо добавлять парные `Dec*`).
