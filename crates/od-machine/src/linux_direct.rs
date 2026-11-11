@@ -3441,6 +3441,68 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7p: FS/GS-based INC m32 through the board facade ----
+
+    #[test]
+    fn gs_inc_dword_after_wrmsr_gs_base_increments_four_bytes_and_keeps_cf_and_the_neighbour() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0xAABB_CCDD_7FFF_FFFF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); SUB DL,1 (0 - 1 borrows: CF = 1);
+        // INC %gs:0x10 (`65 ff 04 25 10 00 00 00`: 0x7fffffff + 1 = 0x80000000, OF and SF set, CF
+        // kept);
+        // INC %gs:disp(%rip) (`65 ff 05 disp32`, effective address 0x10, the next RIP is after the
+        // instruction: 0x80000000 + 1 = 0x80000001); MOV RDX,[BASE+0x10]; HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0x65, 0xFF, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        let next_rip = ENTRY + code.len() as u64 + 7;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0xFF, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x48, 0x8B, 0x14, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 12,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, SUB, INC, INC, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // Only the low dword changed (0x7fffffff -> 0x80000001); the neighbouring dword and the
+        // other registers are untouched.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0xAABB_CCDD_8000_0001
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE);
+        // The last INC gave 0x80000001: SF = 1, ZF = 0, OF = 0 (not an overflow this time), PF = 0
+        // (one bit in the low byte), and the CF set by the SUB survived both INCs.
+        assert_ne!(state.rflags & 1, 0, "CF kept");
+        assert_eq!(state.rflags & (1 << 11), 0, "OF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+        assert_ne!(state.rflags & (1 << 7), 0, "SF");
+        assert_eq!(state.rflags & (1 << 2), 0, "PF");
+    }
+
     // ---- S4-38L7n: LOCK BTS m64, r64 through the board facade ----
 
     #[test]
