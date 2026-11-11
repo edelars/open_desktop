@@ -34794,8 +34794,8 @@ fn step_configured(
         | Operation::LockIncMem { .. }
         // S4-38L7s: and for LOCK OR m8/m32/m64, imm.
         | Operation::LockOrMem { .. }
-        // S4-38L7n: and for LOCK BTS m64, r64.
-        | Operation::LockBtsMem { .. } => {
+        // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
+        | Operation::LockBitMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
@@ -48526,7 +48526,7 @@ fn step_configured(
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockOrMem { .. }
-        | Operation::LockBtsMem { .. }
+        | Operation::LockBitMem { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53726,13 +53726,14 @@ fn transfer(
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
-        Operation::LockBtsMem { base, source } => {
-            // S4-38L7n: one vCPU, so read -> write needs no bus lock. The register is a signed
+        Operation::LockBitMem { kind, base, source } => {
+            // S4-38L7n/S4-38L7t (BTS sets, BTR resets the bit; no other kind is decoded): one vCPU, so read -> write needs no bus lock. The register is a signed
             // bit offset: the qword that holds the bit is at base + floor(offset / 64) * 8 (an
             // arithmetic shift, so negative offsets reach the preceding qwords) and the bit is
             // `offset & 63`. The address (non-canonical start or last byte is #GP(0), RSP/RBP bases
             // #SS(0)) is resolved from the pre-instruction state before any access. The qword is
-            // written back even when the bit was already set (a read-only page faults), and CF
+            // written back even when the bit already had its final value (a read-only page
+            // faults), and CF
             // commits only after that write succeeded; OF/SF/AF/PF are undefined and ZF is not
             // affected, so the flags other than CF stay as they are.
             let offset = state.read(source) as i64;
@@ -53743,7 +53744,14 @@ fn transfer(
             let address = element.access_address_48(state, next_rip)?;
             let mask = 1u64 << (offset & 63);
             let old = memory.read_integer(address, context, element.size)?;
-            memory.write_integer(address, context, element.size, old | mask)?;
+            let new = match kind {
+                BitKind::Set => old | mask,
+                BitKind::Reset => old & !mask,
+                BitKind::Test | BitKind::Complement => {
+                    unreachable!("LockBitMem decodes only BTS and BTR")
+                }
+            };
+            memory.write_integer(address, context, element.size, new)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {
@@ -64560,6 +64568,51 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xab }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn lock_btr_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7t widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `LOCK BTR m64, r64` with opcode 0xb3 and without mutation.
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x13][..],
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x05, 0x13, 0x7c, 0xf7, 0xff][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xb3 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xb3 }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -154174,6 +154227,37 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn lock_btr_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7t belongs to the CPL0 set only; this profile refuses the form without mutation.
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x13][..],
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x05, 0x13, 0x7c, 0xf7, 0xff][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xb3 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fs_gs_test_byte_forms_stay_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7o belongs to the CPL0 set only; this profile refuses the forms without mutation.
         for bytes in [
@@ -154994,6 +155078,27 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0xab },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_lock_btr_unsupported() {
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x13][..],
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x05, 0x13, 0x7c, 0xf7, 0xff][..],
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xb3 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -156811,6 +156916,31 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xab });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_lock_btr_unsupported() {
+        // S4-38L7t belongs to the CPL0 set only; this profile refuses the form without mutation.
+        for code in [
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x13][..],
+            &[0xf0, 0x48, 0x0f, 0xb3, 0x05, 0x13, 0x7c, 0xf7, 0xff][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb3 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
