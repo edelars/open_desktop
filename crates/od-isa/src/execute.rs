@@ -35940,6 +35940,13 @@ fn step_configured(
         // S4-38L4d: `0F 1F /0` is a NOP that never touches its operand; admitted only inside
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
+        // S4-38L7ab: INVLPG m is a no-op (the model has no TLB); admitted only inside the CPL0
+        // profile set at CPL0 in Long64.
+        Operation::Invlpg => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
         Operation::Leave | Operation::FarReturn | Operation::IretQ => {
@@ -50038,7 +50045,7 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop | Operation::NopModrm => {}
+        Operation::Endbr64Nop | Operation::NopModrm | Operation::Invlpg => {}
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
@@ -65102,6 +65109,52 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x2b }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn invlpg_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7ab: INVLPG m is a CPL0-set instruction; without the set (no control policy) bare
+        // `run` and `step` refuse it without mutation (opcode 0x01).
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rdi as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x01 }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -154976,6 +155029,37 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn invlpg_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ab: INVLPG m belongs to the CPL0 set only; this profile refuses it.
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
         // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
         for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
@@ -155810,6 +155894,27 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0x39 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_invlpg_unsupported() {
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state();
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x01 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -157770,6 +157875,31 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x39 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_invlpg_unsupported() {
+        // S4-38L7ab belongs to the CPL0 set only; this profile refuses it without mutation.
+        for code in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state_with_control_registers();
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

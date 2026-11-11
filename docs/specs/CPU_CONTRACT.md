@@ -22684,3 +22684,46 @@ RSP = `0xffffffff83a03dc0`, RBP = `0xffffffff83a03de0`, R13 = `0x5ff`, R14 = 1, 
 `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `INVLPG m` (`0F 01 /7`, memory-операнд) в наборе CPL0; семантика (инвалидация записи TLB; на модели без TLB — вероятно, отсутствие архитектурного эффекта, кроме учёта walker'а) —
 решение по этой границе, не по предположению; не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `INVLPG m` (`0F 01 /7`, memory-операнд) в наборе CPL0 (S4-38L7ab)
+
+Граница S4-38L7aa: `0f 01 3f` = `invlpg (%rdi)` (ModRM `0x3f`: mod 00, reg 111 = /7 INVLPG, rm 111 = `[rdi]`; длина 3), RIP `0xffffffff8141d590`, `Unsupported { opcode: 0x01 }`,
+retired 1185549916; далее в потоке `e9 2b 1a bb 02` (`jmp`) и `65 0f b7 05 …` (`movzwl %gs:…`) — не реализованы этим срезом.
+
+**Решение (принято по умолчанию, ПЕРЕСМАТРИВАЕМО): INVLPG исполняется как no-op.** Обоснование: модель CPU не имеет архитектурно видимой TLB — трансляция каждый раз проходит по таблицам страниц, а единственный кеш
+(кеш трансляции выборки инструкций S4-13, `LinuxCpl0SetMembers::fetch_cache`) прозрачен для результата и сбрасывается при любой гостевой записи в отслеживаемую таблицу и при любой смене контекста трансляции (запись CR0/CR3),
+так что устаревшая запись, которую INVLPG должен был бы сбросить, в модели невозможна. Поэтому сброс записи ничего не меняет. Адрес операнда **не вычисляется, не читается и не транслируется**, память не пишется
+(выбор зафиксирован: «не вычислять» — регистры базы/индекса не читаются). Следствия: для неканонического адреса `#GP` не возникает (по памяти SDM, INVLPG не проверяет каноничность адреса — **по первоисточнику не сверено**);
+`#PF` не возникает; A/D-биты не затрагиваются; FS/GS-база не используется. RFLAGS, регистры, память не меняются; RIP += длина; retired + 1. Семантика Vol. 2 «INVLPG» дана по памяти SDM, **по первоисточнику не сверялась**.
+Пересмотр нужен, если появится TLB в модели walker'а или гость окажется зависящим от устаревшей трансляции (тогда INVLPG должна сбрасывать запись, а не быть no-op).
+
+**Не путать с существующим профилем `step_invlpg`/`InvlpgLong64V1`** (`execute.rs`, S2/S3-диагностика `INVLPG [RBX]`): тот профиль отдельный, исполняет только точные байты и сообщает `TranslationInvalidation::Invlpg { linear_address }`
+потребителю; набор CPL0 его не использует, и его поведение не менялось (тесты `execute::invlpg_tests::*` и `paged_memory_adapter::*invlpg*` проходят без изменений).
+
+**Декодер.** Новая операция `Operation::Invlpg` (без полей: операнд не нужен; байты ModRM/SIB/disp только дают длину через общий `rm_operand`). Принимается `0F 01 /7` с memory-операндом (mod ≠ 11, любая адресация: RIP-relative,
+SIB, disp8/disp32), с необязательным одним FS (`64`) или GS (`65`) префиксом и необязательным REX непосредственно перед опкодом без REX.W (REX.R/X/B и пустой `0x40` допустимы; по REX.R/X/B адрес не вычисляется).
+Отказ (`Unsupported { opcode: 0x01 }` без мутации): LOCK/REP/REPNE (`F0`/`F3`/`F2`), `66`, `67`, REX.W, второй сегментный префикс, CS/DS/ES/SS-префикс (консервативно, как в прочих `0F 01`-формах с префиксами),
+REX не непосредственно перед опкодом (`41 65 0F 01 3F`), регистровая форма `/7` (`0F 01 F8..FF`, т. е. mod = 11) — не менялась (`0F 01 F8` остаётся SWAPGS, прочие — `Unsupported`).
+LGDT/LIDT (`/2`, `/3`), существующие `LOCK`-формы и SWAPGS в декодере не менялись (ветка `reg == 7` добавлена после SWAPGS и до отказа для `reg ∉ {2,3}`; ветка для FS/GS/REX-форм — только для `reg == 7`, остальные формы с префиксом
+отказываются, как и раньше). Ранее для `0F 01` с REX/FS/GS декодер отказывал, не читая ModRM; теперь ModRM читается (длина отказа внутри `Unsupported` не используется исполнителем).
+
+**Исполнение и гейт.** `Operation::Invlpg` исполняется только в наборе CPL0 (`control_policy` задан, CPL0, Long64), пустое действие в той же ветке, что `Endbr64Nop`/`NopModrm`. Вне набора — `Unsupported { opcode: 0x01 }`
+без мутации (голые `run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, paged-probe — тест отказа в каждом); в набор CPL3 не допускается (`WrongPrivilege`).
+
+**Не делалось.** SGDT/SIDT/SMSW/LMSW, регистровые формы `0F 01 C0..FF` (кроме SWAPGS), INVLPG для CS/DS/ES/SS, реальная инвалидация (нет TLB), `jmp`/`movzwl %gs:…` следующего потока.
+
+Тесты: `cpl0_profile_set::invlpg_*` (граница `0f 01 3f`: RIP + 3, retired + 1, чтения и записи пусты, регистры/флаги/память не меняются; неканонический RDI и 0 — без `#GP`; 17 форм с GS/FS, RIP-relative (RIP + 7), SIB,
+disp8/disp32, REX.B r8–r15, REX.X/R, пустой REX при регистрах `0xdeadbeefdeadbeef` — без чтений; не поглощает следующую инструкцию; 17 отказов с точным опкодом `0x01`; вне набора; CPL3), `long_decode::tests::invlpg_decodes_memory_forms_only`
+(длины, отказы, SWAPGS/LGDT/LIDT без изменений); отказ вне набора: `execute::tests::invlpg_stays_unsupported_in_bare_run_and_step`, `mov_cr3_profile_tests::invlpg_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_invlpg_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_invlpg_unsupported`, `paged_probe_profile::invlpg_stays_unsupported_in_the_paged_probe_profile`; фасад:
+`linux_direct::tests::invlpg_through_the_set_loop_retires_without_touching_guest_memory` (INVLPG по адресу из RDI в гостевой памяти, неканонический RDI и GS-форма; память не изменилась; retired 9 с CLI/MOV/store/HLT).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ab-diagnostic-run.json`.
+`invlpg (%rdi)` по `0xffffffff8141d590` проходит (retired 1185549916 → 1201748035, +16198119; `cr3_changes` 3 → 4, `last_cr3_change`: `0x3ffe000` → `0x3a44000`). Новая граница: RIP `0xffffffff8141d729` (GPA `0x141d729`), байты
+`65 f7 05 fc f8 ff 02 ff ff ff 7f 75 0d ff 15 cc` — `testl $0x7fffffff, %gs:0x2fff8fc(%rip)` (`F7 /0 id`: ModRM `0x05` = mod 00, reg 000 = TEST, rm 101 = RIP-relative, disp32 `0x02fff8fc`, imm32 `0x7fffffff`; длина 11; далее
+`jne +0x0d`, `call *…(%rip)`); `Unsupported { opcode: 0xf7 }` (247), `set_exit_detail` = `Run(Unsupported { opcode: 247 })`, `exit_kind` = `unsupported`, retired = 1201748035.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = RCX = RDX = RSI = RDI = R8–R11 = 0, RBX = `0x7e00000`, R12 = `0x100000`, R13 = `0x8000000`, R14 = `0x20000000`,
+R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `TEST r/m32, imm32` (`F7 /0 id`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (по образцу `TestGsMemWord`/`TestGsMemByte` из S4-38L7o/p; решение — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.

@@ -714,6 +714,36 @@ fn fs_gs_cmp_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn invlpg_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ab belongs to the CPL0 set only; this profile refuses it without mutation.
+    for bytes in [
+        &[0x0f, 0x01, 0x3f][..],
+        &[0x65, 0x0f, 0x01, 0x3f][..],
+        &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x01 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn mov_sreg_store_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7u belongs to the CPL0 set only; this profile refuses the forms without mutation.
     for bytes in [

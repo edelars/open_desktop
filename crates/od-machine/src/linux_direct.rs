@@ -3421,6 +3421,53 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7ab: INVLPG m (no-op) through the board facade ----
+
+    #[test]
+    fn invlpg_through_the_set_loop_retires_without_touching_guest_memory() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV RAX,INT64_MIN; MOV [BASE+0x10],RAX; MOV RDI,BASE+0x10; INVLPG (%rdi);
+        // MOV RDI,non-canonical; INVLPG (%rdi) (no #GP: the operand is not evaluated);
+        // GS INVLPG (%rdi); HLT.
+        let mut code = vec![0xFA];
+        code.extend(mov_rax_imm64(0x8000_0000_0000_0000));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBF]);
+        code.extend((BASE + 0x10).to_le_bytes());
+        code.extend([0x0F, 0x01, 0x3F]);
+        code.extend([0x48, 0xBF]);
+        code.extend(0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes());
+        code.extend([0x0F, 0x01, 0x3F]);
+        code.extend([0x65, 0x0F, 0x01, 0x3F]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 9,
+            "CLI, MOV, store, MOV, INVLPG, MOV, INVLPG, GS INVLPG, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], u64::MAX);
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8000_0000_0000_0000,
+            "INVLPG does not write"
+        );
+    }
+
     // ---- S4-38L7k: LOCK CMPXCHG m64, r64 through the board facade ----
 
     #[test]
