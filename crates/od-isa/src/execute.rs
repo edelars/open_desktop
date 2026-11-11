@@ -153267,6 +153267,87 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn mov_cr3_r64_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7h widened the CPL0-set decoder only; this profile keeps accepting
+        // `0F 22 D8` alone, so the new source forms are refused without mutation.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
+        // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rax as usize] = 0x2000;
+            bare.gpr[Register::Rdi as usize] = 0x2000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let outcome = step(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                StepOutcome::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fetch_and_input_failures_do_not_commit_or_emit_an_effect() {
         let mut state = make_state(0x1000, 0x2000);
         let before = state.clone();
@@ -153711,6 +153792,26 @@ mod paged_cr3_probe_tests {
         assert_eq!(state.rip, 6);
         assert_eq!(state.cr3, Some(0x2000));
         assert_eq!(memory.fetches, [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_mov_cr3_r64_forms_unsupported() {
+        // The allow_cr3 whitelist admits only `0F 22 D8`; the S4-38L7h source forms
+        // belong to the CPL0 set and stay refused here without mutation.
+        for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
+            let mut state = state();
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x22 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
     }
 
     #[test]
