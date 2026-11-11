@@ -22928,7 +22928,7 @@ CS/DS/ES/SS в 64-битном режиме не применяются, баз�
 paged-cr3-probe, `PagedCpl0ProbeV1` и paged-mov-profile отказывают `E8` с `Unsupported { opcode: 0xe8 }` без мутации (как и PUSH/POP) — для `2E E8` так же.
 
 **Декодер.** В ветке `E8` допустим ровно один префикс: сегментный `26`/`2E`/`36`/`3E` (`prefix_count == 1`, `Prefixes` содержит только `segment`). В исполнителе (`step_configured`) гейт для `0xe8`
-расширен тем же условием. Правило CS/DS/ES/SS no-op распространено на все четыре байта (контракт: CS/DS/ES/SS в 64-битном режиме принимаются и игнорируются); тесты — на `2E`, `3E`, `26`, `36`.
+расширен тем же условием. Правило no-op распространено на все четыре байта по аналогии с формами, где CS/DS/ES/SS принимаются и игнорируются (повтор перед обычным опкодом — S4-38L7v; прежний путь с игнорированием базы — S4-38L7ac, S4-38L7ad, S4-38L7ae). Общего правила для всех опкодов нет: политика у каждой операции своя (например, `INVLPG m` отказывает CS/DS/ES/SS — S4-38L7ab), поэтому для `E8` она задана явно этим срезом; тесты — на `2E`, `3E`, `26`, `36`.
 
 **Отказы без мутации (`Unsupported { opcode: 0xe8 }`), прежнее поведение.** FS/GS (`64`/`65`) в любом сочетании, в том числе `64 2E`, `2E 64`, `65 3E`; повторное CS/DS/ES/SS (`2E 2E`, `2E 3E`; для `E8`
 не принимается консервативно, хотя перед другими опкодами по S4-38L7v допустимо); `66`, `67` (до и после сегмента), LOCK/REP/REPNE (`F0`/`F2`/`F3` в любой позиции); любой REX, в том числе
@@ -22938,14 +22938,14 @@ paged-cr3-probe, `PagedCpl0ProbeV1` и paged-mov-profile отказывают `E
 (вектор 12, код 0) без записи; ошибка записи (например `#PF`) — RSP, RIP, флаги не меняются, retired не растёт. Флаги не меняются; память не читается; `rflags_defined` без изменений.
 retired + 1 только при успехе.
 
-**Гейт.** Как у беспрефиксного `E8`: набор CPL0 не требуется; голые `run`/`step` и набор CPL0 исполняют форму; в набор CPL3 не допускается (`WrongPrivilege`); профили `mov_cr3_profile`, paged-cr3-probe,
+**Гейт.** Как у беспрефиксного `E8`: набор CPL0 не требуется; голые `run`/`step` и набор CPL0 исполняют форму. `E8` по CPL не гейтится: набор CPL3-пути не даёт (вход набора при CPL3 отказывает `WrongPrivilege` для любых байтов), а голый `run` при CPL3 исполняет префиксную форму так же, как беспрефиксный `E8` (тест `cs_call_rel32_executes_in_bare_run_at_cpl3_like_the_unprefixed_form`); профили `mov_cr3_profile`, paged-cr3-probe,
 `PagedCpl0ProbeV1`, paged-mov-profile отказывают так же, как и `E8` (`Unsupported { opcode: 0xe8 }`, без мутации).
 
 **Тесты.** Декодер: `long_decode::tests` (таблица `direct_relative_control_flow_decodes_signed_offsets_at_full_length` — `2E`/`3E`/`26`/`36` + `E8`, граничные байты, длина 6;
 `direct_call_and_ret_reject_prefixes_and_truncated_immediates` — отказы FS/GS, повтора, 66, REX, LOCK). Исполнение (`cpl0_profile_set`, `cs_call_rel32_*`, `cs_ds_es_ss_call_rel32_*`): граничные байты
 (отрицательный rel32, цель `0xffffffff_fe7a944c`, адрес возврата `RIP + 6`, одна 8-байтовая запись, RSP − 8, соседние байты и флаги не затронуты, `memory.reads` пуст), положительный/нулевой/крайние rel32,
 эквивалентность беспрефиксному `E8` при ненулевых FS/GS базах (длина +1), неканонический стек (три случая → `#SS(0)` без мутации), ошибка записи в стек, таблица из 23 отказов, исполнение в голом `run`
-и с набором `cr3_set`, CPL3. Библиотека `od-isa`: `execute::tests::cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step`, `…cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push`;
+и с набором `cr3_set`, голый `run` при CPL3 (как беспрефиксный), отказ входа набора при CPL3 (`the_set_entry_refuses_cpl3_for_any_bytes`), усечённый rel32 (`2E E8`, `2E E8 00 00 00` — отказ без мутации). Библиотека `od-isa`: `execute::tests::cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step`, `…cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push`;
 профили: `mov_cr3_profile_tests::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_mov_cr3_profile`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_cs_call_rel32_like_the_unprefixed_form`,
 `paged_mov_profile_tests::paged_mov_profile_keeps_cs_call_rel32_like_the_unprefixed_form`; `paged_probe_profile::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_paged_probe_profile`.
 Фасад: `linux_direct::tests::cs_call_rel32_forward_pushes_the_return_address_and_pop_reads_it_back` (вперёд на +1, `POP RAX` возвращает адрес следующей инструкции, qword лежит по `RSP − 8`, retired 4) и

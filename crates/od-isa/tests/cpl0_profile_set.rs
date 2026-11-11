@@ -19221,21 +19221,87 @@ fn cs_call_rel32_executes_in_bare_run_and_the_mov_cr3_set_like_the_unprefixed_fo
 }
 
 #[test]
-fn cs_call_rel32_is_not_reachable_from_cpl3_through_the_set() {
-    let mut state = call_state();
-    let before = state.clone();
-    let mut memory = BitsMemory::new(&CS_CALL_BOUNDARY);
-    let error = run_with_cpl0_profile_set(
-        &mut state,
-        &mut memory,
-        config(PrivilegeLevel::Ring3, 1),
-        od_isa::INTEGER_FLAGS,
-        &base(),
-        None,
-        || false,
-    )
-    .unwrap_err();
-    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+fn the_set_entry_refuses_cpl3_for_any_bytes() {
+    // The set refuses CPL3 at its entry before any fetch, whatever the bytes are (this is not a
+    // property of `E8`: `E8` itself is not gated by the CPL, see the bare-`run` test below).
+    for code in [&CS_CALL_BOUNDARY[..], &[0x90][..]] {
+        let mut state = call_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cs_call_rel32_executes_in_bare_run_at_cpl3_like_the_unprefixed_form() {
+    // `E8` is not gated by the CPL: bare `run` at CPL3 executes both spellings the same way (the
+    // prefixed one is one byte longer).
+    let mut outcomes = Vec::new();
+    for code in [&CS_CALL_BOUNDARY[..], &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..]] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rsp as usize] = CALL_STACK;
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rsp as usize], CALL_STACK - 8);
+        assert_eq!(
+            memory.writes,
+            vec![(
+                CALL_STACK - 8,
+                (RIP + code.len() as u64).to_le_bytes().to_vec()
+            )]
+        );
+        outcomes.push(state.rip);
+    }
+    assert_eq!(outcomes[0], outcomes[1] + 1);
+}
+
+#[test]
+fn cs_call_rel32_with_a_truncated_rel32_is_refused_without_mutation() {
+    // Same behavior as the truncated unprefixed `E8`: the fetch past the code fails, nothing
+    // retires, no write happens, registers, flags and RIP are untouched.
+    for code in [
+        &[0x2eu8, 0xe8][..],
+        &[0x2e, 0xe8, 0x00][..],
+        &[0x2e, 0xe8, 0x00, 0x00, 0x00][..],
+        &[0xe8, 0x00, 0x00, 0x00][..],
+    ] {
+        let mut state = call_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
 }

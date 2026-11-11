@@ -19576,6 +19576,12 @@ mod tests {
             &[0xe8, 0][..],
             &[0xe8, 0, 0][..],
             &[0xe8, 0, 0, 0][..],
+            // S4-38L7af: the prefixed spelling is truncated the same way.
+            &[0x2e, 0xe8][..],
+            &[0x2e, 0xe8, 0][..],
+            &[0x2e, 0xe8, 0, 0][..],
+            &[0x2e, 0xe8, 0, 0, 0][..],
+            &[0x3e, 0xe8, 0, 0, 0][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
