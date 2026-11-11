@@ -527,6 +527,12 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S4-38L7k: `F0 REX.W 0F B1 /r` (LOCK CMPXCHG m64, r64), memory destination only. Executed
+    /// only in the CPL0 set; the destination is always written back.
+    LockCmpxchgMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
@@ -1961,7 +1967,7 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::CmpxchgMemory { .. } => FlagEffects {
+            Operation::CmpxchgMemory { .. } | Operation::LockCmpxchgMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -2701,6 +2707,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // require the specific instruction semantics.
         let locked_qword_memory_xadd_candidate = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xc1
+            && prefixes.group1 == Some(0xf0);
+        // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
+        // it only in the CPL0 set.
+        let locked_qword_memory_cmpxchg_candidate = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xb1
             && prefixes.group1 == Some(0xf0);
         let locked_qword_memory_xchg_candidate = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0x87
@@ -5066,6 +5077,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !movss_memory_load
                 && !movss_memory_store
                 && !locked_qword_memory_xadd_candidate
+                && !locked_qword_memory_cmpxchg_candidate
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
                 && !locked_hlt)
@@ -7438,7 +7450,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0xb1) => {
                 if size != OperandSize::Qword
                     || !prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                    || prefixes.group1.is_some()
+                    || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
                     || prefixes.segment.is_some()
                     || prefixes.operand_override
                     || prefixes.address_override
@@ -7448,10 +7460,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let source = view(((modrm >> 3) & 7) | ((rex & 4) << 1), size, true);
                 match self.rm_operand(modrm, prefixes, size)? {
-                    Operand::Register(destination) => Operation::Cmpxchg {
-                        destination,
-                        source,
-                    },
+                    Operand::Register(destination) if prefixes.group1.is_none() => {
+                        Operation::Cmpxchg {
+                            destination,
+                            source,
+                        }
+                    }
+                    Operand::Memory(destination)
+                        if destination.size == OperandSize::Qword
+                            && prefixes.group1 == Some(0xf0) =>
+                    {
+                        // S4-38L7k: LOCK is a memory-destination form only; `duplicate` prefixes
+                        // are refused by the shared check above.
+                        Operation::LockCmpxchgMem {
+                            destination,
+                            source,
+                        }
+                    }
                     Operand::Memory(destination) if destination.size == OperandSize::Qword => {
                         Operation::CmpxchgMemory {
                             destination,
@@ -21846,6 +21871,82 @@ mod tests {
             &[0xf3, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
             &[0x66, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
             &[0x65, 0x67, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_cmpxchg_decodes_the_qword_memory_form_only() {
+        // S4-38L7k: `F0 REX.W 0F B1 /r` with a memory destination.
+        let rdx = RegisterView::low(Register::Rdx, OperandSize::Qword);
+        let r12 = RegisterView::low(Register::R12, OperandSize::Qword);
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xb1, 0x13]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockCmpxchgMem { destination, source }
+                if source == rdx
+                    && destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.size == OperandSize::Qword
+        ));
+        // REX.R source and a RIP-relative destination.
+        let mut memory = Memory::new(&[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 9);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockCmpxchgMem { destination, source }
+                if source == r12
+                    && destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x1234
+        ));
+        // REX.B base and SIB + disp8.
+        let mut memory = Memory::new(&[0xf0, 0x49, 0x0f, 0xb1, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockCmpxchgMem { destination, .. }
+                if destination.base == AddressBase::Register(Register::R8)
+        ));
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x0f, 0xb1, 0x54, 0x8b, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockCmpxchgMem { destination, .. }
+                if destination.index == Some(Register::Rcx)
+                    && destination.scale == 4
+                    && destination.displacement == 0x10
+        ));
+        // Without LOCK the pre-existing plain memory form is decoded unchanged.
+        let mut memory = Memory::new(&[0x48, 0x0f, 0xb1, 0x13]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpxchgMemory { .. }
+        ));
+        for bytes in [
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x40, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x44, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x48, 0x0f, 0xb1, 0xd3][..],
+            &[0xf0, 0x4d, 0x0f, 0xb1, 0xc8][..],
+            &[0x66, 0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x66, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x67, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf3, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf2, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0xf3, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf3, 0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x64, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x65, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x2e, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x48, 0x66, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(

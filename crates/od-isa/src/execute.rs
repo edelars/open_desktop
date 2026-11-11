@@ -34776,7 +34776,9 @@ fn step_configured(
         | Operation::MovGsLoadQ { .. }
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
-        | Operation::SubGsMem { .. } => {
+        | Operation::SubGsMem { .. }
+        // S4-38L7k: and for LOCK CMPXCHG m64, r64.
+        | Operation::LockCmpxchgMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
@@ -35754,6 +35756,9 @@ fn step_configured(
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
                 && instruction.prefixes.segment.is_none()
+                // S4-38L7k: the CPL0 set models only the LOCK form (the board adapters have no
+                // atomic compare-exchange); the plain memory form is refused there.
+                && control_policy.is_none()
         }
         Operation::Xadd {
             destination,
@@ -48493,6 +48498,7 @@ fn step_configured(
         | Operation::MovGsLoadQ { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
+        | Operation::LockCmpxchgMem { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53530,6 +53536,35 @@ fn transfer(
                 state.rflags,
             );
             state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::LockCmpxchgMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7k: one vCPU, so the read-compare-write needs no bus lock. The address
+            // (non-canonical start or last byte is #GP(0)) and every operand are taken from the
+            // pre-instruction state. The destination is written on both branches (SDM: a failed
+            // compare still writes the old value back), so a read-only page faults either way;
+            // RAX and the flags commit only after that write succeeded.
+            let accumulator = RegisterView::low(Register::Rax, OperandSize::Qword);
+            let expected = state.read(accumulator);
+            let replacement = state.read(source);
+            let address = destination.access_address_48(state, next_rip)?;
+            let observed = memory.read_integer(address, context, destination.size)?;
+            let equal = expected == observed;
+            let stored = if equal { replacement } else { observed };
+            memory.write_integer(address, context, destination.size, stored)?;
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Cmp,
+                expected,
+                observed,
+                state.rflags,
+            );
+            if !equal {
+                state.write(accumulator, observed);
+            }
             state.rflags = flags;
         }
         Operation::MovFsStore { dst, src } => {
@@ -64064,6 +64099,51 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x8b }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn lock_cmpxchg_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7k widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `LOCK CMPXCHG m64, r64` with opcode 0xb1 and without mutation.
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xb1 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xb1 }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -153479,6 +153559,37 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn lock_cmpxchg_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7k belongs to the CPL0 set only; this profile refuses the form without mutation.
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xb1 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fs_gs_sub_forms_stay_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7j widened the CPL0-set decoder path only; this profile refuses the forms.
         for bytes in [
@@ -154026,6 +154137,27 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0x8b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_lock_cmpxchg_unsupported() {
+        for bytes in [
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xb1 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -155632,6 +155764,31 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8b });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_lock_cmpxchg_unsupported() {
+        // S4-38L7k belongs to the CPL0 set only; this profile refuses the form without mutation.
+        for code in [
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
+            &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb1 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
