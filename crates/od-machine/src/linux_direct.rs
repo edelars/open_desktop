@@ -3441,6 +3441,70 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7r: FS/GS-based TEST m16, imm16 through the board facade ----
+
+    #[test]
+    fn gs_test_word_after_wrmsr_gs_base_reads_one_word_sets_flags_and_leaves_memory_alone() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0x0123_4567_89AB_8001;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); SUB DL,1 (0 - 1 borrows: CF = 1);
+        // TEST %gs:0x10,$0xff01 (`65 66 f7 04 25 10 00 00 00 01 ff`: 0x8001 & 0xff01 = 0x8001,
+        // SF = 1, PF = 0, clears CF and OF);
+        // ADD DL,2 (0xff + 2 carries: CF = 1);
+        // TEST %gs:disp(%rip),$0x00fe with the prefixes swapped (`66 65 f7 05 disp32 fe 00`,
+        // effective address 0x10: 0x8001 & 0x00fe = 0, the next RIP is after the imm16);
+        // MOV RDX,[BASE+0x10]; HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([
+            0x65, 0x66, 0xF7, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, 0x01, 0xFF,
+        ]);
+        code.extend([0x80, 0xC2, 0x02]);
+        let next_rip = ENTRY + code.len() as u64 + 10;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x66, 0x65, 0xF7, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0xFE, 0x00]);
+        code.extend([0x48, 0x8B, 0x14, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 13,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, SUB, TEST, ADD, TEST, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // TEST wrote nothing: the whole qword is still there (loaded into RDX), RAX is untouched.
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], VALUE);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE);
+        // The last TEST gave 0x8001 & 0x00fe = 0: ZF = 1, PF = 1, SF = 0, and cleared the CF that
+        // the ADD had set.
+        assert_eq!(state.rflags & 1, 0, "CF");
+        assert_eq!(state.rflags & (1 << 11), 0, "OF");
+        assert_ne!(state.rflags & (1 << 6), 0, "ZF");
+        assert_ne!(state.rflags & (1 << 2), 0, "PF");
+        assert_eq!(state.rflags & (1 << 7), 0, "SF");
+    }
+
     // ---- S4-38L7p: FS/GS-based INC m32 through the board facade ----
 
     #[test]
