@@ -3784,6 +3784,58 @@ mod tests {
         assert_eq!(state.rflags & 1, 1);
     }
 
+    // ---- S4-38L7u: MOV r/m, Sreg through the board facade ----
+
+    #[test]
+    fn mov_sreg_store_reads_loaded_selectors_and_writes_two_bytes_at_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR (GS base = BASE);
+        // MOV %ds,%esi (the boot DS); MOV EAX,0x18; MOV SS,AX; MOV DS,AX;
+        // MOV RBX,-1; MOV %ss,%ebx (the upper half is cleared); MOV RDI,-1; MOV %ds,%rdi;
+        // MOV %ds,%gs:0x10 (two bytes); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0x8C, 0xDE]);
+        code.extend(mov_eax(0x18));
+        code.extend([0x8E, 0xD0, 0x8E, 0xD8]);
+        code.extend([0x48, 0xBB]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0x8C, 0xD3]);
+        code.extend([0x48, 0xBF]);
+        code.extend(u64::MAX.to_le_bytes());
+        code.extend([0x48, 0x8C, 0xDF]);
+        code.extend([0x65, 0x8C, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 15, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.gpr[Register::Rsi as usize],
+            0x18,
+            "DS as the boot state holds it before the load"
+        );
+        assert_eq!(state.gpr[Register::Rbx as usize], 0x18, "SS, zero-extended");
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x18, "DS through REX.W");
+        // Two bytes written at GS base + 0x10; the other bytes of the qword stay zero.
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0x18);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]

@@ -11644,6 +11644,456 @@ fn lock_btr_is_not_reachable_from_cpl3() {
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
 
+// ---- S4-38L7u: `MOV r/m16/32/64, Sreg` (`[REX] 8C /r`, Sreg 0..=5 = ES, CS, SS, DS, FS, GS; SDM
+// Vol.2 MOV: a register destination receives the zero-extended selector, a memory destination
+// receives 16 bits whatever the operand size; no flags; from memory, not re-checked against the SDM
+// text). The selector is the visible value held in the state; the model does not check it against a
+// descriptor table. ----
+
+const SREG_CS: u16 = 0x10;
+const SREG_SS: u16 = 0x20;
+const SREG_DS: u16 = 0x28;
+const SREG_ES: u16 = 0x30;
+const SREG_FS: u16 = 0x38;
+const SREG_GS: u16 = 0x40;
+
+fn ms_state() -> LongModeState {
+    let mut state = board_state();
+    state.cs_selector = Some(SREG_CS);
+    state.ss_selector = Some(SREG_SS);
+    state.ds_selector = SREG_DS;
+    state.es_selector = SREG_ES;
+    state.fs_selector = SREG_FS;
+    state.gs_selector = SREG_GS;
+    for (index, register) in state.gpr.iter_mut().enumerate() {
+        *register = 0xdead_beef_0000_0000 | (index as u64 + 1) << 8;
+    }
+    state.rflags |= FLAG_CF | FLAG_ZF | FLAG_OF;
+    state
+}
+
+fn run_ms(state: &mut LongModeState, code: &[u8]) -> (Cpl0ProfileSetResult, BitsMemory) {
+    let mut memory = BitsMemory::new(code);
+    let result = run_bts_set(state, &mut memory).unwrap();
+    (result, memory)
+}
+
+#[test]
+fn mov_sreg_register_forms_zero_extend_the_selector_into_the_destination() {
+    // (bytes, destination register, selector)
+    let cases: [(&[u8], Register, u16); 20] = [
+        // The S4-38L7t diagnostic boundary: `mov %ss, %eax`.
+        (&[0x8c, 0xd0], Register::Rax, SREG_SS),
+        (&[0x8c, 0xd8], Register::Rax, SREG_DS),
+        (&[0x8c, 0xc0], Register::Rax, SREG_ES),
+        (&[0x8c, 0xc8], Register::Rax, SREG_CS),
+        (&[0x8c, 0xe0], Register::Rax, SREG_FS),
+        (&[0x8c, 0xe8], Register::Rax, SREG_GS),
+        (&[0x8c, 0xd3], Register::Rbx, SREG_SS),
+        (&[0x8c, 0xd9], Register::Rcx, SREG_DS),
+        // REX.W: a 64-bit destination (the exact `48 8C E0|E8` forms keep their own operations).
+        (&[0x48, 0x8c, 0xd8], Register::Rax, SREG_DS),
+        (&[0x48, 0x8c, 0xd0], Register::Rax, SREG_SS),
+        (&[0x48, 0x8c, 0xc0], Register::Rax, SREG_ES),
+        (&[0x48, 0x8c, 0xe0], Register::Rax, SREG_FS),
+        (&[0x48, 0x8c, 0xe8], Register::Rax, SREG_GS),
+        (&[0x48, 0x8c, 0xe1], Register::Rcx, SREG_FS),
+        // REX.B selects r8..r15; a bare REX and REX.R/REX.X do not change the Sreg.
+        (&[0x41, 0x8c, 0xd0], Register::R8, SREG_SS),
+        (&[0x49, 0x8c, 0xd8], Register::R8, SREG_DS),
+        (&[0x41, 0x8c, 0xd7], Register::R15, SREG_SS),
+        (&[0x40, 0x8c, 0xd0], Register::Rax, SREG_SS),
+        (&[0x44, 0x8c, 0xd0], Register::Rax, SREG_SS),
+        (&[0x42, 0x8c, 0xd0], Register::Rax, SREG_SS),
+    ];
+    for (code, destination, selector) in cases {
+        let mut state = ms_state();
+        let mut expected = state.clone();
+        let (result, memory) = run_ms(&mut state, code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        // The selector is zero-extended: with or without REX.W every bit above bit 15 is clear.
+        expected.gpr[destination as usize] = u64::from(selector);
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn mov_sreg_register_form_leaves_flags_and_definedness_alone() {
+    let mut state = ms_state();
+    state.rflags |= FLAG_AF | FLAG_PF | FLAG_SF;
+    let flags = state.rflags;
+    let (result, _) = run_ms(&mut state, &[0x8c, 0xd0]);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags, flags);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn mov_sreg_memory_forms_write_two_bytes_at_the_effective_address() {
+    // (bytes, selector, address); address 0 means "RIP-relative, computed from the displacement".
+    let cases: [(&[u8], u16, u64); 8] = [
+        // `mov %ds, (%rbx)`; neighbours stay untouched.
+        (&[0x8c, 0x1b], SREG_DS, 0x20_0000),
+        // `mov %ss, 0x10(%rbx)`, `mov %cs, (%rbx)`.
+        (&[0x8c, 0x53, 0x10], SREG_SS, 0x20_0010),
+        (&[0x8c, 0x0b], SREG_CS, 0x20_0000),
+        // REX.W does not widen the store; REX.B selects r8 as the base.
+        (&[0x48, 0x8c, 0x1b], SREG_DS, 0x20_0000),
+        (&[0x49, 0x8c, 0x18], SREG_DS, 0x30_0000),
+        // RIP-relative (the next RIP is after the displacement).
+        (&[0x8c, 0x05, 0x00, 0xf0, 0xff, 0xff], SREG_ES, 0),
+        (&[0x8c, 0x25, 0x10, 0x00, 0x00, 0x00], SREG_FS, 0),
+        (&[0x8c, 0x2d, 0x20, 0x00, 0x00, 0x00], SREG_GS, 0),
+    ];
+    for (code, selector, address) in cases {
+        let address = if address == 0 {
+            let disp = i32::from_le_bytes(code[2..6].try_into().unwrap());
+            (RIP + 6).wrapping_add(disp as i64 as u64)
+        } else {
+            address
+        };
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::R8 as usize] = 0x30_0000;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.data.insert(address - 1, 0xa5);
+        memory.data.insert(address + 2, 0xa5);
+        memory.data.insert(address, 0xff);
+        memory.data.insert(address + 1, 0xff);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(
+            memory.writes,
+            vec![(address, selector.to_le_bytes().to_vec())],
+            "{code:02x?}"
+        );
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert_eq!(memory.data[&(address - 1)], 0xa5, "{code:02x?}");
+        assert_eq!(memory.data[&(address + 2)], 0xa5, "{code:02x?}");
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn mov_sreg_memory_form_with_fs_or_gs_prefix_adds_the_segment_base() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let fs_base = 0xffff_8880_4000_0000u64;
+    // `mov %es, %gs:(%rbx)`, `mov %ss, %fs:(%rbx)`, `mov %ds, %gs:0x1234(%rip)`,
+    // `mov %cs, %fs:(%rbx)` with REX.W, `mov %gs, %gs:0x10(%rbx)`.
+    let cases: [(&[u8], u16, u64); 5] = [
+        (&[0x65, 0x8c, 0x03], SREG_ES, gs_base + 0x20_0000),
+        (&[0x64, 0x8c, 0x13], SREG_SS, fs_base + 0x20_0000),
+        (
+            &[0x65, 0x8c, 0x1d, 0x34, 0x12, 0x00, 0x00],
+            SREG_DS,
+            gs_base + RIP + 7 + 0x1234,
+        ),
+        (&[0x64, 0x48, 0x8c, 0x0b], SREG_CS, fs_base + 0x20_0000),
+        (&[0x65, 0x8c, 0x6b, 0x10], SREG_GS, gs_base + 0x20_0010),
+    ];
+    for (code, selector, address) in cases {
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = gs_base;
+        state.fs_base = fs_base;
+        let mut expected = state.clone();
+        let (result, memory) = run_ms(&mut state, code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(
+            memory.writes,
+            vec![(address, selector.to_le_bytes().to_vec())],
+            "{code:02x?}"
+        );
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+    // Without the prefix the base is not added (the flat DS path): the base values are ignored.
+    let mut state = ms_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gs_base = gs_base;
+    state.fs_base = fs_base;
+    let (_, memory) = run_ms(&mut state, &[0x8c, 0x03]);
+    assert_eq!(
+        memory.writes,
+        vec![(0x20_0000, SREG_ES.to_le_bytes().to_vec())]
+    );
+}
+
+#[test]
+fn mov_sreg_memory_store_is_gp0_when_the_start_or_last_byte_is_not_canonical() {
+    // (bytes, RBX, GS base)
+    for (code, rbx, gs_base) in [
+        (&[0x8c, 0x1b][..], 0x0000_8000_0000_0000u64, 0u64),
+        (&[0x8c, 0x1b][..], 0xffff_7fff_ffff_ffff, 0),
+        // The start is canonical but the second byte is not.
+        (&[0x8c, 0x1b][..], 0x0000_7fff_ffff_ffff, 0),
+        (&[0x65, 0x8c, 0x1b][..], 0x0000_7fff_ffff_ffff, 0),
+        // GS base plus offset leaves the canonical range.
+        (&[0x65, 0x8c, 0x1b][..], 0x0000_8000_0000_0000, 0),
+        (&[0x65, 0x8c, 0x1b][..], 0x20_0000, 0x0000_8000_0000_0000),
+    ] {
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.gs_base = gs_base;
+        let before = state.clone();
+        let (result, memory) = run_ms(&mut state, code);
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?} {rbx:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?} {rbx:#x}");
+        assert!(memory.writes.is_empty(), "{code:02x?} {rbx:#x}");
+    }
+}
+
+#[test]
+fn mov_sreg_memory_store_through_rsp_or_rbp_is_ss0_without_a_prefix_and_gp0_with_gs() {
+    let ss0 = ArchitecturalFault {
+        vector: 12,
+        error_code: Some(0),
+        linear_address: None,
+    };
+    // `mov %ds, (%rsp)` and `mov %ds, 0x0(%rbp)`, plain and with a GS prefix.
+    for (register, code, prefixed) in [
+        (
+            Register::Rsp,
+            &[0x8c, 0x1c, 0x24][..],
+            &[0x65, 0x8c, 0x1c, 0x24][..],
+        ),
+        (
+            Register::Rbp,
+            &[0x8c, 0x5d, 0x00][..],
+            &[0x65, 0x8c, 0x5d, 0x00][..],
+        ),
+    ] {
+        for base in [0x0000_8000_0000_0000u64, 0x0000_7fff_ffff_ffff] {
+            let mut state = ms_state();
+            state.gpr[register as usize] = base;
+            let before = state.clone();
+            let (result, memory) = run_ms(&mut state, code);
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ss0.clone()),
+                "{register:?} {base:#x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.writes.is_empty());
+            // With a GS prefix the segment is GS, not SS: the fault is #GP(0).
+            let (result, memory) = run_ms(&mut state, prefixed);
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(GP0),
+                "{register:?} {base:#x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn mov_sreg_write_fault_leaves_registers_rip_and_memory_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x20_0000),
+    };
+    for code in [&[0x8c, 0x1b][..], &[0x48, 0x8c, 0x1b][..]] {
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.write_fault = Some(fault.clone());
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty() && memory.data.is_empty());
+    }
+}
+
+#[test]
+fn mov_sreg_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
+    let cases: [&[u8]; 28] = [
+        // Reserved Sreg encodings 6 and 7, register and memory forms.
+        &[0x8c, 0xf0],
+        &[0x8c, 0xf8],
+        &[0x8c, 0x33],
+        &[0x8c, 0x3b],
+        &[0x48, 0x8c, 0xf0],
+        &[0x65, 0x8c, 0x33],
+        // LOCK, REP and REPNE.
+        &[0xf0, 0x8c, 0xd0],
+        &[0xf0, 0x8c, 0x1b],
+        &[0xf3, 0x8c, 0xd0],
+        &[0xf2, 0x8c, 0xd0],
+        &[0xf3, 0x8c, 0x1b],
+        &[0xf0, 0x48, 0x8c, 0xd0],
+        // 0x66 (16-bit register form) and 0x67 are refused conservatively.
+        &[0x66, 0x8c, 0xd0],
+        &[0x66, 0x48, 0x8c, 0xd0],
+        &[0x66, 0x8c, 0x1b],
+        &[0x67, 0x8c, 0x1b],
+        &[0x67, 0x8c, 0xd0],
+        // A segment prefix on a register form, a non-FS/GS prefix on a memory form, and two
+        // segment prefixes.
+        &[0x65, 0x8c, 0xd0],
+        &[0x64, 0x48, 0x8c, 0xd0],
+        &[0x26, 0x8c, 0x1b],
+        &[0x2e, 0x8c, 0x1b],
+        &[0x36, 0x8c, 0x1b],
+        &[0x3e, 0x8c, 0x1b],
+        &[0x64, 0x65, 0x8c, 0x1b],
+        &[0x65, 0x65, 0x8c, 0x1b],
+        // A REX that is not immediately before the opcode.
+        &[0x48, 0x66, 0x8c, 0xd0],
+        &[0x41, 0x65, 0x8c, 0x03],
+        &[0x48, 0xf3, 0x8c, 0xd0],
+    ];
+    for code in cases {
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let (result, memory) = run_ms(&mut state, code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8c },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn mov_sreg_with_an_unknown_visible_selector_is_refused_without_mutation() {
+    // CS and SS selectors are optional model state: None is not guessed.
+    for code in [&[0x8c, 0xd0][..], &[0x8c, 0xc8][..], &[0x8c, 0x13][..]] {
+        let mut state = ms_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.cs_selector = None;
+        state.ss_selector = None;
+        let before = state.clone();
+        let (result, memory) = run_ms(&mut state, code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8c },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+    // `mov %ds, (%rbx)` does not depend on CS/SS.
+    let mut state = ms_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.cs_selector = None;
+    state.ss_selector = None;
+    let (result, memory) = run_ms(&mut state, &[0x8c, 0x1b]);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.writes.len(), 1);
+}
+
+#[test]
+fn mov_sreg_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the forms are refused without mutation.
+    for code in [
+        &[0x8c, 0xd0][..],
+        &[0x48, 0x8c, 0xd8][..],
+        &[0x8c, 0x1b][..],
+        &[0x65, 0x8c, 0x03][..],
+    ] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.ss_selector = Some(SREG_SS);
+        state.cs_selector = Some(SREG_CS);
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x8c },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn mov_sreg_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = ms_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&[0x8c, 0xd0]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn mov_sreg_two_stores_retire_in_order() {
+    let mut state = ms_state();
+    let mut memory = BitsMemory::new(&[0x8c, 0xd0, 0x8c, 0xd9]);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[Register::Rax as usize], u64::from(SREG_SS));
+    assert_eq!(state.gpr[Register::Rcx as usize], u64::from(SREG_DS));
+    assert_eq!(state.rip, RIP + 4);
+}
+
 // ---- S4-38L7o: FS/GS-based `TEST r/m8, imm8` (`[64|65] [REX] F6 /0 ib`, memory operand; SDM
 // Vol.2 TEST: the byte is ANDed with the immediate, the result is discarded, CF = OF = 0, SF/ZF/PF
 // from the byte result, AF undefined and left unchanged here; Vol.3 3.4.4 FS/GS base; from memory,
