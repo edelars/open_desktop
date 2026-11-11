@@ -32767,14 +32767,18 @@ fn step_configured(
                 linear_address: None,
             })
         };
+        // S4-38L7e: under a CPL0 set policy CR0/CR4 were already admitted by the policy
+        // (which allows PSE/PGE in CR4 beyond the FpInit predicate), so the per-register
+        // FpInit check applies only outside a set.
         if matches!(profile, MsrProfile::EferReadOnlyV1(_))
             && (!context.mode.eq(&InstructionMode::Long64)
-                || !state
-                    .cr0
-                    .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
-                || !state
-                    .cr4
-                    .is_some_and(|value| Cr4Profile::FpInitLong64V1.accepts(value)))
+                || (control_policy.is_none()
+                    && (!state
+                        .cr0
+                        .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
+                        || !state
+                            .cr4
+                            .is_some_and(|value| Cr4Profile::FpInitLong64V1.accepts(value)))))
         {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
