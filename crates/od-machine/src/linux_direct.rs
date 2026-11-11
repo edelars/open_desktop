@@ -3377,6 +3377,70 @@ mod tests {
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
     }
 
+    // ---- S4-38L7o: FS/GS-based TEST m8, imm8 through the board facade ----
+
+    #[test]
+    fn gs_test_byte_after_wrmsr_gs_base_reads_one_byte_sets_flags_and_leaves_memory_alone() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0x0123_4567_89AB_CD81;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); ADD AL,0x80 (0x81 + 0x80 sets CF and OF);
+        // TEST %gs:0x10,$0xf0 (`65 f6 04 25 10 00 00 00 f0`: 0x81 & 0xf0 = 0x80, clears CF and OF);
+        // SUB AL,2 (0x01 - 2 borrows: CF = 1);
+        // TEST %gs:disp(%rip),$0x0e (`65 f6 05 disp32 0e`, effective address 0x10: 0x81 & 0x0e = 0,
+        // the next RIP is after the immediate); MOV RDX,[BASE+0x10]; HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x04, 0x80]);
+        code.extend([0x65, 0xF6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, 0xF0]);
+        code.extend([0x2C, 0x02]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0xF6, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.push(0x0E);
+        code.extend([0x48, 0x8B, 0x14, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 13,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, ADD, TEST, SUB, TEST, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // TEST wrote nothing: the whole qword is still there (the ADD/SUB only touched AL, now
+        // 0x81 + 0x80 - 2 = 0xff), and no register other than RDX (the load) changed.
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], VALUE);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            (VALUE & !0xFF) | 0xFF
+        );
+        // The last TEST gave 0x81 & 0x0e = 0: ZF = 1, PF = 1, SF = 0, and cleared the CF that the
+        // SUB had set.
+        assert_eq!(state.rflags & 1, 0, "CF");
+        assert_eq!(state.rflags & (1 << 11), 0, "OF");
+        assert_ne!(state.rflags & (1 << 6), 0, "ZF");
+        assert_ne!(state.rflags & (1 << 2), 0, "PF");
+        assert_eq!(state.rflags & (1 << 7), 0, "SF");
+    }
+
     // ---- S4-38L7n: LOCK BTS m64, r64 through the board facade ----
 
     #[test]
