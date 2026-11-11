@@ -1,8 +1,8 @@
 # Этап 3 Core — промежуточный отчёт
 
-Статус: **промежуточный. Этап 3 НЕ принят; линия S3 Core выполняется.** Этот отчёт фиксирует отправную точку на `b496d5e` и результаты S3-50 в ветке `codex`. Отчёт не подтверждает приёмку этапа 3.
+Статус: **промежуточный. Этап 3 НЕ принят; линия S3 Core выполняется.** Этот отчёт фиксирует отправную точку на `b496d5e` и результаты S3-50…S3-57 в ветке `codex`. Отчёт не подтверждает приёмку этапа 3.
 
-**Текущий статус (2026-11-11):** S3-50 прошёл независимое ревью и закоммичен в ветке `codex` как `80a0fe6`; Graphify обновлён. [Отчёт и инвентарь](STAGE_3_CORE_REPORT.md): необходимость byte guards классифицирована по формам. `od-jit` — 412 passed; `od-host` — 358 passed и 3 failed из-за отсутствующих локальных corpus artifacts; layout-check — 45 ошибок baseline.
+**Текущий статус (2026-11-11):** реализация и ограниченные измерения линии проверены и закоммичены в `codex`; независимое итоговое ревью кода не выявило дефектов. S3-56 и S3-57 остаются частичными до разрешения ISSUE-075. Исходный baseline S3-50: `od-jit` — 412 passed; `od-host` — 358 passed и 3 failed из-за отсутствующих локальных corpus artifacts; layout-check — 45 ошибок.
 
 Связанные документы: [план S3 Core](../plans/STAGE_3_CORE.md), [основной план этапа 3](../plans/STAGE_3.md), [контракт JIT](../specs/JIT_CONTRACT.md), [карта проекта](../PROJECT_LAYOUT.md).
 
@@ -15,9 +15,9 @@
 | S3-52 — один механизм допуска | Независимое ревью Sol одобрено; коммит `dd9c9bb`, Graphify обновлён |
 | S3-53 — единая точка входа диспетчера | Независимое ревью Sol одобрено; коммит `8aab6f3`, Graphify обновлён |
 | S3-54 — generic путь и multi-entry cache | Проверки выполнены, независимое ревью Sol одобрено; коммит `6c438a8`, Graphify обновлён |
-| S3-55 — interpreter fallback | Ограниченный mixed маршрут реализован и проверен; независимое Sol-ревью пройдено |
-| S3-56 — измерения generic пути | Частично: Sol-ревью выполненного объёма пройдено; задача не принята из-за ISSUE-075 и отсутствующего S3-17 corpus; коммит следует |
-| S3-57 — финальное ревью линии | not_started |
+| S3-55 — interpreter fallback | Ограниченный mixed маршрут реализован и проверен; независимое Sol-ревью пройдено, коммит `31380a5` |
+| S3-56 — измерения generic пути | Частично: Sol-ревью выполненного объёма пройдено; задача не принята из-за ISSUE-075 и отсутствующего S3-17 corpus; коммит `795be59` |
+| S3-57 — финальное ревью линии | Частично: независимое Sol-ревью кода пройдено; приёмка ждёт S3-56 и ISSUE-075 |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -365,13 +365,13 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 ## 8. S3-55 — interpreter fallback
 
-**Статус (2026-11-11): ограниченный mixed маршрут реализован и прошёл независимое Sol-ревью.** Opt-in `MixedRegisterV1Admission` хранит полные границы и native-классы прежнего сканера, отдельно разрешая только точные однобайтовые CLD (`FC`) и STD (`FD`) как interpreter sites. Строгий `NativeRegisterV1Admission` по-прежнему их отвергает. Существующий NOP handoff сохранён. Для этих helper выполняется `od_isa::execute::step` с fetch-only видом в один байт; memory/profile-required формы не заявлены. После шага проверяются привязка кода, CR3, контекст cache и зависимости. Нулевой прогресс и отказы возвращаются типизированно; helper entry исполняется без попытки компиляции. Metadata отдельно считает native-инструкции при компиляции, вызовы helper и успешные шаги интерпретатора. Два новых compile flavor изолируют mixed eager/demand от строгого пути.
+**Статус (2026-11-11): ограниченный mixed маршрут реализован и прошёл независимое Sol-ревью; коммит `31380a5`.** Opt-in `MixedRegisterV1Admission` хранит полные границы и native-классы прежнего сканера, отдельно разрешая только точные однобайтовые CLD (`FC`) и STD (`FD`) как interpreter sites. Строгий `NativeRegisterV1Admission` по-прежнему их отвергает. Существующий NOP handoff сохранён. Для этих helper выполняется `od_isa::execute::step` с fetch-only видом в один байт; memory/profile-required формы не заявлены. После шага проверяются привязка кода, CR3, контекст cache и зависимости. Нулевой прогресс и отказы возвращаются типизированно; helper entry исполняется без попытки компиляции. Metadata отдельно считает native-инструкции при компиляции, вызовы helper и успешные шаги интерпретатора. Два новых compile flavor изолируют mixed eager/demand от строгого пути.
 
 Контракт описывает ограниченный маршрут, не общий Stage 2 fallback и не production owner/MMU integration. ARM64 host-сравнение полностью проверяет состояние и retirement для ADD → NOP → CLD → STD → ADD и ADD → CLD → ADD → STD → ADD на FIFO/LRU, eager/demand и cold/warm. Второй поток проверяет native terminal непосредственно перед обоими helper. Тесты проверяют strict reject и точность mixed witness, отсутствие компиляции helper entry, budget в том числе ноль, STOP/event, типизированный нулевой прогресс native и interpreter, injected отказ interpreter и memory error, пост-helper отказ при изменении source, invalid dependencies, CR3 и устаревшем context generation. `cargo test -p od-jit --lib --offline`: 455 passed, 2 ignored; `cargo test -p od-host --lib --offline`: 362 passed; `cargo fmt --all -- --check`, `cargo check -p od-jit -p od-host --all-targets --offline` и `git diff --check` прошли. `python3 tools/check_layout.py` возвращает 45 существующих ошибок ссылок на локальные отсутствующие артефакты, как baseline S3-50. Независимое Sol-ревью кода, тестов и документации одобрено; подтверждённых дефектов и незакрытых замечаний нет.
 
 ## 9. S3-56 — измерения generic пути
 
-**Статус (2026-11-11): частично; независимое Sol-ревью выполненного объёма пройдено, коммит следует.** Расширены существующие `cold-first-run` и `warm-first-run` флагом `--generic-register`; default поведение сохранено. Измерены interpreter, generic cold и generic warm на одном resident native-only корпусе. S3-56 не принят: для сравнения cold на исходном корпусе S3-35a отсутствуют замороженные inputs, а исторические S3-35a и S3-36b использовали разные корпуса ([ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)). Это измерение выполнено до реализации ограниченного mixed fallback S3-55.
+**Статус (2026-11-11): частично; независимое Sol-ревью выполненного объёма пройдено, коммит `795be59`.** Расширены существующие `cold-first-run` и `warm-first-run` флагом `--generic-register`; default поведение сохранено. Измерены interpreter, generic cold и generic warm на одном resident native-only корпусе. S3-56 не принят: для сравнения cold на исходном корпусе S3-35a отсутствуют замороженные inputs, а исторические S3-35a и S3-36b использовали разные корпуса ([ISSUE-075](../KNOWN_ISSUES.md#issue-075-s3-56-historical-corpus-comparability)). Это измерение выполнено до реализации ограниченного mixed fallback S3-55.
 
 **Методика и вход.** Пять S3-14 branch/helper fixtures, 5 visits и 14 retired guest instructions на sweep; список SHA-256 `dd590c6c8f8ae1a09f2192e47c1d019f7449c814212c87e06194bf7425dd0881`, trace SHA-256 `272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8`. Это те же hashes и case IDs, что у S3-36b. Фикстуры, запись trace, outcome, retirement и NativeRegisterV1 admission проверяются до тайминга. Native-only preflight отвергает bare NOP — единственный текущий interpreter handoff этого профиля — и каждый успешный generic dispatch проверяет `retired_interpreter == 0`. Поэтому fallback helper calls = 0 выведено из проверенной eligibility и результата, а не снято отдельным инструментированным счётчиком; машинные helpers реализации флагов эта величина не считает.
 
@@ -394,4 +394,38 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 ## 10. S3-57 — финальное независимое ревью линии
 
-Статус: not_started.
+**Статус: частично.** Независимый `gpt-6.1-sol` high reviewer проверил diff
+линии `b496d5e..31380a5`: точность допуска, отказов и границ, register
+dispatch, cache/invalidation, fallback/progress и раздельный учёт, а также
+сырые данные и сопоставимость измерений. Подтверждённых дефектов не найдено.
+S3-57 зависит от S3-56 и не принимается до закрытия ISSUE-075 и недоступного
+исторического корпуса. Этап 3 остаётся открытым до S3-41.
+
+Повтор на чистом `31380a5` в `codex`: `cargo fmt --all -- --check`,
+`cargo check -p od-jit -p od-host --all-targets --offline` прошли; `od-jit`
+455 passed / 2 ignored, `od-host` 362 passed, `od-bench` 67 lib и 6 CLI
+passed. Отдельный корпус admission дал 2 452 сравнения и 0 расхождений.
+`python3 tools/check_layout.py` вернул 45 ранее зафиксированных ошибок ссылок
+на отсутствующие локальные артефакты; новых ошибок не обнаружено. Исторические
+основные счётчики S3-50 повторно проверены на `b496d5e`: 16 admission,
+29 объявлений `admits_*`, 43 `run*`, 28 native, 14 demand и 32 `run_with*`.
+После рефакторинга часть счётчиков на текущей ревизии ожидаемо изменилась.
+
+На том же пятислучайном корпусе S3-56 повторены по два независимых release
+процесса каждого режима на чистом `31380a5`, с методикой раздела 9. В таблице
+медиана [min–max], IQR в мкс на sweep; raw JSON фиксирует ревизию, fingerprint,
+20 пар измерений и счётчики:
+
+| Режим / процесс | Generic | Interpreter |
+|---|---:|---:|
+| Cold 1 | 36.979 [36.319–38.235], 0.911 | 2.995 [2.972–3.100], 0.058 |
+| Cold 2 | 37.339 [36.592–39.277], 1.738 | 3.003 [2.972–3.081], 0.050 |
+| Warm 1 | 5.118 [5.067–5.200], 0.060 | 2.991 [2.969–3.070], 0.049 |
+| Warm 2 | 5.065 [5.019–5.130], 0.035 | 2.981 [2.965–3.032], 0.018 |
+
+Сырые данные: [cold 1](data/stage3/s3-57/cold-1.json),
+[cold 2](data/stage3/s3-57/cold-2.json), [warm 1](data/stage3/s3-57/warm-1.json),
+[warm 2](data/stage3/s3-57/warm-2.json). Диапазоны повторов пересекаются с
+записанными в разделе 9; это не доказывает равенство производительности между
+ревизиями. Generic остаётся медленнее interpreter на этом корпусе. Повтор не
+восстанавливает inputs S3-35a и не закрывает требуемое историческое сравнение.
