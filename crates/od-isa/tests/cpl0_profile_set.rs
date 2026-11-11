@@ -10452,7 +10452,7 @@ fn gs_dword_load_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
 #[test]
 fn segment_dword_load_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
     // (code, expected refused opcode); none of them mutates or reads.
-    let cases: [(&[u8], u8); 11] = [
+    let cases: [(&[u8], u8); 12] = [
         // Register source (mod = 11).
         (&[0x65, 0x8b, 0xc0], 0x8b),
         (&[0x64, 0x44, 0x8b, 0xe3], 0x8b),
@@ -10464,8 +10464,10 @@ fn segment_dword_load_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         (&[0x65, 0x67, 0x8b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x8b),
         // A second segment prefix.
         (&[0x64, 0x65, 0x8b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x8b),
-        // REX before a legacy prefix (not immediately before the opcode).
+        // REX before a legacy prefix (not immediately before the opcode). SDM Vol.2 2.2.1
+        // ignores such a REX; the dword form is refused conservatively here.
         (&[0x44, 0x65, 0x8b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x8b),
+        (&[0x48, 0x65, 0x8b, 0x05, 0x34, 0x12, 0x00, 0x00], 0x8b),
         // The byte load stays refused with its own opcode.
         (&[0x65, 0x8a, 0x05, 0x34, 0x12, 0x00, 0x00], 0x8a),
         // The word load via 0x66 with REX.R.
@@ -10489,6 +10491,44 @@ fn segment_dword_load_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         assert_eq!(result.instructions_executed, 0, "{code:02x?}");
         assert_eq!(state, before, "{code:02x?}");
         assert!(memory.reads.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn qword_load_with_a_stale_rex_before_the_segment_prefix_is_still_a_qword_load() {
+    // `48 65 48 8b 05 ..` and `44 64 4c 8b 25 ..` (accepted in S4-38L7i): the first REX is not
+    // immediately before the opcode and is ignored (SDM Vol.2 2.2.1); the last REX has W, so the
+    // form is the qword load, not refused.
+    for (code, fs, register) in [
+        (
+            [0x48u8, 0x65, 0x48, 0x8b, 0x05, 0x34, 0x12, 0x00, 0x00],
+            false,
+            Register::Rax,
+        ),
+        (
+            [0x44u8, 0x64, 0x4c, 0x8b, 0x25, 0x34, 0x12, 0x00, 0x00],
+            true,
+            Register::R12,
+        ),
+    ] {
+        let base = 0xffff_8880_1234_0000u64;
+        let mut state = board_state();
+        state.gs_base = if fs { 0xffff_8880_9999_0000 } else { base };
+        state.fs_base = if fs { base } else { 0xffff_8880_9999_0000 };
+        let mut expected = state.clone();
+        let mut memory = LoadMemory::code(&code);
+        let result = run_load_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        let at = base + RIP + 9 + 0x1234;
+        assert_eq!(memory.reads, vec![(at, 8)], "{code:02x?}");
+        expected.gpr[register as usize] = pattern_qword(at);
+        expected.rip += 9;
+        assert_eq!(state, expected, "{code:02x?}");
     }
 }
 

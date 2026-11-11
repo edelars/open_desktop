@@ -8382,13 +8382,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // S4-38L7i: `[64|65] REX.W 8B /r` (MOV r64, m64) with any memory source.
                     // S4-38L7m: `[64|65] [REX] 8B /r` without REX.W (MOV r32, m32) with a memory
                     // source. Qword/Dword only; LOCK/REP, 0x66 and 0x67 stay refused.
-                    // A REX byte that is not immediately before the opcode is ignored by the
-                    // prefix scan; that spelling stays refused here.
+                    // Per SDM Vol.2 2.2.1 a REX byte that is not immediately before the opcode
+                    // is ignored. For the dword form such a stale REX is refused conservatively
+                    // (Unsupported) so an ambiguous spelling is not executed; qword forms with
+                    // a stale REX (`48 65 48 8B ..`) are accepted as in S4-38L7i.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
-                    if stale_rex
+                    if (stale_rex && size == OperandSize::Dword)
                         || !matches!(size, OperandSize::Qword | OperandSize::Dword)
                         || (size == OperandSize::Qword)
                             != prefixes.rex.is_some_and(|rex| rex & 8 != 0)
@@ -21987,6 +21989,20 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::MovGsLoadQ { .. }
         ));
+        // A REX not immediately before the opcode is ignored per SDM Vol.2 2.2.1; the qword
+        // forms with such a stale REX are accepted as in S4-38L7i (the last REX has W).
+        let mut memory = Memory::new(&[0x48, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovGsLoadQ { dst, .. }
+                if dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+        ));
+        let mut memory = Memory::new(&[0x44, 0x64, 0x4c, 0x8b, 0x25, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsLoadQ { dst, .. }
+                if dst == RegisterView::low(Register::R12, OperandSize::Qword)
+        ));
         for bytes in [
             // Register form (mod = 11).
             &[0x65, 0x8b, 0xc0][..],
@@ -22000,7 +22016,11 @@ mod tests {
             // A second segment override.
             &[0x64, 0x65, 0x8b, 0x05, 1, 0, 0, 0][..],
             // REX before a legacy prefix (REX not immediately before the opcode).
+            // (dword forms only: refused conservatively).
             &[0x44, 0x65, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x48, 0x65, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x48, 0x65, 0x40, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x4c, 0x64, 0x44, 0x8b, 0x25, 1, 0, 0, 0][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
