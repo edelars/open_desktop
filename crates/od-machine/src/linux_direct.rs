@@ -3043,6 +3043,83 @@ mod tests {
         assert_eq!(guest_qword(&mut boot, 0x0200_0028), VALUE);
     }
 
+    // ---- S4-38L7i: FS/GS-based qword load through the board facade ----
+
+    #[test]
+    fn gs_load_after_wrmsr_gs_base_reads_guest_memory_at_base_plus_effective_address() {
+        const BASE: u64 = 0x0200_0000;
+        const VALUE: u64 = 0x0123_4567_89AB_CDEF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,VALUE;
+        // MOV [BASE+0x10],RAX (plain, no override); MOV %gs:disp(%rip),%r12 landing on effective
+        // address 0x10 (the r12 destination is the Linux boundary `65 4c 8b 25`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x4C, 0x8B, 0x25]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 9,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, load, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(boot.board.state().gs_base, BASE);
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::R12 as usize],
+            VALUE
+        );
+    }
+
+    #[test]
+    fn fs_and_gs_loads_with_a_zero_base_read_at_the_effective_address() {
+        const VALUE: u64 = 0x0FED_CBA9_8765_4321;
+        // MOV RAX,VALUE; MOV [0x0200_0020],RAX; MOV %gs:0x0200_0020,%r13;
+        // MOV %fs:0x0200_0020,%r14; HLT (no CLI).
+        let mut code = mov_rax_imm64(VALUE);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x65, 0x4C, 0x8B, 0x2C, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x64, 0x4C, 0x8B, 0x34, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5);
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::R13 as usize],
+            VALUE
+        );
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::R14 as usize],
+            VALUE
+        );
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]

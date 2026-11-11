@@ -34769,7 +34769,11 @@ fn step_configured(
         Operation::Swapgs => true,
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
-        Operation::MovFsStore { .. } | Operation::MovGsStore { .. } => {
+        // S4-38L7i: the same holds for the FS/GS-based qword loads.
+        Operation::MovFsStore { .. }
+        | Operation::MovGsStore { .. }
+        | Operation::MovFsLoadQ { .. }
+        | Operation::MovGsLoadQ { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
@@ -48482,6 +48486,8 @@ fn step_configured(
         | Operation::MovGsLoad { .. }
         | Operation::MovFsStore { .. }
         | Operation::MovGsStore { .. }
+        | Operation::MovFsLoadQ { .. }
+        | Operation::MovGsLoadQ { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53471,6 +53477,20 @@ fn transfer(
             state.write(dst, value);
         }
         Operation::MovGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovFsLoadQ { dst, src } => {
+            // S4-38L7i: base + effective address; non-canonical (start or last byte) is #GP(0)
+            // before any register write.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovGsLoadQ { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
@@ -63965,6 +63985,53 @@ mod tests {
             );
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn segment_qword_load_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7i widened the CPL0-set decoder path only: without the set (no control policy)
+        // bare `run` and `step` refuse the wider FS/GS load forms without mutation.
+        for bytes in [
+            &[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x8b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x8b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x8b }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
         }
     }
 
@@ -153296,6 +153363,39 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn fs_gs_qword_load_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7i widened the CPL0-set decoder path only; this profile refuses the forms.
+        for bytes in [
+            &[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x8b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x8b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
         // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
         for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
@@ -153792,6 +153892,29 @@ mod paged_cr3_probe_tests {
         assert_eq!(state.rip, 6);
         assert_eq!(state.cr3, Some(0x2000));
         assert_eq!(memory.fetches, [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_qword_load_forms_unsupported() {
+        for bytes in [
+            &[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x8b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x8b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
     }
 
     #[test]
@@ -155347,6 +155470,33 @@ mod paged_mov_profile_tests {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(invalid_cr4, before);
         assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_qword_load_forms_unsupported() {
+        // S4-38L7i belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
+            &[0x64, 0x48, 0x8b, 0x40, 0x08][..],
+            &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
     }
 
     #[test]

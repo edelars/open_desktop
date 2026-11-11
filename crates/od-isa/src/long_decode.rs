@@ -440,6 +440,18 @@ pub enum Operation {
         dst: MemoryOperand,
         src: RegisterView,
     },
+    /// S4-38L7i: `64 REX.W 8B /r` (MOV r64, m64 with the FS base) in any memory form other than
+    /// the exact S2-22a `MovFsLoad` one. Executed only in the CPL0 set.
+    MovFsLoadQ {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
+    /// S4-38L7i: `65 REX.W 8B /r` (MOV r64, m64 with the GS base) in any memory form other than
+    /// the exact S2-22b `MovGsLoad` one. Executed only in the CPL0 set.
+    MovGsLoadQ {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
     /// The sole supported segment-register read in S2-22c: `48 8C E0`.
     MovFsSelectorToRax,
     MovGsSelectorToRax,
@@ -8223,6 +8235,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let rm = self.rm_operand(modrm, prefixes, size)?;
                 let reg = Operand::Register(reg);
                 let (dst, src) = if byte & 2 == 0 { (rm, reg) } else { (reg, rm) };
+                let exact_rax_form = byte == 0x8b
+                    && self.length == 4
+                    && prefixes.rex == Some(0x48)
+                    && matches!(
+                        (dst, src),
+                        (Operand::Register(d), Operand::Memory(m))
+                            if d == RegisterView::low(Register::Rax, OperandSize::Qword)
+                                && m.base == AddressBase::Register(Register::Rax)
+                                && m.index.is_none()
+                                && m.scale == 1
+                                && m.displacement == 0
+                                && m.address_size == OperandSize::Qword
+                    );
                 if matches!(prefixes.segment, Some(0x64 | 0x65)) && byte == 0x89 {
                     // S4-38L7g: `[64|65] REX.W 89 /r` (MOV r/m64, r64) with a memory
                     // destination. Qword only; LOCK/REP, 0x66 and 0x67 stay refused.
@@ -8241,6 +8266,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         Operation::MovFsStore { dst, src }
                     } else {
                         Operation::MovGsStore { dst, src }
+                    }
+                } else if matches!(prefixes.segment, Some(0x64 | 0x65))
+                    && byte == 0x8b
+                    && !exact_rax_form
+                {
+                    // S4-38L7i: `[64|65] REX.W 8B /r` (MOV r64, m64) with any memory source.
+                    // Qword only; LOCK/REP, 0x66 and 0x67 stay refused.
+                    if size != OperandSize::Qword
+                        || prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let (Operand::Register(dst), Operand::Memory(src)) = (dst, src) else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    if prefixes.segment == Some(0x64) {
+                        Operation::MovFsLoadQ { dst, src }
+                    } else {
+                        Operation::MovGsLoadQ { dst, src }
                     }
                 } else if matches!(prefixes.segment, Some(0x64 | 0x65)) {
                     if byte != 0x8b
@@ -8509,6 +8556,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovGsLoad { .. } => false,
                 Operation::MovFsStore { .. } => false,
                 Operation::MovGsStore { .. } => false,
+                Operation::MovFsLoadQ { .. } => false,
+                Operation::MovGsLoadQ { .. } => false,
                 Operation::MovFsSelectorToRax => false,
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
@@ -21693,12 +21742,20 @@ mod tests {
                 if dst == RegisterView::low(Register::Rax, OperandSize::Qword)
                     && src.base == AddressBase::Register(Register::Rax)
         ));
+        // S4-38L7i: the wider memory forms decode to the separate MovGsLoadQ, the 0x67 form stays
+        // refused.
         for bytes in [
             &[0x65, 0x48, 0x8b, 0x08][..],
             &[0x65, 0x48, 0x8b, 0x40, 0x00][..],
             &[0x65, 0x48, 0x8b, 0x04, 0x08][..],
-            &[0x65, 0x67, 0x48, 0x8b, 0x00][..],
         ] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(
+                memory.decode().unwrap().operation,
+                Operation::MovGsLoadQ { .. }
+            ));
+        }
+        for bytes in [&[0x65, 0x67, 0x48, 0x8b, 0x00][..]] {
             let mut memory = Memory::new(bytes);
             assert!(matches!(
                 memory.decode(),
@@ -21714,6 +21771,48 @@ mod tests {
                     ..
                 }))
             ));
+        }
+    }
+
+    #[test]
+    fn segment_load_decodes_fs_gs_qword_memory_forms_only() {
+        // S4-38L7i: `[64|65] REX.W 8B /r` with a memory source.
+        let r12 = RegisterView::low(Register::R12, OperandSize::Qword);
+        let mut memory = Memory::new(&[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovGsLoadQ { dst, src }
+                if dst == r12 && src.base == AddressBase::NextRip && src.displacement == 0x511adc
+        ));
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x8b, 0x24, 0x25, 0x10, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsLoadQ { dst, .. } if dst == r12
+        ));
+        // The exact rax forms stay the S2-22a/22b operations.
+        let mut memory = Memory::new(&[0x65, 0x48, 0x8b, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovGsLoad { .. }
+        ));
+        for bytes in [
+            &[0x65, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x65, 0x40, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x65, 0x48, 0x8b, 0xc0][..],
+            &[0x65, 0x48, 0x8a, 0x00][..],
+            &[0x65, 0x4c, 0x8b, 0xe0][..],
+            &[0xf0, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0xf3, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x66, 0x65, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
+            &[0x65, 0x67, 0x48, 0x8b, 0x05, 1, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
         }
     }
 
@@ -22229,9 +22328,14 @@ mod tests {
         }
         for prefix in [0x64, 0x65] {
             let mut memory = Memory::new(&[prefix, 0x48, 0x8b, 0x45, 0]);
+            // S4-38L7i: the FS/GS qword load now decodes (executed only in the CPL0 set).
             assert!(matches!(
                 memory.decode(),
-                Err(DecodeError::Unsupported { length: 5, .. })
+                Ok(Instruction {
+                    length: 5,
+                    operation: Operation::MovFsLoadQ { .. } | Operation::MovGsLoadQ { .. },
+                    ..
+                })
             ));
         }
         for bytes in [&[0x64, 0x0f, 0xbc, 0x00][..], &[0x65, 0x0f, 0xbd, 0x00]] {
