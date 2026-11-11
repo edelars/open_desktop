@@ -21544,3 +21544,60 @@ RBX = `0xffffffff83a03ee8`, RSP = `0xffffffff83a03e88`, RBP = `0xffffffff83a03ec
 R15 = `0x100000`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER
 `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же. Следующий срез — `SUB r64, m64` с префиксом GS (RIP-relative)
 в наборе CPL0 (арифметика с FS/GS-префиксом; решение — по этой границе).
+
+### Арифметика `SUB r64, m64` с префиксом FS/GS в наборе CPL0 (S4-38L7j)
+
+Граница S4-38L7i (`65 48 2b 05 29 70 4f 00`, `sub %gs:0x4f7029(%rip), %rax`, RIP `0xffffffff83f25fd7`,
+`Unsupported { opcode: 0x2b }`) показала, что арифметика с памятью и префиксом FS/GS отказывается целиком. Срез добавляет одну
+форму: `SUB r64, m64` (опкод `0x2B`, REX.W) с префиксом FS (`0x64`) или GS (`0x65`), любая memory-форма, любой приёмник r0–r15.
+Описание дано **по памяти SDM** (Vol. 2 «SUB», «Segment Override Prefixes», Vol. 3 §3.4.4 / §3.4.5, 64-битный режим: базы
+CS/DS/ES/SS нулевые, базы FS/GS берутся из скрытой части регистра / `IA32_FS_BASE` / `IA32_GS_BASE`), по первоисточнику не
+сверялось. Схема повторяет S4-38L7g/S4-38L7i.
+
+**Декодер.** `[64|65] REX.W 2B /r` с memory-формой (mod ≠ 11, любая адресация: RIP-relative, SIB, disp8/disp32, абсолютная SIB без
+базы и индекса), приёмник = `reg` плюс REX.R, порождает новые `Operation::SubFsMem { dst, src }` / `SubGsMem`. Без префикса FS/GS
+`2B` по-прежнему даёт `Operation::Arithmetic { kind: Sub, .. }`. Отказ (`Unsupported { opcode: 0x2b }` без мутации): SUB без REX.W
+(dword), REX без W, регистровая форма (mod = 11), любой из LOCK/REP (`F0`/`F2`/`F3`), `66`, `67`; байтовая форма `2A` отказывается
+со своим опкодом `0x2a`, форма с memory-приёмником `29` — со своим `0x29`; остальные ALU-опкоды с FS/GS-префиксом и memory-операндом
+(`03`, `0B`, `13`, `1B`, `23`, `33`, `3B` и т. д.) отказываются как раньше, каждый со своим опкодом.
+
+**Префиксы CS/DS/ES/SS.** Не менялись: по-прежнему игнорируются (нулевая база), форма исполняется как обычный `SUB`.
+
+**Адрес.** Как у S4-38L7g/S4-38L7i: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом байта
+префикса; адрес только 64-бит) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Каноничность проверяется для начального адреса
+и последнего байта qword (адрес + 7): иначе `#GP(0)` до чтения, без мутации регистров и флагов (для баз RSP/RBP тоже `#GP(0)`, не `#SS`).
+
+**Исполнение.** qword читается одним `memory.read_integer` (граница 4 KiB и A-бит — адаптер платы без изменений), затем результат и
+флаги считает существующая `arithmetic_result(Qword, Sub, ..)` — та же функция, что у не-префиксной формы (CF/PF/AF/ZF/SF/OF как у
+`SUB`, остальные биты RFLAGS сохраняются); приёмник получает `приёмник − источник`; RIP += длина инструкции (с префиксом),
+retired + 1. Приёмник и база адреса читаются из состояния до записи (случай `sub %gs:8(%rax), %rax`). При `#GP(0)` или ошибке памяти
+состояние и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у записи и загрузки. Вне набора — `Unsupported { opcode: 0x2b }` без
+мутации; в набор CPL3 не допускается (`WrongPrivilege`). Профиль `mov_cr3_profile`, paged-probe, `step_paged_mov` и голые
+`run`/`step` новые формы не принимают (тесты отказа в каждом).
+
+**Не делалось.** Прочие ALU-опкоды с FS/GS-префиксом (ADD/CMP/AND/OR/XOR/ADC/SBB, форма с memory-приёмником), dword/byte-формы,
+`SWAPGS`/MSR, CR, CPUID, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::{gs,fs}_rip_relative_qword_sub_*`, `gs_and_fs_sub_with_a_zero_base_*`, `gs_sub_*`, `fs_sub_*`,
+`gs_and_fs_sub_flags_and_results_on_boundary_values` (CF/PF/AF/ZF/SF/OF на граничных значениях, сохранение прочих флагов),
+`gs_sub_flags_equal_the_non_prefixed_sub_r64_m64`, `segment_sub_*`, `plain_unprefixed_qword_sub_*`,
+`cs_ds_es_ss_overrides_on_a_qword_sub_*`; `long_decode::tests::segment_sub_decodes_fs_gs_qword_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_sub_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_sub_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_sub_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_sub_forms_unsupported`;
+`linux_direct::tests::gs_sub_after_wrmsr_gs_base_subtracts_guest_memory_at_base_plus_effective_address`,
+`fs_and_gs_sub_with_a_zero_base_subtract_at_the_effective_address`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7j-diagnostic-run.json`. `sub %gs:0x4f7029(%rip), %rax` по RIP `0xffffffff83f25fd7` и последующие
+инструкции проходят (retired 1137478689 → 1137487951, +9262). Новая граница: RIP `0xffffffff8273441c`, байты
+`f0 48 0f b1 13` (`lock cmpxchg %rdx, (%rbx)`), `Unsupported { opcode: 0xb1 }`, `set_exit_detail` = `Run(Unsupported { opcode: 177 })`,
+`exit_kind` = `unsupported`, retired = 1137487951. Регистры на остановке: RAX = 0, RBX = `0xffffffff83c34f80`,
+RCX = 0, RDX = `0xffffffff83a134c0`, RSI = 1, RDI = `0xffffffff83c34f80`, RSP = `0xffffffff83a03e28`, RBP = `0xffffffff83a03e30`,
+R13 = 1, R14 = `0xffffffff82ffa783`, RFLAGS = `0x56`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER
+walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members`: cli, cpu_owned_cr3,
+cpuid:DiagnosticV1, msr:EferReadOnlyV1(3328), msr:fs_gs_base, popf_cpl0. Следующий срез — `LOCK CMPXCHG r/m64, r64` (`F0 48 0F B1 /r`,
+memory-форма) в наборе CPL0; решение — по этой границе, а не по предположению.
