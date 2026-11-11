@@ -2859,6 +2859,32 @@ mod tests {
         assert_eq!(state.sti_shadow, Some(od_isa::StiShadow::Clear));
     }
 
+    // ---- S4-38L6d: LEAVE through the board facade ----
+
+    #[test]
+    fn leave_runs_through_the_board_set() {
+        // LEAVE then nine NOPs (the filler after ten bytes is the 0x7A stop); RBP points at a
+        // frame in board RAM.
+        let (mut boot, file) =
+            boot_with_entry(&[0xC9, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90]);
+        let saved_rbp = 0x0000_7FFF_1234_5670u64;
+        write_phys(&mut boot, DATA, &saved_rbp.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rbp as usize] = DATA;
+        state.gpr[Register::Rsp as usize] = DATA + 0x100;
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x7A },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 10, "LEAVE and nine NOPs: {record:?}");
+        assert_eq!(record.rip, ENTRY + 10);
+        assert_eq!(record.gpr[Register::Rbp as usize], saved_rbp);
+        assert_eq!(record.gpr[Register::Rsp as usize], DATA + 8);
+        assert_eq!(read_qword(&mut boot, DATA), saved_rbp, "no write");
+    }
+
     // ---- S4-38L4: the CPUID boundary on the set path ----
 
     /// `MOV EAX, imm32` (`B8 id`).

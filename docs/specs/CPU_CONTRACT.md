@@ -20311,7 +20311,7 @@ Linux, поэтому честная верхняя граница прогон�
 **Не входит в набор:** STI (ISSUE-069; `with_sti` нет); MOV CR0/CR4 со значениями PGE/AM/MCE;
 `MOV SS`/`MOV FS`/`MOV GS` с ненулевым селектором (нулевая загрузка — S2-46, ниже); `LGDT m` входит
 (S2-47a, ниже), `LIDT m` (S2-49, ниже) и `LRETQ` (S2-47b, ниже) входят; POPFQ CPL0 (`9D`) входит только с
-членом `popf_cpl0` (S2-50, ниже); `LEAVE` (`C9`); `F3 0F BC`
+членом `popf_cpl0` (S2-50, ниже); `LEAVE` (`C9`) входит (S4-38L6d, ниже); `F3 0F BC`
 (TZCNT/BSF по BMI1); WRMSR GS_BASE и набор MSR (в v1 один профиль); INVLPG; переключение
 CR0.WP; FP/SIMD при EM/TS/OSFXSR.
 
@@ -21157,3 +21157,32 @@ GDT — исключение набора как у `LRETQ`, `state == before`.
 
 Тесты: `cpl0_profile_set::mov_ss_*`, `mov_ds_es_fs_gs_*`, `mov_data_sreg_*`, `mov_sreg_*`;
 `linux_direct::tests::mov_ss_and_es_with_the_boot_data_selector_run_through_the_board_set`.
+
+### `LEAVE` (`C9`) в наборе CPL0 (S4-38L6d)
+
+Реальное ядро на плате (набор CPL0, nonce `s4-38l4a`, бюджет 3000000000) останавливается на `C9` (`LEAVE`) по RIP
+`0x133ed53` (`Unsupported { opcode: 201 }`, retired 1137474275). В инвентаризации S2 `LEAVE` значился отсутствующим.
+Семантика дана по Intel SDM Vol.2 «LEAVE» (64-битный режим) **по памяти; текст SDM в репозитории отсутствует и не
+сверялся**.
+
+**Что делается.** Только голый `C9` (без префиксов): `RSP <- RBP; RBP <- POP qword`. Сначала читается qword по
+адресу `RBP` (чтение с тем же контекстом доступа, что у `POP`/`RET` набора), затем `RSP = RBP + 8`, `RBP =` прочитанное
+значение, RIP += 1, retired += 1. RFLAGS (и отметка определённости флагов) и остальные регистры не меняются,
+записей в память нет. Допускается только внутри набора CPL0 (`control_policy` задан), на CPL0, в Long64; вне набора —
+`Unsupported` без мутации.
+
+**Ошибки.** Неканонический адрес `RBP` (или последнего байта qword) — `#SS(0)` до чтения; неотображённая или
+непредставленная страница — `#PF` с адресом и кодом адаптера памяти (как у `POP`). При любой ошибке `state == before`:
+`RBP`, `RSP` и RIP не тронуты, записей нет. `RBP` у самой границы адресного пространства, при которой адрес qword
+переполняется (`RBP > 0xffff_ffff_ffff_fff8`), возвращает ту же `MemoryError::AddressOverflow`,
+что и `POP`/`RET` набора (общий помощник `stack_access_address`), а не `#SS`.
+
+**Префиксы (решение).** Консервативно, как у остальных операций набора: `66 C9` (в SDM это LEAVE с 16-битным
+стеком), `48 C9` (REX.W в 64-битном режиме для LEAVE ничего не меняет, по памяти), любой другой REX, `F0`/`F2`/`F3`,
+сегментные префиксы и `67` — `Unsupported` без мутации (декодер отказывает на уровне декодирования).
+
+**Не делалось.** `ENTER`, 16-битный `LEAVE`, `LEAVE` вне набора CPL0; `PUSH`/`POP`, CR0/CR3/CR4, CPUID/MSR,
+`PagedCpl0ProbeV1`, `LRETQ`/`IRETQ`, `MOV Sreg` не менялись.
+
+Тесты: `cpl0_profile_set::leave_*`; `long_decode::tests::leave_decodes_only_the_bare_form`;
+`linux_direct::tests::leave_runs_through_the_board_set`.

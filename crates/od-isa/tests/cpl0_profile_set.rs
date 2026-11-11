@@ -6788,3 +6788,178 @@ fn mov_fs_gs_at_cpl3_never_reaches_the_cpl0_loader() {
         assert!(memory.reads.is_empty() && memory.writes == 0);
     }
 }
+
+// ---- S4-38L6d: LEAVE (`C9`) with a 64-bit stack in the CPL0 set ----
+
+const LEAVE_FRAME: u64 = RAM_BASE + 0x1800;
+const LEAVE_SAVED_RBP: u64 = 0x0000_7fff_1234_5670;
+
+/// `RBP` points at a frame whose saved value is `LEAVE_SAVED_RBP`; `RSP` is elsewhere.
+fn leave_state(code: &[u8]) -> (LongModeState, LretqMemory) {
+    let mut state = board_state();
+    state.gpr[4] = STACK - 0x100; // RSP, distinct from RBP
+    state.gpr[5] = LEAVE_FRAME; // RBP
+    state.gpr[1] = 0xaaaa_bbbb_cccc_dddd;
+    state.gpr[3] = 0x0123_4567_89ab_cdef;
+    state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+    let mut memory = LretqMemory::new(code);
+    memory.put(LEAVE_FRAME, LEAVE_SAVED_RBP);
+    (state, memory)
+}
+
+fn run_leave(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn leave_moves_rbp_to_rsp_pops_rbp_and_retires() {
+    let (mut state, mut memory) = leave_state(&[0xc9, 0x90]);
+    let before = state.clone();
+    let result = run_leave(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[5], LEAVE_SAVED_RBP);
+    assert_eq!(state.gpr[4], LEAVE_FRAME + 8);
+    assert_ne!(
+        before.gpr[4], before.gpr[5],
+        "RSP and RBP are distinguishable"
+    );
+    assert_eq!(state.rip, RIP + 1);
+    // Flags, their definedness and every other register are untouched.
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    let mut expected = before;
+    expected.gpr[4] = LEAVE_FRAME + 8;
+    expected.gpr[5] = LEAVE_SAVED_RBP;
+    expected.rip = RIP + 1;
+    assert_eq!(state, expected);
+    // One qword read at [RBP] (same origin as the set's POP), no write.
+    assert_eq!(memory.reads, vec![(LEAVE_FRAME, 8, AccessOrigin::Explicit)]);
+    assert_eq!(memory.writes, 0);
+}
+
+#[test]
+fn leave_with_rsp_equal_to_rbp_still_pops_the_frame() {
+    let (mut state, mut memory) = leave_state(&[0xc9]);
+    state.gpr[4] = LEAVE_FRAME;
+    let result = run_leave(&mut state, &mut memory, 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[4], LEAVE_FRAME + 8);
+    assert_eq!(state.gpr[5], LEAVE_SAVED_RBP);
+}
+
+#[test]
+fn leave_with_a_non_canonical_rbp_is_ss_zero_without_mutation() {
+    for rbp in [0x0000_8000_0000_0000u64, 0xffff_7fff_ffff_ffff] {
+        let (mut state, mut memory) = leave_state(&[0xc9]);
+        state.gpr[5] = rbp;
+        let before = state.clone();
+        let result = run_leave(&mut state, &mut memory, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{rbp:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn leave_with_rbp_on_an_unmapped_page_is_a_page_fault_without_mutation() {
+    let (mut state, mut memory) = leave_state(&[0xc9]);
+    memory.fault_pages.push(LEAVE_FRAME & !0xfff);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_leave(&mut state, &mut memory, 1);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(LEAVE_FRAME),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.ram, ram);
+    assert_eq!(memory.writes, 0);
+
+    // The second page of a straddling qword.
+    let (mut state, mut memory) = leave_state(&[0xc9]);
+    state.gpr[5] = RAM_BASE + 0x1ffc;
+    memory.fault_pages.push(RAM_BASE + 0x2000);
+    let before = state.clone();
+    let result = run_leave(&mut state, &mut memory, 1);
+    assert!(matches!(
+        exit(&result),
+        RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+    ));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn leave_with_prefixes_stays_unsupported_without_mutation() {
+    for code in [
+        &[0x66u8, 0xc9][..],
+        &[0x48, 0xc9],
+        &[0x40, 0xc9],
+        &[0xf3, 0xc9],
+        &[0xf2, 0xc9],
+        &[0xf0, 0xc9],
+        &[0x2e, 0xc9],
+        &[0x67, 0xc9],
+    ] {
+        let (mut state, mut memory) = leave_state(code);
+        let before = state.clone();
+        let result = run_leave(&mut state, &mut memory, 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xc9 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty());
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
+fn leave_outside_the_set_stays_unsupported_without_mutation() {
+    let (mut state, mut memory) = leave_state(&[0xc9]);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc9 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+    assert_eq!(memory.writes, 0);
+}
