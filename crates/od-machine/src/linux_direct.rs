@@ -679,7 +679,9 @@ pub struct LinuxCpl0SetMembers {
     pub msr_fs_gs_base: bool,
     /// `with_halt`.
     pub halt: bool,
-    /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus (COM1, PM timer, PIT).
+    /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
+    /// board bus (COM1, PM block with the timer, and with the Linux profile PIT, port B, PIC,
+    /// CMOS, `0xED`, `0x80`, and the byte accesses to PCI conf1 `0xCF8..=0xCFF`).
     /// `false` in [`Self::minimal`], `true` in [`Self::linux_default`] (S4-38L7x).
     pub pio_u8: bool,
     /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
@@ -727,8 +729,10 @@ impl LinuxCpl0SetMembers {
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
     /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
     /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e), the PCI configuration ports
-    /// (S4-38L7w) and the byte PIO (S4-38L7x: `pio_u8`, COM1/PIT/PM timer; a default decision that
-    /// may be revisited: without COM1 and the timer the kernel does not go further).
+    /// (S4-38L7w) and the byte PIO (S4-38L7x: `pio_u8`, all ports bound on the board bus; a default
+    /// decision that may be revisited: without COM1 and the timer the kernel does not go further).
+    /// Known limit: byte accesses to `0xCF8..` use the bus model's own conf1 latch, dword accesses
+    /// the `pci_config` cell; they agree while the bus has no PCI function.
     /// [`Self::minimal`] stays without it.
     pub const fn linux_default() -> Self {
         Self {
