@@ -86,6 +86,62 @@ fn p(path: &Path) -> &str {
     path.to_str().expect("utf8 path")
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn create_raw_creates_only_a_new_zeroed_file() {
+    let dir = Dir::new();
+    let (code, out, err) = tool(&["create-raw", p(&dir.0), "fresh.raw", "4096"]);
+    assert_eq!(code, i32::from(Exit::Ok.code()), "{out}{err}");
+    assert_eq!(out, "created=1\ncapacity_bytes=4096\n");
+    assert!(err.is_empty());
+    let image = std::fs::read(dir.0.join("fresh.raw")).expect("created RAW");
+    assert_eq!(image.len(), 4096);
+    assert!(image.iter().all(|byte| *byte == 0));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn create_raw_refuses_an_existing_file_without_changing_it() {
+    let dir = Dir::new();
+    let path = dir.file("existing.raw", b"preserve this file");
+    let before = std::fs::read(&path).expect("read original");
+    let (code, out, err) = tool(&["create-raw", p(&dir.0), "existing.raw", "4096"]);
+    assert_eq!(code, i32::from(Exit::Io.code()), "{out}{err}");
+    assert!(out.is_empty());
+    assert_eq!(err, "create_failed=status_3\n");
+    assert_eq!(std::fs::read(&path).expect("read original after refusal"), before);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn create_raw_rejects_a_fifo_directory_without_blocking() {
+    let dir = Dir::new();
+    let fifo = dir.0.join("not-a-directory");
+    let status = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    assert!(status.success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_od-image-tool"))
+        .args(["create-raw", p(&fifo), "fresh.raw", "4096"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn create-raw");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Some(output) = child.try_wait().expect("poll child") {
+            assert_eq!(output.code(), Some(i32::from(Exit::Io.code())));
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("create-raw blocked while opening a FIFO as its directory");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!dir.0.join("fresh.raw").exists());
+}
+
 #[test]
 fn a_valid_image_exits_zero_and_is_not_changed() {
     let dir = Dir::new();

@@ -9,6 +9,9 @@ pub mod session;
 mod session_abi_v1;
 #[cfg(target_os = "macos")]
 mod storage_abi_v1;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use storage_abi_v1::create_raw_for_image_tool;
 #[cfg(unix)]
 pub mod storage_io;
 #[cfg(unix)]
