@@ -21489,3 +21489,47 @@ CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3, последняя смен�
 гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members`: cli, cpu_owned_cr3, cpuid:DiagnosticV1,
 msr:EferReadOnlyV1(3328), msr:fs_gs_base, popf_cpl0. Следующий срез — загрузка с префиксом GS (`8B` /r, REX.WR, RIP-relative)
 в наборе CPL0; решение — по этой границе, а не по предположению.
+
+### Загрузка qword с префиксом FS/GS в наборе CPL0 (S4-38L7i)
+
+Граница S4-38L7h (`65 4c 8b 25 dc 1a 51 00`, `mov %gs:0x511adc(%rip), %r12`, RIP `0xffffffff83f25c74`,
+`Unsupported { opcode: 0x8b }`) показала, что чтение qword с префиксом FS/GS принимается только в точной форме S2-22a/b
+(`64|65 48 8B 00`, `MOV RAX, [RAX]`). Срез добавляет загрузку qword `MOV r64, m64` (опкод `0x8B`) с префиксом FS (`0x64`) или GS
+(`0x65`) для любой memory-формы и любого приёмника r0–r15. Описание дано **по памяти SDM** (Vol. 2 «Segment Override
+Prefixes», Vol. 3 §3.4.4 / §3.4.5, 64-битный режим: базы CS/DS/ES/SS нулевые, базы FS/GS берутся из скрытой части
+регистра / `IA32_FS_BASE` / `IA32_GS_BASE`), по первоисточнику не сверялось. Схема повторяет запись S4-38L7g.
+
+**Декодер.** `[64|65] REX.W 8B /r` с memory-формой (mod ≠ 11, любая адресация: RIP-relative, SIB, disp8/disp32,
+абсолютная SIB без базы и индекса), приёмник = `reg` плюс REX.R, порождает новые
+`Operation::MovFsLoadQ { dst, src }` / `MovGsLoadQ`. Точная форма `64|65 48 8B 00` (приёмник RAX, база RAX, без индекса и
+disp, 4 байта) по-прежнему даёт старые `MovFsLoad`/`MovGsLoad` и принимается теми же профилями, что и раньше; их декодирование и
+исполнение не менялись. Отказ (`Unsupported { opcode: 0x8b }` без мутации): загрузка без REX.W (dword), REX без W, байтовая
+загрузка (`8A`), регистровая форма (mod = 11), любой из LOCK/REP (`F0`/`F2`/`F3`), `66`, `67`. Прочие опкоды с FS/GS-префиксом
+(`C7`, арифметика, `88`) отказываются как раньше.
+
+**Префиксы CS/DS/ES/SS.** Не менялись: по-прежнему игнорируются на обычном `MOV` (нулевая база).
+
+**Адрес.** Как у записи S4-38L7g: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом
+байта префикса; адрес только 64-бит), плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Нулевая база даёт адрес =
+эффективный адрес. Каноничность проверяется для начального адреса и последнего байта qword (адрес + 7): иначе `#GP(0)`
+без мутации и без чтения (для баз RSP/RBP тоже `#GP(0)`, не `#SS`). Права сегмента (лимит, тип) модель не хранит.
+
+**Исполнение.** qword читается одним `memory.read_integer` (граница 4 KiB и A-бит — адаптер платы без изменений), затем
+пишется в приёмник; RIP += длина инструкции (с префиксом), retired + 1, прочие регистры и RFLAGS не меняются. При отказе
+(`#GP(0)`, ошибка памяти) состояние и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у записи. Вне набора — `Unsupported { opcode: 0x8b }` без
+мутации; в набор CPL3 не допускается (`WrongPrivilege`). Профиль `mov_cr3_profile`, paged-probe, `step_paged_mov` и голые
+`run`/`step` новые формы не принимают (тесты отказа в каждом).
+
+**Не делалось.** Загрузки dword/byte, прочие опкоды с префиксом, `SWAPGS`/MSR, CR, CPUID, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::{gs,fs}_rip_relative_qword_load_*`, `gs_and_fs_loads_with_a_zero_base_*`, `gs_load_*`,
+`fs_load_*`, `exact_gs_and_fs_rax_loads_keep_working_in_the_set`, `segment_load_*`, `cs_ds_es_ss_overrides_on_a_qword_load_*`;
+`long_decode::tests::segment_load_decodes_fs_gs_qword_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_qword_load_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_qword_load_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_qword_load_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_qword_load_forms_unsupported`;
+`linux_direct::tests::gs_load_after_wrmsr_gs_base_reads_guest_memory_at_base_plus_effective_address`,
+`fs_and_gs_loads_with_a_zero_base_read_at_the_effective_address`.
