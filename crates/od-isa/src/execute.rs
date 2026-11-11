@@ -34875,6 +34875,9 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
@@ -48638,6 +48641,8 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
         | Operation::CmpFsMem { .. }
@@ -53693,6 +53698,20 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
+        }
+        Operation::MovFsMemByteImm { dst, immediate } => {
+            // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
+            // instruction, immediate included, as `next_rip` is). A non-canonical address (a single
+            // byte is stored) is #GP(0) before the write. Only the byte is stored; flags and
+            // registers are untouched.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
+        }
+        Operation::MovGsMemByteImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
         }
         Operation::SubFsMem { dst, src } => {
             // S4-38L7j: base + effective address; non-canonical (start or last byte) is #GP(0)
@@ -64736,6 +64755,55 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xb7 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn segment_mov_byte_immediate_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7ae widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `[64|65] [REX] C6 /0 ib` (memory operand) with opcode 0xc6 and without
+        // mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xc6 }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -154979,6 +155047,40 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn fs_gs_mov_byte_immediate_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fs_gs_test_dword_qword_forms_stay_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7ac belongs to the CPL0 set only; this profile refuses the forms without mutation.
         for bytes in [
@@ -155953,6 +156055,31 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0xb7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_mov_byte_immediate_forms_unsupported() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xc6 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -157985,6 +158112,34 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb7 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_mov_byte_immediate_forms_unsupported() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc6 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
