@@ -22103,3 +22103,90 @@ R13–R15 = 0, RFLAGS = `0x2`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe00
 `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `TEST m16, imm16` с префиксами `65 66` (`F7 /0 iw`, GS и 66, без
 LOCK) в наборе CPL0: это ширина word, которой в наборе пока нет ни у одной FS/GS-формы (S4-38L7o покрывает только `TEST m8, imm8`), поэтому
 потребуется отдельное решение по порядку префиксов `65 66` / `66 65`, чтению/записи word и каноничности `адрес + 1`.
+
+### `TEST m16, imm16` с префиксом FS/GS в наборе CPL0 (S4-38L7r)
+
+Граница S4-38L7q (`65 66 f7 05 73 68 f0 02 01 ff`, `testw $0xff01, %gs:0x2f06873(%rip)`, RIP `0xffffffff815167b4`,
+`Unsupported { opcode: 0xf7 }`) — первая word-ширина с сегментным префиксом. Срез добавляет `[64|65] 66 [REX] F7 /0 iw` и
+`66 [64|65] [REX] F7 /0 iw` с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB без базы и
+индекса, REX.B/REX.X). Семантика дана **по памяти SDM** (Vol. 2 «TEST»: читает word r/m16, AND с imm16, результат отбрасывается;
+CF = 0, OF = 0, SF/ZF/PF — по результату (PF — по младшему байту результата), AF не определён; Vol. 2 «Segment Override Prefixes» /
+Vol. 3 §3.4.4: в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер.** Ветка `0xF7 /0` с сегментным префиксом `0x64`/`0x65`, размером word (есть `66`, нет REX.W) и memory-операндом порождает новые
+`Operation::TestFsMemWord { src, immediate }` / `TestGsMemWord` (`src` — `MemoryOperand` размера word, `immediate` — `u16`); это та же ветка,
+что у `F6 /0` (S4-38L7o), расширенная до `F7` с word-размером. Длина включает imm16 (для `65 66 f7 05 disp32 iw` — 10 байт: два префикса,
+`F7`, ModRM, disp32, imm16), поэтому RIP-relative считается от RIP **после** immediate (`RIP + 10`), как у беспрефиксной формы. Флаги
+для метаданных (`flag_effects`) те же, что у `Operation::Logic` и `TestFsMemByte`: CF/OF/SF/ZF/PF определены, AF не определён.
+
+**Порядок префиксов.** Принимаются оба порядка, `65 66` и `66 65` (и `64 66` / `66 64`): декодер собирает префиксы в одну структуру независимо
+от порядка (SDM допускает префиксы разных групп в любом порядке), поведение зафиксировано тестами обоих порядков (граничная форма,
+FS RIP-relative, SIB, REX.B, RSP/RBP, вне набора, фасад). REX допустим только непосредственно перед `F7` (то есть после обоих префиксов);
+REX до любого из `66`/сегментного префикса — устаревший, отказ (консервативно, как у S4-38L7o/m).
+
+**REX.W вместе с `66` — отказ.** По памяти SDM REX.W имеет приоритет над `66` (размер qword), но форма не нужна ядру и приоритет по
+первоисточнику не сверен, поэтому `[64|65] 66 REX.W F7 /0` (в обоих порядках) отказывается `Unsupported { opcode: 0xf7 }` без мутации
+(тест `segment_test_word_forms_outside_the_slice_are_refused_with_the_exact_opcode`). REX.R допустим (на word-операнд не влияет), REX.B/X
+расширяют базу/индекс.
+
+**Отказы без мутации (`Unsupported { opcode: 0xf7 }`).** Прочие члены группы `F7` с FS/GS и memory (`/1` — алиас TEST, `/2` NOT, `/3` NEG,
+`/4` MUL, `/5` IMUL, `/6` DIV, `/7` IDIV, в обоих порядках префиксов); `F7 /0` с FS/GS без `66` (dword) и с REX.W (qword) — как раньше;
+LOCK/REP/REPNE (`F0`/`F2`/`F3`); `67`; второй сегментный префикс (`64 65`, `65 65`, `65 66 64`) и повторный `66`; REX не непосредственно
+перед опкодом. Байтовая форма `F6 /0` по-прежнему отказывает `66` с опкодом `0xf6`.
+
+**Регистровая форма (mod = 11) и беспрефиксная форма не менялись.** `66 f7 c3 iw` и `65 66 f7 c3 iw` исполняются как обычный `TEST r16, imm16`
+(сегментный префикс на регистровой форме не имеет смысла, исполняется как раньше, без отказа и вне набора; закреплено тестом
+`test_word_register_form_and_plain_form_keep_their_old_behavior`); `66 F7 /0` с memory без сегментного префикса, а также с
+CS/DS/ES/SS (база игнорируется), и беспрефиксная dword-форма `F7 /0` исполняются прежним путём.
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base`
+(`wrapping_add`). Читаются два байта, поэтому каноничность проверяется и для начала, и для последнего байта word (`адрес + 1`): иначе
+`#GP(0)` без мутации и без чтения (для баз RSP/RBP тоже `#GP(0)`, не `#SS`). Последнее допустимое слово начинается
+с `0x00007ffffffffffe`; начало `0x00007fffffffffff` — `#GP(0)` (второй байт неканоничен).
+
+**Исполнение.** Word читается одним `memory.read_integer` размером 2, затем общая функция `logic_result(Word, Test, значение, imm)`
+даёт флаги (никакой новой арифметики): CF = 0, OF = 0, SF — бит 15 результата, ZF — результат равен нулю, PF — чётность младшего байта
+результата, **AF сохраняется**, остальные биты RFLAGS сохраняются. Руками проверено: `0x8000 & 0x8000` = `0x8000` → SF = 1, ZF = 0, PF = 1 (младший
+байт 0); `0xffff & 0x0003` = `3` → PF = 1; `0x0100 & 0x0100` = `0x0100` → ZF = 0, SF = 0, PF = 1 (PF считается по младшему байту результата, он равен 0 —
+чётное число единиц, поэтому PF = 1, а не 0); `0x0000 & 0xffff` = 0 → ZF = 1, PF = 1, SF = 0. **Запись в память не выполняется**
+(тест `test_word_never_writes_memory_even_on_a_read_only_page`), регистры не меняются. RIP += длина (с префиксами и imm16), retired + 1
+только при успехе. При `#GP(0)` и `#PF` на чтении состояние (флаги, RIP, регистры) и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xf7 }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и
+голые `run`/`step` форму не принимают (тест отказа в каждом, с точным опкодом `0xf7`).
+
+**Не делалось.** `F7 /1..7` с FS/GS, dword/qword `F7 /0` с FS/GS, `REX.W` с `66`, прочие word-формы с FS/GS, прочие опкоды с префиксом,
+`SWAPGS`/MSR, CR, CPUID, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::` — `gs_test_word_boundary_form_*` (граничная форма `65 66 f7 05 73 68 f0 02 01 ff` и `66 65 ...`: адрес =
+база + RIP + 10 + disp, одно слово, флаги, AF и определённость, чтения/записи адаптера), `fs_test_word_rip_relative_*` (оба порядка),
+`test_word_with_a_zero_base_*`, `test_word_flags_follow_the_word_result_on_boundary_values` (17 пар слово/immediate, 2 порядка префиксов, по
+5 начальных наборов флагов), `test_word_matches_the_non_prefixed_test_on_the_same_word`, `gs_test_word_with_base_register_index_scale_and_displacement`,
+`fs_test_word_absolute_sib_disp32_*`, `test_word_with_rex_b_uses_r8_to_r15_*`, `test_word_with_rex_x_uses_r8_to_r15_as_the_index`,
+`test_word_accepts_a_rex_directly_before_the_opcode_without_w`, `test_word_never_writes_memory_*`,
+`test_word_non_canonical_address_is_gp0_without_mutation_or_read` (включая «начало канонично, `адрес + 1` нет»),
+`test_word_last_word_with_both_bytes_canonical_is_read`, `gs_test_word_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical`,
+`test_word_read_fault_*`, `segment_test_word_forms_outside_the_slice_are_refused_with_the_exact_opcode` (36 отказов с точным опкодом,
+плюс два отказа `0xf6` для `66` на байтовой форме), `test_word_register_form_and_plain_form_keep_their_old_behavior`,
+`cs_ds_es_ss_overrides_on_a_test_word_*`, `segment_test_word_stays_unsupported_outside_the_set`, `segment_test_word_is_not_reachable_from_cpl3`;
+`long_decode::tests::segment_test_decodes_fs_gs_word_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_test_word_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_test_word_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_test_word_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_test_word_forms_unsupported`,
+`paged_probe_profile::fs_gs_test_word_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::gs_test_word_after_wrmsr_gs_base_reads_one_word_sets_flags_and_leaves_memory_alone`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7r-diagnostic-run.json`. `testw $0xff01, %gs:0x2f06873(%rip)` по RIP `0xffffffff815167b4` и последующие
+инструкции проходят (retired 1137490747 → 1137534094, +43347). Новая граница: RIP `0xffffffff813c0fcc`, байты
+`f0 80 4b 3d 80 45 31 e4 49 63 f4 4d 63 ec 48 83` (первая инструкция — `lock orb $0x80, 0x3d(%rbx)`: `LOCK OR m8, imm8`, `80 /1 ib`, ModRM `4b`
+= mod 01, reg 1, rm rbx, disp8 `0x3d`, imm8 `0x80`, длина 5; далее `xor %r12d, %r12d`, `movslq %esi, %rsi`...), `Unsupported { opcode: 0x80 }`,
+`set_exit_detail` = `Run(Unsupported { opcode: 128 })`, `exit_kind` = `unsupported`, retired = 1137534094. Регистры на остановке: RAX = RCX = RDX =
+RSI = RDI = R8–R11 = 0, RBX = `0xffffffff83ec7be0`, RSP = `0xffffffff83a03de8`, RBP = `0xffffffff83a03e38`, R12 = `0xffffffff83a03df8`,
+R13 = `0xffffffff83a03dfc`, R14 = `0xffffffff83a03e00`, R15 = `0xffffffff83a03e04`, RFLAGS = `0x46`; CR0 = `0x80050033`, CR4 = `0xb0`,
+CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 26; `set_members` = `cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`,
+`popf_cpl0`. Следующий срез — `LOCK OR m8, imm8` (`F0 80 /1 ib`, memory-операнд, без сегментного префикса) в наборе CPL0 (решение — по
+этой границе).

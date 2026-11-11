@@ -477,6 +477,19 @@ pub enum Operation {
         src: MemoryOperand,
         immediate: u8,
     },
+    /// S4-38L7r: `[64|65] 66 [REX] F7 /0 iw` (TEST m16, imm16 with the FS base), memory operand
+    /// only, in either prefix order. The word is read, ANDed with the immediate and only the flags
+    /// change. Executed only in the CPL0 set.
+    TestFsMemWord {
+        src: MemoryOperand,
+        immediate: u16,
+    },
+    /// S4-38L7r: `[64|65] 66 [REX] F7 /0 iw` (TEST m16, imm16 with the GS base), memory operand
+    /// only. Executed only in the CPL0 set.
+    TestGsMemWord {
+        src: MemoryOperand,
+        immediate: u16,
+    },
     /// S4-38L7p/S4-38L7q: `64 [REX] FF /0|/1` (INC or DEC m32, or m64 with REX.W, with the FS
     /// base), memory operand only. `kind` is `Inc` or `Dec`. The operand is read, changed by one
     /// and written back; CF is kept. Executed only in the CPL0 set.
@@ -2006,7 +2019,10 @@ impl Instruction {
                 undefined: 0,
             },
             // S4-38L7o: as the plain TEST (`Operation::Logic`): AF undefined.
-            Operation::TestFsMemByte { .. } | Operation::TestGsMemByte { .. } => FlagEffects {
+            Operation::TestFsMemByte { .. }
+            | Operation::TestGsMemByte { .. }
+            | Operation::TestFsMemWord { .. }
+            | Operation::TestGsMemWord { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::AF,
                 undefined: crate::AF,
             },
@@ -8146,16 +8162,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         } else {
                             immediate
                         };
-                        if let (0xf6, Some(0x64 | 0x65), Operand::Memory(src)) =
-                            (byte, prefixes.segment, dst)
-                        {
-                            // S4-38L7o: `[64|65] [REX] F6 /0 ib` (TEST m8, imm8) with a memory
-                            // operand. LOCK/REP, 0x66 and 0x67 stay refused. A REX byte that is
-                            // not immediately before the opcode is refused (ambiguous spelling);
-                            // a REX directly before F6 is accepted (REX.W/R do not change the
-                            // byte operand, REX.B/X reach the base/index). The register form
-                            // (mod = 11) is not touched: the segment prefix is irrelevant there
-                            // and it keeps decoding as the plain TEST.
+                        if let (true, Some(0x64 | 0x65), Operand::Memory(src)) = (
+                            byte == 0xf6 || (byte == 0xf7 && size == OperandSize::Word),
+                            prefixes.segment,
+                            dst,
+                        ) {
+                            // S4-38L7o/S4-38L7r: `[64|65] [REX] F6 /0 ib` (TEST m8, imm8) and
+                            // `[64|65] 66 [REX] F7 /0 iw` (TEST m16, imm16, the 66 and the segment
+                            // prefix in either order) with a memory operand. LOCK/REP and 0x67
+                            // stay refused; for F6 so does 0x66, for F7 the word size requires
+                            // it (REX.W with 0x66 gives size qword and falls to the refusal of
+                            // the generic FS/GS check below, we do not guess the precedence). A
+                            // REX byte that is not immediately before the opcode is refused
+                            // (ambiguous spelling); a REX directly before the opcode is accepted
+                            // (REX.W/R do not change the byte operand, REX.B/X reach the
+                            // base/index). The register form (mod = 11) is not touched: the
+                            // segment prefix is irrelevant there and it keeps decoding as the
+                            // plain TEST.
                             let stale_rex =
                                 prefix_bytes[..prefix_count]
                                     .iter()
@@ -8165,16 +8188,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                     });
                             if stale_rex
                                 || prefixes.group1.is_some()
-                                || prefixes.operand_override
+                                || (byte == 0xf6 && prefixes.operand_override)
                                 || prefixes.address_override
                             {
                                 return Err(self.unsupported(opcode));
                             }
-                            let immediate = immediate as u8;
-                            if prefixes.segment == Some(0x64) {
-                                Operation::TestFsMemByte { src, immediate }
-                            } else {
-                                Operation::TestGsMemByte { src, immediate }
+                            match (byte, prefixes.segment) {
+                                (0xf6, Some(0x64)) => Operation::TestFsMemByte {
+                                    src,
+                                    immediate: immediate as u8,
+                                },
+                                (0xf6, _) => Operation::TestGsMemByte {
+                                    src,
+                                    immediate: immediate as u8,
+                                },
+                                (_, Some(0x64)) => Operation::TestFsMemWord {
+                                    src,
+                                    immediate: immediate as u16,
+                                },
+                                (_, _) => Operation::TestGsMemWord {
+                                    src,
+                                    immediate: immediate as u16,
+                                },
                             }
                         } else {
                             Operation::Logic {
@@ -8837,6 +8872,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::SubGsMem { .. } => false,
                 Operation::TestFsMemByte { .. } => false,
                 Operation::TestGsMemByte { .. } => false,
+                Operation::TestFsMemWord { .. } => false,
+                Operation::TestGsMemWord { .. } => false,
                 Operation::IncDecFsMem { .. } => false,
                 Operation::IncDecGsMem { .. } => false,
                 Operation::MovFsSelectorToRax => false,
@@ -22446,6 +22483,136 @@ mod tests {
                 matches!(
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xf6
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_test_decodes_fs_gs_word_memory_forms_only() {
+        // S4-38L7r: `[64|65] 66 [REX] F7 /0 iw` and `66 [64|65] [REX] F7 /0 iw`, memory operand.
+        // The S4-38L7q diagnostic boundary: `testw $0xff01, %gs:0x2f06873(%rip)`, 10 bytes long
+        // (the imm16 counts for the next RIP).
+        let boundary = [0x65, 0x66, 0xf7, 0x05, 0x73, 0x68, 0xf0, 0x02, 0x01, 0xff];
+        let mut memory = Memory::new(&boundary);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 10);
+        assert_eq!(decoded.operand_size, OperandSize::Word);
+        assert_eq!(
+            decoded.flag_effects().defined,
+            crate::ARITHMETIC_FLAGS & !crate::AF
+        );
+        assert_eq!(decoded.flag_effects().undefined, crate::AF);
+        assert!(matches!(
+            decoded.operation,
+            Operation::TestGsMemWord { src, immediate }
+                if src.base == AddressBase::NextRip
+                    && src.displacement == 0x02f0_6873
+                    && src.size == OperandSize::Word
+                    && immediate == 0xff01
+        ));
+        // The same instruction with the prefixes swapped, and the FS forms in both orders.
+        let mut memory = Memory::new(&[0x66, 0x65, 0xf7, 0x05, 0x73, 0x68, 0xf0, 0x02, 0x01, 0xff]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 10);
+        assert!(matches!(
+            decoded.operation,
+            Operation::TestGsMemWord {
+                immediate: 0xff01,
+                ..
+            }
+        ));
+        for bytes in [
+            &[0x64, 0x66, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
+            &[0x66, 0x64, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.length, 10, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::TestFsMemWord { src, immediate: 0x000e }
+                        if src.size == OperandSize::Word
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // REX.B base r8 with disp8 (REX directly before the opcode, either prefix order), and
+        // REX.X index with SIB + disp8.
+        for bytes in [
+            &[0x65, 0x66, 0x41, 0xf7, 0x40, 0x08, 0x00, 0x80][..],
+            &[0x66, 0x65, 0x41, 0xf7, 0x40, 0x08, 0x00, 0x80][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.length, 8, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::TestGsMemWord { src, immediate: 0x8000 }
+                        if src.base == AddressBase::Register(Register::R8)
+                            && src.displacement == 8
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        let mut memory = Memory::new(&[0x65, 0x66, 0x42, 0xf7, 0x44, 0x8b, 0x10, 0x03, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::TestGsMemWord { src, immediate: 3 }
+                if src.index == Some(Register::R9) && src.scale == 4 && src.displacement == 0x10
+        ));
+        // Non-prefixed, segment-less, register and CS/DS/ES/SS forms keep decoding as the plain
+        // TEST.
+        for bytes in [
+            &[0x66, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
+            &[0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00][..],
+            &[0x65, 0x66, 0xf7, 0xc3, 0x01, 0xff][..],
+            &[0x66, 0xf7, 0xc3, 0x01, 0xff][..],
+            &[0x66, 0x2e, 0xf7, 0x03, 0x01, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::Logic {
+                        kind: LogicKind::Test,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // The other F7 group members, the dword/qword forms, REX.W with 0x66, LOCK/REP, 0x67, a
+        // second segment prefix and a stale REX stay unsupported with the F7 opcode.
+        for bytes in [
+            &[0x65, 0x66, 0xf7, 0x0b, 0x01, 0x00][..],
+            &[0x65, 0x66, 0xf7, 0x13][..],
+            &[0x65, 0x66, 0xf7, 0x1b][..],
+            &[0x64, 0x66, 0xf7, 0x23][..],
+            &[0x64, 0x66, 0xf7, 0x2b][..],
+            &[0x65, 0x66, 0xf7, 0x33][..],
+            &[0x65, 0x66, 0xf7, 0x3b][..],
+            &[0x65, 0xf7, 0x03, 0x01, 0x00, 0x00, 0x00][..],
+            &[0x65, 0x48, 0xf7, 0x03, 0x01, 0x00, 0x00, 0x00][..],
+            &[0x65, 0x66, 0x48, 0xf7, 0x03, 0x01, 0x00, 0x00, 0x00][..],
+            &[0x66, 0x65, 0x48, 0xf7, 0x03, 0x01, 0x00, 0x00, 0x00][..],
+            &[0xf0, 0x65, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0xf3, 0x66, 0x65, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0xf2, 0x65, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0x65, 0x66, 0x67, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0x64, 0x65, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0x65, 0x65, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0x44, 0x65, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+            &[0x65, 0x41, 0x66, 0xf7, 0x03, 0x01, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xf7
                 ),
                 "{bytes:02x?}"
             );
