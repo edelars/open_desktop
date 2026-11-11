@@ -22575,3 +22575,11 @@ R12D-источник и RIP-relative; r8d–r15d источники; базы r
 21 отказ с точным опкодом `0xb1`; вне набора; CPL3); `long_decode::tests::lock_cmpxchg_decodes_the_dword_memory_form_with_lock_only`; отказ вне набора: dword-байты добавлены в
 `execute::tests::lock_cmpxchg_stays_unsupported_in_bare_run_and_step`, `lock_cmpxchg_stays_unsupported_in_the_mov_cr3_profile`, `paged_cr3_probe_keeps_lock_cmpxchg_unsupported`,
 `paged_mov_profile_keeps_lock_cmpxchg_unsupported`; фасад: `linux_direct::tests::lock_cmpxchg_dword_equal_*`, `lock_cmpxchg_dword_unequal_*`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7y-diagnostic-run.json`.
+`lock cmpxchg %edx, (%rbx)` по `0xffffffff81501ee7` проходит (retired 1185026844 → 1185027417, +573). Новая граница: RIP `0xffffffff81537280` (GPA `0x1537280`), байты
+`f0 83 44 24 fc 00 48 39 47 08 5d 0f 95 c0 0f b6` — `lock addl $0x0, -0x4(%rsp)` (LOCK + `83 /0 ib`, ModRM `0x44` + SIB `0x24`, disp8 `0xfc`, imm8 `0`; далее `cmp %rax, 0x8(%rdi)`, `pop %rbp`, `setne %al`);
+`Unsupported { opcode: 0x83 }` (131), `set_exit_detail` = `Run(Unsupported { opcode: 131 })`, `exit_kind` = `unsupported`, retired = 1185027417.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = `0xffffffff84422440`, RBX = `0xffffffff83a03b8a`, RCX = RDX = RSI = 0,
+RDI = `0xffffffff83bb60e0`, RSP = RBP = `0xffffffff83a03b10`, R12 = `0xffffffff83a03b90`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; вывод COM1 пуст;
+`set_members` — прежние. Следующий срез — `LOCK ADD m32, imm8` (`F0 83 /0 ib`, идиома барьера памяти), по аналогии с `LockOrMem` (S4-38L7s); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
