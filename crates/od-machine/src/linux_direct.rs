@@ -3495,6 +3495,58 @@ mod tests {
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
     }
 
+    // ---- S4-38L7z: LOCK ADD m32, imm8 on an RSP base through the board facade ----
+
+    #[test]
+    fn lock_add_dword_at_minus_four_of_rsp_changes_only_that_dword() {
+        // MOV RSP,0x0200_0010; MOV RAX,0x7fffffff_11223344; MOV [RSP-8],RAX;
+        // MOV RCX,0xa5a5a5a5_5a5a5a5a; MOV [RSP],RCX;
+        // LOCK ADD DWORD [RSP-4],1 (`f0 83 44 24 fc 01`: 0x7fffffff + 1 = 0x80000000);
+        // MOV RDX,[RSP-8]; MOV RBX,[RSP]; HLT.
+        let mut code = vec![0x48, 0xBC];
+        code.extend(0x0200_0010u64.to_le_bytes());
+        code.extend(mov_rax_imm64(0x7fff_ffff_1122_3344));
+        code.extend([0x48, 0x89, 0x44, 0x24, 0xF8]);
+        code.extend([0x48, 0xB9]);
+        code.extend(0xa5a5_a5a5_5a5a_5a5au64.to_le_bytes());
+        code.extend([0x48, 0x89, 0x0C, 0x24]);
+        code.extend([0xF0, 0x83, 0x44, 0x24, 0xFC, 0x01]);
+        code.extend([0x48, 0x8B, 0x54, 0x24, 0xF8]);
+        code.extend([0x48, 0x8B, 0x1C, 0x24]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 9, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // The dword at RSP-4 became 0x80000000; the dword at RSP-8 and the qword at RSP are intact.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x8000_0000_1122_3344
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            0xa5a5_a5a5_5a5a_5a5a
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rsp as usize], 0x0200_0010);
+        assert_eq!(state.rflags & (1 << 11), 1 << 11, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+        assert_eq!(state.rflags & 1, 0, "CF");
+    }
+
     // ---- S4-38L7l: LOCK INC m32 through the board facade ----
 
     #[test]
