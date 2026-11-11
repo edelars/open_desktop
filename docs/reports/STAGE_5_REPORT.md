@@ -4,12 +4,12 @@
 
 ## 1. Сводка задач
 
-S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). Методика S5-01 подготовлена исполнителем, ожидает ревью; числовые повторы и soak duration заблокированы недостающими измерениями (ISSUE-076). Контракт S5-02 подготовлен исполнителем и ожидает ревью; файловый backend/его проверки не реализованы (это S5-03). S5-03…S5-21 остаются `not_started`; ни один сценарий A–G не принят, этап 5 не принят.
+S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). Методика S5-01 подготовлена исполнителем, ожидает ревью; числовые повторы и soak duration заблокированы недостающими измерениями (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`; файловый backend/его проверки не реализованы (это S5-03). S5-03…S5-21 остаются `not_started`; ни один сценарий A–G не принят, этап 5 не принят.
 
 | Задача | Статус | Задача | Статус |
 |---|---|---|---|
 | S5-00 | `accepted` | S5-01 | `blocked` |
-| S5-02 | `pending_review` | S5-03 | `not_started` |
+| S5-02 | `accepted` | S5-03 | `not_started` |
 | S5-04 | `not_started` | S5-05 | `not_started` |
 | S5-06 | `not_started` | S5-07 | `not_started` |
 | S5-08 | `not_started` | S5-09 | `not_started` |
@@ -96,4 +96,4 @@ S5-00 принят после независимого архитектурно�
 
 ## 9. Статус S5-02 (2026-11-11)
 
-[Host storage contract](../specs/NVME_DEVICE.md#14-постоянный-backend-на-стороне-host-s5-02) подготовлен исполнителем, ожидает независимого архитектурного ревью; checkbox S5-02 остаётся `[ ]`. Контракт ограничен RAW host backend с `VWC = 0`, per-Write `DurableAck` и существующим generic error mapping S7-16; implementation/tests принадлежат S5-03. Explicit flush refusal в preflight блокирует attach/start без CQE и не quarantine image; runtime Flush refusal до guest mutation даёт CQE `Internal Error` и terminal adapter без quarantine; indeterminate flush error даёт sticky `ReconcileRequired`/quarantine. Flush/write failure после Write делает RAW terminal failed/quarantined до отдельно заданной inspection/reconcile; normal reopen не считается восстановлением. `S7-16` остаётся не принят, `S5-01` — blocked. Не заявляются guest integration, namespace durability или power-loss guarantee.
+[Host storage contract](../specs/NVME_DEVICE.md#14-постоянный-backend-на-стороне-host-s5-02) принят после независимого архитектурного ревью (gpt-6.1-sol, high); проверенный исходный коммит S5-02 — `a14d08a`; checkbox S5-02 отмечен `[x]`. Принят только контракт S5-02; этап 5 не принят. Контракт ограничен RAW host backend с `VWC = 0`, per-Write `DurableAck` и существующим generic error mapping S7-16; implementation/tests принадлежат S5-03. Explicit flush refusal в preflight блокирует attach/start без CQE и не quarantine image; runtime Flush refusal до guest mutation даёт CQE `Internal Error` и terminal adapter без quarantine; indeterminate flush error даёт sticky `ReconcileRequired`/quarantine. Flush/write failure после Write делает RAW terminal failed/quarantined до отдельно заданной inspection/reconcile; normal reopen не считается восстановлением. `S7-16` остаётся не принят, `S5-01` — blocked. Не заявляются guest integration, namespace durability или power-loss guarantee.
