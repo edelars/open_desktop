@@ -22015,3 +22015,91 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER wa
 `msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `DEC m32` с префиксом GS (`65 FF /1`, без LOCK) в наборе CPL0: тот же путь
 read → `arithmetic_result(size, Dec, …)` → write, что у `IncGsMem` (решение — по этой границе; расширять `IncFsMem`/`IncGsMem` до
 `/0|/1` либо добавлять парные `Dec*`).
+
+### `DEC m32/m64` с префиксом FS/GS в наборе CPL0 (S4-38L7q)
+
+Граница S4-38L7p (`65 ff 0d 64 63 f2 02`, `decl %gs:0x2f26364(%rip)`, RIP `0xffffffff814f6cc5`, `Unsupported { opcode: 0xff }`) показала, что
+`DEC r/m32` с memory-операндом и префиксом FS/GS отказывается декодером. Срез добавляет `[64|65] [REX] FF /1` с memory-операндом (mod ≠ 11) для
+любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB без базы и индекса, REX.B/REX.X). Семантика дана **по памяти SDM** (Vol. 2
+«DEC»: `dest = dest − 1`; OF/SF/ZF/AF/PF — по результату, **CF не меняется**; OF = 1 только при `0x80000000 → 0x7fffffff` (для qword —
+`0x8000000000000000 → 0x7fffffffffffffff`); операнд читается и записывается всегда; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4: в
+64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Решение по реализации: одна общая операция вместо парных `Dec*`.** Операции S4-38L7p `IncFsMem`/`IncGsMem` переименованы в
+`IncDecFsMem { destination, kind }` / `IncDecGsMem { destination, kind }`, где `kind` — `ArithmeticKind::Inc` (`FF /0`) или
+`ArithmeticKind::Dec` (`FF /1`). Один код исполнения обслуживает обе операции: `arithmetic_result(size, kind, old, 1, rflags)` уже умеет и
+Inc, и Dec, адрес/каноничность/порядок read → write идентичны. Дублирования (парных `DecFsMem`/`DecGsMem` и копий арма в `transfer`) нет;
+поведение INC S4-38L7p не менялось (все его тесты остаются, меняется только форма шаблона операции в декодерном тесте).
+
+**Qword-форма (решение).** `[64|65] REX.W FF /1` (`DEC m64`) реализована тем же путём, что и qword-INC: размер берётся из
+`MemoryOperand.size` (dword без REX.W, qword с REX.W). Диагностическая граница qword-формы не требует; форма добавлена, чтобы не получить
+следующую границу на соседнем `decq %gs:...`.
+
+**Декодер.** Ветка `0xFF` с `/0|/1`, сегментным префиксом `0x64`/`0x65` и memory-операндом порождает `IncDecFsMem`/`IncDecGsMem`
+(`kind` = `Inc` для `/0`, `Dec` для `/1`). `flag_effects` — как у INC: определены OF/SF/ZF/AF/PF, CF не определён и не меняется, неопределённых
+флагов нет. Отказ (`Unsupported { opcode: 0xff }` без мутации): `FF /2..7` с FS/GS и memory (CALL, far CALL, JMP, far JMP, PUSH, `/7`) — прежним
+путём; любой из LOCK/REP (`F0`/`F2`/`F3`; `LOCK DEC` не существует в нашей модели — S4-38L7l покрывает только `LOCK INC`, форма с `LOCK` +
+сегментный префикс остаётся отказом); `66` (word); `67`; второй сегментный префикс; **REX не непосредственно перед опкодом — для обеих
+ширин** (то же сужение, что у S4-38L7p: `48 65 ff 0b`, `44 64 ff 0b`, `48 65 48 ff 0b`, `41 65 48 ff 0b`, `48 64 48 ff 0b` — отказ с `0xff`,
+в том числе когда REX.W стоит прямо перед опкодом; осознанное расхождение с S4-38L7i). Байтовая форма `FE /1` (DEC m8) с FS/GS остаётся отказом с
+опкодом `0xfe` (общий фильтр сегментных префиксов).
+
+**REX.** REX непосредственно перед `FF`: REX.W выбирает qword, REX.R не влияет (поле reg — расширение опкода `/1`; регистра-приёмника нет,
+регистры не меняются), REX.B расширяет базовый регистр (r8–r15), REX.X — индекс (r8–r15; тест с декоем в легаси-регистре того же номера).
+
+**Регистровая форма (mod = 11) и беспрефиксная форма не менялись.** `65 ff cb` продолжает декодироваться как обычный `DEC r32` (сегментный
+префикс на регистровой форме не имеет смысла; исполняется как раньше, без отказа и вне набора; закреплено тестом); `FF /1` с memory без
+префикса, а также с CS/DS/ES/SS (база игнорируется), исполняется прежним путём `Arithmetic { Dec }`. Это отклонение от формулировки «регистровая
+форма — отказ»: отказ сузил бы уже принятое поведение вне набора без причины (так же решено в S4-38L7o/p).
+
+**Адрес.** Как у S4-38L7p: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, длина — с префиксом) плюс
+`state.fs_base`/`state.gs_base` (`wrapping_add`), функция `access_address_48_with_segment_base`. Каноничность начала и последнего байта
+(`адрес + 3` для dword, `+ 7` для qword) проверяется **до доступа**: иначе `#GP(0)` без чтения, без записи и без мутации (для баз RSP/RBP тоже
+`#GP(0)`, не `#SS`).
+
+**Исполнение.** Операнд читается одним `memory.read_integer` размера 4/8, результат и флаги даёт **общая** `arithmetic_result(size, Dec, old, 1,
+rflags)` (новой арифметики нет), результат записывается `memory.write_integer` того же размера, и только после успешной записи фиксируются
+флаги (OF/SF/ZF/AF/PF по результату, CF сохраняется, остальные биты RFLAGS сохраняются). Соседние байты и регистры не меняются. RIP += длина,
+retired + 1 — только при успехе. При `#GP(0)`, `#PF` на чтении и `#PF` на записи память, флаги, RIP, регистры и retired не меняются.
+Проверенные вручную значения флагов (dword): `0x80000000 → 0x7fffffff` — OF, PF, AF (SF = 0, ZF = 0); `0 → 0xffffffff` — SF, PF, AF, CF
+сохраняется; `1 → 0` — ZF, PF, **AF = 0** (граница в бите 4 не пересекается; в задании AF для этого случая предполагался под вопросом — по
+`arithmetic_result` AF не ставится); `0x10 → 0x0f` — AF, PF; `0x80000001 → 0x80000000` — SF, PF. Qword: `0x100000000 → 0xffffffff` —
+PF, AF (SF = 0, ZF = 0, не оборачивается в dword).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xff }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и
+голые `run`/`step` форму не принимают (тест отказа в каждом, с точным опкодом `0xff`).
+
+**Не делалось.** `FF /2..7` с FS/GS, `FE /0|/1` с FS/GS, `LOCK DEC`, прочие опкоды с префиксом, `SWAPGS`/MSR, CR, CPUID, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::` — `gs_dec_dword_boundary_form_*` (граничная форма `65 ff 0d 64 63 f2 02`), `fs_dec_dword_rip_relative_*`,
+`segment_dec_with_a_zero_base_*`, `segment_dec_dword_overflow_and_wraparound_flags` (10 значений; FS и GS; 2 набора начальных флагов),
+`segment_dec_keeps_cf_clear_and_set_on_the_wrap_and_the_overflow`, `segment_dec_matches_the_non_prefixed_dec_on_the_same_value`,
+`segment_dec_with_base_register_index_scale_and_displacement`, `segment_dec_with_rex_b_uses_r8_to_r15_*`,
+`segment_dec_with_rex_x_uses_r8_to_r15_as_the_index`, `segment_dec_accepts_a_rex_directly_before_the_opcode_and_ignores_rex_r`,
+`segment_dec_qword_form_decrements_all_eight_bytes`, `segment_dec_non_canonical_address_is_gp0_without_mutation_or_access`,
+`segment_dec_last_canonical_dword_is_accessible`, `segment_dec_through_a_non_canonical_rsp_or_rbp_base_is_gp0_not_ss`,
+`segment_dec_write_fault_*`, `segment_dec_read_fault_*`, `segment_dec_forms_outside_the_slice_are_refused_with_the_exact_opcode` (отказы с
+точным опкодом: `FF /2..7`, LOCK/REP, 0x66/0x67, второй сегментный префикс, устаревший REX обеих ширин, `FE /1`, соседние формы),
+`segment_dec_register_form_and_plain_form_keep_their_old_behavior`, `segment_dec_leaves_the_inc_forms_working_in_the_same_run`,
+`segment_dec_stays_unsupported_outside_the_set`, `segment_dec_is_not_reachable_from_cpl3`;
+`long_decode::tests::segment_dec_decodes_fs_gs_memory_forms_only` (и обновлённый `segment_inc_decodes_fs_gs_memory_forms_only`); отказ вне набора:
+`execute::tests::segment_dec_forms_stay_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::fs_gs_dec_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_dec_forms_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_dec_forms_unsupported`,
+`paged_probe_profile::fs_gs_dec_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::gs_dec_dword_after_wrmsr_gs_base_decrements_four_bytes_and_keeps_cf_and_the_neighbour`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7q-diagnostic-run.json`. `decl %gs:0x2f26364(%rip)` по RIP `0xffffffff814f6cc5` и последующие инструкции
+(`je`, `pop %rbp`, ...) проходят (retired 1137490741 → 1137490747, +6). Новая граница: RIP `0xffffffff815167b4`, байты
+`65 66 f7 05 73 68 f0 02 01 ff 0f 85 e9 02 00 00` (первая инструкция — `testw $0xff01, %gs:0x2f06873(%rip)`: `TEST m16, imm16`, `F7 /0`, с
+префиксом GS перед `66`, RIP-relative, imm16 = `0xff01`; далее `jne` rel32 `0f 85 e9 02 00 00`), `Unsupported { opcode: 0xf7 }`,
+`set_exit_detail` = `Run(Unsupported { opcode: 247 })`, `exit_kind` = `unsupported`, retired = 1137490747. Регистры на остановке: RAX = RCX = RDX =
+RSI = RDI = 0, RBX = `0xffffffff844b775a`, RSP = `0xffffffff83a03cf8`, RBP = `0xffffffff83a03dc8`, R12 = `0xffffffff83a03e70`, R8–R11,
+R13–R15 = 0, RFLAGS = `0x2`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER
+`0xd01`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 26; `set_members` = `cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`,
+`msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `TEST m16, imm16` с префиксами `65 66` (`F7 /0 iw`, GS и 66, без
+LOCK) в наборе CPL0: это ширина word, которой в наборе пока нет ни у одной FS/GS-формы (S4-38L7o покрывает только `TEST m8, imm8`), поэтому
+потребуется отдельное решение по порядку префиксов `65 66` / `66 65`, чтению/записи word и каноничности `адрес + 1`.
