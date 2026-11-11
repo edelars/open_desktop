@@ -3836,6 +3836,47 @@ mod tests {
         assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0x18);
     }
 
+    // ---- S4-38L7v: repeated CS/DS/ES/SS prefixes through the board facade ----
+
+    #[test]
+    fn repeated_cs_ds_prefixes_before_xor_and_mov_execute_like_the_unprefixed_forms() {
+        // MOV EAX,0x12345678; `ds ds mov %rax,%rbx` (3E 3E 48 89 C3);
+        // `cs cs cs xor %eax,%eax` (2E 2E 2E 31 C0, the S4-38L7u diagnostic boundary); HLT.
+        let mut code = Vec::new();
+        code.extend(mov_eax(0x1234_5678));
+        code.extend([0x3E, 0x3E, 0x48, 0x89, 0xC3]);
+        code.extend([0x2E, 0x2E, 0x2E, 0x31, 0xC0]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip0 = boot.board.state().rip;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "MOV, MOV, XOR, HLT: {record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gpr[Register::Rax as usize], 0, "XOR cleared RAX");
+        assert_eq!(
+            state.gpr[Register::Rbx as usize],
+            0x1234_5678,
+            "the MOV copied RAX"
+        );
+        // ZF = 1, PF = 1, CF = 0, OF = 0, SF = 0.
+        assert_eq!(state.rflags & (0x1 | 0x4 | 0x40 | 0x80 | 0x800), 0x44);
+        // RIP advanced over every prefix byte (HLT retires with RIP after it).
+        assert_eq!(state.rip, rip0 + code.len() as u64);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
