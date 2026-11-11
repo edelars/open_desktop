@@ -34798,6 +34798,13 @@ fn step_configured(
         | Operation::LockBitMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
+        // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
+        // selector is known to the model (CS/SS selectors are optional state).
+        Operation::MovSregStore { sreg, .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && visible_selector(state, sreg).is_some()
+        }
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
         Operation::ReadCr0 | Operation::WriteCr0 => {
@@ -48527,6 +48534,7 @@ fn step_configured(
         | Operation::LockIncMem { .. }
         | Operation::LockOrMem { .. }
         | Operation::LockBitMem { .. }
+        | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::Extend { .. }
@@ -53768,6 +53776,34 @@ fn transfer(
             let value = state.read(src);
             memory.write_integer(address, context, dst.size, value)?;
         }
+        Operation::MovSregStore { dst, sreg, segment } => {
+            // S4-38L7u: the selector is the visible value loaded before the instruction (the
+            // executable gate admitted only known selectors). The register form zero-extends it
+            // to the destination width (Dword clears bits 63:32 of the register, Qword is
+            // 64 bits); the memory form writes 16 bits through the adapter with the FS/GS base
+            // when that prefix is present, otherwise through the flat DS (base 0) path, whose
+            // non-canonical start or last byte is #GP(0) (#SS(0) for RSP/RBP bases). The address is
+            // resolved before any write; flags are not affected.
+            let selector = u64::from(
+                visible_selector(state, sreg).expect("the executable gate admitted the selector"),
+            );
+            match dst {
+                Operand::Register(view) => state.write(view, selector),
+                Operand::Memory(mem) => {
+                    let address = match segment {
+                        Some(0x64) => {
+                            mem.access_address_48_with_segment_base(state, next_rip, state.fs_base)?
+                        }
+                        Some(0x65) => {
+                            mem.access_address_48_with_segment_base(state, next_rip, state.gs_base)?
+                        }
+                        _ => mem.access_address_48(state, next_rip)?,
+                    };
+                    memory.write_integer(address, context, mem.size, selector)?;
+                }
+                Operand::Immediate(_) => unreachable!("MOV r/m, Sreg has no immediate destination"),
+            }
+        }
         Operation::MovFsSelectorToRax => {
             state.gpr[Register::Rax as usize] = u64::from(state.fs_selector);
         }
@@ -53831,6 +53867,20 @@ fn read_operand(
             let address = mem.access_address_48(state, next_rip)?;
             memory.read_integer(address, context, mem.size)
         }
+    }
+}
+
+/// S4-38L7u: the visible selector of segment register `sreg` (0 ES, 1 CS, 2 SS, 3 DS, 4 FS,
+/// 5 GS). CS and SS selectors are optional model state; `None` means the model does not know it.
+fn visible_selector(state: &LongModeState, sreg: u8) -> Option<u16> {
+    match sreg {
+        0 => Some(state.es_selector),
+        1 => state.cs_selector,
+        2 => state.ss_selector,
+        3 => Some(state.ds_selector),
+        4 => Some(state.fs_selector),
+        5 => Some(state.gs_selector),
+        _ => None,
     }
 }
 
@@ -64613,6 +64663,55 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xb3 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn mov_sreg_store_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7u widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `MOV r/m, Sreg` with opcode 0x8c and without mutation.
+        for bytes in [
+            &[0x8c, 0xd0][..],
+            &[0x48, 0x8c, 0xd8][..],
+            &[0x8c, 0x1b][..],
+            &[0x65, 0x8c, 0x03][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            bare.ss_selector = Some(0x20);
+            bare.cs_selector = Some(0x10);
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x8c },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x8c }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -154258,6 +154357,41 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn mov_sreg_store_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7u belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x8c, 0xd0][..],
+            &[0x48, 0x8c, 0xd8][..],
+            &[0x8c, 0x1b][..],
+            &[0x65, 0x8c, 0x03][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.ss_selector = Some(0x20);
+            state.cs_selector = Some(0x10);
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x8c },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fs_gs_test_byte_forms_stay_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7o belongs to the CPL0 set only; this profile refuses the forms without mutation.
         for bytes in [
@@ -155099,6 +155233,31 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0xb3 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_mov_sreg_store_unsupported() {
+        for bytes in [
+            &[0x8c, 0xd0][..],
+            &[0x48, 0x8c, 0xd8][..],
+            &[0x8c, 0x1b][..],
+            &[0x65, 0x8c, 0x03][..],
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.ss_selector = Some(0x20);
+            state.cs_selector = Some(0x10);
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x8c },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -156941,6 +157100,35 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb3 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_mov_sreg_store_unsupported() {
+        // S4-38L7u belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x8c, 0xd0][..],
+            &[0x48, 0x8c, 0xd8][..],
+            &[0x8c, 0x1b][..],
+            &[0x65, 0x8c, 0x03][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.ss_selector = Some(0x20);
+            state.cs_selector = Some(0x10);
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8c });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

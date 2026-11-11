@@ -518,6 +518,16 @@ pub enum Operation {
     /// The sole supported segment-register read in S2-22c: `48 8C E0`.
     MovFsSelectorToRax,
     MovGsSelectorToRax,
+    /// S4-38L7u: `[REX] 8C /r` (MOV r/m, Sreg) for Sreg 0..=5 (ES, CS, SS, DS, FS, GS) other than
+    /// the exact S2-22c `MovFsSelectorToRax`/`MovGsSelectorToRax` forms. The register form
+    /// (`mod == 3`) has a Dword (zero-extending) or, with REX.W, a Qword destination; the memory
+    /// form writes the 16-bit selector (`dst.size == Word`) with an optional FS/GS prefix
+    /// (`segment`). Executed only in the CPL0 set.
+    MovSregStore {
+        dst: Operand,
+        sreg: u8,
+        segment: Option<u8>,
+    },
     /// The sole S2-22e descriptor-rights check: bare `0F 00 E8` (VERW AX).
     VerwGdt,
     /// Exact bare Long64 `0F 01 F8`; execution requires an explicit profile.
@@ -8685,20 +8695,59 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, 0x8c) => {
                 let modrm = self.byte()?;
-                if self.length != 3
-                    || prefixes.rex != Some(0x48)
-                    || prefixes.group1.is_some()
-                    || prefixes.segment.is_some()
-                    || prefixes.operand_override
-                    || prefixes.address_override
-                    || !matches!(modrm, 0xe0 | 0xe8)
+                if self.length == 3
+                    && prefixes.rex == Some(0x48)
+                    && prefixes.group1.is_none()
+                    && prefixes.segment.is_none()
+                    && !prefixes.operand_override
+                    && !prefixes.address_override
+                    && matches!(modrm, 0xe0 | 0xe8)
                 {
-                    return Err(self.unsupported(opcode));
-                }
-                if modrm == 0xe0 {
-                    Operation::MovFsSelectorToRax
+                    // The exact S2-22c forms keep their own operations.
+                    if modrm == 0xe0 {
+                        Operation::MovFsSelectorToRax
+                    } else {
+                        Operation::MovGsSelectorToRax
+                    }
                 } else {
-                    Operation::MovGsSelectorToRax
+                    // S4-38L7u: `[REX] 8C /r`, Sreg 0..=5. 0x66/0x67, LOCK/REP, a segment prefix
+                    // other than one FS/GS on a memory form, and a REX byte that is not
+                    // immediately before the opcode (ignored per SDM Vol.2 2.2.1, refused here
+                    // conservatively) stay Unsupported. REX.R is ignored (the reg field names a
+                    // segment register), REX.B/X extend the r/m operand, REX.W selects a Qword
+                    // register destination (a memory destination is always 16 bits).
+                    let sreg = (modrm >> 3) & 7;
+                    let register_form = modrm >> 6 == 3;
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if sreg > 5
+                        || stale_rex
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                        || match prefixes.segment {
+                            None => false,
+                            Some(0x64 | 0x65) => register_form,
+                            Some(_) => true,
+                        }
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let destination_size = if !register_form {
+                        OperandSize::Word
+                    } else if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else {
+                        OperandSize::Dword
+                    };
+                    size = destination_size;
+                    Operation::MovSregStore {
+                        dst: self.rm_operand(modrm, prefixes, destination_size)?,
+                        sreg,
+                        segment: prefixes.segment,
+                    }
                 }
             }
             (OpcodeMap::Primary, 0x8e) => {
@@ -23363,13 +23412,10 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::MovGsSelectorToRax
         ));
+        // S4-38L7u: the other `[REX] 8C /r` forms decode as `MovSregStore` (see
+        // `mov_sreg_store_decodes_register_and_memory_forms_and_refuses_the_rest`); the forms
+        // below stay refused.
         for bytes in [
-            &[0x8c, 0xe0][..],
-            &[0x48, 0x8c, 0xc0][..],
-            &[0x48, 0x8c, 0xe1][..],
-            &[0x49, 0x8c, 0xe8][..],
-            &[0x48, 0x8c, 0x20][..],
-            &[0x48, 0x8c, 0x28][..],
             &[0x66, 0x48, 0x8c, 0xe0][..],
             &[0x66, 0x48, 0x8c, 0xe8][..],
             &[0x64, 0x48, 0x8c, 0xe0][..],
@@ -23392,6 +23438,120 @@ mod tests {
             let mut memory = Memory::new(&[0x48, 0x8c, 0xe8][..length]);
             assert!(matches!(memory.decode(), Err(DecodeError::Memory(_))));
             assert_eq!(memory.fetched.len(), length + 1);
+        }
+    }
+
+    #[test]
+    fn mov_sreg_store_decodes_register_and_memory_forms_and_refuses_the_rest() {
+        // The S4-38L7t diagnostic boundary: `8c d0` = `mov %ss, %eax`.
+        let mut memory = Memory::new(&[0x8c, 0xd0]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 2);
+        assert_eq!(decoded.opcode.byte, 0x8c);
+        assert_eq!(decoded.operand_size, OperandSize::Dword);
+        assert_eq!(decoded.flag_effects(), FlagEffects::default());
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovSregStore {
+                dst: Operand::Register(dst),
+                sreg: 2,
+                segment: None,
+            } if dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+        ));
+        // REX.W: a Qword destination; REX.B: r8; REX.R is ignored.
+        let mut memory = Memory::new(&[0x48, 0x8c, 0xd8]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovSregStore {
+                dst: Operand::Register(dst),
+                sreg: 3,
+                segment: None,
+            } if dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+        ));
+        let mut memory = Memory::new(&[0x41, 0x8c, 0xd0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovSregStore {
+                dst: Operand::Register(dst),
+                sreg: 2,
+                ..
+            } if dst == RegisterView::low(Register::R8, OperandSize::Dword)
+        ));
+        let mut memory = Memory::new(&[0x44, 0x8c, 0xd0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovSregStore {
+                dst: Operand::Register(dst),
+                sreg: 2,
+                ..
+            } if dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+        ));
+        // Every Sreg 0..=5.
+        for sreg in 0u8..=5 {
+            let mut memory = Memory::new(&[0x8c, 0xc0 | (sreg << 3)]);
+            assert!(matches!(
+                memory.decode().unwrap().operation,
+                Operation::MovSregStore { sreg: s, .. } if s == sreg
+            ));
+        }
+        // Memory: always a Word destination, REX.W does not widen it; optional FS/GS prefix.
+        let mut memory = Memory::new(&[0x65, 0x8c, 0x05, 0x10, 0x00, 0x00, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 7);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovSregStore {
+                dst: Operand::Memory(mem),
+                sreg: 0,
+                segment: Some(0x65),
+            } if mem.size == OperandSize::Word
+                && mem.base == AddressBase::NextRip
+                && mem.displacement == 0x10
+        ));
+        let mut memory = Memory::new(&[0x64, 0x48, 0x8c, 0x1b]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovSregStore {
+                dst: Operand::Memory(mem),
+                sreg: 3,
+                segment: Some(0x64),
+            } if mem.size == OperandSize::Word && mem.base == AddressBase::Register(Register::Rbx)
+        ));
+        let mut memory = Memory::new(&[0x8c, 0x1b]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovSregStore { segment: None, .. }
+        ));
+        // Refused forms: reserved Sreg 6/7, LOCK/REP, 0x66, 0x67, segment prefixes on a register
+        // form or other than one FS/GS on a memory form, and a stale REX.
+        for bytes in [
+            &[0x8c, 0xf0][..],
+            &[0x8c, 0xf8][..],
+            &[0x8c, 0x33][..],
+            &[0xf0, 0x8c, 0xd0][..],
+            &[0xf3, 0x8c, 0xd0][..],
+            &[0xf2, 0x8c, 0x1b][..],
+            &[0x66, 0x8c, 0xd0][..],
+            &[0x67, 0x8c, 0x1b][..],
+            &[0x65, 0x8c, 0xd0][..],
+            &[0x2e, 0x8c, 0x1b][..],
+            &[0x64, 0x65, 0x8c, 0x1b][..],
+            &[0x48, 0x66, 0x8c, 0xd0][..],
+            &[0x41, 0x65, 0x8c, 0x03][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0x8c
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // The decoder fetches no more than the instruction needs.
+        for length in 1..2 {
+            let mut memory = Memory::new(&[0x8c, 0xd0][..length]);
+            assert!(matches!(memory.decode(), Err(DecodeError::Memory(_))));
         }
     }
 

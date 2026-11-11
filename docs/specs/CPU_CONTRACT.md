@@ -22322,3 +22322,71 @@ RSP = `0xffffffff83a03d88`, RBP = `0xffffffff83a03da8`, RFLAGS = `0x46`; CR0 = `
 `set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`). Следующий срез —
 `MOV r32, Sreg` (`8C /r`, чтение селектора SS; семантику и состояние селекторов проверить по `LongModeState`) в наборе CPL0 (решение — по этой
 границе).
+
+### `MOV r/m16/32/64, Sreg` (`[REX] 8C /r`) в наборе CPL0 (S4-38L7u)
+
+Граница S4-38L7t (`8c d0`, `mov %ss, %eax`, RIP `0xffffffff813adf2c`, `Unsupported { opcode: 0x8c }`) показала, что декодер знает у `8C`
+только точные формы `48 8C E0` / `48 8C E8` (чтение FS/GS в RAX, S2-22c). Срез добавляет общее чтение селектора сегментного регистра.
+Семантика дана **по памяти SDM** (Vol. 2 «MOV — Move to/from Segment Registers»: регистровый приёмник получает селектор с нулевым
+расширением до 32/64 бит; memory-приёмник получает 16 бит независимо от размера операнда; флаги не затрагиваются), по первоисточнику
+**не сверялась**.
+
+**Состояние селекторов (проверено по `LongModeState`).** `es_selector: u16`, `ds_selector: u16`, `fs_selector: u16`, `gs_selector: u16`
+(не `Option`); `cs_selector: Option<u16>` и `ss_selector: Option<u16>`. Для CS/SS значение `None` означает «модель селектор не знает»: форма
+отказывается `Unsupported { opcode: 0x8c }` без мутации, значение не выдумывается. Селектор берётся из состояния (значение, загруженное
+до инструкции); с дескрипторными кэшами он не сверяется — для набора CPL0 значения селекторов могут не совпадать с дескрипторами, это
+ограничение модели.
+
+**Операция.** `Operation::MovSregStore { dst: Operand, sreg: u8, segment: Option<u8> }` (`sreg` = ES 0, CS 1, SS 2, DS 3, FS 4, GS 5; `segment` —
+`0x64`/`0x65` только у memory-формы). Точные `48 8C E0|E8` остаются прежними `MovFsSelectorToRax`/`MovGsSelectorToRax` (исполняются и вне
+набора, как раньше); все прочие допустимые формы — новая операция. `flag_effects` — по умолчанию (флаги не меняются).
+
+**Декодер.** Допускается `[REX] 8C /r` с reg-полем 0..5. Регистровая форма (`mod = 11`): без REX.W — приёмник Dword (запись обнуляет
+биты 63:32 регистра), с REX.W — Qword; REX.B выбирает r8–r15; REX.R/REX.X на выбор Sreg не влияют (REX.R игнорируется). Memory-форма:
+приёмник всегда Word, REX.W не расширяет запись; допускается не более одного сегментного префикса `64`/`65`. Отказ (`Unsupported { opcode: 0x8c }`
+без мутации): reg 6 и 7; LOCK, `F2`, `F3`; `66` (**решение — консервативно отказать**, включая 16-битную регистровую форму, которая
+по SDM сохраняла бы старшие биты регистра; ядру она не нужна); `67` (и регистровая, и memory-форма); сегментный префикс у регистровой
+формы; у memory-формы любой сегментный префикс, кроме одного `64`/`65` (`26`/`2E`/`36`/`3E` и повторные — отказ); REX не непосредственно
+перед опкодом (по SDM Vol. 2 2.2.1 такой REX игнорируется; здесь отказ из консерватизма, как в S4-38L7m).
+
+**Исполнение.** Регистровая форма: селектор записывается в приёмник с нулевым расширением (`state.write`); память не затрагивается.
+Memory-форма: адрес вычисляется до записи; без префикса — путь «плоского» DS (`access_address_48`: неканоническое начало или последний
+байт, т. е. адрес+1, → `#GP(0)`, для баз RSP/RBP — `#SS(0)`); с `64`/`65` — база FS/GS (`access_address_48_with_segment_base`, `#GP(0)`,
+в том числе для баз RSP/RBP, как у прочих FS/GS-форм); затем `write_integer` размера 2 через адаптер (`#PF` на записи — ничего не
+меняется). RIP += длина, retired +1 только при успехе; флаги не меняются. Чтения памяти нет.
+
+**Гейт.** `control_policy` задана, CPL0 и селектор известен (CS/SS не `None`); иначе `Unsupported { opcode: 0x8c }` без мутации. CPL3 в набор
+не допускается (`WrongPrivilege`); `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль, `step_paged_mov` и голые `run`/`step`
+формы (кроме прежних точных `48 8C E0|E8`) не принимают.
+
+**Не делалось.** `66`-форма (16-битная запись в регистр), `67`, проверка селектора по дескрипторам, `MOV Sreg` с memory-источником
+(`8E /r` m16), `PUSH Sreg`/`POP Sreg`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::mov_sreg_*` (регистровые формы `8c d0` (SS→eax, старшие 32 бита RAX обнуляются при стартовом `0xdeadbeef…`),
+`8c d8`, `8c c0`, `8c c8`, `8c e0`, `8c e8`, `48 8c d8` и др. с REX.W, REX.B r8/r15, REX.R/REX.X игнорируются — 20 форм; флаги и
+определённость не меняются; memory-формы: `(%rbx)`, disp8, REX.B, RIP-relative, запись ровно 2 байт без изменения соседних; FS/GS-префикс:
+база плюс адрес, без префикса база не прибавляется; `#GP(0)` при неканоническом начале/последнем байте/базе без записи; `#SS(0)`
+для RSP/RBP без префикса и `#GP(0)` с `65`; `#PF` на записи без мутации; 28 отказов с точным опкодом `0x8c`; неизвестные CS/SS;
+вне набора (`run` на `legacy_state`); CPL3; две записи подряд);
+`long_decode::tests::mov_sreg_store_decodes_register_and_memory_forms_and_refuses_the_rest` (в тесте точных форм S2-22c убраны записи,
+ставшие допустимыми); вне набора: `execute::tests::mov_sreg_store_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::mov_sreg_store_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_mov_sreg_store_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_mov_sreg_store_unsupported`,
+`paged_probe_profile::mov_sreg_store_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::mov_sreg_store_reads_loaded_selectors_and_writes_two_bytes_at_the_gs_base`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7u-diagnostic-run.json`. `mov %ss, %eax` по RIP `0xffffffff813adf2c` и последующие инструкции
+проходят (retired 1180654930 → 1181834729, +1179799). Новая граница: RIP `0xffffffff8273440d`, байты
+`2e 2e 2e 31 c0 65 48 8b 15 fe 8b ce 01 31 c0 f0` (первая инструкция — `cs cs cs xor %eax, %eax`: `31 C0` с тремя повторными префиксами
+`2E`; повторные префиксы одной группы декодер отказывает как `duplicate`; далее `mov %gs:0x1ce8bfe(%rip), %rdx`, `xor %eax, %eax`, `lock …`),
+`Unsupported { opcode: 0x31 }`, `set_exit_detail` = `Run(Unsupported { opcode: 49 })`, `exit_kind` = `unsupported`, retired = 1181834729.
+Регистры на остановке: RAX = `0xffffffff83a94050`, RBX = RDI = `0xffffffff83a8d980`,
+RCX = RSI = R8 = R10 = R11 = R13 = R14 = 0, RDX = R12 = `0xffffffff81753890`, R9 = `0xfffffffffe4677ea`, R15 = `0xffffffff830e67a8`,
+RSP = `0xffffffff83a03de8`, RBP = `0xffffffff83a03df0`, RFLAGS = `0x86`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000`
+(`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 26;
+`set_members` те же (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`). Следующий срез —
+вопрос к решению: `31 C0` (XOR r/m32, r32) с повторяющимися префиксами `2E` (padding-префиксы CS, в 64-битном режиме игнорируются; ядро
+использует их для выравнивания альтернатив, `alternatives`/`nospec`); потребуется политика декодера для повторных сегментных префиксов
+`26/2E/36/3E` (SDM: допустимо, эффект игнорируется) — решение принять по этой границе.
