@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-074-s3-55-mixed-fallback-witness"></a>
+
+### ISSUE-074 — S3-55: строгий witness не представляет смешанный native/fallback поток
+
+- **Дата обнаружения:** 2026-11-11, архитектурный анализ S3-55.
+- **Компонент:** `od-jit` register admission и interpreter fallback ([`block.rs`](../crates/od-jit/src/block.rs), [`dispatch.rs`](../crates/od-jit/src/dispatch.rs)).
+- **Статус:** открыта; реализация и acceptance S3-55 заблокированы в текущей границе задачи.
+- **Суть и последствия:** `NativeRegisterV1Admission::from_code` сканирует весь `CodeView` и возвращает `UnsupportedInstruction` на первой форме, которой отказал register classifier (`block.rs:399–455, 1087–1094`). Поэтому для смешанного потока native → bare CLD/STD → native строгий witness не создаётся и текущий generic dispatcher не получает вход для требуемого fallback. При этом `step_admitted_fallback` допускает для `NativeRegisterV1` только уже допущенный NOP (`dispatch.rs:4145–4185`); снятие этого guard само по себе не создаёт смешанный witness.
+- **Основание и условия:** анализ действующих исходников в `codex` на `6c438a8`, подробно в [отчёте S3 Core](reports/STAGE_3_CORE_REPORT.md#8-s3-55--interpreter-fallback). `CodeMemory::one_instruction` ограничивает fetch одним байтом и запрещает data-memory access (`block.rs:8033–8076`); существующий admitted fallback для выбранных известных форм использует `bounded_range` с известной длиной и `od_isa::execute::step` (`dispatch.rs:4194–4215`). Это описание границ кода, а не результат выполнения mixed-корпуса. Формы, требующие отдельного execution profile или иного входа, в таком fallback остаются неподдержанными.
+- **Следующий шаг:** уточнить границы S3-55 и архитектурно определить opt-in mixed-code witness/descriptor: сохранить decoded boundaries и native-классы существующего admission, отдельно пометить допустимые однобайтовые helper-sites, не меняя строгую семантику прежних `from_code`/wrappers. В текущей архитектуре предложенный seam затрагивает `block.rs` и, возможно, `block_compile.rs`, тогда как план указывает `dispatch.rs`. После согласования границы реализовать повторную проверку context/code, учёт и проверки progress, budget/STOP/fault и mixed-корпуса. Не расширять `od-isa` или native-набор ради обхода blocker.
+
 <a id="issue-055-s9-host-durability-guarantee-unconfirmed"></a>
 
 ### ISSUE-055 — Host durability guarantee for macOS/APFS is unconfirmed

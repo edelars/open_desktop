@@ -14,8 +14,9 @@
 | S3-51 — единые правила допуска | Независимое архитектурное ревью Sol пройдено; коммит `8dcaac8`, Graphify обновлён |
 | S3-52 — один механизм допуска | Независимое ревью Sol одобрено; коммит `dd9c9bb`, Graphify обновлён |
 | S3-53 — единая точка входа диспетчера | Независимое ревью Sol одобрено; коммит `8aab6f3`, Graphify обновлён |
-| S3-54 — generic путь и multi-entry cache | Проверки выполнены, независимое ревью Sol одобрено; коммит следует |
-| S3-55…S3-57 | not_started |
+| S3-54 — generic путь и multi-entry cache | Проверки выполнены, независимое ревью Sol одобрено; коммит `6c438a8`, Graphify обновлён |
+| S3-55 — interpreter fallback | Заблокировано: требуется смешанный witness и уточнение границы файлов задачи |
+| S3-56…S3-57 | not_started |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -346,7 +347,7 @@ cargo test -p od-jit --lib --release --offline s3_53_dispatch_entry_microbench -
 
 ## 7. S3-54 — generic путь и multi-entry cache
 
-Статус: независимое ревью Sol одобрено; коммит следует. Добавлен `run_multi_cached_native_register_v1_controlled` через общую точку `run_register_dispatch`, `MultiEntryRegisterPath` и существующие `MultiEntryBlockCache`/`MultiBlockCachedBackend`. Состав `TranslationKey`, алгоритмы FIFO/LRU и существующие memory/fixture entrypoints не изменены. Существующий native cached loop обобщён на `CachedEntryStore`; после `record_hit` он заново находит ключ, поскольку LRU может переместить запись. `reset_for_execution_context` принимает native cached fixture; legacy fixture dispatcher по-прежнему отвергает native profile.
+Статус: независимое ревью Sol одобрено; коммит `6c438a8` в `codex`, Graphify обновлён. Добавлен `run_multi_cached_native_register_v1_controlled` через общую точку `run_register_dispatch`, `MultiEntryRegisterPath` и существующие `MultiEntryBlockCache`/`MultiBlockCachedBackend`. Состав `TranslationKey`, алгоритмы FIFO/LRU и существующие memory/fixture entrypoints не изменены. Существующий native cached loop обобщён на `CachedEntryStore`; после `record_hit` он заново находит ключ, поскольку LRU может переместить запись. `reset_for_execution_context` принимает native cached fixture; legacy fixture dispatcher по-прежнему отвергает native profile.
 
 Тест `s3_54_register_corpus_cold_warm_counters_and_flag_isolation` прогоняет 15 отдельных bounded code views (baseline, S3-32a и 13 native форм) в каждом режиме флагов; mock backend отслеживает опубликованные handles. Счётчики на каждый режим:
 
@@ -363,7 +364,12 @@ ARM64 host-тест `s3_54_native_multi_cache_reuses_published_handle` выпо�
 
 ## 8. S3-55 — interpreter fallback
 
-Статус: not_started.
+**Статус (2026-11-11): blocked, реализация и приёмочные проверки не выполнены.** Архитектурный анализ Sol выявил несовместимость текущего full-code witness с требуемым смешанным потоком native-инструкций и инструкций, которым native admission отказал. Проблема зарегистрирована как [ISSUE-074](../KNOWN_ISSUES.md#issue-074-s3-55-mixed-fallback-witness). Пункты 1–4 `S3-16` на generic пути и сама `S3-16` остаются открытыми.
+
+- **Компонент и основание:** [`NativeRegisterV1Admission::from_code`](../../crates/od-jit/src/block.rs) вызывает `scan_register_code` для всего `CodeView` (`block.rs:399–455, 1087–1094`). Scanner возвращает `UnsupportedInstruction { rip }` при первом отказе classifier, до создания witness. Поэтому смешанный `CodeView`, например native → bare CLD/STD → native, нельзя передать текущему generic dispatcher: строгий witness для него не создаётся. Это не означает, что CLD/STD приняты native-путём.
+- **Граница интерпретатора:** `CodeMemory::one_instruction` в том же файле (`block.rs:8033–8076`) ограничивает fetch диапазоном `[rip, rip + 1)` и запрещает data-memory access. Он пригоден для однобайтового helper-site, но не может обеспечить fetch многобайтовой инструкции. Существующий [`step_admitted_fallback`](../../crates/od-jit/src/dispatch.rs) (`dispatch.rs:4145–4215`) допускает для `NativeRegisterV1` только уже допущенный NOP; он использует `bounded_range` с известной длиной для выбранных допущенных форм и затем вызывает `od_isa::execute::step`. Снятие одного этого guard не создаёт witness для отказанной формы.
+- **Профили и последствия:** обычный [`od_isa::execute::step`](../../crates/od-isa/src/execute.rs) использует default profiles (`execute.rs:20540–20546, 20841–20869`); bare CLD/STD имеют однобайтовую форму (`execute.rs:35888–35893`). Формы, требующие явного execution profile или иного входа, например HLT через `step_with_halt_profile` (`execute.rs:20810–20815`), остаются неподдержанными в этом fallback. Для требуемого mixed generic пути согласование budget/STOP/fault, повторная проверка context/code, защита от нулевого прогресса и повторной компиляции, отдельные metadata counters и сравнение mixed-корпуса с интерпретатором ещё не реализованы и не проверены; существующий admitted fallback имеет собственные проверки.
+- **Следующий шаг:** архитектурно определить и включить в границы S3-55 opt-in mixed-code witness/descriptor с полными decoded boundaries и native-классами из существующего механизма, отдельно отмечающий допустимые однобайтовые helper-sites и сохраняющий отказ native admission; старые `from_code` и wrappers должны сохранить строгую семантику. Для этого требуется как минимум изменить приватный witness seam в `block.rs` и при необходимости адаптировать compiler seam в `block_compile.rs`, тогда как текущая строка «Где» плана указывает только `dispatch.rs`. Уточнить эту границу работ до реализации, затем проверить context/code после helper и выполнить все S3-55 acceptance cases. Изменения `od-isa` и расширение native набора не предполагаются.
 
 ## 9. S3-56 — измерения generic пути
 
