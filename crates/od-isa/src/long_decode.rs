@@ -477,16 +477,18 @@ pub enum Operation {
         src: MemoryOperand,
         immediate: u8,
     },
-    /// S4-38L7p: `64 [REX] FF /0` (INC m32, or INC m64 with REX.W, with the FS base), memory
-    /// operand only. The operand is read, incremented and written back; CF is kept. Executed only
-    /// in the CPL0 set.
-    IncFsMem {
+    /// S4-38L7p/S4-38L7q: `64 [REX] FF /0|/1` (INC or DEC m32, or m64 with REX.W, with the FS
+    /// base), memory operand only. `kind` is `Inc` or `Dec`. The operand is read, changed by one
+    /// and written back; CF is kept. Executed only in the CPL0 set.
+    IncDecFsMem {
         destination: MemoryOperand,
+        kind: ArithmeticKind,
     },
-    /// S4-38L7p: `65 [REX] FF /0` (INC m32/m64 with the GS base), memory operand only. Executed
-    /// only in the CPL0 set.
-    IncGsMem {
+    /// S4-38L7p/S4-38L7q: `65 [REX] FF /0|/1` (INC or DEC m32/m64 with the GS base), memory
+    /// operand only. Executed only in the CPL0 set.
+    IncDecGsMem {
         destination: MemoryOperand,
+        kind: ArithmeticKind,
     },
     /// S4-38L7j: `64 REX.W 2B /r` (SUB r64, m64 with the FS base), memory source only. Executed
     /// only in the CPL0 set.
@@ -2010,8 +2012,8 @@ impl Instruction {
             },
             // S4-38L7l/S4-38L7p: INC leaves CF alone.
             Operation::LockIncMem { .. }
-            | Operation::IncFsMem { .. }
-            | Operation::IncGsMem { .. } => FlagEffects {
+            | Operation::IncDecFsMem { .. }
+            | Operation::IncDecGsMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::CF,
                 undefined: 0,
             },
@@ -8256,17 +8258,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         operand: self.rm_operand(modrm, prefixes, OperandSize::Qword)?,
                     }
                 } else if byte == 0xff
-                    && group == 0
+                    && matches!(group, 0 | 1)
                     && matches!(prefixes.segment, Some(0x64 | 0x65))
                     && modrm >> 6 != 3
                 {
-                    // S4-38L7p: `[64|65] [REX] FF /0` (INC m32, or INC m64 with REX.W) with a
-                    // memory operand and no LOCK. LOCK/REP, 0x66 and 0x67 stay refused. A REX byte
+                    // S4-38L7p/S4-38L7q: `[64|65] [REX] FF /0|/1` (INC or DEC m32, or m64 with
+                    // REX.W) with a memory operand and no LOCK. LOCK/REP, 0x66 and 0x67 stay refused. A REX byte
                     // that is not immediately before the opcode is refused for both widths
                     // (ambiguous spelling; the dword rule of S4-38L7m). The register form
                     // (mod = 11) is not touched: the segment prefix is irrelevant there and it
-                    // keeps decoding as the plain INC. Other FF group members with FS/GS (DEC,
-                    // CALL, JMP, PUSH) stay refused.
+                    // keeps decoding as the plain INC/DEC. Other FF group members with FS/GS
+                    // (CALL, JMP, PUSH) stay refused.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
@@ -8283,10 +8285,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     else {
                         unreachable!("the register form is excluded above")
                     };
-                    if prefixes.segment == Some(0x64) {
-                        Operation::IncFsMem { destination }
+                    let kind = if group == 0 {
+                        ArithmeticKind::Inc
                     } else {
-                        Operation::IncGsMem { destination }
+                        ArithmeticKind::Dec
+                    };
+                    if prefixes.segment == Some(0x64) {
+                        Operation::IncDecFsMem { destination, kind }
+                    } else {
+                        Operation::IncDecGsMem { destination, kind }
                     }
                 } else if prefixes.group1 == Some(0xf0) {
                     // S4-38L7l: LOCK is admitted for the memory INC alone (dword, or qword with
@@ -8830,8 +8837,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::SubGsMem { .. } => false,
                 Operation::TestFsMemByte { .. } => false,
                 Operation::TestGsMemByte { .. } => false,
-                Operation::IncFsMem { .. } => false,
-                Operation::IncGsMem { .. } => false,
+                Operation::IncDecFsMem { .. } => false,
+                Operation::IncDecGsMem { .. } => false,
                 Operation::MovFsSelectorToRax => false,
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
@@ -22460,7 +22467,7 @@ mod tests {
         assert_eq!(decoded.flag_effects().undefined, 0);
         assert!(matches!(
             decoded.operation,
-            Operation::IncGsMem { destination }
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.base == AddressBase::NextRip
                     && destination.displacement == 0x02f2_6373
                     && destination.size == OperandSize::Dword
@@ -22468,7 +22475,7 @@ mod tests {
         let mut memory = Memory::new(&[0x64, 0xff, 0x05, 0x34, 0x12, 0x00, 0x00]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::IncFsMem { destination } if destination.size == OperandSize::Dword
+            Operation::IncDecFsMem { destination, kind: ArithmeticKind::Inc } if destination.size == OperandSize::Dword
         ));
         // REX.B base r8 with disp8; REX.R is ignored; SIB + disp8.
         let mut memory = Memory::new(&[0x65, 0x41, 0xff, 0x40, 0x08]);
@@ -22476,7 +22483,7 @@ mod tests {
         assert_eq!(decoded.length, 5);
         assert!(matches!(
             decoded.operation,
-            Operation::IncGsMem { destination }
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.base == AddressBase::Register(Register::R8)
                     && destination.displacement == 8
                     && destination.size == OperandSize::Dword
@@ -22484,13 +22491,13 @@ mod tests {
         let mut memory = Memory::new(&[0x65, 0x44, 0xff, 0x03]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::IncGsMem { destination }
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.base == AddressBase::Register(Register::Rbx)
         ));
         let mut memory = Memory::new(&[0x65, 0xff, 0x44, 0x8b, 0x10]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::IncGsMem { destination }
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.index == Some(Register::Rcx)
                     && destination.scale == 4
                     && destination.displacement == 0x10
@@ -22501,7 +22508,7 @@ mod tests {
         assert_eq!(decoded.length, 6);
         assert!(matches!(
             decoded.operation,
-            Operation::IncGsMem { destination }
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.base == AddressBase::Register(Register::Rbx)
                     && destination.index == Some(Register::R9)
                     && destination.scale == 4
@@ -22512,7 +22519,7 @@ mod tests {
         let mut memory = Memory::new(&[0x64, 0x48, 0xff, 0x43, 0x58]);
         assert!(matches!(
             memory.decode().unwrap().operation,
-            Operation::IncFsMem { destination }
+            Operation::IncDecFsMem { destination, kind: ArithmeticKind::Inc }
                 if destination.size == OperandSize::Qword && destination.displacement == 0x58
         ));
         // Non-prefixed, register and CS/DS/ES/SS-prefixed forms keep decoding as the plain INC.
@@ -22541,11 +22548,9 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::LockIncMem { .. }
         ));
-        // The other FF group members, LOCK/REP, 0x66, 0x67, a second segment prefix and a stale
+        // The other FF group members (CALL/JMP/PUSH; DEC is S4-38L7q), LOCK/REP, 0x66, 0x67, a second segment prefix and a stale
         // REX stay unsupported with the FF opcode.
         for bytes in [
-            &[0x65, 0xff, 0x0b][..],
-            &[0x64, 0xff, 0x0b][..],
             &[0x65, 0xff, 0x13][..],
             &[0x64, 0xff, 0x23][..],
             &[0x65, 0xff, 0x33][..],
@@ -22569,6 +22574,120 @@ mod tests {
                 matches!(
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xff
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_dec_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7q: `[64|65] [REX] FF /1` with a memory operand.
+        // The S4-38L7p diagnostic boundary: `decl %gs:0x2f26364(%rip)`, 7 bytes long.
+        let mut memory = Memory::new(&[0x65, 0xff, 0x0d, 0x64, 0x63, 0xf2, 0x02]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 7);
+        // CF is not defined by DEC.
+        assert_eq!(
+            decoded.flag_effects().defined,
+            crate::ARITHMETIC_FLAGS & !crate::CF
+        );
+        assert_eq!(decoded.flag_effects().undefined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Dec }
+                if destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x02f2_6364
+                    && destination.size == OperandSize::Dword
+        ));
+        let mut memory = Memory::new(&[0x64, 0xff, 0x0d, 0x34, 0x12, 0x00, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::IncDecFsMem { destination, kind: ArithmeticKind::Dec }
+                if destination.size == OperandSize::Dword
+        ));
+        // REX.B base r8 with disp8; SIB + disp8; REX.X index r9.
+        let mut memory = Memory::new(&[0x65, 0x41, 0xff, 0x48, 0x08]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Dec }
+                if destination.base == AddressBase::Register(Register::R8)
+                    && destination.displacement == 8
+        ));
+        let mut memory = Memory::new(&[0x65, 0x42, 0xff, 0x4c, 0x8b, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::IncDecGsMem { destination, kind: ArithmeticKind::Dec }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.index == Some(Register::R9)
+                    && destination.scale == 4
+                    && destination.displacement == 0x10
+        ));
+        // REX.W directly before the opcode selects the qword form.
+        let mut memory = Memory::new(&[0x64, 0x48, 0xff, 0x4b, 0x58]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::IncDecFsMem { destination, kind: ArithmeticKind::Dec }
+                if destination.size == OperandSize::Qword && destination.displacement == 0x58
+        ));
+        // Non-prefixed, register and CS/DS/ES/SS-prefixed forms keep decoding as the plain DEC.
+        for bytes in [
+            &[0xff, 0x0b][..],
+            &[0x65, 0xff, 0xcb][..],
+            &[0x64, 0x48, 0xff, 0xc8][..],
+            &[0x2e, 0xff, 0x0b][..],
+            &[0x3e, 0xff, 0x0b][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::Arithmetic {
+                        kind: ArithmeticKind::Dec,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // LOCK DEC stays unsupported (only LOCK INC exists, S4-38L7l).
+        let mut memory = Memory::new(&[0xf0, 0xff, 0x4b, 0x58]);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xff
+        ));
+        // LOCK/REP, 0x66, 0x67, a second segment prefix and a stale REX stay unsupported with the
+        // FF opcode.
+        for bytes in [
+            &[0xf0, 0x65, 0xff, 0x0b][..],
+            &[0x65, 0xf0, 0xff, 0x0b][..],
+            &[0xf3, 0x65, 0xff, 0x0b][..],
+            &[0xf2, 0x65, 0xff, 0x0b][..],
+            &[0x66, 0x65, 0xff, 0x0b][..],
+            &[0x65, 0x66, 0xff, 0x0b][..],
+            &[0x65, 0x67, 0xff, 0x0b][..],
+            &[0x64, 0x65, 0xff, 0x0b][..],
+            &[0x48, 0x65, 0xff, 0x0b][..],
+            &[0x44, 0x64, 0xff, 0x0b][..],
+            &[0x48, 0x65, 0x48, 0xff, 0x0b][..],
+            &[0x41, 0x65, 0x48, 0xff, 0x0b][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xff
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // FE /1 (DEC m8) with FS/GS stays unsupported with the FE opcode.
+        for bytes in [&[0x65, 0xfe, 0x0b][..], &[0x64, 0xfe, 0x0b][..]] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xfe
                 ),
                 "{bytes:02x?}"
             );
