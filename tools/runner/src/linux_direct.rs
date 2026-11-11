@@ -1496,7 +1496,7 @@ mod tests {
     /// gives 1385 on this stop), so the expectations below are for this nonce only.
     #[test]
     #[ignore = "needs work/stage4 artifacts (vmlinuz, initramfs, ACPI blob v2)"]
-    fn real_artifacts_stop_at_mov_rbx_cr2_after_the_page_fault_delivery() {
+    fn real_artifacts_stop_at_the_cross_page_qword_read_after_mov_rbx_cr2() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = |p: &str| root.join(p).to_string_lossy().into_owned();
         let options = Options {
@@ -1519,22 +1519,33 @@ mod tests {
         // S4-38L5c: the guest `#PF` at 0x102_0020 (from `MOV [RDI-4], R15B` on 0x541_f236) is
         // delivered through the guest IDT; the boot page-fault handler maps the page, returns with
         // `IRETQ`, and the instruction restarts (`exceptions_delivered` = 1, 24 handler instructions).
-        // With budget 3000000 the run stops `unsupported` at `MOV RBX, CR2` (`0f 20 d3`) on
-        // 0x543_c35e after 390860 retired instructions: the set models `MOV RAX, CR2` only (S4-38L5d,
-        // any general-purpose register). Evidence: `docs/reports/data/stage4/s4-38l5c-pf-delivery-run.json`.
+        // S4-38L5d: `MOV RBX, CR2` (`0f 20 d3`) is executed by the set. With budget 3000000 the run
+        // stops `backend` at `MOV RCX, [RAX]` (`48 8b 08`) on 0x543_5ca0 after 399735 retired
+        // instructions: an 8-byte read whose linear address 0x100_0ffa crosses the 4 KiB boundary,
+        // and the set has no cross-page qword read yet (S4-38L5e). Evidence:
+        // `docs/reports/data/stage4/s4-38l5d-cr2-any-reg-run.json`.
         assert_eq!(value["status"], "loaded", "{value:#}");
         assert_eq!(exit, 0, "{value:#}");
         let stop = &value["stop"];
-        assert_eq!(value["retired"], 390860, "{value:#}");
+        assert_eq!(value["retired"], 399735, "{value:#}");
         assert_eq!(stop["quanta"], 2148, "{value:#}");
-        assert_eq!(stop["exit_kind"], "unsupported", "{value:#}");
-        assert_eq!(stop["rip"], "0x543c35e");
+        assert_eq!(stop["exit_kind"], "backend", "{value:#}");
+        assert_eq!(stop["rip"], "0x5435ca0");
         assert!(
-            stop["rip_bytes"].as_str().unwrap().starts_with("0f 20 d3"),
+            stop["rip_bytes"].as_str().unwrap().starts_with("48 8b 08"),
             "{value:#}"
         );
-        assert_eq!(stop["set_exit_detail"], "Run(Unsupported { opcode: 32 })");
-        assert!(stop["memory_error"].is_null());
+        assert!(
+            stop["set_exit_detail"]
+                .as_str()
+                .unwrap()
+                .contains("CrossesPage { address: GuestLinearAddress(16781306), width: 8 }"),
+            "{value:#}"
+        );
+        assert_eq!(
+            stop["memory_error"],
+            "CrossesPage { address: GuestLinearAddress(16781306), width: 8 }"
+        );
         assert!(stop["page_fault"].is_null());
         assert_eq!(
             stop["set_members"],
