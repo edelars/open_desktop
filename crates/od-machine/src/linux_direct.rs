@@ -469,6 +469,8 @@ pub struct LinuxStopRecord {
     /// The guest-visible IA32_EFER (`efer` plus the `SCE` a guest `WRMSR` may have set,
     /// S4-38L7f); `efer` stays the walker's EFER.
     pub guest_efer: u64,
+    /// The guest PCI CONFIG_ADDRESS (port `0xCF8`, S4-38L7w) after the run; `0` when never written.
+    pub pci_config_address: u32,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -611,6 +613,7 @@ fn stop_record(
         cr4: state.cr4,
         efer: boot.board.efer(),
         guest_efer: boot.board.guest_efer(),
+        pci_config_address: boot.board.pci_config_address(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -680,6 +683,11 @@ pub struct LinuxCpl0SetMembers {
     pub pio_u8: bool,
     /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
     pub popf_cpl0: bool,
+    /// `with_pci_config` (S4-38L7w): the dword/word `OUT DX, EAX`/`IN EAX, DX` (`EF`/`ED`, `66 EF`/
+    /// `66 ED`) for PCI mechanism #1: CONFIG_ADDRESS (`0xCF8`) is stored in the board, CONFIG_DATA
+    /// (`0xCFC..=0xCFF`) has no device (`IN` gives all ones, `OUT` is discarded). Independent of
+    /// [`Self::pio_u8`].
+    pub pci_config: bool,
     /// S4-13: the opt-in translation cache of the instruction fetch (one cache per call of the
     /// set loop, invalidated on every guest write to a table of a cached translation and on
     /// every translation context change). It is not a member of the CPU profile (it adds no
@@ -708,6 +716,7 @@ impl LinuxCpl0SetMembers {
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
+            pci_config: false,
             fetch_cache: false,
             diagnostic_past_c7: false,
         }
@@ -720,6 +729,7 @@ impl LinuxCpl0SetMembers {
         Self {
             cpuid: true,
             popf_cpl0: true,
+            pci_config: true,
             msr: true,
             msr_fs_gs_base: true,
             fetch_cache: true,
@@ -761,6 +771,8 @@ pub fn run_linux_direct_board_set(
     let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
     // S4-38L7f: the guest-visible EFER; the set writes it, the board keeps it between runs.
     let efer_cell = Cell::new(boot.board.guest_efer());
+    // S4-38L7w: the guest CONFIG_ADDRESS, kept by the board between runs like the EFER.
+    let pci_cell = Cell::new(boot.board.pci_config_address());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -796,6 +808,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_popf_cpl0();
         names.push("popf_cpl0".into());
     }
+    if members.pci_config {
+        set = set.with_pci_config(&pci_cell);
+        names.push("pci_config".into());
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
@@ -804,6 +820,7 @@ pub fn run_linux_direct_board_set(
     );
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
+    boot.board.set_pci_config_address(pci_cell.get());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -3877,6 +3894,70 @@ mod tests {
         assert_eq!(state.rip, rip0 + code.len() as u64);
     }
 
+    // ---- S4-38L7w: PCI configuration ports (OUT/IN dword) through the board facade ----
+
+    /// `MOV EDX, imm32` (`BA id`).
+    fn mov_edx(value: u32) -> Vec<u8> {
+        let mut code = vec![0xBA];
+        code.extend_from_slice(&value.to_le_bytes());
+        code
+    }
+
+    fn pci_boundary_code() -> Vec<u8> {
+        // The S4-38L7v boundary: `out %eax,%dx` with EAX = 0x80001000, EDX = 0xcf8; then the data
+        // read `in %dx,%eax` at 0xcfc, then HLT.
+        let mut code = Vec::new();
+        code.extend(mov_eax(0x8000_1000));
+        code.extend(mov_edx(0xcf8));
+        code.push(0xEF);
+        code.extend(mov_edx(0xcfc));
+        code.push(0xED);
+        code.push(0xF4);
+        code
+    }
+
+    #[test]
+    fn pci_config_out_then_data_in_runs_through_the_board_set_and_the_address_is_kept() {
+        let code = pci_boundary_code();
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip0 = boot.board.state().rip;
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, MOV, OUT, MOV, IN, HLT: {record:?}");
+        assert!(record.set_members.contains(&"pci_config".to_string()));
+        let state = boot.board.state();
+        assert_eq!(state.gpr[Register::Rax as usize], 0xffff_ffff, "no device");
+        assert_eq!(state.gpr[Register::Rdx as usize], 0xcfc);
+        assert_eq!(state.rip, rip0 + code.len() as u64);
+        assert_eq!(record.pci_config_address, 0x8000_1000);
+        assert_eq!(boot.board.pci_config_address(), 0x8000_1000);
+    }
+
+    #[test]
+    fn pci_config_ports_are_outside_a_set_without_the_member() {
+        let code = pci_boundary_code();
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip_out = boot.board.state().rip + 10;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                pci_config: false,
+                ..halting_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xEF },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 2);
+        assert_eq!(record.rip, rip_out);
+        assert_eq!(record.pci_config_address, 0);
+        assert!(!record.set_members.contains(&"pci_config".to_string()));
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
@@ -4188,6 +4269,7 @@ mod tests {
             LinuxCpl0SetMembers {
                 cpuid: true,
                 popf_cpl0: true,
+                pci_config: true,
                 msr: true,
                 msr_fs_gs_base: true,
                 fetch_cache: true,
@@ -4205,7 +4287,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
@@ -4291,7 +4374,8 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ]
         );
         assert_eq!(boot.board.state().cr3, None);
@@ -4460,7 +4544,8 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ]
         );
     }

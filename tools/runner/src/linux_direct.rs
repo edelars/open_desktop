@@ -573,6 +573,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
+    // S4-38L7w: the guest PCI CONFIG_ADDRESS (port 0xCF8).
+    stop["pci_config_address"] = json!(hex64(u64::from(record.pci_config_address)));
     stop
 }
 
@@ -1425,7 +1427,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
@@ -1537,7 +1540,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         // Leaf 0x80000001 as well.
@@ -1822,7 +1826,8 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
-                "popf_cpl0"
+                "popf_cpl0",
+                "pci_config"
             ])
         );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter

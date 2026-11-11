@@ -960,6 +960,9 @@ pub struct LoadedFirmwareBoard {
     /// changed `SCE` (the only bit the set lets change). The walkers keep using the constant
     /// [`FIRMWARE_EFER`] (LME/LMA/NXE never change), so [`Self::efer`] stays the walker's EFER.
     guest_efer: u64,
+    /// The guest PCI CONFIG_ADDRESS register (port `0xCF8`, S4-38L7w), kept between CPL0-set runs.
+    /// There is no device behind CONFIG_DATA; the value is only stored and read back.
+    pci_config_address: u32,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1044,6 +1047,16 @@ impl LoadedFirmwareBoard {
     /// Stores the guest-visible EFER a CPL0-set run left (S4-38L7f).
     pub(crate) fn set_guest_efer(&mut self, value: u64) {
         self.guest_efer = value;
+    }
+
+    /// The guest PCI CONFIG_ADDRESS register (S4-38L7w); `0` until a guest `OUT` to `0xCF8`.
+    pub const fn pci_config_address(&self) -> u32 {
+        self.pci_config_address
+    }
+
+    /// Stores the CONFIG_ADDRESS a CPL0-set run left (S4-38L7w).
+    pub(crate) fn set_pci_config_address(&mut self, value: u32) {
+        self.pci_config_address = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1897,6 +1910,7 @@ impl AssembledBoard {
             page_table_root,
             guest_cr2: None,
             guest_efer: FIRMWARE_EFER,
+            pci_config_address: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -1951,6 +1965,7 @@ impl AssembledBoard {
             page_table_root,
             guest_cr2: None,
             guest_efer: FIRMWARE_EFER,
+            pci_config_address: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
