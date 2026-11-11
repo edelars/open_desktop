@@ -20885,6 +20885,29 @@ interrupt gate), бит 1 = 1; CR2 = линейный адрес сбоя (за�
 повтора), `cpl0_set_board_a_fault_chain_that_retires_nothing_ends_at_the_repeat_limit`,
 `set_facade_keeps_cr2_between_calls_and_reports_the_delivery`.
 
+### MOV r64, CR2 в любой регистр общего назначения на CPL0 в наборе (S4-38L5d)
+
+После доставки #PF (L5c) настоящее ядро доходит до `MOV RBX, CR2` (`0F 20 D3`, `0x543_c35e`); L5a знал только
+RAX. Набор CPL0 теперь исполняет `MOV r64, CR2` в любой из 16 регистров общего назначения.
+
+**Декодер.** `[REX] 0F 20 /2`: ModRM mod = 11, reg = 010 (`D0`–`D7`), назначение = `rm | (REX.B << 3)`.
+Без префиксов или ровно один REX `40`–`4F` с `REX.R = 0`. REX.W не имеет значения: в 64-битном режиме
+`MOV r64, CRn` всегда 64-битный (SDM Vol.2 `MOV CRn`), REX.X при mod = 11 не используется; поэтому
+принимаются все W/X/B. REX.R дал бы CR10 — `Unsupported`. Точные формы RAX (`0F 20 D0`, `48 0F 20 D0`) по-прежнему
+дают `Operation::ReadCr2`; остальные — новый `Operation::ReadCr2Into(Register)`. `mod != 11` — не моделируется (по памяти SDM mod у `MOV CRn` игнорируется; здесь — `Unsupported`, консервативно), reg ≠ CR2
+(CR0/CR3/CR4 в другой регистр, CR1, CR5), запись `0F 22`, `LOCK`/`66`/`F2`/`F3`/`67`/сегментный префикс —
+`Unsupported`. ReadCr3/ReadCr4/ReadCr0 принимают прежние формы, ничего не расширено.
+
+**Исполнение.** Назначение получает `state.cr2` целиком (64 бита); RSP и RBP — обычные регистры (при mod = 11
+адреса нет); RIP += 3 (4 с REX), retired += 1; RFLAGS не меняется, определённость арифметических флагов
+снимается, как у `ReadCr2`. `state.cr2 == None` — `Unsupported { opcode: 0x20 }` без мутации. Вне набора и в
+наборе без `with_cpu_owned_cr3` — `Unsupported` без мутации; CPL ≠ 0 — #GP через админ набора. Запись CR2,
+CR0/CR3/CR4, CPUID, MSR, `PUSHFQ` и список `PagedCpl0ProbeV1` не менялись.
+
+Тесты: `cpl0_profile_set` `mov_r64_cr2_*`, `mov_rbx_cr2_is_the_real_kernel_form`, `mov_rsp_and_rbp_cr2_*`;
+декодер `mov_r64_cr2_decodes_every_destination_with_any_rex_but_r`;
+`linux_direct::tests::set_facade_mov_rbx_cr2_reads_the_delivered_cr2`.
+
 ### LRETQ на CPL0 в наборе (S2-47b)
 
 Набор CPL0 исполняет `48 CB` (LRETQ, ровно REX.W без других префиксов; `CB` без REX.W, с `66`/`67`/

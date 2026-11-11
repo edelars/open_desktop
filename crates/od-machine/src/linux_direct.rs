@@ -3933,6 +3933,28 @@ mod tests {
         assert_eq!(boot.board.state().cr2, None);
     }
 
+    /// S4-38L5d: `MOV RBX, CR2` and `MOV R11, CR2` retire in the handler through the board's
+    /// facade. RBX holds the fault address when the handler starts, so it is first overwritten
+    /// (`MOV RBX, 1`) to prove the read, not the leftover, supplies the final value.
+    #[test]
+    fn set_facade_mov_rbx_cr2_reads_the_delivered_cr2() {
+        let mut handler = vec![0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00]; // MOV RBX, 1
+        handler.extend_from_slice(&[0x0F, 0x20, 0xD3]); // MOV RBX, CR2
+        handler.extend_from_slice(&[0x41, 0x0F, 0x20, 0xD3]); // MOV R11, CR2
+        handler.push(0xF4); // HLT
+        let (mut boot, file) = pf_board(0x5A, &handler);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 8, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!((record.retired, record.exceptions_delivered), (4, 1));
+        assert_eq!(record.gpr[Register::Rbx as usize], PF_VA + 0x20);
+        assert_eq!(record.gpr[Register::R11 as usize], PF_VA + 0x20);
+        assert_eq!(boot.board.state().cr2, None, "the CPU state keeps no CR2");
+    }
+
     #[test]
     fn set_facade_page_fault_without_an_idt_is_the_unchanged_fault_stop() {
         let (mut boot, file) = pf_board(0x5A, &[0xF4]);
