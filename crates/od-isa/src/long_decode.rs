@@ -9124,7 +9124,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xe8) => {
-                if prefixes != Prefixes::default() {
+                // S4-38L7af: a single CS/DS/ES/SS override (`26`/`2E`/`36`/`3E`) directly before
+                // `E8` is a no-op in 64-bit mode (the bases are zero and CALL rel32 has no memory
+                // operand), so `2E E8 cd` is `E8 cd`. FS/GS, REX (also a stale one before the
+                // segment byte), 66, 67, LOCK/REP and a repeated override stay refused.
+                let null_base_segment_only = prefix_count == 1
+                    && prefixes
+                        == (Prefixes {
+                            segment: prefixes.segment,
+                            ..Prefixes::default()
+                        })
+                    && matches!(prefixes.segment, Some(0x26 | 0x2e | 0x36 | 0x3e));
+                if prefixes != Prefixes::default() && !null_base_segment_only {
                     return Err(self.unsupported(opcode));
                 }
                 size = OperandSize::Qword;
@@ -19244,6 +19255,25 @@ mod tests {
             (&[0xeb, 0x80][..], Operation::Jump { displacement: -128 }),
             (&[0xe9, 0, 0, 0, 0][..], Operation::Jump { displacement: 0 }),
             (&[0xe8, 0, 0, 0, 0][..], Operation::Call { displacement: 0 }),
+            // S4-38L7af: a lone CS/DS/ES/SS override before `E8` is a no-op (length 6).
+            (
+                &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+                Operation::Call {
+                    displacement: -0x0185_7bba,
+                },
+            ),
+            (
+                &[0x3e, 0xe8, 0, 0, 0, 0][..],
+                Operation::Call { displacement: 0 },
+            ),
+            (
+                &[0x26, 0xe8, 1, 0, 0, 0][..],
+                Operation::Call { displacement: 1 },
+            ),
+            (
+                &[0x36, 0xe8, 2, 0, 0, 0][..],
+                Operation::Call { displacement: 2 },
+            ),
             (&[0xc3][..], Operation::Return { stack_adjust: 0 }),
             (
                 &[0xc2, 0x34, 0x12][..],
@@ -19510,7 +19540,15 @@ mod tests {
     fn direct_call_and_ret_reject_prefixes_and_truncated_immediates() {
         for bytes in [
             &[0x66, 0xe8, 0, 0, 0, 0][..],
-            &[0x2e, 0xe8, 0, 0, 0, 0][..],
+            // S4-38L7af: a lone CS/DS/ES/SS override is accepted; the rest stays refused.
+            &[0x64, 0xe8, 0, 0, 0, 0][..],
+            &[0x65, 0xe8, 0, 0, 0, 0][..],
+            &[0x2e, 0x2e, 0xe8, 0, 0, 0, 0][..],
+            &[0x2e, 0x64, 0xe8, 0, 0, 0, 0][..],
+            &[0x2e, 0x66, 0xe8, 0, 0, 0, 0][..],
+            &[0x2e, 0x48, 0xe8, 0, 0, 0, 0][..],
+            &[0x48, 0x2e, 0xe8, 0, 0, 0, 0][..],
+            &[0xf0, 0x2e, 0xe8, 0, 0, 0, 0][..],
             &[0x67, 0xe8, 0, 0, 0, 0][..],
             &[0x48, 0xe8, 0, 0, 0, 0][..],
             &[0xf3, 0xe8, 0, 0, 0, 0][..],
@@ -19538,6 +19576,12 @@ mod tests {
             &[0xe8, 0][..],
             &[0xe8, 0, 0][..],
             &[0xe8, 0, 0, 0][..],
+            // S4-38L7af: the prefixed spelling is truncated the same way.
+            &[0x2e, 0xe8][..],
+            &[0x2e, 0xe8, 0][..],
+            &[0x2e, 0xe8, 0, 0][..],
+            &[0x2e, 0xe8, 0, 0, 0][..],
+            &[0x3e, 0xe8, 0, 0, 0][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(

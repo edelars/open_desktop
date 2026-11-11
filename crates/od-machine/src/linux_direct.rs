@@ -3860,6 +3860,87 @@ mod tests {
         assert_eq!(state.rflags & (1 << 7), 0, "SF");
     }
 
+    // ---- S4-38L7af: CALL rel32 with a CS override through the board facade ----
+
+    #[test]
+    fn cs_call_rel32_forward_pushes_the_return_address_and_pop_reads_it_back() {
+        // MOV RSP,0x0200_0100; CS CALL +1 (`2e e8 01 00 00 00`: skips the HLT right after it);
+        // POP RAX at the target; HLT. The popped value is the address of the instruction after
+        // the CALL (6 bytes long), RSP is back, the qword stays in memory below RSP.
+        let mut code = vec![0x48, 0xBC];
+        code.extend(0x0200_0100u64.to_le_bytes());
+        let call_at = ENTRY + code.len() as u64;
+        code.extend([0x2E, 0xE8, 0x01, 0x00, 0x00, 0x00]);
+        code.extend([0xF4, 0x58, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "MOV, CS CALL, POP, HLT: {record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let return_address = call_at + 6;
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::Rax as usize],
+            return_address
+        );
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::Rsp as usize],
+            0x0200_0100
+        );
+        assert_eq!(guest_qword(&mut boot, 0x0200_00F8), return_address);
+        // The final HLT is the one after POP (the first one was skipped).
+        assert_eq!(boot.board.state().rip, return_address + 3);
+    }
+
+    #[test]
+    fn cs_call_rel32_backward_branches_to_an_earlier_target_with_a_negative_displacement() {
+        // MOV RSP,0x0200_0100; JMP +2 (over `POP RAX; HLT`); CS CALL -8 back to the POP RAX.
+        // POP RAX takes the return address (the instruction after the 6-byte CALL) and HLT stops.
+        let mut code = vec![0x48, 0xBC];
+        code.extend(0x0200_0100u64.to_le_bytes());
+        code.extend([0xEB, 0x02]);
+        let target = ENTRY + code.len() as u64;
+        code.extend([0x58, 0xF4]);
+        let call_at = ENTRY + code.len() as u64;
+        let next = call_at + 6;
+        let rel = (target as i64 - next as i64) as i32;
+        assert_eq!(rel, -8);
+        code.extend([0x2E, 0xE8]);
+        code.extend(rel.to_le_bytes());
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "MOV, JMP, CS CALL, POP, HLT: {record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], next);
+        assert_eq!(
+            boot.board.state().gpr[od_isa::Register::Rsp as usize],
+            0x0200_0100
+        );
+        assert_eq!(guest_qword(&mut boot, 0x0200_00F8), next);
+    }
+
     // ---- S4-38L7ae: FS/GS-based MOV m8, imm8 through the board facade ----
 
     #[test]

@@ -18965,3 +18965,343 @@ fn segment_movb_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L7af: `CALL rel32` (`E8 cd`) with a lone CS/DS/ES/SS override (`2E E8 cd`). SDM Vol.2
+// CALL: in 64-bit mode the near relative CALL pushes the 8-byte address of the next instruction and
+// continues at next RIP + sign-extended rel32; Vol.1 3.4.2.1: the CS/DS/ES/SS overrides are not
+// applied in 64-bit mode (from memory, not re-checked against the primary source). A CALL rel32 has
+// no memory operand, so the override changes neither the target nor the stack address. Unprefixed
+// `E8` is not gated by the CPL0 set (it executes in bare `run`/`step` and every profile), so the
+// prefixed form is not either. FS/GS, REX, 66, 67, LOCK/REP and a repeated override stay refused
+// with opcode 0xe8. ----
+
+/// `cs call rel32` (the S4-38L7ae diagnostic boundary bytes, 6 bytes long, negative rel32).
+const CS_CALL_BOUNDARY: [u8; 6] = [0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe];
+const CALL_STACK: u64 = 0x20_0000;
+
+fn call_state() -> LongModeState {
+    let mut state = board_state();
+    state.gpr[Register::Rsp as usize] = CALL_STACK;
+    state.gpr[Register::Rbx as usize] = 0x0123_4567_89ab_cdef;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_AF | FLAG_PF;
+    state
+}
+
+#[test]
+fn cs_call_rel32_boundary_pushes_the_next_rip_and_branches_backwards() {
+    let rel = i64::from(i32::from_le_bytes([0x46, 0x84, 0x7a, 0xfe]));
+    assert_eq!(rel, -0x0185_7bba);
+    let next = RIP + 6;
+    let target = next.wrapping_add_signed(rel);
+    assert_eq!(target, 0xffff_ffff_fe7a_944c);
+    let mut state = call_state();
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&CS_CALL_BOUNDARY);
+    memory.data.insert(CALL_STACK - 9, 0xaa);
+    memory.data.insert(CALL_STACK, 0xbb);
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert!(memory.reads.is_empty(), "a CALL rel32 reads no data");
+    assert_eq!(
+        memory.writes,
+        vec![(CALL_STACK - 8, next.to_le_bytes().to_vec())]
+    );
+    assert_eq!(memory.qword(CALL_STACK - 8), next);
+    assert_eq!(memory.data.get(&(CALL_STACK - 9)), Some(&0xaa));
+    assert_eq!(memory.data.get(&CALL_STACK), Some(&0xbb));
+    assert_eq!(state.rip, target);
+    expected.rip = target;
+    expected.gpr[Register::Rsp as usize] = CALL_STACK - 8;
+    assert_eq!(state, expected, "only RIP and RSP change; flags are kept");
+}
+
+#[test]
+fn cs_call_rel32_with_positive_zero_and_extreme_displacements() {
+    for rel in [0x10i32, 0, -6, -1, 0x7fff_ffff, i32::MIN + 6] {
+        let mut code = vec![0x2e, 0xe8];
+        code.extend_from_slice(&rel.to_le_bytes());
+        let next = RIP + 6;
+        let target = next.wrapping_add_signed(i64::from(rel));
+        let mut state = call_state();
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rel:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(CALL_STACK - 8, next.to_le_bytes().to_vec())],
+            "{rel:#x}"
+        );
+        expected.rip = target;
+        expected.gpr[Register::Rsp as usize] = CALL_STACK - 8;
+        assert_eq!(state, expected, "{rel:#x}");
+    }
+}
+
+#[test]
+fn cs_ds_es_ss_call_rel32_equals_the_unprefixed_call_apart_from_the_length() {
+    for prefix in [0x2eu8, 0x3e, 0x26, 0x36] {
+        let mut prefixed = call_state();
+        let mut prefixed_memory = BitsMemory::new(&[prefix, 0xe8, 0x46, 0x84, 0x7a, 0xfe]);
+        let mut plain = call_state();
+        let mut plain_memory = BitsMemory::new(&[0xe8, 0x46, 0x84, 0x7a, 0xfe]);
+        // The segment bases must not matter for either form.
+        for state in [&mut prefixed, &mut plain] {
+            state.fs_base = 0xffff_8880_1111_0000;
+            state.gs_base = 0xffff_8880_2222_0000;
+        }
+        run_bts_set(&mut prefixed, &mut prefixed_memory).unwrap();
+        run_bts_set(&mut plain, &mut plain_memory).unwrap();
+        // One byte longer: the target and the pushed address are one byte further.
+        assert_eq!(prefixed.rip, plain.rip + 1, "{prefix:#x}");
+        assert_eq!(
+            prefixed.gpr[Register::Rsp as usize],
+            plain.gpr[Register::Rsp as usize]
+        );
+        assert_eq!(prefixed.rflags, plain.rflags);
+        assert_eq!(prefixed.gpr, plain.gpr);
+        assert_eq!(
+            prefixed_memory.writes,
+            vec![(CALL_STACK - 8, (RIP + 6).to_le_bytes().to_vec())],
+            "{prefix:#x}"
+        );
+        assert_eq!(
+            plain_memory.writes,
+            vec![(CALL_STACK - 8, (RIP + 5).to_le_bytes().to_vec())]
+        );
+    }
+}
+
+#[test]
+fn cs_call_rel32_with_a_non_canonical_stack_faults_without_commit() {
+    // The push address (RSP - 8) or its last byte leaves the canonical range: #SS(0), no write, no
+    // register change, RIP stays at the CALL (same rule as the unprefixed form).
+    for rsp in [
+        0x0000_8000_0000_0008u64, // RSP - 8 is the first non-canonical address
+        0x0000_8000_0000_0004,    // the start is canonical, the last byte is not
+        0xffff_8000_0000_0004,    // RSP - 8 is the last non-canonical address below the high half
+    ] {
+        for code in [&CS_CALL_BOUNDARY[..], &[0xe8, 0x10, 0, 0, 0][..]] {
+            let mut state = call_state();
+            state.gpr[Register::Rsp as usize] = rsp;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                "{rsp:#x} {code:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{rsp:#x} {code:02x?}");
+            assert_eq!(state, before, "{rsp:#x} {code:02x?}");
+            assert!(memory.writes.is_empty() && memory.reads.is_empty());
+        }
+    }
+}
+
+#[test]
+fn cs_call_rel32_stack_write_fault_keeps_rsp_and_rip() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(CALL_STACK - 8),
+    };
+    let mut state = call_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&CS_CALL_BOUNDARY);
+    memory.write_fault = Some(fault.clone());
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before, "RSP, RIP and flags are untouched");
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn cs_call_rel32_refuses_every_other_prefix_combination_like_the_unprefixed_form() {
+    for code in [
+        // FS/GS never mix with the no-op rule.
+        &[0x64u8, 0xe8, 0x10, 0, 0, 0][..],
+        &[0x65, 0xe8, 0x10, 0, 0, 0],
+        &[0x64, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x64, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x65, 0xe8, 0x10, 0, 0, 0],
+        &[0x65, 0x3e, 0xe8, 0x10, 0, 0, 0],
+        // A repeated CS/DS/ES/SS override is not accepted here (conservative).
+        &[0x2e, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x3e, 0xe8, 0x10, 0, 0, 0],
+        // Operand/address size, LOCK and REP with the override.
+        &[0x66, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x66, 0xe8, 0x10, 0, 0, 0],
+        &[0x67, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x67, 0xe8, 0x10, 0, 0, 0],
+        &[0xf0, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0xf0, 0xe8, 0x10, 0, 0, 0],
+        &[0xf2, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0xf3, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0xf3, 0xe8, 0x10, 0, 0, 0],
+        // REX directly before the opcode and a stale REX before the override.
+        &[0x2e, 0x48, 0xe8, 0x10, 0, 0, 0],
+        &[0x2e, 0x40, 0xe8, 0x10, 0, 0, 0],
+        &[0x48, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        &[0x41, 0x2e, 0xe8, 0x10, 0, 0, 0],
+        // The unprefixed refusals the prefixed form must keep in step with.
+        &[0x66, 0xe8, 0x10, 0, 0, 0],
+        &[0x48, 0xe8, 0x10, 0, 0, 0],
+    ] {
+        let mut state = call_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xe8 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn cs_call_rel32_executes_in_bare_run_and_the_mov_cr3_set_like_the_unprefixed_form() {
+    // Unprefixed `E8` is not gated by the CPL0 set, so the prefixed form is admitted wherever it is:
+    // bare `run` (legacy state, no control policy) and a set with CR3 ownership execute it the same.
+    let next = RIP + 6;
+    let target = next.wrapping_add_signed(i64::from(i32::from_le_bytes([0x46, 0x84, 0x7a, 0xfe])));
+    let mut state = legacy_state();
+    state.gpr[Register::Rsp as usize] = CALL_STACK;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&CS_CALL_BOUNDARY);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip = target;
+    expected.gpr[Register::Rsp as usize] = CALL_STACK - 8;
+    assert_eq!(state, expected);
+    assert_eq!(
+        memory.writes,
+        vec![(CALL_STACK - 8, next.to_le_bytes().to_vec())]
+    );
+
+    let mut state = cr3_state(0x5000);
+    state.gpr[Register::Rsp as usize] = CALL_STACK;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&CS_CALL_BOUNDARY);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    expected.rip = target;
+    expected.gpr[Register::Rsp as usize] = CALL_STACK - 8;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn the_set_entry_refuses_cpl3_for_any_bytes() {
+    // The set refuses CPL3 at its entry before any fetch, whatever the bytes are (this is not a
+    // property of `E8`: `E8` itself is not gated by the CPL, see the bare-`run` test below).
+    for code in [&CS_CALL_BOUNDARY[..], &[0x90][..]] {
+        let mut state = call_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cs_call_rel32_executes_in_bare_run_at_cpl3_like_the_unprefixed_form() {
+    // `E8` is not gated by the CPL: bare `run` at CPL3 executes both spellings the same way (the
+    // prefixed one is one byte longer).
+    let mut outcomes = Vec::new();
+    for code in [&CS_CALL_BOUNDARY[..], &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..]] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rsp as usize] = CALL_STACK;
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rsp as usize], CALL_STACK - 8);
+        assert_eq!(
+            memory.writes,
+            vec![(
+                CALL_STACK - 8,
+                (RIP + code.len() as u64).to_le_bytes().to_vec()
+            )]
+        );
+        outcomes.push(state.rip);
+    }
+    assert_eq!(outcomes[0], outcomes[1] + 1);
+}
+
+#[test]
+fn cs_call_rel32_with_a_truncated_rel32_is_refused_without_mutation() {
+    // Same behavior as the truncated unprefixed `E8`: the fetch past the code fails, nothing
+    // retires, no write happens, registers, flags and RIP are untouched.
+    for code in [
+        &[0x2eu8, 0xe8][..],
+        &[0x2e, 0xe8, 0x00][..],
+        &[0x2e, 0xe8, 0x00, 0x00, 0x00][..],
+        &[0xe8, 0x00, 0x00, 0x00][..],
+    ] {
+        let mut state = call_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}

@@ -35964,6 +35964,14 @@ fn step_configured(
         Operation::Call { .. } | Operation::Return { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && (instruction.prefixes == Prefixes::default()
+                    // S4-38L7af: `2E E8 cd` (a lone CS/DS/ES/SS override) is `E8 cd`.
+                    || (instruction.opcode.byte == 0xe8
+                        && matches!(instruction.prefixes.segment, Some(0x26 | 0x2e | 0x36 | 0x3e))
+                        && instruction.prefixes
+                            == (Prefixes {
+                                segment: instruction.prefixes.segment,
+                                ..Prefixes::default()
+                            }))
                     || (instruction.opcode.byte == 0xc3
                         && instruction.prefixes
                             == (Prefixes {
@@ -64808,6 +64816,88 @@ mod tests {
             );
             assert_eq!(state, before, "{bytes:02x?}");
             assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step() {
+        // S4-38L7af: `[26|2E|36|3E] E8 cd` is `E8 cd` (not gated by the CPL0 set, like the plain
+        // form): push the next RIP, branch to next RIP + rel32.
+        for prefix in [0x2eu8, 0x3e, 0x26, 0x36] {
+            let code = [prefix, 0xe8, 0x46, 0x84, 0x7a, 0xfe];
+            let next = 0x1006u64;
+            let target =
+                next.wrapping_add_signed(i64::from(i32::from_le_bytes([0x46, 0x84, 0x7a, 0xfe])));
+            let mut start = LongModeState::default();
+            start.rip = 0x1000;
+            start.rflags = crate::CF | crate::ZF | 2;
+            start.gpr[Register::Rsp as usize] = 0x1010;
+
+            let mut state = start.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+            assert_eq!(state.rip, target);
+            assert_eq!(state.gpr[Register::Rsp as usize], 0x1008);
+            assert_eq!(state.rflags, start.rflags);
+            assert_eq!(
+                u64::from_le_bytes(memory.bytes[8..16].try_into().unwrap()),
+                next
+            );
+
+            let mut state = start.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Branched),
+                "{prefix:#x}"
+            );
+            assert_eq!(state.rip, target);
+            assert_eq!(state.gpr[Register::Rsp as usize], 0x1008);
+        }
+    }
+
+    #[test]
+    fn cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push() {
+        // The target is checked before the stack write, as for the unprefixed form: no write, RSP and
+        // RIP unchanged.
+        let base = 0x0000_7fff_ffff_f000u64;
+        for code in [
+            &[0x2e, 0xe8, 0x00, 0x10, 0x00, 0x00][..],
+            &[0xe8, 0x00, 0x10, 0x00, 0x00][..],
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = base;
+            state.gpr[Register::Rsp as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::at(code, base);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })),
+                "{code:02x?}"
+            );
+            assert_eq!(state, before, "{code:02x?}");
+            assert!(
+                memory
+                    .accesses
+                    .iter()
+                    .all(|(kind, _, _)| *kind == AccessKind::Fetch),
+                "{code:02x?}"
+            );
         }
     }
 
@@ -155081,6 +155171,37 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_mov_cr3_profile() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for bytes in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xe8 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn fs_gs_test_dword_qword_forms_stay_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7ac belongs to the CPL0 set only; this profile refuses the forms without mutation.
         for bytes in [
@@ -156080,6 +156201,28 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_cs_call_rel32_like_the_unprefixed_form() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for bytes in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xe8 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -158140,6 +158283,31 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc6 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_cs_call_rel32_like_the_unprefixed_form() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for code in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xe8 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

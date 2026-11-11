@@ -22913,3 +22913,55 @@ R12 = `0xffffffff82fe1b64`, R13 = `0xffffffff83f39070`, R15 = `0x100000`, RSP = 
 Следующий срез — `CALL rel32` с префиксом CS (`2E E8 cd`, в objdump `cs call`, длина 6) в наборе CPL0 (в 64-битном режиме префикс CS игнорируется, ожидается поведение обычного `E8`; решение,
 расширять ли существующий путь `E8` или завести отдельную форму, — по этой границе); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `CALL rel32` (`E8 cd`) с одиночным префиксом CS/DS/ES/SS (`2E E8 cd`) (S4-38L7af)
+
+Граница S4-38L7ae (`2e e8 46 84 7a fe`, `cs call rel32`, RIP `0xffffffff83f94dd4`, `Unsupported { opcode: 0xe8 }`) — прямой near `CALL rel32` с префиксом CS. Срез делает `2E E8 cd`
+эквивалентным `E8 cd`: rel32 со знаком, цель = RIP следующей инструкции + rel32, в стек пишется 8-байтовый адрес следующей инструкции (длина 6, для граничных байт). Семантика дана
+**по памяти SDM** (Vol. 2 «CALL»: near relative CALL в 64-битном режиме толкает 8-байтовый RIP следующей инструкции и переходит на RIP + rel32; Vol. 1 §3.4.2.1 / Vol. 3: переопределения
+CS/DS/ES/SS в 64-битном режиме не применяются, базы нулевые), по первоисточнику **не сверялась**. У `CALL rel32` нет memory-операнда, поэтому префикс не меняет ни базу, ни один адрес.
+
+**Что существует (установлено до правки).** Беспрефиксный `E8` декодируется веткой `(OpcodeMap::Primary, 0xe8)` в `long_decode.rs` (`Operation::Call { displacement }`, размер Qword) и исполняется
+в `execute.rs` (`Operation::Call`): цель считается от `next_rip`, неканоническая цель — `#GP(0)` до записи; затем `push_stack_value` (8 байт, адрес `RSP - 8` и его последний байт проверяются
+на каноничность, при неканоническом — `#SS(0)`, запись через `memory.write_integer`, RSP уменьшается только после успешной записи), RIP = цель. `E8` **не** входит в набор CPL0 как отдельный гейт:
+он исполняется в голых `run`/`step`; гейт в `step_configured` (`Operation::Call | Return`) требует `prefixes == Prefixes::default()` и опкод `0xe8|0xc2|0xc3`. Профили `mov_cr3_profile`,
+paged-cr3-probe, `PagedCpl0ProbeV1` и paged-mov-profile отказывают `E8` с `Unsupported { opcode: 0xe8 }` без мутации (как и PUSH/POP) — для `2E E8` так же.
+
+**Декодер.** В ветке `E8` допустим ровно один префикс: сегментный `26`/`2E`/`36`/`3E` (`prefix_count == 1`, `Prefixes` содержит только `segment`). В исполнителе (`step_configured`) гейт для `0xe8`
+расширен тем же условием. Правило no-op распространено на все четыре байта по аналогии с формами, где CS/DS/ES/SS принимаются и игнорируются (повтор перед обычным опкодом — S4-38L7v; прежний путь с игнорированием базы — S4-38L7ac, S4-38L7ad, S4-38L7ae). Общего правила для всех опкодов нет: политика у каждой операции своя (например, `INVLPG m` отказывает CS/DS/ES/SS — S4-38L7ab), поэтому для `E8` она задана явно этим срезом; тесты — на `2E`, `3E`, `26`, `36`.
+
+**Отказы без мутации (`Unsupported { opcode: 0xe8 }`), прежнее поведение.** FS/GS (`64`/`65`) в любом сочетании, в том числе `64 2E`, `2E 64`, `65 3E`; повторное CS/DS/ES/SS (`2E 2E`, `2E 3E`; для `E8`
+не принимается консервативно, хотя перед другими опкодами по S4-38L7v допустимо); `66`, `67` (до и после сегмента), LOCK/REP/REPNE (`F0`/`F2`/`F3` в любой позиции); любой REX, в том числе
+непосредственно перед `E8` (`2E 48 E8`, как у беспрефиксной `48 E8`) и устаревший перед сегментом (`48 2E E8`, `41 2E E8`). Беспрефиксные отказы (`66 E8`, `48 E8`, `67 E8`, `F3 E8`) не менялись.
+
+**Исполнение, каноничность, ошибки.** Без изменений относительно `E8`: цель неканоническая — `#GP(0)` без записи, RSP и RIP не меняются; RSP − 8 или его последний байт неканонический — `#SS(0)`
+(вектор 12, код 0) без записи; ошибка записи (например `#PF`) — RSP, RIP, флаги не меняются, retired не растёт. Флаги не меняются; память не читается; `rflags_defined` без изменений.
+retired + 1 только при успехе.
+
+**Гейт.** Как у беспрефиксного `E8`: набор CPL0 не требуется; голые `run`/`step` и набор CPL0 исполняют форму. `E8` по CPL не гейтится: набор CPL3-пути не даёт (вход набора при CPL3 отказывает `WrongPrivilege` для любых байтов), а голый `run` при CPL3 исполняет префиксную форму так же, как беспрефиксный `E8` (тест `cs_call_rel32_executes_in_bare_run_at_cpl3_like_the_unprefixed_form`); профили `mov_cr3_profile`, paged-cr3-probe,
+`PagedCpl0ProbeV1`, paged-mov-profile отказывают так же, как и `E8` (`Unsupported { opcode: 0xe8 }`, без мутации).
+
+**Тесты.** Декодер: `long_decode::tests` (таблица `direct_relative_control_flow_decodes_signed_offsets_at_full_length` — `2E`/`3E`/`26`/`36` + `E8`, граничные байты, длина 6;
+`direct_call_and_ret_reject_prefixes_and_truncated_immediates` — отказы FS/GS, повтора, 66, REX, LOCK). Исполнение (`cpl0_profile_set`, `cs_call_rel32_*`, `cs_ds_es_ss_call_rel32_*`): граничные байты
+(отрицательный rel32, цель `0xffffffff_fe7a944c`, адрес возврата `RIP + 6`, одна 8-байтовая запись, RSP − 8, соседние байты и флаги не затронуты, `memory.reads` пуст), положительный/нулевой/крайние rel32,
+эквивалентность беспрефиксному `E8` при ненулевых FS/GS базах (длина +1), неканонический стек (три случая → `#SS(0)` без мутации), ошибка записи в стек, таблица из 23 отказов, исполнение в голом `run`
+и с набором `cr3_set`, голый `run` при CPL3 (как беспрефиксный), отказ входа набора при CPL3 (`the_set_entry_refuses_cpl3_for_any_bytes`), усечённый rel32 (`2E E8`, `2E E8 00 00 00` — отказ без мутации). Библиотека `od-isa`: `execute::tests::cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step`, `…cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push`;
+профили: `mov_cr3_profile_tests::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_mov_cr3_profile`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_cs_call_rel32_like_the_unprefixed_form`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_cs_call_rel32_like_the_unprefixed_form`; `paged_probe_profile::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_paged_probe_profile`.
+Фасад: `linux_direct::tests::cs_call_rel32_forward_pushes_the_return_address_and_pop_reads_it_back` (вперёд на +1, `POP RAX` возвращает адрес следующей инструкции, qword лежит по `RSP − 8`, retired 4) и
+`…cs_call_rel32_backward_branches_to_an_earlier_target_with_a_negative_displacement` (rel32 = −8, retired 5).
+
+**Не делалось.** FS/GS перед `E8`, повторное CS/DS/ES/SS перед `E8`, `66`/`67`/REX/LOCK/REP-варианты, `CALL` с префиксом в других формах (`FF /2` с CS по-прежнему как было), разрешение `E8` в профилях
+`mov_cr3`/paged (отказывают так же, как беспрефиксная форма).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7af-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`cs call` по `0xffffffff83f94dd4` проходит (retired 1202200805 → 1204882973, +2682168 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f4aa29` (GPA `0x3f4aa29`), байты `f0 80 25 6f 39 f8 ff fe f0 80 25 e7 38 f8 ff fe` — `lock andb $0xfe, -0x7c691(%rip)` (`LOCK` + `80 /4 ib` с memory-операндом
+RIP-relative: disp32 `0xfff8396f`, imm8 `0xfe`, длина 8; далее ещё одна такая же `lock andb`); `Unsupported { opcode: 0x80 }` (128), `set_exit_detail` = `Run(Unsupported { opcode: 128 })`,
+`exit_kind` = `unsupported`, retired = 1204882973.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x86`; RAX = `0xffffffff83f4aa20`, RBX = `0x1000000`, R12 = `0x80000000`, R13 = `0x27`, R15 = `0x100000`,
+RCX = RDX = RSI = RDI = R8–R11 = R14 = 0, RSP = RBP = `0xffffffff83a03e90`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`,
+`cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `LOCK AND m8, imm8` (`F0 80 /4 ib`, memory-операнд RIP-relative) в наборе CPL0 (по аналогии с LOCK OR S4-38L7s; решение, расширять ли существующий путь `F0 80|81|83 /1` на `/4`
+или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
