@@ -12,8 +12,9 @@
 |---|---|
 | S3-50 — отчёт и инвентарь дублирования | Ревью пройдено; коммит `80a0fe6`, Graphify обновлён |
 | S3-51 — единые правила допуска | Независимое архитектурное ревью Sol пройдено; коммит `8dcaac8`, Graphify обновлён |
-| S3-52 — один механизм допуска | Проверки выполнены, независимое ревью Sol одобрено; коммит ожидается |
-| S3-53…S3-57 | not_started |
+| S3-52 — один механизм допуска | Независимое ревью Sol одобрено; коммит `dd9c9bb`, Graphify обновлён |
+| S3-53 — единая точка входа диспетчера | Проверки выполнены, независимое ревью Sol одобрено; коммит следует |
+| S3-54…S3-57 | not_started |
 
 ## 2. S3-50 — инвентарь дублирования
 
@@ -79,7 +80,7 @@
 | SUB RAX,imm8 | `run_with_native_sub_rax_imm8` | `run_with_native_sub_rax_imm8_demand_flags_candidate` |
 | MOV RAX,imm32 | `run_with_native_mov_rax_imm32` | `run_with_native_mov_rax_imm32_demand_flags_candidate` |
 
-Разница `31` против `32` в плане и коде оставлена открытой для согласования: код содержит по два NOP fallback API и два NOP+INC fallback API. Из исходника нельзя заключить, является ли ожидаемое `31` устаревшим числом или арифметической ошибкой. Полный `pub fn run*` до `#[cfg(test)]` — 43, включая эти 32, cached и multi-cached API.
+Числа `31` и `32` описывают разные множества. S3-53 охватывает 28 `run_with_native_*`, два demand-варианта NOP/NOP+INC fallback и `run_cached_native_register_v1_demand_flags_candidate_controlled` — всего 31. Таблица выше содержит 32 `run_with*`: в неё входят также два eager fallback, но не входит cached demand. Полный `pub fn run*` до `#[cfg(test)]` — 43, включая cached и multi-cached API.
 
 ### 2.4 Методы admits_* и вызовы по файлам
 
@@ -208,7 +209,7 @@ PY
 
 ## 4. S3-51 — единые правила допуска
 
-Статус: **независимое архитектурное ревью Sol пройдено, замечания исправлены**; коммит будет зафиксирован следующим шагом. В [§3a JIT_CONTRACT](../specs/JIT_CONTRACT.md#3a-единые-правила-допуска-регистрового-набора) записаны положительные правила выбранного профиля, привязка к полному `CodeView`, действующие byte guards, все пять `S0_09NopAdmissionError` и оба предела `BlockLimits`. Memory-path и exact fallback `NOT RCX` оставлены отдельно; NOP в admission не объявлен native-формой builder. Код и действующее множество форм не менялись.
+Статус: **независимое архитектурное ревью Sol пройдено, замечания исправлены**; коммит `8dcaac8` в `codex`, Graphify обновлён. В [§3a JIT_CONTRACT](../specs/JIT_CONTRACT.md#3a-единые-правила-допуска-регистрового-набора) записаны положительные правила выбранного профиля, привязка к полному `CodeView`, действующие byte guards, все пять `S0_09NopAdmissionError` и оба предела `BlockLimits`. Memory-path и exact fallback `NOT RCX` оставлены отдельно; NOP в admission не объявлен native-формой builder. Код и действующее множество форм не менялись.
 
 ### Построчная сверка с инвентарём S3-50
 
@@ -240,11 +241,11 @@ PY
 
 ## 5. S3-52 — один механизм допуска
 
-Статус: реализация и корпус проверены; независимое ревью Sol одобрено, коммит ожидается. Публичные admission-структуры и их `admits_*` методы сохранены. Один full-CodeView scanner декодирует и классифицирует регистровые формы, проверяет полный набор branch boundaries и проецирует записи в прежние RIP/value списки; builder register path использует тот же classifier с отдельной политикой NOP handoff. `Checked*` memory branches оставлены отдельными. Декодированная запись хранит диапазон исходных байтов внутри witness, без отдельной копии на инструкцию.
+Статус: реализация и корпус проверены; независимое ревью Sol одобрено, коммит `dd9c9bb` в `codex`, Graphify обновлён. Публичные admission-структуры и их `admits_*` методы сохранены. Один full-CodeView scanner декодирует и классифицирует регистровые формы, проверяет полный набор branch boundaries и проецирует записи в прежние RIP/value списки; builder register path использует тот же classifier с отдельной политикой NOP handoff. `Checked*` memory branches оставлены отдельными. Декодированная запись хранит диапазон исходных байтов внутри witness, без отдельной копии на инструкцию.
 
 Корпус [S3-52](../testing/JIT.md#s3-52-register-admission-equivalence) сохраняет под `cfg(test)` прежние 16 admission loops и register builder decision как независимый oracle; точные поформенные предикаты остаются общими и дополнительно проверяются фиксированными byte/class ожиданиями. Выполненный целевой прогон дал `comparisons=2452 mismatches=0`. Сопоставляются полные wrapper results и значения, source binding, builder outcomes и отказы; defensive `InvalidLength`/`RangeOverflow` проверены через synthetic validation seam. Формы и кодировки намеренно не расширялись.
 
-Проверки на `codex`: `cargo fmt --all -- --check` и `cargo check -p od-jit -p od-host --all-targets --offline` прошли; `od-jit` — 413 passed, один отдельный microbenchmark проигнорирован в обычном наборе; `od-host` — 361 passed после появления локальных corpus artifacts. В базовом прогоне S3-50 три теста `od-host` не прошли из-за отсутствовавших artifacts. `python3 tools/check_layout.py` показывает прежние 45 ошибок отсутствующих ссылок, новых ошибок изменённых документов нет; `git diff --check` чист. Корпус эквивалентности дал 2452 сравнения и ноль расхождений. Независимое ревью Sol одобрено; коммит ещё не создан. Измерение ниже использует адаптированный legacy proxy и не воспроизводит исходный allocation/lifetime baseline для NativeRegisterV1.
+Проверки на `codex`: `cargo fmt --all -- --check` и `cargo check -p od-jit -p od-host --all-targets --offline` прошли; `od-jit` — 413 passed, один отдельный microbenchmark проигнорирован в обычном наборе; `od-host` — 361 passed после появления локальных corpus artifacts. В базовом прогоне S3-50 три теста `od-host` не прошли из-за отсутствовавших artifacts. `python3 tools/check_layout.py` показывает прежние 45 ошибок отсутствующих ссылок, новых ошибок изменённых документов нет; `git diff --check` чист. Корпус эквивалентности дал 2452 сравнения и ноль расхождений. Независимое ревью Sol одобрено; коммит `dd9c9bb` в `codex`, Graphify обновлён. Измерение ниже использует адаптированный legacy proxy и не воспроизводит исходный allocation/lifetime baseline для NativeRegisterV1.
 
 ### Измерение full-CodeView scanner
 
@@ -291,7 +292,56 @@ PY
 
 ## 6. S3-53 — единая точка входа диспетчера
 
-Статус: not_started.
+Статус: независимое ревью Sol одобрено; коммит следует. Проверены все 31 wrapper, 33 целевых теста, форматирование и сборка; полный `od-jit` — 446 passed/2 ignored, `od-host` — 361 passed при наличии локальных artifacts, layout — 45 baseline ошибок. Измерение с mock backend не является проверкой производительности полного JIT.
+
+В `dispatch.rs` частная `run_register_dispatch` принимает профиль и режим flags отдельно. `RegisterDispatchProfile` связывает существующий тип admission с режимом исполнения формы; `InterpretedIncRax` сохраняет обычный S0-09 builder и interpreter fallback, а `NativeIncRax` выбирает native builder. `UncachedRegisterPath` передаёт профиль и mode существующему циклу; `SingleEntryRegisterPath` типизированно передаёт `NativeRegisterV1` в прежний single-entry cache loop. Публичные сигнатуры 31 обёртки сохранены. Оставшиеся cached/multi/memory точки входа не переводились на этот путь.
+
+Для 28 native обёрток ниже каждый столбец — отдельный тест `dispatch::tests::s3_53_<имя>`, сравнивающий публичный вызов с прямым `run_register_dispatch` и прежней стратегией на той же admitted форме и следующем базовом ADD. Сравниваются результат, всё состояние, emitted bytes, входные бюджеты и число вызовов executor; дополнительно фиксируются ожидаемые retirement и NOP handoff.
+
+| Профиль | Eager test suffix | Demand test suffix |
+|---|---|---|
+| NativeRegisterV1 | `native_register_v1` | `native_register_v1_demand_flags_candidate` |
+| INC RAX | `native_inc_rax` | `native_inc_rax_demand_flags_candidate` |
+| DEC RAX | `native_dec_rax` | `native_dec_rax_demand_flags_candidate` |
+| NEG RAX | `native_neg_rax` | `native_neg_rax_demand_flags_candidate` |
+| NOT RAX | `native_not_rax` | `native_not_rax_demand_flags_candidate` |
+| LEA RAX,[RBX] | `native_lea_rax_rbx` | `native_lea_rax_rbx_demand_flags_candidate` |
+| LEA RAX,[RBX+disp8] | `native_lea_rax_rbx_disp8` | `native_lea_rax_rbx_disp8_demand_flags_candidate` |
+| LEA RAX,[RBX+RCX] | `native_lea_rax_rbx_rcx` | `native_lea_rax_rbx_rcx_demand_flags_candidate` |
+| LEA RAX,[RIP+disp32] | `native_lea_rax_rip_disp32` | `native_lea_rax_rip_disp32_demand_flags_candidate` |
+| XCHG RAX,RBX | `native_xchg_rax_rbx` | `native_xchg_rax_rbx_demand_flags_candidate` |
+| ADD RAX,imm8 | `native_add_rax_imm8` | `native_add_rax_imm8_demand_flags_candidate` |
+| CMP RAX,imm8 | `native_cmp_rax_imm8` | `native_cmp_rax_imm8_demand_flags_candidate` |
+| SUB RAX,imm8 | `native_sub_rax_imm8` | `native_sub_rax_imm8_demand_flags_candidate` |
+| MOV RAX,imm32 | `native_mov_rax_imm32` | `native_mov_rax_imm32_demand_flags_candidate` |
+
+Остальные три wrapper-теста — `s3_53_nop_fallback_demand`, `s3_53_nop_inc_fallback_demand` и `s3_53_cached_native_register_v1_demand_wrapper`. Cached-тест сравнивает cold/hit и замену eager/demand по состоянию, результату, counters, publish/execute/drop и compile-flavor isolation. `s3_53_direct_entry_preserves_control_and_source_binding` отдельно проверяет STOP address/request, нулевой budget, event и отказ на изменённый CodeView; `s3_53_direct_entry_preserves_branch_and_nop_handoff` проверяет ветвление с последующим NOP.
+
+Целевой прогон `cargo test -p od-jit --lib --offline s3_53_` — 33 passed, 0 failed: 31 тест обёрток и два общих сценария. `cargo fmt --all -- --check` и `cargo check -p od-jit -p od-host --all-targets --offline` прошли; полный `od-jit` — 446 passed, 2 ignored (два отдельных microbenchmark), 0 failed. `od-host` — 361 passed, 0 failed, при наличии локальных corpus artifacts; его прогон выполнен до добавления test-only benchmark, после которого повторный `cargo check --all-targets` прошёл. `python3 tools/check_layout.py` завершился с 45 прежними `ERROR`, новых ошибок в изменённых документах и данных нет. `git diff --check` чист.
+
+### Измерение издержек маршрутизации
+
+Для решения на критичном dispatch-пути выполнен ограниченный paired microbenchmark: прежний прямой вызов существующего strategy-loop и новый `run_register_dispatch` используют одинаковые admitted bytes и один и тот же loop в одном release binary. Сценарии — interpreter NOP, uncached native INC с mock executor и прогретый single-entry demand cache с mock backend. Это не измерение исполнения ARM64/JIT и не сравнение полного приложения. В каждой из трёх отдельных сессий выполнялись 9 пар, порядок old/new чередовался; числа включают сброс тестового состояния. NOP — 10 000 вызовов на выборку, uncached INC — 250, cached demand — 1 000. Команда воспроизведения:
+
+```sh
+cargo test -p od-jit --lib --release --offline s3_53_dispatch_entry_microbench -- --ignored --nocapture
+```
+
+Конфигурация: Apple M3 Max, 36 GiB RAM, macOS 26.7.1/Darwin 25.6.0 arm64, rustc 1.99.0 (`b940084d7`), cargo 1.99.0, стандартный Cargo release profile. Полные парные значения наносекунд приведены в [CSV](data/stage3/s3-53-dispatch-entry-2026-11-11.csv). Ниже — медиана и наблюдаемый min–max за 9 выборок; delta — медиана и min–max парных `(unified − legacy) / legacy`, не доверительный интервал.
+
+| Сессия / сценарий | Legacy, мс | Unified, мс | Парная delta, % |
+|---|---:|---:|---:|
+| A / NOP | 3.389 [3.359–3.481] | 3.408 [3.360–3.499] | +0.58 [−1.74…+2.78] |
+| A / uncached INC | 0.738 [0.716–0.843] | 0.726 [0.716–0.837] | −1.03 [−9.64…+13.43] |
+| A / cached demand | 0.581 [0.569–0.688] | 0.584 [0.569–0.679] | +0.41 [−5.59…+2.13] |
+| B / NOP | 3.396 [3.348–3.459] | 3.384 [3.326–3.405] | −0.33 [−2.17…+0.24] |
+| B / uncached INC | 0.762 [0.730–0.849] | 0.756 [0.737–0.807] | +0.34 [−8.54…+1.72] |
+| B / cached demand | 0.587 [0.567–0.667] | 0.574 [0.571–0.658] | +0.03 [−6.03…+3.75] |
+| C / NOP | 3.330 [3.300–3.361] | 3.320 [3.309–3.355] | −0.13 [−0.69…+0.63] |
+| C / uncached INC | 0.728 [0.717–0.790] | 0.727 [0.718–0.747] | −0.57 [−5.81…+1.28] |
+| C / cached demand | 0.578 [0.569–0.661] | 0.578 [0.568–0.664] | −0.23 [−5.68…+4.04] |
+
+Парные изменения малы относительно разброса и меняют знак между сессиями; эти данные не подтверждают ни ускорение, ни отсутствие регрессии на реальной нагрузке. Память отдельно не измерялась. Полное сравнение cold/warm JIT остаётся задачей S3-56.
 
 ## 7. S3-54 — generic путь и multi-entry cache
 

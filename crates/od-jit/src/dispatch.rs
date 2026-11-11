@@ -1101,20 +1101,19 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
-    let mut observer = NoopObserver;
-    run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+    run_register_dispatch(
         code,
         admission,
-        execution_context,
-        dependencies,
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        cache,
-        backend,
-        &mut observer,
-        NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
-        None,
+        SingleEntryRegisterPath {
+            execution_context,
+            dependencies,
+            cache,
+            backend,
+        },
     )
 }
 
@@ -2266,14 +2265,14 @@ pub fn run_with_nop_fallback_demand_flags_candidate<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::Nop(admission),
+        RegisterDispatchProfile::Nop(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2287,14 +2286,14 @@ pub fn run_with_native_register_v1<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NativeRegisterV1(admission),
+        RegisterDispatchProfile::NativeRegisterV1(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeRegisterV1,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2308,14 +2307,14 @@ pub fn run_with_native_register_v1_demand_flags_candidate<E: ControlledBlockExec
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NativeRegisterV1(admission),
+        RegisterDispatchProfile::NativeRegisterV1(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeRegisterV1DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2349,14 +2348,14 @@ pub fn run_with_nop_inc_rax_fallback_demand_flags_candidate<E: ControlledBlockEx
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopIncRax(admission),
+        RegisterDispatchProfile::InterpretedIncRax(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2370,14 +2369,14 @@ pub fn run_with_native_inc_rax<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopIncRax(admission),
+        RegisterDispatchProfile::NativeIncRax(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeIncRax,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2391,14 +2390,14 @@ pub fn run_with_native_inc_rax_demand_flags_candidate<E: ControlledBlockExecutor
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopIncRax(admission),
+        RegisterDispatchProfile::NativeIncRax(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2411,14 +2410,14 @@ pub fn run_with_native_dec_rax<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopDecRax(admission),
+        RegisterDispatchProfile::NativeDecRax(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeDecRax,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2432,14 +2431,14 @@ pub fn run_with_native_dec_rax_demand_flags_candidate<E: ControlledBlockExecutor
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopDecRax(admission),
+        RegisterDispatchProfile::NativeDecRax(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeDecRaxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2452,14 +2451,14 @@ pub fn run_with_native_neg_rax<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopNegRax(admission),
+        RegisterDispatchProfile::NativeNegRax(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeNegRax,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2472,14 +2471,14 @@ pub fn run_with_native_neg_rax_demand_flags_candidate<E: ControlledBlockExecutor
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopNegRax(admission),
+        RegisterDispatchProfile::NativeNegRax(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeNegRaxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2492,14 +2491,14 @@ pub fn run_with_native_not_rax<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopNotRax(admission),
+        RegisterDispatchProfile::NativeNotRax(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeNotRax,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2512,14 +2511,14 @@ pub fn run_with_native_not_rax_demand_flags_candidate<E: ControlledBlockExecutor
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopNotRax(admission),
+        RegisterDispatchProfile::NativeNotRax(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeNotRaxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2532,14 +2531,14 @@ pub fn run_with_native_lea_rax_rbx<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbx(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbx(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbx,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2552,14 +2551,14 @@ pub fn run_with_native_lea_rax_rbx_demand_flags_candidate<E: ControlledBlockExec
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbx(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbx(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2572,14 +2571,14 @@ pub fn run_with_native_lea_rax_rbx_disp8<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbxDisp8(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbxDisp8(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbxDisp8,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2592,14 +2591,14 @@ pub fn run_with_native_lea_rax_rbx_disp8_demand_flags_candidate<E: ControlledBlo
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbxDisp8(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbxDisp8(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbxDisp8DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2612,14 +2611,14 @@ pub fn run_with_native_lea_rax_rbx_rcx<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbxRcx(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbxRcx(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbxRcx,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2632,14 +2631,14 @@ pub fn run_with_native_lea_rax_rbx_rcx_demand_flags_candidate<E: ControlledBlock
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRbxRcx(admission),
+        RegisterDispatchProfile::NativeLeaRaxRbxRcx(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRbxRcxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2652,14 +2651,14 @@ pub fn run_with_native_lea_rax_rip_disp32<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRipDisp32(admission),
+        RegisterDispatchProfile::NativeLeaRaxRipDisp32(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRipDisp32,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2671,14 +2670,14 @@ pub fn run_with_native_lea_rax_rip_disp32_demand_flags_candidate<E: ControlledBl
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopLeaRaxRipDisp32(admission),
+        RegisterDispatchProfile::NativeLeaRaxRipDisp32(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeLeaRaxRipDisp32DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2691,14 +2690,14 @@ pub fn run_with_native_xchg_rax_rbx<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopXchgRaxRbx(admission),
+        RegisterDispatchProfile::NativeXchgRaxRbx(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeXchgRaxRbx,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2711,14 +2710,14 @@ pub fn run_with_native_xchg_rax_rbx_demand_flags_candidate<E: ControlledBlockExe
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopXchgRaxRbx(admission),
+        RegisterDispatchProfile::NativeXchgRaxRbx(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeXchgRaxRbxDemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2731,14 +2730,14 @@ pub fn run_with_native_add_rax_imm8<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopAddRaxImm8(admission),
+        RegisterDispatchProfile::NativeAddRaxImm8(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeAddRaxImm8,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2751,14 +2750,14 @@ pub fn run_with_native_add_rax_imm8_demand_flags_candidate<E: ControlledBlockExe
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopAddRaxImm8(admission),
+        RegisterDispatchProfile::NativeAddRaxImm8(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeAddRaxImm8DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2771,14 +2770,14 @@ pub fn run_with_native_cmp_rax_imm8<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopCmpRaxImm8(admission),
+        RegisterDispatchProfile::NativeCmpRaxImm8(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeCmpRaxImm8,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2791,14 +2790,14 @@ pub fn run_with_native_cmp_rax_imm8_demand_flags_candidate<E: ControlledBlockExe
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopCmpRaxImm8(admission),
+        RegisterDispatchProfile::NativeCmpRaxImm8(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeCmpRaxImm8DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2811,14 +2810,14 @@ pub fn run_with_native_sub_rax_imm8<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopSubRaxImm8(admission),
+        RegisterDispatchProfile::NativeSubRaxImm8(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeSubRaxImm8,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2831,14 +2830,14 @@ pub fn run_with_native_sub_rax_imm8_demand_flags_candidate<E: ControlledBlockExe
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopSubRaxImm8(admission),
+        RegisterDispatchProfile::NativeSubRaxImm8(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeSubRaxImm8DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2851,14 +2850,14 @@ pub fn run_with_native_mov_rax_imm32<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopMovRaxImm32(admission),
+        RegisterDispatchProfile::NativeMovRaxImm32(admission),
+        RegisterFlagsMode::Eager,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeMovRaxImm32,
+        UncachedRegisterPath(executor),
     )
 }
 
@@ -2871,15 +2870,303 @@ pub fn run_with_native_mov_rax_imm32_demand_flags_candidate<E: ControlledBlockEx
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
-    run_with_nop_fallback_strategy(
+    run_register_dispatch(
         code,
-        FallbackAdmission::NopMovRaxImm32(admission),
+        RegisterDispatchProfile::NativeMovRaxImm32(admission),
+        RegisterFlagsMode::DemandFlagsCandidate,
         state,
         total_budget,
         control,
-        executor,
-        NopFallbackCompilation::NativeMovRaxImm32DemandFlagsCandidate,
+        UncachedRegisterPath(executor),
     )
+}
+
+// A profile identifies the admission and whether its extra form is interpreted
+// or compiled natively. Flag policy is independent of that choice.
+#[derive(Clone, Copy)]
+enum RegisterFlagsMode {
+    Eager,
+    DemandFlagsCandidate,
+}
+
+#[derive(Clone, Copy)]
+enum RegisterDispatchProfile<'a> {
+    Nop(&'a InterpreterFallbackAdmission),
+    InterpretedIncRax(&'a IncRaxInterpreterFallbackAdmission),
+    NativeIncRax(&'a IncRaxInterpreterFallbackAdmission),
+    NativeDecRax(&'a DecRaxInterpreterFallbackAdmission),
+    NativeNegRax(&'a NegRaxInterpreterFallbackAdmission),
+    NativeNotRax(&'a NotRaxInterpreterFallbackAdmission),
+    NativeLeaRaxRbx(&'a LeaRaxRbxInterpreterFallbackAdmission),
+    NativeLeaRaxRbxDisp8(&'a LeaRaxRbxDisp8InterpreterFallbackAdmission),
+    NativeLeaRaxRbxRcx(&'a LeaRaxRbxRcxInterpreterFallbackAdmission),
+    NativeLeaRaxRipDisp32(&'a LeaRaxRipDisp32InterpreterFallbackAdmission),
+    NativeXchgRaxRbx(&'a XchgRaxRbxInterpreterFallbackAdmission),
+    NativeAddRaxImm8(&'a AddRaxImm8InterpreterFallbackAdmission),
+    NativeCmpRaxImm8(&'a CmpRaxImm8InterpreterFallbackAdmission),
+    NativeSubRaxImm8(&'a SubRaxImm8InterpreterFallbackAdmission),
+    NativeMovRaxImm32(&'a MovRaxImm32InterpreterFallbackAdmission),
+    NativeRegisterV1(&'a NativeRegisterV1Admission),
+}
+
+impl<'a> RegisterDispatchProfile<'a> {
+    fn into_strategy(
+        self,
+        flags: RegisterFlagsMode,
+    ) -> (FallbackAdmission<'a>, NopFallbackCompilation) {
+        match self {
+            Self::Nop(admission) => (
+                FallbackAdmission::Nop(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::Eager,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::InterpretedIncRax(admission) => (
+                FallbackAdmission::NopIncRax(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::Eager,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeIncRax(admission) => (
+                FallbackAdmission::NopIncRax(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeIncRax,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeDecRax(admission) => (
+                FallbackAdmission::NopDecRax(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeDecRax,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeDecRaxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeNegRax(admission) => (
+                FallbackAdmission::NopNegRax(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeNegRax,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeNegRaxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeNotRax(admission) => (
+                FallbackAdmission::NopNotRax(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeNotRax,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeNotRaxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeLeaRaxRbx(admission) => (
+                FallbackAdmission::NopLeaRaxRbx(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeLeaRaxRbx,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeLeaRaxRbxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeLeaRaxRbxDisp8(admission) => (
+                FallbackAdmission::NopLeaRaxRbxDisp8(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeLeaRaxRbxDisp8,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeLeaRaxRbxDisp8DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeLeaRaxRbxRcx(admission) => (
+                FallbackAdmission::NopLeaRaxRbxRcx(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeLeaRaxRbxRcx,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeLeaRaxRbxRcxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeLeaRaxRipDisp32(admission) => (
+                FallbackAdmission::NopLeaRaxRipDisp32(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeLeaRaxRipDisp32,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeLeaRaxRipDisp32DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeXchgRaxRbx(admission) => (
+                FallbackAdmission::NopXchgRaxRbx(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeXchgRaxRbx,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeXchgRaxRbxDemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeAddRaxImm8(admission) => (
+                FallbackAdmission::NopAddRaxImm8(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeAddRaxImm8,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeAddRaxImm8DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeCmpRaxImm8(admission) => (
+                FallbackAdmission::NopCmpRaxImm8(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeCmpRaxImm8,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeCmpRaxImm8DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeSubRaxImm8(admission) => (
+                FallbackAdmission::NopSubRaxImm8(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeSubRaxImm8,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeSubRaxImm8DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeMovRaxImm32(admission) => (
+                FallbackAdmission::NopMovRaxImm32(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeMovRaxImm32,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeMovRaxImm32DemandFlagsCandidate
+                    }
+                },
+            ),
+            Self::NativeRegisterV1(admission) => (
+                FallbackAdmission::NativeRegisterV1(admission),
+                match flags {
+                    RegisterFlagsMode::Eager => NopFallbackCompilation::NativeRegisterV1,
+                    RegisterFlagsMode::DemandFlagsCandidate => {
+                        NopFallbackCompilation::NativeRegisterV1DemandFlagsCandidate
+                    }
+                },
+            ),
+        }
+    }
+}
+
+// The cache path has different dependencies and executor ownership from the
+// uncached path. This private adapter keeps those contracts typed while both
+// routes enter through the same profile/flags dispatcher.
+trait RegisterDispatchPath<'admission> {
+    type Error;
+    type Profile;
+
+    fn dispatch(
+        self,
+        code: CodeView<'_>,
+        profile: Self::Profile,
+        flags: RegisterFlagsMode,
+        state: &mut LongModeState,
+        total_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<FallbackDispatchResult, DispatchError<Self::Error>>;
+}
+
+struct UncachedRegisterPath<'a, E>(&'a mut E);
+
+impl<'admission, E: ControlledBlockExecutor> RegisterDispatchPath<'admission>
+    for UncachedRegisterPath<'_, E>
+{
+    type Error = E::Error;
+    type Profile = RegisterDispatchProfile<'admission>;
+
+    fn dispatch(
+        self,
+        code: CodeView<'_>,
+        profile: Self::Profile,
+        flags: RegisterFlagsMode,
+        state: &mut LongModeState,
+        total_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<FallbackDispatchResult, DispatchError<Self::Error>> {
+        let (admission, compilation) = profile.into_strategy(flags);
+        run_with_nop_fallback_strategy(
+            code,
+            admission,
+            state,
+            total_budget,
+            control,
+            self.0,
+            compilation,
+        )
+    }
+}
+
+struct SingleEntryRegisterPath<'a, B: CachedBlockBackend> {
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &'a [CodeDependencySpan],
+    cache: &'a mut SingleEntryBlockCache<B::Published>,
+    backend: &'a mut B,
+}
+
+impl<'admission, B: CachedBlockBackend> RegisterDispatchPath<'admission>
+    for SingleEntryRegisterPath<'_, B>
+{
+    type Error = B::Error;
+    type Profile = &'admission NativeRegisterV1Admission;
+
+    fn dispatch(
+        self,
+        code: CodeView<'_>,
+        admission: Self::Profile,
+        flags: RegisterFlagsMode,
+        state: &mut LongModeState,
+        total_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<FallbackDispatchResult, DispatchError<Self::Error>> {
+        let mut observer = NoopObserver;
+        let strategy = match flags {
+            RegisterFlagsMode::Eager => NativeRegisterV1CacheStrategy::Eager,
+            RegisterFlagsMode::DemandFlagsCandidate => {
+                NativeRegisterV1CacheStrategy::DemandFlagsCandidate
+            }
+        };
+        run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+            code,
+            admission,
+            self.execution_context,
+            self.dependencies,
+            state,
+            total_budget,
+            control,
+            self.cache,
+            self.backend,
+            &mut observer,
+            strategy,
+            None,
+        )
+    }
+}
+
+fn run_register_dispatch<'admission, P: RegisterDispatchPath<'admission>>(
+    code: CodeView<'_>,
+    profile: P::Profile,
+    flags: RegisterFlagsMode,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    path: P,
+) -> Result<FallbackDispatchResult, DispatchError<P::Error>> {
+    path.dispatch(code, profile, flags, state, total_budget, control)
 }
 
 #[derive(Clone, Copy)]
@@ -8086,5 +8373,996 @@ mod tests {
         assert_eq!(observed_cache.counters().hits, 1);
         assert_eq!(observed_cache.counters().successful_compiles, 1);
         assert_eq!(observed_cache.counters().successful_publications, 1);
+    }
+    // S3-53 tests compare each public wrapper with the new entry and the
+    // pre-existing strategy, including the emitted native code.
+    #[derive(Default)]
+    struct S3_53RecordingExecutor {
+        next_rip: u64,
+        retired: u64,
+        branch_exit: bool,
+        emissions: Vec<(Vec<u8>, u64)>,
+    }
+
+    impl ControlledBlockExecutor for S3_53RecordingExecutor {
+        type Error = ();
+
+        fn execute_one_block_controlled(
+            &mut self,
+            block: &crate::block_compile::CompiledBlock,
+            state: &mut LongModeState,
+            incoming_budget: u64,
+            _control: DispatchControl<'_>,
+        ) -> Result<BlockExecutionReport, Self::Error> {
+            self.emissions
+                .push((block.emitted().to_le_bytes().unwrap(), incoming_budget));
+            state.rip = self.next_rip;
+            state.gpr[0] = 0x1234;
+            state.rflags = 0x202;
+            Ok(report(
+                if self.branch_exit {
+                    RuntimeExitTag::DispatchCandidate
+                } else {
+                    RuntimeExitTag::NeedInterpreter
+                },
+                incoming_budget - self.retired,
+                self.retired,
+            ))
+        }
+    }
+
+    macro_rules! s3_53_uncached_wrapper_test {
+        ($test:ident, $wrapper:ident, $admission_ty:ty, $profile:ident, $flags:ident,
+         $legacy_admission:ident, $legacy_compilation:ident, $bytes:expr, $native_retired:expr) => {
+            #[test]
+            fn $test() {
+                let base = 0x9300;
+                let mut bytes = Vec::from($bytes.as_slice());
+                // A second baseline flag writer makes eager/demand compilation
+                // observable in the emitted block where the profile allows it.
+                bytes.extend_from_slice(&[0x48, 0x03, 0xc0, 0x90]);
+                let view = CodeView::new(base, &bytes).unwrap();
+                let admission = <$admission_ty>::from_code(view).unwrap();
+                let initial = LongModeState {
+                    rip: base,
+                    ..LongModeState::default()
+                };
+                let mut wrapper_state = initial.clone();
+                let mut direct_state = initial.clone();
+                let mut legacy_state = initial;
+                let native_end = view.code_end() - 1;
+                let mut wrapper_executor = S3_53RecordingExecutor {
+                    next_rip: native_end,
+                    retired: $native_retired,
+                    ..Default::default()
+                };
+                let mut direct_executor = S3_53RecordingExecutor {
+                    next_rip: native_end,
+                    retired: $native_retired,
+                    ..Default::default()
+                };
+                let mut legacy_executor = S3_53RecordingExecutor {
+                    next_rip: native_end,
+                    retired: $native_retired,
+                    ..Default::default()
+                };
+                let stop = AtomicU8::new(0);
+                let control = DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: None,
+                };
+                let wrapper = $wrapper(
+                    view,
+                    &admission,
+                    &mut wrapper_state,
+                    6,
+                    control,
+                    &mut wrapper_executor,
+                )
+                .unwrap();
+                let direct = run_register_dispatch(
+                    view,
+                    RegisterDispatchProfile::$profile(&admission),
+                    RegisterFlagsMode::$flags,
+                    &mut direct_state,
+                    6,
+                    control,
+                    UncachedRegisterPath(&mut direct_executor),
+                )
+                .unwrap();
+                let legacy = run_with_nop_fallback_strategy(
+                    view,
+                    FallbackAdmission::$legacy_admission(&admission),
+                    &mut legacy_state,
+                    6,
+                    control,
+                    &mut legacy_executor,
+                    NopFallbackCompilation::$legacy_compilation,
+                )
+                .unwrap();
+                assert_eq!(wrapper, direct);
+                assert_eq!(wrapper, legacy);
+                assert_eq!(wrapper_state, direct_state);
+                assert_eq!(wrapper_state, legacy_state);
+                assert_eq!(wrapper_executor.emissions, direct_executor.emissions);
+                assert_eq!(wrapper_executor.emissions, legacy_executor.emissions);
+                assert_eq!(wrapper.exit, DispatchExit::CodeEnd);
+                assert_eq!(wrapper.remaining_budget, 3);
+                assert_eq!(wrapper.retired_native, $native_retired);
+                assert_eq!(wrapper.retired_interpreter, 3 - $native_retired);
+                assert_eq!(wrapper.blocks_executed, 1);
+                assert_eq!(wrapper_executor.emissions.len(), 1);
+            }
+        };
+    }
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_register_v1,
+        run_with_native_register_v1,
+        NativeRegisterV1Admission,
+        NativeRegisterV1,
+        Eager,
+        NativeRegisterV1,
+        NativeRegisterV1,
+        [0x48, 0xff, 0xc0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_register_v1_demand_flags_candidate,
+        run_with_native_register_v1_demand_flags_candidate,
+        NativeRegisterV1Admission,
+        NativeRegisterV1,
+        DemandFlagsCandidate,
+        NativeRegisterV1,
+        NativeRegisterV1DemandFlagsCandidate,
+        [0x48, 0xff, 0xc0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_inc_rax,
+        run_with_native_inc_rax,
+        IncRaxInterpreterFallbackAdmission,
+        NativeIncRax,
+        Eager,
+        NopIncRax,
+        NativeIncRax,
+        [0x48, 0xff, 0xc0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_inc_rax_demand_flags_candidate,
+        run_with_native_inc_rax_demand_flags_candidate,
+        IncRaxInterpreterFallbackAdmission,
+        NativeIncRax,
+        DemandFlagsCandidate,
+        NopIncRax,
+        NativeIncRaxDemandFlagsCandidate,
+        [0x48, 0xff, 0xc0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_dec_rax,
+        run_with_native_dec_rax,
+        DecRaxInterpreterFallbackAdmission,
+        NativeDecRax,
+        Eager,
+        NopDecRax,
+        NativeDecRax,
+        [0x48, 0xff, 0xc8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_dec_rax_demand_flags_candidate,
+        run_with_native_dec_rax_demand_flags_candidate,
+        DecRaxInterpreterFallbackAdmission,
+        NativeDecRax,
+        DemandFlagsCandidate,
+        NopDecRax,
+        NativeDecRaxDemandFlagsCandidate,
+        [0x48, 0xff, 0xc8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_neg_rax,
+        run_with_native_neg_rax,
+        NegRaxInterpreterFallbackAdmission,
+        NativeNegRax,
+        Eager,
+        NopNegRax,
+        NativeNegRax,
+        [0x48, 0xf7, 0xd8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_neg_rax_demand_flags_candidate,
+        run_with_native_neg_rax_demand_flags_candidate,
+        NegRaxInterpreterFallbackAdmission,
+        NativeNegRax,
+        DemandFlagsCandidate,
+        NopNegRax,
+        NativeNegRaxDemandFlagsCandidate,
+        [0x48, 0xf7, 0xd8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_not_rax,
+        run_with_native_not_rax,
+        NotRaxInterpreterFallbackAdmission,
+        NativeNotRax,
+        Eager,
+        NopNotRax,
+        NativeNotRax,
+        [0x48, 0xf7, 0xd0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_not_rax_demand_flags_candidate,
+        run_with_native_not_rax_demand_flags_candidate,
+        NotRaxInterpreterFallbackAdmission,
+        NativeNotRax,
+        DemandFlagsCandidate,
+        NopNotRax,
+        NativeNotRaxDemandFlagsCandidate,
+        [0x48, 0xf7, 0xd0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx,
+        run_with_native_lea_rax_rbx,
+        LeaRaxRbxInterpreterFallbackAdmission,
+        NativeLeaRaxRbx,
+        Eager,
+        NopLeaRaxRbx,
+        NativeLeaRaxRbx,
+        [0x48, 0x8d, 0x03],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx_demand_flags_candidate,
+        run_with_native_lea_rax_rbx_demand_flags_candidate,
+        LeaRaxRbxInterpreterFallbackAdmission,
+        NativeLeaRaxRbx,
+        DemandFlagsCandidate,
+        NopLeaRaxRbx,
+        NativeLeaRaxRbxDemandFlagsCandidate,
+        [0x48, 0x8d, 0x03],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx_disp8,
+        run_with_native_lea_rax_rbx_disp8,
+        LeaRaxRbxDisp8InterpreterFallbackAdmission,
+        NativeLeaRaxRbxDisp8,
+        Eager,
+        NopLeaRaxRbxDisp8,
+        NativeLeaRaxRbxDisp8,
+        [0x48, 0x8d, 0x43, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx_disp8_demand_flags_candidate,
+        run_with_native_lea_rax_rbx_disp8_demand_flags_candidate,
+        LeaRaxRbxDisp8InterpreterFallbackAdmission,
+        NativeLeaRaxRbxDisp8,
+        DemandFlagsCandidate,
+        NopLeaRaxRbxDisp8,
+        NativeLeaRaxRbxDisp8DemandFlagsCandidate,
+        [0x48, 0x8d, 0x43, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx_rcx,
+        run_with_native_lea_rax_rbx_rcx,
+        LeaRaxRbxRcxInterpreterFallbackAdmission,
+        NativeLeaRaxRbxRcx,
+        Eager,
+        NopLeaRaxRbxRcx,
+        NativeLeaRaxRbxRcx,
+        [0x48, 0x8d, 0x04, 0x0b],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rbx_rcx_demand_flags_candidate,
+        run_with_native_lea_rax_rbx_rcx_demand_flags_candidate,
+        LeaRaxRbxRcxInterpreterFallbackAdmission,
+        NativeLeaRaxRbxRcx,
+        DemandFlagsCandidate,
+        NopLeaRaxRbxRcx,
+        NativeLeaRaxRbxRcxDemandFlagsCandidate,
+        [0x48, 0x8d, 0x04, 0x0b],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rip_disp32,
+        run_with_native_lea_rax_rip_disp32,
+        LeaRaxRipDisp32InterpreterFallbackAdmission,
+        NativeLeaRaxRipDisp32,
+        Eager,
+        NopLeaRaxRipDisp32,
+        NativeLeaRaxRipDisp32,
+        [0x48, 0x8d, 0x05, 0x01, 0, 0, 0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_lea_rax_rip_disp32_demand_flags_candidate,
+        run_with_native_lea_rax_rip_disp32_demand_flags_candidate,
+        LeaRaxRipDisp32InterpreterFallbackAdmission,
+        NativeLeaRaxRipDisp32,
+        DemandFlagsCandidate,
+        NopLeaRaxRipDisp32,
+        NativeLeaRaxRipDisp32DemandFlagsCandidate,
+        [0x48, 0x8d, 0x05, 0x01, 0, 0, 0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_xchg_rax_rbx,
+        run_with_native_xchg_rax_rbx,
+        XchgRaxRbxInterpreterFallbackAdmission,
+        NativeXchgRaxRbx,
+        Eager,
+        NopXchgRaxRbx,
+        NativeXchgRaxRbx,
+        [0x48, 0x87, 0xd8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_xchg_rax_rbx_demand_flags_candidate,
+        run_with_native_xchg_rax_rbx_demand_flags_candidate,
+        XchgRaxRbxInterpreterFallbackAdmission,
+        NativeXchgRaxRbx,
+        DemandFlagsCandidate,
+        NopXchgRaxRbx,
+        NativeXchgRaxRbxDemandFlagsCandidate,
+        [0x48, 0x87, 0xd8],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_add_rax_imm8,
+        run_with_native_add_rax_imm8,
+        AddRaxImm8InterpreterFallbackAdmission,
+        NativeAddRaxImm8,
+        Eager,
+        NopAddRaxImm8,
+        NativeAddRaxImm8,
+        [0x48, 0x83, 0xc0, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_add_rax_imm8_demand_flags_candidate,
+        run_with_native_add_rax_imm8_demand_flags_candidate,
+        AddRaxImm8InterpreterFallbackAdmission,
+        NativeAddRaxImm8,
+        DemandFlagsCandidate,
+        NopAddRaxImm8,
+        NativeAddRaxImm8DemandFlagsCandidate,
+        [0x48, 0x83, 0xc0, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_cmp_rax_imm8,
+        run_with_native_cmp_rax_imm8,
+        CmpRaxImm8InterpreterFallbackAdmission,
+        NativeCmpRaxImm8,
+        Eager,
+        NopCmpRaxImm8,
+        NativeCmpRaxImm8,
+        [0x48, 0x83, 0xf8, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_cmp_rax_imm8_demand_flags_candidate,
+        run_with_native_cmp_rax_imm8_demand_flags_candidate,
+        CmpRaxImm8InterpreterFallbackAdmission,
+        NativeCmpRaxImm8,
+        DemandFlagsCandidate,
+        NopCmpRaxImm8,
+        NativeCmpRaxImm8DemandFlagsCandidate,
+        [0x48, 0x83, 0xf8, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_sub_rax_imm8,
+        run_with_native_sub_rax_imm8,
+        SubRaxImm8InterpreterFallbackAdmission,
+        NativeSubRaxImm8,
+        Eager,
+        NopSubRaxImm8,
+        NativeSubRaxImm8,
+        [0x48, 0x83, 0xe8, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_sub_rax_imm8_demand_flags_candidate,
+        run_with_native_sub_rax_imm8_demand_flags_candidate,
+        SubRaxImm8InterpreterFallbackAdmission,
+        NativeSubRaxImm8,
+        DemandFlagsCandidate,
+        NopSubRaxImm8,
+        NativeSubRaxImm8DemandFlagsCandidate,
+        [0x48, 0x83, 0xe8, 0x01],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_mov_rax_imm32,
+        run_with_native_mov_rax_imm32,
+        MovRaxImm32InterpreterFallbackAdmission,
+        NativeMovRaxImm32,
+        Eager,
+        NopMovRaxImm32,
+        NativeMovRaxImm32,
+        [0x48, 0xc7, 0xc0, 0x01, 0, 0, 0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_native_mov_rax_imm32_demand_flags_candidate,
+        run_with_native_mov_rax_imm32_demand_flags_candidate,
+        MovRaxImm32InterpreterFallbackAdmission,
+        NativeMovRaxImm32,
+        DemandFlagsCandidate,
+        NopMovRaxImm32,
+        NativeMovRaxImm32DemandFlagsCandidate,
+        [0x48, 0xc7, 0xc0, 0x01, 0, 0, 0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_nop_fallback_demand,
+        run_with_nop_fallback_demand_flags_candidate,
+        InterpreterFallbackAdmission,
+        Nop,
+        DemandFlagsCandidate,
+        Nop,
+        DemandFlagsCandidate,
+        [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0],
+        2
+    );
+    s3_53_uncached_wrapper_test!(
+        s3_53_nop_inc_fallback_demand,
+        run_with_nop_inc_rax_fallback_demand_flags_candidate,
+        IncRaxInterpreterFallbackAdmission,
+        InterpretedIncRax,
+        DemandFlagsCandidate,
+        NopIncRax,
+        DemandFlagsCandidate,
+        [0x48, 0xff, 0xc0],
+        1
+    );
+    #[test]
+    fn s3_53_cached_native_register_v1_demand_wrapper() {
+        let bytes = [0x48, 0x83, 0xc0, 1];
+        let base = 0x9500;
+        let view = CodeView::new(base, &bytes).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut wrapper_cache =
+            SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut direct_cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut legacy_cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let wrapper_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let direct_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let legacy_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut wrapper_backend = mock_cached_backend(wrapper_tracker.clone());
+        let mut direct_backend = mock_cached_backend(direct_tracker.clone());
+        let mut legacy_backend = mock_cached_backend(legacy_tracker.clone());
+
+        // Cold demand, warm demand, eager replacement, demand replacement.
+        for demand in [true, true, false, true] {
+            let initial = LongModeState {
+                rip: base,
+                ..LongModeState::default()
+            };
+            let mut wrapper_state = initial.clone();
+            let mut direct_state = initial.clone();
+            let mut legacy_state = initial;
+            let wrapper = if demand {
+                run_cached_native_register_v1_demand_flags_candidate_controlled(
+                    view,
+                    &admission,
+                    context,
+                    &dependencies,
+                    &mut wrapper_state,
+                    4,
+                    control,
+                    &mut wrapper_cache,
+                    &mut wrapper_backend,
+                )
+                .unwrap()
+            } else {
+                run_cached_native_register_v1_controlled(
+                    view,
+                    &admission,
+                    context,
+                    &dependencies,
+                    &mut wrapper_state,
+                    4,
+                    control,
+                    &mut wrapper_cache,
+                    &mut wrapper_backend,
+                )
+                .unwrap()
+            };
+            let direct = run_register_dispatch(
+                view,
+                &admission,
+                if demand {
+                    RegisterFlagsMode::DemandFlagsCandidate
+                } else {
+                    RegisterFlagsMode::Eager
+                },
+                &mut direct_state,
+                4,
+                control,
+                SingleEntryRegisterPath {
+                    execution_context: context,
+                    dependencies: &dependencies,
+                    cache: &mut direct_cache,
+                    backend: &mut direct_backend,
+                },
+            )
+            .unwrap();
+            let mut observer = NoopObserver;
+            let legacy = run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+                view,
+                &admission,
+                context,
+                &dependencies,
+                &mut legacy_state,
+                4,
+                control,
+                &mut legacy_cache,
+                &mut legacy_backend,
+                &mut observer,
+                if demand {
+                    NativeRegisterV1CacheStrategy::DemandFlagsCandidate
+                } else {
+                    NativeRegisterV1CacheStrategy::Eager
+                },
+                None,
+            )
+            .unwrap();
+            assert_eq!(wrapper, direct);
+            assert_eq!(wrapper, legacy);
+            assert_eq!(wrapper_state, direct_state);
+            assert_eq!(wrapper_state, legacy_state);
+            assert_eq!(wrapper.exit, DispatchExit::CodeEnd);
+            assert_eq!(wrapper.retired_native, 1);
+            assert_eq!(wrapper.retired_interpreter, 0);
+            assert_eq!(wrapper.blocks_executed, 1);
+            assert_eq!(wrapper_cache.counters(), direct_cache.counters());
+            assert_eq!(wrapper_cache.counters(), legacy_cache.counters());
+        }
+        let counts = wrapper_cache.counters();
+        assert_eq!((counts.misses, counts.hits), (3, 1));
+        assert_eq!(
+            (counts.successful_compiles, counts.successful_publications),
+            (3, 3)
+        );
+        for tracker in [&wrapper_tracker, &direct_tracker, &legacy_tracker] {
+            let tracker = tracker.borrow();
+            assert_eq!(
+                (
+                    tracker.publishes,
+                    tracker.executions,
+                    tracker.live,
+                    tracker.drops
+                ),
+                (3, 4, 1, 2)
+            );
+            assert_eq!(tracker.executed_ids, [1, 1, 2, 3]);
+        }
+        drop(wrapper_cache);
+        drop(direct_cache);
+        drop(legacy_cache);
+        for tracker in [&wrapper_tracker, &direct_tracker, &legacy_tracker] {
+            let tracker = tracker.borrow();
+            assert_eq!((tracker.live, tracker.drops), (0, 3));
+        }
+    }
+
+    #[test]
+    fn s3_53_direct_entry_preserves_control_and_source_binding() {
+        let code = [0x90];
+        let other = [0xcc];
+        let base = 0x9600;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = InterpreterFallbackAdmission::from_code(view).unwrap();
+        for (stop_rip, stop_value, event_value, budget, expected) in [
+            (
+                Some(base),
+                0,
+                false,
+                3,
+                DispatchExit::Runtime(RuntimeExitTag::StopAddress),
+            ),
+            (
+                None,
+                1,
+                false,
+                3,
+                DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+            ),
+            (None, 0, false, 0, DispatchExit::BudgetExhausted),
+            (None, 0, true, 3, DispatchExit::EventPending),
+        ] {
+            let stop = AtomicU8::new(stop_value);
+            let event = AtomicBool::new(event_value);
+            let control = DispatchControl {
+                stop_rip,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            };
+            let initial = LongModeState {
+                rip: base,
+                ..LongModeState::default()
+            };
+            let mut wrapper_state = initial.clone();
+            let mut direct_state = initial.clone();
+            let mut wrapper_executor = S3_53RecordingExecutor::default();
+            let mut direct_executor = S3_53RecordingExecutor::default();
+            let wrapper = run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut wrapper_state,
+                budget,
+                control,
+                &mut wrapper_executor,
+            )
+            .unwrap();
+            let direct = run_register_dispatch(
+                view,
+                RegisterDispatchProfile::Nop(&admission),
+                RegisterFlagsMode::DemandFlagsCandidate,
+                &mut direct_state,
+                budget,
+                control,
+                UncachedRegisterPath(&mut direct_executor),
+            )
+            .unwrap();
+            assert_eq!(wrapper, direct);
+            assert_eq!(wrapper.exit, expected);
+            assert_eq!(wrapper_state, initial);
+            assert_eq!(direct_state, initial);
+            assert!(wrapper_executor.emissions.is_empty());
+            assert!(direct_executor.emissions.is_empty());
+        }
+        let wrong_view = CodeView::new(base, &other).unwrap();
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let initial = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut wrapper_state = initial.clone();
+        let mut direct_state = initial.clone();
+        let mut wrapper_executor = S3_53RecordingExecutor::default();
+        let mut direct_executor = S3_53RecordingExecutor::default();
+        let wrapper = run_with_nop_fallback_demand_flags_candidate(
+            wrong_view,
+            &admission,
+            &mut wrapper_state,
+            3,
+            control,
+            &mut wrapper_executor,
+        );
+        let direct = run_register_dispatch(
+            wrong_view,
+            RegisterDispatchProfile::Nop(&admission),
+            RegisterFlagsMode::DemandFlagsCandidate,
+            &mut direct_state,
+            3,
+            control,
+            UncachedRegisterPath(&mut direct_executor),
+        );
+        assert_eq!(wrapper, direct);
+        assert_eq!(wrapper, Err(DispatchError::NopAdmissionDoesNotMatchCode));
+        assert_eq!(wrapper_state, initial);
+        assert_eq!(direct_state, initial);
+        assert!(wrapper_executor.emissions.is_empty());
+        assert!(direct_executor.emissions.is_empty());
+    }
+
+    #[test]
+    fn s3_53_direct_entry_preserves_branch_and_nop_handoff() {
+        // CMP RAX,RAX; JE next; NOP. The scripted native block commits Jcc.
+        let bytes = [0x48, 0x3b, 0xc0, 0x74, 0, 0x90];
+        let base = 0x9700;
+        let view = CodeView::new(base, &bytes).unwrap();
+        let admission = InterpreterFallbackAdmission::from_code(view).unwrap();
+        let initial = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut wrapper_state = initial.clone();
+        let mut direct_state = initial;
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut wrapper_executor = S3_53RecordingExecutor {
+            next_rip: base + 5,
+            retired: 2,
+            branch_exit: true,
+            ..Default::default()
+        };
+        let mut direct_executor = S3_53RecordingExecutor {
+            next_rip: base + 5,
+            retired: 2,
+            branch_exit: true,
+            ..Default::default()
+        };
+        let wrapper = run_with_nop_fallback_demand_flags_candidate(
+            view,
+            &admission,
+            &mut wrapper_state,
+            5,
+            control,
+            &mut wrapper_executor,
+        )
+        .unwrap();
+        let direct = run_register_dispatch(
+            view,
+            RegisterDispatchProfile::Nop(&admission),
+            RegisterFlagsMode::DemandFlagsCandidate,
+            &mut direct_state,
+            5,
+            control,
+            UncachedRegisterPath(&mut direct_executor),
+        )
+        .unwrap();
+        assert_eq!(wrapper, direct);
+        assert_eq!(wrapper_state, direct_state);
+        assert_eq!(wrapper_executor.emissions, direct_executor.emissions);
+        assert_eq!(
+            (
+                wrapper.exit,
+                wrapper.retired_native,
+                wrapper.retired_interpreter,
+                wrapper.remaining_budget
+            ),
+            (DispatchExit::CodeEnd, 2, 1, 2)
+        );
+        assert_eq!(wrapper_state.rip, view.code_end());
+    }
+    // Isolated dispatcher timing with the same admitted bytes and mock
+    // executor/backend on both routes. This is not native guest execution.
+    #[test]
+    #[ignore = "S3-53 dispatcher overhead measurement"]
+    fn s3_53_dispatch_entry_microbench() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        struct BenchBackend;
+        impl ControlledBlockExecutor for BenchBackend {
+            type Error = ();
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &crate::block_compile::CompiledBlock,
+                state: &mut LongModeState,
+                incoming_budget: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                state.rip = block.code_end();
+                Ok(report(
+                    RuntimeExitTag::BlockComplete,
+                    incoming_budget - 1,
+                    1,
+                ))
+            }
+        }
+        impl CachedBlockBackend for BenchBackend {
+            type Error = ();
+            type Published = ();
+            fn publish_cached_block(
+                &mut self,
+                _: &crate::block_compile::CompiledBlock,
+            ) -> Result<(), ()> {
+                Ok(())
+            }
+            fn execute_cached_block(
+                &mut self,
+                _: &(),
+                block: &crate::block_compile::CompiledBlock,
+                state: &mut LongModeState,
+                incoming_budget: u64,
+                _: DispatchControl<'_>,
+            ) -> Result<BlockExecutionReport, ()> {
+                state.rip = block.code_end();
+                Ok(report(
+                    RuntimeExitTag::BlockComplete,
+                    incoming_budget - 1,
+                    1,
+                ))
+            }
+        }
+        fn measure(iterations: usize, action: &mut impl FnMut()) -> u128 {
+            let start = Instant::now();
+            for _ in 0..iterations {
+                action();
+            }
+            start.elapsed().as_nanos()
+        }
+        macro_rules! paired {
+            ($name:literal, $round:expr, $iterations:expr, $old:expr, $new:expr) => {{
+                let (old_ns, new_ns) = if $round % 2 == 0 {
+                    let old = measure($iterations, &mut $old);
+                    let new = measure($iterations, &mut $new);
+                    (old, new)
+                } else {
+                    let new = measure($iterations, &mut $new);
+                    let old = measure($iterations, &mut $old);
+                    (old, new)
+                };
+                println!(
+                    "S3_53_BENCH,{},{},{},{},{}",
+                    $name, $round, $iterations, old_ns, new_ns
+                );
+            }};
+        }
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let nop_bytes = [0x90];
+        let nop_view = CodeView::new(0x9800, &nop_bytes).unwrap();
+        let nop_admission = InterpreterFallbackAdmission::from_code(nop_view).unwrap();
+        let inc_bytes = [0x48, 0xff, 0xc0];
+        let inc_view = CodeView::new(0x9900, &inc_bytes).unwrap();
+        let inc_admission = IncRaxInterpreterFallbackAdmission::from_code(inc_view).unwrap();
+        let union_admission = NativeRegisterV1Admission::from_code(inc_view).unwrap();
+        let dependencies = dependency(inc_view, 1);
+        let context = native_test_context_with_generation(1);
+        let mut old_nop_backend = BenchBackend;
+        let mut new_nop_backend = BenchBackend;
+        let mut old_inc_backend = BenchBackend;
+        let mut new_inc_backend = BenchBackend;
+        let mut old_cache_backend = BenchBackend;
+        let mut new_cache_backend = BenchBackend;
+        let mut old_cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut new_cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut old_nop = || {
+            let mut state = LongModeState {
+                rip: nop_view.base_rip(),
+                ..LongModeState::default()
+            };
+            black_box(
+                run_with_nop_fallback_strategy(
+                    nop_view,
+                    FallbackAdmission::Nop(&nop_admission),
+                    &mut state,
+                    2,
+                    control,
+                    &mut old_nop_backend,
+                    NopFallbackCompilation::DemandFlagsCandidate,
+                )
+                .unwrap(),
+            );
+        };
+        let mut new_nop = || {
+            let mut state = LongModeState {
+                rip: nop_view.base_rip(),
+                ..LongModeState::default()
+            };
+            black_box(
+                run_register_dispatch(
+                    nop_view,
+                    RegisterDispatchProfile::Nop(&nop_admission),
+                    RegisterFlagsMode::DemandFlagsCandidate,
+                    &mut state,
+                    2,
+                    control,
+                    UncachedRegisterPath(&mut new_nop_backend),
+                )
+                .unwrap(),
+            );
+        };
+        let mut old_inc = || {
+            let mut state = LongModeState {
+                rip: inc_view.base_rip(),
+                ..LongModeState::default()
+            };
+            black_box(
+                run_with_nop_fallback_strategy(
+                    inc_view,
+                    FallbackAdmission::NopIncRax(&inc_admission),
+                    &mut state,
+                    2,
+                    control,
+                    &mut old_inc_backend,
+                    NopFallbackCompilation::NativeIncRax,
+                )
+                .unwrap(),
+            );
+        };
+        let mut new_inc = || {
+            let mut state = LongModeState {
+                rip: inc_view.base_rip(),
+                ..LongModeState::default()
+            };
+            black_box(
+                run_register_dispatch(
+                    inc_view,
+                    RegisterDispatchProfile::NativeIncRax(&inc_admission),
+                    RegisterFlagsMode::Eager,
+                    &mut state,
+                    2,
+                    control,
+                    UncachedRegisterPath(&mut new_inc_backend),
+                )
+                .unwrap(),
+            );
+        };
+        let mut old_cached = || {
+            let mut state = LongModeState {
+                rip: inc_view.base_rip(),
+                ..LongModeState::default()
+            };
+            let mut observer = NoopObserver;
+            black_box(
+                run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
+                    inc_view,
+                    &union_admission,
+                    context,
+                    &dependencies,
+                    &mut state,
+                    2,
+                    control,
+                    &mut old_cache,
+                    &mut old_cache_backend,
+                    &mut observer,
+                    NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
+                    None,
+                )
+                .unwrap(),
+            );
+        };
+        let mut new_cached = || {
+            let mut state = LongModeState {
+                rip: inc_view.base_rip(),
+                ..LongModeState::default()
+            };
+            black_box(
+                run_register_dispatch(
+                    inc_view,
+                    &union_admission,
+                    RegisterFlagsMode::DemandFlagsCandidate,
+                    &mut state,
+                    2,
+                    control,
+                    SingleEntryRegisterPath {
+                        execution_context: context,
+                        dependencies: &dependencies,
+                        cache: &mut new_cache,
+                        backend: &mut new_cache_backend,
+                    },
+                )
+                .unwrap(),
+            );
+        };
+        // Warm the binary, code paths, and both single-entry caches before timing.
+        old_nop();
+        new_nop();
+        old_inc();
+        new_inc();
+        old_cached();
+        new_cached();
+        for round in 0..9 {
+            paired!("nop", round, 10_000, old_nop, new_nop);
+            paired!("uncached_inc", round, 250, old_inc, new_inc);
+            paired!("cached_demand", round, 1_000, old_cached, new_cached);
+        }
     }
 }
