@@ -23032,7 +23032,7 @@ RIP `0xffffffff8158f69b`, `Unsupported { opcode: 0x83 }`, retired 1205413825; д
 **Декодер.** Выбор зафиксирован: две новые операции `Operation::CmpFsMemImm { dst: MemoryOperand, immediate: u64 }` / `CmpGsMemImm` (парные к `CmpFsMem`/`CmpGsMem` из S4-38L7aa; не расширение
 `CmpFsMem`, потому что у неё источник — `RegisterView`), в той же ветке декодирования `80|81|83`, что и обычный `CMP m, imm`. Новая ветка срабатывает при `опкод == 0x83`, `group == 7`, сегментном префиксе
 FS/GS и memory-операнде (mod ≠ 11); `immediate` — imm8, уже знаково расширенный до 64 бит декодером (как у обычной формы), ширина сравнения берётся из `dst.size` (общая `arithmetic_result` маскирует
-`immediate` по ширине). Принимается любая адресация (RIP-relative, SIB, disp8/disp32, REX.B/REX.X). С REX.W — qword (`CMP r/m64, imm8`), **без REX.W — dword** (`CMP r/m32, imm8`, граница; допустим пустой REX
+`immediate` по ширине). Принимается любая адресация (RIP-relative, SIB, disp8/disp32, REX.B; REX.X — путь общий с `rm_operand`, индекс R8–R15 отдельным тестом не проверен). С REX.W — qword (`CMP r/m64, imm8`), **без REX.W — dword** (`CMP r/m32, imm8`, граница; допустим пустой REX
 `0x40` и REX.R/B/X без W). Длина включает imm8, поэтому RIP-relative считается от RIP **после** imm8 (следующий RIP = адрес + 8 для граничных байтов). `flag_effects`: все шесть флагов определены (как у
 `Operation::Arithmetic` и `CmpFsMem`). Без префикса FS/GS `83 /7` по-прежнему даёт `Operation::Arithmetic { kind: Cmp, .. }` (не менялось).
 
