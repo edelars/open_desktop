@@ -12198,11 +12198,9 @@ fn segment_inc_read_fault_leaves_everything_unchanged() {
 
 #[test]
 fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
-    let cases: [(&[u8], u8); 33] = [
-        // DEC and the other FF group members with a segment base (CALL, far CALL, JMP, far JMP,
-        // PUSH, /7) stay outside this slice.
-        (&[0x65, 0xff, 0x0b], 0xff),
-        (&[0x64, 0xff, 0x0b], 0xff),
+    let cases: [(&[u8], u8); 31] = [
+        // The other FF group members with a segment base (CALL, far CALL, JMP, far JMP, PUSH, /7)
+        // stay outside this slice (DEC, /1, is S4-38L7q).
         (&[0x65, 0xff, 0x13], 0xff),
         (&[0x65, 0xff, 0x1b], 0xff),
         (&[0x64, 0xff, 0x23], 0xff),
@@ -12328,6 +12326,703 @@ fn segment_inc_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = BitsMemory::new(&GS_INCL_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7q: FS/GS-based `DEC r/m32` (`[64|65] FF /1`, memory operand, no LOCK; SDM Vol.2 DEC:
+// destination - 1, OF/SF/ZF/AF/PF from the result, CF unchanged; Vol.3 3.4.4 FS/GS base; from
+// memory, not re-checked against the SDM text). The memory operand is always read and written back.
+// The qword form (`[64|65] REX.W FF /1`) is decoded and executed the same way, through the same
+// operation as INC (S4-38L7p) with the DEC arithmetic. ----
+
+/// `decl %gs:0x2f26364(%rip)` (the S4-38L7p diagnostic boundary bytes, 7 bytes long).
+const GS_DECL_BOUNDARY: [u8; 7] = [0x65, 0xff, 0x0d, 0x64, 0x63, 0xf2, 0x02];
+/// `decl %fs:0x1234(%rip)`.
+const FS_DECL_RIP: [u8; 7] = [0x64, 0xff, 0x0d, 0x34, 0x12, 0x00, 0x00];
+/// `decq %gs:0x1234(%rip)`.
+const GS_DECQ_RIP: [u8; 8] = [0x65, 0x48, 0xff, 0x0d, 0x34, 0x12, 0x00, 0x00];
+/// `decl %gs:0x58(%rbx)`.
+const GS_DECL_RBX_58: [u8; 4] = [0x65, 0xff, 0x4b, 0x58];
+/// `decq %fs:0x58(%rbx)`.
+const FS_DECQ_RBX_58: [u8; 5] = [0x64, 0x48, 0xff, 0x4b, 0x58];
+
+#[test]
+fn gs_dec_dword_boundary_form_reads_and_writes_four_bytes_at_gs_base_plus_next_rip() {
+    let mut state = board_state();
+    state.gs_base = INC_GS_BASE;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.rflags |= FLAG_CF | FLAG_ZF | FLAG_SF | FLAG_OF;
+    let mut expected = state.clone();
+    let at = INC_GS_BASE + RIP + 7 + 0x02f2_6364;
+    let mut memory = BitsMemory::new(&GS_DECL_BOUNDARY);
+    set_dword(&mut memory, at, 0x42);
+    // The neighbouring bytes must survive.
+    memory.data.insert(at - 1, 0xaa);
+    memory.data.insert(at + 4, 0xbb);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(memory.writes, vec![(at, 0x41u32.to_le_bytes().to_vec())]);
+    assert_eq!(dword_at(&memory, at), 0x41);
+    assert_eq!(memory.data.get(&(at - 1)), Some(&0xaa));
+    assert_eq!(memory.data.get(&(at + 4)), Some(&0xbb));
+    // DEC leaves no flag undefined (CF is kept, not undefined).
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    expected.rip += 7;
+    // 0x41 has two set bits: PF; CF survives, ZF/SF/OF are recomputed.
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_CF | FLAG_PF;
+    assert_eq!(state, expected, "only RFLAGS and RIP change");
+}
+
+#[test]
+fn fs_dec_dword_rip_relative_uses_the_fs_base_and_ignores_gs() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let at = fs_base + RIP + 7 + 0x1234;
+    let mut memory = BitsMemory::new(&FS_DECL_RIP);
+    set_dword(&mut memory, at, 10);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(memory.writes, vec![(at, 9u32.to_le_bytes().to_vec())]);
+    expected.rip += 7;
+    // 9 = 0b1001: PF, no other flag.
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_PF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn segment_dec_with_a_zero_base_uses_the_effective_address() {
+    for (code, disp) in [
+        (&GS_DECL_BOUNDARY[..], 0x02f2_6364u64),
+        (&FS_DECL_RIP[..], 0x1234),
+    ] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        let mut memory = BitsMemory::new(code);
+        set_dword(&mut memory, RIP + 7 + disp, 5);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(RIP + 7 + disp, 4)]);
+        assert_eq!(
+            memory.writes,
+            vec![(RIP + 7 + disp, 4u32.to_le_bytes().to_vec())]
+        );
+    }
+}
+
+#[test]
+fn segment_dec_dword_overflow_and_wraparound_flags() {
+    // (old value, expected OF/SF/ZF/AF/PF; CF is checked separately). Worked by hand from the DEC
+    // rule: result = old - 1; AF = bit 4 of old ^ 1 ^ result (a borrow out of bit 3); PF = even
+    // number of set bits in the low result byte; OF only for 0x80000000 -> 0x7fffffff.
+    let cases: [(u32, u64); 10] = [
+        // INT_MIN - 1: overflow, positive result, low byte 0xff (even parity), nibble borrow.
+        (0x8000_0000, FLAG_OF | FLAG_PF | FLAG_AF),
+        // 0 wraps to all ones: SF, PF, AF (CF stays as it was).
+        (0, FLAG_SF | FLAG_PF | FLAG_AF),
+        // 1 -> 0: ZF and PF; no nibble borrow, so AF stays clear.
+        (1, FLAG_ZF | FLAG_PF),
+        // 0x10 -> 0x0f: AF (borrow out of the low nibble) and PF (four bits).
+        (0x10, FLAG_AF | FLAG_PF),
+        // 2 -> 1: one bit, no flag.
+        (2, 0),
+        (0x0f, 0),
+        (0x7fff_ffff, 0),
+        // 0xffffffff -> 0xfffffffe: SF only (seven bits in the low byte).
+        (0xffff_ffff, FLAG_SF),
+        // 0x100 -> 0xff: PF and AF.
+        (0x100, FLAG_PF | FLAG_AF),
+        // 0x80000001 -> 0x80000000: SF, and PF (the low byte is zero).
+        (0x8000_0001, FLAG_SF | FLAG_PF),
+    ];
+    for fs in [false, true] {
+        for (old, arithmetic) in cases {
+            for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                let mut state = board_state();
+                state.rflags = initial;
+                state.gs_base = INC_GS_BASE;
+                state.fs_base = INC_GS_BASE;
+                state.gpr[Register::Rbx as usize] = 0x20_0000;
+                let code: &[u8] = if fs {
+                    &[0x64, 0xff, 0x4b, 0x58]
+                } else {
+                    &GS_DECL_RBX_58
+                };
+                let mut memory = BitsMemory::new(code);
+                let at = INC_GS_BASE + 0x20_0058;
+                set_dword(&mut memory, at, old);
+                let result = run_inc_set(&mut state, &mut memory).unwrap();
+                assert_eq!(result.instructions_executed, 1, "{old:#x}");
+                assert_eq!(
+                    dword_at(&memory, at),
+                    old.wrapping_sub(1),
+                    "{old:#x} from {initial:#x}"
+                );
+                // IF, DF and bit 1 are preserved, and so is the previous CF.
+                assert_eq!(
+                    state.rflags,
+                    (initial & !ARITH) | (initial & FLAG_CF) | arithmetic,
+                    "fs={fs} {old:#x} from {initial:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn segment_dec_keeps_cf_clear_and_set_on_the_wrap_and_the_overflow() {
+    for cf in [0, FLAG_CF] {
+        for old in [0u32, 0x8000_0000, 1, 0x10] {
+            let mut state = board_state();
+            state.rflags = (state.rflags & !ARITH) | cf;
+            state.gs_base = INC_GS_BASE;
+            state.gpr[Register::Rbx as usize] = 0x20_0000;
+            let mut memory = BitsMemory::new(&GS_DECL_RBX_58);
+            set_dword(&mut memory, INC_GS_BASE + 0x20_0058, old);
+            run_inc_set(&mut state, &mut memory).unwrap();
+            assert_eq!(state.rflags & FLAG_CF, cf, "{old:#x}");
+        }
+    }
+}
+
+#[test]
+fn segment_dec_matches_the_non_prefixed_dec_on_the_same_value() {
+    // `decl (%rbx)` (ff 0b) has the same flag and memory result as the GS form.
+    for old in [
+        0u32,
+        1,
+        0x0f,
+        0x10,
+        0x7f,
+        0x100,
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_fffe,
+        0xffff_ffff,
+    ] {
+        for initial_cf in [0, FLAG_CF] {
+            let mut plain_state = bts_state(0);
+            plain_state.rflags |= initial_cf;
+            let mut plain_memory = BitsMemory::new(&[0xff, 0x0b]);
+            set_dword(&mut plain_memory, 0x20_0000, old);
+            run_inc_set(&mut plain_state, &mut plain_memory).unwrap();
+
+            let mut state = bts_state(0);
+            state.rflags |= initial_cf;
+            state.gs_base = INC_GS_BASE;
+            let mut memory = BitsMemory::new(&[0x65, 0xff, 0x0b]);
+            set_dword(&mut memory, INC_GS_BASE + 0x20_0000, old);
+            run_inc_set(&mut state, &mut memory).unwrap();
+            assert_eq!(state.rflags, plain_state.rflags, "{old:#x} {initial_cf}");
+            assert_eq!(
+                dword_at(&memory, INC_GS_BASE + 0x20_0000),
+                dword_at(&plain_memory, 0x20_0000),
+                "{old:#x}"
+            );
+            assert_eq!(
+                memory.writes,
+                vec![(
+                    INC_GS_BASE + 0x20_0000,
+                    old.wrapping_sub(1).to_le_bytes().to_vec()
+                )]
+            );
+        }
+    }
+}
+
+#[test]
+fn segment_dec_with_base_register_index_scale_and_displacement() {
+    // `decl %gs:0x10(%rbx,%rcx,4)` = 65 ff 4c 8b 10.
+    let mut state = board_state();
+    state.gs_base = INC_GS_BASE;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let before_gpr = state.gpr;
+    let mut memory = BitsMemory::new(&[0x65, 0xff, 0x4c, 0x8b, 0x10]);
+    let at = INC_GS_BASE + 0x1000 + 12 + 0x10;
+    set_dword(&mut memory, at, 0x1234);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(memory.writes, vec![(at, 0x1233u32.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(state.gpr, before_gpr, "no register changes");
+    // `decl %fs:0x20` (absolute SIB, no base or index) = 64 ff 0c 25 20 00 00 00.
+    let mut state = board_state();
+    state.fs_base = INC_GS_BASE;
+    let mut memory = BitsMemory::new(&[0x64, 0xff, 0x0c, 0x25, 0x20, 0, 0, 0]);
+    set_dword(&mut memory, INC_GS_BASE + 0x20, 5);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(INC_GS_BASE + 0x20, 4)]);
+    assert_eq!(dword_at(&memory, INC_GS_BASE + 0x20), 4);
+    assert_eq!(state.rip, RIP + 8);
+}
+
+#[test]
+fn segment_dec_with_rex_b_uses_r8_to_r15_as_the_base_and_changes_no_register() {
+    // `decl %gs:0x8(%rN)` via REX.B: 65 41 ff 48+n 08; R12 needs a SIB byte.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let mut code = vec![0x65, 0x41, 0xff];
+        if i == 4 {
+            code.extend([0x4c, 0x24, 0x08]);
+        } else {
+            code.extend([0x48 | i as u8, 0x08]);
+        }
+        let base = 0x40_0000 + (i as u64) * 0x1000;
+        let mut state = board_state();
+        state.gs_base = INC_GS_BASE;
+        state.gpr[register as usize] = base;
+        let before_gpr = state.gpr;
+        let at = INC_GS_BASE + base + 8;
+        let mut memory = BitsMemory::new(&code);
+        set_dword(&mut memory, at, 7);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "base r{}", i + 8);
+        assert_eq!(memory.reads, vec![(at, 4)], "base r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(at, 6u32.to_le_bytes().to_vec())],
+            "base r{}",
+            i + 8
+        );
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(state.gpr, before_gpr, "base r{}", i + 8);
+    }
+}
+
+#[test]
+fn segment_dec_with_rex_x_uses_r8_to_r15_as_the_index() {
+    // `decl %gs:0x10(%rbx,%rN,4)` via REX.X: 65 42 ff 4c SIB 10 with SIB = scale 4, index N, base
+    // rbx. The legacy register with the same index number holds a decoy that must not be used
+    // (index 4 would be "no index" without REX.X, so it has no decoy).
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let sib = 0x80 | ((i as u8) << 3) | 0x03;
+        let code = [0x65, 0x42, 0xff, 0x4c, sib, 0x10];
+        let mut state = board_state();
+        state.gs_base = INC_GS_BASE;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[register as usize] = 3 + i as u64;
+        let legacy = [
+            Register::Rax,
+            Register::Rcx,
+            Register::Rdx,
+            Register::Rbx,
+            Register::Rsp,
+            Register::Rbp,
+            Register::Rsi,
+            Register::Rdi,
+        ][i];
+        if i != 3 && i != 4 {
+            state.gpr[legacy as usize] = 0x7000;
+        }
+        let before_gpr = state.gpr;
+        let at = INC_GS_BASE + 0x1000 + (3 + i as u64) * 4 + 0x10;
+        let mut memory = BitsMemory::new(&code);
+        set_dword(&mut memory, at, 0x1234);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "index r{}", i + 8);
+        assert_eq!(memory.reads, vec![(at, 4)], "index r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(at, 0x1233u32.to_le_bytes().to_vec())],
+            "index r{}",
+            i + 8
+        );
+        assert_eq!(dword_at(&memory, at), 0x1233, "index r{}", i + 8);
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(state.gpr, before_gpr, "index r{}", i + 8);
+    }
+    // The qword form with REX.W+X directly before the opcode: `decq %fs:(%rbx,%r9,8)` =
+    // 64 4a ff 0c cb.
+    let mut state = board_state();
+    state.fs_base = INC_GS_BASE;
+    state.gpr[Register::Rbx as usize] = 0x2000;
+    state.gpr[Register::R9 as usize] = 5;
+    state.gpr[Register::Rcx as usize] = 0x9000;
+    let at = INC_GS_BASE + 0x2000 + 5 * 8;
+    let mut memory = BitsMemory::new(&[0x64, 0x4a, 0xff, 0x0c, 0xcb]);
+    memory.set_qword(at, 0x1_0000_0000);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(at), 0xffff_ffff);
+}
+
+#[test]
+fn segment_dec_accepts_a_rex_directly_before_the_opcode_and_ignores_rex_r() {
+    // REX.R does not change the opcode extension (/1 stays DEC) and there is no register
+    // destination: the instruction is `decl %gs:(%rbx)` for REX 0x40 and 0x44.
+    for rex in [0x40u8, 0x44] {
+        let mut state = board_state();
+        state.gs_base = INC_GS_BASE;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before_gpr = state.gpr;
+        let at = INC_GS_BASE + 0x20_0000;
+        let mut memory = BitsMemory::new(&[0x65, rex, 0xff, 0x0b]);
+        set_dword(&mut memory, at, 0);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rex:#x}");
+        assert_eq!(memory.reads, vec![(at, 4)], "{rex:#x}");
+        assert_eq!(dword_at(&memory, at), 0xffff_ffff, "{rex:#x}");
+        assert_eq!(state.rip, RIP + 4, "{rex:#x}");
+        assert_eq!(state.gpr, before_gpr, "{rex:#x}");
+    }
+}
+
+#[test]
+fn segment_dec_qword_form_decrements_all_eight_bytes() {
+    let cases: [(u64, u64); 5] = [
+        (0, FLAG_SF | FLAG_PF | FLAG_AF),
+        (0x8000_0000_0000_0000, FLAG_OF | FLAG_PF | FLAG_AF),
+        // Borrow out of the low dword does not wrap the qword: 0x1_0000_0000 -> 0xffff_ffff.
+        (0x1_0000_0000, FLAG_PF | FLAG_AF),
+        (1, FLAG_ZF | FLAG_PF),
+        // 0x1234 -> 0x1233: low byte 0x33 has four set bits.
+        (0x1234, FLAG_PF),
+    ];
+    for (old, arithmetic) in cases {
+        for cf in [0, FLAG_CF] {
+            let mut state = board_state();
+            state.rflags = (state.rflags & !ARITH) | cf;
+            state.gs_base = INC_GS_BASE;
+            let at = INC_GS_BASE + RIP + 8 + 0x1234;
+            let mut memory = BitsMemory::new(&GS_DECQ_RIP);
+            memory.set_qword(at, old);
+            memory.data.insert(at + 8, 0xcc);
+            let result = run_inc_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{old:#x}");
+            assert_eq!(memory.reads, vec![(at, 8)]);
+            assert_eq!(
+                memory.writes,
+                vec![(at, old.wrapping_sub(1).to_le_bytes().to_vec())]
+            );
+            assert_eq!(memory.data.get(&(at + 8)), Some(&0xcc));
+            assert_eq!(state.rip, RIP + 8);
+            assert_eq!(state.rflags & ARITH, cf | arithmetic, "{old:#x}");
+        }
+    }
+    // FS qword through a base register.
+    let mut state = board_state();
+    state.fs_base = INC_GS_BASE;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let at = INC_GS_BASE + 0x20_0058;
+    let mut memory = BitsMemory::new(&FS_DECQ_RBX_58);
+    memory.set_qword(at, 43);
+    run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.qword(at), 42);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+}
+
+#[test]
+fn segment_dec_non_canonical_address_is_gp0_without_mutation_or_access() {
+    // (segment base, effective address before the 0x58 displacement, code): the start, or the last
+    // byte of the dword/qword, is outside the canonical range.
+    let cases: [(u64, u64, &[u8]); 6] = [
+        (0x0000_8000_0000_0000, 0x58, &GS_DECL_RBX_58),
+        (0xffff_7fff_ffff_ff00, 0x58, &GS_DECL_RBX_58),
+        // The start is canonical but the dword's last byte crosses into the hole.
+        (0x0000_7fff_ffff_fffe, 0x58, &GS_DECL_RBX_58),
+        (0x0000_7fff_ffff_ffff, 0x58, &GS_DECL_RBX_58),
+        // The same for the qword form.
+        (0x0000_7fff_ffff_fffc, 0x58, &FS_DECQ_RBX_58),
+        // The base is fine but the register pushes the effective address out.
+        (0, 0x0000_8000_0000_0000, &GS_DECL_RBX_58),
+    ];
+    for (segment_base, address, code) in cases {
+        let mut state = board_state();
+        state.gs_base = segment_base;
+        state.fs_base = segment_base;
+        // The code adds 0x58; pick RBX so that the final effective address is `address`.
+        state.gpr[Register::Rbx as usize] = address.wrapping_sub(0x58);
+        state.rflags |= FLAG_CF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(GP0),
+            "{segment_base:#x} {address:#x} {code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{segment_base:#x} {address:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+    // RIP-relative: the effective address crosses the canonical boundary.
+    let mut state = board_state();
+    state.gs_base = 0x0000_8000_0000_0000 - 0x02f2_6364 - 7 - RIP;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_DECL_BOUNDARY);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_dec_last_canonical_dword_is_accessible() {
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fffc - 0x02f2_6364 - 7 - RIP;
+    let mut memory = BitsMemory::new(&GS_DECL_BOUNDARY);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x0000_7fff_ffff_fffc, 4)]);
+}
+
+#[test]
+fn segment_dec_through_a_non_canonical_rsp_or_rbp_base_is_gp0_not_ss() {
+    // `decl %gs:(%rsp)` = 65 ff 0c 24 and `decl %gs:0x0(%rbp)` = 65 ff 4d 00.
+    for (code, register) in [
+        (&[0x65u8, 0xff, 0x0c, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0xff, 0x4d, 0x00][..], Register::Rbp),
+        (&[0x64u8, 0xff, 0x0c, 0x24][..], Register::Rsp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0;
+        state.fs_base = 0;
+        state.gpr[register as usize] = 0x0000_8000_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_dec_write_fault_leaves_flags_rip_registers_and_memory_unchanged() {
+    // A read-only page: the always-performed write faults.
+    let at = INC_GS_BASE + 0x20_0058;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(at),
+    };
+    for (old, code) in [
+        (0x8000_0000u64, &GS_DECL_RBX_58[..]),
+        (0, &FS_DECQ_RBX_58[..]),
+    ] {
+        let mut state = board_state();
+        state.gs_base = INC_GS_BASE;
+        state.fs_base = INC_GS_BASE;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rflags |= FLAG_CF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(at, old);
+        memory.write_fault = Some(fault.clone());
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{old:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{old:#x}");
+        assert_eq!(memory.qword(at), old);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_dec_read_fault_leaves_everything_unchanged() {
+    let at = INC_GS_BASE + RIP + 7 + 0x02f2_6364;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(at),
+    };
+    let mut state = board_state();
+    state.gs_base = INC_GS_BASE;
+    state.rflags |= FLAG_CF | FLAG_OF;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_DECL_BOUNDARY);
+    memory.read_fault = Some(fault.clone());
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn segment_dec_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
+    let cases: &[(&[u8], u8)] = &[
+        // The other FF group members with a segment base stay outside this slice (CALL, far CALL,
+        // JMP, far JMP, PUSH, /7); INC (/0) is S4-38L7p and DEC (/1) is this slice.
+        (&[0x65, 0xff, 0x13], 0xff),
+        (&[0x65, 0xff, 0x1b], 0xff),
+        (&[0x64, 0xff, 0x23], 0xff),
+        (&[0x64, 0xff, 0x2b], 0xff),
+        (&[0x65, 0xff, 0x33], 0xff),
+        (&[0x65, 0xff, 0x3b], 0xff),
+        // LOCK (no LOCK DEC and no segment prefix with LOCK), REP, REPNE.
+        (&[0xf0, 0x65, 0xff, 0x0b], 0xff),
+        (&[0x65, 0xf0, 0xff, 0x0b], 0xff),
+        (&[0xf0, 0x64, 0x48, 0xff, 0x0b], 0xff),
+        (&[0xf0, 0xff, 0x0b], 0xff),
+        (&[0xf3, 0x65, 0xff, 0x0b], 0xff),
+        (&[0xf2, 0x64, 0xff, 0x0b], 0xff),
+        (&[0x65, 0xf3, 0xff, 0x0b], 0xff),
+        // 0x66 (word) and 0x67.
+        (&[0x66, 0x65, 0xff, 0x0b], 0xff),
+        (&[0x65, 0x66, 0xff, 0x0b], 0xff),
+        (&[0x65, 0x66, 0x48, 0xff, 0x0b], 0xff),
+        (&[0x65, 0x67, 0xff, 0x0b], 0xff),
+        (&[0x67, 0x64, 0xff, 0x0b], 0xff),
+        // A second segment prefix.
+        (&[0x64, 0x65, 0xff, 0x0b], 0xff),
+        (&[0x65, 0x65, 0xff, 0x0b], 0xff),
+        // REX not immediately before the opcode (stale), for the dword form.
+        (&[0x44, 0x65, 0xff, 0x0b], 0xff),
+        (&[0x48, 0x64, 0xff, 0x0b], 0xff),
+        (&[0x41, 0x65, 0x40, 0xff, 0x0b], 0xff),
+        (&[0x65, 0x48, 0x67, 0xff, 0x0b], 0xff),
+        // The qword form with a REX.W that is not immediately before the opcode (the REX before
+        // the segment prefix is stale, even though the final REX.W is present) is refused too.
+        (&[0x48, 0x65, 0x48, 0xff, 0x0b], 0xff),
+        (&[0x41, 0x65, 0x48, 0xff, 0x0b], 0xff),
+        (&[0x48, 0x64, 0x48, 0xff, 0x0b], 0xff),
+        (&[0x44, 0x64, 0x48, 0xff, 0x4b, 0x58], 0xff),
+        // The byte form (FE /1) with a segment base stays refused with its own opcode.
+        (&[0x65, 0xfe, 0x0b], 0xfe),
+        (&[0x64, 0xfe, 0x0b], 0xfe),
+        (&[0x65, 0xfe, 0x4b, 0x58], 0xfe),
+        // Neighbouring FS/GS arithmetic forms that are not part of this slice.
+        (&[0x65, 0xf7, 0x1b], 0xf7),       // NEG
+        (&[0x65, 0xf7, 0x13], 0xf7),       // NOT
+        (&[0x65, 0x01, 0x03], 0x01),       // ADD m32, r32
+        (&[0x65, 0x29, 0x03], 0x29),       // SUB m32, r32
+        (&[0x65, 0x83, 0x2b, 0x01], 0x83), // SUB m32, imm8
+        (&[0x65, 0x83, 0x03, 0x01], 0x83), // ADD m32, imm8
+    ];
+    for &(code, opcode) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = INC_GS_BASE;
+        state.fs_base = INC_GS_BASE;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_dec_register_form_and_plain_form_keep_their_old_behavior() {
+    // The register form (mod = 11) is not memory: the segment prefix is irrelevant and it keeps
+    // decoding as the plain `DEC r32` (unchanged by S4-38L7q).
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 1;
+    let mut memory = BitsMemory::new(&[0x65, 0xff, 0xcb]); // dec %ebx
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(state.gpr[Register::Rbx as usize], 0);
+    assert_ne!(state.rflags & FLAG_ZF, 0);
+
+    // The memory form without a segment prefix keeps ignoring the FS/GS bases and the old path.
+    let mut state = bts_state(0);
+    state.gs_base = INC_GS_BASE;
+    state.fs_base = INC_GS_BASE;
+    let mut memory = BitsMemory::new(&[0xff, 0x0b]); // decl (%rbx)
+    set_dword(&mut memory, 0x20_0000, 0x41);
+    let result = run_inc_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 4)]);
+    assert_eq!(dword_at(&memory, 0x20_0000), 0x40);
+    // CS/DS/ES/SS overrides keep ignoring the segment base too.
+    for prefix in [0x2eu8, 0x3e, 0x36, 0x26] {
+        let mut state = bts_state(0);
+        state.gs_base = INC_GS_BASE;
+        state.fs_base = INC_GS_BASE;
+        let mut memory = BitsMemory::new(&[prefix, 0xff, 0x0b]);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 4)], "{prefix:#x}");
+    }
+}
+
+#[test]
+fn segment_dec_leaves_the_inc_forms_working_in_the_same_run() {
+    // `incl %gs:0x58(%rbx)` and `decl %gs:0x58(%rbx)` back to back (INC is S4-38L7p).
+    let mut state = board_state();
+    state.gs_base = INC_GS_BASE;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.rflags |= FLAG_CF;
+    let at = INC_GS_BASE + 0x20_0058;
+    let mut memory = BitsMemory::new(&[0x65, 0xff, 0x43, 0x58, 0x65, 0xff, 0x4b, 0x58]);
+    set_dword(&mut memory, at, 0x7fff_ffff);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(
+        memory.writes,
+        vec![
+            (at, 0x8000_0000u32.to_le_bytes().to_vec()),
+            (at, 0x7fff_ffffu32.to_le_bytes().to_vec())
+        ]
+    );
+    assert_eq!(dword_at(&memory, at), 0x7fff_ffff);
+    assert_ne!(state.rflags & FLAG_CF, 0, "CF kept through both");
+}
+
+#[test]
+fn segment_dec_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for code in [&GS_DECL_BOUNDARY[..], &FS_DECL_RIP[..], &GS_DECQ_RIP[..]] {
+        let mut state = legacy_state();
+        state.gs_base = INC_GS_BASE;
+        state.fs_base = INC_GS_BASE;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xff });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_dec_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_DECL_BOUNDARY);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
