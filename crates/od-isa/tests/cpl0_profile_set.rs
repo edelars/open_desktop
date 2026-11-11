@@ -6100,3 +6100,271 @@ fn pf_delivery_idt_and_gdt_read_failures_write_nothing() {
         assert_eq!(memory.writes, 0);
     }
 }
+
+// ---- S4-38L6b: WRMSR/RDMSR IA32_GS_BASE / IA32_FS_BASE in the CPL0 set ----
+
+const GS_BASE_MSR: u64 = 0xc000_0101;
+const FS_BASE_MSR: u64 = 0xc000_0100;
+
+fn gs_set() -> Cpl0ProfileSet<'static> {
+    base().with_msr_fs_gs_base()
+}
+
+/// Run `code` once at `privilege` with RCX/RAX/RDX set; returns state, before, result.
+fn run_msr_base(
+    set: &Cpl0ProfileSet<'_>,
+    privilege: PrivilegeLevel,
+    code: &[u8],
+    (rcx, rax, rdx): (u64, u64, u64),
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let mut state = board_state();
+    state.gpr[1] = rcx;
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    state.gs_base = 0xffff_8000_1234_5678;
+    state.fs_base = 0x7fff_0000_0000;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(privilege, 1),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap();
+    (state, before, result)
+}
+
+fn gp0() -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    })
+}
+
+#[test]
+fn wrmsr_gs_base_zero_is_the_real_kernel_entry_case() {
+    let (state, before, result) = run_msr_base(
+        &gs_set(),
+        PrivilegeLevel::Ring0,
+        &[0x0f, 0x30],
+        (GS_BASE_MSR, 0, 0),
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gs_base, 0);
+    assert_eq!(state.fs_base, before.fs_base);
+    assert_eq!(state.kernel_gs_base, before.kernel_gs_base);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(state.gpr, before.gpr);
+}
+
+#[test]
+fn wrmsr_gs_and_fs_base_store_edx_eax_canonical_values() {
+    for (index, value) in [
+        (GS_BASE_MSR, 0xffff_8880_0000_1000u64),
+        (GS_BASE_MSR, 0x0000_7fff_ffff_ffff),
+        (FS_BASE_MSR, 0x0000_7fff_dead_beef),
+        (FS_BASE_MSR, 0xffff_8000_0000_0000),
+    ] {
+        let (state, before, result) = run_msr_base(
+            &gs_set(),
+            PrivilegeLevel::Ring0,
+            &[0x0f, 0x30],
+            (index, value & 0xffff_ffff, value >> 32),
+        );
+        assert_eq!(result.instructions_executed, 1, "{index:#x} {value:#x}");
+        if index == GS_BASE_MSR {
+            assert_eq!(state.gs_base, value);
+            assert_eq!(state.fs_base, before.fs_base);
+        } else {
+            assert_eq!(state.fs_base, value);
+            assert_eq!(state.gs_base, before.gs_base);
+        }
+        assert_eq!(state.rip, RIP + 2);
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(state.gpr, before.gpr);
+    }
+}
+
+#[test]
+fn wrmsr_gs_base_non_canonical_is_gp0_without_mutation() {
+    for value in [0x0000_8000_0000_0000u64, 0xffff_7fff_ffff_ffff, 1 << 63] {
+        let (state, before, result) = run_msr_base(
+            &gs_set(),
+            PrivilegeLevel::Ring0,
+            &[0x0f, 0x30],
+            (GS_BASE_MSR, value & 0xffff_ffff, value >> 32),
+        );
+        assert_eq!(exit(&result), &gp0(), "{value:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn wrmsr_and_rdmsr_gs_base_at_cpl3_never_reach_the_msr_member() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch.
+    for code in [[0x0f, 0x30], [0x0f, 0x32]] {
+        let mut state = board_state();
+        state.gpr[1] = GS_BASE_MSR;
+        let before = state.clone();
+        let mut memory = Memory::code(&code);
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &gs_set(),
+            None,
+            || false,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            Cpl0ProfileSetInputError::WrongPrivilege
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, 0);
+    }
+}
+
+#[test]
+fn msr_index_is_ecx_only_like_the_legacy_profiles() {
+    // RCX[63:32] is ignored (SDM: the index is ECX), as in the FS/GS profiles.
+    let (state, _, result) = run_msr_base(
+        &gs_set(),
+        PrivilegeLevel::Ring0,
+        &[0x0f, 0x30],
+        (GS_BASE_MSR | (1 << 32), 0, 0),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gs_base, 0);
+}
+
+#[test]
+fn wrmsr_other_msrs_stay_unsupported_without_mutation() {
+    // APIC_BASE, SYSENTER_CS, EFER, KERNEL_GS_BASE, STAR, and an unknown index.
+    for index in [
+        0x1bu64,
+        0x174,
+        0xc000_0080,
+        0xc000_0102,
+        0xc000_0081,
+        0x1234_5678,
+    ] {
+        let (state, before, result) = run_msr_base(
+            &gs_set(),
+            PrivilegeLevel::Ring0,
+            &[0x0f, 0x30],
+            (index, 0, 0),
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn wrmsr_gs_base_without_the_member_is_unsupported() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    for set in [base(), base().with_msr(&efer)] {
+        let (state, before, result) = run_msr_base(
+            &set,
+            PrivilegeLevel::Ring0,
+            &[0x0f, 0x30],
+            (GS_BASE_MSR, 0, 0),
+        );
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn wrmsr_gs_base_rejects_prefixed_forms() {
+    for code in [[0x66u8, 0x0f, 0x30], [0x48, 0x0f, 0x30]] {
+        let (state, before, result) =
+            run_msr_base(&gs_set(), PrivilegeLevel::Ring0, &code, (GS_BASE_MSR, 0, 0));
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn rdmsr_gs_and_fs_base_return_the_stored_value_in_edx_eax() {
+    for (index, expected) in [
+        (GS_BASE_MSR, 0xffff_8000_1234_5678u64),
+        (FS_BASE_MSR, 0x7fff_0000_0000),
+    ] {
+        let (state, before, result) = run_msr_base(
+            &gs_set(),
+            PrivilegeLevel::Ring0,
+            &[0x0f, 0x32],
+            (index, u64::MAX, u64::MAX),
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gpr[0], expected & 0xffff_ffff);
+        assert_eq!(state.gpr[2], expected >> 32);
+        assert_eq!(state.rip, RIP + 2);
+        assert_eq!(state.gs_base, before.gs_base);
+        assert_eq!(state.fs_base, before.fs_base);
+    }
+}
+
+#[test]
+fn wrmsr_then_rdmsr_gs_base_round_trips_in_one_run() {
+    // mov ecx,0xc0000101; mov eax,0x1000; mov edx,0xffff8880; wrmsr;
+    // xor eax,eax; xor edx,edx; rdmsr
+    let code: &[u8] = &[
+        0xb9, 0x01, 0x01, 0x00, 0xc0, 0xb8, 0x00, 0x10, 0x00, 0x00, 0xba, 0x80, 0x88, 0xff, 0xff,
+        0x0f, 0x30, 0x31, 0xc0, 0x31, 0xd2, 0x0f, 0x32,
+    ];
+    let mut state = board_state();
+    let mut memory = Memory::code(code);
+    let result = run_set(&mut state, &mut memory, &gs_set(), 7).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 7);
+    assert_eq!(state.gs_base, 0xffff_8880_0000_1000);
+    assert_eq!(state.gpr[0], 0x1000);
+    assert_eq!(state.gpr[2], 0xffff_8880);
+}
+
+#[test]
+fn gs_base_member_keeps_the_selected_efer_profile() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base().with_msr(&efer).with_msr_fs_gs_base();
+    let (state, _, result) = run_msr_base(
+        &set,
+        PrivilegeLevel::Ring0,
+        &[0x0f, 0x32],
+        (0xc000_0080, 0, 0),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[0], 0xd00);
+    // EFER stays read-only: WRMSR is Unsupported, GS_BASE is writable.
+    let (state, before, result) = run_msr_base(
+        &set,
+        PrivilegeLevel::Ring0,
+        &[0x0f, 0x30],
+        (0xc000_0080, 0, 0),
+    );
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+    let (state, _, result) = run_msr_base(
+        &set,
+        PrivilegeLevel::Ring0,
+        &[0x0f, 0x30],
+        (GS_BASE_MSR, 0, 0),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gs_base, 0);
+}

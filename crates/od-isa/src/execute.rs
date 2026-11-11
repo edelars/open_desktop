@@ -1847,6 +1847,7 @@ pub struct Cpl0ProfileSet<'a> {
     cpuid: Option<&'a CpuidProfile>,
     rdtsc: bool,
     msr: Option<&'a MsrProfile>,
+    msr_bases: bool,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1861,6 +1862,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             cpuid: None,
             rdtsc: false,
             msr: None,
+            msr_bases: false,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -1894,6 +1896,18 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// the earlier profile.
     pub const fn with_msr(mut self, profile: &'a MsrProfile) -> Self {
         self.msr = Some(profile);
+        self
+    }
+
+    /// S4-38L6b: admit RDMSR/WRMSR of IA32_FS_BASE (`0xC000_0100`) and
+    /// IA32_GS_BASE (`0xC000_0101`) at CPL0, on top of the profile chosen by
+    /// [`Self::with_msr`] (which keeps the indexes it handles). The value is
+    /// `EDX:EAX`, stored in `LongModeState.fs_base`/`gs_base`; a non-canonical
+    /// 48-bit value, or CPL > 0, raises #GP(0) without a state change. Every
+    /// other MSR stays `Unsupported`. IA32_KERNEL_GS_BASE is not part of
+    /// this member.
+    pub const fn with_msr_fs_gs_base(mut self) -> Self {
+        self.msr_bases = true;
         self
     }
 
@@ -2061,6 +2075,7 @@ enum FxCr0GateControls {
 struct ExecutionProfiles<'a> {
     cpuid: Option<&'a CpuidProfile>,
     msr: Option<&'a MsrProfile>,
+    msr_bases: bool,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
     minss_invalid: Option<MinssInvalidControls>,
@@ -3203,6 +3218,7 @@ pub fn run_with_maxss_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3358,6 +3374,7 @@ pub fn run_with_minsd_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3513,6 +3530,7 @@ pub fn run_with_maxsd_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3668,6 +3686,7 @@ pub fn run_with_minpd_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3823,6 +3842,7 @@ pub fn run_with_minps_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3978,6 +3998,7 @@ pub fn run_with_maxps_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4133,6 +4154,7 @@ pub fn run_with_maxpd_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4288,6 +4310,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4443,6 +4466,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4598,6 +4622,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4753,6 +4778,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4908,6 +4934,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5063,6 +5090,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5218,6 +5246,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5373,6 +5402,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5528,6 +5558,7 @@ pub fn run_with_cvtss2si_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5683,6 +5714,7 @@ pub fn run_with_cvttss2si_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5837,6 +5869,7 @@ pub fn run_with_cvtsd2si_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6025,6 +6058,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6180,6 +6214,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6370,6 +6405,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6529,6 +6565,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6717,6 +6754,7 @@ fn run_with_cvtss2si_r32_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6872,6 +6910,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7027,6 +7066,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7215,6 +7255,7 @@ fn run_with_cvttss2si_r32_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7371,6 +7412,7 @@ pub fn run_with_cvttsd2si_registers_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7526,6 +7568,7 @@ pub fn run_with_cvtdq2pd_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7681,6 +7724,7 @@ pub fn run_with_cvtdq2pd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7835,6 +7879,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7990,6 +8035,7 @@ pub fn run_with_cvtdq2ps_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8178,6 +8224,7 @@ fn run_with_cvtdq2ps_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8333,6 +8380,7 @@ pub fn run_with_cvtps2dq_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8488,6 +8536,7 @@ pub fn run_with_cvttps2dq_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8676,6 +8725,7 @@ fn run_with_cvtps2dq_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8864,6 +8914,7 @@ fn run_with_cvttps2dq_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9052,6 +9103,7 @@ fn run_with_cvttpd2dq_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9240,6 +9292,7 @@ fn run_with_cvtpd2dq_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9395,6 +9448,7 @@ pub fn run_with_cvtpd2dq_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9550,6 +9604,7 @@ pub fn run_with_cvtpd2ps_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9705,6 +9760,7 @@ pub fn run_with_cvttpd2dq_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9860,6 +9916,7 @@ pub fn run_with_cvtss2sd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10015,6 +10072,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10206,6 +10264,7 @@ fn run_with_cvtpi2ps_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10528,6 +10587,7 @@ pub fn run_with_cvtsd2ss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10683,6 +10743,7 @@ pub fn run_with_cvtps2pd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10838,6 +10899,7 @@ pub fn run_with_cvtps2pd_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10993,6 +11055,7 @@ pub fn run_with_cvtss2sd_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11147,6 +11210,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11302,6 +11366,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11515,6 +11580,7 @@ fn run_with_cmpss_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11670,6 +11736,7 @@ pub fn run_with_cmpsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11825,6 +11892,7 @@ pub fn run_with_cmppd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11979,6 +12047,7 @@ pub fn run_with_cmppd_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12133,6 +12202,7 @@ pub fn run_with_cmpps_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12310,6 +12380,7 @@ fn run_with_minsd_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12465,6 +12536,7 @@ pub fn run_with_maxsd_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12642,6 +12714,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12814,6 +12887,7 @@ fn run_with_minpd_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13004,6 +13078,7 @@ fn run_with_minps_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13159,6 +13234,7 @@ pub fn run_with_rcpps_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13314,6 +13390,7 @@ pub fn run_with_rcpss_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13468,6 +13545,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13622,6 +13700,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13776,6 +13855,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13963,6 +14043,7 @@ fn run_with_sqrtps_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14117,6 +14198,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14303,6 +14385,7 @@ fn run_with_sqrtpd_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14489,6 +14572,7 @@ fn run_with_sqrtsd_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14678,6 +14762,7 @@ fn run_with_maxpd_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14871,6 +14956,7 @@ fn run_with_maxps_memory_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15082,6 +15168,7 @@ fn run_minss_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: exception_controls,
@@ -15279,6 +15366,7 @@ fn run_maxss_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15433,6 +15521,7 @@ pub fn run_with_cmpps_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15588,6 +15677,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15796,6 +15886,7 @@ pub fn run_with_efer_rdmsr_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: Some(&MsrProfile::EferReadOnlyV1(efer_value)),
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -16196,6 +16287,7 @@ pub fn run_with_cr0_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -16396,6 +16488,7 @@ fn run_with_cr4_profile_and_rflags_defined(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -19509,6 +19602,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
         ExecutionProfiles {
             cpuid: cpuid_profile,
             msr: msr_profile,
+            msr_bases: false,
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
@@ -19852,6 +19946,7 @@ fn run_cpl0_profile_set_inner(
         ExecutionProfiles {
             cpuid: set.cpuid,
             msr: set.msr,
+            msr_bases: set.msr_bases,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -20313,6 +20408,7 @@ pub fn step_with_cr0_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -20711,6 +20807,7 @@ fn step_tracked_with_profiles_and_rdtsc(
         ExecutionProfiles {
             cpuid: cpuid_profile,
             msr: msr_profile,
+            msr_bases: false,
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
@@ -20866,6 +20963,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21245,6 +21343,7 @@ fn run_with_comparison_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21402,6 +21501,7 @@ pub fn run_with_sqrtss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21557,6 +21657,7 @@ pub fn run_with_sqrtsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21712,6 +21813,7 @@ pub fn run_with_sqrtps_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21867,6 +21969,7 @@ pub fn run_with_sqrtpd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22023,6 +22126,7 @@ fn run_with_subpd_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22237,6 +22341,7 @@ pub fn run_with_mulpd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22392,6 +22497,7 @@ fn run_with_addpd_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22583,6 +22689,7 @@ fn run_with_mulpd_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22793,6 +22900,7 @@ pub fn run_with_addsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22948,6 +23056,7 @@ pub fn run_with_divpd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23136,6 +23245,7 @@ fn run_with_divpd_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23291,6 +23401,7 @@ pub fn run_with_addss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23480,6 +23591,7 @@ fn run_with_addss_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23668,6 +23780,7 @@ fn run_with_addsd_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23859,6 +23972,7 @@ fn run_with_addps_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24014,6 +24128,7 @@ pub fn run_with_divsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24205,6 +24320,7 @@ fn run_with_divps_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24360,6 +24476,7 @@ pub fn run_with_divss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24515,6 +24632,7 @@ pub fn run_with_mulsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24670,6 +24788,7 @@ pub fn run_with_mulss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24861,6 +24980,7 @@ fn run_with_mulps_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25016,6 +25136,7 @@ pub fn run_with_subsd_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25171,6 +25292,7 @@ pub fn run_with_subss_register_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25326,6 +25448,7 @@ fn run_with_scalar_float_memory_rax_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25725,6 +25848,7 @@ fn run_with_subps_profile(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25879,6 +26003,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
         ExecutionProfiles {
             cpuid: None,
             msr: None,
+            msr_bases: false,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -26332,6 +26457,7 @@ fn step_configured(
     let ExecutionProfiles {
         cpuid: cpuid_profile,
         msr: msr_profile,
+        msr_bases: msr_bases_enabled,
         sep: sep_profile,
         xorpd: xorpd_prerequisites,
         minss_invalid: configured_minss_controls,
@@ -32501,15 +32627,28 @@ fn step_configured(
         instruction.operation,
         Operation::ReadMsr | Operation::WriteMsr
     ) {
+        // S4-38L6b: the set's FS/GS base member adds IA32_FS_BASE and
+        // IA32_GS_BASE next to the selected MSR profile. The selected
+        // profile keeps every index it handles; only the two base indexes
+        // it does not handle fall through to the base profiles.
+        let msr_index = state.gpr[Register::Rcx as usize] as u32;
+        let msr_profile = match msr_profile {
+            Some(profile) if profile.handles_index(msr_index) => Some(profile),
+            _ if msr_bases_enabled && msr_index == 0xc000_0101 => Some(&MsrProfile::GsBaseV1),
+            _ if msr_bases_enabled && msr_index == 0xc000_0100 => Some(&MsrProfile::FsBaseV1),
+            other => other,
+        };
         let Some(profile) = msr_profile else {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
         };
-        if matches!(
+        if (matches!(
             profile,
             MsrProfile::KernelGsBaseV1 | MsrProfile::EferReadOnlyV1(_)
-        ) && (instruction.length != 2 || instruction.prefixes != Prefixes::default())
+        ) || (msr_bases_enabled
+            && matches!(profile, MsrProfile::GsBaseV1 | MsrProfile::FsBaseV1)))
+            && (instruction.length != 2 || instruction.prefixes != Prefixes::default())
         {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
