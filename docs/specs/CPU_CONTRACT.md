@@ -21441,3 +21441,10 @@ S4-38L4h без изменений); RIP += длина инструкции (с 
 `segment_store_*`, `cs_ds_es_ss_overrides_*`; `long_decode::tests::segment_store_decodes_fs_gs_qword_memory_forms_only`;
 `linux_direct::tests::gs_store_after_wrmsr_gs_base_writes_at_base_plus_effective_address`,
 `fs_and_gs_stores_with_a_zero_base_write_at_the_effective_address`.
+
+**Диагностический прогон (не засчитывается).** После среза прогон (`--diagnostic-past-c7`, бюджет 3e9) проходит запись
+`mov %rax, %gs:...(%rip)` и останавливается на `Unsupported { opcode: 0x22 }` (`Run(Unsupported { opcode: 34 })`) по RIP
+`0xffffffff82728f60`, байты `0f 22 df 31 ff e9 46 4d 01 00 66 0f 1f 44 00 00` (`MOV CR3, RDI`); retired = 1137477792
+(17 инструкций после записи), RDI = `0x3ffe000`, RAX = 0, RBX = `0x100000`, RSP = `0xffffffff83a03f08`, CR0 = `0x80050033`,
+CR4 = `0xb0`, EFER walker'а `0xd00`, гостевой EFER `0xd01`, `memory_error`/`page_fault` отсутствуют. Значения FS/GS base в JSON
+не выводятся. Следующий срез — выяснить, почему `MOV CR3, RDI` не принимается набором (форма с CR4 = `0xb0`).
