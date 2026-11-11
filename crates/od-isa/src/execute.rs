@@ -155492,7 +155492,7 @@ mod paged_mov_profile_tests {
                 crate::INTEGER_FLAGS & !(1 << 7),
             )
             .unwrap();
-            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8b });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
