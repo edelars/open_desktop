@@ -10616,6 +10616,8 @@ struct BitsMemory {
     writes: Vec<(u64, Vec<u8>)>,
     /// When set, every data write fails with this fault (a read-only page).
     write_fault: Option<ArchitecturalFault>,
+    /// When set, every data read fails with this fault (a not-present page).
+    read_fault: Option<ArchitecturalFault>,
 }
 
 impl BitsMemory {
@@ -10626,6 +10628,7 @@ impl BitsMemory {
             reads: Vec::new(),
             writes: Vec::new(),
             write_fault: None,
+            read_fault: None,
         }
     }
 
@@ -10664,6 +10667,9 @@ impl GuestMemory for BitsMemory {
         bytes: &mut [u8],
     ) -> Result<(), MemoryError> {
         self.reads.push((address, bytes.len()));
+        if let Some(fault) = self.read_fault.clone() {
+            return Err(MemoryError::Architectural(fault));
+        }
         for (index, byte) in bytes.iter_mut().enumerate() {
             *byte = self
                 .data
@@ -11173,6 +11179,486 @@ fn lock_bts_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7o: FS/GS-based `TEST r/m8, imm8` (`[64|65] [REX] F6 /0 ib`, memory operand; SDM
+// Vol.2 TEST: the byte is ANDed with the immediate, the result is discarded, CF = OF = 0, SF/ZF/PF
+// from the byte result, AF undefined and left unchanged here; Vol.3 3.4.4 FS/GS base; from memory,
+// not re-checked against the SDM text). Nothing is written to memory or to a register. ----
+
+/// `testb $0xf0, %gs:0x2f0692c(%rip)` (the S4-38L7n diagnostic boundary bytes, 8 bytes long: the
+/// next RIP is after the immediate).
+const GS_TEST8_BOUNDARY: [u8; 8] = [0x65, 0xf6, 0x05, 0x2c, 0x69, 0xf0, 0x02, 0xf0];
+/// `testb $0x0e, %fs:0x1234(%rip)`.
+const FS_TEST8_RIP: [u8; 8] = [0x64, 0xf6, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e];
+
+fn run_test8_set(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_bts_set(state, memory)
+}
+
+const TEST8_FLAGS: u64 = FLAG_CF | FLAG_PF | FLAG_ZF | FLAG_SF | FLAG_OF;
+
+#[test]
+fn gs_test_byte_boundary_form_reads_one_byte_at_gs_base_plus_next_rip_and_changes_only_flags() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_AF;
+    let mut expected = state.clone();
+    let at = gs_base + RIP + 8 + 0x02f0_692c;
+    let mut memory = BitsMemory::new(&GS_TEST8_BOUNDARY);
+    // 0x8f & 0xf0 = 0x80: SF = 1, ZF = 0, PF = 0 (one bit), CF = OF = 0, AF as before.
+    memory.data.insert(at, 0x8f);
+    // The neighbouring byte must stay unread.
+    memory.data.insert(at + 1, 0xff);
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 1)]);
+    assert!(memory.writes.is_empty());
+    // As the plain TEST: CF/OF/SF/ZF/PF become defined, AF is undefined.
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !FLAG_AF);
+    expected.rflags = (expected.rflags & !TEST8_FLAGS) | FLAG_SF;
+    expected.rip += 8;
+    assert_eq!(state, expected, "only RFLAGS and RIP change");
+    assert_ne!(state.rflags & FLAG_AF, 0, "AF is kept");
+}
+
+#[test]
+fn fs_test_byte_rip_relative_reads_at_fs_base_plus_effective_address() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let at = fs_base + RIP + 8 + 0x1234;
+    let mut memory = BitsMemory::new(&FS_TEST8_RIP);
+    memory.data.insert(at, 0xf1);
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 1)]);
+    assert!(memory.writes.is_empty());
+    // 0xf1 & 0x0e = 0: ZF = 1, PF = 1, SF = 0.
+    expected.rflags |= FLAG_ZF | FLAG_PF;
+    expected.rip += 8;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn test_byte_with_a_zero_base_uses_the_effective_address() {
+    for code in [GS_TEST8_BOUNDARY, FS_TEST8_RIP] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        let mut memory = BitsMemory::new(&code);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        let disp = if code[0] == 0x65 { 0x02f0_692c } else { 0x1234 };
+        assert_eq!(memory.reads, vec![(RIP + 8 + disp, 1)]);
+    }
+}
+
+#[test]
+fn test_byte_flags_follow_the_byte_result_on_boundary_values() {
+    // (memory byte, immediate, expected ZF/SF/PF bits). CF and OF are always cleared, and the
+    // result is the byte (not widened): 0x80 sets SF, only the low eight bits count for PF.
+    let cases: [(u8, u8, u64); 14] = [
+        (0x00, 0xff, FLAG_ZF | FLAG_PF),
+        (0xff, 0x00, FLAG_ZF | FLAG_PF),
+        (0x01, 0x01, 0),
+        (0x03, 0x03, FLAG_PF),
+        (0x80, 0x80, FLAG_SF),
+        (0xf0, 0xf0, FLAG_SF | FLAG_PF),
+        (0xff, 0xff, FLAG_SF | FLAG_PF),
+        (0x7f, 0xff, 0),
+        (0x0f, 0xf0, FLAG_ZF | FLAG_PF),
+        (0xaa, 0x55, FLAG_ZF | FLAG_PF),
+        (0xfe, 0x01, FLAG_ZF | FLAG_PF),
+        (0x81, 0x81, FLAG_SF | FLAG_PF),
+        (0x7e, 0x7e, FLAG_PF),
+        (0x07, 0xff, 0),
+    ];
+    for (value, immediate, expected_flags) in cases {
+        for initial in [
+            0u64,
+            TEST8_FLAGS,
+            FLAG_CF | FLAG_OF,
+            FLAG_AF,
+            TEST8_FLAGS | FLAG_AF,
+        ] {
+            let mut code = GS_TEST8_BOUNDARY;
+            code[7] = immediate;
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.rflags = 2 | IF | initial;
+            let mut expected = state.clone();
+            let at = 0xffff_8880_0000_0000 + RIP + 8 + 0x02f0_692c;
+            let mut memory = BitsMemory::new(&code);
+            memory.data.insert(at, value);
+            let result = run_test8_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{value:#x} {immediate:#x}");
+            assert_eq!(
+                state.rflags & (FLAG_CF | FLAG_OF),
+                0,
+                "{value:#x} {immediate:#x}"
+            );
+            assert_eq!(
+                state.rflags & TEST8_FLAGS,
+                expected_flags,
+                "{value:#x} & {immediate:#x} from {initial:#x}"
+            );
+            expected.rflags = (expected.rflags & !TEST8_FLAGS) | expected_flags;
+            expected.rip += 8;
+            assert_eq!(state, expected, "{value:#x} {immediate:#x} {initial:#x}");
+            assert!(memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn test_byte_matches_the_non_prefixed_test_on_the_same_byte() {
+    // `testb $imm, (%rbx)` (f6 03 ib) has the same flag result as the GS form on every value.
+    for value in [0u8, 1, 2, 3, 0x7f, 0x80, 0x81, 0xf0, 0xff] {
+        for immediate in [0u8, 1, 0x80, 0xf0, 0xff, 0x55] {
+            let mut plain_state = bts_state(0);
+            plain_state.rflags |= FLAG_CF | FLAG_OF;
+            let mut plain_memory = BitsMemory::new(&[0xf6, 0x03, immediate]);
+            plain_memory.data.insert(0x20_0000, value);
+            run_test8_set(&mut plain_state, &mut plain_memory).unwrap();
+
+            let mut state = bts_state(0);
+            state.rflags |= FLAG_CF | FLAG_OF;
+            state.gs_base = 0xffff_8880_0000_0000;
+            let mut memory = BitsMemory::new(&[0x65, 0xf6, 0x03, immediate]);
+            memory.data.insert(0xffff_8880_0020_0000, value);
+            run_test8_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                state.rflags, plain_state.rflags,
+                "{value:#x} {immediate:#x}"
+            );
+            assert_eq!(memory.reads, vec![(0xffff_8880_0020_0000, 1)]);
+        }
+    }
+}
+
+#[test]
+fn gs_test_byte_with_base_register_index_scale_and_displacement() {
+    // `testb $0x40, %gs:0x10(%rbx,%rcx,4)` = 65 f6 44 8b 10 40.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let mut expected = state.clone();
+    let at = 0xffff_8880_0000_0000 + 0x1000 + 12 + 0x10;
+    let mut memory = BitsMemory::new(&[0x65, 0xf6, 0x44, 0x8b, 0x10, 0x40]);
+    memory.data.insert(at, 0x40);
+    run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 1)]);
+    assert!(memory.writes.is_empty());
+    // 0x40 & 0x40 = 0x40: not zero, not negative, one bit set (PF = 0).
+    expected.rflags &= !TEST8_FLAGS;
+    expected.rip += 6;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn fs_test_byte_absolute_sib_disp32_without_base_or_index_adds_only_the_fs_base() {
+    // `testb $0x01, %fs:0x20` = 64 f6 04 25 20 00 00 00 01.
+    let mut state = board_state();
+    state.fs_base = 0xffff_8880_0000_0000;
+    let mut memory = BitsMemory::new(&[0x64, 0xf6, 0x04, 0x25, 0x20, 0, 0, 0, 0x01]);
+    memory.data.insert(0xffff_8880_0000_0020, 0x01);
+    run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0020, 1)]);
+    assert_eq!(state.rip, RIP + 9);
+    assert_eq!(state.rflags & TEST8_FLAGS, 0);
+}
+
+#[test]
+fn test_byte_with_rex_b_uses_r8_to_r15_as_the_base_and_changes_no_register() {
+    // `testb $0x80, %gs:0x8(%r8..%r15)`: 65 41 f6 40+n 08 80 (REX.B, disp8).
+    for (n, register) in [
+        (0u8, Register::R8),
+        (1, Register::R9),
+        (7, Register::R15),
+        (5, Register::R13),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[register as usize] = 0x4000;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&[0x65, 0x41, 0xf6, 0x40 + n, 0x08, 0x80]);
+        let at = 0xffff_8880_0000_4008;
+        memory.data.insert(at, 0x80);
+        run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(memory.reads, vec![(at, 1)], "{register:?}");
+        assert!(memory.writes.is_empty());
+        expected.rflags = (expected.rflags & !TEST8_FLAGS) | FLAG_SF;
+        expected.rip += 6;
+        assert_eq!(state, expected, "{register:?}");
+    }
+    // R12 through a SIB byte: `testb $0x80, %gs:0x8(%r12)` = 65 41 f6 44 24 08 80.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R12 as usize] = 0x4000;
+    let mut memory = BitsMemory::new(&[0x65, 0x41, 0xf6, 0x44, 0x24, 0x08, 0x80]);
+    memory.data.insert(0xffff_8880_0000_4008, 0x80);
+    run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_4008, 1)]);
+    assert_eq!(state.rip, RIP + 7);
+}
+
+#[test]
+fn test_byte_accepts_a_rex_directly_before_the_opcode_with_any_w_r_bits() {
+    // REX.W and REX.R do not change the byte operand; the rest of the instruction is identical.
+    for rex in [0x40u8, 0x44, 0x48, 0x4c] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&[0x65, rex, 0xf6, 0x03, 0xff]);
+        memory.data.insert(0xffff_8880_0020_0000, 0x00);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rex:#x}");
+        assert_eq!(memory.reads, vec![(0xffff_8880_0020_0000, 1)], "{rex:#x}");
+        assert_eq!(state.rip, RIP + 5, "{rex:#x}");
+        assert_eq!(state.gpr, before.gpr, "{rex:#x}");
+        assert_eq!(state.rflags & TEST8_FLAGS, FLAG_ZF | FLAG_PF, "{rex:#x}");
+    }
+}
+
+#[test]
+fn test_byte_never_writes_memory_even_on_a_read_only_page() {
+    // The adapter fails every write; the TEST must still retire.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x20_0000),
+    };
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&[0x65, 0xf6, 0x03, 0x01]);
+    memory.write_fault = Some(fault);
+    memory.data.insert(0x20_0000, 0x55);
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.data.get(&0x20_0000), Some(&0x55));
+}
+
+#[test]
+fn test_byte_non_canonical_address_is_gp0_without_mutation_or_read() {
+    for (gs, base) in [
+        (true, 0x0000_8000_0000_0000u64),
+        (true, 0x7fff_ffff_ffff_fff0),
+        // The effective address itself lands one past the canonical boundary.
+        (true, 0x0000_8000_0000_0000 - 0x02f0_692c - 8 - RIP),
+        (false, 0x0000_8000_0000_0000),
+    ] {
+        let mut state = board_state();
+        state.gs_base = base;
+        state.fs_base = base;
+        state.rflags |= FLAG_CF | FLAG_ZF;
+        let before = state.clone();
+        let code = if gs { GS_TEST8_BOUNDARY } else { FS_TEST8_RIP };
+        let mut memory = BitsMemory::new(&code);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{gs} {base:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{gs} {base:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn test_byte_last_canonical_address_is_read() {
+    // A single byte is read, so the last canonical byte 0x7fff_ffff_ffff is accessible.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_ffff - 0x02f0_692c - 8 - RIP;
+    let mut memory = BitsMemory::new(&GS_TEST8_BOUNDARY);
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x0000_7fff_ffff_ffff, 1)]);
+}
+
+#[test]
+fn gs_test_byte_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `testb $1, %gs:(%rsp)` = 65 f6 04 24 01 and `testb $1, %gs:0x0(%rbp)` = 65 f6 45 00 01.
+    for (code, register) in [
+        (&[0x65u8, 0xf6, 0x04, 0x24, 0x01][..], Register::Rsp),
+        (&[0x65u8, 0xf6, 0x45, 0x00, 0x01][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn test_byte_read_fault_leaves_flags_rip_and_registers_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_0000 + RIP + 8 + 0x02f0_692c),
+    };
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_TEST8_BOUNDARY);
+    memory.read_fault = Some(fault.clone());
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn segment_test_byte_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
+    let cases: [(&[u8], u8); 24] = [
+        // Other F6 group members with a segment base stay outside this slice.
+        (&[0x65, 0xf6, 0x0b, 0x01], 0xf6), // /1 (TEST alias)
+        (&[0x65, 0xf6, 0x13], 0xf6),       // NOT
+        (&[0x65, 0xf6, 0x1b], 0xf6),       // NEG
+        (&[0x64, 0xf6, 0x23], 0xf6),       // MUL
+        (&[0x64, 0xf6, 0x2b], 0xf6),       // IMUL
+        (&[0x65, 0xf6, 0x33], 0xf6),       // DIV
+        (&[0x65, 0xf6, 0x3b], 0xf6),       // IDIV
+        // LOCK (invalid TEST form), REP, REPNE.
+        (&[0xf0, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x65, 0xf0, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0xf3, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0xf2, 0x64, 0xf6, 0x03, 0x01], 0xf6),
+        // 0x66 and 0x67.
+        (&[0x66, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x65, 0x66, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x65, 0x67, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x67, 0x64, 0xf6, 0x03, 0x01], 0xf6),
+        // A second segment prefix.
+        (&[0x64, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x65, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        // REX not immediately before the opcode (stale).
+        (&[0x44, 0x65, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x48, 0x64, 0xf6, 0x03, 0x01], 0xf6),
+        (&[0x41, 0x65, 0x40, 0xf6, 0x03, 0x01], 0xf6),
+        // The word/dword/qword TEST (F7) and TEST r/m8, r8 (84) with a segment prefix stay
+        // refused with their own opcodes.
+        (&[0x65, 0xf7, 0x03, 0x01, 0, 0, 0], 0xf7),
+        (&[0x65, 0x48, 0xf7, 0x03, 0x01, 0, 0, 0], 0xf7),
+        (&[0x65, 0x84, 0x03], 0x84),
+        // FS-form NOT with an absolute address.
+        (&[0x64, 0xf6, 0x14, 0x25, 0x20, 0, 0, 0], 0xf6),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn test_byte_register_form_and_plain_form_keep_their_old_behavior() {
+    // The register form (mod = 11) is not memory: the segment prefix is irrelevant and it keeps
+    // decoding as the plain `TEST r8, imm8` (unchanged by S4-38L7o). The memory form without a
+    // segment prefix keeps ignoring the FS/GS bases.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x00;
+    let mut memory = BitsMemory::new(&[0x65, 0xf6, 0xc3, 0x01]); // test $1, %bl
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.reads.is_empty());
+    assert_ne!(state.rflags & FLAG_ZF, 0);
+
+    let mut state = bts_state(0);
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    let mut memory = BitsMemory::new(&[0xf6, 0x03, 0x01]); // testb $1, (%rbx)
+    memory.data.insert(0x20_0000, 0x01);
+    let result = run_test8_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 1)]);
+    assert_eq!(state.rflags & FLAG_ZF, 0);
+}
+
+#[test]
+fn cs_ds_es_ss_overrides_on_a_test_byte_keep_ignoring_the_segment_base() {
+    for prefix in [0x2eu8, 0x3e, 0x36, 0x26] {
+        let mut state = bts_state(0);
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let mut memory = BitsMemory::new(&[prefix, 0xf6, 0x03, 0x01]);
+        let result = run_test8_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 1)], "{prefix:#x}");
+    }
+}
+
+#[test]
+fn segment_test_byte_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for code in [&GS_TEST8_BOUNDARY[..], &FS_TEST8_RIP[..]] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xf6 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_test_byte_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_TEST8_BOUNDARY);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
