@@ -1401,6 +1401,11 @@ pub enum Operation {
     /// Exact `0F 20 D0` / `48 0F 20 D0` MOV RAX, CR2 (S4-38L5a). Executes only
     /// in the CPL0 profile set that owns CR3 (`with_cpu_owned_cr3`); read-only.
     ReadCr2,
+    /// `[REX] 0F 20 /2` MOV r64, CR2 into any general register other than the
+    /// exact RAX forms of `ReadCr2` (S4-38L5d). Executes only in the CPL0
+    /// profile set that owns CR3; read-only. The destination is `rm` extended
+    /// by REX.B; REX.W carries no meaning (the operand is always 64-bit).
+    ReadCr2Into(Register),
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -2325,24 +2330,52 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(self.unsupported(opcode));
             }
             // S4-38L4c / S4-38L5a: `48 0F 20 D8` (REX.W `MOV RAX, CR3`) and
-            // `48 0F 20 D0` (REX.W `MOV RAX, CR2`) are the only prefixed
-            // control-register forms; every other prefix stays unsupported.
+            // `48 0F 20 D0` (REX.W `MOV RAX, CR2`) are the prefixed forms of
+            // CR3/CR2. S4-38L5d: `MOV r64, CR2` also takes any REX (`40`-`4F`,
+            // no other prefix); CR0/CR3/CR4 keep their old prefix rules.
             let rex_w_read_cr3 = opcode.byte == 0x20
                 && prefixes
                     == (Prefixes {
                         rex: Some(0x48),
                         ..Prefixes::default()
                     });
-            if prefixes != Prefixes::default() && !rex_w_read_cr3 {
+            let rex_only_read = opcode.byte == 0x20
+                && prefixes.rex.is_some()
+                && prefixes
+                    == (Prefixes {
+                        rex: prefixes.rex,
+                        ..Prefixes::default()
+                    });
+            if prefixes != Prefixes::default() && !rex_only_read {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
-            // `0F 20 D0` (MOV RAX, CR2) is read-only: `0F 22 D0` stays unsupported.
-            let cr2_read = opcode.byte == 0x20 && modrm == 0xd0;
-            if !(matches!(modrm, 0xc0 | 0xd8 | 0xe0) || cr2_read)
-                || (rex_w_read_cr3 && !matches!(modrm, 0xd8 | 0xd0))
-            {
+            // `0F 20 /2` with mod = 11 (MOV r64, CR2) is read-only: `0F 22 D0`
+            // stays unsupported. REX.R would select CR10 (unsupported); REX.W
+            // and REX.X do not change a 64-bit register-to-register MOV.
+            let rex = prefixes.rex.unwrap_or(0x40);
+            let cr2_read = opcode.byte == 0x20 && modrm & 0xf8 == 0xd0 && rex & 0x04 == 0;
+            let old_cr_form = matches!(modrm, 0xc0 | 0xd8 | 0xe0)
+                && (prefixes == Prefixes::default() || rex_w_read_cr3);
+            if !(old_cr_form || cr2_read) || (rex_w_read_cr3 && modrm != 0xd8 && !cr2_read) {
                 return Err(self.unsupported(opcode));
+            }
+            if cr2_read {
+                let dest = Register::from_encoding((modrm & 7) | ((rex & 1) << 3)).unwrap();
+                let exact_rax_form =
+                    dest == Register::Rax && matches!(prefixes.rex, None | Some(0x48));
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: if exact_rax_form {
+                        Operation::ReadCr2
+                    } else {
+                        Operation::ReadCr2Into(dest)
+                    },
+                });
             }
             return Ok(Instruction {
                 length: self.length,
@@ -24057,9 +24090,6 @@ mod tests {
             &[0xf0, 0x0f, 0x20, 0xd0][..],
             &[0x66, 0x0f, 0x20, 0xd0][..],
             &[0xf3, 0x0f, 0x20, 0xd0][..],
-            &[0x49, 0x0f, 0x20, 0xd0][..],
-            &[0x40, 0x0f, 0x20, 0xd0][..],
-            &[0x0f, 0x20, 0xd1][..],
             &[0x0f, 0x20, 0xc8][..],
             &[0x0f, 0x20, 0xe8][..],
         ] {
@@ -24071,6 +24101,95 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn mov_r64_cr2_decodes_every_destination_with_any_rex_but_r() {
+        // Exact RAX forms keep `ReadCr2`; everything else is `ReadCr2Into`.
+        for rex in [
+            None,
+            Some(0x40u8),
+            Some(0x41),
+            Some(0x48),
+            Some(0x49),
+            Some(0x4a),
+            Some(0x4b),
+        ] {
+            for rm in 0u8..8 {
+                let mut bytes = Vec::new();
+                bytes.extend(rex);
+                bytes.extend_from_slice(&[0x0f, 0x20, 0xd0 | rm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                let dest = Register::from_encoding(rm | ((rex.unwrap_or(0) & 1) << 3)).unwrap();
+                let exact_rax = dest == Register::Rax && matches!(rex, None | Some(0x48));
+                let expected = if exact_rax {
+                    Operation::ReadCr2
+                } else {
+                    Operation::ReadCr2Into(dest)
+                };
+                assert_eq!(instruction.operation, expected, "{bytes:02x?}");
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(instruction.operand_size, OperandSize::Qword);
+                assert_eq!(instruction.prefixes.rex, rex);
+            }
+        }
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xd3]).decode().unwrap().operation,
+            Operation::ReadCr2Into(Register::Rbx)
+        );
+        assert_eq!(
+            Memory::new(&[0x41, 0x0f, 0x20, 0xd3])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::ReadCr2Into(Register::R11)
+        );
+        for bytes in [
+            &[0x44, 0x0f, 0x20, 0xd3][..], // REX.R: CR10
+            &[0x4d, 0x0f, 0x20, 0xdf][..],
+            &[0x0f, 0x20, 0x13][..], // memory forms
+            &[0x0f, 0x20, 0x53, 0x08][..],
+            &[0x0f, 0x20, 0xc3][..], // CR0/CR3/CR4 into RBX
+            &[0x0f, 0x20, 0xdb][..],
+            &[0x0f, 0x20, 0xe3][..],
+            &[0x41, 0x0f, 0x20, 0xd8][..],
+            &[0x48, 0x0f, 0x20, 0xc0][..],
+            &[0x0f, 0x22, 0xd3][..],
+            &[0x66, 0x0f, 0x20, 0xd3][..],
+            &[0xf2, 0x0f, 0x20, 0xd3][..],
+            &[0xf3, 0x0f, 0x20, 0xd3][..],
+            &[0x67, 0x0f, 0x20, 0xd3][..],
+            &[0x2e, 0x0f, 0x20, 0xd3][..],
+            &[0xf0, 0x0f, 0x20, 0xd3][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // CR3/CR4/CR0 keep their forms.
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xd8]).decode().unwrap().operation,
+            Operation::ReadCr3
+        );
+        assert_eq!(
+            Memory::new(&[0x48, 0x0f, 0x20, 0xd8])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::ReadCr3
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xe0]).decode().unwrap().operation,
+            Operation::ReadCr4
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xc0]).decode().unwrap().operation,
+            Operation::ReadCr0
+        );
     }
 
     #[test]

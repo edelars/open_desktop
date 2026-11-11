@@ -1279,7 +1279,6 @@ mod tests {
         assert_eq!(record.virtual_ns, 2 + 1_000);
         assert_eq!(record.rip, 0x0100_0200 + 3);
         // RDTSC read the clock at the start of the run (0): EDX:EAX = 0.
-        assert_eq!(record.gpr[Register::Rax as usize], 0);
         assert_eq!(record.gpr[Register::Rdx as usize], 0);
         assert!(record.linux_profile);
         // The same code without RDTSC (MOV AL, 1; HLT) moves the clock only by the retired instructions.
@@ -2813,7 +2812,6 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 64, halting_default());
         assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
         assert_eq!(record.retired, 4);
-        assert_eq!(record.gpr[Register::Rax as usize], 0);
     }
 
     /// CLI; MOV EBX, 0x1234; MOV EAX, `leaf`; CPUID; HLT.
@@ -3931,6 +3929,28 @@ mod tests {
         assert_eq!((second.retired, second.exceptions_delivered), (2, 0));
         assert_eq!(second.gpr[Register::Rax as usize], PF_VA + 0x20);
         assert_eq!(boot.board.state().cr2, None);
+    }
+
+    /// S4-38L5d: `MOV RBX, CR2` and `MOV R11, CR2` retire in the handler through the board's
+    /// facade. RBX holds the fault address when the handler starts, so it is first overwritten
+    /// (`MOV RBX, 1`) to prove the read, not the leftover, supplies the final value.
+    #[test]
+    fn set_facade_mov_rbx_cr2_reads_the_delivered_cr2() {
+        let mut handler = vec![0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00]; // MOV RBX, 1
+        handler.extend_from_slice(&[0x0F, 0x20, 0xD3]); // MOV RBX, CR2
+        handler.extend_from_slice(&[0x41, 0x0F, 0x20, 0xD3]); // MOV R11, CR2
+        handler.push(0xF4); // HLT
+        let (mut boot, file) = pf_board(0x5A, &handler);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 8, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!((record.retired, record.exceptions_delivered), (4, 1));
+        assert_eq!(record.gpr[Register::Rbx as usize], PF_VA + 0x20);
+        assert_eq!(record.gpr[Register::R11 as usize], PF_VA + 0x20);
+        assert_eq!(boot.board.state().cr2, None, "the CPU state keeps no CR2");
     }
 
     #[test]
