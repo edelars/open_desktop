@@ -1,0 +1,288 @@
+{
+  "acceptance": "diagnostic_not_counted",
+  "acpi": {
+    "facs_address": "0xef000",
+    "load_base": "0xe0000",
+    "manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "payload_len": 832,
+    "rsdp_address": "0xe0000",
+    "tables": [
+      {
+        "address": "0xe0040",
+        "length": 245,
+        "signature": "DSDT"
+      },
+      {
+        "address": "0xe0140",
+        "length": 84,
+        "signature": "APIC"
+      },
+      {
+        "address": "0xe01a0",
+        "length": 276,
+        "signature": "FACP"
+      },
+      {
+        "address": "0xe02c0",
+        "length": 60,
+        "signature": "MCFG"
+      },
+      {
+        "address": "0xe0300",
+        "length": 60,
+        "signature": "XSDT"
+      }
+    ],
+    "version": 2
+  },
+  "acpi_rsdp_addr": "0xe0000",
+  "acpi_rsdp_signature_in_memory": "RSD PTR ",
+  "acpi_rsdp_signature_matches": true,
+  "cmdline": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s4-38l4a nokaslr",
+  "cmdline_in_memory": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s4-38l4a nokaslr",
+  "cmdline_in_memory_matches": true,
+  "command": "linux-direct",
+  "diagnostic_note": "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a profile of the target CPU, the result is NOT counted",
+  "diagnostic_past_c7": true,
+  "e820": [
+    {
+      "addr": "0x0",
+      "end": "0x9f000",
+      "size": "0x9f000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0x9f000",
+      "end": "0xe0000",
+      "size": "0x41000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xe0000",
+      "end": "0xef000",
+      "size": "0xf000",
+      "type": 3,
+      "type_name": "acpi"
+    },
+    {
+      "addr": "0xef000",
+      "end": "0xf0000",
+      "size": "0x1000",
+      "type": 4,
+      "type_name": "nvs"
+    },
+    {
+      "addr": "0xf0000",
+      "end": "0x150000",
+      "size": "0x60000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0x150000",
+      "end": "0x8000000",
+      "size": "0x7eb0000",
+      "type": 1,
+      "type_name": "ram"
+    },
+    {
+      "addr": "0xf8000000",
+      "end": "0xfa400000",
+      "size": "0x2400000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xfc100000",
+      "end": "0xfc200000",
+      "size": "0x100000",
+      "type": 2,
+      "type_name": "reserved"
+    },
+    {
+      "addr": "0xffc00000",
+      "end": "0x100000000",
+      "size": "0x400000",
+      "type": 2,
+      "type_name": "reserved"
+    }
+  ],
+  "e820_count": 9,
+  "entry": {
+    "cr0": "0x80010033",
+    "cr3": "0x130000",
+    "cr4": "0x20",
+    "cs": "0x10",
+    "ds": "0x18",
+    "efer": "0xd00",
+    "es": "0x18",
+    "gdtr_base": "0x120000",
+    "gdtr_limit": "0x1f",
+    "rflags": "0x2",
+    "rip": "0x1000200",
+    "rsi": "0x100000",
+    "rsp": "0x150000",
+    "ss": "0x18"
+  },
+  "guest_started": true,
+  "header": {
+    "cmdline_size": 2047,
+    "init_size": "0x44c1000",
+    "initrd_addr_max": "0x7fffffff",
+    "kernel_alignment": "0x200000",
+    "payload_length": "0x10456ea",
+    "payload_offset": "0x2cc",
+    "pm_code_size": "0x107f200",
+    "pref_address": "0x1000000",
+    "protected_mode_offset": "0x5000",
+    "relocatable": 1,
+    "version": "0x020f",
+    "xloadflags": "0x007f"
+  },
+  "inputs": {
+    "acpi_blob": {
+      "bytes": 1072,
+      "expected_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "path": "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin",
+      "sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf"
+    },
+    "initramfs": {
+      "bytes": 4688,
+      "expected_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "path": "/Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio",
+      "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588"
+    },
+    "vmlinuz": {
+      "bytes": 17320328,
+      "expected_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+      "path": "/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+      "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  },
+  "memory_sha256": {
+    "initrd": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "initrd_matches_file": true,
+    "kernel_pm_code": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+    "kernel_pm_code_matches_file": true
+  },
+  "nonce": "s4-38l4a",
+  "plan": {
+    "acpi_facs": {
+      "end": "0xef040",
+      "start": "0xef000"
+    },
+    "acpi_tables": {
+      "end": "0xe0340",
+      "start": "0xe0000"
+    },
+    "boot_params": {
+      "end": "0x101000",
+      "start": "0x100000"
+    },
+    "cmdline": {
+      "end": "0x101800",
+      "start": "0x101000"
+    },
+    "gdt": {
+      "end": "0x121000",
+      "start": "0x120000"
+    },
+    "initrd": {
+      "end": "0x7fff250",
+      "start": "0x7ffe000"
+    },
+    "kernel": {
+      "end": "0x54c1000",
+      "start": "0x1000000"
+    },
+    "page_tables": {
+      "end": "0x140000",
+      "start": "0x130000"
+    },
+    "stack": {
+      "end": "0x150000",
+      "start": "0x140000"
+    }
+  },
+  "ram_mib": 128,
+  "retired": 1201748037,
+  "schema_version": 1,
+  "status": "loaded",
+  "stop": {
+    "budget": 3000000000,
+    "com1_hex": "5b20202020302e3030303030305d204c696e75782076657273696f6e20372e302e302d33382d67656e6572696320286275696c6464406c637930322d616d6436342d3037302920287838365f36342d6c696e75782d676e752d67636320285562756e74752031352e322e302d31367562756e747531292031352e322e302c20474e55206c642028474e552042696e7574696c7320666f72205562756e74752920322e343629202333382d5562756e747520534d5020505245454d50545f44594e414d494320467269205365702020342030393a31303a313420555443203230323620285562756e747520372e302e302d33382e33382d67656e6572696320372e302e3134290d0a5b20202020302e3030303030305d20436f6d6d616e64206c696e653a20636f6e736f6c653d74747953302c313135323030206561726c79636f6e3d75617274383235302c696f2c307833663820383235302e6e725f75617274733d31206f642e6e6f6e63653d73342d33386c3461206e6f6b61736c720d0a5b20202020302e3030303030305d204b45524e454c20737570706f7274656420637075733a0d0a5b20202020302e3030303030305d202020496e74656c2047656e75696e65496e74656c0d0a5b20202020302e3030303030305d202020414d442041757468656e746963414d440d0a5b20202020302e3030303030305d2020204879676f6e204879676f6e47656e75696e650d0a5b20202020302e3030303030305d20202043656e746175722043656e746175724861756c730d0a5b20202020302e3030303030305d2020207a68616f78696e2020205368616e6768616920200d0a5b20202020302e3030303030305d204350553a2076656e646f725f696420274f70656e4465736b746f70202720756e6b6e6f776e2c207573696e672067656e6572696320696e69742e0d0a5b20202020302e3030303030305d204350553a20596f75722073797374656d206d617920626520756e737461626c652e0d0a5b20202020302e3030303030305d2042494f532d70726f766964656420706879736963616c2052414d206d61703a0d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303030303030302d3078303030303030303030303039656666665d202053797374656d2052414d0d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303039663030302d3078303030303030303030303064666666665d20206465766963652072657365727665640d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303065303030302d3078303030303030303030303065656666665d20204143504920646174610d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303065663030302d3078303030303030303030303065666666665d202041435049204e56530d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303066303030302d3078303030303030303030303134666666665d20206465766963652072657365727665640d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303030303135303030302d3078303030303030303030376666666666665d202053797374656d2052414d0d0a5b20202020302e3030303030305d2042494f532d653832303a205b676170203078303030303030303030383030303030302d3078303030303030303066376666666666665d0d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303066383030303030302d3078303030303030303066613366666666665d20206465766963652072657365727665640d0a5b20202020302e3030303030305d2042494f532d653832303a205b676170203078303030303030303066613430303030302d3078303030303030303066633066666666665d0d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303066633130303030302d3078303030303030303066633166666666665d20206465766963652072657365727665640d0a5b20202020302e3030303030305d2042494f532d653832303a205b676170203078303030303030303066633230303030302d3078303030303030303066666266666666665d0d0a5b20202020302e3030303030305d2042494f532d653832303a205b6d656d203078303030303030303066666330303030302d3078303030303030303066666666666666665d20206465766963652072657365727665640d0a5b20202020302e3030303030305d206561726c79636f6e3a20756172743832353020617420492f4f20706f727420307833663820286f7074696f6e73202727290d0a5b20202020302e3030303030305d207072696e746b3a206c656761637920626f6f74636f6e736f6c65205b75617274383235305d20656e61626c65640d0a5b20202020302e3030303030305d204e6f746963653a204e582028457865637574652044697361626c65292070726f74656374696f6e206d697373696e6720696e20435055210d0a5b20202020302e3030303030305d20415049433a205374617469632063616c6c7320696e697469616c697a65640d0a5b20202020302e3030303030305d20444d49206e6f742070726573656e74206f7220696e76616c69642e0d0a5b20202020302e3030303030305d206c6173745f70666e203d20307838303030206d61785f617263685f70666e203d2030783430303030303030300d0a5b20202020302e3030303030305d204d545252732064697361626c656420286e6f7420617661696c61626c65290d0a5b20202020302e3030303030305d207838362f5041543a20504154206e6f7420737570706f7274656420627920746865204350552e0d0a5b20202020302e3030303030305d207838362f5041543a20436f6e66696775726174696f6e205b302d375d3a20574220205754202055432d2055432020574220205754202055432d20554320200d0a",
+    "com1_text": "[    0.000000] Linux version 7.0.0-38-generic (buildd@lcy02-amd64-070) (x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46) #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 (Ubuntu 7.0.0-38.38-generic 7.0.14)\r\n[    0.000000] Command line: console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s4-38l4a nokaslr\r\n[    0.000000] KERNEL supported cpus:\r\n[    0.000000]   Intel GenuineIntel\r\n[    0.000000]   AMD AuthenticAMD\r\n[    0.000000]   Hygon HygonGenuine\r\n[    0.000000]   Centaur CentaurHauls\r\n[    0.000000]   zhaoxin   Shanghai  \r\n[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.\r\n[    0.000000] CPU: Your system may be unstable.\r\n[    0.000000] BIOS-provided physical RAM map:\r\n[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009efff]  System RAM\r\n[    0.000000] BIOS-e820: [mem 0x000000000009f000-0x00000000000dffff]  device reserved\r\n[    0.000000] BIOS-e820: [mem 0x00000000000e0000-0x00000000000eefff]  ACPI data\r\n[    0.000000] BIOS-e820: [mem 0x00000000000ef000-0x00000000000effff]  ACPI NVS\r\n[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x000000000014ffff]  device reserved\r\n[    0.000000] BIOS-e820: [mem 0x0000000000150000-0x0000000007ffffff]  System RAM\r\n[    0.000000] BIOS-e820: [gap 0x0000000008000000-0x00000000f7ffffff]\r\n[    0.000000] BIOS-e820: [mem 0x00000000f8000000-0x00000000fa3fffff]  device reserved\r\n[    0.000000] BIOS-e820: [gap 0x00000000fa400000-0x00000000fc0fffff]\r\n[    0.000000] BIOS-e820: [mem 0x00000000fc100000-0x00000000fc1fffff]  device reserved\r\n[    0.000000] BIOS-e820: [gap 0x00000000fc200000-0x00000000ffbfffff]\r\n[    0.000000] BIOS-e820: [mem 0x00000000ffc00000-0x00000000ffffffff]  device reserved\r\n[    0.000000] earlycon: uart8250 at I/O port 0x3f8 (options '')\r\n[    0.000000] printk: legacy bootconsole [uart8250] enabled\r\n[    0.000000] Notice: NX (Execute Disable) protection missing in CPU!\r\n[    0.000000] APIC: Static calls initialized\r\n[    0.000000] DMI not present or invalid.\r\n[    0.000000] last_pfn = 0x8000 max_arch_pfn = 0x400000000\r\n[    0.000000] MTRRs disabled (not available)\r\n[    0.000000] x86/PAT: PAT not supported by the CPU.\r\n[    0.000000] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  \r\n",
+    "cpl": 0,
+    "cpu_profile": "Cpl0ProfileSet (S2-45) of od-isa under Cpl0BaseLong64V1, 2 MiB walk rebuilt on MOV CR3; members in set_members",
+    "cpuid_divergence_leaf": null,
+    "cr0": "0x80050033",
+    "cr3": "0x3a44000",
+    "cr3_changes": 4,
+    "cr4": "0xb0",
+    "diagnostic_past_c7": true,
+    "efer": "0xd00",
+    "exceptions_delivered": 30,
+    "exit_detail": "Unsupported { opcode: 183 }",
+    "exit_kind": "unsupported",
+    "gpr": {
+      "r10": "0x0",
+      "r11": "0x0",
+      "r12": "0x100000",
+      "r13": "0x8000000",
+      "r14": "0x20000000",
+      "r15": "0x7cb0000",
+      "r8": "0x0",
+      "r9": "0x0",
+      "rax": "0x0",
+      "rbp": "0xffffffff83a03e48",
+      "rbx": "0x7e00000",
+      "rcx": "0x0",
+      "rdi": "0x0",
+      "rdx": "0x0",
+      "rsi": "0x0",
+      "rsp": "0xffffffff83a03e48"
+    },
+    "guest_efer": "0xd01",
+    "inputs": {
+      "acpi_blob_sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf",
+      "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+      "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "initramfs_sha256_in_memory": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+      "kernel_pm_code_sha256_in_memory": "1489991f93c2b5c256bd6c1c4ccf94d6ff103d083c68dd1590abfda92a9dfce2",
+      "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    },
+    "last_cr3_change": {
+      "new_cr3": "0x3a44000",
+      "old_cr3": "0x3ffe000"
+    },
+    "linux_profile": true,
+    "memory_error": null,
+    "mode": "long64",
+    "page_fault": null,
+    "path": "cpl0_set",
+    "pci_config_address": "0x80001000",
+    "quanta": 18488,
+    "retired": 1201748037,
+    "rflags": "0x2",
+    "rip": "0xffffffff8141d743",
+    "rip_bytes": "65 0f b7 3d 05 a0 01 03 e8 d0 df ff ff 0f 20 d8",
+    "rip_bytes_error": null,
+    "rip_gpa": "0x141d743",
+    "set_exit_detail": "Run(Unsupported { opcode: 183 })",
+    "set_members": [
+      "cli",
+      "cpu_owned_cr3",
+      "cpuid:DiagnosticV1",
+      "msr:EferReadOnlyV1(3328)",
+      "msr:fs_gs_base",
+      "pio_u8",
+      "popf_cpl0",
+      "pci_config"
+    ],
+    "tsc_hz": 1000000000,
+    "unsupported_opcode": "0xb7",
+    "virtual_ns": 1201748037
+  }
+}

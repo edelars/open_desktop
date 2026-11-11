@@ -22727,3 +22727,72 @@ R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault`
 `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `TEST r/m32, imm32` (`F7 /0 id`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (по образцу `TestGsMemWord`/`TestGsMemByte` из S4-38L7o/p; решение — по этой границе); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `TEST r/m32, imm32` и `TEST r/m64, imm32` (`F7 /0 id`) с префиксом FS/GS в наборе CPL0 (S4-38L7ac)
+
+Граница S4-38L7ab (`65 f7 05 fc f8 ff 02 ff ff ff 7f`, `testl $0x7fffffff, %gs:0x2fff8fc(%rip)`, RIP `0xffffffff8141d729`,
+`Unsupported { opcode: 0xf7 }`) — dword-ширина `F7 /0` с сегментным префиксом. Срез добавляет `[64|65] [REX] F7 /0 id` (dword, REX без W) и
+`[64|65] REX.W F7 /0 id` (qword, imm32 знаково расширяется до 64 бит) с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB,
+disp8/disp32, абсолютная SIB без базы и индекса, REX.B/REX.X). Форма — прямое расширение S4-38L7r (`F7 /0 iw`, word, `66`) и S4-38L7o
+(`F6 /0 ib`) на ширины dword/qword. Семантика дана **по памяти SDM** (Vol. 2 «TEST»: читает r/m32 (r/m64), AND с imm32 (для qword —
+знаково расширенным), результат отбрасывается; CF = 0, OF = 0, SF/ZF/PF — по результату (PF — по младшему байту), AF не определён; Vol. 2
+«Segment Override Prefixes» / Vol. 3 §3.4.4: в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер.** Ветка `0xF7 /0` с сегментным префиксом `0x64`/`0x65`, размером dword/qword (нет `66`) и memory-операндом порождает новые
+`Operation::TestFsMemWide { src, immediate }` / `TestGsMemWide` (`src` — `MemoryOperand` размера dword или qword, `immediate` — `u64`, уже
+приведённый к ширине: для dword — `u32` с нулевым расширением, для qword — `i32` со знаковым). Это та же ветка, что у `F6 /0` и `F7 /0 iw`.
+Длина включает imm32 (для граничной формы `65 f7 05 disp32 imm32` — 11 байт, для `65 48 f7 05 disp32 imm32` — 12), поэтому RIP-relative
+считается от RIP **после** immediate. `flag_effects` те же, что у `TestFsMemWord`: CF/OF/SF/ZF/PF определены, AF не определён.
+REX допустим только непосредственно перед `F7` (REX.W — qword, REX.R игнорируется, REX.B/X — база/индекс); REX не последним — устаревший,
+отказ (как у S4-38L7o/r/m).
+
+**Отказы без мутации (`Unsupported { opcode: 0xf7 }`).** `F7 /1..7` с FS/GS и memory (`/1` — алиас TEST, `/2` NOT, `/3` NEG, `/4` MUL,
+`/5` IMUL, `/6` DIV, `/7` IDIV); LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` вместе с REX.W (как у S4-38L7r: приоритет по первоисточнику
+не сверен; `66` без REX.W — word-форма S4-38L7r, не менялась); `67`; второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не
+непосредственно перед опкодом. Тест `segment_test_dword_forms_outside_the_slice_are_refused_with_the_exact_opcode` (28 кодировок).
+Тесты отказов S4-38L7o/r на `65 f7 03 id` / `65 48 f7 03 id` (раньше «dword/qword F7 с сегментом — отказ») обновлены: эти формы теперь исполняются.
+
+**Регистровая форма (mod = 11) и беспрефиксная форма не менялись.** `65 f7 c3 imm32`, `64 f7 c3 imm32` и `65 48 f7 c3 imm32` исполняются как обычный
+`TEST r32/r64, imm32` (сегментный префикс на регистровой форме не имеет смысла; закреплено тестом
+`test_dword_register_form_and_plain_form_keep_their_old_behavior`); беспрефиксная `F7 /0` с memory (в том числе с RSP/RBP: неканоничный адрес —
+`#SS(0)`, тест `plain_test_dword_through_rsp_non_canonical_stays_ss0`), а также с CS/DS/ES/SS (база игнорируется) исполняются прежним путём.
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base`
+(`wrapping_add`). Читаются 4 (8) байт, поэтому каноничность проверяется и для начала, и для последнего байта (`адрес + 3`, для qword
+`адрес + 7`): иначе `#GP(0)` без мутации и без чтения (для баз RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`). Последний допустимый dword
+начинается с `0x00007ffffffffffc`, qword — с `0x00007ffffffffff8`; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Значение читается одним `memory.read_integer` размером `src.size` (4 или 8), затем общая функция
+`logic_result(src.size, Test, значение, imm)` даёт флаги (никакой новой арифметики): CF = 0, OF = 0, SF — старший бит результата, ZF — результат
+равен нулю, PF — чётность младшего байта результата, **AF сохраняется**, остальные биты RFLAGS сохраняются. Руками проверено:
+`0x80000000 & 0x80000000` → SF = 1, ZF = 0, PF = 1 (младший байт 0); `0 & 0xffffffff` → ZF = 1, PF = 1; `0xffffffff & 0x7fffffff` = `0x7fffffff` → SF = 0,
+ZF = 0, PF = 1 (младший байт `0xff` — восемь единиц); `0xff & 0x7f` = `0x7f` → семь единиц, PF = 0;
+`0x12345678 & 0xff` = `0x78` → PF = 1 (четыре единицы). Для qword imm32 `0xffffffff` — это `-1` (вся 64-битная маска), `0x7fffffff` — только
+младшие 31 бит, `0x80000000` — `0xffffffff80000000`. **Запись в память не выполняется** (тест
+`test_dword_never_writes_memory_even_on_a_read_only_page`), регистры не меняются. RIP += длина (с префиксами и imm32), retired + 1 только при
+успехе. При `#GP(0)` и `#PF` на чтении состояние (флаги, RIP, регистры) и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xf7 }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и
+голые `run`/`step` форму не принимают (тест отказа в каждом, с точным опкодом `0xf7`).
+
+**Тесты.** Декодер: `long_decode::tests::segment_test_decodes_fs_gs_dword_qword_memory_forms_only` (граничная форма, длина 11, imm 0x7fffffff;
+FS; REX.W со знаковым расширением; REX.B/REX.X; обычные формы; отказы). Исполнение (`cpl0_profile_set`): граничная форма, FS RIP-relative, qword со знаковым
+расширением, нулевая база, флаги на граничных значениях (60 комбинаций с начальными флагами; ожидание независимо считается по SDM-модели), совпадение с беспрефиксной формой,
+SIB+disp, абсолютная SIB, REX.B/REX.X, REX без W, запись не выполняется, неканоничность (`#GP(0)`, начало/последний байт), последнее
+канонично допустимое, RSP/RBP, `#PF` на чтении, отказы, регистровая и беспрефиксная формы, вне набора, CPL3. Отказ вне набора: bare
+`run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `paged_probe_profile` — по одному тесту (`*_dword_qword_*`). Фасад:
+`linux_direct::tests::gs_test_dword_after_wrmsr_gs_base_reads_one_dword_sets_flags_and_leaves_memory_alone` (dword с абсолютной SIB и RIP-relative, qword с `-1`;
+память не изменилась, retired 15).
+
+**Не делалось.** `F7 /1..7` с FS/GS, `REX.W` с `66`, регистровая форма с сегментным префиксом как отдельная операция, прочие опкоды с префиксом.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ac-diagnostic-run.json`.
+`testl $0x7fffffff, %gs:0x2fff8fc(%rip)` по `0xffffffff8141d729` проходит (retired 1201748035 → 1201748037: TEST и следующий `jne +0x0d`, переход выполнен; `cr3_changes` = 4, `last_cr3_change`: `0x3ffe000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8141d743` (GPA `0x141d743`), байты `65 0f b7 3d 05 a0 01 03 e8 d0 df ff ff 0f 20 d8` — `movzwl %gs:0x301a005(%rip), %edi` (`0F B7 /r` MOVZX r32, r/m16 с GS: ModRM `0x3d` = mod 00, reg 111 = EDI,
+rm 101 = RIP-relative, disp32 `0x0301a005`; длина 8; далее `call -0x2030`, `mov %cr3, %rax`); `Unsupported { opcode: 0xb7 }` (183), `set_exit_detail` = `Run(Unsupported { opcode: 183 })`, `exit_kind` = `unsupported`, retired = 1201748037.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = RCX = RDX = RSI = RDI = R8–R11 = 0, RBX = `0x7e00000`, R12 = `0x100000`, R13 = `0x8000000`, R14 = `0x20000000`,
+R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOVZX r32, r/m16` (`[64|65] 0F B7 /r`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0; не реализован (решение — по этой границе).
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
