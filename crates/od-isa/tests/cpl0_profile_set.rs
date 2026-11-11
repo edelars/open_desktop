@@ -10601,3 +10601,589 @@ fn cs_ds_es_ss_overrides_on_a_dword_load_keep_ignoring_the_segment_base() {
         assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 4)], "{prefix:#x}");
     }
 }
+
+// ---- S4-38L7n: `LOCK BTS r/m64, r64` (`F0 REX.W 0F AB /r`, memory operand; SDM Vol.2 BTS: the
+// register is a signed bit offset into a bit string starting at the memory operand, the qword that
+// holds the bit is at EA + floor(offset / 64) * 8, CF = the old bit, the bit is set; OF/SF/AF/PF are
+// undefined and ZF is not affected, and all of them are left unchanged here; from memory, not
+// re-checked against the SDM text). The qword is always written back. ----
+
+/// Sparse guest data (zero by default, byte-granular) plus a log of every read and write.
+struct BitsMemory {
+    code: Vec<u8>,
+    data: std::collections::BTreeMap<u64, u8>,
+    reads: Vec<(u64, usize)>,
+    writes: Vec<(u64, Vec<u8>)>,
+    /// When set, every data write fails with this fault (a read-only page).
+    write_fault: Option<ArchitecturalFault>,
+}
+
+impl BitsMemory {
+    fn new(code: &[u8]) -> Self {
+        Self {
+            code: code.to_vec(),
+            data: std::collections::BTreeMap::new(),
+            reads: Vec::new(),
+            writes: Vec::new(),
+            write_fault: None,
+        }
+    }
+
+    fn set_qword(&mut self, address: u64, value: u64) {
+        for (index, byte) in value.to_le_bytes().into_iter().enumerate() {
+            self.data.insert(address + index as u64, byte);
+        }
+    }
+
+    fn qword(&self, address: u64) -> u64 {
+        let mut bytes = [0u8; 8];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = self
+                .data
+                .get(&(address + index as u64))
+                .copied()
+                .unwrap_or(0);
+        }
+        u64::from_le_bytes(bytes)
+    }
+}
+
+impl GuestMemory for BitsMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Fetch,
+        })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        bytes: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.reads.push((address, bytes.len()));
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = self
+                .data
+                .get(&(address + index as u64))
+                .copied()
+                .unwrap_or(0);
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, bytes: &[u8]) -> Result<(), MemoryError> {
+        if let Some(fault) = self.write_fault.clone() {
+            return Err(MemoryError::Architectural(fault));
+        }
+        self.writes.push((address, bytes.to_vec()));
+        for (index, byte) in bytes.iter().enumerate() {
+            self.data.insert(address + index as u64, *byte);
+        }
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!("the CPL0 set must not reach the backend atomic compare-exchange")
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+fn run_bts_set(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+}
+
+/// `lock bts %rax, (%rbx)`.
+const LOCK_BTS_RAX_RBX: [u8; 5] = [0xf0, 0x48, 0x0f, 0xab, 0x03];
+/// `lock bts %rax, 0x1234(%rip)`.
+const LOCK_BTS_RAX_RIP: [u8; 9] = [0xf0, 0x48, 0x0f, 0xab, 0x05, 0x34, 0x12, 0x00, 0x00];
+/// `lock bts %rax, -0x883ed(%rbx)` (the S4-38L7m diagnostic displacement on a base register).
+const LOCK_BTS_RAX_RBX_NEG: [u8; 9] = [0xf0, 0x48, 0x0f, 0xab, 0x83, 0x13, 0x7c, 0xf7, 0xff];
+/// The S4-38L7m diagnostic boundary: `lock bts %rax, -0x883ed(%rip)`.
+const LOCK_BTS_BOUNDARY: [u8; 9] = [0xf0, 0x48, 0x0f, 0xab, 0x05, 0x13, 0x7c, 0xf7, 0xff];
+
+fn bts_state(offset: u64) -> LongModeState {
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = offset;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state
+}
+
+#[test]
+fn lock_bts_sets_every_bit_of_the_first_qword_and_writes_it_back() {
+    for offset in 0u64..64 {
+        let mut state = bts_state(offset);
+        let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+        let neighbour = 0xa5a5_5a5a_dead_beefu64;
+        memory.set_qword(0x20_0008, neighbour);
+        memory.set_qword(0x1f_fff8, neighbour);
+        let mut expected = state.clone();
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1, "offset {offset}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 8)], "offset {offset}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_0000, (1u64 << offset).to_le_bytes().to_vec())],
+            "offset {offset}"
+        );
+        assert_eq!(memory.qword(0x20_0000), 1u64 << offset);
+        assert_eq!(memory.qword(0x20_0008), neighbour, "neighbour after");
+        assert_eq!(memory.qword(0x1f_fff8), neighbour, "neighbour before");
+        expected.rip += 5;
+        assert_eq!(
+            state, expected,
+            "offset {offset}: only RIP changes (old bit was 0, CF stays 0)"
+        );
+    }
+}
+
+#[test]
+fn lock_bts_reports_the_old_bit_in_cf_and_still_writes_when_it_was_already_set() {
+    for (old, offset, cf) in [
+        (0u64, 5u64, 0u64),
+        (1 << 5, 5, 1),
+        (u64::MAX, 63, 1),
+        (u64::MAX >> 1, 63, 0),
+        (0x8000_0000_0000_0000, 0, 0),
+    ] {
+        for initial_cf in [0, FLAG_CF] {
+            let mut state = bts_state(offset);
+            state.rflags = (state.rflags & !FLAG_CF) | initial_cf;
+            let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+            memory.set_qword(0x20_0000, old);
+            run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(state.rflags & FLAG_CF, cf, "{old:#x} bit {offset}");
+            assert_eq!(memory.qword(0x20_0000), old | (1 << offset));
+            // The write happens even when the bit was already set.
+            assert_eq!(
+                memory.writes,
+                vec![(0x20_0000, (old | (1 << offset)).to_le_bytes().to_vec())],
+                "{old:#x} bit {offset}"
+            );
+        }
+    }
+}
+
+#[test]
+fn lock_bts_leaves_every_flag_but_cf_unchanged() {
+    for undefined in [0, FLAG_OF | FLAG_SF | FLAG_ZF | FLAG_AF | FLAG_PF] {
+        for old in [0u64, 1 << 9] {
+            let mut state = bts_state(9);
+            state.rflags = (state.rflags & !ARITH) | undefined;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+            memory.set_qword(0x20_0000, old);
+            run_bts_set(&mut state, &mut memory).unwrap();
+            let cf = u64::from(old != 0);
+            assert_eq!(state.rflags & ARITH, undefined | cf);
+            assert_eq!(state.rflags & !ARITH, before.rflags & !ARITH);
+        }
+    }
+}
+
+#[test]
+fn lock_bts_register_offset_selects_the_qword_by_an_arithmetic_shift() {
+    // (offset, byte delta of the qword that holds the bit, bit inside it).
+    let cases: [(i64, i64, u32); 12] = [
+        (-1, -8, 63),
+        (-64, -8, 0),
+        (-65, -16, 63),
+        (-128, -16, 0),
+        (-129, -24, 63),
+        (64, 8, 0),
+        (65, 8, 1),
+        (64 * 5 + 3, 40, 3),
+        (64 * 5 + 63, 40, 63),
+        (64 * 1000 + 7, 8000, 7),
+        (-64 * 1000, -8000, 0),
+        (-(64 * 1000) - 1, -8008, 63),
+    ];
+    for (offset, delta, bit) in cases {
+        let mut state = bts_state(offset as u64);
+        state.gpr[Register::Rbx as usize] = 0x40_0000;
+        let at = (0x40_0000i64 + delta) as u64;
+        let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+        let marker = 0x0123_4567_89ab_cdefu64 & !(1u64 << bit);
+        memory.set_qword(at, marker);
+        let mut expected = state.clone();
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "offset {offset}");
+        assert_eq!(memory.reads, vec![(at, 8)], "offset {offset}");
+        assert_eq!(
+            memory.writes,
+            vec![(at, (marker | (1u64 << bit)).to_le_bytes().to_vec())],
+            "offset {offset}"
+        );
+        expected.rip += 5;
+        assert_eq!(state, expected, "offset {offset}");
+        // The bit string base itself is untouched unless the offset lands in it.
+        if delta != 0 {
+            assert_eq!(memory.qword(0x40_0000), 0, "offset {offset}");
+        }
+    }
+}
+
+#[test]
+fn lock_bts_with_every_extended_source_register_r8_to_r15() {
+    // `lock bts %rN, (%rbx)`: REX = 0x4c (W + R), reg = N & 7, modrm = 0x03 | (reg << 3).
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let code = [0xf0, 0x4c, 0x0f, 0xab, 0x03 | ((i as u8) << 3)];
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x30_0000;
+        state.gpr[register as usize] = 64 + 10 + i as u64;
+        // RAX must not be used as the offset by mistake.
+        state.gpr[Register::Rax as usize] = 3;
+        let mut memory = BitsMemory::new(&code);
+        run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(memory.reads, vec![(0x30_0008, 8)], "source r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(0x30_0008, (1u64 << (10 + i)).to_le_bytes().to_vec())],
+            "source r{}",
+            i + 8
+        );
+        assert_eq!(state.rip, RIP + 5);
+    }
+}
+
+#[test]
+fn lock_bts_with_every_extended_base_register_r8_to_r15() {
+    // `lock bts %rax, 0x0(%rN)` via REX.B: mod = 01 with disp8 0; R12 needs a SIB byte.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let mut code = vec![0xf0, 0x49, 0x0f, 0xab];
+        if i == 4 {
+            code.extend([0x44, 0x24, 0x00]);
+        } else {
+            code.extend([0x40 | i as u8, 0x00]);
+        }
+        let base = 0x40_0000 + (i as u64) * 0x1000;
+        let mut state = board_state();
+        state.gpr[register as usize] = base;
+        state.gpr[Register::Rax as usize] = 64 * 2 + 1;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "base r{}", i + 8);
+        assert_eq!(memory.reads, vec![(base + 16, 8)], "base r{}", i + 8);
+        assert_eq!(
+            memory.writes,
+            vec![(base + 16, 2u64.to_le_bytes().to_vec())],
+            "base r{}",
+            i + 8
+        );
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn lock_bts_with_rip_relative_and_negative_displacement_addresses() {
+    // The RIP-relative address is next RIP (all 9 bytes) + disp32, plus the bit string delta.
+    let mut state = bts_state(64 * 3 + 2);
+    let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RIP);
+    run_bts_set(&mut state, &mut memory).unwrap();
+    let at = RIP + 9 + 0x1234 + 24;
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.writes, vec![(at, 4u64.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 9);
+    // A negative disp32 on a base register, with a negative bit offset.
+    let mut state = bts_state((-1i64) as u64);
+    state.gpr[Register::Rbx as usize] = 0x100_0000;
+    let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX_NEG);
+    run_bts_set(&mut state, &mut memory).unwrap();
+    let at = 0x100_0000 - 0x883ed - 8;
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(
+        memory.writes,
+        vec![(at, (1u64 << 63).to_le_bytes().to_vec())]
+    );
+    // The diagnostic boundary bytes decode and run: next RIP - 0x883ed wraps into the canonical
+    // high half, and the bit string delta of offset 70 is one qword.
+    let mut state = bts_state(70);
+    let mut memory = BitsMemory::new(&LOCK_BTS_BOUNDARY);
+    run_bts_set(&mut state, &mut memory).unwrap();
+    let at = (RIP + 9).wrapping_sub(0x883ed) + 8;
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.writes, vec![(at, 0x40u64.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 9);
+}
+
+#[test]
+fn lock_bts_with_sib_base_index_scale_and_displacement() {
+    // `lock bts %rax, 0x10(%rbx,%rcx,4)` = f0 48 0f ab 44 8b 10.
+    let mut state = bts_state(64 * 2 + 5);
+    state.gpr[Register::Rbx as usize] = 0x50_0000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let mut memory = BitsMemory::new(&[0xf0, 0x48, 0x0f, 0xab, 0x44, 0x8b, 0x10]);
+    run_bts_set(&mut state, &mut memory).unwrap();
+    let at = 0x50_0000 + 12 + 0x10 + 16;
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.writes, vec![(at, 0x20u64.to_le_bytes().to_vec())]);
+    assert_eq!(state.rip, RIP + 7);
+}
+
+#[test]
+fn lock_bts_resolves_the_address_and_offset_from_the_pre_state_when_they_alias() {
+    // `lock bts %rbx, (%rbx)`: the base register is also the offset register.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000 + 3;
+    let mut memory = BitsMemory::new(&[0xf0, 0x48, 0x0f, 0xab, 0x1b]);
+    run_bts_set(&mut state, &mut memory).unwrap();
+    // offset = 0x200003: qword delta = (0x200003 >> 6) * 8, bit = 3.
+    let at = 0x20_0003 + (0x20_0003u64 >> 6) * 8;
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.writes, vec![(at, 8u64.to_le_bytes().to_vec())]);
+    assert_eq!(
+        state.gpr[Register::Rbx as usize],
+        0x20_0003,
+        "registers are not written"
+    );
+}
+
+#[test]
+fn lock_bts_non_canonical_address_is_gp0_without_mutation_or_access() {
+    // (rbx, offset): the start, the shifted start, or the last byte of the qword leaves the
+    // canonical ranges.
+    for (rbx, offset) in [
+        (0x0000_8000_0000_0000u64, 0u64),
+        (0xffff_7fff_ffff_ffff, 0),
+        // The start is canonical but the qword's last byte crosses into the hole.
+        (0x0000_7fff_ffff_fffc, 0),
+        // The bit string delta pushes the qword into the hole.
+        (0x0000_7fff_ffff_fff8, 64),
+        // ... and from the high half down into it.
+        (0xffff_8000_0000_0000, (-65i64) as u64),
+        // Extreme offsets wrap the 64-bit address arithmetic.
+        (0x20_0000, i64::MIN as u64),
+        (0x20_0000, i64::MAX as u64),
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = offset;
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.rflags |= FLAG_CF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{rbx:#x} {offset:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{rbx:#x} {offset:#x}");
+        assert!(memory.reads.is_empty(), "{rbx:#x} {offset:#x}");
+        assert!(memory.writes.is_empty(), "{rbx:#x} {offset:#x}");
+    }
+}
+
+#[test]
+fn lock_bts_through_an_rsp_or_rbp_base_is_ss0() {
+    // `lock bts %rax, (%rsp)` = f0 48 0f ab 04 24 and `lock bts %rax, 0x0(%rbp)` = f0 48 0f ab 45 00.
+    for (register, code) in [
+        (Register::Rsp, &[0xf0, 0x48, 0x0f, 0xab, 0x04, 0x24][..]),
+        (Register::Rbp, &[0xf0, 0x48, 0x0f, 0xab, 0x45, 0x00][..]),
+    ] {
+        for (base, offset) in [
+            (0x0000_8000_0000_0000u64, 0u64),
+            // A canonical stack pointer whose bit string delta leaves the canonical range.
+            (0x0000_7fff_ffff_fff8, 64),
+        ] {
+            let mut state = board_state();
+            state.gpr[register as usize] = base;
+            state.gpr[Register::Rax as usize] = offset;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                "{register:?} {base:#x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn lock_bts_write_fault_leaves_cf_rip_registers_and_memory_unchanged() {
+    // A read-only page: the always-performed write faults, even when the bit was already set.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x20_0008),
+    };
+    for (old, cf) in [(0u64, FLAG_CF), (1 << 3, 0), (1 << 3, FLAG_CF)] {
+        let mut state = bts_state(64 + 3);
+        state.rflags = (state.rflags & !ARITH) | cf | FLAG_ZF | FLAG_OF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+        memory.set_qword(0x20_0008, old);
+        memory.write_fault = Some(fault.clone());
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{old:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{old:#x}");
+        assert_eq!(memory.qword(0x20_0008), old);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_bts_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
+    let cases: [(&[u8], u8); 26] = [
+        // No REX.W (dword), REX without W, REX.R without W.
+        (&[0xf0, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x40, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x44, 0x0f, 0xab, 0x03], 0xab),
+        // Register forms (mod = 11).
+        (&[0xf0, 0x48, 0x0f, 0xab, 0xc3], 0xab),
+        (&[0xf0, 0x4d, 0x0f, 0xab, 0xc8], 0xab),
+        // 0x66 and 0x67.
+        (&[0x66, 0xf0, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x66, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x67, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        // REP/REPNE instead of LOCK, or alongside it, and a repeated LOCK.
+        (&[0xf3, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf2, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0xf3, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf3, 0xf0, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0xf0, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        // Segment prefixes.
+        (&[0xf0, 0x64, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x65, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0x65, 0xf0, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        (&[0xf0, 0x2e, 0x48, 0x0f, 0xab, 0x03], 0xab),
+        // REX not directly before the opcode loses its W bit.
+        (&[0xf0, 0x48, 0x66, 0x0f, 0xab, 0x03], 0xab),
+        // The immediate form (`0F BA /4..7 ib`) and the other LOCK bit-test forms stay outside.
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x2b, 0x05], 0xba),
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x23, 0x05], 0xba),
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x33, 0x05], 0xba),
+        (&[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x05], 0xba),
+        (&[0xf0, 0x48, 0x0f, 0xa3, 0x03], 0xa3),
+        (&[0xf0, 0x48, 0x0f, 0xb3, 0x03], 0xb3),
+        (&[0xf0, 0x48, 0x0f, 0xbb, 0x03], 0xbb),
+        (&[0xf0, 0x4c, 0x0f, 0xbb, 0x03], 0xbb),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_bts_without_lock_keeps_its_existing_path_in_the_set() {
+    // S4-38L7n does not narrow the non-LOCK BTS: its read -> write path needs no operation the
+    // adapter lacks. Register and immediate offsets keep executing as before.
+    let mut state = bts_state(64 + 4);
+    let mut memory = BitsMemory::new(&[0x48, 0x0f, 0xab, 0x03]);
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.qword(0x20_0008), 1 << 4);
+    assert_eq!(state.rip, RIP + 4);
+    let mut state = bts_state(0);
+    let mut memory = BitsMemory::new(&[0x48, 0x0f, 0xba, 0x2b, 0x07]);
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.qword(0x20_0000), 1 << 7);
+}
+
+#[test]
+fn lock_bts_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the LOCK form is refused without mutation.
+    for code in [&LOCK_BTS_RAX_RBX[..], &LOCK_BTS_BOUNDARY[..]] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xab });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lock_bts_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&LOCK_BTS_RAX_RBX);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

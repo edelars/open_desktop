@@ -21781,3 +21781,78 @@ RAX = приёмник, `#GP(0)` для RSP/RBP), `fs_dword_load_*`, `gs_and_fs_
 R12 = `0xb0`, R13 = `0x27`, R15 = `0x100000`, RFLAGS = `0x46`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER
 walker'а `0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` те же. Следующий срез — `LOCK BTS m64, r64`
 в наборе CPL0 (решение — по этой границе).
+
+### `LOCK BTS m64, r64` в наборе CPL0 (S4-38L7n)
+
+Граница S4-38L7m (`f0 48 0f ab 05 13 7c f7 ff`, `lock bts %rax, -0x883ed(%rip)`, RIP `0xffffffff83f52ac4`,
+`Unsupported { opcode: 0xab }`) показала, что LOCK-форма `0F AB` отказывается декодером. Срез добавляет `F0 REX.W 0F AB /r` с
+memory-операндом (mod ≠ 11); база/индекс любые (RIP-relative, SIB, disp8/disp32, REX.B), источник — любой r0–r15 (REX.R). Семантика
+дана **по памяти SDM** (Vol. 2 «BTS»: регистровое смещение — знаковое битовое смещение в битовой строке, начинающейся с
+memory-операнда; CF = прежнее значение бита; бит устанавливается; OF, SF, AF, PF не определены, ZF не затрагивается), по первоисточнику
+**не сверялась**.
+
+**Декодер.** `F0 REX.W 0F AB /r` с memory-формой порождает новый `Operation::LockBtsMem { base, source }` (`base` — `MemoryOperand`
+размера qword, `source` — 64-битный регистр; флаги: определён CF, не определены OF/SF/AF/PF, как у `Operation::Bit`). Отказ
+(`Unsupported { opcode: 0xab }` без мутации): без REX.W (dword), REX без W, регистровая форма (mod = 11), `66`, `67`, `F2`/`F3` вместо
+LOCK или вместе с ним, повторный `F0`, любой сегментный префикс (включая FS/GS). REX не непосредственно перед опкодом теряет W и
+отказывается. Другие LOCK-формы битовых операций не менялись и отказываются со своим опкодом: `F0 REX.W 0F A3/B3/BB` (BT/BTR/BTC),
+`F0 REX.W 0F BA /4..7 ib` (immediate-форма, включая `/5` BTS imm8) → `Unsupported { opcode: 0xa3/0xb3/0xbb/0xba }`.
+
+**Без LOCK.** `0F AB` без LOCK (и `0F BA /5`) уже была реализована как `Operation::Bit` (чтение, установка бита, запись через
+адаптер; для memory с регистровым смещением адрес считается через евклидово деление, `displacement += floor(offset / 64) * size`) и
+исполняется в любом профиле. Принцип S4-38L7l: сужать только там, где путь без LOCK опирается на операцию, которой нет у адаптера; здесь
+такой операции нет, поэтому поведение **не сужается** и не менялось. Новая операция принимается только с LOCK.
+
+**Адрес битовой строки.** Смещение — значение r64, как знаковое 64-бит. Байтовое смещение qword = `(offset >> 6) * 8` (арифметический
+сдвиг, `wrapping_mul`); итоговое выражение адреса = исходное выражение операнда с `displacement.wrapping_add(байтовое смещение)`,
+то есть EA + дельта по модулю 2^64. Бит внутри qword = `offset & 63`. Отрицательные смещения попадают в предыдущие qword
+(`-1` → EA − 8, бит 63; `-64` → EA − 8, бит 0; `-65` → EA − 16, бит 63); `64*5+3` → EA + 40, бит 3. Сегментной базы нет (FS/GS отказываются).
+Регистр-источник и регистры адреса читаются из состояния до инструкции (источник может совпадать с базой).
+
+**Каноничность.** `MemoryOperand::access_address_48` для **вычисленного** адреса (с дельтой): неканоническое начало или последний байт
+qword даёт `#GP(0)` (для баз RSP/RBP — `#SS(0)`, при вычисленном адресе тоже) до любого доступа, без мутации регистров, флагов и
+памяти. Крайние смещения (`i64::MIN`, `i64::MAX`) выходят за канонические диапазоны и дают `#GP(0)`.
+
+**Исполнение (один vCPU, шина не блокируется).** Читается qword (`memory.read_integer`), в него ставится бит, результат **записывается
+всегда** (`memory.write_integer`), даже если бит уже был 1 — чтобы запись давала A/D-биты и `#PF` на записи. Только после успешной
+записи CF получает прежнее значение бита. RIP += длина, retired + 1. При `#GP`/`#SS`/`#PF` на чтении или записи память, CF, RIP, retired
+и регистры не меняются. Чтение и запись — две отдельные операции адаптера: для одного vCPU это эквивалентно LOCK.
+
+**Флаги.** Меняется только CF. OF, SF, AF, PF по SDM не определены, ZF не затрагивается; **решение среза: ни один из них не
+меняется** (у не-LOCK `Operation::Bit` то же поведение), остальные биты RFLAGS сохраняются. Тест
+`lock_bts_leaves_every_flag_but_cf_unchanged` проверяет оба начальных состояния OF/SF/ZF/AF/PF.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xab }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`, `step_paged_mov` и голые `run`/`step` форму не
+принимают (тесты отказа в каждом).
+
+**Ограничение (по памяти SDM, не сверено).** `#PF` на неприсутствующей странице при чтении сообщит код ошибки с W = 0, тогда как железо
+для RMW, по-видимому, сообщает W = 1 (как у LOCK INC/CMPXCHG и прочих RMW-форм интерпретатора).
+
+**Не делалось.** Dword-форма `F0 0F AB`, immediate-форма `0F BA /4..7`, LOCK BTR/BTC/BT, FS/GS-вариант, SMP-упорядочение,
+`PagedCpl0ProbeV1` как профиль исполнения, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_bts_*` (каждый бит 0..63 первого qword с проверкой соседних qword; CF = прежний бит (1 и 0) и запись при
+уже установленном бите; прочие флаги не меняются; отрицательные смещения и смещения через несколько qword (−1, −64, −65, −129, 64,
+65, 64·5+3, ±64000…); источник r8–r15; база r8–r15; RIP-relative, отрицательный disp32 и SIB+disp; совпадение базы и источника;
+`#GP(0)` (в том числе `i64::MIN`/`i64::MAX`) и `#SS(0)` (RSP/RBP, в том числе канонический RSP со сдвигом в дыру) без мутации и без
+доступа; `#PF` на записи без мутации; 26 отказов с точным опкодом (`0xab`/`0xba`/`0xa3`/`0xb3`/`0xbb`); вне набора; CPL3),
+`plain_bts_without_lock_keeps_its_existing_path_in_the_set`; `long_decode::tests::lock_bts_decodes_the_qword_memory_form_only`; отказ
+вне набора: `execute::tests::lock_bts_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::lock_bts_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_bts_unsupported`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_lock_bts_unsupported`,
+`paged_probe_profile::lock_bts_stays_unsupported_in_the_paged_probe_profile`;
+`linux_direct::tests::lock_bts_sets_a_bit_in_a_bit_string_in_guest_memory_and_leaves_neighbours_alone`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON:
+`docs/reports/data/stage4/s4-38l7n-diagnostic-run.json`. `lock bts %rax, -0x883ed(%rip)` по RIP `0xffffffff83f52ac4` и последующие
+инструкции проходят (retired 1137490263 → 1137490662, +399). Новая граница: RIP `0xffffffff815166fe`, байты
+`65 f6 05 2c 69 f0 02 f0 74 6e 41 80 fd 01 0f 87` (первая инструкция — `testb $0xf0, %gs:0x2f0692c(%rip)`: `TEST m8, imm8`, `F6 /0 ib`,
+с префиксом GS, RIP-relative; далее `jz`), `Unsupported { opcode: 0xf6 }`, `set_exit_detail` = `Run(Unsupported { opcode: 246 })`,
+`exit_kind` = `unsupported`, retired = 1137490662. Регистры на остановке: RAX = `0x92`, RBX = `0xffffffff`, RCX = `0xffffffff82fd9a06`,
+RDX = 0, RSI = `0xffffffff`, RDI = 0, RSP = `0xffffffff83a03cf8`, RBP = `0xffffffff83a03dc8`, R8 = R12 = `0xffffffff83a03e70`,
+R10 = `0xffffffff82fd9a06`, RFLAGS = `0x92`; CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а
+`0xd00`, гостевой EFER `0xd01`; `memory_error`/`page_fault` отсутствуют; `set_members` = `cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`,
+`msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `popf_cpl0`. Следующий срез — `TEST m8, imm8` с префиксом GS (`65 F6 /0 ib`) в наборе
+CPL0 (решение — по этой границе).

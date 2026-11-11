@@ -594,6 +594,35 @@ fn admission_matrix_rejects_before_fetch_or_pio() {
 }
 
 #[test]
+fn lock_bts_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7n belongs to the CPL0 set only; this profile refuses the form without mutation.
+    for bytes in [
+        &[0xf0, 0x48, 0x0f, 0xab, 0x03][..],
+        &[0xf0, 0x48, 0x0f, 0xab, 0x05, 0x13, 0x7c, 0xf7, 0xff][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xab },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn adjacent_mov_pio_and_hlt_encodings_are_outside_the_allowlist() {
     for bytes in [
         &[0x48, 0x8b, 0x0b][..],       // MOV RCX,[RBX]

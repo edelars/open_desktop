@@ -3377,6 +3377,58 @@ mod tests {
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
     }
 
+    // ---- S4-38L7n: LOCK BTS m64, r64 through the board facade ----
+
+    #[test]
+    fn lock_bts_sets_a_bit_in_a_bit_string_in_guest_memory_and_leaves_neighbours_alone() {
+        // MOV RBX,0x0200_0100; MOV RDI,0x1100; MOV [RBX+8],RDI; MOV [RBX+16],RDI;
+        // MOV [RBX+24],RDI; MOV RAX,64*1+5;
+        // LOCK BTS [RBX],RAX (bit 69: qword RBX+8, bit 5; the bit was clear, CF = 0);
+        // MOV RAX,-1; LOCK BTS [RBX],RAX (bit -1: qword RBX-8, bit 63);
+        // MOV RDX,[RBX+8]; MOV RCX,[RBX+16]; MOV RSI,[RBX+24]; MOV R8,[RBX-8]; HLT.
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0100u64.to_le_bytes());
+        code.extend([0x48, 0xBF]);
+        code.extend(0x1100u64.to_le_bytes());
+        code.extend([0x48, 0x89, 0x7B, 0x08]);
+        code.extend([0x48, 0x89, 0x7B, 0x10]);
+        code.extend([0x48, 0x89, 0x7B, 0x18]);
+        code.extend(mov_rax_imm64(64 + 5));
+        code.extend([0xF0, 0x48, 0x0F, 0xAB, 0x03]);
+        code.extend(mov_rax_imm64(u64::MAX));
+        code.extend([0xF0, 0x48, 0x0F, 0xAB, 0x03]);
+        code.extend([0x48, 0x8B, 0x53, 0x08]);
+        code.extend([0x48, 0x8B, 0x4B, 0x10]);
+        code.extend([0x48, 0x8B, 0x73, 0x18]);
+        code.extend([0x4C, 0x8B, 0x43, 0xF8]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 14, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // Bit 69 of the string set RBX+8 bit 5 only; RBX+16 and RBX+24 keep their marker.
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 0x1100 | (1 << 5));
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x1100);
+        assert_eq!(state.gpr[od_isa::Register::Rsi as usize], 0x1100);
+        // Bit -1 set bit 63 of the qword at RBX-8 (it was zero RAM).
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 1 << 63);
+        // Both bits were clear: CF = 0.
+        assert_eq!(state.rflags & 1, 0);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
