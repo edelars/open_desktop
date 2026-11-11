@@ -115,7 +115,6 @@ const DEV_IOAPIC: usize = 2;
 const DEV_DISPLAY: usize = 3;
 /// Device-table index and bus index of the optional NVMe controller (device code 8).
 const DEV_NVME_TABLE: usize = 7;
-const DEV_NVME_BUS: usize = 4;
 const DEVICE_CODE_NVME: u32 = 8;
 /// Device-table index of the PCIe ECAM entry (device code 7, a v1.0 slot).
 const DEV_ECAM_TABLE: usize = 6;
@@ -134,6 +133,9 @@ pub struct FirmwareBoardConfig {
     pub ram_bytes: u64,
     /// Second display screen (DISPLAY_DEVICE.md 16.3).
     pub second_screen: bool,
+    /// Primary display device. Defaults to true for the existing firmware profile;
+    /// the S5 NVMe stand profile disables it.
+    pub display_enabled: bool,
     pub tsc_hz: u64,
     /// SMBIOS Type 1 UUID bytes, copied verbatim; all zero means "absent".
     pub system_uuid: [u8; 16],
@@ -176,6 +178,7 @@ impl Default for FirmwareBoardConfig {
         Self {
             ram_bytes: FIRMWARE_MIN_RAM_BYTES,
             second_screen: false,
+            display_enabled: true,
             tsc_hz: 1_000_000_000,
             system_uuid: [0; 16],
             serial: Vec::new(),
@@ -189,6 +192,17 @@ impl Default for FirmwareBoardConfig {
 }
 
 impl FirmwareBoardConfig {
+    /// Host-side S5 NVMe stand: 128 MiB RAM, COM1, LAPIC/IOAPIC, PM timer block,
+    /// and the polling NVMe controller, without PCI, display, vTPM, or network.
+    pub fn s5_nvme_stand() -> Self {
+        Self {
+            display_enabled: false,
+            nvme: Some(NvmeConfig::default()),
+            acpi_pm: true,
+            ..Self::default()
+        }
+    }
+
     /// Manifest hash of the ACPI table blob for this board (S4-31d): SHA-256 over the resolved
     /// device table (the entries the handoff block would carry), see
     /// [`crate::acpi_manifest_hash`]. A blob built for another configuration carries another
@@ -196,7 +210,12 @@ impl FirmwareBoardConfig {
     /// therefore requires rebuilding the blob.
     pub fn acpi_manifest_hash(&self) -> Result<crate::AcpiManifestHash, FirmwareBoardError> {
         validate_config(self)?;
-        let devices = board_devices(self.nvme.is_some(), self.pci_ecam, self.acpi_tables);
+        let devices = board_devices(
+            self.nvme.is_some(),
+            self.pci_ecam,
+            self.acpi_tables,
+            self.display_enabled,
+        );
         let encoded: Vec<[u8; DEVICE_ENTRY_BYTES]> =
             devices.iter().copied().map(DeviceEntry::to_bytes).collect();
         crate::acpi_manifest_hash(&encoded).map_err(|_| {
@@ -371,6 +390,11 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     if config.tsc_hz == 0 {
         return Err(FirmwareBoardError::Config("tsc_hz must not be zero"));
     }
+    if config.second_screen && !config.display_enabled {
+        return Err(FirmwareBoardError::Config(
+            "second_screen requires display_enabled",
+        ));
+    }
     if config.acpi_tables && !config.acpi_pm {
         return Err(FirmwareBoardError::Config(
             "acpi_tables describes the PM block and needs acpi_pm",
@@ -441,7 +465,7 @@ impl DeviceEntry {
 /// are `PRESENT = 0` until S7-10 and S7-22 add them; ECAM is `PRESENT = 0` unless
 /// `pci_ecam` is set (S4-30c). With `nvme` the table gets the eighth entry,
 /// device code 8 (FIRMWARE_BOOT.md 6.3); with `acpi_tables` the last entry is code 9.
-fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool) -> Vec<DeviceEntry> {
+fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool, display: bool) -> Vec<DeviceEntry> {
     let mmio = |code, base, length| DeviceEntry {
         code,
         flags: DEVICE_PRESENT,
@@ -465,7 +489,11 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool) -> Vec<DeviceEnt
         },
         mmio(2, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE),
         mmio(3, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE),
-        mmio(4, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+        if display {
+            mmio(4, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES)
+        } else {
+            DeviceEntry::absent(4)
+        },
         DeviceEntry::absent(5),
         DeviceEntry::absent(6),
         DeviceEntry::absent(DEVICE_CODE_ECAM),
@@ -498,6 +526,15 @@ fn board_devices(nvme: bool, pci_ecam: bool, acpi_tables: bool) -> Vec<DeviceEnt
         });
     }
     devices
+}
+
+fn configured_board_devices(config: &FirmwareBoardConfig) -> Vec<DeviceEntry> {
+    board_devices(
+        config.nvme.is_some(),
+        config.pci_ecam,
+        config.acpi_tables,
+        config.display_enabled,
+    )
 }
 
 /// `version_minor` of the handoff block: 2 with the ACPI entry (code 9), else 1
@@ -537,15 +574,17 @@ fn board_map(
         range(FIRMWARE_ROM_BASE, FIRMWARE_IMAGE_BYTES as u64)?,
         MemoryRegionKind::Rom,
     ));
-    regions.push(MemoryRegionSpec::new(
-        range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
-        MemoryRegionKind::Framebuffer,
-    ));
-    if config.second_screen {
+    if config.display_enabled {
         regions.push(MemoryRegionSpec::new(
-            range(DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
+            range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
             MemoryRegionKind::Framebuffer,
         ));
+        if config.second_screen {
+            regions.push(MemoryRegionSpec::new(
+                range(DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
+                MemoryRegionKind::Framebuffer,
+            ));
+        }
     }
     for device in devices.iter().filter(|device| device.is_mmio()) {
         regions.push(MemoryRegionSpec::new(
@@ -1641,7 +1680,7 @@ pub(crate) fn assemble_board(
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
-    let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
+    let devices = configured_board_devices(config);
     validate_config(config)?;
 
     let map = board_map(config, &devices)?;
@@ -1692,23 +1731,28 @@ pub(crate) fn assemble_board(
     } else {
         DisplayDevice::new_with_handle()
     };
-    // Bus order: COM1, LAPIC, IOAPIC, display, then the optional NVMe controller,
+    // Bus order: COM1, LAPIC, IOAPIC, optional display, then NVMe,
     // the optional PCI configuration device and the optional ACPI PM block; the
     // `linux_profile` devices (PIT, port B, 8259 pair, CMOS, 0xED, 0x80) are appended
     // at the very end of the list.
-    let mut bus_devices: Vec<Box<dyn crate::BusDevice>> = vec![
-        Box::new(uart_device),
-        Box::new(lapic),
-        Box::new(ioapic),
-        Box::new(display_device),
-    ];
-    let mut mmio: Vec<MmioBinding> = [DEV_LAPIC, DEV_IOAPIC, DEV_DISPLAY]
+    let mut bus_devices: Vec<Box<dyn crate::BusDevice>> =
+        vec![Box::new(uart_device), Box::new(lapic), Box::new(ioapic)];
+    if config.display_enabled {
+        bus_devices.push(Box::new(display_device));
+    }
+    let mut mmio: Vec<MmioBinding> = [DEV_LAPIC, DEV_IOAPIC]
         .iter()
         .map(|&index| MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[index].base),
             device_index: index,
         })
         .collect();
+    if config.display_enabled {
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(devices[DEV_DISPLAY].base),
+            device_index: DEV_DISPLAY,
+        });
+    }
     // The device exists on the bus only when the manifest entry is PRESENT.
     let mut nvme = None;
     if let Some(nvme_config) = &config.nvme
@@ -1716,10 +1760,11 @@ pub(crate) fn assemble_board(
     {
         let (device, handle) =
             NvmeDevice::new_with_handle(nvme_config.clone()).map_err(FirmwareBoardError::Nvme)?;
+        let device_index = bus_devices.len();
         bus_devices.push(Box::new(device));
         mmio.push(MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[DEV_NVME_TABLE].base),
-            device_index: DEV_NVME_BUS,
+            device_index,
         });
         nvme = Some(handle);
     }
@@ -1986,7 +2031,7 @@ fn load_firmware_image_inner(
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
-    let devices = board_devices(config.nvme.is_some(), config.pci_ecam, config.acpi_tables);
+    let devices = configured_board_devices(config);
     let entry_offset = validate_image(image, handoff_minor(&devices))?;
     assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
 }
@@ -2125,7 +2170,7 @@ mod tests {
                 second_screen,
                 ..FirmwareBoardConfig::default()
             };
-            let devices = board_devices(false, false, false);
+            let devices = board_devices(false, false, false, true);
             // `MachineMemoryMap::new` itself rejects overlaps and width overflow.
             let map = board_map(&config, &devices).unwrap();
             let table_bytes = boot_page_table_count(&map) * PAGE;
@@ -2541,6 +2586,95 @@ mod tests {
     }
 
     #[test]
+    fn s5_nvme_stand_omits_display_and_keeps_fixed_nvme_slot_and_window() {
+        let config = FirmwareBoardConfig::s5_nvme_stand();
+        assert_eq!(config.ram_bytes, 128 << 20);
+        assert!(config.nvme.is_some());
+        assert!(config.acpi_pm);
+        assert!(!config.pci_ecam && !config.acpi_tables && !config.linux_profile);
+        assert!(!config.display_enabled && !config.second_screen);
+
+        let devices = configured_board_devices(&config);
+        let map = board_map(&config, &devices).unwrap();
+        let window = map
+            .regions()
+            .iter()
+            .find(|region| region.range.start().get() == NVME_MMIO_BASE)
+            .expect("stand maps the fixed NVMe window");
+        assert_eq!(window.range.len(), NVME_MMIO_BYTES);
+        for region in map.regions() {
+            if region.range.start().get() == NVME_MMIO_BASE {
+                continue;
+            }
+            let start = region.range.start().get();
+            let end = start + region.range.len();
+            assert!(
+                end <= NVME_MMIO_BASE || start >= NVME_MMIO_BASE + NVME_MMIO_BYTES,
+                "NVMe window overlaps {region:?}"
+            );
+        }
+        for display_range in [
+            (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+            (DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+            (DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+        ] {
+            assert!(!map.regions().iter().any(|region| {
+                region.range.start().get() == display_range.0
+                    && region.range.len() == display_range.1
+            }));
+        }
+        let nvme_start = NVME_MMIO_BASE;
+        let nvme_end = NVME_MMIO_BASE + NVME_MMIO_BYTES;
+        for (base, length) in [
+            (u64::from(FIRMWARE_COM1_PORT), 8),
+            (
+                u64::from(PCI_CONF1_BASE_PORT),
+                u64::from(PCI_CONF1_PORT_BYTES),
+            ),
+            (
+                u64::from(ACPI_PM_DESCRIPTOR.base_port),
+                u64::from(ACPI_PM_DESCRIPTOR.port_bytes),
+            ),
+        ] {
+            assert!(nvme_end <= base || base + length <= nvme_start);
+        }
+
+        let board = load_firmware_image(&nvme_image(&[0xf4]), &config).unwrap();
+        let handoff = board.handoff_block();
+        assert_eq!(le_u32(handoff, 0x40).unwrap(), 8);
+        assert_eq!(le_u32(device_entry(handoff, DEV_DISPLAY), 0).unwrap(), 4);
+        assert_eq!(le_u32(device_entry(handoff, DEV_DISPLAY), 4).unwrap(), 0);
+        assert_eq!(le_u64(device_entry(handoff, DEV_DISPLAY), 8).unwrap(), 0);
+        assert_eq!(le_u32(device_entry(handoff, DEV_NVME_TABLE), 0).unwrap(), 8);
+        assert_eq!(
+            le_u64(device_entry(handoff, DEV_NVME_TABLE), 8).unwrap(),
+            NVME_MMIO_BASE
+        );
+        assert!(!board.nvme().unwrap().is_ready());
+    }
+
+    #[test]
+    fn s5_stand_without_nvme_keeps_seven_base_entries_and_default_display_is_compatible() {
+        let image = nvme_image(&[0xf4]);
+        let mut no_nvme = FirmwareBoardConfig::s5_nvme_stand();
+        no_nvme.nvme = None;
+        let board = load_firmware_image(&image, &no_nvme).unwrap();
+        assert_eq!(le_u32(board.handoff_block(), 0x40).unwrap(), 7);
+        assert!(board.nvme().is_none());
+        assert_eq!(
+            le_u32(device_entry(board.handoff_block(), DEV_DISPLAY), 4).unwrap(),
+            0
+        );
+
+        let default_board = load(&hlt_image());
+        assert!(FirmwareBoardConfig::default().display_enabled);
+        assert_eq!(
+            le_u32(device_entry(default_board.handoff_block(), DEV_DISPLAY), 4).unwrap(),
+            DEVICE_PRESENT
+        );
+    }
+
+    #[test]
     fn nvme_entry_extends_the_handoff_to_v1_1_and_binds_the_window() {
         let mut board = load_firmware_image(&nvme_image(&[0xf4]), &nvme_config()).unwrap();
         let block = board.handoff_block().to_vec();
@@ -2773,7 +2907,7 @@ mod tests {
             pci_ecam: true,
             ..FirmwareBoardConfig::default()
         };
-        let devices = board_devices(true, true, false);
+        let devices = board_devices(true, true, false, true);
         let map = board_map(&config, &devices).unwrap();
         let ecam = PCI_ECAM_DESCRIPTOR;
         let (start, end) = (ecam.base, ecam.base + ecam.size);
@@ -3056,6 +3190,77 @@ mod tests {
         assert_eq!(&serial, b"OD-NVME-0001");
     }
 
+    #[test]
+    fn doorbell_pending_stops_quantum_then_host_services_before_the_next_quantum() {
+        const ASQ: u64 = 0x0100_0000;
+        const ACQ: u64 = 0x0100_1000;
+        const DATA: u64 = 0x0100_2000;
+        let mut board = load_firmware_image(&nvme_image(&[0xF4]), &nvme_config()).unwrap();
+        let nvme = board.nvme().unwrap();
+        let mmio = |offset: u64| GuestPhysicalAddress::new(NVME_MMIO_BASE + offset);
+        {
+            let bus = board.bus_mut();
+            for (offset, width, value) in [
+                (0x24, AccessWidth::Dword, 0x000F_000F),
+                (0x28, AccessWidth::Qword, ASQ),
+                (0x30, AccessWidth::Qword, ACQ),
+                (0x14, AccessWidth::Dword, 0x0046_0001),
+            ] {
+                bus.write_physical(mmio(offset), width, value, |_| {})
+                    .unwrap();
+            }
+            let mut sqe = [0u8; 64];
+            sqe[0..4].copy_from_slice(&(0x06u32 | (0x42 << 16)).to_le_bytes());
+            sqe[24..32].copy_from_slice(&DATA.to_le_bytes());
+            sqe[40..44].copy_from_slice(&1u32.to_le_bytes());
+            bus.write_flat_bytes(GuestPhysicalAddress::new(ASQ), &sqe, |_| {})
+                .unwrap();
+            bus.write_physical(mmio(0x1000), AccessWidth::Dword, 1, |_| {})
+                .unwrap();
+        }
+        assert!(nvme.doorbell_pending(), "32-bit MMIO doorbell sets pending");
+
+        let mut stop_checks = 0;
+        let first = board.run(
+            100,
+            || {
+                stop_checks += 1;
+                nvme.doorbell_pending()
+            },
+            |_| {},
+        );
+        assert_eq!(first.exit, PagedProbeExit::Stopped);
+        assert_eq!(stop_checks, 1, "the stop was requested by doorbell_pending");
+        assert_eq!(
+            first.instructions_executed, 0,
+            "pending doorbell stops the quantum"
+        );
+        assert!(nvme.doorbell_pending());
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_physical(GuestPhysicalAddress::new(ACQ + 12), AccessWidth::Dword)
+                .unwrap(),
+            0,
+            "CQE must not exist before host service"
+        );
+
+        let serviced = nvme.service(board.bus_mut(), |_| {});
+        assert_eq!((serviced.commands, serviced.completions), (1, 1));
+        assert!(!nvme.doorbell_pending());
+        let cqe = board
+            .bus_mut()
+            .read_physical(GuestPhysicalAddress::new(ACQ + 12), AccessWidth::Dword)
+            .unwrap() as u32;
+        assert_eq!(cqe & 0xFFFF, 0x42, "CID");
+        assert_eq!((cqe >> 16) & 1, 1, "phase tag");
+        assert_eq!(cqe >> 17, 0, "success");
+
+        let second = board.run(100, || nvme.doorbell_pending(), |_| {});
+        assert_eq!(second.exit, PagedProbeExit::Halted);
+        assert_eq!(second.instructions_executed, 1);
+    }
+
     // ---- S7-14a: ACPI fixed hardware on the board (opt-in) ----
 
     fn pm_config() -> FirmwareBoardConfig {
@@ -3128,6 +3333,25 @@ mod tests {
     }
 
     #[test]
+    fn s5_nvme_stand_exposes_pm_tmr_on_board_clock_without_linux_profile() {
+        let config = FirmwareBoardConfig::s5_nvme_stand();
+        assert!(!config.linux_profile);
+        let mut board = load_firmware_image(&nvme_image(&[0xf4]), &config).unwrap();
+        assert!(board.nvme().is_some());
+        assert!(board.acpi_pm().is_some());
+
+        board.advance_time_ns(1_000_000_000).unwrap();
+        assert_eq!(
+            board
+                .bus_mut()
+                .read_port(io_port(ACPI_PM_TMR_BLK), AccessWidth::Dword),
+            Ok(3_579_545),
+            "S5 PM_TMR follows the board clock"
+        );
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+    }
+
+    #[test]
     fn acpi_pm_ports_avoid_com1_conf1_and_0xcf9_on_the_fully_populated_board() {
         let d = ACPI_PM_DESCRIPTOR;
         let pm = d.base_port..d.base_port + d.port_bytes as u16;
@@ -3188,7 +3412,7 @@ mod tests {
     fn acpi_pm_does_not_alias_mmio_windows_of_the_board() {
         // Ports and MMIO are separate spaces: the PM block adds no MMIO region,
         // so the memory map and the handoff regions are identical to the default.
-        let devices = board_devices(true, true, false);
+        let devices = board_devices(true, true, false, true);
         let plain = FirmwareBoardConfig {
             ram_bytes: FIRMWARE_MAX_RAM_BYTES,
             nvme: Some(NvmeConfig::default()),
@@ -3594,8 +3818,8 @@ mod tests {
                 acpi_tables: true,
                 ..base.clone()
             };
-            let map_without = board_map(&base, &board_devices(true, true, false)).unwrap();
-            let map_with = board_map(&with, &board_devices(true, true, true)).unwrap();
+            let map_without = board_map(&base, &board_devices(true, true, false, true)).unwrap();
+            let map_with = board_map(&with, &board_devices(true, true, true, true)).unwrap();
             let shape = |map: &MachineMemoryMap| {
                 map.regions()
                     .iter()

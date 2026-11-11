@@ -64,6 +64,13 @@ impl PersistentNvmeBackend {
     pub fn open(path: &Path) -> Result<Self, PersistentNvmeOpenError> {
         let file = HostFileStorage::open_read_write_exclusive(path)
             .map_err(PersistentNvmeOpenError::WriterOpen)?;
+        Self::from_storage(file)
+    }
+
+    /// Builds the backend around an already-created or already-opened locked
+    /// storage object. Ownership of that exact descriptor and its `LOCK_EX`
+    /// moves into the adapter; the path is not reopened.
+    pub fn from_storage(file: HostFileStorage) -> Result<Self, PersistentNvmeOpenError> {
         let inner = PersistentStorage::open(file)?;
         Ok(Self { inner })
     }
@@ -88,6 +95,23 @@ pub fn attach_persistent_nvme(
     path: &Path,
 ) -> Result<(), AttachPersistentNvmeError> {
     let backend = PersistentNvmeBackend::open(path).map_err(AttachPersistentNvmeError::Open)?;
+    attach_persistent_nvme_backend(handle, backend)
+}
+
+/// Attaches the supplied locked file object without resolving its path again.
+pub fn attach_persistent_nvme_storage(
+    handle: &NvmeHandle,
+    file: HostFileStorage,
+) -> Result<(), AttachPersistentNvmeError> {
+    let backend =
+        PersistentNvmeBackend::from_storage(file).map_err(AttachPersistentNvmeError::Open)?;
+    attach_persistent_nvme_backend(handle, backend)
+}
+
+fn attach_persistent_nvme_backend(
+    handle: &NvmeHandle,
+    backend: PersistentNvmeBackend,
+) -> Result<(), AttachPersistentNvmeError> {
     handle
         .attach_backend(Box::new(backend))
         .map_err(AttachPersistentNvmeError::Attach)
@@ -315,6 +339,7 @@ impl NvmeBackend for PersistentNvmeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -405,6 +430,33 @@ mod tests {
             .durable_flush()
             .expect("flush even with no new write");
         assert_eq!(flush_calls(), 2, "runtime Flush must call backend flush");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn backend_keeps_created_storage_identity_and_refuses_replaced_path() {
+        let file = TempFile::new(&[]);
+        let original_path = file.path.with_extension("created.raw");
+        let moved_path = file.path.with_extension("locked.raw");
+        let storage = HostFileStorage::create_new_exclusive(&original_path, SECTOR_BYTES as u64)
+            .expect("create and lock scratch image");
+
+        fs::rename(&original_path, &moved_path).expect("move locked inode away");
+        fs::write(&original_path, [0xA5; SECTOR_BYTES]).expect("replace original pathname");
+        let mut backend = PersistentNvmeBackend::from_storage(storage)
+            .expect("wrap the originally created descriptor");
+
+        assert_eq!(
+            backend.write_sectors(0, &[0x5A; SECTOR_BYTES]),
+            Err(BackendError::Io),
+            "identity check must reject mutation through the replaced pathname"
+        );
+        assert!(backend.is_terminal_failed());
+        assert!(backend.is_quarantined());
+        assert_eq!(fs::read(&original_path).unwrap(), [0xA5; SECTOR_BYTES]);
+        assert_eq!(fs::read(&moved_path).unwrap(), [0; SECTOR_BYTES]);
+        fs::remove_file(original_path).unwrap();
+        fs::remove_file(moved_path).unwrap();
     }
 
     #[test]

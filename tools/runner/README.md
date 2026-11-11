@@ -779,3 +779,24 @@ other than the two above stays `unsupported` (`0xa2`); the boundary still sees a
 0x80000001 and stops there. `schema_version` stays 1 (`cpuid_divergence_leaf` and the new `exit_kind` are additive).
 
 `--diagnostic-past-c7` (S4-38L7, only with `--run --set-cpl0`) is an opt-in DIAGNOSTIC mode: the boundary above is off, `CPUID` leaf 1 and 0x80000001 execute with the DiagnosticV1 answer like every other leaf (nothing substituted, no kernel patch) and the run goes on to its next stop, to inventory the forms the kernel executes past C7. The result is NOT counted. The JSON always carries `diagnostic_past_c7` (top level and in `stop`) and a top-level `acceptance`: `false` / `"counted"` without the flag, `true` / `"diagnostic_not_counted"` (plus a `diagnostic_note`) with it; they are set right after the arguments are parsed, so refusals carry them too, and they follow the request of the flag, not its effect (without the `cpuid` member the flag changes nothing but the marker stays). Only a bare `0F A2` is executed this way; a prefixed `CPUID` stays `unsupported` (`0xa2`). `set_members` and the other leaves do not change; `schema_version` stays 1.
+## S5 NVMe stand (macOS arm64)
+
+On an Apple Silicon host, run the no-guest persistent NVMe smoke path with a
+firmware image that advertises handoff minor 1 and a new scratch-file path:
+
+```sh
+cargo run --offline -p od-runner -- s5-nvme-stand \
+  --image path/to/firmware.bin --disk path/to/disk.raw
+```
+
+The command creates and keeps the original locked file descriptor, assembles
+`FirmwareBoardConfig::s5_nvme_stand`, attaches that exact storage object through
+the S5-03 persistent backend before enabling the controller, and drives Identify,
+queue creation, one-sector Write/Read, and Flush through the assembled
+`MachineBus`. `--disk` must name a path that does not already exist; the runner
+creates an 8-sector (4 KiB) RAW scratch image and refuses to overwrite an
+existing file. If a later setup or command fails, the newly created scratch
+file may remain. It does not execute guest instructions or prove PCI discovery,
+IRQ delivery, Linux guest behavior, `F_FULLFSYNC` power-loss behavior, or
+namespace durability. It requires file-data durability support from the host
+backend and may fail at preflight on unsupported hosts/filesystems.

@@ -270,6 +270,7 @@
 ### S5-04. Собрать профиль платы со диском и прогнать диск без гостя
 
 - [ ] Принято после ревью. Опора на непринятый `S7-16` — по решению `S5-00` п.4(б).
+- **Текущий статус (2026-11-11):** headless board profile and no-guest persistent-backend runner prepared, pending independent review; checkbox remains unchecked. The runner uses existing `NvmeHandle::doorbell_pending`/`service` with 32-bit doorbells; existing `run_boot_executes_commands_submitted_before_the_guest_starts` checks pending doorbell service between guest quanta. S7-16 remains unaccepted; no PCI discovery, IRQ delivery, or Linux guest claim.
 - **Где:** [firmware_board.rs](../../crates/od-machine/src/firmware_board.rs) (`nvme: Option<NvmeConfig>`, окно `NVME_MMIO_BASE`, handoff), профиль стенда в `tools/runner/src/`.
 - **Сделать:**
   1. Завести профиль платы стенда: RAM, UART как консоль, APIC/IOAPIC и таймер, PM-блок, NVMe с backend из `S5-03`.
