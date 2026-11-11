@@ -4315,6 +4315,111 @@ fn nop_0f1f_truncated_operand_bytes_report_the_fetch_error() {
     assert_eq!(state, before);
 }
 
+// ---- S4-38L6a: PREFETCH hints `0F 18 /0../7 m` ----
+
+#[test]
+fn prefetch_0f18_forms_are_architectural_nops_of_their_decoded_length() {
+    let mut forms: Vec<Vec<u8>> = vec![
+        vec![0x0f, 0x18, 0x0a],             // PREFETCHT0 [RDX] (kernel boot form)
+        vec![0x0f, 0x18, 0x4a, 0x40],       // PREFETCHT0 [RDX+0x40]
+        vec![0x0f, 0x18, 0x4e, 0x40],       // disp8 [RSI+0x40]
+        vec![0x0f, 0x18, 0x0c, 0x24],       // SIB [RSP]
+        vec![0x41, 0x0f, 0x18, 0x00],       // REX.B [R8]
+        vec![0x0f, 0x18, 0x05, 0, 0, 0, 0], // RIP-relative
+        vec![0x0f, 0x18, 0x84, 0x00, 0, 0, 0, 0], // SIB + disp32
+        vec![0x0f, 0x18, 0x01],             // [rcx], non-canonical RCX: no #GP
+        vec![0x66, 0x0f, 0x18, 0x00],       // 66
+        vec![0x67, 0x0f, 0x18, 0x00],       // 67
+        vec![0x2e, 0x0f, 0x18, 0x00],       // CS
+        vec![0x48, 0x0f, 0x18, 0x00],       // REX.W
+    ];
+    // Every sub-opcode /0../7 (memory form [RDX]).
+    for reg in 0..8u8 {
+        forms.push(vec![0x0f, 0x18, (reg << 3) | 0x02]);
+    }
+    for code in &forms {
+        let (state, before, result) = run_nop_0f1f(code);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn prefetch_0f18_does_not_fault_on_an_unmapped_address() {
+    // RDX points at an unmapped page: a prefetch performs no access, so no #PF/error.
+    let mut state = endbr_state();
+    state.gpr[2] = 0x0000_7fff_0000_0000;
+    let mut before = state.clone();
+    before.rip += 3;
+    let mut memory = Memory::code(&[0x0f, 0x18, 0x0a]);
+    let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn prefetch_0f18_then_next_instruction_continues_at_the_decoded_length() {
+    let code = [0x0f, 0x18, 0x4a, 0x40, 0x0f, 0x18, 0x0a, 0x48, 0x89, 0xc0];
+    let mut state = endbr_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &base(), 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + 10);
+}
+
+#[test]
+fn prefetch_0f18_lookalikes_stay_unsupported_in_the_set() {
+    for code in [
+        &[0x0fu8, 0x18, 0xc8][..],       // register form (conservative)
+        &[0x0f, 0x18, 0xc0],             // register form /0
+        &[0xf0, 0x0f, 0x18, 0x0a],       // LOCK
+        &[0xf3, 0x0f, 0x18, 0x0a],       // REP
+        &[0xf2, 0x0f, 0x18, 0x0a],       // REPNE
+        &[0x2e, 0x2e, 0x0f, 0x18, 0x0a], // duplicate segment
+        &[0x40, 0x41, 0x0f, 0x18, 0x0a], // duplicate REX
+    ] {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x18 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn prefetch_0f18_outside_the_set_stays_unsupported() {
+    let mut state = endbr_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x18, 0x0a]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x18 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
 // ---- S2-50: POPFQ with the CPL0 IOPL/IF rule ----
 
 const RF: u64 = 1 << 16;

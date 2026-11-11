@@ -2251,7 +2251,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // Duplicate groups are outside this slice: do not manufacture #UD or
         // claim a universal last-prefix-wins rule.
         let nop_0f1f = opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x1f;
-        if duplicate && !(nop_0f1f && !duplicate_other_than_66) {
+        // S4-38L6a: `0F 18 /0..7 m` (PREFETCHNTA/T0/T1/T2 and reserved-NOP /4../7) is a hint
+        // with no architectural effect; it reuses the NopModrm decode and execution.
+        let prefetch_0f18 = opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x18;
+        let nop_modrm_opcode = nop_0f1f || prefetch_0f18;
+        if duplicate && !(nop_modrm_opcode && !duplicate_other_than_66) {
             return Err(self.unsupported(opcode));
         }
         let modeled_system_operation = match (opcode.map, opcode.byte) {
@@ -2505,7 +2509,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // S4-38L4d: `0F 1F /0` is the architectural multi-byte NOP. Any ModRM form decodes
         // (the operand is only skipped for the length); LOCK/REP prefixes and ModRM.reg != 0
         // stay unsupported. Repeated 0x66 prefixes are admitted (see above).
-        if nop_0f1f {
+        if nop_modrm_opcode {
             // More than one REX byte is outside the slice (the SDM allows only one).
             let rex_bytes = prefix_bytes[..prefix_count]
                 .iter()
@@ -2515,7 +2519,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
-            if (modrm >> 3) & 7 != 0 {
+            if nop_0f1f && (modrm >> 3) & 7 != 0 {
+                return Err(self.unsupported(opcode));
+            }
+            // S4-38L6a: only the memory forms of the 0F 18 group are modeled; the register
+            // form stays unsupported (conservative, as before this slice).
+            if prefetch_0f18 && modrm >> 6 == 3 {
                 return Err(self.unsupported(opcode));
             }
             self.rm_operand(modrm, prefixes, prefixes.operand_size())?;
@@ -23786,6 +23795,44 @@ mod tests {
             &[0x66, 0x66, 0xf3, 0x0f, 0x1f, 0x00],
             &[0x2e, 0x2e, 0x0f, 0x1f, 0x00],
             &[0x40, 0x41, 0x0f, 0x1f, 0x00],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefetch_0f18_memory_forms_decode_as_nop_modrm_with_modrm_length() {
+        // S4-38L6a: every memory form of the 0F 18 group (reg 0..7) is a NopModrm hint.
+        for (bytes, length) in [
+            (&[0x0fu8, 0x18, 0x0a][..], 3u8),
+            (&[0x0f, 0x18, 0x4a, 0x40], 4),
+            (&[0x0f, 0x18, 0x4e, 0x00], 4),
+            (&[0x0f, 0x18, 0x0c, 0x24], 4),
+            (&[0x0f, 0x18, 0x05, 0, 0, 0, 0], 7),
+            (&[0x0f, 0x18, 0x84, 0x00, 0, 0, 0, 0], 8),
+            (&[0x41, 0x0f, 0x18, 0x00], 4),
+            (&[0x67, 0x0f, 0x18, 0x00], 4),
+            (&[0x66, 0x66, 0x2e, 0x0f, 0x18, 0x00], 6),
+            (&[0x0f, 0x18, 0x20], 3),
+            (&[0x0f, 0x18, 0x38], 3),
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(decoded.operation, Operation::NopModrm, "{bytes:02x?}");
+        }
+        for bytes in [
+            &[0x0fu8, 0x18, 0xc8][..],
+            &[0x0f, 0x18, 0xc0],
+            &[0xf0, 0x0f, 0x18, 0x0a],
+            &[0xf3, 0x0f, 0x18, 0x0a],
+            &[0xf2, 0x0f, 0x18, 0x0a],
+            &[0x40, 0x41, 0x0f, 0x18, 0x0a],
         ] {
             assert!(
                 matches!(
