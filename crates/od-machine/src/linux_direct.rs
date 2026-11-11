@@ -3188,6 +3188,72 @@ mod tests {
         assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 90);
     }
 
+    // ---- S4-38L7k: LOCK CMPXCHG m64, r64 through the board facade ----
+
+    #[test]
+    fn lock_cmpxchg_reads_and_writes_guest_memory_for_equal_and_unequal_compares() {
+        // MOV RAX,5; MOV [0x0200_0020],RAX; MOV RDX,9;
+        // LOCK CMPXCHG [0x0200_0020],RDX (RAX == [m]: [m] = 9, RAX stays 5);
+        // LOCK CMPXCHG [0x0200_0020],RDX (RAX 5 != [m] 9: RAX = 9, [m] written back as 9);
+        // MOV RCX,[0x0200_0020]; HLT.
+        let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(9u64.to_le_bytes());
+        code.extend([0xF0, 0x48, 0x0F, 0xB1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0xF0, 0x48, 0x0F, 0xB1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x8B, 0x0C, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 9);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 9);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 9);
+        // The second compare was unequal: ZF is clear after it (HLT/MOV leave the flags alone).
+        assert_eq!(state.rflags & (1 << 6), 0);
+    }
+
+    #[test]
+    fn plain_cmpxchg_memory_form_without_lock_is_refused_in_the_cpl0_set() {
+        // The set models only the LOCK form; the plain `48 0F B1 /r` memory form is refused
+        // through the facade with opcode 0xB1 after the one preceding MOV retired.
+        let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x0F, 0xB1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xB1 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
+    }
+
     // ---- S4-38L7e: RDMSR IA32_EFER through the board facade ----
 
     #[test]
