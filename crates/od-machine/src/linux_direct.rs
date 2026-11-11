@@ -2734,10 +2734,11 @@ mod tests {
         assert!(record.com1.is_empty());
     }
 
-    /// S4-38L7x: `MOV EAX, 0x12345600; MOV EDX, 0x3F9; IN AL, DX; HLT` (the S4-38L7w boundary:
-    /// a byte read of COM1 IER). `IN AL, DX` leaves EAX bits 8..32 alone.
+    /// S4-38L7x: `MOV EAX, 0x123456AB; MOV EDX, 0x3F9; IN AL, DX; HLT` (the S4-38L7w boundary:
+    /// a byte read of COM1 IER). AL starts non-zero (0xAB), so a missing write of AL fails the test;
+    /// `IN AL, DX` leaves EAX bits 8..32 alone.
     fn in_al_com1_ier_code() -> Vec<u8> {
-        let mut code = mov_eax(0x1234_5600);
+        let mut code = mov_eax(0x1234_56AB);
         code.extend(mov_edx(0x3f9));
         code.extend([0xEC, 0xF4]);
         code
@@ -2781,7 +2782,7 @@ mod tests {
             "{record:?}"
         );
         assert_eq!((record.retired, record.rip), (2, rip_in));
-        assert_eq!(record.gpr[Register::Rax as usize], 0x1234_5600);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x1234_56AB);
         assert!(!record.set_members.contains(&"pio_u8".to_string()));
         // The minimal set has no PIO either.
         let (mut boot, file) = boot_with_entry(&code);
