@@ -1373,14 +1373,14 @@ fn mov_cr3_stays_unsupported_without_cr3_ownership() {
 
 #[test]
 fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
-    // Architecturally these are not #UD (REX.W and 0x66 are ignored by MOV CR in
-    // 64-bit mode, and `0F 22 D9` is a valid `MOV CR3, RCX`); they are outside
-    // the exact `MOV CR3, RAX` profile, so the decoder reports the opcode byte
-    // `0x22` as unsupported in every case.
+    // Architecturally these are not #UD (0x66 is an operand-size prefix that MOV CR
+    // ignores in 64-bit mode); they are outside the set's forms, so the decoder
+    // reports the opcode byte `0x22` as unsupported. REX.W and REX.B forms of
+    // `MOV CR3, r64` are supported since S4-38L7h (see `mov_cr3_r64_*` below).
     for bytes in [
-        &[0x48, 0x0f, 0x22, 0xd8][..],
         &[0x66, 0x0f, 0x22, 0xd8][..],
-        &[0x0f, 0x22, 0xd9][..],
+        &[0x66, 0x0f, 0x22, 0xdf][..],
+        &[0x44, 0x0f, 0x22, 0xdf][..],
     ] {
         let mut state = cr3_state(0x1000);
         let before = state.clone();
@@ -1592,6 +1592,166 @@ fn mov_rax_cr3_is_not_reachable_from_cpl3() {
     let mut state = cr3_state(CR3_DISTINCT);
     let before = state.clone();
     let mut memory = Memory::code(&MOV_RAX_CR3);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+// ---- S4-38L7h: MOV CR3, r64 from any general register ------------------------
+
+/// The Linux CR3 written by the real kernel (`RDI` in the S4-38L7g boundary).
+const CR3_LINUX: u64 = 0x3ffe000;
+
+#[test]
+fn mov_cr3_r64_writes_rdi_rbx_r8_and_r15_and_follows_the_new_cr3() {
+    for (bytes, src) in [
+        (&[0x0f, 0x22, 0xdf][..], Register::Rdi),
+        (&[0x0f, 0x22, 0xdb][..], Register::Rbx),
+        (&[0x41, 0x0f, 0x22, 0xd8][..], Register::R8),
+        (&[0x41, 0x0f, 0x22, 0xdf][..], Register::R15),
+    ] {
+        let mut state = cr3_state(0x1000);
+        state.gpr[src as usize] = CR3_LINUX;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.exit, cr3_write(0x1000, CR3_LINUX), "{bytes:02x?}");
+        assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+        let mut expected = before.clone();
+        expected.cr3 = Some(CR3_LINUX);
+        expected.rip = RIP + bytes.len() as u64;
+        assert_eq!(state, expected, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_cr3_r64_with_any_rex_but_r_reads_the_selected_register_only() {
+    for rm in 0u8..8 {
+        for rex in [
+            None,
+            Some(0x40u8),
+            Some(0x41),
+            Some(0x48),
+            Some(0x49),
+            Some(0x4b),
+        ] {
+            let mut bytes = Vec::new();
+            bytes.extend(rex);
+            bytes.extend_from_slice(&[0x0f, 0x22, 0xd8 | rm]);
+            let src = (rm | ((rex.unwrap_or(0) & 1) << 3)) as usize;
+            let mut state = cr3_state(0x1000);
+            // The register with the other REX.B value holds an out-of-range CR3.
+            state.gpr[src ^ 8] = 1 << 40;
+            state.gpr[src] = CR3_LINUX;
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+            assert_eq!(result.exit, cr3_write(0x1000, CR3_LINUX), "{bytes:02x?}");
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            let mut expected = before.clone();
+            expected.cr3 = Some(CR3_LINUX);
+            expected.rip = RIP + bytes.len() as u64;
+            assert_eq!(state, expected, "{bytes:02x?}");
+        }
+    }
+}
+
+#[test]
+fn mov_cr3_r64_beyond_36_bits_is_gp0_without_mutation() {
+    for (bytes, src) in [
+        (&[0x0f, 0x22, 0xdf][..], Register::Rdi),
+        (&[0x41, 0x0f, 0x22, 0xd8][..], Register::R8),
+        (&[0x41, 0x0f, 0x22, 0xdf][..], Register::R15),
+    ] {
+        for value in [1u64 << 36, 1 << 40, u64::MAX] {
+            let mut state = cr3_state(0x1000);
+            state.gpr[src as usize] = value;
+            let before = state.clone();
+            let mut memory = Memory::code(bytes);
+            let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+            assert_eq!(exit(&result), &gp0(), "{bytes:02x?} {value:#x}");
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?} {value:#x}");
+            assert_eq!(state, before, "{bytes:02x?} {value:#x}");
+        }
+    }
+}
+
+#[test]
+fn mov_cr3_r64_other_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0xf0, 0x0f, 0x22, 0xdf][..], // LOCK with a non-RAX source
+        &[0x44, 0x0f, 0x22, 0xdf][..], // REX.R: CR11
+        &[0x4d, 0x0f, 0x22, 0xdf][..],
+        &[0x0f, 0x22, 0x1f][..],             // mod 00
+        &[0x0f, 0x22, 0x5f, 0x08][..],       // mod 01
+        &[0x0f, 0x22, 0x9f, 0, 0, 0, 0][..], // mod 10
+        &[0x66, 0x0f, 0x22, 0xdf][..],
+        &[0xf3, 0x0f, 0x22, 0xdf][..],
+        &[0x67, 0x0f, 0x22, 0xdf][..],
+        &[0x41, 0x66, 0x0f, 0x22, 0xdf][..],
+        &[0x40, 0x48, 0x0f, 0x22, 0xdf][..], // two REX prefixes
+    ] {
+        let mut state = cr3_state(0x1000);
+        state.gpr[Register::Rdi as usize] = CR3_LINUX;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x22 }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn lock_mov_cr3_r64_is_unsupported_under_the_cr3_set() {
+    let mut state = cr3_state(0x1000);
+    state.gpr[Register::Rdi as usize] = CR3_LINUX;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf0, 0x0f, 0x22, 0xdf]);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn mov_cr3_r64_stays_unsupported_without_cr3_ownership() {
+    for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x41, 0x0f, 0x22, 0xd8][..]] {
+        let mut state = board_state();
+        state.gpr[Register::Rdi as usize] = CR3_LINUX;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_cr3_r64_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch, as for the RAX form.
+    let mut state = cr3_state(0x1000);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x22, 0xdf]);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
@@ -2417,7 +2577,7 @@ fn mov_cr4_r64_other_forms_are_unsupported_without_mutation() {
         &[0x0f, 0x22, 0xe9][..],       // CR5: not a modeled register
         &[0x41, 0x0f, 0x22, 0xc0][..], // CR0 stays RAX-only
         &[0x0f, 0x22, 0xc1][..],
-        &[0x0f, 0x22, 0xd9][..], // CR3 stays RAX-only
+        &[0x0f, 0x22, 0xdf][..], // MOV CR3, RDI: outside this CR4-only set
         &[0x41, 0x0f, 0x22, 0xd8][..],
     ] {
         let mut state = mov_cr4_state(Register::Rcx as usize, CR4_PSE_PAE);

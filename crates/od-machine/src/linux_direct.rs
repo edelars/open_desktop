@@ -2382,6 +2382,39 @@ mod tests {
     }
 
     #[test]
+    fn set_facade_mov_cr3_rdi_is_a_continuation_like_the_rax_form() {
+        // S4-38L7h: the same layout as `cr3_switch_program`, with `mov rdi, imm32` (48 C7 C7)
+        // and `mov cr3, rdi` (0F 22 DF) instead of the RAX bytes. The new tree then runs the same
+        // continuation as the RAX form: five retired instructions, one CR3 change.
+        let board_cr3 = boot_with_entry(&[0xF4]).0.board.cr3();
+        let mut program = cr3_switch_program(TREE_PML4, 0x1111);
+        program[3] = 0xC7;
+        program[10] = 0xDF;
+        assert_eq!(&program[8..11], &[0x0F, 0x22, 0xDF]);
+        let (mut boot, file) = boot_with_entry(&program);
+        install_second_tree(&mut boot, 0x2222);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "{record:?}");
+        assert_eq!(record.gpr[Register::Rdi as usize], TREE_PML4);
+        assert_eq!(
+            record.gpr[Register::Rbx as usize],
+            0x2222,
+            "new tree fetched"
+        );
+        assert_eq!(record.cr3_changes, 1);
+        assert_eq!(record.last_cr3_change, Some((board_cr3, TREE_PML4)));
+        assert_eq!(record.cr3, TREE_PML4);
+        assert_eq!(boot.board.cr3(), TREE_PML4);
+        assert_eq!(boot.board.state().cr3, None);
+        assert_eq!(record.set_members, ["cli", "cpu_owned_cr3", "halt"]);
+    }
+
+    #[test]
     fn set_facade_without_the_cr3_member_refuses_the_board_cr3_before_any_fetch() {
         let (mut boot, file) = boot_with_entry(&PROLOGUE);
         let members = LinuxCpl0SetMembers {
