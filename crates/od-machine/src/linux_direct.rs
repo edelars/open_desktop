@@ -680,6 +680,7 @@ pub struct LinuxCpl0SetMembers {
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus (COM1, PM timer, PIT).
+    /// `false` in [`Self::minimal`], `true` in [`Self::linux_default`] (S4-38L7x).
     pub pio_u8: bool,
     /// `with_popf_cpl0` (S2-50): the qword `POPFQ` with the CPL0 IOPL/IF rule. TF stays outside.
     pub popf_cpl0: bool,
@@ -725,12 +726,15 @@ impl LinuxCpl0SetMembers {
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
     /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
-    /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e) and the PCI configuration ports
-    /// (S4-38L7w).
+    /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e), the PCI configuration ports
+    /// (S4-38L7w) and the byte PIO (S4-38L7x: `pio_u8`, COM1/PIT/PM timer; a default decision that
+    /// may be revisited: without COM1 and the timer the kernel does not go further).
+    /// [`Self::minimal`] stays without it.
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
             popf_cpl0: true,
+            pio_u8: true,
             pci_config: true,
             msr: true,
             msr_fs_gs_base: true,
@@ -2726,6 +2730,69 @@ mod tests {
         assert!(record.com1.is_empty());
     }
 
+    /// S4-38L7x: `MOV EAX, 0x12345600; MOV EDX, 0x3F9; IN AL, DX; HLT` (the S4-38L7w boundary:
+    /// a byte read of COM1 IER). `IN AL, DX` leaves EAX bits 8..32 alone.
+    fn in_al_com1_ier_code() -> Vec<u8> {
+        let mut code = mov_eax(0x1234_5600);
+        code.extend(mov_edx(0x3f9));
+        code.extend([0xEC, 0xF4]);
+        code
+    }
+
+    #[test]
+    fn set_facade_in_al_dx_on_com1_ier_runs_through_the_bus_in_the_linux_default() {
+        let code = in_al_com1_ier_code();
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "MOV, MOV, IN, HLT: {record:?}");
+        assert!(record.set_members.contains(&"pio_u8".to_string()));
+        // The byte is whatever the board's COM1 gives for IER (a fresh UART: zero).
+        assert_eq!(
+            record.gpr[Register::Rax as usize],
+            0x1234_5600,
+            "{record:?}"
+        );
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x3f9);
+        assert!(record.com1.is_empty());
+    }
+
+    #[test]
+    fn set_facade_in_al_dx_is_unsupported_without_the_pio_member() {
+        let code = in_al_com1_ier_code();
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip_in = boot.board.state().rip + 10;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                pio_u8: false,
+                ..halting_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xEC },
+            "{record:?}"
+        );
+        assert_eq!((record.retired, record.rip), (2, rip_in));
+        assert_eq!(record.gpr[Register::Rax as usize], 0x1234_5600);
+        assert!(!record.set_members.contains(&"pio_u8".to_string()));
+        // The minimal set has no PIO either.
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xEC });
+    }
+
     #[test]
     fn set_facade_a_port_error_is_the_port_io_exit_with_rip_on_the_instruction() {
         // CLI; MOV AL, 1; MOV DX, 0x1234; OUT DX, AL; HLT. Nothing is mapped at 0x1234, so the
@@ -4294,6 +4361,7 @@ mod tests {
             LinuxCpl0SetMembers {
                 cpuid: true,
                 popf_cpl0: true,
+                pio_u8: true,
                 pci_config: true,
                 msr: true,
                 msr_fs_gs_base: true,
@@ -4302,6 +4370,8 @@ mod tests {
             }
         );
         assert!(!LinuxCpl0SetMembers::minimal().fetch_cache);
+        assert!(LinuxCpl0SetMembers::linux_default().pio_u8);
+        assert!(!LinuxCpl0SetMembers::minimal().pio_u8);
         let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
         let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
         assert_eq!(
@@ -4312,6 +4382,7 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ]
@@ -4399,6 +4470,7 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ]
@@ -4569,6 +4641,7 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "halt",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ]

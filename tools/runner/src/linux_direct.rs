@@ -1427,6 +1427,7 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -1559,6 +1560,7 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -1845,6 +1847,7 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
