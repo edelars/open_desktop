@@ -21285,3 +21285,30 @@ TLB/walker не менялись.
 `page_walk::tests::cpu_state_snapshot_admits_cr4_pse_as_a_snapshot_only_bit`;
 `linux_direct::tests::set_facade_mov_cr4_rcx_with_pse_retires_and_the_board_reenters`. Из тестов S4-38L7b и декодера
 убраны записи «`0F 22 E2` / `41 0F 22 E0` — `Unsupported`» (теперь поддержаны).
+
+### CR4.PGE в политике CR4 набора CPL0 (S4-38L7d)
+
+Диагностический прогон за C7 (`--diagnostic-past-c7`, не засчитывается) после записи CR4 = `0x30` доходит до второй
+`MOV CR4, RCX` (`0F 22 E1`, RIP `0xffffffff8139c0c7`) с RCX = `0xb0` (PSE | PAE | PGE: PGE = бит 7). Семантика по Intel
+SDM Vol.3 §4.10.2.4 / §4.10.4.1 **по памяти; текст SDM в репозитории отсутствует и не сверялся**: CR4.PGE разрешает
+глобальные страницы (бит G, бит 8 записи PTE), а запись CR4, меняющая PGE, сбрасывает TLB, включая глобальные записи.
+
+**Политика.** `ControlRegisterPolicy::accepts_cr4` теперь: `value & !(PSE | PGE | OSFXSR | OSXMMEXCPT) == PAE`, т. е. PAE
+обязателен, допустимы PSE (`0x10`), PGE (`0x80`), OSFXSR (`0x200`), OSXMMEXCPT (`0x400`). Политика общая для входа в
+набор, `WriteCr4` (RAX) и `WriteCr4From`; поведение при PAE = 0 (#GP(0)) и при остальных битах вне маски (LA57 = бит 12,
+PCE = бит 8, PKE, PCIDE = бит 17, SMEP/SMAP и т. д. — `Unsupported`, без мутации) не менялось. CPL ≠ 0 и вне набора
+поведение прежнее.
+
+**TLB.** В модели TLB нет: `walker` (`page_walk.rs`) каждый раз проходит таблицы заново и не читает ни CR4, ни бит G записи
+(он не входит в маски зарезервированных битов и ни на что не влияет), поэтому глобальные страницы не меняют трансляцию, а
+сброс TLB при смене PGE моделировать нечего. `FetchTranslationCache` (S4-13) ключуется снимком CR4, так что изменение CR4
+инвалидирует его по ключу. В `Long64ProbeConfig` бит PGE добавлен в допустимую маску снимка (`CR4_ALLOWED`) как
+snapshot-only бит, иначе плата не вошла бы повторно с `CR4 = 0xb0`; PAE по-прежнему обязателен.
+
+**Не делалось.** Декодер, CR0/CR3, `PUSHFQ`, CPUID/MSR, список `PagedCpl0ProbeV1`, `LEAVE`/`IRETQ`/`LRETQ`/`MOV Sreg`,
+`interrupt.rs` (внешняя доставка требует `Cr4Profile::BASE`) не менялись.
+
+Тесты: `cpl0_profile_set::mov_cr4_*pge*`, `cr4_with_pge_is_admitted_on_reentry_and_by_the_rax_write`,
+`mov_cr4_r64_accepts_exactly_the_policy_masks`; `page_walk::tests::cpu_state_snapshot_admits_cr4_pge_as_a_snapshot_only_bit`;
+`linux_direct::tests::set_facade_mov_cr4_rcx_with_pge_retires_and_the_board_reenters`. Из тестов политики убрано «PGE —
+вне политики» (прежние значения `0xa0` заменены на `0x1020`, бит 7 исключён из списка запрещённых битов).

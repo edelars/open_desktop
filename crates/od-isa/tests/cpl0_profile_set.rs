@@ -281,8 +281,8 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
         ),
         (
             "cr4 outside policy",
-            |s| s.cr4 = Some(0xa0),
-            Cpl0ProfileSetInputError::Cr4OutsidePolicy { value: 0xa0 },
+            |s| s.cr4 = Some(0x1020),
+            Cpl0ProfileSetInputError::Cr4OutsidePolicy { value: 0x1020 },
         ),
         (
             "cr0 missing",
@@ -582,11 +582,11 @@ fn cr_reads_return_current_values_and_clear_arithmetic_definedness() {
 #[test]
 fn cr4_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    // 0xa0 adds PGE (bit 7); bit 17 is PCIDE, bit 18 OSXSAVE, bit 2 TSD and
-    // bit 40 is reserved: all outside the CR4 policy (only OSFXSR/OSXMMEXCPT
-    // may vary). PAE cleared is outside as well.
+    // 0x1020 adds LA57 (bit 12); bit 17 is PCIDE, bit 18 OSXSAVE, bit 2 TSD and
+    // bit 40 is reserved: all outside the CR4 policy (only PSE/PGE/OSFXSR/
+    // OSXMMEXCPT may vary). PAE cleared is outside as well.
     for value in [
-        0xa0u64,
+        0x1020u64,
         CR4_BASE | (1 << 17),
         CR4_BASE | (1 << 18),
         CR4_BASE | (1 << 2),
@@ -2350,7 +2350,7 @@ fn mov_cr4_r64_without_pae_is_gp0_without_mutation() {
 
 #[test]
 fn mov_cr4_r64_with_bits_outside_the_policy_is_unsupported_without_mutation() {
-    for bit in [2u32, 3, 6, 7, 8, 11, 12, 14, 16, 17, 18, 20, 21, 22, 40, 63] {
+    for bit in [2u32, 3, 6, 8, 11, 12, 14, 16, 17, 18, 20, 21, 22, 40, 63] {
         let value = CR4_PSE_PAE | (1u64 << bit);
         let mut state = mov_cr4_state(Register::Rcx as usize, value);
         let before = state.clone();
@@ -2368,7 +2368,9 @@ fn mov_cr4_r64_with_bits_outside_the_policy_is_unsupported_without_mutation() {
 
 #[test]
 fn mov_cr4_r64_accepts_exactly_the_policy_masks() {
-    for value in [0x20u64, 0x30, 0x220, 0x420, 0x620, 0x230, 0x430, 0x630] {
+    for value in [
+        0x20u64, 0x30, 0x220, 0x420, 0x620, 0x230, 0x430, 0x630, 0xa0, 0xb0, 0x2a0, 0x6b0,
+    ] {
         let mut state = mov_cr4_state(Register::Rdx as usize, value);
         let mut memory = Memory::code(&[0x0f, 0x22, 0xe2]);
         let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
@@ -7460,4 +7462,156 @@ fn leave_outside_the_set_stays_unsupported_without_mutation() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty());
     assert_eq!(memory.writes, 0);
+}
+
+// ---- S4-38L7d: CR4.PGE joins the CPL0 set CR4 policy -------------------------
+
+/// The second CR4 value the real kernel writes (PSE|PAE|PGE).
+const CR4_PGE_PSE_PAE: u64 = 0xb0;
+
+#[test]
+fn mov_cr4_rcx_with_pge_is_the_second_real_kernel_write() {
+    // `0F 22 E1` at 0xffffffff8139c0c7 in the real kernel, RCX = 0xb0.
+    let mut state = mov_cr4_state(Register::Rcx as usize, CR4_PGE_PSE_PAE);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+    let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+    let mut expected = before.clone();
+    expected.cr4 = Some(CR4_PGE_PSE_PAE);
+    expected.rip = RIP + 3;
+    assert_eq!(state, expected);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(state.cr0, before.cr0);
+}
+
+#[test]
+fn mov_cr4_pge_reads_every_register_and_rex_b() {
+    for rm in 0u8..8 {
+        for rex in [None, Some(0x40u8), Some(0x48)] {
+            let mut bytes = Vec::new();
+            bytes.extend(rex);
+            bytes.extend_from_slice(&[0x0f, 0x22, 0xe0 | rm]);
+            let mut state = mov_cr4_state(rm as usize, CR4_PGE_PSE_PAE | 0x600);
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            let mut expected = before.clone();
+            expected.cr4 = Some(CR4_PGE_PSE_PAE | 0x600);
+            expected.rip = RIP + bytes.len() as u64;
+            assert_eq!(state, expected, "{bytes:02x?}");
+        }
+        for rex in [0x41u8, 0x49] {
+            let bytes = [rex, 0x0f, 0x22, 0xe0 | rm];
+            let mut state = mov_cr4_state(rm as usize, 0x1000);
+            state.gpr[8 + rm as usize] = CR4_PGE_PSE_PAE;
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            let mut expected = before.clone();
+            expected.cr4 = Some(CR4_PGE_PSE_PAE);
+            expected.rip = RIP + 4;
+            assert_eq!(state, expected, "{bytes:02x?}");
+        }
+    }
+}
+
+#[test]
+fn mov_cr4_pge_without_pae_is_gp0_without_mutation() {
+    for value in [0x90u64, 0x80, 0x680, 0x690] {
+        let mut state = mov_cr4_state(Register::Rcx as usize, value);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(exit(&result), &gp0(), "{value:#x}");
+        assert_eq!(result.instructions_executed, 0, "{value:#x}");
+        assert_eq!(state, before, "{value:#x}");
+    }
+}
+
+#[test]
+fn mov_cr4_pge_with_other_bits_outside_the_policy_is_unsupported_without_mutation() {
+    // LA57 (bit 12), PCE (bit 8), PCIDE (bit 17), SMEP (bit 20): still outside the policy.
+    for extra in [0x1000u64, 0x100, 0x2_0000, 0x10_0000] {
+        let value = CR4_PGE_PSE_PAE | extra;
+        let mut state = mov_cr4_state(Register::Rcx as usize, value);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{value:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{value:#x}");
+        assert_eq!(state, before, "{value:#x}");
+    }
+}
+
+#[test]
+fn cr4_with_pge_is_admitted_on_reentry_and_by_the_rax_write() {
+    let mut state = cr4_any_reg_state(CR4_PGE_PSE_PAE);
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xe2]);
+    run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+    assert_eq!(state.gpr[Register::Rdx as usize], CR4_PGE_PSE_PAE);
+    let mut code = movabs_rax(CR4_PGE_PSE_PAE);
+    code.extend_from_slice(&MOV_CR4_RAX);
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cr_set(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.cr4, Some(CR4_PGE_PSE_PAE));
+}
+
+#[test]
+fn mov_cr4_pge_regressions_keep_pse_only_and_pae_only() {
+    for value in [0x30u64, 0x20] {
+        let mut state = mov_cr4_state(Register::Rcx as usize, value);
+        let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+        assert_eq!(state.cr4, Some(value));
+    }
+}
+
+#[test]
+fn mov_cr4_pge_stays_unsupported_outside_the_set_and_gp_at_cpl3() {
+    let mut state = LongModeState {
+        rip: RIP,
+        rflags: 2 | IF,
+        cr4: None,
+        ..LongModeState::default()
+    };
+    state.gpr[Register::Rcx as usize] = CR4_PGE_PSE_PAE;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 4),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+
+    let mut state = mov_cr4_state(Register::Rcx as usize, CR4_PGE_PSE_PAE);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x22, 0xe1]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
 }
