@@ -3365,6 +3365,62 @@ mod tests {
         assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 90);
     }
 
+    // ---- S4-38L7aa: FS/GS-based CMP m64, r64 through the board facade ----
+
+    #[test]
+    fn gs_cmp_after_wrmsr_gs_base_sets_flags_and_does_not_write_guest_memory() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,INT64_MIN;
+        // MOV [BASE+0x10],RAX (plain); MOV RDX,1; CMP %rdx,%gs:disp(%rip) landing on effective
+        // address 0x10 (`65 48 39 15`, the Linux boundary form); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(0x8000_0000_0000_0000));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(1u64.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x48, 0x39, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, MOV rdx, CMP, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(boot.board.state().gs_base, BASE);
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 1);
+        // INT64_MIN - 1: OF, PF, AF; no CF, ZF or SF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 11) | (1 << 2) | (1 << 4),
+            "{:#x}",
+            state.rflags
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8000_0000_0000_0000,
+            "CMP does not write"
+        );
+    }
+
     // ---- S4-38L7k: LOCK CMPXCHG m64, r64 through the board facade ----
 
     #[test]

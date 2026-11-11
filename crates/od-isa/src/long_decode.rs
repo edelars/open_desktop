@@ -525,6 +525,19 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
+    /// S4-38L7aa: `64 [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W, with the FS base),
+    /// memory destination only. The operand is read and only the flags change (no write).
+    /// Executed only in the CPL0 set.
+    CmpFsMem {
+        dst: MemoryOperand,
+        src: RegisterView,
+    },
+    /// S4-38L7aa: `65 [REX] 39 /r` (CMP m32/m64, r with the GS base), memory destination only.
+    /// Executed only in the CPL0 set.
+    CmpGsMem {
+        dst: MemoryOperand,
+        src: RegisterView,
+    },
     /// The sole supported segment-register read in S2-22c: `48 8C E0`.
     MovFsSelectorToRax,
     MovGsSelectorToRax,
@@ -2055,7 +2068,11 @@ impl Instruction {
                 },
                 undefined: 0,
             },
-            Operation::SubFsMem { .. } | Operation::SubGsMem { .. } => FlagEffects {
+            // S4-38L7aa: as the plain CMP (`Operation::Arithmetic`): all six flags defined.
+            Operation::SubFsMem { .. }
+            | Operation::SubGsMem { .. }
+            | Operation::CmpFsMem { .. }
+            | Operation::CmpGsMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -8143,6 +8160,35 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         } else {
                             Operation::SubGsMem { dst, src }
                         }
+                    } else if matches!(prefixes.segment, Some(0x64 | 0x65))
+                        && byte == 0x39
+                        && modrm >> 6 != 3
+                    {
+                        // S4-38L7aa: `[64|65] [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W)
+                        // with a memory destination. The register form (mod = 11) is not touched:
+                        // it takes the plain `binary_operation` path below, the prefix ignored.
+                        // LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte that
+                        // is not immediately before the opcode (the dword rule of S4-38L7m).
+                        let stale_rex = prefix_bytes[..prefix_count]
+                            .iter()
+                            .enumerate()
+                            .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                        if stale_rex
+                            || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                            || prefixes.group1.is_some()
+                            || prefixes.operand_override
+                            || prefixes.address_override
+                        {
+                            return Err(self.unsupported(opcode));
+                        }
+                        let (Operand::Memory(dst), Operand::Register(src)) = (dst, src) else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        if prefixes.segment == Some(0x64) {
+                            Operation::CmpFsMem { dst, src }
+                        } else {
+                            Operation::CmpGsMem { dst, src }
+                        }
                     } else {
                         binary_operation(byte >> 3, dst, src)
                     }
@@ -9057,6 +9103,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovGsLoadD { .. } => false,
                 Operation::SubFsMem { .. } => false,
                 Operation::SubGsMem { .. } => false,
+                Operation::CmpFsMem { .. } => false,
+                Operation::CmpGsMem { .. } => false,
                 Operation::TestFsMemByte { .. } => false,
                 Operation::TestGsMemByte { .. } => false,
                 Operation::TestFsMemWord { .. } => false,
@@ -23665,6 +23713,95 @@ mod tests {
             assert!(
                 matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
                 "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_cmp_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7aa: `[64|65] [REX] 39 /r` with a memory destination.
+        let rdx = RegisterView::low(Register::Rdx, OperandSize::Qword);
+        let edx = RegisterView::low(Register::Rdx, OperandSize::Dword);
+        // The S4-38L7z diagnostic boundary bytes.
+        let mut memory = Memory::new(&[0x65, 0x48, 0x39, 0x15, 0x08, 0x8a, 0xce, 0x01]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmpGsMem { dst, src }
+                if src == rdx
+                    && dst.size == OperandSize::Qword
+                    && dst.base == AddressBase::NextRip
+                    && dst.displacement == 0x01ce8a08
+        ));
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x39, 0x24, 0x25, 0x10, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpFsMem { dst, src }
+                if src == RegisterView::low(Register::R12, OperandSize::Qword)
+                    && dst.size == OperandSize::Qword
+        ));
+        // Dword form (no REX.W), with and without a REX byte.
+        let mut memory = Memory::new(&[0x65, 0x39, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpGsMem { dst, src } if src == edx && dst.size == OperandSize::Dword
+        ));
+        let mut memory = Memory::new(&[0x65, 0x44, 0x39, 0x05, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpGsMem { dst, src }
+                if src == RegisterView::low(Register::R8, OperandSize::Dword)
+                    && dst.size == OperandSize::Dword
+        ));
+        // No segment prefix: still the plain arithmetic operation.
+        let mut memory = Memory::new(&[0x48, 0x39, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                ..
+            }
+        ));
+        // The register form (mod = 11) is not touched: the prefix is ignored, plain CMP.
+        for bytes in [&[0x65, 0x48, 0x39, 0xd0][..], &[0x64, 0x39, 0xd0][..]] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Arithmetic {
+                        kind: ArithmeticKind::Cmp,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for (bytes, refused_opcode) in [
+            // 0x66, 0x67, LOCK, REP, REPNE.
+            (&[0x66, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x65, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x65, 0x67, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0xf0, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0xf3, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0xf2, 0x64, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            // A second segment prefix.
+            (&[0x64, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x2e, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            // REX not directly before the opcode.
+            (&[0x48, 0x65, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x65, 0x48, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            // The neighbouring forms (CMP r, m and CMP m8, r8) stay outside the slice.
+            (&[0x65, 0x48, 0x3b, 0x15, 1, 0, 0, 0][..], 0x3b),
+            (&[0x65, 0x48, 0x38, 0x15, 1, 0, 0, 0][..], 0x38),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
             );
         }
     }
