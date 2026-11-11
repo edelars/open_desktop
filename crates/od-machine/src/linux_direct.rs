@@ -505,6 +505,10 @@ pub struct LinuxStopRecord {
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
+    /// S4-38L7: the run was made with the diagnostic mode past C7
+    /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
+    /// diagnostic only and is NOT counted. `false` on every other run.
+    pub diagnostic_past_c7: bool,
 }
 
 fn exit_kind(exit: &PagedProbeExit) -> &'static str {
@@ -554,6 +558,7 @@ pub fn run_linux_direct_board(
             changes: &[],
             cpuid_divergence_leaf: None,
             exceptions_delivered: 0,
+            diagnostic_past_c7: false,
         },
     ))
 }
@@ -566,6 +571,7 @@ struct SetExtras<'a> {
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
     exceptions_delivered: u64,
+    diagnostic_past_c7: bool,
 }
 
 fn stop_record(
@@ -623,6 +629,7 @@ fn stop_record(
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
         exceptions_delivered: extras.exceptions_delivered,
+        diagnostic_past_c7: extras.diagnostic_past_c7,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
         last_cr3_change: extras
@@ -673,6 +680,13 @@ pub struct LinuxCpl0SetMembers {
     /// walks. `false` in [`Self::minimal`], `true` in [`Self::linux_default`]; a diagnostic run
     /// turns it off to compare.
     pub fetch_cache: bool,
+    /// S4-38L7: opt-in DIAGNOSTIC mode past checkpoint C7. With it the CPUID boundary of S4-38L4
+    /// is off: `CPUID` leaf 1 and 0x8000_0001 execute with the DiagnosticV1 answer like every
+    /// other leaf (no substituted "better" values, no kernel patch) and the run goes on. The result
+    /// is NOT counted (DiagnosticV1 is not a profile of the target CPU); the stop record says so
+    /// (`diagnostic_past_c7`). Not a member of the CPU profile and not in `set_members`. `false` in
+    /// [`Self::minimal`] and [`Self::linux_default`]. Has no effect without `cpuid`.
+    pub diagnostic_past_c7: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -688,6 +702,7 @@ impl LinuxCpl0SetMembers {
             pio_u8: false,
             popf_cpl0: false,
             fetch_cache: false,
+            diagnostic_past_c7: false,
         }
     }
 
@@ -700,6 +715,7 @@ impl LinuxCpl0SetMembers {
             popf_cpl0: true,
             msr_fs_gs_base: true,
             fetch_cache: true,
+            diagnostic_past_c7: false,
             ..Self::minimal()
         }
     }
@@ -720,6 +736,10 @@ impl LinuxCpl0SetMembers {
 /// word would steer the kernel) and does not patch the kernel: the run ends at the honest edge.
 /// Other leaves (0, 0x8000_0000, ...) are answered by DiagnosticV1 as the set does. Results past
 /// the edge are diagnostic only. Without the member `CPUID` stays `Unsupported` (0xa2).
+///
+/// Diagnostic mode (S4-38L7, `members.diagnostic_past_c7`): the boundary is off. Leaf 1 and
+/// 0x8000_0001 are answered by DiagnosticV1 as every other leaf and the run goes on; the record
+/// carries `diagnostic_past_c7: true` and the result is NOT counted.
 pub fn run_linux_direct_board_set(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
@@ -766,7 +786,12 @@ pub fn run_linux_direct_board_set(
     }
     let report = boot
         .board
-        .run_linux_boot_cpl0_set(instruction_budget, &set, members.cpuid, members.fetch_cache)
+        .run_linux_boot_cpl0_set(
+            instruction_budget,
+            &set,
+            members.cpuid && !members.diagnostic_past_c7,
+            members.fetch_cache,
+        )
         .map_err(|failure| {
             let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
             error.retired = Some(failure.retired);
@@ -783,6 +808,7 @@ pub fn run_linux_direct_board_set(
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
             exceptions_delivered: report.exceptions_delivered,
+            diagnostic_past_c7: members.diagnostic_past_c7,
         },
     ))
 }
@@ -3086,6 +3112,114 @@ mod tests {
             .expect("runs");
         assert_eq!(record.cpuid_divergence_leaf, None);
         assert_eq!(record.exit_kind, "unsupported");
+    }
+
+    // ---- S4-38L7: the diagnostic mode past C7 ----
+
+    fn diagnostic_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            diagnostic_past_c7: true,
+            ..halting_default()
+        }
+    }
+
+    #[test]
+    fn diagnostic_past_c7_is_off_by_default_and_stops_as_before() {
+        assert!(!LinuxCpl0SetMembers::minimal().diagnostic_past_c7);
+        assert!(!LinuxCpl0SetMembers::linux_default().diagnostic_past_c7);
+        // Without the flag: the C7 stop, record not marked diagnostic (regression of S4-38L4).
+        assert_stops_before_cpuid(&[], 1);
+        assert_stops_before_cpuid(&[], 0x8000_0001);
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert!(!record.diagnostic_past_c7);
+    }
+
+    #[test]
+    fn diagnostic_past_c7_executes_leaf_1_with_the_diagnostic_v1_answer() {
+        // CLI; MOV EBX, 0x1234; MOV EAX, 1; CPUID; HLT. Budget 4 ends right after the CPUID.
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let cpuid_rip = ENTRY + 1 + 5 + 5;
+        let record = run_set_facade(&mut boot, &file, 4, diagnostic_default());
+        assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+        assert_eq!(record.exit_kind, "budget_exhausted");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert!(record.diagnostic_past_c7);
+        assert_eq!(record.retired, 4, "CLI, MOV, MOV and the CPUID itself");
+        assert_eq!(record.rip, cpuid_rip + 2, "RIP past the two-byte CPUID");
+        // Exactly the DiagnosticV1 tuple of leaf 1, nothing substituted.
+        assert_eq!(record.gpr[Register::Rax as usize], 0x600);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        // The run goes on from there: the HLT retires.
+        let next = run_set_facade(&mut boot, &file, 64, diagnostic_default());
+        assert_eq!(next.exit, PagedProbeExit::Halted, "{next:?}");
+        assert_eq!(next.retired, 1);
+        assert_eq!(next.gpr[Register::Rax as usize], 0x600);
+    }
+
+    #[test]
+    fn diagnostic_past_c7_executes_leaf_0x80000001_with_zeros() {
+        // The board stays on its own state; a seed in ECX and EDX shows the CPUID wrote them.
+        let mut code = vec![
+            0xFA, 0xB9, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x21, 0x43, 0x65, 0x07,
+        ];
+        code.extend(mov_eax(0x8000_0001));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, diagnostic_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert_eq!(record.retired, 6, "CLI, three MOVs, CPUID, HLT");
+        for register in [Register::Rax, Register::Rbx, Register::Rcx, Register::Rdx] {
+            assert_eq!(record.gpr[register as usize], 0, "{register:?}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_past_c7_does_not_change_other_leaves_or_the_set() {
+        // Other leaves: the same results with and without the flag.
+        for leaf in [0u32, 2, 0x8000_0000, 0x8000_0002, 0x21] {
+            let (mut plain_boot, file) = boot_with_entry(&divergence_program(&[], leaf));
+            let plain = run_set_facade(&mut plain_boot, &file, 64, halting_default());
+            let (mut boot, file) = boot_with_entry(&divergence_program(&[], leaf));
+            let diag = run_set_facade(&mut boot, &file, 64, diagnostic_default());
+            assert_eq!(diag.exit, PagedProbeExit::Halted, "{leaf:#x}: {diag:?}");
+            assert_eq!(diag.gpr, plain.gpr, "{leaf:#x}");
+            assert_eq!((diag.retired, diag.rip), (plain.retired, plain.rip));
+            assert_eq!(diag.set_members, plain.set_members, "{leaf:#x}");
+            assert!(diag.diagnostic_past_c7 && !plain.diagnostic_past_c7);
+        }
+        // The set members are the linux set: no label, no extra member.
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 8, diagnostic_default());
+        assert_eq!(
+            record.set_members,
+            [
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:DiagnosticV1",
+                "msr:fs_gs_base",
+                "halt",
+                "popf_cpl0"
+            ]
+        );
+    }
+
+    #[test]
+    fn diagnostic_past_c7_without_cpuid_member_stays_unsupported() {
+        let mut code = vec![0xFA];
+        code.extend(mov_eax(1));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            diagnostic_past_c7: true,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA2 });
+        assert!(record.diagnostic_past_c7);
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----
