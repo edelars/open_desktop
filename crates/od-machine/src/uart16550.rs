@@ -15,8 +15,11 @@
 //! THR/RBR and IER. The divisor is only stored: the model has no baud rate
 //! and the divisor never affects time. Semantics follow the 16550 datasheet
 //! from memory and were not checked against a primary source. A THR write
-//! still requires DLAB clear, LCR exactly 8N1 (`0x03`) and a non-zero divisor,
-//! otherwise it is refused with `UnsupportedConfiguration` without mutation.
+//! still requires a non-zero divisor and an LCR that selects 8N1: bits 1..0 =
+//! 11 (8 bits), bit 2 = 0 (one stop bit), bit 3 PEN = 0 (parity off), bit 6 = 0
+//! (break off) and bit 7 DLAB = 0. Bits 4 (EPS) and 5 (stick parity) have no
+//! effect while PEN = 0 and are ignored, so `0x13` passes. Otherwise the write
+//! is refused with `UnsupportedConfiguration` without mutation.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -24,6 +27,10 @@ use std::sync::{Arc, Mutex};
 const UART_REGISTER_COUNT: u64 = 8;
 const LCR_DLAB: u8 = 0x80;
 const LCR_8N1: u8 = 0x03;
+/// LCR bits that matter for an 8N1 transmit gate when PEN = 0: word length
+/// (bits 1..0), stop (bit 2), PEN (bit 3), break (bit 6) and DLAB (bit 7).
+/// EPS (bit 4) and stick parity (bit 5) are ignored while PEN = 0.
+const LCR_TX_GATE_MASK: u8 = 0xcf;
 const IIR_NO_INTERRUPT: u8 = 0x01;
 const IIR_THRE: u8 = 0x02;
 const IIR_RDA: u8 = 0x04;
@@ -262,7 +269,7 @@ impl UartState {
     }
 
     fn line_configuration_ready(&self) -> bool {
-        !self.dlab() && self.line_control == LCR_8N1 && self.divisor != 0
+        self.line_control & LCR_TX_GATE_MASK == LCR_8N1 && self.divisor != 0
     }
 
     fn line_status(&self) -> u8 {
@@ -360,7 +367,8 @@ impl UartState {
             2 => return Err(DeviceError::UnsupportedConfiguration),
             // S4-38L7bq: LCR stores all eight bits (word length, stop, parity,
             // break, DLAB) and reads them back. Only the THR path interprets
-            // them: a THR write still needs exactly 8N1 with DLAB clear.
+            // them: a THR write needs 8N1 with parity off and DLAB clear
+            // (bits 4 and 5 are ignored while PEN = 0).
             3 => self.line_control = value,
             4 if value & !MCR_OUT2 == 0 => self.mcr = value,
             // DTR/RTS/OUT1/loopback are not modelled.
@@ -746,26 +754,73 @@ mod tests {
     }
 
     #[test]
-    fn thr_write_still_needs_exact_8n1_dlab_clear_and_nonzero_divisor() {
+    fn thr_write_refuses_non_8n1_lcr_and_zero_divisor_without_mutation() {
         let mut device = Uart16550PollingTx::new();
         write(&mut device, 3, 0x93);
         write(&mut device, 0, 0x0c);
         write(&mut device, 1, 0x00);
-        // LCR 0x13 (parity-select bit set) and 0x07 are stored but not 8N1.
-        for lcr in [0x13_u8, 0x07] {
+        // 0x07: two stop bits; 0x0b/0x1b/0x2b: parity enabled; 0x43: break;
+        // 0x02/0x01/0x00: not 8 data bits.
+        for lcr in [0x07_u8, 0x0b, 0x1b, 0x2b, 0x43, 0x02, 0x01, 0x00] {
             write(&mut device, 3, lcr);
+            let before = device.snapshot();
             assert_eq!(
                 device.write(access(0), 0x41),
                 Err(DeviceError::UnsupportedConfiguration)
             );
+            assert_eq!(device.snapshot(), before);
             assert_eq!(read(&mut device, 5), 0x60);
             assert_eq!(read(&mut device, 3), lcr);
         }
-        write(&mut device, 3, 0x03);
-        write(&mut device, 0, 0x41);
-        assert_eq!(read(&mut device, 5), 0x00);
-        assert!(device.transfer_holding_to_shift());
-        assert_eq!(device.complete_transmission(), Some(0x41));
+        // Zero divisor with a valid LCR is refused too.
+        let mut zero = Uart16550PollingTx::new();
+        write(&mut zero, 3, 0x03);
+        let before = zero.snapshot();
+        assert_eq!(
+            zero.write(access(0), 0x41),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(zero.snapshot(), before);
+    }
+
+    #[test]
+    fn thr_write_accepts_lcr_0x13_and_ignores_eps_and_stick_bits_when_pen_is_clear() {
+        // 0x03 reference: THR write fills holding, LSR goes 0x60 -> 0x00.
+        let mut reference = Uart16550PollingTx::new();
+        write(&mut reference, 3, 0x83);
+        write(&mut reference, 0, 0x0c);
+        write(&mut reference, 1, 0x00);
+        write(&mut reference, 3, 0x03);
+        write(&mut reference, 0, 0x41);
+        assert_eq!(read(&mut reference, 5), 0x00);
+
+        // 0x13: EPS set, PEN clear. 0x23: stick set, PEN clear. 0x33: both.
+        for lcr in [0x13_u8, 0x23, 0x33] {
+            let mut device = Uart16550PollingTx::new();
+            write(&mut device, 3, 0x80 | lcr);
+            write(&mut device, 0, 0x0c);
+            write(&mut device, 1, 0x00);
+            write(&mut device, 3, lcr);
+            assert_eq!(read(&mut device, 5), 0x60);
+            write(&mut device, 0, 0x41);
+            assert_eq!(read(&mut device, 5), 0x00);
+            assert_eq!(read(&mut device, 3), lcr);
+            assert!(device.transfer_holding_to_shift());
+            assert_eq!(read(&mut device, 5), 0x20);
+            assert_eq!(device.complete_transmission(), Some(0x41));
+            assert_eq!(read(&mut device, 5), 0x60);
+        }
+    }
+
+    #[test]
+    fn dlab_set_never_reaches_thr_even_with_an_8n1_word() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        write(&mut device, 0, 0x41); // divisor LSB, not THR
+        write(&mut device, 1, 0x00);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert_eq!(device.complete_transmission(), None);
+        assert!(!device.transfer_holding_to_shift());
     }
 
     #[test]
