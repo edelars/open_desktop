@@ -8702,6 +8702,493 @@ fn wrmsr_cstar_at_cpl3_never_reaches_the_member() {
     assert_eq!(cell.get(), 0x77);
 }
 
+// ---- S4-38L7ar: WRMSR IA32_SYSENTER_CS in the CPL0 set (write-only, caller's cell) ----
+
+const SYSENTER_CS_MSR: u64 = 0x174;
+const SYSENTER_ESP_MSR: u64 = 0x175;
+const SYSENTER_EIP_MSR: u64 = 0x176;
+/// The Linux boundary value: EDX:EAX = 0:0x10 (__KERNEL_CS).
+const SYSENTER_CS_EAX: u64 = 0x10;
+const SYSENTER_CS_EDX: u64 = 0;
+
+#[test]
+fn wrmsr_sysenter_cs_stores_exactly_edx_eax_and_changes_only_rip() {
+    // The boundary of the Linux run: `0F 30`, ECX = IA32_SYSENTER_CS, EDX:EAX = 0:0x10.
+    let cell = Cell::new(0xff);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    let (state, before, result) = run_star(
+        &set,
+        &WRMSR,
+        (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+        1,
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x10);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+
+    // The cell is NOT a 16-bit selector: the value is exactly EDX << 32 | EAX (full 64 bits, no
+    // canonical or reserved-bit check); the upper halves of RAX, RCX and RDX are ignored.
+    let cell = Cell::new(0x1234);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    let (_, _, result) = run_star(
+        &set,
+        &WRMSR,
+        (
+            SYSENTER_CS_MSR | (1 << 32),
+            0xffff_ffff_dead_beef,
+            0xffff_ffff_8000_0001,
+        ),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x8000_0001_dead_beef);
+    // A second write replaces the first; zero is a value too.
+    let (_, _, result) = run_star(&set, &WRMSR, (SYSENTER_CS_MSR, 0, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0);
+}
+
+#[test]
+fn wrmsr_sysenter_cs_composes_with_the_efer_base_and_syscall_members_in_one_run() {
+    // mov ecx,0x174; mov eax,0x10; xor edx,edx; wrmsr (SYSENTER_CS), after a STAR write
+    // (mov ecx,0xc0000081; xor eax,eax; mov edx,0x230010; wrmsr).
+    let code = [
+        0xb9, 0x81, 0x00, 0x00, 0xc0, 0x31, 0xc0, 0xba, 0x10, 0x00, 0x23, 0x00, 0x0f, 0x30, 0xb9,
+        0x74, 0x01, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xd2, 0x0f, 0x30,
+    ];
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star_cell = Cell::new(0);
+    let lstar_cell = Cell::new(0);
+    let cstar_cell = Cell::new(0);
+    let sysenter_cell = Cell::new(0);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_efer_write(&efer_cell)
+        .with_msr_fs_gs_base()
+        .with_msr_star_write(&star_cell)
+        .with_msr_lstar_write(&lstar_cell)
+        .with_msr_cstar_write(&cstar_cell)
+        .with_msr_sysenter_cs_write(&sysenter_cell);
+    let (state, before, result) = run_star(&set, &code, (0, 0, 0), 8);
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(star_cell.get(), 0x0023_0010_0000_0000);
+    assert_eq!(sysenter_cell.get(), 0x10);
+    assert_eq!((lstar_cell.get(), cstar_cell.get()), (0, 0));
+    assert_eq!(efer_cell.get(), 0xd00);
+    assert_eq!(state.gs_base, before.gs_base);
+    assert_eq!(state.fs_base, before.fs_base);
+}
+
+#[test]
+fn a_single_msr_write_changes_only_its_own_cell_with_all_four_members() {
+    // STAR, LSTAR, CSTAR and SYSENTER_CS present with sentinels: one WRMSR changes exactly one
+    // cell. The member alone also leaves the SYSCALL cells (not given) out of play.
+    let sentinels = [
+        0x1111_2222_3333_4444u64,
+        0x5555_6666_7777_8888,
+        0x9999_aaaa_bbbb_cccc,
+        0x0123_4567_89ab_cdef,
+    ];
+    for (which, index) in [STAR_MSR, LSTAR_MSR, CSTAR_MSR, SYSENTER_CS_MSR]
+        .into_iter()
+        .enumerate()
+    {
+        let star = Cell::new(sentinels[0]);
+        let lstar = Cell::new(sentinels[1]);
+        let cstar = Cell::new(sentinels[2]);
+        let sysenter = Cell::new(sentinels[3]);
+        let set = base()
+            .with_msr_star_write(&star)
+            .with_msr_lstar_write(&lstar)
+            .with_msr_cstar_write(&cstar)
+            .with_msr_sysenter_cs_write(&sysenter);
+        let (_, _, result) = run_star(&set, &WRMSR, (index, 0x0000_0007, 0x0000_0008), 1);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = sentinels;
+        expected[which] = 0x0000_0008_0000_0007;
+        assert_eq!(
+            [star.get(), lstar.get(), cstar.get(), sysenter.get()],
+            expected,
+            "{index:#x}"
+        );
+    }
+}
+
+#[test]
+fn wrmsr_sysenter_cs_without_the_member_is_unsupported_in_every_other_set() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star_cell = Cell::new(0x66);
+    let lstar_cell = Cell::new(0x88);
+    let cstar_cell = Cell::new(0x99);
+    for set in [
+        base(),
+        base().with_msr(&efer),
+        base().with_msr(&efer).with_msr_efer_write(&efer_cell),
+        base().with_msr_fs_gs_base(),
+        base().with_msr_star_write(&star_cell),
+        base().with_msr_lstar_write(&lstar_cell),
+        base().with_msr_cstar_write(&cstar_cell),
+        base()
+            .with_msr_star_write(&star_cell)
+            .with_msr_lstar_write(&lstar_cell)
+            .with_msr_cstar_write(&cstar_cell),
+        gs_set().with_msr(&efer).with_msr_efer_write(&efer_cell),
+    ] {
+        let (state, before, result) = run_star(
+            &set,
+            &WRMSR,
+            (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+            1,
+        );
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(efer_cell.get(), 0xd00);
+        assert_eq!(
+            (star_cell.get(), lstar_cell.get(), cstar_cell.get()),
+            (0x66, 0x88, 0x99)
+        );
+    }
+}
+
+#[test]
+fn wrmsr_sysenter_cs_outside_the_set_stays_refused_in_bare_run_and_msr_profiles() {
+    // Outside the set the refusal is the existing one: the exit of SYSENTER_CS equals the exit of
+    // an unmodelled MSR (a control index), nothing retires and the state is unchanged, also with
+    // `SysenterProbeV1` in this bare-run context (its #GP(0) in the set and at every CPL is
+    // covered by the precedence test below and by the `sysenter_msr_probes_fault_...` lib test).
+    let check = |profile: Option<&MsrProfile>, index: u64| {
+        let mut state = board_state();
+        state.gpr[1] = index;
+        state.gpr[0] = SYSENTER_CS_EAX;
+        state.gpr[2] = SYSENTER_CS_EDX;
+        let before = state.clone();
+        let mut memory = Memory::code(&WRMSR);
+        let result = match profile {
+            None => run(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                || false,
+            ),
+            Some(profile) => run_with_msr_profile(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                profile,
+                || false,
+            ),
+        };
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        result.exit
+    };
+    let unsupported = check(None, 0x1234_5678);
+    assert!(
+        matches!(unsupported, RunExit::Unsupported { .. }),
+        "{unsupported:?}"
+    );
+    assert_eq!(check(None, SYSENTER_CS_MSR), unsupported);
+    for profile in [
+        MsrProfile::EferReadOnlyV1(0xd00),
+        MsrProfile::GsBaseV1,
+        MsrProfile::FsBaseV1,
+        MsrProfile::KernelGsBaseV1,
+        MsrProfile::SysenterProbeV1,
+    ] {
+        assert_eq!(
+            check(Some(&profile), SYSENTER_CS_MSR),
+            check(Some(&profile), 0x1234_5678),
+            "{profile:?}"
+        );
+    }
+}
+
+#[test]
+fn the_sysenter_probe_profile_wins_over_the_member_in_both_builder_orders() {
+    // `SysenterProbeV1` handles 0x174..=0x176 and faults RDMSR/WRMSR with #GP(0) at any CPL. The
+    // member never overrides it: no cell write, no retirement, the state unchanged, whatever the
+    // order of `with_msr` and `with_msr_sysenter_cs_write`.
+    let probe = MsrProfile::SysenterProbeV1;
+    for member_first in [true, false] {
+        for (code, operation) in [(&WRMSR, "wrmsr"), (&RDMSR, "rdmsr")] {
+            let cell = Cell::new(0x77);
+            let set = if member_first {
+                base().with_msr_sysenter_cs_write(&cell).with_msr(&probe)
+            } else {
+                base().with_msr(&probe).with_msr_sysenter_cs_write(&cell)
+            };
+            let (state, before, result) = run_star(
+                &set,
+                code,
+                (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+                1,
+            );
+            assert_eq!(
+                exit(&result),
+                &gp0(),
+                "{operation}, member_first={member_first}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(cell.get(), 0x77, "{operation}, member_first={member_first}");
+        }
+    }
+
+    // The probe profile and the member on other indexes: ESP/EIP fault as before, STAR (not the
+    // probe's) is still stored by its own member next to it.
+    for member_first in [true, false] {
+        let sysenter = Cell::new(0x77);
+        let star = Cell::new(0);
+        let set = if member_first {
+            base()
+                .with_msr_sysenter_cs_write(&sysenter)
+                .with_msr_star_write(&star)
+                .with_msr(&probe)
+        } else {
+            base()
+                .with_msr(&probe)
+                .with_msr_star_write(&star)
+                .with_msr_sysenter_cs_write(&sysenter)
+        };
+        for index in [SYSENTER_ESP_MSR, SYSENTER_EIP_MSR] {
+            let (state, before, result) = run_star(&set, &WRMSR, (index, 1, 2), 1);
+            assert_eq!(exit(&result), &gp0(), "{index:#x}");
+            assert_eq!(state, before);
+        }
+        let (_, _, result) = run_star(&set, &WRMSR, (STAR_MSR, 0, STAR_EDX), 1);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(star.get(), 0x0023_0010_0000_0000);
+        assert_eq!(sysenter.get(), 0x77);
+    }
+}
+
+#[test]
+fn wrmsr_sysenter_cs_is_effective_under_the_other_msr_profiles_in_both_builder_orders() {
+    // The precedence concerns only `SysenterProbeV1`: with the profiles the Linux set uses (EFER
+    // read-only, FS/GS base members) the member is effective, in either builder order.
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    for member_first in [true, false] {
+        let cell = Cell::new(0);
+        let set = if member_first {
+            base()
+                .with_msr_sysenter_cs_write(&cell)
+                .with_msr(&efer)
+                .with_msr_efer_write(&efer_cell)
+                .with_msr_fs_gs_base()
+        } else {
+            base()
+                .with_msr(&efer)
+                .with_msr_efer_write(&efer_cell)
+                .with_msr_fs_gs_base()
+                .with_msr_sysenter_cs_write(&cell)
+        };
+        let (_, _, result) = run_star(
+            &set,
+            &WRMSR,
+            (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+            1,
+        );
+        assert_eq!(
+            result.instructions_executed, 1,
+            "member_first={member_first}"
+        );
+        assert_eq!(cell.get(), 0x10);
+        assert_eq!(efer_cell.get(), 0xd00);
+    }
+}
+
+#[test]
+fn wrmsr_other_msrs_stay_unsupported_with_the_sysenter_cs_member() {
+    // ESP, EIP, the SYSCALL MSRs (no member), EFER (no profile in this set), KERNEL_GS_BASE,
+    // FS/GS base (no base member), APIC_BASE and an unknown index: refused with 0x30, the cell
+    // untouched.
+    let cell = Cell::new(0xabcd);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    for index in [
+        SYSENTER_ESP_MSR,
+        SYSENTER_EIP_MSR,
+        0xc000_0080u64,
+        STAR_MSR,
+        LSTAR_MSR,
+        CSTAR_MSR,
+        SYSCALL_MASK_MSR,
+        0xc000_0102,
+        0xc000_0100,
+        0xc000_0101,
+        0x1b,
+        0x1234_5678,
+    ] {
+        let (state, before, result) =
+            run_star(&set, &WRMSR, (index, SYSENTER_CS_EAX, SYSENTER_CS_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xabcd);
+    }
+}
+
+#[test]
+fn wrmsr_with_the_sysenter_cs_low_bits_but_another_index_is_unsupported_without_mutation() {
+    // ECX is a 32-bit index: 0x174 under another high half or with other bits set is another
+    // MSR (a prefix-like 0x1_0000_0174 in RCX is the exception: RCX[63:32] is ignored, as for
+    // every cell, see the first test). 0xc000_0174 and 0x8000_0174 are not SYSENTER_CS.
+    let cell = Cell::new(0x77);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    for index in [
+        0x0001_0174u64,
+        0x8000_0174,
+        0xc000_0174,
+        0x0000_0074,
+        0x0000_1740,
+        0x0000_0173,
+    ] {
+        let (state, before, result) =
+            run_star(&set, &WRMSR, (index, SYSENTER_CS_EAX, SYSENTER_CS_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x77);
+    }
+}
+
+#[test]
+fn rdmsr_sysenter_cs_stays_unsupported_even_after_a_write() {
+    // No RDMSR of SYSENTER_CS in the set: the written value is observable only through the cell.
+    let cell = Cell::new(0);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    let (state, before, result) = run_star(&set, &RDMSR, (SYSENTER_CS_MSR, 0, 0), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_fs_gs_base()
+        .with_msr_sysenter_cs_write(&cell);
+    // mov ecx,0x174; mov eax,0x10; xor edx,edx; wrmsr; rdmsr
+    let mut code = vec![
+        0xb9, 0x74, 0x01, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xd2,
+    ];
+    code.extend_from_slice(&WRMSR);
+    code.extend_from_slice(&RDMSR);
+    let (state, _, result) = run_star(&set, &code, (0, 0, 0), 6);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(result.instructions_executed, 4, "the RDMSR is not retired");
+    assert_eq!(cell.get(), 0x10);
+    assert_eq!(state.rip, RIP + 14, "stopped at the RDMSR");
+}
+
+#[test]
+fn wrmsr_sysenter_cs_with_prefixes_is_unsupported_without_mutation() {
+    for code in [
+        &[0x66u8, 0x0f, 0x30][..],
+        &[0xf3, 0x0f, 0x30],
+        &[0xf2, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+        &[0x40, 0x0f, 0x30],
+        &[0x2e, 0x0f, 0x30],
+        &[0x3e, 0x0f, 0x30],
+        &[0x67, 0x0f, 0x30],
+    ] {
+        let cell = Cell::new(0x77);
+        let set = base().with_msr_sysenter_cs_write(&cell);
+        let (state, before, result) = run_star(
+            &set,
+            code,
+            (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+            1,
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x77);
+    }
+}
+
+#[test]
+fn sysenter_and_sysexit_stay_unsupported_in_the_set_with_the_sysenter_cs_member() {
+    // The stored SYSENTER_CS is never consumed: SYSENTER (0F 34) and SYSEXIT (0F 35, REX.W 0F 35)
+    // are refused without mutation, also after a write and with the SYSCALL members present;
+    // SYSCALL/SYSRET keep 0x05/0x07.
+    let star = Cell::new(0x0023_0010_0000_0000);
+    let cell = Cell::new(0x10);
+    let set = base()
+        .with_msr_star_write(&star)
+        .with_msr_sysenter_cs_write(&cell);
+    for (code, opcode) in [
+        (&[0x0f, 0x34][..], 0x34u8),
+        (&[0x0f, 0x35], 0x35),
+        (&[0x48, 0x0f, 0x35], 0x35),
+        (&[0x0f, 0x05], 0x05),
+        (&[0x0f, 0x07], 0x07),
+        (&[0x48, 0x0f, 0x07], 0x07),
+    ] {
+        let (state, before, result) = run_star(
+            &set,
+            code,
+            (SYSENTER_CS_MSR, SYSENTER_CS_EAX, SYSENTER_CS_EDX),
+            1,
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x10);
+        assert_eq!(star.get(), 0x0023_0010_0000_0000);
+    }
+}
+
+#[test]
+fn wrmsr_sysenter_cs_at_cpl3_never_reaches_the_member() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch or write.
+    let cell = Cell::new(0x77);
+    let set = base().with_msr_sysenter_cs_write(&cell);
+    let mut state = board_state();
+    state.gpr[1] = SYSENTER_CS_MSR;
+    state.gpr[0] = SYSENTER_CS_EAX;
+    state.gpr[2] = SYSENTER_CS_EDX;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(cell.get(), 0x77);
+}
+
 #[test]
 fn cr0_am_is_accepted_by_the_set_policy() {
     let set = cr_set();

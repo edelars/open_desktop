@@ -972,6 +972,10 @@ pub struct LoadedFirmwareBoard {
     /// The guest `IA32_CSTAR` (S4-38L7aq): `0` until a guest `WRMSR` of it through the CPL0 set.
     /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
     guest_cstar: u64,
+    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// The full 64-bit value written (the real register holds a 16-bit selector; not modelled as
+    /// such). Only stored; nothing consumes it (`SYSENTER`/`SYSEXIT` are not modelled).
+    guest_sysenter_cs: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1099,6 +1103,17 @@ impl LoadedFirmwareBoard {
     /// Stores the CSTAR a CPL0-set run left (S4-38L7aq).
     pub(crate) fn set_guest_cstar(&mut self, value: u64) {
         self.guest_cstar = value;
+    }
+
+    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_CS stays refused.
+    pub const fn guest_sysenter_cs(&self) -> u64 {
+        self.guest_sysenter_cs
+    }
+
+    /// Stores the SYSENTER_CS a CPL0-set run left (S4-38L7ar).
+    pub(crate) fn set_guest_sysenter_cs(&mut self, value: u64) {
+        self.guest_sysenter_cs = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1956,6 +1971,7 @@ impl AssembledBoard {
             guest_star: 0,
             guest_lstar: 0,
             guest_cstar: 0,
+            guest_sysenter_cs: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -2014,6 +2030,7 @@ impl AssembledBoard {
             guest_star: 0,
             guest_lstar: 0,
             guest_cstar: 0,
+            guest_sysenter_cs: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
