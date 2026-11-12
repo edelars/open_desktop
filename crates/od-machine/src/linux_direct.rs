@@ -42,6 +42,7 @@ use crate::acpi_blob::{
     AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
 };
 use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwareBoard};
+use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
@@ -538,6 +539,17 @@ pub struct LinuxStopRecord {
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
+    /// S4-38L8b: external interrupts the CPL0 set board delivered through the guest IDT in this
+    /// run. `0` while the board has no interrupt source (and on the `paged_probe` path).
+    pub irqs_delivered: u64,
+    /// S4-38L8b: IRQ 0 edges the board source reported; `0` while there is no source.
+    pub irq0_edges: u64,
+    /// S4-38L8b: instruction boundaries at which a pending vector was held back by RFLAGS.IF = 0.
+    pub irq_refused_masked: u64,
+    /// S4-38L8b: the same because of the one-instruction STI shadow.
+    pub irq_refused_shadow: u64,
+    /// S4-38L8b: quanta the board shortened to the deadline of the interrupt source.
+    pub quantum_cut_by_deadline: u64,
     /// S4-38L7: the run was made with the diagnostic mode past C7
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
@@ -591,6 +603,7 @@ pub fn run_linux_direct_board(
             changes: &[],
             cpuid_divergence_leaf: None,
             exceptions_delivered: 0,
+            irq: IrqCounters::default(),
             diagnostic_past_c7: false,
         },
     ))
@@ -604,6 +617,7 @@ struct SetExtras<'a> {
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
     exceptions_delivered: u64,
+    irq: IrqCounters,
     diagnostic_past_c7: bool,
 }
 
@@ -672,6 +686,11 @@ fn stop_record(
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
         exceptions_delivered: extras.exceptions_delivered,
+        irqs_delivered: extras.irq.irqs_delivered,
+        irq0_edges: extras.irq.irq0_edges,
+        irq_refused_masked: extras.irq.irq_refused_masked,
+        irq_refused_shadow: extras.irq.irq_refused_shadow,
+        quantum_cut_by_deadline: extras.irq.quantum_cut_by_deadline,
         diagnostic_past_c7: extras.diagnostic_past_c7,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
@@ -788,6 +807,18 @@ pub struct LinuxCpl0SetMembers {
     /// (`diagnostic_past_c7`). Not a member of the CPU profile and not in `set_members`. `false` in
     /// [`Self::minimal`] and [`Self::linux_default`]. Has no effect without `cpuid`.
     pub diagnostic_past_c7: bool,
+    /// S4-38L8b: the interrupt hook of the CPL0 set loop. With it each instruction boundary asks
+    /// the board's interrupt source for a pending vector and delivers it through the guest IDT
+    /// when RFLAGS.IF = 1 and the STI shadow is `Clear` (the loop holds the vector back
+    /// otherwise, and counts it). The CPU activity is checked by the delivery itself: with
+    /// IF = 1, a `Clear` shadow and an activity other than `Running` it refuses
+    /// (`ActivityOutsideProfile`) and the run stops with `run_failed`, not a quiet skip. A quantum is cut to
+    /// the source's next deadline and a guest write to the PIT ports ends the quantum when the
+    /// source asks for it. The board has no source yet (an empty one that never gives a vector),
+    /// so with or without the member a run is the same. Not a CPU instruction, but a member of
+    /// the board set: it is listed in `set_members` as `irq`. `false` in [`Self::minimal`], `true`
+    /// in [`Self::linux_default`].
+    pub irq: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -813,6 +844,7 @@ impl LinuxCpl0SetMembers {
             pci_config: false,
             fetch_cache: false,
             diagnostic_past_c7: false,
+            irq: false,
         }
     }
 
@@ -844,6 +876,7 @@ impl LinuxCpl0SetMembers {
             msr_kernel_gs_base: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
+            irq: true,
             ..Self::minimal()
         }
     }
@@ -970,11 +1003,15 @@ pub fn run_linux_direct_board_set(
         set = set.with_pci_config(&pci_cell);
         names.push("pci_config".into());
     }
+    if members.irq {
+        names.push("irq".into());
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
         members.cpuid && !members.diagnostic_past_c7,
         members.fetch_cache,
+        members.irq,
     );
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
@@ -1004,6 +1041,7 @@ pub fn run_linux_direct_board_set(
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
             exceptions_delivered: report.exceptions_delivered,
+            irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
     ))
@@ -8214,10 +8252,12 @@ mod tests {
                 msr_syscall_mask: true,
                 msr_kernel_gs_base: true,
                 fetch_cache: true,
+                irq: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
         );
         assert!(!LinuxCpl0SetMembers::minimal().fetch_cache);
+        assert!(!LinuxCpl0SetMembers::minimal().irq);
         assert!(LinuxCpl0SetMembers::linux_default().pio_u8);
         assert!(!LinuxCpl0SetMembers::minimal().pio_u8);
         let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
@@ -8241,7 +8281,8 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
@@ -8357,7 +8398,8 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
         assert_eq!(boot.board.state().cr3, None);
@@ -8537,7 +8579,8 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
     }
@@ -9972,6 +10015,7 @@ mod tests {
             |range| writes.push((range.start().get(), range.len())),
             true,
             cache,
+            None,
         );
         let mut memory = Vec::new();
         for (start, len) in [
@@ -10536,5 +10580,528 @@ mod tests {
         }
         assert_eq!(runs[0].0, runs[1].0, "stop records differ");
         assert_eq!(runs[0].1, runs[1].1, "guest RAM differs");
+    }
+
+    // ---- S4-38L8b: the interrupt source hook of the CPL0 set board ----
+
+    mod irq_hook {
+        use super::*;
+        use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
+        use crate::paged_memory_adapter::IrqDeliveryFailure;
+        use od_isa::{Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal, StiShadow};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        /// What the scripted source does, shared with the test that owns it.
+        #[derive(Default)]
+        struct Script {
+            pending: Option<u8>,
+            /// Stays pending after the acknowledge (a level line).
+            keep_pending: bool,
+            acked: Vec<u8>,
+            deadline: Option<u64>,
+            pit_ends: bool,
+            polls: u64,
+        }
+
+        #[derive(Clone, Default)]
+        struct ScriptedSource(Rc<RefCell<Script>>);
+
+        impl BoardIrqSource for ScriptedSource {
+            fn pending_vector(&self) -> Option<u8> {
+                self.0.borrow().pending
+            }
+            fn acknowledge(&mut self, vector: u8) {
+                let mut script = self.0.borrow_mut();
+                script.acked.push(vector);
+                if !script.keep_pending {
+                    script.pending = None;
+                }
+            }
+            fn next_deadline_ns(&self) -> Option<u64> {
+                let mut script = self.0.borrow_mut();
+                script.polls += 1;
+                script.deadline
+            }
+            fn pit_write_ends_quantum(&self) -> bool {
+                self.0.borrow().pit_ends
+            }
+        }
+
+        const IRQ_IDT_AT: u64 = DATA + 0x2000;
+        const IRQ_HANDLER_AT: u64 = ENTRY + 0x100;
+        const IRQ_VECTOR: u8 = 0x30;
+        /// `CLD`: a one-byte instruction the minimal set retires.
+        const CLD: u8 = 0xFC;
+
+        /// A board whose entry is `code`, with an IDT whose gate `IRQ_VECTOR` is an interrupt gate
+        /// to a handler of `CLD`s, IF = 1, the loader's `Clear` shadow and `Running` activity.
+        fn irq_board(code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = boot_with_entry(code);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &[CLD; 8]);
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: IRQ_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.rflags = 2 | (1 << 9);
+            assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            (boot, file)
+        }
+
+        /// One call of the set loop with the hook (the CPUID boundary off, no fetch cache).
+        fn run_hook(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+            skip_first_boundary: bool,
+        ) -> (LongModeState, PagedCpl0SetReport) {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = minimal_set(&cli).with_pio_u8().with_sti(&sti);
+            let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+            let mut state = boot.board.state().clone();
+            state.cr3 = Some(cr3);
+            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+                &mut state,
+                boot.board.bus_mut(),
+                cr3,
+                efer,
+                long64(),
+                budget,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                false,
+                false,
+                Some(IrqBoundaryHook {
+                    source,
+                    counters,
+                    skip_first_boundary,
+                }),
+            );
+            (state, report)
+        }
+
+        #[test]
+        fn members_irq_is_on_in_linux_default_off_in_minimal_and_listed_last() {
+            assert!(LinuxCpl0SetMembers::linux_default().irq);
+            assert!(!LinuxCpl0SetMembers::minimal().irq);
+            let (mut boot, file) = boot_with_entry(&[CLD]);
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.set_members.last().map(String::as_str), Some("irq"));
+            let (mut boot, file) = boot_with_entry(&[CLD]);
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+            assert!(!record.set_members.iter().any(|name| name == "irq"));
+        }
+
+        #[test]
+        fn the_empty_source_changes_nothing_and_the_counters_are_zero() {
+            let program = com1_program(b'X');
+            let mut runs = Vec::new();
+            for irq in [false, true] {
+                let (mut boot, file) = boot_with_entry(&program);
+                let record = run_set_facade(
+                    &mut boot,
+                    &file,
+                    64,
+                    LinuxCpl0SetMembers {
+                        irq,
+                        ..LinuxCpl0SetMembers::linux_default()
+                    },
+                );
+                assert_eq!(record.com1, b"X");
+                assert_eq!(
+                    (
+                        record.irqs_delivered,
+                        record.irq0_edges,
+                        record.irq_refused_masked,
+                        record.irq_refused_shadow,
+                        record.quantum_cut_by_deadline
+                    ),
+                    (0, 0, 0, 0, 0)
+                );
+                runs.push((
+                    record.exit,
+                    record.exit_detail,
+                    record.set_exit_detail,
+                    record.retired,
+                    record.quanta,
+                    record.rip,
+                    record.rflags,
+                    record.gpr,
+                    record.virtual_ns,
+                    record.com1,
+                    record.cr3,
+                ));
+            }
+            assert_eq!(runs[0], runs[1]);
+        }
+
+        #[test]
+        fn a_pending_vector_is_delivered_at_the_boundary_and_acknowledged_after() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // The delivery retires nothing; the budget of 1 is the handler's first `CLD`.
+            let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 1, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+            assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
+            // The frame: RIP = the interrupted instruction, CS, RFLAGS with IF, old RSP, SS.
+            let frame = state.gpr[Register::Rsp as usize];
+            assert_eq!(read_qword(&mut boot, frame), ENTRY);
+            assert_eq!(read_qword(&mut boot, frame + 8), 0x10);
+            assert_ne!(read_qword(&mut boot, frame + 16) & (1 << 9), 0);
+            assert_eq!(read_qword(&mut boot, frame + 24), rsp);
+        }
+
+        #[test]
+        fn an_empty_boundary_asks_once_and_changes_nothing() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let rip_before = boot.board.state().rip;
+            let script = ScriptedSource::default();
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 3);
+            assert_eq!(state.rip, rip_before + 3);
+            assert_eq!(counters, IrqCounters::default());
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn interrupts_masked_refuses_without_acknowledge_and_counts_every_boundary() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().rflags = 2;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
+            // Boundaries 0, 1 and 2; the budget check precedes the interrupt check at 3.
+            assert_eq!(report.instructions_executed, 3);
+            assert_eq!(counters.irq_refused_masked, 3);
+            assert_eq!(counters.irq_refused_shadow, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(script.0.borrow().pending, Some(IRQ_VECTOR), "still pending");
+            assert_eq!(state.rip, ENTRY + 3);
+        }
+
+        #[test]
+        fn the_sti_shadow_refuses_once_then_the_vector_is_delivered() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // Boundary 0: shadow, refused; `CLD` retires and ends the shadow; boundary 1:
+            // delivered; the second retired instruction is the handler's first.
+            let (state, report) = run_hook(&mut boot, 2, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 2, "{report:?}");
+            assert_eq!(counters.irq_refused_shadow, 1);
+            assert_eq!(counters.irq_refused_masked, 0);
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+        }
+
+        #[test]
+        fn an_unknown_shadow_refuses_like_a_shadow() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().sti_shadow = None;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (_, _report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(counters.irq_refused_shadow, 1);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn the_first_boundary_of_a_resumed_partial_rep_is_skipped() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            {
+                let mut script = script.0.borrow_mut();
+                script.pending = Some(IRQ_VECTOR);
+                script.keep_pending = true;
+            }
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // Boundary 0 is skipped: `CLD` retires and the budget ends the call.
+            let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, true);
+            assert_eq!(report.instructions_executed, 1);
+            assert_eq!(state.rip, ENTRY + 1);
+            assert_eq!(counters, IrqCounters::default());
+            assert!(script.0.borrow().acked.is_empty());
+            // Without the skip the same pending vector is delivered at once.
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let mut counters = IrqCounters::default();
+            let (state, _) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+        }
+
+        #[test]
+        fn a_gate_that_cannot_deliver_stops_with_an_error_and_acknowledges_nothing() {
+            // No gate written for the vector: P = 0.
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            write_phys(
+                &mut boot,
+                IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16,
+                &[0u8; 16],
+            );
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let before = boot.board.state().clone();
+            let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::IrqDeliveryFailed {
+                    vector: IRQ_VECTOR,
+                    failure: IrqDeliveryFailure::Refused(
+                        Cpl0ExternalInterruptRefusal::GateNotPresent
+                    ),
+                },
+                "{report:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(
+                (state.rip, state.gpr, state.rflags),
+                (before.rip, before.gpr, before.rflags)
+            );
+        }
+
+        #[test]
+        fn a_failed_idt_read_is_aborted_not_silent() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            // The IDT lies in an unmapped page: the gate read faults.
+            boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+                base: PF_VA,
+                limit: 0xFFF,
+            });
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (_, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
+                panic!("{report:?}");
+            };
+            assert_eq!(*vector, IRQ_VECTOR);
+            assert!(
+                matches!(
+                    failure,
+                    IrqDeliveryFailure::Aborted {
+                        phase: Cpl0ExternalInterruptPhase::IdtGateRead,
+                        ..
+                    }
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn a_failed_frame_store_is_aborted_and_leaves_the_cpu_state_unchanged() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            // The stack lies in an unmapped page: the first frame store faults.
+            boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let before = boot.board.state().clone();
+            let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
+                panic!("{report:?}");
+            };
+            assert_eq!(*vector, IRQ_VECTOR);
+            assert!(
+                matches!(
+                    failure,
+                    IrqDeliveryFailure::Aborted {
+                        phase: Cpl0ExternalInterruptPhase::StackWrite { .. },
+                        ..
+                    }
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(
+                (state.rip, state.gpr, state.rflags),
+                (before.rip, before.gpr, before.rflags)
+            );
+        }
+
+        #[test]
+        fn the_board_reports_a_failed_delivery_as_a_run_error() {
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            write_phys(
+                &mut boot,
+                IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16,
+                &[0u8; 16],
+            );
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let error = run_linux_direct_board_set(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                8,
+                LinuxCpl0SetMembers::linux_default(),
+            )
+            .expect_err("the delivery is refused");
+            assert_eq!(error.code, "run_failed");
+            assert!(error.detail.contains("external interrupt"), "{error:?}");
+            assert!(script.0.borrow().acked.is_empty());
+            // Without the `irq` member the same source is never asked.
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                2,
+                LinuxCpl0SetMembers {
+                    irq: false,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+            );
+            assert_eq!(record.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(script.0.borrow().polls, 0);
+        }
+
+        #[test]
+        fn the_board_delivers_and_counts_through_the_facade() {
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 3, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
+            assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn a_deadline_shortens_the_quantum_and_the_run_resumes_to_the_budget() {
+            let program = [CLD; 12];
+            // Without a deadline the whole budget is one quantum.
+            let (mut boot, file) = boot_with_entry(&program);
+            let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+            assert_eq!((record.retired, record.quanta), (8, 1));
+            assert_eq!(record.quantum_cut_by_deadline, 0);
+            // A deadline 5 ns ahead: 5 instructions, then the time is up and every quantum is
+            // one instruction (the minimum) until the budget is spent.
+            let (mut boot, file) = boot_with_entry(&program);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!(record.retired, 8);
+            // Quanta of 5, 1, 1 (each cut) and the last 1 that is the whole rest (not a cut).
+            assert_eq!((record.quanta, record.quantum_cut_by_deadline), (4, 3));
+            assert_eq!(record.rip, ENTRY + 8);
+            // The deadline is not consulted without the member.
+            let (mut boot, file) = boot_with_entry(&program);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                8,
+                LinuxCpl0SetMembers {
+                    irq: false,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+            );
+            assert_eq!((record.quanta, record.quantum_cut_by_deadline), (1, 0));
+            assert_eq!(script.0.borrow().polls, 0);
+        }
+
+        /// `MOV AL, 0x34; MOV DX, 0x43; OUT DX, AL; CLD; CLD; CLD; CLD`.
+        const PIT_WRITE_PROGRAM: [u8; 11] =
+            [0xB0, 0x34, 0x66, 0xBA, 0x43, 0x00, 0xEE, CLD, CLD, CLD, CLD];
+
+        #[test]
+        fn a_pit_write_ends_the_quantum_only_for_a_source_that_asks() {
+            let mut exits = Vec::new();
+            for pit_ends in [false, true] {
+                let (mut boot, _) = irq_board(&PIT_WRITE_PROGRAM);
+                let script = ScriptedSource::default();
+                script.0.borrow_mut().pit_ends = pit_ends;
+                let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+                let (state, report) = run_hook(&mut boot, 20, &mut source, &mut counters, false);
+                exits.push((
+                    report.exit,
+                    report.instructions_executed,
+                    state.rip,
+                    counters,
+                ));
+            }
+            // Without the request the loop runs on past the OUT to the filler after the code.
+            assert!(
+                matches!(
+                    &exits[0].0,
+                    PagedCpl0SetExit::Run(RunExit::Unsupported { .. })
+                ),
+                "{:?}",
+                exits[0]
+            );
+            assert_eq!(exits[0].3.pit_write_quantum_ends, 0);
+            // With it the quantum ends right after the OUT (three retired instructions).
+            assert_eq!(
+                exits[1].0,
+                PagedCpl0SetExit::Run(RunExit::StopRequested),
+                "{:?}",
+                exits[1]
+            );
+            assert_eq!((exits[1].1, exits[1].2), (3, ENTRY + 7));
+            assert_eq!(exits[1].3.pit_write_quantum_ends, 1);
+        }
+
+        #[test]
+        fn a_pit_write_quantum_end_is_resumed_by_the_board_and_deadline_is_asked_again() {
+            let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pit_ends = true;
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!((record.retired, record.rip), (6, ENTRY + 10));
+            // The OUT ended the first quantum; the rest is the second.
+            assert_eq!(record.quanta, 2);
+            // One question before each quantum.
+            assert_eq!(script.0.borrow().polls, 2);
+            // The same program without the request is one quantum.
+            let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
+            let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
+            assert_eq!((record.retired, record.quanta), (6, 1));
+        }
     }
 }
