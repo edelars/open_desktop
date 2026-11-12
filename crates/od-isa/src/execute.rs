@@ -2116,7 +2116,9 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
-    /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms.
+    /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms and, since S4-38L7bk,
+    /// the exact bare `IN AL, imm8` (`E4 ib`) and `OUT imm8, AL` (`E6 ib`) forms (port = the
+    /// zero-extended immediate; same port callback and port-error behaviour).
     /// They execute only through [`run_with_cpl0_profile_set_and_pio`]; any
     /// other entry point, and a set built without this call, leaves them
     /// `Unsupported` without touching a port.
@@ -19789,6 +19791,40 @@ fn commit_pio_u8<P: crate::PortIo + ?Sized>(
     PioU8Commit::Retired
 }
 
+/// S4-38L7bk: commit of the exact bare `IN AL, imm8` (`E4 ib`) / `OUT imm8, AL` (`E6 ib`) forms.
+/// The port is the zero-extended immediate (length 2, no prefix); the byte access is the same as in
+/// [`commit_pio_u8`]. The port callback runs before any state change, so a failure leaves RIP and
+/// AL untouched. Flags are not touched.
+fn commit_pio_u8_imm<P: crate::PortIo + ?Sized>(
+    state: &mut LongModeState,
+    instruction: &long_decode::Instruction,
+    pio: &mut P,
+) -> PioU8Commit<P::Error> {
+    let opcode = instruction.opcode.byte;
+    if instruction.length != 2 || instruction.prefixes != Prefixes::default() {
+        return PioU8Commit::Unsupported { opcode };
+    }
+    match instruction.operation {
+        Operation::InAlImm8 { port } => match pio.read_u8(u16::from(port)) {
+            Ok(value) => state.write(
+                RegisterView::low(Register::Rax, OperandSize::Byte),
+                u64::from(value),
+            ),
+            Err(error) => return PioU8Commit::PortIo { opcode, error },
+        },
+        Operation::OutImm8Al { port } => {
+            if let Err(error) =
+                pio.write_u8(u16::from(port), state.gpr[Register::Rax as usize] as u8)
+            {
+                return PioU8Commit::PortIo { opcode, error };
+            }
+        }
+        _ => return PioU8Commit::Unsupported { opcode },
+    }
+    state.rip = state.rip.wrapping_add(u64::from(instruction.length));
+    PioU8Commit::Retired
+}
+
 /// Continue an execution while carrying the caller's explicit RFLAGS
 /// definedness snapshot. Use the `rflags_defined` value returned by the prior
 /// call; this function does not infer execution history from guest state.
@@ -33153,6 +33189,19 @@ fn step_configured(
                 },
             );
         }
+        Operation::InAlImm8 { .. } | Operation::OutImm8Al { .. }
+            if pio_u8.is_some_and(|bridge| bridge.byte) =>
+        {
+            let bridge = pio_u8.expect("guarded by the match arm").port;
+            return Ok(
+                match commit_pio_u8_imm(state, &instruction, &mut **bridge.borrow_mut()) {
+                    PioU8Commit::Retired => StepOutcome::Advanced,
+                    PioU8Commit::Unsupported { opcode } | PioU8Commit::PortIo { opcode, .. } => {
+                        StepOutcome::Unsupported { opcode }
+                    }
+                },
+            );
+        }
         _ => {}
     }
     if instruction.operation == Operation::Hlt {
@@ -35181,6 +35230,8 @@ fn step_configured(
         | Operation::Hlt
         | Operation::InAlDx
         | Operation::OutDxAl
+        | Operation::InAlImm8 { .. }
+        | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
         | Operation::OutDx { .. } => false,
         Operation::Swapgs => true,
@@ -37557,6 +37608,8 @@ fn step_configured(
     match instruction.operation {
         Operation::InAlDx
         | Operation::OutDxAl
+        | Operation::InAlImm8 { .. }
+        | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
         | Operation::OutDx { .. } => {
             unreachable!("PIO operations are rejected outside the explicit PIO entry")

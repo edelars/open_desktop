@@ -3029,6 +3029,110 @@ mod tests {
         );
     }
 
+    fn host_read_port(boot: &mut LinuxDirectBoot, port: u16) -> u32 {
+        boot.board
+            .bus_mut()
+            .read_port(crate::PortAddress::new(port), crate::AccessWidth::Byte)
+            .expect("host port read")
+    }
+
+    #[test]
+    fn set_facade_out_imm8_al_programs_pit_channel_2_through_the_bus() {
+        // S4-38L7bk. CLI; MOV AL,0x01; OUT 0x61,AL (gate high); MOV AL,0xA0; OUT 0x43,AL
+        // (channel 2, MSB only, mode 0); MOV AL,0x10; OUT 0x42,AL (reload 0x1000); HLT. The same
+        // programming by the host gives the reference: the guest reaches the PIT only through
+        // the three `E6 ib` writes (RDX stays 0, so no DX form is involved).
+        let code = [
+            0xFA, 0xB0, 0x01, 0xE6, 0x61, 0xB0, 0xA0, 0xE6, 0x43, 0xB0, 0x10, 0xE6, 0x42, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 8, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 14, "after the HLT");
+        assert_eq!(record.gpr[Register::Rax as usize] & 0xFF, 0x10);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        // Port B bit 0 (the gate) was written through port 0x61.
+        assert_eq!(host_read_port(&mut boot, 0x61) & 1, 1);
+        // The channel 2 counter answers now (MSB-only mode 0, reload 0x1000): its MSB is the
+        // value the host programming gives on a twin board.
+        let guest_counter = host_read_port(&mut boot, 0x42);
+        let (mut twin, _) = boot_with_entry(&code);
+        program_pit_channel_2(&mut twin);
+        assert_eq!(guest_counter, host_read_port(&mut twin, 0x42));
+        assert_eq!(guest_counter, 0x10, "reload 0x1000, MSB only");
+    }
+
+    #[test]
+    fn set_facade_in_al_imm8_reads_the_pit_through_the_bus_and_ticks_once() {
+        // S4-38L7bk. MOV EAX,0x123456AB; IN AL,0x42; HLT with channel 2 programmed by the host:
+        // AL is the byte the board gives (the same as `IN AL,DX` with DX = 0x42), RAX[63:8] is
+        // kept and RDX is not touched. The PIT read ticks the board clock once, like the DX form.
+        let mut code = vec![0xFA];
+        code.extend(mov_eax(0x1234_56AB));
+        code.extend([0xE4, 0x42, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        program_pit_channel_2(&mut boot);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 1 + 5 + 2 + 1);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rax as usize] & !0xFF, 0x1234_5600);
+        assert_eq!(record.virtual_ns, 4 + 1_000, "one timer read, 1 us");
+        // The DX form on a twin board reads the same byte.
+        let mut dx_code = vec![0xFA];
+        dx_code.extend(mov_eax(0x1234_56AB));
+        dx_code.extend(mov_edx(0x42));
+        dx_code.extend([0xEC, 0xF4]);
+        let (mut twin, twin_file) = boot_with_entry(&dx_code);
+        program_pit_channel_2(&mut twin);
+        let twin_record = run_set_facade(&mut twin, &twin_file, 64, halting_default());
+        assert_eq!(twin_record.exit, PagedProbeExit::Halted, "{twin_record:?}");
+        assert_eq!(
+            record.gpr[Register::Rax as usize],
+            twin_record.gpr[Register::Rax as usize]
+        );
+    }
+
+    #[test]
+    fn set_facade_out_in_imm8_are_unsupported_without_the_pio_member() {
+        for (code, opcode) in [
+            (vec![0xFA, 0xB0, 0x01, 0xE6, 0x61, 0xF4], 0xE6u8),
+            (vec![0xFA, 0xB0, 0x01, 0xE4, 0x61, 0xF4], 0xE4),
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                LinuxCpl0SetMembers {
+                    pio_u8: false,
+                    ..halting_default()
+                },
+            );
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!((record.retired, record.rip), (2, ENTRY + 3));
+            assert_eq!(record.gpr[Register::Rax as usize] & 0xFF, 0x01);
+            assert_eq!(record.virtual_ns, 2, "no port access, no tick");
+            assert_eq!(host_read_port(&mut boot, 0x61) & 1, 0, "port B untouched");
+        }
+    }
+
+    #[test]
+    fn set_facade_out_imm8_to_an_unmapped_port_is_the_port_io_exit_with_rip_on_the_instruction() {
+        // CLI; MOV AL,1; OUT 0x44,AL; HLT. Nothing is bound at 0x44 (the PIT owns 0x40..=0x43).
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xB0, 0x01, 0xE6, 0x44, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        let error = crate::BusAccessError::UnmappedPort(crate::PortAddress::new(0x44));
+        assert_eq!(record.exit, PagedProbeExit::PortIo(error), "{record:?}");
+        assert_eq!((record.retired, record.rip), (2, ENTRY + 3));
+    }
+
     #[test]
     fn set_facade_mov_rax_cr3_returns_the_board_cr3_under_the_owned_cr3_member() {
         // S4-38L4c: CLI; MOV RAX, CR3; HLT (and the REX.W spelling). `cpu_owned_cr3` is part of

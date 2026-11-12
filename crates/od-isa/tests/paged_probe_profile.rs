@@ -2751,3 +2751,56 @@ fn paged_probe_profiles_keep_wrmsr_ia32_kernel_gs_base_unsupported_and_pure() {
     assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
     assert_eq!(cpu, before);
 }
+
+#[test]
+fn out_in_imm8_stay_unsupported_in_the_paged_probe_profiles() {
+    // S4-38L7bk belongs to the CPL0 set only (member `pio_u8`); the paged probe profiles refuse
+    // `E6 ib` / `E4 ib` with their own opcode, without a port access and without mutation.
+    for (bytes, opcode) in [
+        (&[0xe6, 0x43][..], 0xe6u8),
+        (&[0xe4, 0x40][..], 0xe4),
+        (&[0xe6, 0x00][..], 0xe6),
+        (&[0xe4, 0xff][..], 0xe4),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty());
+        assert!(pio.writes.is_empty());
+
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = execute::step_paged_stack_probe(
+            PagedCpl0StackProbeV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(cpu, before);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}

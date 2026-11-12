@@ -2881,13 +2881,14 @@ fn pio_does_not_widen_to_prefixed_or_other_port_forms() {
     let cli = CliProfile::NonPviLong64V1;
     // The 0x66/REP prefixes are consumed as legacy prefixes and the following
     // opcode byte is reported, so `66 EE` and `F3 EE` give `Unsupported` with
-    // the `OUT` opcode `0xee`, not #UD. The imm8 forms (E4/E6) and the word
-    // form (ED/EF) report their own opcode.
+    // the `OUT` opcode `0xee`, not #UD. The word/dword imm8 forms (E5/E7) and the
+    // word form (ED/EF) report their own opcode. The byte imm8 forms (E4/E6) are
+    // admitted since S4-38L7bk (their former entries moved to the `*_imm8_*` tests below).
     for (code, opcode) in [
         (&[0x66, 0xee][..], 0xee),
         (&[0xf3, 0xee][..], 0xee),
-        (&[0xe6, 0x80][..], 0xe6),
-        (&[0xe4, 0x80][..], 0xe4),
+        (&[0xe7, 0x80][..], 0xe7),
+        (&[0xe5, 0x80][..], 0xe5),
         (&[0xef][..], 0xef),
         (&[0xed][..], 0xed),
     ] {
@@ -36766,4 +36767,327 @@ fn segment_cmov_load_is_not_reachable_from_cpl3() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7bk: `OUT imm8, AL` (`E6 ib`) and `IN AL, imm8` (`E4 ib`) under `pio_u8` ----
+
+/// Decoy RDX: a DX-based implementation would touch this port instead of the immediate.
+const IMM8_DECOY_RDX: u64 = 0x3f8;
+
+fn imm8_state() -> LongModeState {
+    let mut state = board_state();
+    state.gpr[0] = 0x1111_2222_3333_44a5;
+    state.gpr[2] = IMM8_DECOY_RDX;
+    state
+}
+
+#[test]
+fn out_imm8_al_writes_al_to_the_immediate_port_and_changes_only_rip() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = imm8_state();
+    let mut expected = state.clone();
+    expected.rip = RIP + 2;
+    let mut memory = Memory::code(&[0xe6, 0x43]);
+    let mut pio = TestPio::default();
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 1);
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.writes, [(0x43, 0xa5)]);
+    assert!(pio.reads.is_empty());
+    // Registers, flags and the rest of the state are unchanged; RDX is not the port.
+    assert_eq!(state, expected);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn in_al_imm8_loads_al_from_the_immediate_port_and_keeps_the_rest_of_rax() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = imm8_state();
+    let mut expected = state.clone();
+    expected.rip = RIP + 2;
+    expected.gpr[0] = 0x1111_2222_3333_445a;
+    let mut memory = Memory::code(&[0xe4, 0x40]);
+    let mut pio = TestPio {
+        read_value: 0x5a,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 1);
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.reads, [0x40]);
+    assert!(pio.writes.is_empty());
+    assert_eq!(state, expected);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn imm8_port_is_zero_extended_for_every_boundary_value() {
+    let cli = CliProfile::NonPviLong64V1;
+    for port in [0x00u8, 0x01, 0x7f, 0x80, 0xfe, 0xff] {
+        let mut state = imm8_state();
+        let mut memory = Memory::code(&[0xe6, port]);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 1);
+        assert_eq!(result.instructions_executed, 1, "{port:#x}");
+        assert_eq!(pio.writes, [(u16::from(port), 0xa5)], "{port:#x}");
+
+        let mut state = imm8_state();
+        let mut memory = Memory::code(&[0xe4, port]);
+        let mut pio = TestPio {
+            read_value: 0x01,
+            ..TestPio::default()
+        };
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 1);
+        assert_eq!(result.instructions_executed, 1, "{port:#x}");
+        assert_eq!(pio.reads, [u16::from(port)], "{port:#x}");
+        assert_eq!(state.gpr[0], 0x1111_2222_3333_4401, "{port:#x}");
+    }
+}
+
+#[test]
+fn imm8_forms_ignore_the_flags_and_the_upper_rdx() {
+    let cli = CliProfile::NonPviLong64V1;
+    for flags in [2u64, 2 | IF, 2 | 0x8d5 | IF] {
+        let mut state = imm8_state();
+        state.rflags = flags;
+        state.gpr[2] = 0xffff_ffff_ffff_0043;
+        let mut memory = Memory::code(&[0xe6, 0x61, 0xe4, 0x61]);
+        let mut pio = TestPio {
+            read_value: 0x0f,
+            ..TestPio::default()
+        };
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 2);
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(pio.writes, [(0x61, 0xa5)]);
+        assert_eq!(pio.reads, [0x61]);
+        assert_eq!(state.rflags, flags);
+        assert_eq!(state.gpr[2], 0xffff_ffff_ffff_0043);
+        assert_eq!(state.gpr[0], 0x1111_2222_3333_440f);
+        assert_eq!(state.rip, RIP + 4);
+    }
+}
+
+#[test]
+fn the_pit_boundary_sequence_runs_out_then_in_through_the_port_callback() {
+    // S4-38L7bj boundary bytes: `out %al,$0x43; in $0x40,%al; mov %eax,%edx; in $0x40,%al`.
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = imm8_state();
+    let mut memory = Memory::code(&[0xe6, 0x43, 0xe4, 0x40, 0x89, 0xc2, 0xe4, 0x40]);
+    let mut pio = TestPio {
+        read_value: 0x5a,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 4);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(pio.writes, [(0x43, 0xa5)]);
+    assert_eq!(pio.reads, [0x40, 0x40]);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_445a);
+    assert_eq!(state.gpr[2], 0x3333_445a, "MOV EDX, EAX after the first IN");
+    assert_eq!(state.rip, RIP + 8);
+}
+
+#[test]
+fn imm8_port_errors_are_typed_and_leave_the_instruction_unretired() {
+    let cli = CliProfile::NonPviLong64V1;
+    for (code, fail_read, expected) in [
+        (&[0xe6u8, 0x43][..], false, "write failed"),
+        (&[0xe4, 0x40][..], true, "read failed"),
+    ] {
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio {
+            read_value: 0x5a,
+            fail_read,
+            fail_write: !fail_read,
+            ..TestPio::default()
+        };
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+        assert_eq!(result.exit, Cpl0ProfileSetExit::PortIo(expected));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(pio.reads.len() + pio.writes.len(), 1, "one callback");
+        assert_eq!(state, before, "RIP stays on the instruction, AL untouched");
+    }
+}
+
+#[test]
+fn imm8_forms_without_the_pio_member_or_entry_stay_unsupported_and_untouched() {
+    let cli = CliProfile::NonPviLong64V1;
+    let no_member = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+    for (code, opcode) in [(&[0xe6u8, 0x43][..], 0xe6u8), (&[0xe4, 0x40][..], 0xe4)] {
+        // The pio entry with the member off.
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &no_member, &mut pio, 64);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+        // The member on but the entry without a port.
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &pio_set(&cli), 64).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn imm8_forms_stay_unsupported_outside_the_set_in_bare_run_and_step() {
+    for (code, opcode) in [(&[0xe6u8, 0x43][..], 0xe6u8), (&[0xe4, 0x40][..], 0xe4)] {
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = od_isa::execute::step(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        );
+        assert_eq!(
+            result,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode })
+        );
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn imm8_forms_are_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let cli = CliProfile::NonPviLong64V1;
+    for code in [[0xe6u8, 0x43], [0xe4, 0x40]] {
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&code);
+        let mut pio = TestPio::default();
+        let error = run_with_cpl0_profile_set_and_pio(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &pio_set(&cli),
+            None,
+            &mut pio,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!((memory.fetches, &state), (0, &before));
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn imm8_forms_refuse_every_prefix_and_the_wider_forms_with_the_exact_opcode() {
+    let cli = CliProfile::NonPviLong64V1;
+    for (code, opcode) in [
+        (&[0x66, 0xe6, 0x43][..], 0xe6u8),
+        (&[0x66, 0xe4, 0x40][..], 0xe4),
+        (&[0x67, 0xe6, 0x43][..], 0xe6),
+        (&[0x67, 0xe4, 0x40][..], 0xe4),
+        (&[0xf0, 0xe6, 0x43][..], 0xe6),
+        (&[0xf0, 0xe4, 0x40][..], 0xe4),
+        (&[0xf3, 0xe6, 0x43][..], 0xe6),
+        (&[0xf3, 0xe4, 0x40][..], 0xe4),
+        (&[0xf2, 0xe6, 0x43][..], 0xe6),
+        (&[0xf2, 0xe4, 0x40][..], 0xe4),
+        (&[0x40, 0xe6, 0x43][..], 0xe6),
+        (&[0x48, 0xe6, 0x43][..], 0xe6),
+        (&[0x48, 0xe4, 0x40][..], 0xe4),
+        (&[0x41, 0xe4, 0x40][..], 0xe4),
+        (&[0x2e, 0xe6, 0x43][..], 0xe6),
+        (&[0x3e, 0xe4, 0x40][..], 0xe4),
+        (&[0x64, 0xe6, 0x43][..], 0xe6),
+        (&[0x65, 0xe4, 0x40][..], 0xe4),
+        // Word/dword immediate forms and their 66 spellings.
+        (&[0xe5, 0x40][..], 0xe5),
+        (&[0xe7, 0x43][..], 0xe7),
+        (&[0x66, 0xe5, 0x40][..], 0xe5),
+        (&[0x66, 0xe7, 0x43][..], 0xe7),
+        (&[0x48, 0xe7, 0x43][..], 0xe7),
+    ] {
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(pio.reads.is_empty() && pio.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn imm8_form_with_a_missing_immediate_is_a_fetch_error_without_a_port_access() {
+    let cli = CliProfile::NonPviLong64V1;
+    for opcode in [0xe6u8, 0xe4] {
+        let mut state = imm8_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&[opcode]);
+        let mut pio = TestPio::default();
+        let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 64);
+        assert!(
+            matches!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::MemoryError(_))
+            ),
+            "{:?}",
+            result.exit
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn dx_forms_keep_their_behaviour_next_to_the_imm8_forms() {
+    // `IN AL, DX` / `OUT DX, AL` still take the port from DX[15:0], not from a following byte.
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = imm8_state();
+    state.gpr[2] = 0xabcd_0000_0000_03f9;
+    let mut memory = Memory::code(&[0xee, 0xec]);
+    let mut pio = TestPio {
+        read_value: 0x07,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 2);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(pio.writes, [(0x3f9, 0xa5)]);
+    assert_eq!(pio.reads, [0x3f9]);
+    assert_eq!(state.rip, RIP + 2, "each DX form is one byte long");
 }
