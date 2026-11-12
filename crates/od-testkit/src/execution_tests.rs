@@ -10982,6 +10982,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
             cr3: None,
             cr4: None,
             cr0: None,

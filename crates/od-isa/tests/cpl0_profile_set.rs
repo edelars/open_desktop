@@ -25524,7 +25524,6 @@ fn ltr_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x66, 0x41, 0x0f, 0x00, 0xd8],
         &[0x0f, 0x00, 0xc0], // /0 SLDT
         &[0x0f, 0x00, 0xc8], // /1 STR
-        &[0x0f, 0x00, 0xd0], // /2 LLDT
         &[0x0f, 0x00, 0xe0], // /4 VERR
         &[0x0f, 0x00, 0xe8], // /5 VERW AX
         &[0x0f, 0x00, 0xf0], // /6
@@ -25642,6 +25641,255 @@ fn ltr_is_not_reachable_from_cpl3() {
     let mut state = ltr_state();
     let before = state.clone();
     let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7aw: `LLDT r/m16` (`[REX.B] 0F 00 /2`, register form), null selector only. SDM Vol.2
+// LLDT / Vol.3 3.5.1: a null selector marks LDTR invalid and reads no descriptor; a non-null
+// selector needs the GDT read and the LDT descriptor checks, which stay refused (0x00). ----
+
+/// `lldt %si; mov -8(%rbp), %rax` (the S4-38L7aw diagnostic boundary bytes).
+const LLDT_SI_BOUNDARY: [u8; 7] = [0x0f, 0x00, 0xd6, 0x48, 0x8b, 0x45, 0xf8];
+
+fn lldt_state(selector: u64) -> LongModeState {
+    let mut state = ltr_state();
+    state.gpr[Register::Rsi as usize] = 0xfeed_0000_0000_0000 | selector;
+    state
+}
+
+#[test]
+fn lldt_null_selector_boundary_form_makes_ldtr_unusable_and_changes_only_rip() {
+    let mut state = lldt_state(0);
+    let mut expected = state.clone();
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+    let data_before = memory.data.clone();
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(memory.data, data_before);
+    expected.ldtr_null_selector = Some(0);
+    expected.rip += 3;
+    assert_eq!(
+        state, expected,
+        "only LDTR and RIP change (flags, registers, GDTR, TR)"
+    );
+}
+
+#[test]
+fn lldt_null_selectors_with_rpl_bits_keep_the_visible_selector() {
+    for selector in 0u64..=3 {
+        let mut state = lldt_state(selector);
+        let mut expected = state.clone();
+        let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "selector {selector}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        expected.ldtr_null_selector = Some(selector as u16);
+        expected.rip += 3;
+        assert_eq!(state, expected, "selector {selector}");
+    }
+}
+
+#[test]
+fn lldt_does_not_need_a_modeled_gdtr_and_reads_the_low_word_of_every_register() {
+    // The null path touches no descriptor table, so it works without a GDTR.
+    let mut state = lldt_state(0);
+    state.gdtr = None;
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ldtr_null_selector, Some(0));
+    assert_eq!(state.gdtr, None);
+    // Every register (REX.B for r8..r15): only the low word is the selector.
+    for register in 0u8..16 {
+        let (code, length) = if register < 8 {
+            (vec![0x0f, 0x00, 0xd0 | register], 3u64)
+        } else {
+            (vec![0x41, 0x0f, 0x00, 0xd0 | (register & 7)], 4)
+        };
+        let mut state = ltr_state();
+        state.gpr[register as usize] = 0x1234_5678_9abc_0002;
+        let mut expected = state.clone();
+        let mut memory = ltr_memory(&code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        expected.ldtr_null_selector = Some(2);
+        expected.rip += length;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+    // Bits above the low word do not make a null selector non-null.
+    let mut state = ltr_state();
+    state.gpr[Register::Rax as usize] = 0x0000_0000_0001_0000;
+    let mut memory = ltr_memory(&[0x0f, 0x00, 0xd0], ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ldtr_null_selector, Some(0));
+}
+
+#[test]
+fn lldt_non_null_selectors_are_refused_with_0x00_without_mutation() {
+    for selector in [4u64, 7, 8, 0x40, 0x44, 0xfff8, 0xffff] {
+        let mut state = lldt_state(selector);
+        let before = state.clone();
+        let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+        let data_before = memory.data.clone();
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x00 },
+            "selector {selector:#x}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "selector {selector:#x}");
+        assert_eq!(state, before, "selector {selector:#x}");
+        assert_eq!(state.ldtr_null_selector, None);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(memory.data, data_before);
+    }
+}
+
+#[test]
+fn lldt_second_null_load_updates_the_visible_selector() {
+    let mut state = lldt_state(0);
+    state.ldtr_null_selector = Some(3);
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.ldtr_null_selector, Some(0));
+}
+
+#[test]
+fn lldt_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
+    let cases: &[&[u8]] = &[
+        &[0xf0, 0x0f, 0x00, 0xd6], // LOCK
+        &[0xf3, 0x0f, 0x00, 0xd6], // REP
+        &[0xf2, 0x0f, 0x00, 0xd6], // REPNE
+        &[0x66, 0x0f, 0x00, 0xd6], // 0x66
+        &[0x67, 0x0f, 0x00, 0xd6], // 0x67
+        &[0x64, 0x0f, 0x00, 0xd6], // FS/GS and CS/DS/ES/SS overrides
+        &[0x65, 0x0f, 0x00, 0xd6],
+        &[0x2e, 0x0f, 0x00, 0xd6],
+        &[0x3e, 0x0f, 0x00, 0xd6],
+        &[0x48, 0x0f, 0x00, 0xd6], // REX.W
+        &[0x49, 0x0f, 0x00, 0xd6],
+        &[0x41, 0x66, 0x0f, 0x00, 0xd6], // stale REX
+        &[0x41, 0x41, 0x0f, 0x00, 0xd6],
+        &[0x66, 0x41, 0x0f, 0x00, 0xd6],
+        &[0x0f, 0x00, 0xc6], // /0 SLDT
+        &[0x0f, 0x00, 0xce], // /1 STR
+        &[0x0f, 0x00, 0xe6], // /4 VERR
+        &[0x0f, 0x00, 0xf6], // /6
+        &[0x0f, 0x00, 0xfe], // /7
+        &[0x0f, 0x00, 0x10], // /2 memory forms
+        &[0x0f, 0x00, 0x16],
+        &[0x0f, 0x00, 0x55, 0xf0],
+        &[0x0f, 0x00, 0x15, 0x00, 0x10, 0x00, 0x00],
+        &[0x41, 0x0f, 0x00, 0x10],
+        &[0x65, 0x0f, 0x00, 0x10],
+        &[0x0f, 0x00, 0x20], // other memory forms
+    ];
+    for &code in cases {
+        // A null selector in every register, so only the form can cause the refusal.
+        let mut state = ltr_state();
+        for value in state.gpr.iter_mut() {
+            *value &= !0xffff;
+        }
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x00 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(state.ldtr_null_selector, None, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn lldt_truncated_input_is_refused_without_mutation() {
+    for code in [&[0x0fu8, 0x00][..], &[0x41, 0x0f, 0x00][..], &[0x0f][..]] {
+        let mut state = lldt_state(0);
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn lldt_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): refused without mutation.
+    let mut state = legacy_state();
+    state.gpr[Register::Rsi as usize] = 0;
+    let before = state.clone();
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x00 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn lldt_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gpr[Register::Rsi as usize] = 0;
+    let before = state.clone();
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x00 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn lldt_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = lldt_state(0);
+    let before = state.clone();
+    let mut memory = ltr_memory(&LLDT_SI_BOUNDARY, ltr_tss_descriptor());
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
