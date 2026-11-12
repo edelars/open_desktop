@@ -976,6 +976,12 @@ pub struct LoadedFirmwareBoard {
     /// The full 64-bit value written (the real register holds a 16-bit selector; not modelled as
     /// such). Only stored; nothing consumes it (`SYSENTER`/`SYSEXIT` are not modelled).
     guest_sysenter_cs: u64,
+    /// The guest `IA32_SYSENTER_ESP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written. Only stored; nothing consumes it.
+    guest_sysenter_esp: u64,
+    /// The guest `IA32_SYSENTER_EIP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written. Only stored; nothing consumes it.
+    guest_sysenter_eip: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1114,6 +1120,28 @@ impl LoadedFirmwareBoard {
     /// Stores the SYSENTER_CS a CPL0-set run left (S4-38L7ar).
     pub(crate) fn set_guest_sysenter_cs(&mut self, value: u64) {
         self.guest_sysenter_cs = value;
+    }
+
+    /// The guest `IA32_SYSENTER_ESP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_ESP stays refused.
+    pub const fn guest_sysenter_esp(&self) -> u64 {
+        self.guest_sysenter_esp
+    }
+
+    /// Stores the SYSENTER_ESP a CPL0-set run left (S4-38L7as).
+    pub(crate) fn set_guest_sysenter_esp(&mut self, value: u64) {
+        self.guest_sysenter_esp = value;
+    }
+
+    /// The guest `IA32_SYSENTER_EIP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_EIP stays refused.
+    pub const fn guest_sysenter_eip(&self) -> u64 {
+        self.guest_sysenter_eip
+    }
+
+    /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
+    pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
+        self.guest_sysenter_eip = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1972,6 +2000,8 @@ impl AssembledBoard {
             guest_lstar: 0,
             guest_cstar: 0,
             guest_sysenter_cs: 0,
+            guest_sysenter_esp: 0,
+            guest_sysenter_eip: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -2031,6 +2061,8 @@ impl AssembledBoard {
             guest_lstar: 0,
             guest_cstar: 0,
             guest_sysenter_cs: 0,
+            guest_sysenter_esp: 0,
+            guest_sysenter_eip: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
