@@ -207,7 +207,7 @@
     }
   },
   "ram_mib": 128,
-  "retired": 1461576165,
+  "retired": 3000000000,
   "schema_version": 1,
   "status": "loaded",
   "stop": {
@@ -224,8 +224,8 @@
     "diagnostic_past_c7": true,
     "efer": "0xd00",
     "exceptions_delivered": 30,
-    "exit_detail": "PortIo(Device { device_index: 6, source: UnsupportedConfiguration })",
-    "exit_kind": "port_io",
+    "exit_detail": "BudgetExhausted",
+    "exit_kind": "budget_exhausted",
     "gpr": {
       "r10": "0x0",
       "r11": "0x0",
@@ -235,12 +235,12 @@
       "r15": "0x0",
       "r8": "0x0",
       "r9": "0x0",
-      "rax": "0xffffffc2",
+      "rax": "0xffffff00",
       "rbp": "0xffffffff83a03e88",
       "rbx": "0x0",
       "rcx": "0x0",
       "rdi": "0x0",
-      "rdx": "0x0",
+      "rdx": "0xffffff40",
       "rsi": "0x0",
       "rsp": "0xffffffff83a03e78"
     },
@@ -272,13 +272,13 @@
     "path": "cpl0_set",
     "pci_config_address": "0x8000f80a",
     "quanta": 108140,
-    "retired": 1461576165,
-    "rflags": "0x46",
-    "rip": "0xffffffff8271ea4c",
-    "rip_bytes": "e6 43 e4 40 89 c2 e4 40 0f b6 c8 e4 40 83 e2 40",
+    "retired": 3000000000,
+    "rflags": "0x2",
+    "rip": "0xffffffff8271ea59",
+    "rip_bytes": "83 e2 40 75 e9 c1 e0 08 09 c8 0f b7 c0 48 31 c3",
     "rip_bytes_error": null,
-    "rip_gpa": "0x271ea4c",
-    "set_exit_detail": "PortIo(Device { device_index: 6, source: UnsupportedConfiguration })",
+    "rip_gpa": "0x271ea59",
+    "set_exit_detail": "Run(InstructionBudgetExhausted)",
     "set_members": [
       "cli",
       "cpu_owned_cr3",
@@ -299,6 +299,6 @@
     ],
     "tsc_hz": 1000000000,
     "unsupported_opcode": null,
-    "virtual_ns": 1546543165
+    "virtual_ns": 3084967000
   }
 }
