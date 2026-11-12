@@ -17,7 +17,9 @@
 //! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
 //! refused. ExtINT/LINT0 delivery, IRQ lines and the poll command are not part
 //! of this model. ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
-//! ([`Pic8259Elcr`]) whose two bytes are only stored and read back.
+//! ([`Pic8259Elcr`]) whose two bytes are only stored and read back under the
+//! masks `0xF8` (master) and `0xDE` (slave), the standard PIIX-compatible layout
+//! from memory, not checked against the primary source.
 //!
 //! The chips are separate [`BusDevice`]s (each bound to its own two-port
 //! `PortRegionBinding`, because a device sees offsets relative to its binding);
@@ -76,14 +78,14 @@ const OCW3_BIT7: u8 = 1 << 7;
 pub const PIC_ELCR_BASE_PORT: u16 = 0x4D0;
 /// Ports of the ELCR pair.
 pub const PIC_ELCR_PORT_BYTES: u32 = 2;
-/// Master ELCR bits that are stored: IRQ3 and IRQ4. Bits 0..2 and 5..7 are
-/// reserved (read 0, writes dropped). From the datasheet by memory, not checked
-/// against the primary source.
-pub const PIC_ELCR_MASTER_MASK: u8 = 0b0001_1000;
-/// Slave ELCR bits that are stored: IRQ9..12 and IRQ14, IRQ15 (bits 1, 2, 3, 4,
-/// 6; the issue's expected value is `0x5E`). Bits 0, 5, 7 are reserved. From the
-/// datasheet by memory, not checked against the primary source.
-pub const PIC_ELCR_SLAVE_MASK: u8 = 0b0101_1110;
+/// Master ELCR bits that are stored: bits 3..7 (IRQ3..IRQ7). Bits 0..2 (IRQ0..2)
+/// are reserved (read 0, writes dropped). Standard (PIIX-compatible) layout from
+/// memory, not checked against the primary source.
+pub const PIC_ELCR_MASTER_MASK: u8 = 0b1111_1000;
+/// Slave ELCR bits that are stored: bits 1, 2, 3, 4, 6, 7 (IRQ9..IRQ12, IRQ14,
+/// IRQ15). Bits 0 (IRQ8) and 5 (IRQ13) are reserved. Standard (PIIX-compatible)
+/// layout from memory, not checked against the primary source.
+pub const PIC_ELCR_SLAVE_MASK: u8 = 0b1101_1110;
 
 /// Which chip of the pair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1045,31 +1047,38 @@ mod tests {
     }
 
     #[test]
-    fn master_elcr_keeps_irq3_and_irq4_only() {
+    fn master_elcr_keeps_bits_3_to_7_only() {
         let (mut elcr, handle) = Pic8259Elcr::new_with_handle();
         elcr_out(&mut elcr, 0, 0x08).unwrap();
         assert_eq!(elcr_in(&mut elcr, 0), 0x08);
         elcr_out(&mut elcr, 0, 0x10).unwrap();
         assert_eq!(elcr_in(&mut elcr, 0), 0x10);
+        // IRQ5.
+        elcr_out(&mut elcr, 0, 0x20).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 0), 0x20);
         elcr_out(&mut elcr, 0, 0xFF).unwrap();
-        assert_eq!(elcr_in(&mut elcr, 0), 0x18);
+        assert_eq!(elcr_in(&mut elcr, 0), 0xF8);
         // The slave register is independent.
         assert_eq!(elcr_in(&mut elcr, 1), 0);
         elcr_out(&mut elcr, 0, 0x00).unwrap();
         assert_eq!(elcr_in(&mut elcr, 0), 0);
-        // Reserved bits alone store nothing.
-        elcr_out(&mut elcr, 0, 0xE7).unwrap();
+        // Reserved bits alone (0..2) store nothing.
+        elcr_out(&mut elcr, 0, 0x07).unwrap();
         assert_eq!(handle.snapshot(), (0, 0));
     }
 
     #[test]
-    fn slave_elcr_keeps_bits_1_2_3_4_6_only() {
+    fn slave_elcr_keeps_bits_1_2_3_4_6_7_only() {
         let (mut elcr, handle) = Pic8259Elcr::new_with_handle();
         elcr_out(&mut elcr, 1, 0xFF).unwrap();
-        assert_eq!(elcr_in(&mut elcr, 1), 0x5E);
+        assert_eq!(elcr_in(&mut elcr, 1), 0xDE);
         assert_eq!(elcr_in(&mut elcr, 0), 0);
-        elcr_out(&mut elcr, 1, 0xA1).unwrap();
+        // Reserved bits alone (0 and 5) store nothing.
+        elcr_out(&mut elcr, 1, 0x21).unwrap();
         assert_eq!(elcr_in(&mut elcr, 1), 0);
+        // IRQ15.
+        elcr_out(&mut elcr, 1, 0x80).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 1), 0x80);
         elcr_out(&mut elcr, 1, 0x02).unwrap();
         assert_eq!(handle.snapshot(), (0, 0x02));
     }
@@ -1110,7 +1119,7 @@ mod tests {
         let (m0, s0) = (master_handle.snapshot(), slave_handle.snapshot());
         elcr_out(&mut elcr, 0, 0xFF).unwrap();
         elcr_out(&mut elcr, 1, 0xFF).unwrap();
-        assert_eq!(elcr_handle.snapshot(), (0x18, 0x5E));
+        assert_eq!(elcr_handle.snapshot(), (0xF8, 0xDE));
         assert_eq!(master_handle.snapshot(), m0);
         assert_eq!(slave_handle.snapshot(), s0);
         assert_eq!(inb(&mut master, 1), 0xFB);
@@ -1118,7 +1127,7 @@ mod tests {
         // A new ICW1 resets IMR but leaves ELCR as it was.
         out(&mut master, 0, PIC_ICW1_ACCEPTED).unwrap();
         assert_eq!(master_handle.snapshot().imr, 0);
-        assert_eq!(elcr_handle.snapshot(), (0x18, 0x5E));
+        assert_eq!(elcr_handle.snapshot(), (0xF8, 0xDE));
     }
 
     #[test]
@@ -1145,8 +1154,8 @@ mod tests {
         assert_eq!(bus.read_port(port(0x4D1), BYTE).unwrap(), 0);
         bus.write_port(port(0x4D0), BYTE, 0xFF).unwrap();
         bus.write_port(port(0x4D1), BYTE, 0xFF).unwrap();
-        assert_eq!(bus.read_port(port(0x4D0), BYTE).unwrap(), 0x18);
-        assert_eq!(bus.read_port(port(0x4D1), BYTE).unwrap(), 0x5E);
-        assert_eq!(pair.elcr_handle.snapshot(), (0x18, 0x5E));
+        assert_eq!(bus.read_port(port(0x4D0), BYTE).unwrap(), 0xF8);
+        assert_eq!(bus.read_port(port(0x4D1), BYTE).unwrap(), 0xDE);
+        assert_eq!(pair.elcr_handle.snapshot(), (0xF8, 0xDE));
     }
 }
