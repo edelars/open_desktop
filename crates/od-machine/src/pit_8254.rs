@@ -23,9 +23,37 @@
 //!   `1` (`p = N - 1`), just before the reload.
 //!
 //! Only binary counting, modes 0 and 2, channels 0 and 2, access modes
-//! LSB/MSB/LSB+MSB and counter latch are modelled. A control word with BCD,
-//! another mode, channel 1 or the read-back command is refused with
-//! [`DeviceError::UnsupportedConfiguration`] before any state changes.
+//! LSB/MSB/LSB+MSB, counter latch and the channel 0 read-back command are
+//! modelled. A control word with BCD, another mode, channel 1 or any other
+//! read-back command is refused with [`DeviceError::UnsupportedConfiguration`]
+//! before any state changes.
+//!
+//! # Read-back (S4-38L7bl)
+//!
+//! The semantics below are the Intel 8254 datasheet read from memory; the
+//! primary source was not re-checked. A control word with `D7:D6 = 11` is the
+//! read-back command: `D5` = `COUNT#` (0 latches the count), `D4` = `STATUS#`
+//! (0 latches the status), `D3` selects channel 2, `D2` channel 1, `D1`
+//! channel 0, and `D0` is reserved (0). Only the word with `D3:D0 = 0010`
+//! (channel 0 alone, so `0xC2`, `0xD2`, `0xE2`, `0xF2`) is accepted; channel 1
+//! or 2 selected, an empty selection and `D0 = 1` are refused. `0xF2` (neither
+//! `COUNT#` nor `STATUS#` low) latches nothing.
+//!
+//! * The count latch is the ordinary counter latch above: a second latch
+//!   before the first is read is ignored, and a channel without a count is
+//!   refused.
+//! * The status latch holds one byte taken at the command: `D7` = `OUT` (from
+//!   the model's `OUT` computation), `D6` = null count, `D5:D4` = the
+//!   access mode (`01` LSB, `10` MSB, `11` LSB+MSB), `D3:D1` = the mode (`000`
+//!   or `010`), `D0` = BCD (always 0, BCD is refused). Null count is 1 while the
+//!   channel holds no count (programmed but not loaded, or mode 0 stopped by a
+//!   first byte) and, in mode 2, while a reload waits for the next period
+//!   boundary; the model loads a count at the tick of its write, so a mode 0
+//!   count is never reported null. A second status latch before the first is
+//!   read is ignored; a channel that no control word programmed is refused.
+//! * The next read of `0x40` returns the status byte (and clears the status
+//!   latch); further reads return the latched count by the access mode, then
+//!   the live counter. A control word for the channel clears both latches.
 //!
 //! # Port B (`0x61`)
 //!
@@ -90,6 +118,12 @@ const PORT_B_SPEAKER: u8 = 1 << 1;
 const PORT_B_REFRESH: u8 = 1 << 4;
 const PORT_B_OUT2: u8 = 1 << 5;
 const CTRL_BCD: u8 = 1 << 0;
+/// Read-back word: `D5` = `COUNT#`, `D4` = `STATUS#`, `D3:D0` = channel 2,
+/// channel 1, channel 0, reserved.
+const READ_BACK_NOT_COUNT: u8 = 1 << 5;
+const READ_BACK_NOT_STATUS: u8 = 1 << 4;
+const READ_BACK_TARGET_MASK: u8 = 0x0F;
+const READ_BACK_CHANNEL0: u8 = 0b0010;
 
 /// Tick index of the PIT input clock at `now_ns`: `floor(now_ns * f / 1e9)`.
 pub const fn pit_ticks(now_ns: u64) -> u64 {
@@ -156,6 +190,9 @@ pub struct PitChannelSnapshot {
     /// `None`: no counter value (not loaded, or mode 0 stopped by a new reload).
     pub run: Option<PitRun>,
     pub latch: Option<PitLatch>,
+    /// Read-back status byte waiting to be read (S4-38L7bl); it is delivered
+    /// before the count latch.
+    pub status_latch: Option<u8>,
     /// LSB+MSB live read: the high byte is next.
     pub read_hi: bool,
 }
@@ -214,6 +251,36 @@ impl PitChannelSnapshot {
             PitMode::TerminalCount => (u64::from(reload).wrapping_sub(e) & 0xFFFF) as u16,
             PitMode::RateGenerator => (u64::from(reload) - e % u64::from(reload)) as u16,
         })
+    }
+
+    /// Whether the count register holds a value the counting element has not
+    /// loaded yet: no count at all, or a mode 2 reload waiting for its boundary.
+    fn null_count(&self, tick: u64) -> bool {
+        match self.run {
+            None => true,
+            Some(run) => run.next.is_some_and(|next| tick < next.start_tick),
+        }
+    }
+
+    /// The read-back status byte at `tick`; `None` until a control word
+    /// programmed the channel.
+    fn status(&self, tick: u64) -> Option<u8> {
+        let (mode, access) = self.mode.zip(self.access)?;
+        let access_bits = match access {
+            PitAccess::Lsb => 0b01,
+            PitAccess::Msb => 0b10,
+            PitAccess::LsbMsb => 0b11,
+        };
+        let mode_bits = match mode {
+            PitMode::TerminalCount => 0b000,
+            PitMode::RateGenerator => 0b010,
+        };
+        Some(
+            u8::from(self.out(tick)) << 7
+                | u8::from(self.null_count(tick)) << 6
+                | access_bits << 4
+                | mode_bits << 1,
+        )
     }
 
     /// One byte written to the channel's data port at `tick`.
@@ -281,6 +348,9 @@ impl PitChannelSnapshot {
     }
 
     fn read_data(&mut self, tick: u64) -> Result<u8, DeviceError> {
+        if let Some(status) = self.status_latch.take() {
+            return Ok(status);
+        }
         if let Some(latch) = self.latch {
             let byte = match self.access {
                 Some(PitAccess::Msb) => {
@@ -342,7 +412,8 @@ impl PitSnapshot {
         let channel = match word >> 6 {
             0 => PitChannel::Channel0,
             2 => PitChannel::Channel2,
-            // Channel 1 is not modelled; `0b11` is the read-back command.
+            3 => return self.read_back(word, tick),
+            // Channel 1 is not modelled.
             _ => return Err(DeviceError::UnsupportedConfiguration),
         };
         let access = match (word >> 4) & 3 {
@@ -383,6 +454,41 @@ impl PitSnapshot {
             access: Some(access),
             ..PitChannelSnapshot::default()
         };
+        Ok(())
+    }
+
+    /// The read-back command (`D7:D6 = 11`), channel 0 only. Both latches are
+    /// validated before either is set.
+    fn read_back(&mut self, word: u8, tick: u64) -> Result<(), DeviceError> {
+        if word & READ_BACK_TARGET_MASK != READ_BACK_CHANNEL0 {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        let ch = &mut self.channel0;
+        let status = if word & READ_BACK_NOT_STATUS == 0 && ch.status_latch.is_none() {
+            Some(
+                ch.status(tick)
+                    .ok_or(DeviceError::UnsupportedConfiguration)?,
+            )
+        } else {
+            None
+        };
+        let count = if word & READ_BACK_NOT_COUNT == 0 && ch.latch.is_none() {
+            Some(
+                ch.count(tick)
+                    .ok_or(DeviceError::UnsupportedConfiguration)?,
+            )
+        } else {
+            None
+        };
+        if let Some(status) = status {
+            ch.status_latch = Some(status);
+        }
+        if let Some(value) = count {
+            ch.latch = Some(PitLatch {
+                value,
+                hi_pending: false,
+            });
+        }
         Ok(())
     }
 
