@@ -1326,6 +1326,66 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  403f00: {encoding} {operands}")
             self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
 
+    def test_s2_35_62_pmuludq_matches_all_xmm_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.62-PMULUDQ-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f f4 {modrm:02x}"
+                operands = f"pmuludq xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  404400: {encoding} {operands}")
+                self.assertEqual(row["signature"], "pmuludq xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  404500: 66 40 0f f4 c3 pmuludq xmm0,xmm3")), expected)
+        rejected = (
+            ("0f f4 c3", "pmuludq mm0,mm3"),
+            ("0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("66 42 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("66 48 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("66 4c 0f f4 c3", "pmuludq xmm8,xmm3"),
+            ("66 66 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("66 f2 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("66 f3 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("67 66 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("64 66 0f f4 c3", "pmuludq xmm0,xmm3"),
+            ("44 66 0f f4 c3", "pmuludq xmm8,xmm3"),
+            ("66 0f f4 00", "pmuludq xmm0,XMMWORD PTR [rax]"),
+            ("66 0f f4", "pmuludq xmm0,xmm3"),
+            ("66 0f f4 c3 90", "pmuludq xmm0,xmm3"),
+            ("66 0f f5 c3", "pmaddwd xmm0,xmm3"),
+            ("c5 f9 f4 c3", "vpmuludq xmm0,xmm1,xmm3"),
+            ("62 f1 7d 08 f4 c3", "vpmuludq xmm0,xmm1,xmm3"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  404600: {encoding} {operands}")
+            self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
+
+    def test_s2_35_62_pmuludq_registry_records_fresh_review_and_exact_lanes(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.62 PMULUDQ XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("both raw x87 and SSE state", profile["gate"])
+        self.assertIn("fresh independent review for this bounded inventory slice", profile["gate"])
+        family = profile["families"][0]
+        self.assertIn("66 [one optional REX.R/B] 0F F4 /r", family["encoding"])
+        self.assertIn("REX.R extends the destination", family["gate"])
+        self.assertIn("lanes 0 and 2", family["outcome"])
+        self.assertIn("ignores source lanes 1 and 3", family["outcome"])
+        self.assertIn("updates destination XMM and RIP on success", family["outcome"])
+
     def test_s2_35_61_pmovmskb_matches_all_xmm_gpr_pairs_and_rex_extensions(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)

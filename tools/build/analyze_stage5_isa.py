@@ -334,6 +334,7 @@ PCMPGTB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PCMPEQB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 PCMPEQD_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 PMOVMSKB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
+PMULUDQ_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 MOVAPD_REGISTER_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PACKUSWB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PCMPGTD_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
@@ -753,6 +754,25 @@ def pmovmskb_xmm_gpr_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.61-PMOVMSKB-XMM-source-GPR32-destination"
 
 
+def pmuludq_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-35.62 XMM register-register form."""
+    if row["mnemonic"] != "pmuludq" or row["signature"] != "pmuludq xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0xF4):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PMULUDQ_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory 66 + optional REX.R/B + 0F F4 + register ModR/M.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-35.62-PMULUDQ-XMM-register-register"
+
+
 def psrlq_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.45 XMM register immediate form."""
     if row["mnemonic"] != "psrlq" or row["signature"] != "psrlq xmm,imm":
@@ -922,6 +942,9 @@ def local_profile_candidate(row: dict) -> str | None:
     pmovmskb_candidate = pmovmskb_xmm_gpr_local_profile_candidate(row)
     if pmovmskb_candidate is not None:
         return pmovmskb_candidate
+    pmuludq_candidate = pmuludq_local_profile_candidate(row)
+    if pmuludq_candidate is not None:
+        return pmuludq_candidate
     psubq_candidate = psubq_local_profile_candidate(row)
     if psubq_candidate is not None:
         return psubq_candidate

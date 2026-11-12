@@ -1754,6 +1754,32 @@
         "docs/plans/STAGE_2.md:14965-14967",
         "docs/reports/STAGE_2_REPORT.md:16231-16233"
       ]
+    },
+    {
+      "task": "S2-35.62 PMULUDQ XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice approved the existing decoder/schema/state/semantic gates and reran focused ISA, testkit, and fixture checks; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-35.62",
+          "encoding": "66 [one optional REX.R/B] 0F F4 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PMULUDQ XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends the destination XMM and REX.B extends the source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "local interpreter multiplies unsigned dword lanes 0 and 2 of the original destination and source into two full 64-bit products in destination lanes 0 and 1; ignores source lanes 1 and 3; source/destination aliasing is valid; updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12496-12498",
+            "docs/plans/STAGE_2.md:14969-14971",
+            "docs/reports/STAGE_2_REPORT.md:16235-16237"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12496-12498",
+        "docs/plans/STAGE_2.md:14969-14971",
+        "docs/reports/STAGE_2_REPORT.md:16235-16237"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
