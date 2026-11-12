@@ -1806,6 +1806,32 @@
         "docs/plans/STAGE_2.md:13161-13179",
         "docs/reports/STAGE_2_REPORT.md:14237-14248"
       ]
+    },
+    {
+      "task": "S2-35.15 PSUBD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. Fresh independent review for this bounded inventory slice passed focused ISA, schema and fixture checks; this is new inventory-slice review evidence. The prior S2-35.16 review corrected the early local-only native guard; its Linux-gated assertion was compiled but not run on this Mac host. Native/JIT/physical acceptance remains unclaimed.",
+      "families": [
+        {
+          "task": "S2-35.15",
+          "encoding": "66 [one optional REX.R/B] 0F FA /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PSUBD XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "four independent little-endian u32 lanes compute (DEST-SRC) modulo 2^32, with no borrow crossing lane boundaries; updates destination XMM and RIP on success and preserves all other state; no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12097-12108",
+            "docs/plans/STAGE_2.md:13641-13672",
+            "docs/reports/STAGE_2_REPORT.md:14781-14796"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12097-12108",
+        "docs/plans/STAGE_2.md:13641-13672",
+        "docs/reports/STAGE_2_REPORT.md:14781-14796"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

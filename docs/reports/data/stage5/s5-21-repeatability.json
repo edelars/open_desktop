@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movss-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-psubd-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-movss-rootfs-pass1.json",
-      "sha256": "399c057dcae4729d6f4fb2dcc8bc776d485b3e670a704f09b6a96cd6637c5c9a",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-psubd-rootfs-pass1.json",
+      "sha256": "6b49ea4bed09aaf18003d0572f9931b2e758bc803618d12ed82f7b67ae68a816",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-movss-rootfs-pass2.json",
-      "sha256": "399c057dcae4729d6f4fb2dcc8bc776d485b3e670a704f09b6a96cd6637c5c9a",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-psubd-rootfs-pass2.json",
+      "sha256": "6b49ea4bed09aaf18003d0572f9931b2e758bc803618d12ed82f7b67ae68a816",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295879,
-      "unclassified": 214521
+      "proven_supported": 6295903,
+      "unclassified": 214497
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293528,
+      "local_interpreter_profile": 6293552,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1059,
-    "unclassified_normalized_forms": 210,
+    "classified_normalized_forms": 1060,
+    "unclassified_normalized_forms": 209,
     "scenario_classification_frequencies": {
       "C": {
         "proven_supported": 322711,
         "unclassified": 23438
       },
       "D": {
-        "proven_supported": 6226831,
-        "unclassified": 209383
+        "proven_supported": 6226855,
+        "unclassified": 209359
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "399c057dcae4729d6f4fb2dcc8bc776d485b3e670a704f09b6a96cd6637c5c9a",
+    "raw_inventory_sha256": "6b49ea4bed09aaf18003d0572f9931b2e758bc803618d12ed82f7b67ae68a816",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -136,7 +136,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6293528,
+    "local_interpreter_profile_rows": 6293552,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -251,15 +251,22 @@
     "movss_register_rows_by_profile": {
       "S2-34.8a-MOVSS-XMM-register-register": 15
     },
-    "movss_scope": "Accepted local-only MOVSS legacy XMM register-register profile: mandatory F3 with optional one REX.R/B byte after F3 and before 0F 10, ModR/M.mod=3; copies raw source low32 to destination low32 and preserves destination upper96. Requires both x87 and SSE state; absent state refuses atomically. No floating-point operation, MXCSR or flags change, and no data-memory callback. No MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only."
+    "movss_scope": "Accepted local-only MOVSS legacy XMM register-register profile: mandatory F3 with optional one REX.R/B byte after F3 and before 0F 10, ModR/M.mod=3; copies raw source low32 to destination low32 and preserves destination upper96. Requires both x87 and SSE state; absent state refuses atomically. No floating-point operation, MXCSR or flags change, and no data-memory callback. No MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
+    "psubd_register_rows": 24,
+    "psubd_register_normalized_forms": 1,
+    "psubd_register_encoding_forms": 8,
+    "psubd_register_rows_by_profile": {
+      "S2-35.15-PSUBD-XMM-register-register": 24
+    },
+    "psubd_scope": "Accepted local-only PSUBD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST-SRC) modulo 2^32, without inter-lane borrow. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed ISA/schema/fixture checks; prior S2-35.16 corrected an early native guard, whose Linux-gated assertion was compiled but not run on this Mac host. No native/JIT/physical acceptance is implied."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "4ad0a02ee2f44ef8f719f0fc2395a08a543ba22fa2f64132b2bd8b140e18f6d8",
-    "size_bytes": 1005188,
+    "sha256": "a6703ed2c8854eb7bf7671ceeca4e3d9efb07090472ed47f5cd8d2caa9515d08",
+    "size_bytes": 1005283,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movss-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movss-rootfs-pass1.json.gz",
-    "repeat_sha256": "4ad0a02ee2f44ef8f719f0fc2395a08a543ba22fa2f64132b2bd8b140e18f6d8",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psubd-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psubd-rootfs-pass1.json.gz",
+    "repeat_sha256": "a6703ed2c8854eb7bf7671ceeca4e3d9efb07090472ed47f5cd8d2caa9515d08",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },
