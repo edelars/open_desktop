@@ -36024,3 +36024,746 @@ fn lock_bts_imm_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L7bj: FS/GS-based `CMOVcc r32, r/m32` and `CMOVcc r64, r/m64` (`[64|65] [REX] 0F 40..4F
+// /r`, memory source; SDM Vol.2 CMOVcc: the source is read regardless of the condition, if the
+// condition holds it is moved into the register, a 32-bit destination zeroes bits 63:32 also when
+// the move is not taken in 64-bit mode, flags are unchanged; Vol.3 3.4.4 FS/GS base; from memory,
+// not re-checked against the primary source). The register is the ModRM reg operand (REX.R extends
+// it); the source is read at the register width at base + effective address. One read, no memory
+// write. The condition table is `cmov_condition_oracle` (explicit flag bits, independent of the
+// interpreter's `ConditionCode::evaluate`). The register form (mod = 11) ignores the segment prefix
+// and stays the plain CMOVcc. ----
+
+/// `cmove %gs:0x3089560(%rip), %edi` (the S4-38L7bi diagnostic boundary bytes, 8 bytes).
+const GS_CMOVE_EDI_BOUNDARY: [u8; 8] = [0x65, 0x0f, 0x44, 0x3d, 0x60, 0x95, 0x08, 0x03];
+
+/// `[prefix] [rex] 0F 40+cc /r` with ModRM `RIP-relative, reg = 2` (RDX/EDX) and disp32 0x1234.
+fn cmov_load_rdx_rip(prefix: u8, rex: Option<u8>, condition: u8) -> Vec<u8> {
+    let mut code = vec![prefix];
+    code.extend(rex);
+    code.extend([0x0f, 0x40 + condition, 0x15, 0x34, 0x12, 0x00, 0x00]);
+    code
+}
+
+/// Whether condition `cc` (the low four bits of the opcode) holds, by the table of the SDM
+/// (overflow, below, equal, below-or-equal, sign, parity, less, less-or-equal and their negations).
+fn cmov_condition_oracle(cc: u8, flags: u64) -> bool {
+    let (cf, pf, zf, sf, of) = (
+        flags & FLAG_CF != 0,
+        flags & FLAG_PF != 0,
+        flags & FLAG_ZF != 0,
+        flags & FLAG_SF != 0,
+        flags & FLAG_OF != 0,
+    );
+    let positive = match cc >> 1 {
+        0 => of,
+        1 => cf,
+        2 => zf,
+        3 => cf || zf,
+        4 => sf,
+        5 => pf,
+        6 => sf != of,
+        _ => zf || (sf != of),
+    };
+    positive != (cc & 1 == 1)
+}
+
+/// The expected destination register after a CMOVcc of `value` into a register that held `old`.
+fn cmov_expected_register(bits: u32, taken: bool, old: u64, value: u64) -> u64 {
+    match (bits, taken) {
+        (64, true) => value,
+        (64, false) => old,
+        (_, true) => value & 0xffff_ffff,
+        (_, false) => old & 0xffff_ffff,
+    }
+}
+
+#[test]
+fn cmov_condition_oracle_matches_the_hand_table() {
+    // A few conditions worked out by hand: E (4) needs ZF, NE (5) is its complement, BE (6) is
+    // CF or ZF, A (7) neither, L (0xc) is SF != OF, G (0xf) is ZF = 0 and SF = OF.
+    assert!(cmov_condition_oracle(4, FLAG_ZF));
+    assert!(!cmov_condition_oracle(4, FLAG_CF));
+    assert!(cmov_condition_oracle(5, FLAG_CF));
+    assert!(!cmov_condition_oracle(5, FLAG_ZF));
+    assert!(cmov_condition_oracle(6, FLAG_CF) && cmov_condition_oracle(6, FLAG_ZF));
+    assert!(!cmov_condition_oracle(6, FLAG_SF));
+    assert!(cmov_condition_oracle(7, FLAG_SF) && !cmov_condition_oracle(7, FLAG_CF));
+    assert!(cmov_condition_oracle(0xc, FLAG_SF) && !cmov_condition_oracle(0xc, FLAG_SF | FLAG_OF));
+    assert!(cmov_condition_oracle(0xf, FLAG_SF | FLAG_OF) && !cmov_condition_oracle(0xf, FLAG_ZF));
+    assert!(cmov_condition_oracle(0, FLAG_OF) && cmov_condition_oracle(1, 0));
+    assert!(cmov_condition_oracle(0xa, FLAG_PF) && cmov_condition_oracle(0xb, 0));
+}
+
+#[test]
+fn gs_cmove_boundary_with_zf_set_loads_edi_zero_extended_and_touches_nothing_else() {
+    // `65 0f 44 3d 60 95 08 03`: next RIP (RIP + 8) + disp32 + the GS base.
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let at = gs_base + RIP + 8 + 0x0308_9560;
+    let mut memory = BitsMemory::new(&GS_CMOVE_EDI_BOUNDARY);
+    memory.set_qword(at - 8, 0x7777_8888_9999_aaaa);
+    // The memory dword is 0x1122_3344; the upper dword is not part of the operation.
+    memory.set_qword(at, 0xaaaa_bbbb_1122_3344);
+    memory.set_qword(at + 8, 0x3333_4444_5555_6666);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::Rdi as usize] = 0xdead_beef_0000_0001;
+    state.rflags |= FLAG_ZF | FLAG_CF | FLAG_SF;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert!(memory.writes.is_empty(), "no memory write");
+    assert_eq!(memory.qword(at), 0xaaaa_bbbb_1122_3344);
+    expected.rip += 8;
+    // EDI is the memory dword, bits 63:32 are zeroed; the flags are those the instruction found.
+    expected.gpr[Register::Rdi as usize] = 0x0000_0000_1122_3344;
+    assert_eq!(state, expected, "only RIP and RDI change");
+}
+
+#[test]
+fn gs_cmove_boundary_with_zf_clear_still_reads_and_zeroes_the_upper_half_of_rdi() {
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let at = gs_base + RIP + 8 + 0x0308_9560;
+    let mut memory = BitsMemory::new(&GS_CMOVE_EDI_BOUNDARY);
+    memory.set_qword(at, 0xaaaa_bbbb_1122_3344);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rdi as usize] = 0xdead_beef_0000_0001;
+    state.rflags |= FLAG_CF | FLAG_SF | FLAG_OF | FLAG_PF;
+    state.rflags &= !FLAG_ZF;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    // The source is read even though the move is not taken.
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert!(memory.writes.is_empty());
+    expected.rip += 8;
+    // Not taken: EDI keeps its low dword 1, but in 64-bit mode bits 63:32 are zeroed.
+    expected.gpr[Register::Rdi as usize] = 0x0000_0000_0000_0001;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn fs_gs_cmov_load_follows_every_condition_for_all_flag_combinations_and_both_widths() {
+    let old = 0x1111_2222_3333_4444u64;
+    let value = 0x5555_6666_7777_8888u64;
+    let flag_bits = [FLAG_CF, FLAG_PF, FLAG_ZF, FLAG_SF, FLAG_OF];
+    for prefix in [0x64u8, 0x65] {
+        for (rex, bits) in [(None, 32u32), (Some(0x48u8), 64)] {
+            for condition in 0u8..16 {
+                for mask in 0u32..32 {
+                    let mut flags = 0;
+                    for (i, bit) in flag_bits.into_iter().enumerate() {
+                        if mask & (1 << i) != 0 {
+                            flags |= bit;
+                        }
+                    }
+                    let code = cmov_load_rdx_rip(prefix, rex, condition);
+                    let mut state = board_state();
+                    state.gs_base = 0xffff_8880_4321_0000;
+                    state.fs_base = 0xffff_8880_4321_0000;
+                    state.rflags = 2 | IF | flags | (1 << 10);
+                    state.gpr[Register::Rdx as usize] = old;
+                    let mut expected = state.clone();
+                    let mut memory = CasMemory::new(&code, value);
+                    let result = run_cas_set(&mut state, &mut memory).unwrap();
+                    let label = format!("{code:02x?} flags {flags:#x}");
+                    assert_eq!(result.instructions_executed, 1, "{label}");
+                    assert_eq!(
+                        memory.reads,
+                        vec![(
+                            0xffff_8880_4321_0000 + RIP + code.len() as u64 + 0x1234,
+                            (bits / 8) as usize
+                        )],
+                        "{label}"
+                    );
+                    assert!(memory.writes.is_empty(), "{label}");
+                    assert_eq!(memory.cell, value, "{label}");
+                    expected.rip += code.len() as u64;
+                    expected.gpr[Register::Rdx as usize] = cmov_expected_register(
+                        bits,
+                        cmov_condition_oracle(condition, flags),
+                        old,
+                        value,
+                    );
+                    // Flags (all of them, DF included) are untouched.
+                    assert_eq!(state, expected, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_cmov_load_use_their_own_base_and_ignore_the_other() {
+    for (prefix, fs, gs) in [(0x64u8, true, false), (0x65, false, true)] {
+        for (rex, width) in [(None, 4usize), (Some(0x48u8), 8)] {
+            let code = cmov_load_rdx_rip(prefix, rex, 4);
+            let used = 0xffff_8880_4321_0000u64;
+            let other = 0xffff_8880_9999_0000u64;
+            let mut state = board_state();
+            state.fs_base = if fs { used } else { other };
+            state.gs_base = if gs { used } else { other };
+            state.rflags |= FLAG_ZF;
+            state.gpr[Register::Rdx as usize] = 0x0f0f;
+            let mut memory = CasMemory::new(&code, 0x1000_0000_f0f0);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            let at = used + RIP + code.len() as u64 + 0x1234;
+            assert_eq!(memory.reads, vec![(at, width)], "{code:02x?}");
+            let expected = if width == 8 { 0x1000_0000_f0f0 } else { 0xf0f0 };
+            assert_eq!(state.gpr[Register::Rdx as usize], expected, "{code:02x?}");
+        }
+    }
+    // A zero base: the plain effective address.
+    for prefix in [0x64u8, 0x65] {
+        let code = cmov_load_rdx_rip(prefix, Some(0x48), 4);
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        state.rflags |= FLAG_ZF;
+        let mut memory = CasMemory::new(&code, 0x10);
+        run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(memory.reads, vec![(RIP + 9 + 0x1234, 8)]);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x10);
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_with_every_extended_register_r8_to_r15_taken_and_not_taken() {
+    // `cmove %gs:0x1234(%rip), %rN` via REX.W + REX.R (0x4c) and `..., %rNd` via REX.R (0x44).
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        for prefix in [0x65u8, 0x64] {
+            for (rex, bits) in [(0x4cu8, 64u32), (0x44, 32)] {
+                for taken in [true, false] {
+                    let code = [
+                        prefix,
+                        rex,
+                        0x0f,
+                        0x44,
+                        ((i as u8) << 3) | 0x05,
+                        0x34,
+                        0x12,
+                        0,
+                        0,
+                    ];
+                    let old = 0x1_0000_0100 + i as u64;
+                    let value = 0x2_0000_0200 + i as u64;
+                    let mut state = board_state();
+                    state.gs_base = 0xffff_8880_0000_0000;
+                    state.fs_base = 0xffff_8880_0000_0000;
+                    state.rflags = 2 | IF | if taken { FLAG_ZF } else { 0 };
+                    state.gpr[Register::Rdx as usize] = 0x7777;
+                    state.gpr[register as usize] = old;
+                    let mut expected = state.clone();
+                    let mut memory = CasMemory::new(&code, value);
+                    let result = run_cas_set(&mut state, &mut memory).unwrap();
+                    let label = format!("r{} {prefix:#x} {rex:#x} taken {taken}", i + 8);
+                    assert_eq!(result.instructions_executed, 1, "{label}");
+                    assert_eq!(
+                        memory.reads,
+                        vec![(
+                            0xffff_8880_0000_0000 + RIP + 9 + 0x1234,
+                            (bits / 8) as usize
+                        )],
+                        "{label}"
+                    );
+                    expected.rip += 9;
+                    expected.gpr[register as usize] =
+                        cmov_expected_register(bits, taken, old, value);
+                    assert_eq!(state, expected, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_with_every_legacy_register_and_the_empty_rex() {
+    let order = [
+        Register::Rax,
+        Register::Rcx,
+        Register::Rdx,
+        Register::Rbx,
+        Register::Rsp,
+        Register::Rbp,
+        Register::Rsi,
+        Register::Rdi,
+    ];
+    for (i, register) in order.into_iter().enumerate() {
+        for (prefixes, bits) in [
+            (&[0x65u8][..], 32u32),
+            (&[0x65, 0x40][..], 32),
+            (&[0x64, 0x48][..], 64),
+        ] {
+            for taken in [true, false] {
+                let mut code = prefixes.to_vec();
+                code.extend([0x0f, 0x44, ((i as u8) << 3) | 0x05, 0x34, 0x12, 0, 0]);
+                let mut state = board_state();
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8880_0000_0000;
+                state.rflags = 2 | IF | if taken { FLAG_ZF } else { 0 };
+                state.gpr[register as usize] = 0x5_0000_0010;
+                let mut expected = state.clone();
+                let mut memory = CasMemory::new(&code, 0x9_0000_0020);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                let label = format!("{code:02x?} taken {taken}");
+                assert_eq!(result.instructions_executed, 1, "{label}");
+                assert_eq!(memory.reads.len(), 1, "{label}");
+                assert_eq!(memory.reads[0].1, (bits / 8) as usize, "{label}");
+                expected.rip += code.len() as u64;
+                expected.gpr[register as usize] =
+                    cmov_expected_register(bits, taken, 0x5_0000_0010, 0x9_0000_0020);
+                assert_eq!(state, expected, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_with_base_disp8_and_sib_addressing() {
+    let base = 0xffff_8880_0000_0000u64;
+    // (code, address relative to the segment base, width).
+    // cmove %gs:(%rbx), %rdx              -> 65 48 0f 44 13
+    // cmove %fs:0x3d(%rbx), %rdx          -> 64 48 0f 44 53 3d
+    // cmove %gs:0x10(%rbx,%rcx,4), %rdx   -> 65 48 0f 44 54 8b 10
+    // cmove %fs:-0x4(%rsp), %rdx          -> 64 48 0f 44 54 24 fc
+    // cmove %gs:0x10(%rbx,%rcx,8), %edx   -> 65 0f 44 54 cb 10
+    let cases: [(&[u8], u64, usize); 5] = [
+        (&[0x65, 0x48, 0x0f, 0x44, 0x13], 0x1000, 8),
+        (&[0x64, 0x48, 0x0f, 0x44, 0x53, 0x3d], 0x1000 + 0x3d, 8),
+        (
+            &[0x65, 0x48, 0x0f, 0x44, 0x54, 0x8b, 0x10],
+            0x1000 + 12 + 0x10,
+            8,
+        ),
+        (&[0x64, 0x48, 0x0f, 0x44, 0x54, 0x24, 0xfc], 0x2000 - 4, 8),
+        (&[0x65, 0x0f, 0x44, 0x54, 0xcb, 0x10], 0x1000 + 24 + 0x10, 4),
+    ];
+    for (code, offset, width) in cases {
+        let mut state = board_state();
+        state.gs_base = base;
+        state.fs_base = base;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rsp as usize] = 0x2000;
+        state.gpr[Register::Rdx as usize] = 0xffff_ffff_0000_0f00;
+        state.rflags |= FLAG_ZF;
+        let mut memory = CasMemory::new(code, 0x1234_5678_9abc_def0);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(base + offset, width)], "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        let expected = if width == 8 {
+            0x1234_5678_9abc_def0
+        } else {
+            0x9abc_def0
+        };
+        assert_eq!(state.gpr[Register::Rdx as usize], expected, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+    }
+    // The register is also the base: the address uses the unchanged RAX.
+    let mut state = board_state();
+    state.gs_base = base;
+    state.gpr[Register::Rax as usize] = 0x100;
+    state.rflags |= FLAG_ZF;
+    let mut memory = CasMemory::new(&[0x65, 0x48, 0x0f, 0x44, 0x40, 0x08], 0x2);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(base + 0x108, 8)]);
+    assert_eq!(state.gpr[Register::Rax as usize], 2);
+}
+
+#[test]
+fn fs_gs_cmov_load_with_every_extended_base_and_index_register_r8_to_r15() {
+    // `cmove %gs:0x0(%rN), %rdx` via REX.W + REX.B (0x49): mod = 01 with disp8 0; R12 needs a SIB.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        for prefix in [0x65u8, 0x64] {
+            let mut code = vec![prefix, 0x49, 0x0f, 0x44];
+            if i == 4 {
+                code.extend([0x54, 0x24, 0x00]);
+            } else {
+                code.extend([0x50 | i as u8, 0x00]);
+            }
+            let address = 0x40_0000 + (i as u64) * 0x1000;
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.fs_base = 0xffff_8880_0000_0000;
+            state.gpr[register as usize] = address;
+            state.gpr[Register::Rdx as usize] = 0x10;
+            state.rflags |= FLAG_ZF;
+            let mut memory = CasMemory::new(&code, 0x99);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            let label = format!("base r{} {prefix:#x}", i + 8);
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert_eq!(
+                memory.reads,
+                vec![(0xffff_8880_0000_0000 + address, 8)],
+                "{label}"
+            );
+            assert_eq!(state.gpr[Register::Rdx as usize], 0x99, "{label}");
+        }
+    }
+    // `cmove %gs:0x20(%rbx,%rN), %rdx` via REX.W + REX.X (0x4a); scale 1.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let code = [0x65, 0x4a, 0x0f, 0x44, 0x54, ((i as u8) << 3) | 3, 0x20];
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x40_0000;
+        state.gpr[register as usize] = 0x100 * (i as u64 + 1);
+        state.gpr[Register::Rdx as usize] = 0x10;
+        state.rflags |= FLAG_ZF;
+        let mut memory = CasMemory::new(&code, 0x99);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "index r{}", i + 8);
+        let at = 0xffff_8880_0000_0000 + 0x40_0000 + 0x100 * (i as u64 + 1) + 0x20;
+        assert_eq!(memory.reads, vec![(at, 8)], "index r{}", i + 8);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x99, "index r{}", i + 8);
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_non_canonical_address_is_gp0_without_any_change() {
+    // Qword: the start is canonical but the last byte (address + 7) crosses into the hole; also
+    // when the condition is false (the address is checked before the condition).
+    for base in [0x0000_8000_0000_0000u64, 0x7fff_ffff_ffff_fff0] {
+        for taken in [true, false] {
+            for (prefix, rex) in [(0x65u8, Some(0x48u8)), (0x64, Some(0x48)), (0x65, None)] {
+                let code = cmov_load_rdx_rip(prefix, rex, 4);
+                let mut state = board_state();
+                state.gs_base = base;
+                state.fs_base = base;
+                state.gpr[Register::Rdx as usize] = 0xdead_beef_0000_0001;
+                state.rflags |= FLAG_CF | if taken { FLAG_ZF } else { 0 };
+                let before = state.clone();
+                let mut memory = CasMemory::new(&code, 1);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                let label = format!("{base:#x} {code:02x?} taken {taken}");
+                assert_eq!(exit(&result), &RunExit::Fault(GP0), "{label}");
+                assert_eq!(result.instructions_executed, 0, "{label}");
+                // Not even the upper half of EDX is zeroed on the fault.
+                assert_eq!(state, before, "{label}");
+                assert!(
+                    memory.reads.is_empty() && memory.writes.is_empty(),
+                    "{label}"
+                );
+            }
+        }
+    }
+    // The last canonical qword (address + 7 = 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fff8 - 0x1234 - 9 - RIP;
+    let mut memory = CasMemory::new(&cmov_load_rdx_rip(0x65, Some(0x48), 4), 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    // Dword: address + 3 is the last byte, so a start of 0x7fff_ffff_fffd is refused ...
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fffd - 0x1234 - 8 - RIP;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&cmov_load_rdx_rip(0x65, None, 4), 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    // ... and 0x7fff_ffff_fffc (last byte 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fffc - 0x1234 - 8 - RIP;
+    let mut memory = CasMemory::new(&cmov_load_rdx_rip(0x65, None, 4), 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    // A non-canonical address through an RSP/RBP base is #GP(0), not #SS(0).
+    for code in [
+        &[0x65u8, 0x48, 0x0f, 0x44, 0x14, 0x24][..],
+        &[0x65u8, 0x48, 0x0f, 0x44, 0x55, 0x00][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[Register::Rsp as usize] = 0;
+        state.gpr[Register::Rbp as usize] = 0;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_read_fault_changes_nothing_even_when_the_move_is_not_taken() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for taken in [true, false] {
+        for code in [
+            cmov_load_rdx_rip(0x65, Some(0x48), 4),
+            cmov_load_rdx_rip(0x64, Some(0x48), 4),
+            cmov_load_rdx_rip(0x65, None, 4),
+            GS_CMOVE_EDI_BOUNDARY.to_vec(),
+        ] {
+            let mut state = board_state();
+            state.rflags |= FLAG_CF | FLAG_OF | if taken { FLAG_ZF } else { 0 };
+            state.gpr[Register::Rdx as usize] = 0xdead_beef_0000_0009;
+            state.gpr[Register::Rdi as usize] = 0xdead_beef_0000_0009;
+            let before = state.clone();
+            let mut memory = CasMemory::new(&code, 1);
+            memory.read_fault = Some(fault.clone());
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            let label = format!("{code:02x?} taken {taken}");
+            assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{label}");
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            // The upper half of a dword destination is not zeroed when the read faults.
+            assert_eq!(state, before, "{label}");
+            assert!(memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn segment_cmov_load_forms_outside_the_slice_are_refused_without_mutation() {
+    // (code, expected refused opcode): the CMOVcc forms refuse with their own opcode 0x40..0x4f.
+    let cases: [(&[u8], u8); 20] = [
+        // 0x66 (word), in both orders, and 0x67.
+        (&[0x66, 0x65, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        (&[0x65, 0x66, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        (
+            &[0x64, 0x66, 0x48, 0x0f, 0x45, 0x15, 0x34, 0x12, 0, 0],
+            0x45,
+        ),
+        (
+            &[0x65, 0x67, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (&[0x67, 0x64, 0x0f, 0x4f, 0x15, 0x34, 0x12, 0, 0], 0x4f),
+        // LOCK, REP, REPNE, in both orders.
+        (
+            &[0xf0, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (&[0x65, 0xf0, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        (
+            &[0xf3, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (&[0xf2, 0x64, 0x0f, 0x40, 0x15, 0x34, 0x12, 0, 0], 0x40),
+        // A second or a different segment prefix, including a CS prefix before GS.
+        (
+            &[0x64, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (
+            &[0x65, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (&[0x65, 0x64, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        (
+            &[0x2e, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (&[0x65, 0x2e, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        // REX not directly before the opcode (dword and qword).
+        (&[0x48, 0x65, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0], 0x44),
+        (
+            &[0x65, 0x48, 0x66, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        (
+            &[0x41, 0x65, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0],
+            0x44,
+        ),
+        // The ends of the opcode range, with the same refusals.
+        (&[0x66, 0x64, 0x0f, 0x40, 0x15, 0x34, 0x12, 0, 0], 0x40),
+        (&[0x64, 0x67, 0x0f, 0x4f, 0x15, 0x34, 0x12, 0, 0], 0x4f),
+        (&[0xf0, 0x64, 0x0f, 0x4f, 0x15, 0x34, 0x12, 0, 0], 0x4f),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_with_a_truncated_modrm_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x48, 0x0f, 0x44][..],
+        &[0x65, 0x0f, 0x44][..],
+        &[0x64, 0x48, 0x0f, 0x44, 0x15][..],
+        &[0x65, 0x0f, 0x44, 0x3d, 0x60, 0x95, 0x08][..],
+        &[0x65, 0x48, 0x0f, 0x44, 0x54][..],
+        &[0x65, 0x48, 0x0f, 0x44, 0x54, 0x8b][..],
+        &[0x65, 0x48, 0x0f, 0x44, 0x53][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rflags |= FLAG_ZF;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_prefixed_register_cmov_is_unchanged_and_ignores_the_prefix() {
+    // The register form (mod = 11) with FS/GS keeps the existing policy: the prefix is ignored and
+    // the instruction is the plain `cmovcc r, r`: same result as the unprefixed form, no memory
+    // access, RIP advances by the full length (prefix included).
+    let cases: [(&[u8], &[u8]); 4] = [
+        (&[0x65, 0x48, 0x0f, 0x44, 0xd8], &[0x48, 0x0f, 0x44, 0xd8]),
+        (&[0x64, 0x48, 0x0f, 0x45, 0xc2], &[0x48, 0x0f, 0x45, 0xc2]),
+        (&[0x64, 0x0f, 0x44, 0xc8], &[0x0f, 0x44, 0xc8]),
+        (&[0x65, 0x0f, 0x45, 0xd0], &[0x0f, 0x45, 0xd0]),
+    ];
+    for (prefixed, plain) in cases {
+        for zf in [0, FLAG_ZF] {
+            let seed = |code: &[u8]| {
+                let mut state = board_state();
+                state.rflags |= zf;
+                state.gpr[Register::Rax as usize] = 0x1_0000_0005;
+                state.gpr[Register::Rdx as usize] = 0x2_0000_0070;
+                state.gpr[Register::Rcx as usize] = 0x3_0000_0003;
+                state.gpr[Register::Rbx as usize] = 0x4_0000_0044;
+                let mut memory = CasMemory::new(code, 1);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                (state, memory, result)
+            };
+            let (state, memory, result) = seed(prefixed);
+            let (plain_state, _, plain_result) = seed(plain);
+            assert_eq!(result.instructions_executed, 1, "{prefixed:02x?}");
+            assert_eq!(plain_result.instructions_executed, 1, "{plain:02x?}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            assert_eq!(state.gpr, plain_state.gpr, "{prefixed:02x?}");
+            assert_eq!(state.rflags, plain_state.rflags, "{prefixed:02x?}");
+            assert_eq!(state.rip, RIP + prefixed.len() as u64, "{prefixed:02x?}");
+        }
+    }
+}
+
+#[test]
+fn plain_unprefixed_cmov_load_still_reads_the_effective_address_ignoring_other_bases() {
+    // Regression: `cmove 0x1234(%rip), %rdx`, the dword form and a CS/DS/ES/SS override ignore the
+    // FS/GS bases and read the effective address; not taken keeps EDX's low dword and zeroes the
+    // upper half, as before.
+    for (code, width) in [
+        (&[0x48u8, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 8usize),
+        (&[0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 4),
+        (&[0x2e, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 8),
+        (&[0x3e, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 4),
+        (&[0x26, 0x48, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 8),
+        (&[0x36, 0x0f, 0x44, 0x15, 0x34, 0x12, 0, 0][..], 4),
+    ] {
+        for taken in [true, false] {
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.fs_base = 0xffff_8880_0000_0000;
+            state.rflags |= if taken { FLAG_ZF } else { 0 };
+            state.gpr[Register::Rdx as usize] = 0xaaaa_bbbb_0000_000f;
+            let mut memory = CasMemory::new(code, 0xf0);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            assert_eq!(
+                memory.reads,
+                vec![(RIP + code.len() as u64 + 0x1234, width)],
+                "{code:02x?}"
+            );
+            let expected = match (taken, width) {
+                (true, _) => 0xf0,
+                (false, 8) => 0xaaaa_bbbb_0000_000f,
+                (false, _) => 0x0f,
+            };
+            assert_eq!(state.gpr[Register::Rdx as usize], expected, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn segment_cmov_load_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for (code, opcode) in [
+        (GS_CMOVE_EDI_BOUNDARY.to_vec(), 0x44),
+        (cmov_load_rdx_rip(0x65, Some(0x48), 4), 0x44),
+        (cmov_load_rdx_rip(0x64, Some(0x48), 0xf), 0x4f),
+        (cmov_load_rdx_rip(0x65, None, 0), 0x40),
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(&code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_cmov_load_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_CMOVE_EDI_BOUNDARY, 1);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x44 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_cmov_load_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_CMOVE_EDI_BOUNDARY, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

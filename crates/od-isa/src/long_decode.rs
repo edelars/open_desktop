@@ -651,6 +651,23 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
+    /// S4-38L7bj: `64 [REX] 0F 40..4F /r` (CMOVcc r32, m32, or r64, m64 with REX.W, with the FS
+    /// base), memory source only. The operand is read regardless of the condition; if the
+    /// condition holds it is loaded into `dst`, otherwise `dst` is unchanged except that a dword
+    /// destination has its upper 32 bits zeroed (as the plain CMOVcc). Flags are kept; memory is
+    /// not written. Executed only in the CPL0 set.
+    CmovFsLoad {
+        condition: ConditionCode,
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
+    /// S4-38L7bj: `65 [REX] 0F 40..4F /r` (CMOVcc r32/r64, m32/m64 with the GS base), memory
+    /// source only. Executed only in the CPL0 set.
+    CmovGsLoad {
+        condition: ConditionCode,
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
     /// S4-38L7aa: `64 [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W, with the FS base),
     /// memory destination only. The operand is read and only the flags change (no write).
     /// Executed only in the CPL0 set.
@@ -9703,10 +9720,48 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     size,
                     prefixes.rex.is_some(),
                 );
-                Operation::ConditionalMove {
-                    condition: ConditionCode::from_encoding(byte & 0x0f).unwrap(),
-                    dst,
-                    src: self.rm_operand(modrm, prefixes, size)?,
+                let condition = ConditionCode::from_encoding(byte & 0x0f).unwrap();
+                let src = self.rm_operand(modrm, prefixes, size)?;
+                if let (Some(segment @ (0x64 | 0x65)), Operand::Memory(src)) =
+                    (prefixes.segment, src)
+                {
+                    // S4-38L7bj: `[64|65] [REX] 0F 40..4F /r` (CMOVcc r32, m32, or r64, m64 with
+                    // REX.W) with a memory source. The register form (mod = 11) is not matched
+                    // here and stays the plain `ConditionalMove` (the segment prefix is ignored,
+                    // as in S4-38L7bd/be). LOCK/REP, 0x66 (word), 0x67 and a REX byte that is not
+                    // immediately before the opcode stay refused; a second segment prefix is
+                    // already refused by the shared duplicate check.
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if stale_rex
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                        || !matches!(size, OperandSize::Dword | OperandSize::Qword)
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    if segment == 0x64 {
+                        Operation::CmovFsLoad {
+                            condition,
+                            dst,
+                            src,
+                        }
+                    } else {
+                        Operation::CmovGsLoad {
+                            condition,
+                            dst,
+                            src,
+                        }
+                    }
+                } else {
+                    Operation::ConditionalMove {
+                        condition,
+                        dst,
+                        src,
+                    }
                 }
             }
             (OpcodeMap::Primary, 0xeb) => {
@@ -9910,6 +9965,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::AddGsLoad { .. } => false,
                 Operation::CmpFsLoad { .. } => false,
                 Operation::CmpGsLoad { .. } => false,
+                Operation::CmovFsLoad { .. } => false,
+                Operation::CmovGsLoad { .. } => false,
                 Operation::CmpFsMem { .. } => false,
                 Operation::CmpGsMem { .. } => false,
                 Operation::CmpFsMemImm { .. } => false,
@@ -22436,13 +22493,84 @@ mod tests {
             &[0xf0, 0x0f, 0x44, 0xc0][..],
             &[0xf2, 0x0f, 0x44, 0xc0][..],
             &[0xf3, 0x0f, 0x44, 0xc0][..],
-            &[0x64, 0x0f, 0x44, 0x00][..],
-            &[0x65, 0x0f, 0x44, 0x00][..],
+            // S4-38L7bj: FS/GS with a memory source is accepted (see
+            // `segment_cmov_load_decodes_fs_gs_memory_forms_only`); the refused forms of that
+            // shape (66, 67, LOCK/REP, stale REX, second segment) are listed there.
+            &[0x64, 0x66, 0x0f, 0x44, 0x00][..],
+            &[0x65, 0x67, 0x0f, 0x44, 0x00][..],
         ] {
             assert!(matches!(
                 Memory::new(bytes).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn segment_cmov_load_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7bj: the diagnostic boundary `cmove %gs:0x3089560(%rip), %edi`.
+        let edi = RegisterView::low(Register::Rdi, OperandSize::Dword);
+        let mut memory = Memory::new(&[0x65, 0x0f, 0x44, 0x3d, 0x60, 0x95, 0x08, 0x03]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmovGsLoad { condition: ConditionCode::Equal, dst, src }
+                if dst == edi
+                    && src.size == OperandSize::Dword
+                    && src.base == AddressBase::NextRip
+                    && src.displacement == 0x0308_9560
+        ));
+        // REX.W with REX.R: register R12, FS, condition 0x4f (G).
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x0f, 0x4f, 0x24, 0x25, 0x10, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmovFsLoad { condition: ConditionCode::Greater, dst, src }
+                if dst == RegisterView::low(Register::R12, OperandSize::Qword)
+                    && src.size == OperandSize::Qword
+        ));
+        // No segment prefix and CS/DS/ES/SS prefixes: still the plain `ConditionalMove`.
+        for bytes in [
+            &[0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x2e, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x36, 0x48, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+        ] {
+            assert!(matches!(
+                Memory::new(bytes).decode().unwrap().operation,
+                Operation::ConditionalMove { .. }
+            ));
+        }
+        // The register form (mod = 11) is not touched: the prefix is ignored.
+        for bytes in [
+            &[0x65, 0x0f, 0x44, 0xfb][..],
+            &[0x64, 0x48, 0x0f, 0x45, 0xc3][..],
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len());
+            assert!(matches!(
+                decoded.operation,
+                Operation::ConditionalMove {
+                    src: Operand::Register(_),
+                    ..
+                }
+            ));
+        }
+        for bytes in [
+            &[0x66, 0x65, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x65, 0x66, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x65, 0x67, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0xf0, 0x65, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0xf3, 0x65, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0xf2, 0x64, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x64, 0x65, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x48, 0x65, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+            &[0x65, 0x48, 0x66, 0x0f, 0x44, 0x3d, 1, 0, 0, 0][..],
+        ] {
+            let result = Memory::new(bytes).decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0x44),
+                "{bytes:02x?}: {result:?}"
+            );
         }
     }
 

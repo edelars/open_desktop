@@ -35220,6 +35220,9 @@ fn step_configured(
         // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
         | Operation::CmpFsLoad { .. }
         | Operation::CmpGsLoad { .. }
+        // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
+        | Operation::CmovFsLoad { .. }
+        | Operation::CmovGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -49085,6 +49088,9 @@ fn step_configured(
         // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
         | Operation::CmpFsLoad { .. }
         | Operation::CmpGsLoad { .. }
+        // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
+        | Operation::CmovFsLoad { .. }
+        | Operation::CmovGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -54689,6 +54695,43 @@ fn transfer(
                 state.rflags,
             );
             state.rflags = flags;
+        }
+        Operation::CmovFsLoad {
+            condition,
+            dst,
+            src,
+        } => {
+            // S4-38L7bj: base + effective address; a non-canonical start or last byte is #GP(0)
+            // before the read. As the plain CMOVcc the source is read regardless of the
+            // condition (a read fault changes nothing); the condition is the shared
+            // `ConditionCode::evaluate`. When it holds the value is written; otherwise a dword
+            // destination is rewritten with its own low dword, which zeroes the upper 32 bits (the
+            // 64-bit-mode rule of the plain CMOVcc), a qword destination stays. Flags are
+            // untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            if condition.evaluate(state.rflags) {
+                state.write(dst, value);
+            } else if dst.size() == OperandSize::Dword {
+                let old_low_dword = state.read(dst);
+                state.write(dst, old_low_dword);
+            }
+        }
+        Operation::CmovGsLoad {
+            condition,
+            dst,
+            src,
+        } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            if condition.evaluate(state.rflags) {
+                state.write(dst, value);
+            } else if dst.size() == OperandSize::Dword {
+                let old_low_dword = state.read(dst);
+                state.write(dst, old_low_dword);
+            }
         }
         Operation::TestFsMemByte { src, immediate } => {
             // S4-38L7o: base + effective address; a non-canonical address (a single byte is read)
