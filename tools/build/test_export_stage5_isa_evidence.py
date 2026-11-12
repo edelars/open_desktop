@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1054)
-                self.assertEqual(fields["unclassified_normalized_forms"], 215)
+                self.assertEqual(fields["classified_normalized_forms"], 1056)
+                self.assertEqual(fields["unclassified_normalized_forms"], 213)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295723 if full_key else 6296007
-                expected_unclassified_rows = 214677 if full_key else 214738
+                expected_supported_rows = 6295849 if full_key else 6296133
+                expected_unclassified_rows = 214551 if full_key else 214612
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -102,10 +102,15 @@ class NormalizedFormTests(unittest.TestCase):
                             totals[classification] += frequencies.get(classification, 0)
                     scenario_totals[scenario] = totals
                 self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
+                for scope_key in (
+                    "pcmpgtb_scope", "pcmpeqb_scope", "psubq_scope", "movapd_scope",
+                    "packuswb_scope", "pcmpgtd_scope", "movaps_scope",
+                ):
+                    self.assertNotIn("PCMPEQD", fields[scope_key])
                 report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
                 local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
-                self.assertIn("6 293 656", local_scope_line)
-                self.assertIn("6 293 372", local_scope_line)
+                self.assertIn("6 293 782", local_scope_line)
+                self.assertIn("6 293 498", local_scope_line)
                 scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
                 c_totals = fields["scenario_classification_frequencies"]["C"]
                 d_totals = fields["scenario_classification_frequencies"]["D"]
@@ -124,7 +129,7 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "215 normalized forms / 214 677 rootfs-only rows (214 738 с E ELF)",
+                    "213 normalized forms / 214 551 rootfs-only rows (214 612 с E ELF)",
                     issue_section,
                 )
                 report_binary_rows = {}
@@ -356,6 +361,29 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(movaps_encodings), 12)
                 self.assertEqual(sum(row["count"] for row in movaps_encodings), 98)
                 self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in movaps_encodings))
+                pcmpeqd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "76"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpeqd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqd_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpeqd_forms), 126)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.20-PCMPEQD-XMM-register-register", 0) for row in pcmpeqd_forms),
+                    126,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpeqd_forms),
+                    126,
+                )
+                pcmpeqd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "76"]
+                    and row["dimensions"]["operand_signature"] == "pcmpeqd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqd_encodings), 18)
+                self.assertEqual(sum(row["count"] for row in pcmpeqd_encodings), 126)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pcmpeqd_encodings))
                 pcmpgtd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]

@@ -1283,6 +1283,64 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("second 66 after 0F is opcode", family["gate"])
         self.assertIn("signed little-endian i32", family["outcome"])
 
+    def test_s2_35_20_pcmpeqd_matches_register_pairs_rex_and_exact_form(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.20-PCMPEQD-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 76 {modrm:02x}"
+                operands = f"pcmpeqd xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  403d00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "pcmpeqd xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  403e00: 66 40 0f 76 c1 pcmpeqd xmm0,xmm1")), expected)
+        rejected = (
+            ("0f 76 c1", "pcmpeqd mm0,mm1"),
+            ("0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 42 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 48 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 4c 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 66 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 f2 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 f3 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("67 66 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("44 66 0f 76 c1", "pcmpeqd xmm0,xmm1"),
+            ("66 0f 76 00", "pcmpeqd xmm0,XMMWORD PTR [rax]"),
+            ("66 0f 75 c1", "pcmpeqw xmm0,xmm1"),
+            ("66 0f 66 c1", "pcmpgtd xmm0,xmm1"),
+            ("66 0f 76", "pcmpeqd xmm0,xmm1"),
+            ("66 0f 76 c1 90", "pcmpeqd xmm0,xmm1"),
+            ("c5 f9 76 c1", "vpcmpeqd xmm0,xmm1,xmm2"),
+            ("62 f1 7d 08 76 c1", "vpcmpeqd xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403f00: {encoding} {operands}")
+            self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
+
+    def test_s2_35_20_pcmpeqd_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.20 PCMPEQD XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertIn("66 [one optional REX.R/B] 0F 76 /r", family["encoding"])
+        self.assertIn("ModR/M.mod=3", family["gate"])
+        self.assertIn("full dword values are equal", family["outcome"])
+        self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
+        self.assertIn("CPU_CONTRACT has no PCMPEQD entry", profile["gate"])
+
     def test_s2_35_18_pcmpeqb_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])
