@@ -588,6 +588,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["guest_sysenter_eip"] = json!(hex64(record.guest_sysenter_eip));
     // S4-38L7at: the guest IA32_SYSCALL_MASK (write-only for the guest; the full 64-bit value).
     stop["guest_syscall_mask"] = json!(hex64(record.guest_syscall_mask));
+    // S4-38L7au: the guest IA32_KERNEL_GS_BASE (write-only for the guest; the full 64-bit value).
+    stop["guest_kernel_gs_base"] = json!(hex64(record.guest_kernel_gs_base));
     stop
 }
 
@@ -1446,6 +1448,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1646,6 +1649,38 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_guest_kernel_gs_base_after_its_wrmsr() {
+        // MOV ECX,0xC0000102; MOV EAX,0x12345678; MOV EDX,0xFFFF8880; WRMSR (S4-38L7au).
+        let code = [
+            0xB9, 0x02, 0x01, 0x00, 0xC0, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x80, 0x88, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-kernel-gs-base",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_kernel_gs_base"], "0xffff888012345678");
+        assert_eq!(stop["guest_syscall_mask"], "0x0");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_sysenter_esp"], "0x0");
+        assert_eq!(stop["guest_sysenter_eip"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes it.
+        let value = run_case("kernel-gs-base-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_kernel_gs_base"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
         // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
         let code = [
@@ -1737,6 +1772,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -2030,6 +2066,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"

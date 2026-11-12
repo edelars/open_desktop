@@ -986,6 +986,10 @@ pub struct LoadedFirmwareBoard {
     /// set. The full 64-bit value written (the flag-clearing behaviour of the real FMASK is not
     /// modelled). Only stored; nothing consumes it.
     guest_syscall_mask: u64,
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au): `0` until a guest `WRMSR` of it through the
+    /// CPL0 set. The full 64-bit value written (no canonical check; `SWAPGS` is not modelled).
+    /// Only stored; nothing consumes it.
+    guest_kernel_gs_base: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1157,6 +1161,17 @@ impl LoadedFirmwareBoard {
     /// Stores the SYSCALL_MASK a CPL0-set run left (S4-38L7at).
     pub(crate) fn set_guest_syscall_mask(&mut self, value: u64) {
         self.guest_syscall_mask = value;
+    }
+
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au); `0` until a guest `WRMSR` of it. The full
+    /// 64-bit value written. Not readable by the guest: `RDMSR` of KERNEL_GS_BASE stays refused.
+    pub const fn guest_kernel_gs_base(&self) -> u64 {
+        self.guest_kernel_gs_base
+    }
+
+    /// Stores the KERNEL_GS_BASE a CPL0-set run left (S4-38L7au).
+    pub(crate) fn set_guest_kernel_gs_base(&mut self, value: u64) {
+        self.guest_kernel_gs_base = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -2018,6 +2033,7 @@ impl AssembledBoard {
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
             guest_syscall_mask: 0,
+            guest_kernel_gs_base: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -2080,6 +2096,7 @@ impl AssembledBoard {
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
             guest_syscall_mask: 0,
+            guest_kernel_gs_base: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]

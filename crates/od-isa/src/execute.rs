@@ -1907,6 +1907,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_sysenter_cs: Option<&'a Cell<u64>>,
     msr_sysenter_stack: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     msr_syscall_mask: Option<&'a Cell<u64>>,
+    msr_kernel_gs_base: Option<&'a Cell<u64>>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1930,6 +1931,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_sysenter_cs: None,
             msr_sysenter_stack: None,
             msr_syscall_mask: None,
+            msr_kernel_gs_base: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2076,6 +2078,21 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// today no [`MsrProfile`] covers `0xC000_0084`, so the member is never overridden.
     pub const fn with_msr_syscall_mask_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_syscall_mask = Some(cell);
+        self
+    }
+
+    /// S4-38L7au: admit `WRMSR` of IA32_KERNEL_GS_BASE (`0xC000_0102`) at CPL0 under Long64, with
+    /// exactly the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the
+    /// caller's guest KERNEL_GS_BASE and receives `EDX:EAX` exactly (full 64-bit value; no
+    /// canonical check, no other state change). Only the bare two-byte form `0F 30` is admitted,
+    /// `RDMSR` of KERNEL_GS_BASE stays `Unsupported`, and `SWAPGS` is not modelled by the member,
+    /// so nothing in the set consumes the value. The member is separate from
+    /// [`Self::with_msr_bases`], which covers IA32_FS_BASE and IA32_GS_BASE only.
+    ///
+    /// Precedence: [`MsrProfile::KernelGsBaseV1`] handles `0xC000_0102`; a set whose MSR profile
+    /// handles the index keeps it (as for `0x174..=0x176`), so the member never overrides it.
+    pub const fn with_msr_kernel_gs_base_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_kernel_gs_base = Some(cell);
         self
     }
 
@@ -2254,9 +2271,9 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
-/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at: the guest-owned write-only MSR cells
-/// of a set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSCALL_MASK) and
-/// IA32_SYSENTER_CS, _ESP and _EIP.
+/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: the guest-owned write-only
+/// MSR cells of a set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSCALL_MASK),
+/// IA32_SYSENTER_CS, _ESP and _EIP, and IA32_KERNEL_GS_BASE.
 /// One optional bundle, so that adding such an MSR does not touch every `ExecutionProfiles`
 /// literal. The SYSENTER cells are only carried here; in the set, the board and the stop record
 /// they are separate cells, not SYSCALL ones.
@@ -2269,6 +2286,7 @@ struct GuestMsrCells<'a> {
     sysenter_esp: Option<&'a Cell<u64>>,
     sysenter_eip: Option<&'a Cell<u64>>,
     syscall_mask: Option<&'a Cell<u64>>,
+    kernel_gs_base: Option<&'a Cell<u64>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2278,8 +2296,8 @@ struct ExecutionProfiles<'a> {
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
     /// The set's write-only guest MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSENTER_CS,
-    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP, IA32_SYSCALL_MASK); `None` outside a set or when the
-    /// set has none.
+    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP, IA32_SYSCALL_MASK, IA32_KERNEL_GS_BASE); `None`
+    /// outside a set or when the set has none.
     guest_msrs: Option<GuestMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
@@ -20379,6 +20397,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_sysenter_cs.is_some()
                 || set.msr_sysenter_stack.is_some()
                 || set.msr_syscall_mask.is_some()
+                || set.msr_kernel_gs_base.is_some()
             {
                 Some(GuestMsrCells {
                     star: set.msr_star,
@@ -20388,6 +20407,7 @@ fn run_cpl0_profile_set_inner(
                     sysenter_esp: set.msr_sysenter_stack.map(|(esp, _)| esp),
                     sysenter_eip: set.msr_sysenter_stack.map(|(_, eip)| eip),
                     syscall_mask: set.msr_syscall_mask,
+                    kernel_gs_base: set.msr_kernel_gs_base,
                 })
             } else {
                 None
@@ -33278,9 +33298,9 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at: `WRMSR` of IA32_STAR /
-        // IA32_LSTAR / IA32_CSTAR / IA32_SYSCALL_MASK / IA32_SYSENTER_CS / IA32_SYSENTER_ESP /
-        // IA32_SYSENTER_EIP stores EDX:EAX in
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: `WRMSR` of
+        // IA32_STAR / IA32_LSTAR / IA32_CSTAR / IA32_SYSCALL_MASK / IA32_SYSENTER_CS /
+        // IA32_SYSENTER_ESP / IA32_SYSENTER_EIP / IA32_KERNEL_GS_BASE stores EDX:EAX in
         // the set's cell for that index. An MSR profile that handles the index (`handles_index`;
         // today `SysenterProbeV1` for 0x174..=0x176) wins for its own index, so every other form
         // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
@@ -33308,6 +33328,13 @@ fn step_configured(
                     if !msr_profile.is_some_and(|profile| profile.handles_index(0xc000_0084)) =>
                 {
                     cells.syscall_mask
+                }
+                // S4-38L7au: IA32_KERNEL_GS_BASE, same precedence: `MsrProfile::KernelGsBaseV1`
+                // handles the index and keeps it.
+                0xc000_0102
+                    if !msr_profile.is_some_and(|profile| profile.handles_index(0xc000_0102)) =>
+                {
+                    cells.kernel_gs_base
                 }
                 _ => None,
             }
