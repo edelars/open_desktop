@@ -35965,6 +35965,14 @@ fn step_configured(
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
         }
+        // S4-38L7al: SGDT m stores the modeled GDTR; admitted only inside the CPL0 profile set
+        // at CPL0 in Long64 and only when a GDTR is modeled (no GDTR value is invented).
+        Operation::StoreGdtr { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gdtr.is_some()
+        }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
         Operation::Leave | Operation::FarReturn | Operation::IretQ => {
@@ -48825,6 +48833,27 @@ fn step_configured(
                 return report_memory_error(error);
             }
         }
+        Operation::StoreGdtr { dst } => {
+            let gdtr = state.gdtr.expect("SGDT admission requires a modeled GDTR");
+            let segment_base = match instruction.prefixes.segment {
+                Some(0x64) => state.fs_base,
+                Some(0x65) => state.gs_base,
+                _ => 0,
+            };
+            if let Err(error) = store_pseudo_descriptor_qwords(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                segment_base,
+                instruction.prefixes.segment.is_none(),
+                gdtr.limit,
+                gdtr.base,
+            ) {
+                return report_memory_error(error);
+            }
+        }
         Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
             // Null load (admitted by the CPL0 set only). The visible selector becomes 0 and
             // the register is marked unusable; the FS base MSR value and any modeled cache
@@ -52678,6 +52707,62 @@ fn read_pseudo_descriptor_qwords(
         return Err(general_protection());
     }
     Ok((base, limit))
+}
+
+/// Pseudo-descriptor store for `SGDT m` (S4-38L7al): the limit as 2 bytes little-endian at
+/// `+0`, the 64-bit base as 8 bytes little-endian at `+2`. The adapters have no ten-byte
+/// write, so the store is two overlapping qword writes: `[a, a+8)` (limit and the low six
+/// base bytes) and `[a+2, a+10)` (the whole base); the overlap carries equal bytes.
+///
+/// The start address and the last byte (`+9`) must be canonical, otherwise #GP(0) (#SS(0) for
+/// an unprefixed RSP/RBP-based operand, as for LGDT) before any write. The write that goes first
+/// is the one that touches every page of the operand (`[a+2, a+10)` unless the offset in the
+/// page is at least `0xffe`, where only `[a, a+8)` crosses the page boundary), so a page that
+/// refuses the store makes the first write fail and nothing is committed. Registers and flags
+/// are not touched.
+#[allow(clippy::too_many_arguments)]
+fn store_pseudo_descriptor_qwords(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    dst: MemoryOperand,
+    segment_base: u64,
+    unprefixed: bool,
+    limit: u16,
+    base: u64,
+) -> Result<(), MemoryError> {
+    let address = dst
+        .effective_address(state, next_rip)
+        .wrapping_add(segment_base);
+    let last = address.checked_add(9);
+    if !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        let ss_based = unprefixed
+            && matches!(
+                dst.base,
+                long_decode::AddressBase::Register(Register::Rsp | Register::Rbp)
+            );
+        return Err(MemoryError::Architectural(ArchitecturalFault {
+            vector: if ss_based { 12 } else { 13 },
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+    let context = AccessContext {
+        origin: crate::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let mut head = [0; 8];
+    head[..2].copy_from_slice(&limit.to_le_bytes());
+    head[2..].copy_from_slice(&base.to_le_bytes()[..6]);
+    let tail = base.to_le_bytes();
+    if address & 0xfff >= 0xffe {
+        memory.write(address, context, &head)?;
+        memory.write(address + 2, context, &tail)
+    } else {
+        memory.write(address + 2, context, &tail)?;
+        memory.write(address, context, &head)
+    }
 }
 
 fn load_gdtr(
@@ -65553,6 +65638,56 @@ mod tests {
         ] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rdi as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x01 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sgdt_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7al: SGDT m is a CPL0-set instruction; without the set (no control policy) bare
+        // `run` and `step` refuse it without mutation (opcode 0x01), even with a modeled GDTR.
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x0f, 0x01, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            bare.gpr[Register::Rbp as usize] = 0x2000;
             let before = bare.clone();
 
             let mut state = bare.clone();
@@ -155628,6 +155763,40 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn sgdt_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7al: SGDT m belongs to the CPL0 set only; this profile refuses it.
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn mov_cr3_r64_forms_stay_unsupported_in_bare_run_and_step() {
         // No CPL0 set and no cpu-owned CR3: bare `run` and `step` refuse the forms.
         for bytes in [&[0x0f, 0x22, 0xdf][..], &[0x48, 0x0f, 0x22, 0xd8][..]] {
@@ -156581,6 +156750,30 @@ mod paged_cr3_probe_tests {
             &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
         ] {
             let mut state = state();
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_sgdt_unsupported() {
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = state();
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
             let before = state.clone();
             let mut memory = Memory::new(bytes);
             let result = step(&mut state, &mut memory);
@@ -158680,6 +158873,34 @@ mod paged_mov_profile_tests {
             &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
         ] {
             let mut state = state_with_control_registers();
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_sgdt_unsupported() {
+        // S4-38L7al belongs to the CPL0 set only; this profile refuses it without mutation.
+        for code in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
             let before = state.clone();
             let mut memory = Memory::new(code);
             let result = step_paged_mov(

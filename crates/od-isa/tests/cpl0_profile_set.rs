@@ -11327,6 +11327,9 @@ struct BitsMemory {
     writes: Vec<(u64, Vec<u8>)>,
     /// When set, every data write fails with this fault (a read-only page).
     write_fault: Option<ArchitecturalFault>,
+    /// With `write_fault` set: only writes that overlap this half-open address range fail (a
+    /// refusing page); `None` keeps the "every write fails" behaviour.
+    write_fault_range: Option<std::ops::Range<u64>>,
     /// When set, every data read fails with this fault (a not-present page).
     read_fault: Option<ArchitecturalFault>,
 }
@@ -11339,6 +11342,7 @@ impl BitsMemory {
             reads: Vec::new(),
             writes: Vec::new(),
             write_fault: None,
+            write_fault_range: None,
             read_fault: None,
         }
     }
@@ -11392,7 +11396,11 @@ impl GuestMemory for BitsMemory {
     }
 
     fn write(&mut self, address: u64, _: AccessContext, bytes: &[u8]) -> Result<(), MemoryError> {
-        if let Some(fault) = self.write_fault.clone() {
+        if let Some(fault) = self.write_fault.clone()
+            && self.write_fault_range.as_ref().is_none_or(|range| {
+                address < range.end && address + bytes.len() as u64 > range.start
+            })
+        {
             return Err(MemoryError::Architectural(fault));
         }
         self.writes.push((address, bytes.to_vec()));
@@ -22341,6 +22349,570 @@ fn segment_movsxd_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = BitsMemory::new(&GS_MOVSXD_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7al: `SGDT m` (`0F 01 /0`, memory operand, optional FS/GS) in the CPL0 set. The ten-byte
+// pseudo-descriptor (limit as 2 bytes little-endian at +0, 64-bit base as 8 bytes at +2) is stored
+// at the effective address plus the FS/GS base; the model has no ten-byte write, so the store is two
+// overlapping qword writes (`[a, a+8)` and `[a+2, a+10)`). Semantics from memory of SDM Vol.2 SGDT,
+// not re-checked against the primary source. ----
+
+/// `sgdt -0x1a(%rbp)` (the S4-38L7ak diagnostic boundary bytes).
+const SGDT_BOUNDARY: [u8; 4] = [0x0f, 0x01, 0x45, 0xe6];
+const SGDT_GDTR: od_isa::state::Gdtr = od_isa::state::Gdtr {
+    base: 0xffff_fe00_1122_3344,
+    limit: 0xa57f,
+};
+/// Limit little-endian, then the base little-endian.
+const SGDT_BYTES: [u8; 10] = [0x7f, 0xa5, 0x44, 0x33, 0x22, 0x11, 0x00, 0xfe, 0xff, 0xff];
+const SS0: ArchitecturalFault = ArchitecturalFault {
+    vector: 12,
+    error_code: Some(0),
+    linear_address: None,
+};
+
+fn sgdt_state() -> LongModeState {
+    let mut state = board_state();
+    state.gdtr = Some(SGDT_GDTR);
+    state.rflags |= ARITH | (1 << 10);
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_1111_0000;
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x0101_0101_0101_0101u64.wrapping_mul(index as u64 + 1);
+    }
+    state
+}
+
+fn sgdt_stored(memory: &BitsMemory, at: u64) -> [u8; 10] {
+    let mut bytes = [0xeeu8; 10];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = memory
+            .data
+            .get(&(at + index as u64))
+            .copied()
+            .unwrap_or(0xee);
+    }
+    bytes
+}
+
+/// Fills `[start, end)` with `value`.
+fn sgdt_fill(memory: &mut BitsMemory, start: u64, end: u64, value: u8) {
+    for address in start..end {
+        memory.data.insert(address, value);
+    }
+}
+
+#[test]
+fn sgdt_boundary_form_stores_the_ten_byte_pseudo_descriptor_and_changes_only_rip() {
+    let at = 0x3000u64;
+    let mut state = sgdt_state();
+    state.gpr[Register::Rbp as usize] = at + 0x1a;
+    let mut expected = state.clone();
+    // The boundary stream: `sgdt -0x1a(%rbp); mov %ebx, %edi`. One instruction retires.
+    let code = [0x0f, 0x01, 0x45, 0xe6, 0x89, 0xdf];
+    let mut memory = BitsMemory::new(&code);
+    sgdt_fill(&mut memory, at - 8, at + 18, 0xaa);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert!(memory.reads.is_empty(), "a store does not read");
+    // The first write is the base qword at +2, the second the limit and the low six base bytes at
+    // +0 (the offset in the page is below 0xffe).
+    assert_eq!(
+        memory.writes,
+        vec![
+            (at + 2, SGDT_BYTES[2..].to_vec()),
+            (at, SGDT_BYTES[..8].to_vec()),
+        ]
+    );
+    assert_eq!(sgdt_stored(&memory, at), SGDT_BYTES);
+    // Limit and base byte by byte, independent of the constant.
+    assert_eq!(memory.data[&at], 0x7f);
+    assert_eq!(memory.data[&(at + 1)], 0xa5);
+    for (index, byte) in [0x44u8, 0x33, 0x22, 0x11, 0x00, 0xfe, 0xff, 0xff]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            memory.data[&(at + 2 + index as u64)],
+            byte,
+            "base byte {index}"
+        );
+    }
+    // The neighbours keep their value.
+    for address in (at - 8..at).chain(at + 10..at + 18) {
+        assert_eq!(memory.data[&address], 0xaa, "{address:#x}");
+    }
+    expected.rip += 4;
+    assert_eq!(state, expected, "only RIP changes (flags, registers, GDTR)");
+}
+
+#[test]
+fn sgdt_stores_whatever_the_modeled_gdtr_holds() {
+    for gdtr in [
+        od_isa::state::Gdtr {
+            base: 0x0000_0000_0012_0000,
+            limit: 0x1f,
+        },
+        od_isa::state::Gdtr { base: 0, limit: 0 },
+        od_isa::state::Gdtr {
+            base: 0xffff_ffff_ffff_ffff,
+            limit: 0xffff,
+        },
+        od_isa::state::Gdtr {
+            base: 0x0000_7fff_8000_0001,
+            limit: 0x0100,
+        },
+    ] {
+        let mut state = sgdt_state();
+        state.gdtr = Some(gdtr);
+        state.gpr[Register::Rbp as usize] = 0x3000 + 0x1a;
+        let mut memory = BitsMemory::new(&SGDT_BOUNDARY);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        let mut want = [0u8; 10];
+        want[..2].copy_from_slice(&gdtr.limit.to_le_bytes());
+        want[2..].copy_from_slice(&gdtr.base.to_le_bytes());
+        assert_eq!(sgdt_stored(&memory, 0x3000), want, "{gdtr:?}");
+        assert_eq!(state.gdtr, Some(gdtr));
+    }
+}
+
+#[test]
+fn sgdt_with_gs_and_fs_adds_the_segment_base_and_the_plain_form_ignores_it() {
+    let at_offset = 0x3000u64;
+    for (prefix, base_of) in [
+        (Some(0x65u8), 0xffff_8880_0000_0000u64),
+        (Some(0x64), 0xffff_8880_1111_0000),
+        (None, 0),
+    ] {
+        let mut code = Vec::new();
+        code.extend(prefix);
+        code.extend_from_slice(&SGDT_BOUNDARY);
+        let mut state = sgdt_state();
+        state.gpr[Register::Rbp as usize] = at_offset + 0x1a;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let at = at_offset + base_of;
+        sgdt_fill(&mut memory, at - 4, at + 14, 0x55);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(sgdt_stored(&memory, at), SGDT_BYTES, "{code:02x?}");
+        assert!(memory.reads.is_empty());
+        assert!(
+            memory.writes.iter().all(|(address, bytes)| {
+                *address >= at && address + bytes.len() as u64 <= at + 10 && bytes.len() == 8
+            }),
+            "{code:02x?}: {:?}",
+            memory.writes
+        );
+        for address in (at - 4..at).chain(at + 10..at + 14) {
+            assert_eq!(memory.data[&address], 0x55, "{code:02x?} {address:#x}");
+        }
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn sgdt_addressing_forms_reach_the_effective_address() {
+    let gs = 0xffff_8880_0000_0000u64;
+    let fs = 0xffff_8880_1111_0000u64;
+    let at = 0x3000u64;
+    // (code, register values, expected address)
+    type Form = (&'static [u8], &'static [(Register, u64)], u64);
+    let forms: &[Form] = &[
+        (&[0x0f, 0x01, 0x03], &[(Register::Rbx, 0x3000)], at),
+        (&[0x0f, 0x01, 0x43, 0x08], &[(Register::Rbx, 0x2ff8)], at),
+        (
+            &[0x0f, 0x01, 0x83, 0x00, 0x01, 0x00, 0x00],
+            &[(Register::Rbx, 0x2f00)],
+            at,
+        ),
+        (
+            // 0x10(%rbx,%rcx,4)
+            &[0x0f, 0x01, 0x44, 0x8b, 0x10],
+            &[(Register::Rbx, 0x2fe4), (Register::Rcx, 3)],
+            at,
+        ),
+        (
+            // absolute SIB, no base and no index
+            &[0x0f, 0x01, 0x04, 0x25, 0x00, 0x30, 0x00, 0x00],
+            &[],
+            at,
+        ),
+        (&[0x0f, 0x01, 0x04, 0x24], &[(Register::Rsp, 0x3000)], at),
+        (&[0x41, 0x0f, 0x01, 0x00], &[(Register::R8, 0x3000)], at),
+        (&[0x41, 0x0f, 0x01, 0x07], &[(Register::R15, 0x3000)], at),
+        (
+            // (%rax,%r12): REX.X reaches the index
+            &[0x42, 0x0f, 0x01, 0x04, 0x20],
+            &[(Register::Rax, 0x2ff0), (Register::R12, 0x10)],
+            at,
+        ),
+        (&[0x44, 0x0f, 0x01, 0x03], &[(Register::Rbx, 0x3000)], at),
+        (&[0x40, 0x0f, 0x01, 0x03], &[(Register::Rbx, 0x3000)], at),
+        // RIP-relative: relative to the end of the whole instruction (7 bytes).
+        (
+            &[0x0f, 0x01, 0x05, 0x34, 0x12, 0x00, 0x00],
+            &[],
+            RIP + 7 + 0x1234,
+        ),
+        // The same with GS (8 bytes).
+        (
+            &[0x65, 0x0f, 0x01, 0x05, 0x34, 0x12, 0x00, 0x00],
+            &[],
+            gs + RIP + 8 + 0x1234,
+        ),
+        (
+            &[0x65, 0x0f, 0x01, 0x03],
+            &[(Register::Rbx, 0x3000)],
+            gs + at,
+        ),
+        // FS with REX.B and a disp8.
+        (
+            &[0x64, 0x41, 0x0f, 0x01, 0x40, 0x10],
+            &[(Register::R8, 0x2ff0)],
+            fs + at,
+        ),
+    ];
+    for &(code, registers, address) in forms {
+        let mut state = sgdt_state();
+        for &(register, value) in registers {
+            state.gpr[register as usize] = value;
+        }
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}: {result:?}");
+        assert_eq!(sgdt_stored(&memory, address), SGDT_BYTES, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn sgdt_non_canonical_first_or_last_byte_is_gp0_without_write() {
+    // (start address, faults): the access is `[start, start + 10)`.
+    let cases = [
+        (0x0000_8000_0000_0000u64, true),
+        // Start canonical, last byte (start + 9) in the hole.
+        (0x0000_7fff_ffff_fff7, true),
+        // The last canonical positions are accepted.
+        (0x0000_7fff_ffff_fff6, false),
+        (0xffff_8000_0000_0000, false),
+        // Start in the hole.
+        (0xffff_7fff_ffff_fff8, true),
+        (0xffff_ffff_ffff_fff6, false),
+        // The access would wrap around 2^64: refused like LGDT's pseudo-descriptor read.
+        (0xffff_ffff_ffff_fff7, true),
+    ];
+    for (address, faults) in cases {
+        // Plain `(%rbx)` and `%gs:(%rbx)` with the whole address in the GS base.
+        for (code, in_rbx) in [
+            (&[0x0fu8, 0x01, 0x03][..], true),
+            (&[0x65, 0x0f, 0x01, 0x03][..], false),
+        ] {
+            let mut state = sgdt_state();
+            state.gpr[Register::Rbx as usize] = if in_rbx { address } else { 0 };
+            state.gs_base = if in_rbx { 0 } else { address };
+            state.rflags |= FLAG_CF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            if faults {
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Fault(GP0),
+                    "{address:#x} {code:02x?}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before, "{address:#x} {code:02x?}");
+                assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            } else {
+                assert_eq!(result.instructions_executed, 1, "{address:#x} {code:02x?}");
+                assert_eq!(sgdt_stored(&memory, address), SGDT_BYTES);
+            }
+        }
+    }
+}
+
+#[test]
+fn sgdt_through_a_stack_base_is_ss0_unprefixed_and_gp0_with_fs_gs() {
+    let hole = 0x0000_8000_0000_0000u64;
+    let cases: [(&[u8], Register, ArchitecturalFault); 6] = [
+        (&[0x0f, 0x01, 0x04, 0x24], Register::Rsp, SS0), // (%rsp)
+        (&[0x0f, 0x01, 0x45, 0x00], Register::Rbp, SS0), // 0(%rbp)
+        (&SGDT_BOUNDARY, Register::Rbp, SS0),
+        (&[0x65, 0x0f, 0x01, 0x04, 0x24], Register::Rsp, GP0), // %gs:(%rsp)
+        (&[0x64, 0x0f, 0x01, 0x45, 0x00], Register::Rbp, GP0), // %fs:0(%rbp)
+        // R12/R13 are data references, not stack bases.
+        (&[0x41, 0x0f, 0x01, 0x45, 0x00], Register::R13, GP0),
+    ];
+    for (code, register, fault) in cases {
+        let mut state = sgdt_state();
+        state.gs_base = 0;
+        state.fs_base = 0;
+        state.gpr[register as usize] = if code == SGDT_BOUNDARY {
+            hole + 0x1a
+        } else {
+            hole
+        };
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn sgdt_write_fault_leaves_memory_flags_rip_and_registers_unchanged() {
+    let at = 0x3000u64;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(at),
+    };
+    for code in [&SGDT_BOUNDARY[..], &[0x65, 0x0f, 0x01, 0x45, 0xe6][..]] {
+        let mut state = sgdt_state();
+        state.gs_base = 0;
+        state.gpr[Register::Rbp as usize] = at + 0x1a;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.write_fault = Some(fault.clone());
+        sgdt_fill(&mut memory, at - 4, at + 14, 0x55);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+        assert!(memory.reads.is_empty(), "the destination is not read");
+        for address in at - 4..at + 14 {
+            assert_eq!(memory.data[&address], 0x55, "{address:#x}");
+        }
+    }
+}
+
+#[test]
+fn sgdt_across_a_page_boundary_commits_nothing_when_either_page_refuses_the_store() {
+    // Pages A = [0x5000, 0x6000) and B = [0x6000, 0x7000). The operand `[a, a + 10)` always
+    // touches A for the offsets below and touches B from the offset 0xff7. A write that touches the
+    // refusing page fails, so the store must fail before any byte is committed.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x6000),
+    };
+    for offset in 0xfe8u64..=0xfff {
+        let address = 0x5000 + offset;
+        for (refusing, touched) in [
+            (0x5000u64..0x6000, true),
+            (0x6000u64..0x7000, offset >= 0xff7),
+        ] {
+            let mut state = sgdt_state();
+            state.gpr[Register::Rbx as usize] = address;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&[0x0f, 0x01, 0x03]);
+            memory.write_fault = Some(fault.clone());
+            memory.write_fault_range = Some(refusing.clone());
+            sgdt_fill(&mut memory, 0x4ff0, 0x7010, 0x55);
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            if touched {
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Fault(fault.clone()),
+                    "{offset:#x} {refusing:?}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before, "{offset:#x} {refusing:?}");
+                assert!(
+                    memory.writes.is_empty(),
+                    "{offset:#x} {refusing:?}: {:?}",
+                    memory.writes
+                );
+                for byte_address in 0x4ff0..0x7010 {
+                    assert_eq!(memory.data[&byte_address], 0x55, "{byte_address:#x}");
+                }
+            } else {
+                assert_eq!(result.instructions_executed, 1, "{offset:#x} {refusing:?}");
+                assert_eq!(sgdt_stored(&memory, address), SGDT_BYTES, "{offset:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn sgdt_forms_outside_the_slice_are_refused_with_0x01_without_mutation() {
+    let cases: &[&[u8]] = &[
+        &[0xf0, 0x0f, 0x01, 0x03],       // LOCK
+        &[0xf3, 0x0f, 0x01, 0x03],       // REP
+        &[0xf2, 0x0f, 0x01, 0x03],       // REPNE
+        &[0xf0, 0x65, 0x0f, 0x01, 0x03], // LOCK with GS
+        &[0x66, 0x0f, 0x01, 0x03],       // 0x66
+        &[0x65, 0x66, 0x0f, 0x01, 0x03],
+        &[0x67, 0x0f, 0x01, 0x03], // 0x67
+        &[0x65, 0x67, 0x0f, 0x01, 0x03],
+        &[0x64, 0x65, 0x0f, 0x01, 0x03], // mixing FS and GS
+        &[0x65, 0x64, 0x0f, 0x01, 0x03],
+        &[0x65, 0x65, 0x0f, 0x01, 0x03], // repeated segment prefixes
+        &[0x64, 0x64, 0x0f, 0x01, 0x03],
+        &[0x26, 0x0f, 0x01, 0x03], // CS/DS/ES/SS overrides
+        &[0x2e, 0x0f, 0x01, 0x03],
+        &[0x36, 0x0f, 0x01, 0x03],
+        &[0x3e, 0x0f, 0x01, 0x03],
+        &[0x48, 0x0f, 0x01, 0x03], // REX.W
+        &[0x49, 0x0f, 0x01, 0x03],
+        &[0x65, 0x48, 0x0f, 0x01, 0x03],
+        &[0x41, 0x65, 0x0f, 0x01, 0x03], // stale REX (not directly before the opcode)
+        &[0x65, 0x41, 0x66, 0x0f, 0x01, 0x03],
+        &[0x0f, 0x01, 0xc0], // register forms of /0
+        &[0x0f, 0x01, 0xc1],
+        &[0x0f, 0x01, 0xc7],
+        &[0x65, 0x0f, 0x01, 0xc0],
+        &[0x41, 0x0f, 0x01, 0xc0],
+        &[0x0f, 0x01, 0x0b], // /1 SIDT m: not part of the slice
+        &[0x65, 0x0f, 0x01, 0x0b],
+        &[0x0f, 0x01, 0x23], // /4 SMSW m
+        &[0x0f, 0x01, 0x33], // /6 LMSW m
+        &[0x0f, 0x01, 0x2b], // /5
+    ];
+    for &code in cases {
+        let mut state = sgdt_state();
+        state.gpr[Register::Rbx as usize] = 0x3000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x01 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn sgdt_with_a_truncated_displacement_is_refused_without_mutation() {
+    for code in [
+        &SGDT_BOUNDARY[..3],
+        &SGDT_BOUNDARY[..2],
+        &SGDT_BOUNDARY[..1],
+        &[0x65u8, 0x0f, 0x01, 0x45][..],
+        &[0x0f, 0x01, 0x05, 0x34, 0x12][..],
+        &[0x65, 0x0f, 0x01, 0x05, 0x34][..],
+    ] {
+        let mut state = sgdt_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn sgdt_without_a_modeled_gdtr_stays_unsupported_and_invents_nothing() {
+    let mut state = sgdt_state();
+    state.gdtr = None;
+    state.gpr[Register::Rbp as usize] = 0x3000 + 0x1a;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&SGDT_BOUNDARY);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn sgdt_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): refused without mutation, GDTR modeled or not.
+    for code in [
+        &SGDT_BOUNDARY[..],
+        &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        &[0x0f, 0x01, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        for gdtr in [Some(SGDT_GDTR), None] {
+            let mut state = legacy_state();
+            state.gdtr = gdtr;
+            state.gpr[Register::Rbp as usize] = 0x3000 + 0x1a;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x01 },
+                "{code:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn sgdt_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gdtr = Some(SGDT_GDTR);
+    state.gpr[Register::Rbp as usize] = 0x3000 + 0x1a;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&SGDT_BOUNDARY);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x01 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn sgdt_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = sgdt_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&SGDT_BOUNDARY);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
