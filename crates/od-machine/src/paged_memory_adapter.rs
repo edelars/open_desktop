@@ -465,10 +465,13 @@ pub(crate) enum PagedCpl0SetExit {
         failure: PagedCpl0ExceptionFailure,
     },
     /// An external interrupt of the board source (S4-38L8b) could not be delivered, although the
-    /// loop had checked IF, the STI shadow and the CPU activity first: a refusal other than
-    /// `InterruptsMasked`/`StiShadowActive` (a broken gate, a missing IDT) or a failed memory
-    /// access of the delivery. The run stops with an error; nothing was acknowledged. RIP is on
-    /// the instruction that was about to run.
+    /// loop had checked IF and the STI shadow first: a refusal other than
+    /// `InterruptsMasked`/`StiShadowActive` (a broken gate, a missing IDT, and also
+    /// `ActivityOutsideProfile`: the CPU activity is checked by
+    /// `deliver_external_interrupt_cpl0_set`, not by the loop, so with IF = 1, a `Clear` shadow
+    /// and an activity other than `Running` the refusal ends here) or a failed memory access of
+    /// the delivery. The run stops with an error (`run_failed` on the board), never as a quiet
+    /// skip; nothing was acknowledged. RIP is on the instruction that was about to run.
     IrqDeliveryFailed {
         vector: u8,
         failure: IrqDeliveryFailure,

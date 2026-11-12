@@ -809,7 +809,10 @@ pub struct LinuxCpl0SetMembers {
     pub diagnostic_past_c7: bool,
     /// S4-38L8b: the interrupt hook of the CPL0 set loop. With it each instruction boundary asks
     /// the board's interrupt source for a pending vector and delivers it through the guest IDT
-    /// when RFLAGS.IF = 1, the STI shadow is `Clear` and the CPU is `Running`; a quantum is cut to
+    /// when RFLAGS.IF = 1 and the STI shadow is `Clear` (the loop holds the vector back
+    /// otherwise, and counts it). The CPU activity is checked by the delivery itself: with
+    /// IF = 1, a `Clear` shadow and an activity other than `Running` it refuses
+    /// (`ActivityOutsideProfile`) and the run stops with `run_failed`, not a quiet skip. A quantum is cut to
     /// the source's next deadline and a guest write to the PIT ports ends the quantum when the
     /// source asks for it. The board has no source yet (an empty one that never gives a vector),
     /// so with or without the member a run is the same. Not a CPU instruction, but a member of
@@ -10915,6 +10918,39 @@ mod tests {
             );
             assert_eq!(report.instructions_executed, 0);
             assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn a_failed_frame_store_is_aborted_and_leaves_the_cpu_state_unchanged() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            // The stack lies in an unmapped page: the first frame store faults.
+            boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let before = boot.board.state().clone();
+            let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
+                panic!("{report:?}");
+            };
+            assert_eq!(*vector, IRQ_VECTOR);
+            assert!(
+                matches!(
+                    failure,
+                    IrqDeliveryFailure::Aborted {
+                        phase: Cpl0ExternalInterruptPhase::StackWrite { .. },
+                        ..
+                    }
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(
+                (state.rip, state.gpr, state.rflags),
+                (before.rip, before.gpr, before.rflags)
+            );
         }
 
         #[test]
