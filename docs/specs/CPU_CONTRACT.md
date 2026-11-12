@@ -23093,7 +23093,7 @@ RSP = RBP = `0xffffffff83a03d90`, прочие регистры (RBX, RCX, RDX, 
 
 **Декодер.** Выбор зафиксирован: новая операция `Operation::LockAddMemReg { destination: MemoryOperand, source: RegisterView }` (не расширение `LockAddMem`, у которой источник — непосредственный `u64`), в
 существующей ветке декодирования прямых арифметических опкодов (`ADD/ADC/SBB/SUB/CMP` и логика `00..3D`). Ветка срабатывает при `опкод == 0x01`, префиксе LOCK (`F0`) и memory-операнде; источник — регистр
-из поля reg ModRM с REX.R (`view(reg | REX.R << 3, size, true)`). С REX.W — qword (`LOCK ADD r/m64, r64`), **без REX.W — dword** (`LOCK ADD r/m32, r32`; допустим пустой REX `0x40` и REX.R/B/X без W). Принимается
+из поля reg ModRM с REX.R (`view(reg | REX.R << 3, size, rex_present)`). С REX.W — qword (`LOCK ADD r/m64, r64`), **без REX.W — dword** (`LOCK ADD r/m32, r32`; допустим пустой REX `0x40` и REX.R/B/X без W). Принимается
 любая адресация (RIP-relative, SIB, disp8/disp32, REX.B, REX.X). Длина — префиксы, опкод, ModRM, SIB, смещение; непосредственного операнда нет, поэтому RIP-relative считается от RIP **после** disp32
 (следующий RIP = адрес + 8 для граничных байтов). В проверку «LOCK допустим только для особых форм» добавлен кандидат `locked_memory_add_reg_candidate` (`опкод == 0x01` и `F0`); остальные прямые
 арифметические опкоды с LOCK (`00`, `02`, `03`, `05`, `09`, `11`, `19`, `21`, `29`, `31`, `39`, …) отказывают на этой проверке с собственным опкодом, как и раньше. `flag_effects`: все шесть флагов определены
@@ -23119,7 +23119,7 @@ CS/SS, в обоих порядках, с REX и без) — `0x01`: анало�
 **Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockAddMem`. Вне набора — `Unsupported { opcode: 0x01 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step`,
 `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov` и paged-probe форму не принимают (тесты отказа).
 
-**Тесты.** `cpl0_profile_set` (18): `lock_add_reg_boundary_form_*` (граничные байты `f0 48 01 3d 8f 02 dc 02`: адрес = RIP + 8 + disp32, читается и пишется 8 байт, qword меняется на значение RDI, меняются
+**Тесты.** `cpl0_profile_set` (19): `lock_add_reg_boundary_form_*` (граничные байты `f0 48 01 3d 8f 02 dc 02`: адрес = RIP + 8 + disp32, читается и пишется 8 байт, qword меняется на значение RDI, меняются
 только RIP и флаги, RDI не меняется), `lock_add_reg_flags_follow_the_qword_and_dword_sums` (qword и dword × 12 × 12 значений на границах ширины × два начальных RFLAGS, по независимому расчёту `add_oracle`
 на 128-битной арифметике), `lock_add_reg_flags_on_named_boundary_values` (`0x7fff…` + 1, `0xffff…` + 1, перенос через границу dword, маскирование источника у dword),
 `lock_add_reg_dword_form_*` (читается и пишется 4 байта, верхние биты источника и ячейки не участвуют), `lock_add_reg_writes_back_an_unchanged_value_*`,
