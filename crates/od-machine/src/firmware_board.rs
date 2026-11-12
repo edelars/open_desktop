@@ -1002,6 +1002,25 @@ pub struct LoadedFirmwareBoard {
     /// The guest PCI CONFIG_ADDRESS register (port `0xCF8`, S4-38L7w), kept between CPL0-set runs.
     /// There is no device behind CONFIG_DATA; the value is only stored and read back.
     pci_config_address: u32,
+    /// The guest `IA32_STAR` (S4-38L7ao): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
+    guest_star: u64,
+    /// The guest `IA32_LSTAR` (S4-38L7ap): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
+    guest_lstar: u64,
+    /// The guest `IA32_CSTAR` (S4-38L7aq): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
+    guest_cstar: u64,
+    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// The full 64-bit value written (the real register holds a 16-bit selector; not modelled as
+    /// such). Only stored; nothing consumes it (`SYSENTER`/`SYSEXIT` are not modelled).
+    guest_sysenter_cs: u64,
+    /// The guest `IA32_SYSENTER_ESP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written. Only stored; nothing consumes it.
+    guest_sysenter_esp: u64,
+    /// The guest `IA32_SYSENTER_EIP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written. Only stored; nothing consumes it.
+    guest_sysenter_eip: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1096,6 +1115,72 @@ impl LoadedFirmwareBoard {
     /// Stores the CONFIG_ADDRESS a CPL0-set run left (S4-38L7w).
     pub(crate) fn set_pci_config_address(&mut self, value: u32) {
         self.pci_config_address = value;
+    }
+
+    /// The guest `IA32_STAR` (S4-38L7ao); `0` until a guest `WRMSR` of it. Not readable by the
+    /// guest: `RDMSR` of STAR stays refused.
+    pub const fn guest_star(&self) -> u64 {
+        self.guest_star
+    }
+
+    /// Stores the STAR a CPL0-set run left (S4-38L7ao).
+    pub(crate) fn set_guest_star(&mut self, value: u64) {
+        self.guest_star = value;
+    }
+
+    /// The guest `IA32_LSTAR` (S4-38L7ap); `0` until a guest `WRMSR` of it. Not readable by the
+    /// guest: `RDMSR` of LSTAR stays refused.
+    pub const fn guest_lstar(&self) -> u64 {
+        self.guest_lstar
+    }
+
+    /// Stores the LSTAR a CPL0-set run left (S4-38L7ap).
+    pub(crate) fn set_guest_lstar(&mut self, value: u64) {
+        self.guest_lstar = value;
+    }
+
+    /// The guest `IA32_CSTAR` (S4-38L7aq); `0` until a guest `WRMSR` of it. Not readable by the
+    /// guest: `RDMSR` of CSTAR stays refused.
+    pub const fn guest_cstar(&self) -> u64 {
+        self.guest_cstar
+    }
+
+    /// Stores the CSTAR a CPL0-set run left (S4-38L7aq).
+    pub(crate) fn set_guest_cstar(&mut self, value: u64) {
+        self.guest_cstar = value;
+    }
+
+    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_CS stays refused.
+    pub const fn guest_sysenter_cs(&self) -> u64 {
+        self.guest_sysenter_cs
+    }
+
+    /// Stores the SYSENTER_CS a CPL0-set run left (S4-38L7ar).
+    pub(crate) fn set_guest_sysenter_cs(&mut self, value: u64) {
+        self.guest_sysenter_cs = value;
+    }
+
+    /// The guest `IA32_SYSENTER_ESP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_ESP stays refused.
+    pub const fn guest_sysenter_esp(&self) -> u64 {
+        self.guest_sysenter_esp
+    }
+
+    /// Stores the SYSENTER_ESP a CPL0-set run left (S4-38L7as).
+    pub(crate) fn set_guest_sysenter_esp(&mut self, value: u64) {
+        self.guest_sysenter_esp = value;
+    }
+
+    /// The guest `IA32_SYSENTER_EIP` (S4-38L7as); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSENTER_EIP stays refused.
+    pub const fn guest_sysenter_eip(&self) -> u64 {
+        self.guest_sysenter_eip
+    }
+
+    /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
+    pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
+        self.guest_sysenter_eip = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1956,6 +2041,12 @@ impl AssembledBoard {
             guest_cr2: None,
             guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
+            guest_star: 0,
+            guest_lstar: 0,
+            guest_cstar: 0,
+            guest_sysenter_cs: 0,
+            guest_sysenter_esp: 0,
+            guest_sysenter_eip: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -2011,6 +2102,12 @@ impl AssembledBoard {
             guest_cr2: None,
             guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
+            guest_star: 0,
+            guest_lstar: 0,
+            guest_cstar: 0,
+            guest_sysenter_cs: 0,
+            guest_sysenter_esp: 0,
+            guest_sysenter_eip: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]

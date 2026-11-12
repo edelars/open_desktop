@@ -1901,6 +1901,11 @@ pub struct Cpl0ProfileSet<'a> {
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
+    msr_star: Option<&'a Cell<u64>>,
+    msr_lstar: Option<&'a Cell<u64>>,
+    msr_cstar: Option<&'a Cell<u64>>,
+    msr_sysenter_cs: Option<&'a Cell<u64>>,
+    msr_sysenter_stack: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1918,6 +1923,11 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            msr_star: None,
+            msr_lstar: None,
+            msr_cstar: None,
+            msr_sysenter_cs: None,
+            msr_sysenter_stack: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -1978,6 +1988,77 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// read-only (`WRMSR` is `Unsupported`).
     pub const fn with_msr_efer_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_efer = Some(cell);
+        self
+    }
+
+    /// S4-38L7ao: admit `WRMSR` of IA32_STAR (`0xC000_0081`) at CPL0 under Long64. The set does
+    /// not own the value: `cell` is the caller's guest STAR and receives `EDX:EAX` exactly (no
+    /// canonical or reserved-bit check, no other state change). Only the bare two-byte form
+    /// `0F 30` (no prefix, no REX) is admitted. There is no `RDMSR` of STAR in the set (it stays
+    /// `Unsupported`) and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes
+    /// the value. Without this member, at CPL > 0, outside Long64 or outside a CPL0 set the
+    /// write keeps its refusal (`Unsupported`, opcode `0x30`).
+    pub const fn with_msr_star_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_star = Some(cell);
+        self
+    }
+
+    /// S4-38L7ap: admit `WRMSR` of IA32_LSTAR (`0xC000_0082`) at CPL0 under Long64, with exactly
+    /// the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the caller's guest
+    /// LSTAR and receives `EDX:EAX` exactly (no canonical check, no bit semantics, no other state
+    /// change), only the bare two-byte form `0F 30` is admitted, `RDMSR` of LSTAR stays
+    /// `Unsupported`, and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes the
+    /// value. CSTAR (`0xC000_0083`) and SYSCALL_MASK (`0xC000_0084`) are not part of the member.
+    pub const fn with_msr_lstar_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_lstar = Some(cell);
+        self
+    }
+
+    /// S4-38L7aq: admit `WRMSR` of IA32_CSTAR (`0xC000_0083`) at CPL0 under Long64, with exactly
+    /// the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the caller's guest
+    /// CSTAR and receives `EDX:EAX` exactly (no canonical check, no bit semantics, no other state
+    /// change), only the bare two-byte form `0F 30` is admitted, `RDMSR` of CSTAR stays
+    /// `Unsupported`, and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes the
+    /// value. SYSCALL_MASK (`0xC000_0084`) is not part of the member.
+    pub const fn with_msr_cstar_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_cstar = Some(cell);
+        self
+    }
+
+    /// S4-38L7ar: admit `WRMSR` of IA32_SYSENTER_CS (`0x174`) at CPL0 under Long64, with the
+    /// conditions of [`Self::with_msr_star_write`]: `cell` is the caller's guest SYSENTER_CS and
+    /// receives `EDX:EAX` exactly. The real register holds a 16-bit selector; the cell is NOT
+    /// modelled as such (full 64-bit value written, no canonical check, no bit semantics, no other
+    /// state change). Only the bare two-byte form `0F 30` is admitted, `RDMSR` of SYSENTER_CS stays
+    /// `Unsupported`, `SYSENTER`/`SYSEXIT` are not modelled, so nothing in the set consumes the
+    /// value. SYSENTER_ESP (`0x175`) and SYSENTER_EIP (`0x176`) are not part of the member.
+    ///
+    /// Precedence: when the MSR profile chosen with [`Self::with_msr`] is
+    /// [`MsrProfile::SysenterProbeV1`] (it handles `0x174..=0x176` and faults `RDMSR`/`WRMSR` with
+    /// `#GP(0)` at any CPL) the member has no effect and that `#GP(0)` stays, whatever the order
+    /// of the two builder calls.
+    pub const fn with_msr_sysenter_cs_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_sysenter_cs = Some(cell);
+        self
+    }
+
+    /// S4-38L7as: admit `WRMSR` of IA32_SYSENTER_ESP (`0x175`) and IA32_SYSENTER_EIP (`0x176`) at
+    /// CPL0 under Long64, with the conditions of [`Self::with_msr_sysenter_cs_write`]: `esp` and
+    /// `eip` are the caller's guest cells for the two indexes and each receives `EDX:EAX` exactly
+    /// (full 64-bit value, no canonical check, no bit semantics, no other state change). One
+    /// member covers both indexes; a write changes only the cell of its own index. Only the bare
+    /// two-byte form `0F 30` is admitted, `RDMSR` of both stays `Unsupported`, `SYSENTER`/`SYSEXIT`
+    /// are not modelled, so nothing in the set consumes the values.
+    ///
+    /// Precedence: as for SYSENTER_CS, an MSR profile that handles the index
+    /// ([`MsrProfile::SysenterProbeV1`]: `#GP(0)` at any CPL) keeps it, whatever the order of the
+    /// builder calls; the member has no effect for that index.
+    pub const fn with_msr_sysenter_stack_write(
+        mut self,
+        esp: &'a Cell<u64>,
+        eip: &'a Cell<u64>,
+    ) -> Self {
+        self.msr_sysenter_stack = Some((esp, eip));
         self
     }
 
@@ -2156,12 +2237,30 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
+/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: the guest-owned write-only MSR cells of a
+/// set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR) and IA32_SYSENTER_CS, _ESP and _EIP.
+/// One optional bundle, so that adding such an MSR does not touch every `ExecutionProfiles`
+/// literal. The SYSENTER cells are only carried here; in the set, the board and the stop record
+/// they are separate cells, not SYSCALL ones.
+#[derive(Clone, Copy)]
+struct GuestMsrCells<'a> {
+    star: Option<&'a Cell<u64>>,
+    lstar: Option<&'a Cell<u64>>,
+    cstar: Option<&'a Cell<u64>>,
+    sysenter_cs: Option<&'a Cell<u64>>,
+    sysenter_esp: Option<&'a Cell<u64>>,
+    sysenter_eip: Option<&'a Cell<u64>>,
+}
+
 #[derive(Clone, Copy)]
 struct ExecutionProfiles<'a> {
     cpuid: Option<&'a CpuidProfile>,
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
+    /// The set's write-only guest MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSENTER_CS,
+    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP); `None` outside a set or when the set has none.
+    guest_msrs: Option<GuestMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
     minss_invalid: Option<MinssInvalidControls>,
@@ -3306,6 +3405,7 @@ pub fn run_with_maxss_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3463,6 +3563,7 @@ pub fn run_with_minsd_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3620,6 +3721,7 @@ pub fn run_with_maxsd_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3777,6 +3879,7 @@ pub fn run_with_minpd_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -3934,6 +4037,7 @@ pub fn run_with_minps_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4091,6 +4195,7 @@ pub fn run_with_maxps_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4248,6 +4353,7 @@ pub fn run_with_maxpd_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4405,6 +4511,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4562,6 +4669,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4719,6 +4827,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -4876,6 +4985,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5033,6 +5143,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5190,6 +5301,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5347,6 +5459,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5504,6 +5617,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5661,6 +5775,7 @@ pub fn run_with_cvtss2si_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5818,6 +5933,7 @@ pub fn run_with_cvttss2si_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -5974,6 +6090,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6164,6 +6281,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6321,6 +6439,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6513,6 +6632,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6674,6 +6794,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -6864,6 +6985,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7021,6 +7143,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7178,6 +7301,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7368,6 +7492,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7526,6 +7651,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7683,6 +7809,7 @@ pub fn run_with_cvtdq2pd_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7840,6 +7967,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -7996,6 +8124,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8153,6 +8282,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8343,6 +8473,7 @@ fn run_with_cvtdq2ps_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8500,6 +8631,7 @@ pub fn run_with_cvtps2dq_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8657,6 +8789,7 @@ pub fn run_with_cvttps2dq_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -8847,6 +8980,7 @@ fn run_with_cvtps2dq_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9037,6 +9171,7 @@ fn run_with_cvttps2dq_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9227,6 +9362,7 @@ fn run_with_cvttpd2dq_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9417,6 +9553,7 @@ fn run_with_cvtpd2dq_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9574,6 +9711,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9731,6 +9869,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -9888,6 +10027,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10045,6 +10185,7 @@ pub fn run_with_cvtss2sd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10202,6 +10343,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10395,6 +10537,7 @@ fn run_with_cvtpi2ps_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10719,6 +10862,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -10876,6 +11020,7 @@ pub fn run_with_cvtps2pd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11033,6 +11178,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11190,6 +11336,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11346,6 +11493,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11503,6 +11651,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11718,6 +11867,7 @@ fn run_with_cmpss_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -11875,6 +12025,7 @@ pub fn run_with_cmpsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12032,6 +12183,7 @@ pub fn run_with_cmppd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12188,6 +12340,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12344,6 +12497,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12523,6 +12677,7 @@ fn run_with_minsd_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12680,6 +12835,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -12859,6 +13015,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13033,6 +13190,7 @@ fn run_with_minpd_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13225,6 +13383,7 @@ fn run_with_minps_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13382,6 +13541,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13539,6 +13699,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13695,6 +13856,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -13851,6 +14013,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14007,6 +14170,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14196,6 +14360,7 @@ fn run_with_sqrtps_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14352,6 +14517,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14540,6 +14706,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14728,6 +14895,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -14919,6 +15087,7 @@ fn run_with_maxpd_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15114,6 +15283,7 @@ fn run_with_maxps_memory_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15327,6 +15497,7 @@ fn run_minss_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: exception_controls,
@@ -15526,6 +15697,7 @@ fn run_maxss_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15682,6 +15854,7 @@ pub fn run_with_cmpps_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -15839,6 +16012,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -16049,6 +16223,7 @@ pub fn run_with_efer_rdmsr_profile(
             msr: Some(&MsrProfile::EferReadOnlyV1(efer_value)),
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -16451,6 +16626,7 @@ pub fn run_with_cr0_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -16653,6 +16829,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -19830,6 +20007,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             msr: msr_profile,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
@@ -20175,6 +20353,23 @@ fn run_cpl0_profile_set_inner(
             msr: set.msr,
             msr_bases: set.msr_bases,
             msr_efer: set.msr_efer,
+            guest_msrs: if set.msr_star.is_some()
+                || set.msr_lstar.is_some()
+                || set.msr_cstar.is_some()
+                || set.msr_sysenter_cs.is_some()
+                || set.msr_sysenter_stack.is_some()
+            {
+                Some(GuestMsrCells {
+                    star: set.msr_star,
+                    lstar: set.msr_lstar,
+                    cstar: set.msr_cstar,
+                    sysenter_cs: set.msr_sysenter_cs,
+                    sysenter_esp: set.msr_sysenter_stack.map(|(esp, _)| esp),
+                    sysenter_eip: set.msr_sysenter_stack.map(|(_, eip)| eip),
+                })
+            } else {
+                None
+            },
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -20645,6 +20840,7 @@ pub fn step_with_cr0_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21045,6 +21241,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             msr: msr_profile,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
@@ -21202,6 +21399,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21583,6 +21781,7 @@ fn run_with_comparison_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21742,6 +21941,7 @@ pub fn run_with_sqrtss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -21899,6 +22099,7 @@ pub fn run_with_sqrtsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22056,6 +22257,7 @@ pub fn run_with_sqrtps_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22213,6 +22415,7 @@ pub fn run_with_sqrtpd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22371,6 +22574,7 @@ fn run_with_subpd_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22587,6 +22791,7 @@ pub fn run_with_mulpd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22744,6 +22949,7 @@ fn run_with_addpd_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -22937,6 +23143,7 @@ fn run_with_mulpd_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23149,6 +23356,7 @@ pub fn run_with_addsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23306,6 +23514,7 @@ pub fn run_with_divpd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23496,6 +23705,7 @@ fn run_with_divpd_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23653,6 +23863,7 @@ pub fn run_with_addss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -23844,6 +24055,7 @@ fn run_with_addss_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24034,6 +24246,7 @@ fn run_with_addsd_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24227,6 +24440,7 @@ fn run_with_addps_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24384,6 +24598,7 @@ pub fn run_with_divsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24577,6 +24792,7 @@ fn run_with_divps_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24734,6 +24950,7 @@ pub fn run_with_divss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -24891,6 +25108,7 @@ pub fn run_with_mulsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25048,6 +25266,7 @@ pub fn run_with_mulss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25241,6 +25460,7 @@ fn run_with_mulps_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25398,6 +25618,7 @@ pub fn run_with_subsd_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25555,6 +25776,7 @@ pub fn run_with_subss_register_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -25712,6 +25934,7 @@ fn run_with_scalar_float_memory_rax_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -26113,6 +26336,7 @@ fn run_with_subps_profile(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -26269,6 +26493,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             msr: None,
             msr_bases: false,
             msr_efer: None,
+            guest_msrs: None,
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -26724,6 +26949,7 @@ fn step_configured(
         msr: msr_profile,
         msr_bases: msr_bases_enabled,
         msr_efer: msr_efer_cell,
+        guest_msrs: guest_msr_cells,
         sep: sep_profile,
         xorpd: xorpd_prerequisites,
         minss_invalid: configured_minss_controls,
@@ -33030,6 +33256,45 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: `WRMSR` of IA32_STAR / IA32_LSTAR /
+        // IA32_CSTAR / IA32_SYSENTER_CS / IA32_SYSENTER_ESP / IA32_SYSENTER_EIP stores EDX:EAX in
+        // the set's cell for that index. An MSR profile that handles the index (`handles_index`;
+        // today `SysenterProbeV1` for 0x174..=0x176) wins for its own index, so every other form
+        // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
+        // the existing refusal below.
+        if instruction.operation == Operation::WriteMsr
+            && let Some(cells) = guest_msr_cells
+            && let Some(cell) = match msr_index {
+                0xc000_0081 => cells.star,
+                0xc000_0082 => cells.lstar,
+                0xc000_0083 => cells.cstar,
+                // S4-38L7ar: a profile that handles 0x174 (SysenterProbeV1: #GP(0) at any CPL)
+                // keeps the index; the member never overrides it.
+                0x174 if !msr_profile.is_some_and(|profile| profile.handles_index(0x174)) => {
+                    cells.sysenter_cs
+                }
+                // S4-38L7as: the same precedence for SYSENTER_ESP and SYSENTER_EIP.
+                0x175 if !msr_profile.is_some_and(|profile| profile.handles_index(0x175)) => {
+                    cells.sysenter_esp
+                }
+                0x176 if !msr_profile.is_some_and(|profile| profile.handles_index(0x176)) => {
+                    cells.sysenter_eip
+                }
+                _ => None,
+            }
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+        {
+            cell.set(
+                (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
+                    | u64::from(state.gpr[Register::Rax as usize] as u32),
+            );
+            state.rip = next_rip;
+            return Ok(StepOutcome::Advanced);
+        }
         let msr_profile = match msr_profile {
             Some(profile) if profile.handles_index(msr_index) => Some(profile),
             _ if msr_bases_enabled && msr_index == 0xc000_0101 => Some(&MsrProfile::GsBaseV1),
@@ -34873,14 +35138,30 @@ fn step_configured(
         // S4-38L7m: and for the FS/GS-based dword loads.
         | Operation::MovFsLoadD { .. }
         | Operation::MovGsLoadD { .. }
+        | Operation::MovzxFsLoadW { .. }
+        | Operation::MovzxGsLoadW { .. }
+        // S4-38L7ak: and for the FS/GS-based MOVSXD r64, m32.
+        | Operation::MovsxdFsLoad { .. }
+        | Operation::MovsxdGsLoad { .. }
+        // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
+        | Operation::MovFsMemImm { .. }
+        | Operation::MovGsMemImm { .. }
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
+        | Operation::CmpFsMem { .. }
+        | Operation::CmpGsMem { .. }
+        | Operation::CmpFsMemImm { .. }
+        | Operation::CmpGsMemImm { .. }
         // S4-38L7o: and for the FS/GS-based TEST m8, imm8.
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
         | Operation::TestFsMemWord { .. }
         | Operation::TestGsMemWord { .. }
+        | Operation::TestFsMemWide { .. }
+        | Operation::TestGsMemWide { .. }
         // S4-38L7p/S4-38L7q: and for the FS/GS-based INC/DEC m32/m64.
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
@@ -34890,6 +35171,12 @@ fn step_configured(
         | Operation::LockIncMem { .. }
         // S4-38L7s: and for LOCK OR m8/m32/m64, imm.
         | Operation::LockOrMem { .. }
+        // S4-38L7z: and for LOCK ADD m8/m32/m64, imm.
+        | Operation::LockAddMem { .. }
+        // S4-38L7ai: and for LOCK ADD m32/m64, r32/r64.
+        | Operation::LockAddMemReg { .. }
+        // S4-38L7ag: and for LOCK AND m8, imm8.
+        | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
@@ -35936,6 +36223,30 @@ fn step_configured(
         // S4-38L4d: `0F 1F /0` is a NOP that never touches its operand; admitted only inside
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
+        // S4-38L7ab: INVLPG m is a no-op (the model has no TLB); admitted only inside the CPL0
+        // profile set at CPL0 in Long64.
+        Operation::Invlpg => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
+        // S4-38L7al: SGDT m stores the modeled GDTR; admitted only inside the CPL0 profile set
+        // at CPL0 in Long64 and only when a GDTR is modeled (no GDTR value is invented).
+        Operation::StoreGdtr { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gdtr.is_some()
+        }
+        // S4-38L7am: LTR r/m16 (register form) reads the TSS descriptor from the modeled GDT;
+        // admitted only inside the CPL0 profile set at CPL0 in Long64 and only when a GDTR is
+        // modeled (no TR value is invented).
+        Operation::LoadTr { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gdtr.is_some()
+        }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
         Operation::Leave | Operation::FarReturn | Operation::IretQ => {
@@ -35946,6 +36257,14 @@ fn step_configured(
         Operation::Call { .. } | Operation::Return { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && (instruction.prefixes == Prefixes::default()
+                    // S4-38L7af: `2E E8 cd` (a lone CS/DS/ES/SS override) is `E8 cd`.
+                    || (instruction.opcode.byte == 0xe8
+                        && matches!(instruction.prefixes.segment, Some(0x26 | 0x2e | 0x36 | 0x3e))
+                        && instruction.prefixes
+                            == (Prefixes {
+                                segment: instruction.prefixes.segment,
+                                ..Prefixes::default()
+                            }))
                     || (instruction.opcode.byte == 0xc3
                         && instruction.prefixes
                             == (Prefixes {
@@ -48621,17 +48940,34 @@ fn step_configured(
         | Operation::MovGsLoadQ { .. }
         | Operation::MovFsLoadD { .. }
         | Operation::MovGsLoadD { .. }
+        | Operation::MovzxFsLoadW { .. }
+        | Operation::MovzxGsLoadW { .. }
+        | Operation::MovsxdFsLoad { .. }
+        | Operation::MovsxdGsLoad { .. }
+        | Operation::MovFsMemByteImm { .. }
+        | Operation::MovGsMemByteImm { .. }
+        | Operation::MovFsMemImm { .. }
+        | Operation::MovGsMemImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
+        | Operation::CmpFsMem { .. }
+        | Operation::CmpGsMem { .. }
+        | Operation::CmpFsMemImm { .. }
+        | Operation::CmpGsMemImm { .. }
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
         | Operation::TestFsMemWord { .. }
         | Operation::TestGsMemWord { .. }
+        | Operation::TestFsMemWide { .. }
+        | Operation::TestGsMemWide { .. }
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockOrMem { .. }
+        | Operation::LockAddMem { .. }
+        | Operation::LockAddMemReg { .. }
+        | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
@@ -48769,6 +49105,39 @@ fn step_configured(
         Operation::LoadIdtr { source } => {
             if let Err(error) = load_idtr(state, memory, context, next_rip, source) {
                 return report_memory_error(error);
+            }
+        }
+        Operation::StoreGdtr { dst } => {
+            let gdtr = state.gdtr.expect("SGDT admission requires a modeled GDTR");
+            let segment_base = match instruction.prefixes.segment {
+                Some(0x64) => state.fs_base,
+                Some(0x65) => state.gs_base,
+                _ => 0,
+            };
+            if let Err(error) = store_pseudo_descriptor_qwords(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                segment_base,
+                instruction.prefixes.segment.is_none(),
+                gdtr.limit,
+                gdtr.base,
+            ) {
+                return report_memory_error(error);
+            }
+        }
+        Operation::LoadTr { source } => {
+            let selector = state.gpr[source as usize] as u16;
+            match load_tr_cpl0(state, memory, context, selector) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
+                Err(error) => return report_memory_error(error),
             }
         }
         Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
@@ -50031,7 +50400,7 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop | Operation::NopModrm => {}
+        Operation::Endbr64Nop | Operation::NopModrm | Operation::Invlpg => {}
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
@@ -52626,6 +52995,62 @@ fn read_pseudo_descriptor_qwords(
     Ok((base, limit))
 }
 
+/// Pseudo-descriptor store for `SGDT m` (S4-38L7al): the limit as 2 bytes little-endian at
+/// `+0`, the 64-bit base as 8 bytes little-endian at `+2`. The adapters have no ten-byte
+/// write, so the store is two overlapping qword writes: `[a, a+8)` (limit and the low six
+/// base bytes) and `[a+2, a+10)` (the whole base); the overlap carries equal bytes.
+///
+/// The start address and the last byte (`+9`) must be canonical, otherwise #GP(0) (#SS(0) for
+/// an unprefixed RSP/RBP-based operand, as for LGDT) before any write. The write that goes first
+/// is the one that touches every page of the operand (`[a+2, a+10)` unless the offset in the
+/// page is at least `0xffe`, where only `[a, a+8)` crosses the page boundary), so a page that
+/// refuses the store makes the first write fail and nothing is committed. Registers and flags
+/// are not touched.
+#[allow(clippy::too_many_arguments)]
+fn store_pseudo_descriptor_qwords(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    dst: MemoryOperand,
+    segment_base: u64,
+    unprefixed: bool,
+    limit: u16,
+    base: u64,
+) -> Result<(), MemoryError> {
+    let address = dst
+        .effective_address(state, next_rip)
+        .wrapping_add(segment_base);
+    let last = address.checked_add(9);
+    if !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        let ss_based = unprefixed
+            && matches!(
+                dst.base,
+                long_decode::AddressBase::Register(Register::Rsp | Register::Rbp)
+            );
+        return Err(MemoryError::Architectural(ArchitecturalFault {
+            vector: if ss_based { 12 } else { 13 },
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+    let context = AccessContext {
+        origin: crate::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let mut head = [0; 8];
+    head[..2].copy_from_slice(&limit.to_le_bytes());
+    head[2..].copy_from_slice(&base.to_le_bytes()[..6]);
+    let tail = base.to_le_bytes();
+    if address & 0xfff >= 0xffe {
+        memory.write(address, context, &head)?;
+        memory.write(address + 2, context, &tail)
+    } else {
+        memory.write(address + 2, context, &tail)?;
+        memory.write(address, context, &head)
+    }
+}
+
 fn load_gdtr(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -52794,6 +53219,78 @@ fn load_sreg_cpl0(
             state.gs_unusable = false;
         }
     }
+    Ok(true)
+}
+
+/// `LTR r/m16` register form (`0F 00 /3`, mod = 11) inside the CPL0 profile set (S4-38L7am), at
+/// CPL0 in 64-bit mode with a modeled GDTR. The selector and descriptor rules are those of the
+/// bounded paged `LTR AX` (`prepare_paged_ltr_ax`, `validate_tss_descriptor`):
+///
+/// * a null selector (`selector & !3 == 0`) is `#GP(0)`; TI = 1 or a 16-byte entry beyond the GDT
+///   limit is `#GP(selector & !3)`; an overflowing or non-canonical descriptor address is `#GP(0)`;
+/// * after the 16-byte descriptor is read as two qwords: a type other than an available 64-bit TSS
+///   (a busy TSS, a non-system or other system descriptor) is `#GP(selector & !3)`, a not-present
+///   TSS is `#NP(selector & !3)`, a nonzero type field in the upper dword is `#GP(selector & !3)`,
+///   a non-canonical base is `#GP(0)`.
+///
+/// A descriptor whose 16 bytes would cross a page (`address & 0xfff > 0xff0`) is not modeled, as
+/// in the paged path: `Ok(false)` without any access. On success the busy bit is written back as
+/// one qword (the low half of the descriptor; the board adapter writes whole qwords) and only then
+/// TR (selector, base, limit, access with the busy bit, flags) is committed, so every error leaves
+/// the CPU state and the descriptor untouched. RIP is advanced by the caller.
+fn load_tr_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    selector: u16,
+) -> Result<bool, MemoryError> {
+    let Some(gdtr) = state.gdtr else {
+        return Ok(false);
+    };
+    let fault = |vector: u8, code: u32| {
+        MemoryError::Architectural(ArchitecturalFault {
+            vector,
+            error_code: Some(code),
+            linear_address: None,
+        })
+    };
+    if selector & !3 == 0 {
+        return Err(fault(13, 0));
+    }
+    let code = u32::from(selector & !3);
+    let table_offset = u64::from(selector & !7);
+    if selector & 4 != 0 || table_offset + 15 > u64::from(gdtr.limit) {
+        return Err(fault(13, code));
+    }
+    let Some(address) = gdtr.base.checked_add(table_offset) else {
+        return Err(fault(13, 0));
+    };
+    let Some(end) = address.checked_add(15) else {
+        return Err(fault(13, 0));
+    };
+    if !canonical(address) || !canonical(end) {
+        return Err(fault(13, 0));
+    }
+    if address & 0xfff > 0xff0 {
+        return Ok(false);
+    }
+    let table = context.descriptor_table();
+    let low = memory.read_integer(address, table, OperandSize::Qword)?;
+    let high = memory.read_integer(address + 8, table, OperandSize::Qword)?;
+    let mut descriptor = [0u8; 16];
+    descriptor[..8].copy_from_slice(&low.to_le_bytes());
+    descriptor[8..].copy_from_slice(&high.to_le_bytes());
+    let mut tr = crate::validate_tss_descriptor(PrivilegeLevel::Ring0, selector, gdtr, descriptor)
+        .map_err(MemoryError::Architectural)?;
+    descriptor[5] |= 2;
+    tr.access = descriptor[5];
+    memory.write_integer(
+        address,
+        table,
+        OperandSize::Qword,
+        u64::from_le_bytes(descriptor[..8].try_into().expect("eight bytes")),
+    )?;
+    state.tr = Some(tr);
     Ok(true)
 }
 
@@ -53657,6 +54154,65 @@ fn transfer(
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
+        Operation::MovzxFsLoadW { dst, src } => {
+            // S4-38L7ad: base + effective address; a non-canonical start or last byte (address+1)
+            // is #GP(0) before the read. The word is zero-extended by `state.write` of the dword
+            // (upper 32 bits zeroed) or qword view; flags are untouched.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovzxGsLoadW { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovsxdFsLoad { dst, src } => {
+            // S4-38L7ak: base + effective address; a non-canonical first or last byte (address+3)
+            // is #GP(0) before the read. The dword is sign-extended to 64 bits explicitly; flags
+            // are untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value as u32 as i32 as i64 as u64);
+        }
+        Operation::MovsxdGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value as u32 as i32 as i64 as u64);
+        }
+        Operation::MovFsMemByteImm { dst, immediate } => {
+            // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
+            // instruction, immediate included, as `next_rip` is). A non-canonical address (a single
+            // byte is stored) is #GP(0) before the write. Only the byte is stored; flags and
+            // registers are untouched.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
+        }
+        Operation::MovGsMemByteImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            memory.write_integer(address, context, dst.size, u64::from(immediate))?;
+        }
+        Operation::MovFsMemImm { dst, immediate } => {
+            // S4-38L7aj: base + effective address (RIP-relative is relative to the end of the
+            // instruction, imm32 included, as `next_rip` is). A non-canonical first or last byte
+            // is #GP(0) before the write. Exactly `dst.size` bytes (dword or qword) are stored;
+            // `immediate` is already zero-extended (dword) or sign-extended (qword). Flags and
+            // registers are untouched; the destination is not read.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            memory.write_integer(address, context, dst.size, immediate)?;
+        }
+        Operation::MovGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            memory.write_integer(address, context, dst.size, immediate)?;
+        }
         Operation::SubFsMem { dst, src } => {
             // S4-38L7j: base + effective address; non-canonical (start or last byte) is #GP(0)
             // before the read, so before any register or flag write. Result and flags come from
@@ -53686,6 +54242,54 @@ fn transfer(
                 state.rflags,
             );
             state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::CmpFsMem { dst, src } => {
+            // S4-38L7aa: base + effective address; non-canonical (start or last byte) is #GP(0)
+            // before the read. Only the flags change: the operand is read (no write) and
+            // compared with the register through the shared CMP arithmetic.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size,
+                ArithmeticKind::Cmp,
+                lhs,
+                state.read(src),
+                state.rflags,
+            );
+            state.rflags = flags;
+        }
+        Operation::CmpGsMem { dst, src } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size,
+                ArithmeticKind::Cmp,
+                lhs,
+                state.read(src),
+                state.rflags,
+            );
+            state.rflags = flags;
+        }
+        Operation::CmpFsMemImm { dst, immediate } => {
+            // S4-38L7ah: as CmpFsMem, with the sign-extended imm8 (masked to the operand width)
+            // as the right-hand side. Non-canonical (start or last byte) is #GP(0) before the
+            // read; only the flags change.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
+            state.rflags = flags;
+        }
+        Operation::CmpGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let lhs = memory.read_integer(address, context, dst.size)?;
+            let (_, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
             state.rflags = flags;
         }
         Operation::TestFsMemByte { src, immediate } => {
@@ -53748,6 +54352,27 @@ fn transfer(
             );
             state.rflags = flags;
         }
+        Operation::TestFsMemWide { src, immediate } => {
+            // S4-38L7ac: as TestFsMemWord, but a dword (REX.W: qword; the immediate is already
+            // sign-extended by the decoder): the start and the last byte must be canonical
+            // (#GP(0) before the read); the value is ANDed with the immediate through the shared
+            // `logic_result` (CF = OF = 0, SF/ZF from the top bit, PF from the low byte, AF
+            // kept). Nothing is written to memory or to a register.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            let (_, flags) =
+                logic_result(src.size, LogicKind::Test, value, immediate, state.rflags);
+            state.rflags = flags;
+        }
+        Operation::TestGsMemWide { src, immediate } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            let (_, flags) =
+                logic_result(src.size, LogicKind::Test, value, immediate, state.rflags);
+            state.rflags = flags;
+        }
         Operation::IncDecFsMem { destination, kind } => {
             // S4-38L7p/S4-38L7q: base + effective address; a non-canonical start or last byte is
             // #GP(0) (also for RSP/RBP bases) before any access. read -> write with the shared
@@ -53778,21 +54403,20 @@ fn transfer(
             // pre-instruction state. The destination is written on both branches (SDM: a failed
             // compare still writes the old value back), so a read-only page faults either way;
             // RAX and the flags commit only after that write succeeded.
-            let accumulator = RegisterView::low(Register::Rax, OperandSize::Qword);
+            // S4-38L7y: the width follows the destination (dword: EAX, a dword source; the
+            // compare uses the dword flags). On inequality EAX is written through the dword
+            // register write, which zero-extends into RAX; on equality RAX is not touched.
+            let size = destination.size;
+            let accumulator = RegisterView::low(Register::Rax, size);
             let expected = state.read(accumulator);
             let replacement = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
-            let observed = memory.read_integer(address, context, destination.size)?;
+            let observed = memory.read_integer(address, context, size)?;
             let equal = expected == observed;
             let stored = if equal { replacement } else { observed };
-            memory.write_integer(address, context, destination.size, stored)?;
-            let (_, flags) = arithmetic_result(
-                OperandSize::Qword,
-                ArithmeticKind::Cmp,
-                expected,
-                observed,
-                state.rflags,
-            );
+            memory.write_integer(address, context, size, stored)?;
+            let (_, flags) =
+                arithmetic_result(size, ArithmeticKind::Cmp, expected, observed, state.rflags);
             if !equal {
                 state.write(accumulator, observed);
             }
@@ -53826,6 +54450,76 @@ fn transfer(
             let (result, flags) = logic_result(
                 destination.size,
                 LogicKind::Or,
+                old,
+                immediate,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockAddMem {
+            destination,
+            immediate,
+        } => {
+            // S4-38L7z: as LockOrMem, but the shared ADD (`arithmetic_result`: all six flags from
+            // the sum at the destination width). One vCPU, so read -> write needs no bus lock. The
+            // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
+            // resolved before any access (a RIP-relative operand is relative to the end of the
+            // instruction, immediate included). The sum is written back even for a zero addend;
+            // the flags commit only after the write succeeded, so a faulting write leaves memory
+            // and flags untouched.
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = arithmetic_result(
+                destination.size,
+                ArithmeticKind::Add,
+                old,
+                immediate,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockAddMemReg {
+            destination,
+            source,
+        } => {
+            // S4-38L7ai: as LockAddMem, with a register addend (read before the access, masked
+            // to the operand width by the register view). One vCPU, so read -> write needs no bus
+            // lock. The address (non-canonical start or last byte is #GP(0), RSP/RBP bases
+            // #SS(0)) is resolved before any access (a RIP-relative operand is relative to the
+            // end of the instruction). The sum is written back even for a zero addend; the flags
+            // commit only after the write succeeded, so a faulting write leaves memory and flags
+            // untouched. Nothing is written to a register.
+            let addend = state.read(source);
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = arithmetic_result(
+                destination.size,
+                ArithmeticKind::Add,
+                old,
+                addend,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockAndMem {
+            destination,
+            immediate,
+        } => {
+            // S4-38L7ag: as LockOrMem, with the shared AND (`logic_result`: CF = OF = 0, SF/ZF/PF
+            // from the byte result, AF kept). One vCPU, so read -> write needs no bus lock. The
+            // address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
+            // resolved before any access (a RIP-relative operand is relative to the end of the
+            // instruction, immediate included). The result is written back even when it equals
+            // the old value; the flags commit only after the write succeeded, so a faulting write
+            // leaves memory and flags untouched.
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = logic_result(
+                destination.size,
+                LogicKind::And,
                 old,
                 immediate,
                 state.rflags,
@@ -64449,6 +65143,8 @@ mod tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut bare = LongModeState::default();
             bare.gpr[Register::Rbx as usize] = 0x1000;
@@ -64543,6 +65239,238 @@ mod tests {
             &[0x65, 0x66, 0xf7, 0x05, 0x73, 0x68, 0xf0, 0x02, 0x01, 0xff][..],
             &[0x66, 0x64, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
             &[0x65, 0x66, 0xf7, 0x43, 0x08, 0x01, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xf7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xf7 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn segment_movzx_word_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7ad widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `[64|65] [REX] 0F B7 /r` (memory source) with opcode 0xb7 and without
+        // mutation.
+        for bytes in [
+            &[0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03][..],
+            &[0x64, 0x48, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x65, 0x0f, 0xb7, 0x43, 0x08][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xb7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xb7 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn segment_mov_byte_immediate_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7ae widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `[64|65] [REX] C6 /0 ib` (memory operand) with opcode 0xc6 and without
+        // mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xc6 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step() {
+        // S4-38L7af: `[26|2E|36|3E] E8 cd` is `E8 cd` (not gated by the CPL0 set, like the plain
+        // form): push the next RIP, branch to next RIP + rel32.
+        for prefix in [0x2eu8, 0x3e, 0x26, 0x36] {
+            let code = [prefix, 0xe8, 0x46, 0x84, 0x7a, 0xfe];
+            let next = 0x1006u64;
+            let target =
+                next.wrapping_add_signed(i64::from(i32::from_le_bytes([0x46, 0x84, 0x7a, 0xfe])));
+            let mut start = LongModeState::default();
+            start.rip = 0x1000;
+            start.rflags = crate::CF | crate::ZF | 2;
+            start.gpr[Register::Rsp as usize] = 0x1010;
+
+            let mut state = start.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, 1, "{prefix:#x}");
+            assert_eq!(state.rip, target);
+            assert_eq!(state.gpr[Register::Rsp as usize], 0x1008);
+            assert_eq!(state.rflags, start.rflags);
+            assert_eq!(
+                u64::from_le_bytes(memory.bytes[8..16].try_into().unwrap()),
+                next
+            );
+
+            let mut state = start.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Branched),
+                "{prefix:#x}"
+            );
+            assert_eq!(state.rip, target);
+            assert_eq!(state.gpr[Register::Rsp as usize], 0x1008);
+        }
+    }
+
+    #[test]
+    fn cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push() {
+        // The target is checked before the stack write, as for the unprefixed form: no write, RSP and
+        // RIP unchanged.
+        let base = 0x0000_7fff_ffff_f000u64;
+        for code in [
+            &[0x2e, 0xe8, 0x00, 0x10, 0x00, 0x00][..],
+            &[0xe8, 0x00, 0x10, 0x00, 0x00][..],
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = base;
+            state.gpr[Register::Rsp as usize] = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::at(code, base);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })),
+                "{code:02x?}"
+            );
+            assert_eq!(state, before, "{code:02x?}");
+            assert!(
+                memory
+                    .accesses
+                    .iter()
+                    .all(|(kind, _, _)| *kind == AccessKind::Fetch),
+                "{code:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_test_dword_qword_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7ac widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `[64|65] F6 /0 ib` with opcode 0xf7 and without mutation.
+        for bytes in [
+            &[
+                0x65, 0xf7, 0x05, 0xfc, 0xf8, 0xff, 0x02, 0xff, 0xff, 0xff, 0x7f,
+            ][..],
+            &[
+                0x64, 0x48, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            ][..],
+            &[0x65, 0xf7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00][..],
         ] {
             let mut bare = LongModeState::default();
             bare.gs_base = 0x1000;
@@ -64864,6 +65792,61 @@ mod tests {
     }
 
     #[test]
+    fn lock_add_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7z widened the CPL0-set path only: without the set (no control policy) bare `run`
+        // and `step` refuse `LOCK ADD m8/m32/m64, imm` with the group opcode and without mutation.
+        for (bytes, opcode) in [
+            (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83u8),
+            (&[0xf0, 0x80, 0x43, 0x3d, 0x80][..], 0x80),
+            (&[0xf0, 0x83, 0x43, 0x3d, 0x80][..], 0x83),
+            (
+                &[0xf0, 0x48, 0x81, 0x43, 0x3d, 0x00, 0x00, 0x00, 0x80][..],
+                0x81,
+            ),
+            // S4-38L7ag: `LOCK AND m8, imm8` is a CPL0-set form too, including the RIP-relative
+            // boundary bytes.
+            (&[0xf0, 0x80, 0x63, 0x3d, 0xfe][..], 0x80),
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
+            // S4-38L7ai: `LOCK ADD m32/m64, r32/r64` is a CPL0-set form too, including the
+            // RIP-relative boundary bytes.
+            (&[0xf0, 0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02][..], 0x01),
+            (&[0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rbx as usize] = 0x1000;
+            bare.gpr[Register::Rsp as usize] = 0x1004;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{bytes:02x?}");
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn lock_inc_stays_unsupported_in_bare_run_and_step() {
         // S4-38L7l widened the CPL0-set path only: without the set (no control policy) bare `run`
         // and `step` refuse `LOCK INC m32/m64` with opcode 0xff and without mutation.
@@ -64995,6 +65978,149 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x2b }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn invlpg_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7ab: INVLPG m is a CPL0-set instruction; without the set (no control policy) bare
+        // `run` and `step` refuse it without mutation (opcode 0x01).
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gpr[Register::Rdi as usize] = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x01 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sgdt_stays_unsupported_in_bare_run_and_step() {
+        // S4-38L7al: SGDT m is a CPL0-set instruction; without the set (no control policy) bare
+        // `run` and `step` refuse it without mutation (opcode 0x01), even with a modeled GDTR.
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x0f, 0x01, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            bare.gpr[Register::Rbp as usize] = 0x2000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x01 }),
+                "{bytes:02x?}"
+            );
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn segment_cmp_forms_stay_unsupported_in_bare_run_and_step() {
+        // S4-38L7aa widened the CPL0-set decoder path only: without the set (no control policy)
+        // bare `run` and `step` refuse the FS/GS CMP r/m, r forms without mutation.
+        for bytes in [
+            &[0x65, 0x48, 0x39, 0x15, 0x08, 0x8a, 0xce, 0x01][..],
+            &[0x64, 0x48, 0x39, 0x40, 0x08][..],
+            &[0x65, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut bare = LongModeState::default();
+            bare.gs_base = 0x1000;
+            bare.fs_base = 0x1000;
+            let before = bare.clone();
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            let result = super::run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x39 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+            assert!(memory.accesses.is_empty(), "{bytes:02x?}");
+
+            let mut state = bare.clone();
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x39 }),
                 "{bytes:02x?}"
             );
             assert_eq!(state, before, "{bytes:02x?}");
@@ -154050,6 +155176,43 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn mov_cr3_profile_keeps_lock_add_unsupported() {
+        // S4-38L7z belongs to the CPL0 set only; this profile refuses the form without mutation.
+        for (bytes, opcode) in [
+            (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83),
+            (&[0xf0, 0x81, 0x43, 0x58, 1, 0, 0, 0][..], 0x81),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
+            // S4-38L7ai: LOCK ADD m64, r64 (the diagnostic boundary bytes) is a CPL0-set form too.
+            (&[0xf0, 0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02][..], 0x01),
+            (&[0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rsp as usize] = 0x1004;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn wp_profile_admits_only_the_two_wp_values_and_legacy_stays_wp1_only() {
         for cr0 in [Cr0Profile::BASE, Cr0Profile::BASE & !(1 << 16)] {
             let mut state = make_state(0x1000, 0x2000);
@@ -154368,6 +155531,8 @@ mod mov_cr3_profile_tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = make_state(0x1000, 0x2000);
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -154531,6 +155696,143 @@ mod mov_cr3_profile_tests {
             &[0x65, 0x66, 0xf7, 0x05, 0x73, 0x68, 0xf0, 0x02, 0x01, 0xff][..],
             &[0x66, 0x64, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
             &[0x65, 0x66, 0xf7, 0x43, 0x08, 0x01, 0x00][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xf7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fs_gs_movzx_word_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ad belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03][..],
+            &[0x64, 0x48, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x65, 0x0f, 0xb7, 0x43, 0x08][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xb7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fs_gs_mov_byte_immediate_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_mov_cr3_profile() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for bytes in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xe8 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fs_gs_test_dword_qword_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ac belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[
+                0x65, 0xf7, 0x05, 0xfc, 0xf8, 0xff, 0x02, 0xff, 0xff, 0xff, 0x7f,
+            ][..],
+            &[
+                0x64, 0x48, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            ][..],
+            &[0x65, 0xf7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00][..],
         ] {
             let mut state = make_state(0x1000, 0x2000);
             state.gs_base = 0x1000;
@@ -154747,6 +156049,104 @@ mod mov_cr3_profile_tests {
             assert_eq!(
                 result.exit,
                 MovCr3Exit::Unsupported { opcode: 0x2b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fs_gs_cmp_forms_stay_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7aa widened the CPL0-set decoder path only; this profile refuses the forms.
+        for bytes in [
+            &[0x65, 0x48, 0x39, 0x15, 0x08, 0x8a, 0xce, 0x01][..],
+            &[0x64, 0x48, 0x39, 0x40, 0x08][..],
+            &[0x65, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x39 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn invlpg_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ab: INVLPG m belongs to the CPL0 set only; this profile refuses it.
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sgdt_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7al: SGDT m belongs to the CPL0 set only; this profile refuses it.
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0x01 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -155281,6 +156681,8 @@ mod paged_cr3_probe_tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = state();
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -155413,6 +156815,105 @@ mod paged_cr3_probe_tests {
     }
 
     #[test]
+    fn paged_cr3_probe_keeps_fs_gs_movzx_word_forms_unsupported() {
+        for bytes in [
+            &[0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03][..],
+            &[0x64, 0x48, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x65, 0x0f, 0xb7, 0x43, 0x08][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xb7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_mov_byte_immediate_forms_unsupported() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for bytes in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xc6 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_cs_call_rel32_like_the_unprefixed_form() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for bytes in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xe8 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_test_dword_qword_forms_unsupported() {
+        for bytes in [
+            &[
+                0x65, 0xf7, 0x05, 0xfc, 0xf8, 0xff, 0x02, 0xff, 0xff, 0xff, 0x7f,
+            ][..],
+            &[
+                0x64, 0x48, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            ][..],
+            &[0x65, 0xf7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0xf7 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn paged_cr3_probe_keeps_fs_gs_inc_forms_unsupported() {
         for bytes in [
             &[0x65, 0xff, 0x05, 0x73, 0x63, 0xf2, 0x02][..],
@@ -155503,6 +157004,34 @@ mod paged_cr3_probe_tests {
     }
 
     #[test]
+    fn paged_cr3_probe_keeps_lock_add_unsupported() {
+        for (bytes, opcode) in [
+            (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83u8),
+            (&[0xf0, 0x83, 0x43, 0x3d, 0x80][..], 0x83),
+            (&[0xf0, 0x80, 0x43, 0x3d, 0x80][..], 0x80),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
+            // S4-38L7ai: LOCK ADD m64, r64 (the diagnostic boundary bytes) is a CPL0-set form too.
+            (&[0xf0, 0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02][..], 0x01),
+            (&[0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+        ] {
+            let mut state = state();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.gpr[Register::Rsp as usize] = 0x1004;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn paged_cr3_probe_keeps_fs_gs_dword_load_forms_unsupported() {
         for bytes in [
             &[0x65, 0x8b, 0x05, 0x73, 0xa5, 0x4c, 0x00][..],
@@ -155541,6 +157070,74 @@ mod paged_cr3_probe_tests {
             assert_eq!(
                 result.exit,
                 PagedProbeExit::Unsupported { opcode: 0x2b },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_fs_gs_cmp_forms_unsupported() {
+        for bytes in [
+            &[0x65, 0x48, 0x39, 0x15, 0x08, 0x8a, 0xce, 0x01][..],
+            &[0x64, 0x48, 0x39, 0x40, 0x08][..],
+            &[0x65, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x39 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_invlpg_unsupported() {
+        for bytes in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state();
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x01 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paged_cr3_probe_keeps_sgdt_unsupported() {
+        for bytes in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = state();
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = step(&mut state, &mut memory);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x01 },
                 "{bytes:02x?}"
             );
             assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
@@ -157131,11 +158728,46 @@ mod paged_mov_profile_tests {
     }
 
     #[test]
+    fn paged_mov_profile_keeps_lock_add_unsupported() {
+        // S4-38L7z belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for (code, opcode) in [
+            (&[0xf0, 0x83, 0x44, 0x24, 0xfc, 0x00][..], 0x83),
+            (&[0xf0, 0x83, 0x43, 0x58, 0x01][..], 0x83),
+            (&[0xf0, 0x81, 0x43, 0x58, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x48, 0x83, 0x43, 0x58, 0x01][..], 0x83),
+            // S4-38L7ag: LOCK AND m8, imm8 is a CPL0-set form too.
+            (&[0xf0, 0x80, 0x25, 0x6f, 0x39, 0xf8, 0xff, 0xfe][..], 0x80),
+            // S4-38L7ai: LOCK ADD m64, r64 (the diagnostic boundary bytes) is a CPL0-set form too.
+            (&[0xf0, 0x48, 0x01, 0x3d, 0x8f, 0x02, 0xdc, 0x02][..], 0x01),
+            (&[0xf0, 0x01, 0x43, 0x3d][..], 0x01),
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.gpr[Register::Rsp as usize] = 0x1004;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn paged_mov_profile_keeps_lock_cmpxchg_unsupported() {
         // S4-38L7k belongs to the CPL0 set only; this profile refuses the form without mutation.
         for code in [
             &[0xf0, 0x48, 0x0f, 0xb1, 0x13][..],
             &[0xf0, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            // S4-38L7y: the dword form is refused here too.
+            &[0xf0, 0x0f, 0xb1, 0x13][..],
         ] {
             let mut state = state_with_control_registers();
             state.gpr[Register::Rbx as usize] = 0x1000;
@@ -157269,6 +158901,119 @@ mod paged_mov_profile_tests {
             &[0x65, 0x66, 0xf7, 0x05, 0x73, 0x68, 0xf0, 0x02, 0x01, 0xff][..],
             &[0x66, 0x64, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x0e, 0x00][..],
             &[0x65, 0x66, 0xf7, 0x43, 0x08, 0x01, 0x00][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xf7 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_movzx_word_forms_unsupported() {
+        // S4-38L7ad belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0x0f, 0xb7, 0x3d, 0x05, 0xa0, 0x01, 0x03][..],
+            &[0x64, 0x48, 0x0f, 0xb7, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x65, 0x0f, 0xb7, 0x43, 0x08][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb7 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_mov_byte_immediate_forms_unsupported() {
+        // S4-38L7ae belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0xc6, 0x05, 0x68, 0xa2, 0x01, 0x03, 0x01][..],
+            &[0x64, 0x48, 0xc6, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff][..],
+            &[0x65, 0xc6, 0x43, 0x08, 0x01][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc6 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_cs_call_rel32_like_the_unprefixed_form() {
+        // S4-38L7af: `2E E8 cd` is `E8 cd`; this profile refuses both without mutation.
+        for code in [
+            &[0x2e, 0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+            &[0xe8, 0x46, 0x84, 0x7a, 0xfe][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rsp as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xe8 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_test_dword_qword_forms_unsupported() {
+        // S4-38L7ac belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[
+                0x65, 0xf7, 0x05, 0xfc, 0xf8, 0xff, 0x02, 0xff, 0xff, 0xff, 0x7f,
+            ][..],
+            &[
+                0x64, 0x48, 0xf7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            ][..],
+            &[0x65, 0xf7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00][..],
         ] {
             let mut state = state_with_control_registers();
             state.gs_base = 0x1000;
@@ -157444,6 +159189,86 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x2b });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_fs_gs_cmp_forms_unsupported() {
+        // S4-38L7aa belongs to the CPL0 set only; this profile refuses the forms without mutation.
+        for code in [
+            &[0x65, 0x48, 0x39, 0x15, 0x08, 0x8a, 0xce, 0x01][..],
+            &[0x64, 0x48, 0x39, 0x40, 0x08][..],
+            &[0x65, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gs_base = 0x1000;
+            state.fs_base = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x39 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_invlpg_unsupported() {
+        // S4-38L7ab belongs to the CPL0 set only; this profile refuses it without mutation.
+        for code in [
+            &[0x0f, 0x01, 0x3f][..],
+            &[0x65, 0x0f, 0x01, 0x3f][..],
+            &[0x0f, 0x01, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
+        ] {
+            let mut state = state_with_control_registers();
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_sgdt_unsupported() {
+        // S4-38L7al belongs to the CPL0 set only; this profile refuses it without mutation.
+        for code in [
+            &[0x0f, 0x01, 0x45, 0xe6][..],
+            &[0x65, 0x0f, 0x01, 0x45, 0xe6][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gdtr = Some(crate::state::Gdtr {
+                base: 0xffff_fe00_0000_1000,
+                limit: 0x7f,
+            });
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

@@ -22505,3 +22505,1033 @@ CPL0: вопрос к решению (какие порты, ответ шины
 (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x6`; RAX = RDX = `0x3f9`; RSP = `0xffffffff83a03ca8`, RBP = `0xffffffff83a03cb8`;
 `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; `set_members` — прежние и `pci_config` последним. Следующий срез — решение: включать
 ли `pio_u8` (COM1/PIT/PM-таймер платы) в набор Linux по умолчанию (код PIO у платы уже есть), не реализовано.
+
+### Байтовый PIO (`pio_u8`) в наборе Linux по умолчанию (S4-38L7x)
+
+Граница S4-38L7w (`ec` = `in %dx, %al` по RIP `0xffffffff81ff8a2c`, RDX = `0x3f9` — IER COM1) — это байтовый порт-ввод, а член набора `pio_u8`
+(`IN AL, DX`/`OUT DX, AL` через `PortIo` платы, см. список портов ниже) в `linux_default` не входил.
+
+**Решение (принято как решение по умолчанию; пересматриваемое).** `pio_u8` включён в `LinuxCpl0SetMembers::linux_default()` (`true`); `minimal()` остаётся без него
+(`false`). Довод: без COM1 и таймера ядро не продвинется дальше; код PIO у платы уже есть и покрыт тестами od-isa (`pio_u8_profile`, `cpl0_profile_set`) и
+фасада (`set_facade_com1_through_the_bus_needs_the_pio_member`). Если решение пересмотрят, достаточно убрать поле из `linux_default` (код члена не меняется).
+
+**Какие порты доступны через `pio_u8`.** Член пропускает `EC`/`EE` в `MachineBusPortIo`, поэтому доступен каждый порт, привязанный к шине платы
+(`firmware_board.rs`, сборка `ports`; список сверен по коду): COM1 `0x3f8..0x3ff` (8 портов); PM-блок ACPI `0x600..0x60f` (в нём PM-таймер `0x608`; только при `acpi_pm`);
+при профиле платы Linux (`linux_profile`) — PIT `0x40..0x43`, port B `0x61`, PIC ведущий `0x20..0x21` и ведомый `0xa0..0xa1`, CMOS `0x70`/`0x71`, задержка ввода-вывода `0xed`, POST `0x80`
+(CMOS/`0xed`/`0x80` — `AbsentPorts`, устройств за ними нет); и PCI conf1 `0xcf8..0xcff` (только при наличии ECAM-устройства в плате), байтовые обращения к которому разбирает `PciEcam`
+(`pci_ecam.rs`): `0xcf8` и `0xcfa..0xcfb` читаются как `0xff`, запись игнорируется; `0xcfc..0xcff` — окно данных (без устройства: `0xff`, запись отбрасывается); `0xcf9` даёт
+`UnknownOffset` (`PortIo`-ошибка). Порт без привязки — `PortIo`-ошибка.
+
+**Известное ограничение (CONFIG_ADDRESS).** Защёлка CONFIG_ADDRESS есть в двух местах: байтовые обращения к `0xcf8..` (через `pio_u8`) идут в шинную модель `PciEcam` со своей защёлкой
+`conf1_latch`, а dword-обращения (`pci_config`, `OUT/IN` `EAX`) — в ячейку `pci_cell` члена `pci_config`. Сейчас обе дают одинаковый результат (шина пуста, функций нет),
+но при появлении PCI-функции защёлки разойдутся и потребуется единый источник.
+Семантика `IN AL, DX`/`OUT DX, AL` (по памяти, по SDM НЕ сверено): порт — `DX[15:0]`, `IN AL, DX` пишет только `AL` и сохраняет `RAX[63:8]`, флаги не меняются;
+ответ — ответ шины платы (свежий COM1 по IER даёт 0), порт без устройства — `PortIo`-ошибка (выход `port_io`, RIP на инструкции).
+
+**Порядок в `set_members`.** Имя `pio_u8` стоит после `msr:fs_gs_base` (и после `halt`, если он включён) и до `popf_cpl0`: порядок по умолчанию —
+`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`.
+
+Тесты: `linux_direct::tests::linux_default_set_is_cli_cr3_cpuid_and_popf` (`linux_default().pio_u8`, `!minimal().pio_u8`, новый список `set_members`),
+`set_facade_in_al_dx_on_com1_ier_runs_through_the_bus_in_the_linux_default` (`MOV EAX,0x123456AB; MOV EDX,0x3f9; IN AL,DX; HLT` → RAX = `0x12345600`, т.е. AL = IER = 0 записан,
+RAX[63:8] сохранены, retired 4), `set_facade_in_al_dx_is_unsupported_without_the_pio_member` (без члена и в `minimal` — `Unsupported { opcode: 0xec }`, RIP на `ec`,
+retired 2); ожидания `set_members` обновлены в od-machine и `od-runner`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7x-diagnostic-run.json`.
+`in %dx, %al` по `0xffffffff81ff8a2c` проходит (retired 1185015387 → 1185026844, +11457). Новая граница: RIP `0xffffffff81501ee7` (GPA `0x1501ee7`), байты
+`f0 0f b1 13 75 20 4c 89 e0 5b 41 5c 5d 31 d2 31` — `lock cmpxchg %edx, (%rbx)` (LOCK-префикс `f0` + `0f b1`; далее `jne`, `mov %r12,%rax`, `pop %rbx`);
+`Unsupported { opcode: 0xb1 }` (177), `set_exit_detail` = `Run(Unsupported { opcode: 177 })`, `exit_kind` = `unsupported`, retired = 1185026844.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = 0, RCX = 0, RDX = 1,
+RBX = RDI = `0xffffffff83bb62a0`, RSP = `0xffffffff83a03b28`, RBP = `0xffffffff83a03b38`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28;
+вывод COM1 пуст (`com1_hex` = ""); `set_members` — прежние с `pio_u8`. Следующий срез — расширение S4-38L7k (`LOCK CMPXCHG`, см. выше) на dword-форму `LOCK CMPXCHG r/m32, r32` (без REX.W): семантика LOCK на одноядерной плате и
+флаги уже решены в S4-38L7k, dword-форма отмечена там как «Не делалось»; не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK CMPXCHG m32, r32` (`F0 [REX] 0F B1 /r`) в наборе CPL0 (S4-38L7y)
+
+Расширение S4-38L7k (`LOCK CMPXCHG m64, r64`, см. выше) на dword-форму; в S4-38L7k она числилась как «Не делалось». Граница S4-38L7x:
+`f0 0f b1 13` = `lock cmpxchg %edx, (%rbx)` (ModRM `0x13`: reg = EDX, rm = `[rbx]`), RIP `0xffffffff81501ee7`, `Unsupported { opcode: 0xb1 }`.
+Семантика дана **по памяти SDM** (Vol. 2 «CMPXCHG»: EAX сравнивается с dword-назначением; при равенстве ZF = 1 и назначение = r32, иначе ZF = 0 и EAX = назначение;
+остальные флаги как у `CMP EAX, назначение`; назначение при memory-форме записывается в обоих случаях), по первоисточнику **не сверялась**.
+
+**Декодер.** Та же операция `Operation::LockCmpxchgMem { destination, source }`, размер берётся из `destination.size` (Dword). Ветка `0F B1` расширена, не продублирована.
+Принимается `F0 [REX без W] 0F B1 /r` с memory-операндом (mod ≠ 11): REX без W допустим и действует (пустой `0x40`; `REX.R` выбирает источник r8d–r15d, `REX.B`/`REX.X` — базу и индекс).
+Отказ (`Unsupported { opcode: 0xb1 }` без мутации): регистровая форма (mod = 11) с LOCK, `66`, `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс
+(включая FS/GS), REX не непосредственно перед опкодом (в dword-форме любой такой REX, включая `48`, отказывается, чтобы он не декодировался молча как обычная dword-форма; qword-форма S4-38L7k без изменений,
+в том числе её принятие REX.W до другого префикса). **Без LOCK** dword-форма (`0F B1`, memory и регистровая) отказывается (как и qword memory-форма в наборе S4-38L7k); `CmpxchgMemory`/`Cmpxchg` не менялись и остаются qword-only.
+
+**Адрес.** Без сегментной базы; неканоническое начало или адрес + 3 даёт `#GP(0)` (`#SS(0)` для баз RSP/RBP) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** Ширина — `destination.size`. Порядок: адрес (каноничность) → `read_integer(4)` → сравнение EAX с прочитанным → `write_integer(4)` **всегда**
+(источник при равенстве, прочитанное при неравенстве) → только после успешной записи: флаги = флаги `arithmetic_result(Dword, Cmp, EAX, назначение)` (остальные биты RFLAGS сохраняются);
+при неравенстве EAX = прочитанное значение через `state.write` для Dword, который **обнуляет RAX[63:32]** (поведение записи 32-битного регистра в 64-битном режиме, проверено по коду `LongModeState::write`);
+при равенстве RAX не меняется (старшие 32 бита сохраняются). RIP += длина, retired + 1 только при успехе. При `#GP`/`#SS`/`#PF` на чтении или записи RAX, флаги, RIP, retired и память не меняются.
+Сравнение берёт только младшие 32 бита RAX и источника. Ограничения те же, что в S4-38L7k (две отдельные операции адаптера вместо атомарного вызова; код ошибки `#PF` на чтении без W = 1).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockCmpxchgMem`. Вне набора — `Unsupported { opcode: 0xb1 }` без мутации; CPL3 — `WrongPrivilege`.
+
+**Не делалось.** FS/GS-вариант, byte/word-формы, CMPXCHG8B/16B, XADD/XCHG и прочие LOCK-формы, SMP-упорядочение.
+
+Тесты: `cpl0_profile_set::lock_cmpxchg_dword_*` (равенство; неравенство с обнулением RAX[63:32]; флаги на 0x7fffffff/0x80000000/0xffffffff/0 и мусор в RAX[63:32];
+R12D-источник и RIP-relative; r8d–r15d источники; базы r8–r15; SIB+disp; `#GP(0)` по адресу + 3 и принятие последнего канонического dword; `#SS(0)` RSP/RBP; `#PF` на записи при равенстве и неравенстве;
+21 отказ с точным опкодом `0xb1`; вне набора; CPL3); `long_decode::tests::lock_cmpxchg_decodes_the_dword_memory_form_with_lock_only`; отказ вне набора: dword-байты добавлены в
+`execute::tests::lock_cmpxchg_stays_unsupported_in_bare_run_and_step`, `lock_cmpxchg_stays_unsupported_in_the_mov_cr3_profile`, `paged_cr3_probe_keeps_lock_cmpxchg_unsupported`,
+`paged_mov_profile_keeps_lock_cmpxchg_unsupported`; фасад: `linux_direct::tests::lock_cmpxchg_dword_equal_*`, `lock_cmpxchg_dword_unequal_*`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7y-diagnostic-run.json`.
+`lock cmpxchg %edx, (%rbx)` по `0xffffffff81501ee7` проходит (retired 1185026844 → 1185027417, +573). Новая граница: RIP `0xffffffff81537280` (GPA `0x1537280`), байты
+`f0 83 44 24 fc 00 48 39 47 08 5d 0f 95 c0 0f b6` — `lock addl $0x0, -0x4(%rsp)` (LOCK + `83 /0 ib`, ModRM `0x44` + SIB `0x24`, disp8 `0xfc`, imm8 `0`; далее `cmp %rax, 0x8(%rdi)`, `pop %rbp`, `setne %al`);
+`Unsupported { opcode: 0x83 }` (131), `set_exit_detail` = `Run(Unsupported { opcode: 131 })`, `exit_kind` = `unsupported`, retired = 1185027417.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = `0xffffffff84422440`, RBX = `0xffffffff83a03b8a`, RCX = RDX = RSI = 0,
+RDI = `0xffffffff83bb60e0`, RSP = RBP = `0xffffffff83a03b10`, R12 = `0xffffffff83a03b90`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28; вывод COM1 пуст;
+`set_members` — прежние. Следующий срез — `LOCK ADD m32, imm8` (`F0 83 /0 ib`, идиома барьера памяти), по аналогии с `LockOrMem` (S4-38L7s); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK ADD m8/m32/m64, imm` (`F0 [REX] 80|81|83 /0`) в наборе CPL0 (S4-38L7z)
+
+Граница S4-38L7y: `f0 83 44 24 fc 00` = `lock addl $0x0, -0x4(%rsp)` (ModRM `0x44`: mod 01, reg 0 = ADD, rm 100 = SIB; SIB `0x24`: база RSP, без индекса; disp8 `0xfc` = −4; imm8 `0`),
+RIP `0xffffffff81537280`, `Unsupported { opcode: 0x83 }`, retired 1185027417 (идиома барьера памяти). Семантика дана **по памяти SDM** (Vol. 2 «ADD»: назначение = назначение + sign-extended
+immediate на ширине операнда; CF/PF/AF/ZF/SF/OF — по результату сложения), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: новая операция `Operation::LockAddMem { destination, immediate }` (парная к `LockOrMem` из S4-38L7s, `immediate` уже расширено до ширины операнда), но **та же ветка
+декодирования** `80|81|83` — условие принятия LOCK расширено с `group == 1` до `group ∈ {0, 1}`, внутри ветки выбор операции по `group`. Всё остальное (чтение ModRM, `rm_operand`, чтение и расширение immediate,
+проверки префиксов) общее, ничего не продублировано. Принимается `F0 [REX] 83 /0 ib` (dword; с REX.W — qword со sign-extended imm8; граница), и «бесплатно в том же коде»
+`F0 [REX] 81 /0 id` (dword; с REX.W — qword со sign-extended imm32) и `F0 [REX] 80 /0 ib` (байт) — все с memory-операндом (mod ≠ 11), любой адресацией, без сегментного префикса.
+Длина включает immediate (граничная форма — 6 байт; `f0 83 05 disp32 ib` — 8), поэтому RIP-relative считается от RIP **после** immediate.
+`flag_effects`: все шесть флагов определены (как у `Operation::Arithmetic`). Отказ (`Unsupported { opcode: 0x80|0x81|0x83 }`, опкод самой инструкции, без мутации): `/2`–`/7` с LOCK (ADC, SBB, AND, SUB, XOR, CMP),
+регистровая форма (mod = 11) с LOCK, `66` (в том числе для `81`: word-форма — консервативный отказ), `67`, `F2`/`F3` вместо LOCK или вместе с ним, повторный `F0`, любой сегментный префикс (FS/GS с LOCK — отказ),
+REX до LOCK или не непосредственно перед опкодом (`48 f0 83 …`, `f0 48 66 83 …`). REX.R на селектор группы не влияет. `/1` (LOCK OR) не менялся.
+
+**Без LOCK.** `83 /0` (ADD m32, imm8 без LOCK), `81 /0`, `80 /0` по-прежнему декодируются в `Operation::Arithmetic { kind: Add }` и исполняются через `binary_operation` и адаптер; не менялось (тесты
+`plain_add_memory_immediate_without_lock_keeps_its_existing_arithmetic_path_in_the_set` и декодерный).
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы: неканоническое начало или последний байт операнда (адрес + 3 для dword) даёт `#GP(0)` (для баз RSP/RBP — `#SS(0)`) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** Порядок: каноничность адреса → `read_integer(size)` → общая `arithmetic_result(size, Add, старое, immediate, RFLAGS)` (никакой новой арифметики) →
+`write_integer(size)` **всегда**, даже при нулевом слагаемом (для страницы только для чтения это `#PF`) → только после успешной записи обновляются CF/PF/AF/ZF/SF/OF (прочие биты RFLAGS сохраняются).
+RIP += длина, retired + 1 только при успехе. При `#GP`/`#SS`/`#PF` память, флаги, RIP, регистры и retired не меняются. Регистр (в том числе RSP) не меняется. Руками проверено (dword): `0x7fffffff + 1` = `0x80000000`
+→ OF, SF, PF, AF; `0xffffffff + 1` = 0 → CF, ZF, PF, AF; `0x0f + 1` → AF; `0 + 0` → ZF, PF; imm8 `0x80` = −128: `0 + 0xffffff80` → SF **без CF** (сложение не даёт переноса; в постановке среза ожидалось CF = 1,
+это перенос из вычитания и ошибка счёта), `0x80 + 0xffffff80` = 0 → CF, ZF, PF (CF = 1 здесь). Ожидаемые флаги дополнительно сверяются в тесте независимым расчётом на целых хоста (`add32_flags`).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockOrMem`. Вне набора — `Unsupported { opcode: 0x80|0x81|0x83 }` без мутации; CPL3 — `WrongPrivilege`.
+`mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `step_paged_probe` и голые `run`/`step` форму не принимают (тест отказа в каждом).
+
+**Не делалось.** LOCK ADC/SBB/AND/SUB/XOR/CMP/DEC/NEG/NOT, `LOCK ADD r/m, r` (`F0 01/00`), word-форма (`66`), FS/GS-вариант, SMP-упорядочение, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::lock_add_*` (граница `f0 83 44 24 fc 00` на RSP-базе: адрес RSP − 4, запись неизменённого dword, только RIP и флаги; флаги на 14 парах значений при двух начальных RFLAGS по независимому
+расчёту и 6 именованных граничных значений; RIP-relative (длина 8) и SIB+disp; базы r8–r15; индексы r8–r15; REX.R; byte/dword/qword-формы с imm8/imm32; `#GP(0)` по адресу + 3 и принятие последнего канонического dword;
+`#SS(0)` для RSP (в том числе по адресу + 3) и RBP; `#PF` на записи; 45 отказов с точным опкодом; вне набора; голый `step`; CPL3), `plain_add_memory_immediate_without_lock_keeps_its_existing_arithmetic_path_in_the_set`;
+`long_decode::tests::lock_add_decodes_the_memory_immediate_forms_only`; отказ вне набора: `execute::tests::lock_add_stays_unsupported_in_bare_run_and_step`,
+`mov_cr3_profile_tests::mov_cr3_profile_keeps_lock_add_unsupported`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_add_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_lock_add_unsupported`,
+`paged_probe_profile::lock_add_stays_unsupported_in_the_paged_probe_profile`; фасад: `linux_direct::tests::lock_add_dword_at_minus_four_of_rsp_changes_only_that_dword` (dword −4 на RSP-базе, соседние байты целы).
+Ранее принятые отказы `LOCK ADD` в таблицах отказов S4-38L7s (`lock_or_forms_outside_the_slice_*`, `lock_or_decodes_the_memory_immediate_forms_only`) убраны, т.к. `/0` теперь принимается.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7z-diagnostic-run.json`.
+`lock addl $0x0, -0x4(%rsp)` по `0xffffffff81537280` проходит (retired 1185027417 → 1185342631, +315214). Новая граница: RIP `0xffffffff82734608` (GPA `0x2734608`), байты
+`65 48 39 15 08 8a ce 01 75 08 48 c7 43 18 00 00` — `cmp %rdx, %gs:0x1ce8a08(%rip)` (GS-префикс + REX.W + `39 /r`, CMP r/m64, r64 с memory-операндом, ModRM `0x15`: RIP-relative, disp32 `0x01ce8a08`, длина 8;
+далее `jne +8`, `movq $0, 0x18(%rbx)`); `Unsupported { opcode: 0x39 }` (57), `set_exit_detail` = `Run(Unsupported { opcode: 57 })`, `exit_kind` = `unsupported`, retired = 1185342631.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = `0x86`, RBX = `0xffffffff83bb62a0`,
+RCX = RSI = RDI = R8–R11 = R14 = 0, RDX = `0xffffffff83a134c0`, RSP = `0xffffffff83a03b28`, RBP = `0xffffffff83a03b58`, R12 = `0xffffffff83a03b30`, R13 = 1, R15 = 2; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 28; вывод COM1 — только ранний лог (3784 hex-символов); `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `CMP r/m64, r64` с FS/GS-префиксом (`[64|65] REX.W 39 /r`, memory-операнд; по образцу `SubGsMem` из S4-38L7j/`[64|65] 2B`) в наборе CPL0 (решение — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `CMP r/m64, r64` и `CMP r/m32, r32` с префиксом FS/GS в наборе CPL0 (S4-38L7aa)
+
+Граница S4-38L7z: `65 48 39 15 08 8a ce 01` = `cmp %rdx, %gs:0x1ce8a08(%rip)` (ModRM `0x15`: mod 00, reg 010 = RDX, rm 101 = RIP-relative, disp32 `0x01ce8a08`; длина 8),
+RIP `0xffffffff82734608`, `Unsupported { opcode: 0x39 }`, retired 1185342631. Срез повторяет схему S4-38L7j (`SUB r64, m64` с FS/GS, см. выше), но операнд в памяти — **назначение**, а не источник, и результат
+не записывается. Семантика дана **по памяти SDM** (Vol. 2 «CMP»: флаги CF/PF/AF/ZF/SF/OF по результату `назначение − источник` на ширине операнда, назначение не меняется; «Segment Override Prefixes», Vol. 3 §3.4.4:
+в 64-битном режиме добавляются только базы FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::CmpFsMem { dst: MemoryOperand, src: RegisterView }` / `CmpGsMem` (парные к `SubFsMem`/`SubGsMem`), в той же ветке декодирования ALU
+`00..3D`, что и `SubFsMem`; размер берётся из `dst.size`. Принимается `[64|65] [REX] 39 /r` с memory-операндом (mod ≠ 11, любая адресация: RIP-relative, SIB, disp8/disp32, REX.B/REX.X), источник = `reg` плюс REX.R
+(r0–r15). С REX.W — qword (`CMP r/m64, r64`, граница), **без REX.W — dword** (`CMP r/m32, r32`, тот же код, ширина выбирается общим `size`; допустим пустой REX `0x40` и REX.R/B/X без W). Без префикса FS/GS
+`39` по-прежнему даёт `Operation::Arithmetic { kind: Cmp, .. }` (не менялось; тест `plain_unprefixed_cmp_memory_still_reads_*`). Отказ (`Unsupported { opcode: 0x39 }` без мутации): LOCK/REP/REPNE (`F0`/`F2`/`F3`), `66` (word, в любом порядке с сегментным префиксом), `67`, второй сегментный префикс (в том числе `64 65`, `65 65`, `2E 65`), REX не
+непосредственно перед опкодом (`48 65 39 …`, `65 48 66 39 …`, `41 65 48 39 …`; правило dword из S4-38L7m/S4-38L7p). Регистровая форма (mod = 11) не тронута: префикс FS/GS у операции без memory-операнда игнорируется, как в S4-38L7o/p/q/r; исполняется как обычный `CMP r, r` (тест
+`segment_prefixed_register_cmp_is_unchanged_and_ignores_the_prefix`).
+Соседние формы с FS/GS и memory-операндом (`38` байтовая, `3B` обратная `CMP r, r/m`) отказываются **со своим опкодом** (`0x38`, `0x3b`), как и раньше. Префиксы CS/DS/ES/SS не менялись (нулевая база,
+обычный `CMP`). `flag_effects`: все шесть флагов определены (как у `Operation::Arithmetic`).
+
+**Адрес.** Как у S4-38L7j: эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом байта префикса; адрес только 64-бит) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`).
+Каноничность проверяется для начального адреса и последнего байта операнда (адрес + 7 для qword, адрес + 3 для dword): иначе `#GP(0)` до чтения, без мутации. Для баз RSP/RBP с префиксом FS/GS тоже `#GP(0)`,
+не `#SS` (`access_address_48_with_segment_base`); без префикса (обычный `CMP`) для RSP/RBP остаётся `#SS(0)` — не менялось, зафиксировано регрессионным тестом.
+
+**Исполнение.** Один `memory.read_integer(address, context, size)` (4 или 8 байт; граница 4 KiB и A-бит — адаптер платы без изменений), затем флаги считает существующая
+`arithmetic_result(size, Cmp, прочитанное, регистр, RFLAGS)` — та же функция, что у не-префиксной формы, никакой новой арифметики; результат вычитания отбрасывается. `state.rflags = flags` только после успешного
+чтения (прочие биты RFLAGS сохраняются); регистры, в том числе источник и база, не меняются; **записи в память нет** (в тестах журнал записей пуст). Для dword сравниваются только младшие 32 бита регистра,
+старшие 32 бита регистров не затрагиваются. RIP += длина инструкции (с префиксом), retired + 1 только при успехе. При `#GP(0)` или `#PF` на чтении состояние, память и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0x39 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe,
+`step_paged_mov`, paged-probe и голые `run`/`step` новые формы не принимают (тест отказа в каждом).
+
+**Не делалось.** Прочие ALU-опкоды с FS/GS-префиксом (ADD/AND/OR/XOR/ADC/SBB в memory-форме, `3B` `CMP r, m`, `38`, `3A`, `3C`, `3D`), word- и byte-формы CMP, CMP m, imm (`80|81|83 /7`),
+LOCK-варианты, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+Тесты: `cpl0_profile_set::{gs,fs}_cmp_*` (граница `65 48 39 15 …` по базе GS и RIP-relative, запись отсутствует, меняются только RIP и флаги; база FS; нулевая база; флаги на 7 парах значений при двух начальных RFLAGS
+(равенство ZF = 1 CF = 0; `0 − 1` CF/SF; `0x8000000000000000 − 1` OF; AF/PF) и 5 именованных парах; равенство с не-префиксным `CMP`; dword-форма — 32-битное сравнение, старшие биты RAX/RDX не затронуты, чтение
+4 байт; источники r8–r15 (qword и dword); базы r8–r15; SIB+disp; база-алиас сравниваемого регистра; `#GP(0)` по адресу + 7 (qword) / + 3 (dword) и принятие последнего канонического qword; `#GP(0)` для
+RSP/RBP с префиксом; `#PF` на чтении без изменения чего-либо; 17 отказов с точным опкодом), `plain_cmp_through_a_non_canonical_rsp_or_rbp_base_is_ss0`,
+`plain_unprefixed_cmp_memory_still_reads_at_the_effective_address_without_writing`, `segment_cmp_stays_unsupported_outside_the_set`, `segment_cmp_is_refused_by_the_bare_step_entry_point`,
+`segment_cmp_is_not_reachable_from_cpl3`; `long_decode::tests::segment_cmp_decodes_fs_gs_memory_forms_only`; отказ вне набора:
+`execute::tests::segment_cmp_forms_stay_unsupported_in_bare_run_and_step`, `mov_cr3_profile_tests::fs_gs_cmp_forms_stay_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_fs_gs_cmp_forms_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_fs_gs_cmp_forms_unsupported`,
+`paged_probe_profile::fs_gs_cmp_stays_unsupported_in_the_paged_probe_profile`; фасад:
+`linux_direct::tests::gs_cmp_after_wrmsr_gs_base_sets_flags_and_does_not_write_guest_memory` (RDX и память по базе GS, `INT64_MIN − 1`: OF/PF/AF, память не изменилась).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7aa-diagnostic-run.json`.
+`cmp %rdx, %gs:0x1ce8a08(%rip)` по `0xffffffff82734608` проходит (retired 1185342631 → 1185549916, +207285). Новая граница: RIP `0xffffffff8141d590` (GPA `0x141d590`), байты
+`0f 01 3f e9 2b 1a bb 02 65 0f b7 05 b0 a1 01 03` — `invlpg (%rdi)` (`0F 01 /7`, ModRM `0x3f`: mod 00, reg 111 = /7 INVLPG, rm 111 = `[rdi]`; далее `jmp`, `movzwl %gs:…(%rip), %eax`);
+`Unsupported { opcode: 0x01 }` (1), `set_exit_detail` = `Run(Unsupported { opcode: 1 })`, `exit_kind` = `unsupported`, retired = 1185549916.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3ffe000` (`cr3_changes` = 3), EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = RCX = RDX = RSI = R8–R12 = 0, RBX = RDI = `0xffffffffff200000`,
+RSP = `0xffffffff83a03dc0`, RBP = `0xffffffff83a03de0`, R13 = `0x5ff`, R14 = 1, R15 = `0x8000000000000121`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 28;
+`set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `INVLPG m` (`0F 01 /7`, memory-операнд) в наборе CPL0; семантика (инвалидация записи TLB; на модели без TLB — вероятно, отсутствие архитектурного эффекта, кроме учёта walker'а) —
+решение по этой границе, не по предположению; не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `INVLPG m` (`0F 01 /7`, memory-операнд) в наборе CPL0 (S4-38L7ab)
+
+Граница S4-38L7aa: `0f 01 3f` = `invlpg (%rdi)` (ModRM `0x3f`: mod 00, reg 111 = /7 INVLPG, rm 111 = `[rdi]`; длина 3), RIP `0xffffffff8141d590`, `Unsupported { opcode: 0x01 }`,
+retired 1185549916; далее в потоке `e9 2b 1a bb 02` (`jmp`) и `65 0f b7 05 …` (`movzwl %gs:…`) — не реализованы этим срезом.
+
+**Решение (принято по умолчанию, ПЕРЕСМАТРИВАЕМО): INVLPG исполняется как no-op.** Обоснование: модель CPU не имеет архитектурно видимой TLB — трансляция каждый раз проходит по таблицам страниц, а единственный кеш
+(кеш трансляции выборки инструкций S4-13, `LinuxCpl0SetMembers::fetch_cache`) прозрачен для результата и сбрасывается при любой гостевой записи в отслеживаемую таблицу и при любой смене контекста трансляции (запись CR0/CR3),
+так что устаревшая запись, которую INVLPG должен был бы сбросить, в модели невозможна. Поэтому сброс записи ничего не меняет. Адрес операнда **не вычисляется, не читается и не транслируется**, память не пишется
+(выбор зафиксирован: «не вычислять» — регистры базы/индекса не читаются). Следствия: для неканонического адреса `#GP` не возникает (по памяти SDM, INVLPG не проверяет каноничность адреса — **по первоисточнику не сверено**);
+`#PF` не возникает; A/D-биты не затрагиваются; FS/GS-база не используется. RFLAGS, регистры, память не меняются; RIP += длина; retired + 1. Семантика Vol. 2 «INVLPG» дана по памяти SDM, **по первоисточнику не сверялась**.
+Пересмотр нужен, если появится TLB в модели walker'а или гость окажется зависящим от устаревшей трансляции (тогда INVLPG должна сбрасывать запись, а не быть no-op).
+
+**Не путать с существующим профилем `step_invlpg`/`InvlpgLong64V1`** (`execute.rs`, S2/S3-диагностика `INVLPG [RBX]`): тот профиль отдельный, исполняет только точные байты и сообщает `TranslationInvalidation::Invlpg { linear_address }`
+потребителю; набор CPL0 его не использует, и его поведение не менялось (тесты `execute::invlpg_tests::*` и `paged_memory_adapter::*invlpg*` проходят без изменений).
+
+**Декодер.** Новая операция `Operation::Invlpg` (без полей: операнд не нужен; байты ModRM/SIB/disp только дают длину через общий `rm_operand`). Принимается `0F 01 /7` с memory-операндом (mod ≠ 11, любая адресация: RIP-relative,
+SIB, disp8/disp32), с необязательным одним FS (`64`) или GS (`65`) префиксом и необязательным REX непосредственно перед опкодом без REX.W (REX.R/X/B и пустой `0x40` допустимы; по REX.R/X/B адрес не вычисляется).
+Отказ (`Unsupported { opcode: 0x01 }` без мутации): LOCK/REP/REPNE (`F0`/`F3`/`F2`), `66`, `67`, REX.W, второй сегментный префикс, CS/DS/ES/SS-префикс (консервативно, как в прочих `0F 01`-формах с префиксами),
+REX не непосредственно перед опкодом (`41 65 0F 01 3F`), регистровая форма `/7` (`0F 01 F8..FF`, т. е. mod = 11) — не менялась (`0F 01 F8` остаётся SWAPGS, прочие — `Unsupported`).
+LGDT/LIDT (`/2`, `/3`), существующие `LOCK`-формы и SWAPGS в декодере не менялись (ветка `reg == 7` добавлена после SWAPGS и до отказа для `reg ∉ {2,3}`; ветка для FS/GS/REX-форм — только для `reg == 7`, остальные формы с префиксом
+отказываются, как и раньше). Ранее для `0F 01` с REX/FS/GS декодер отказывал, не читая ModRM; теперь ModRM читается (длина отказа внутри `Unsupported` не используется исполнителем).
+
+**Исполнение и гейт.** `Operation::Invlpg` исполняется только в наборе CPL0 (`control_policy` задан, CPL0, Long64), пустое действие в той же ветке, что `Endbr64Nop`/`NopModrm`. Вне набора — `Unsupported { opcode: 0x01 }`
+без мутации (голые `run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, paged-probe — тест отказа в каждом); в набор CPL3 не допускается (`WrongPrivilege`).
+
+**Не делалось.** SGDT/SIDT/SMSW/LMSW, регистровые формы `0F 01 C0..FF` (кроме SWAPGS), INVLPG для CS/DS/ES/SS, реальная инвалидация (нет TLB), `jmp`/`movzwl %gs:…` следующего потока.
+
+Тесты: `cpl0_profile_set::invlpg_*` (граница `0f 01 3f`: RIP + 3, retired + 1, чтения и записи пусты, регистры/флаги/память не меняются; неканонический RDI и 0 — без `#GP`; 17 форм с GS/FS, RIP-relative (RIP + 7), SIB,
+disp8/disp32, REX.B r8–r15, REX.X/R, пустой REX при регистрах `0xdeadbeefdeadbeef` — без чтений; не поглощает следующую инструкцию; 17 отказов с точным опкодом `0x01`; вне набора; CPL3), `long_decode::tests::invlpg_decodes_memory_forms_only`
+(длины, отказы, SWAPGS/LGDT/LIDT без изменений); отказ вне набора: `execute::tests::invlpg_stays_unsupported_in_bare_run_and_step`, `mov_cr3_profile_tests::invlpg_stays_unsupported_in_the_mov_cr3_profile`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_invlpg_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_invlpg_unsupported`, `paged_probe_profile::invlpg_stays_unsupported_in_the_paged_probe_profile`; фасад:
+`linux_direct::tests::invlpg_through_the_set_loop_retires_without_touching_guest_memory` (INVLPG по адресу из RDI в гостевой памяти, неканонический RDI и GS-форма; память не изменилась; retired 9 с CLI/MOV/store/HLT).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ab-diagnostic-run.json`.
+`invlpg (%rdi)` по `0xffffffff8141d590` проходит (retired 1185549916 → 1201748035, +16198119; `cr3_changes` 3 → 4, `last_cr3_change`: `0x3ffe000` → `0x3a44000`). Новая граница: RIP `0xffffffff8141d729` (GPA `0x141d729`), байты
+`65 f7 05 fc f8 ff 02 ff ff ff 7f 75 0d ff 15 cc` — `testl $0x7fffffff, %gs:0x2fff8fc(%rip)` (`F7 /0 id`: ModRM `0x05` = mod 00, reg 000 = TEST, rm 101 = RIP-relative, disp32 `0x02fff8fc`, imm32 `0x7fffffff`; длина 11; далее
+`jne +0x0d`, `call *…(%rip)`); `Unsupported { opcode: 0xf7 }` (247), `set_exit_detail` = `Run(Unsupported { opcode: 247 })`, `exit_kind` = `unsupported`, retired = 1201748035.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = RCX = RDX = RSI = RDI = R8–R11 = 0, RBX = `0x7e00000`, R12 = `0x100000`, R13 = `0x8000000`, R14 = `0x20000000`,
+R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `TEST r/m32, imm32` (`F7 /0 id`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (по образцу `TestGsMemWord`/`TestGsMemByte` из S4-38L7o/p; решение — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `TEST r/m32, imm32` и `TEST r/m64, imm32` (`F7 /0 id`) с префиксом FS/GS в наборе CPL0 (S4-38L7ac)
+
+Граница S4-38L7ab (`65 f7 05 fc f8 ff 02 ff ff ff 7f`, `testl $0x7fffffff, %gs:0x2fff8fc(%rip)`, RIP `0xffffffff8141d729`,
+`Unsupported { opcode: 0xf7 }`) — dword-ширина `F7 /0` с сегментным префиксом. Срез добавляет `[64|65] [REX] F7 /0 id` (dword, REX без W) и
+`[64|65] REX.W F7 /0 id` (qword, imm32 знаково расширяется до 64 бит) с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB,
+disp8/disp32, абсолютная SIB без базы и индекса, REX.B/REX.X). Форма — прямое расширение S4-38L7r (`F7 /0 iw`, word, `66`) и S4-38L7o
+(`F6 /0 ib`) на ширины dword/qword. Семантика дана **по памяти SDM** (Vol. 2 «TEST»: читает r/m32 (r/m64), AND с imm32 (для qword —
+знаково расширенным), результат отбрасывается; CF = 0, OF = 0, SF/ZF/PF — по результату (PF — по младшему байту), AF не определён; Vol. 2
+«Segment Override Prefixes» / Vol. 3 §3.4.4: в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер.** Ветка `0xF7 /0` с сегментным префиксом `0x64`/`0x65`, размером dword/qword (нет `66`) и memory-операндом порождает новые
+`Operation::TestFsMemWide { src, immediate }` / `TestGsMemWide` (`src` — `MemoryOperand` размера dword или qword, `immediate` — `u64`, уже
+приведённый к ширине: для dword — `u32` с нулевым расширением, для qword — `i32` со знаковым). Это та же ветка, что у `F6 /0` и `F7 /0 iw`.
+Длина включает imm32 (для граничной формы `65 f7 05 disp32 imm32` — 11 байт, для `65 48 f7 05 disp32 imm32` — 12), поэтому RIP-relative
+считается от RIP **после** immediate. `flag_effects` те же, что у `TestFsMemWord`: CF/OF/SF/ZF/PF определены, AF не определён.
+REX допустим только непосредственно перед `F7` (REX.W — qword, REX.R игнорируется, REX.B/X — база/индекс); REX не последним — устаревший,
+отказ (как у S4-38L7o/r/m).
+
+**Отказы без мутации (`Unsupported { opcode: 0xf7 }`).** `F7 /1..7` с FS/GS и memory (`/1` — алиас TEST, `/2` NOT, `/3` NEG, `/4` MUL,
+`/5` IMUL, `/6` DIV, `/7` IDIV); LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` вместе с REX.W (как у S4-38L7r: приоритет по первоисточнику
+не сверен; `66` без REX.W — word-форма S4-38L7r, не менялась); `67`; второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не
+непосредственно перед опкодом. Тест `segment_test_dword_forms_outside_the_slice_are_refused_with_the_exact_opcode` (28 кодировок).
+Тесты отказов S4-38L7o/r на `65 f7 03 id` / `65 48 f7 03 id` (раньше «dword/qword F7 с сегментом — отказ») обновлены: эти формы теперь исполняются.
+
+**Регистровая форма (mod = 11) и беспрефиксная форма не менялись.** `65 f7 c3 imm32`, `64 f7 c3 imm32` и `65 48 f7 c3 imm32` исполняются как обычный
+`TEST r32/r64, imm32` (сегментный префикс на регистровой форме не имеет смысла; закреплено тестом
+`test_dword_register_form_and_plain_form_keep_their_old_behavior`); беспрефиксная `F7 /0` с memory (в том числе с RSP/RBP: неканоничный адрес —
+`#SS(0)`, тест `plain_test_dword_through_rsp_non_canonical_stays_ss0`), а также с CS/DS/ES/SS (база игнорируется) исполняются прежним путём.
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base`
+(`wrapping_add`). Читаются 4 (8) байт, поэтому каноничность проверяется и для начала, и для последнего байта (`адрес + 3`, для qword
+`адрес + 7`): иначе `#GP(0)` без мутации и без чтения (для баз RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`). Последний допустимый dword
+начинается с `0x00007ffffffffffc`, qword — с `0x00007ffffffffff8`; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Значение читается одним `memory.read_integer` размером `src.size` (4 или 8), затем общая функция
+`logic_result(src.size, Test, значение, imm)` даёт флаги (никакой новой арифметики): CF = 0, OF = 0, SF — старший бит результата, ZF — результат
+равен нулю, PF — чётность младшего байта результата, **AF сохраняется**, остальные биты RFLAGS сохраняются. Руками проверено:
+`0x80000000 & 0x80000000` → SF = 1, ZF = 0, PF = 1 (младший байт 0); `0 & 0xffffffff` → ZF = 1, PF = 1; `0xffffffff & 0x7fffffff` = `0x7fffffff` → SF = 0,
+ZF = 0, PF = 1 (младший байт `0xff` — восемь единиц); `0xff & 0x7f` = `0x7f` → семь единиц, PF = 0;
+`0x12345678 & 0xff` = `0x78` → PF = 1 (четыре единицы). Для qword imm32 `0xffffffff` — это `-1` (вся 64-битная маска), `0x7fffffff` — только
+младшие 31 бит, `0x80000000` — `0xffffffff80000000`. **Запись в память не выполняется** (тест
+`test_dword_never_writes_memory_even_on_a_read_only_page`), регистры не меняются. RIP += длина (с префиксами и imm32), retired + 1 только при
+успехе. При `#GP(0)` и `#PF` на чтении состояние (флаги, RIP, регистры) и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xf7 }` без мутации; в набор CPL3 не
+допускается (`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и
+голые `run`/`step` форму не принимают (тест отказа в каждом, с точным опкодом `0xf7`).
+
+**Тесты.** Декодер: `long_decode::tests::segment_test_decodes_fs_gs_dword_qword_memory_forms_only` (граничная форма, длина 11, imm 0x7fffffff;
+FS; REX.W со знаковым расширением; REX.B/REX.X; обычные формы; отказы). Исполнение (`cpl0_profile_set`): граничная форма, FS RIP-relative, qword со знаковым
+расширением, нулевая база, флаги на граничных значениях (60 комбинаций с начальными флагами; ожидание независимо считается по SDM-модели), совпадение с беспрефиксной формой,
+SIB+disp, абсолютная SIB, REX.B/REX.X, REX без W, запись не выполняется, неканоничность (`#GP(0)`, начало/последний байт), последнее
+канонично допустимое, RSP/RBP, `#PF` на чтении, отказы, регистровая и беспрефиксная формы, вне набора, CPL3. Отказ вне набора: bare
+`run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `paged_probe_profile` — по одному тесту (`*_dword_qword_*`). Фасад:
+`linux_direct::tests::gs_test_dword_after_wrmsr_gs_base_reads_one_dword_sets_flags_and_leaves_memory_alone` (dword с абсолютной SIB и RIP-relative, qword с `-1`;
+память не изменилась, retired 15).
+
+**Не делалось.** `F7 /1..7` с FS/GS, `REX.W` с `66`, регистровая форма с сегментным префиксом как отдельная операция, прочие опкоды с префиксом.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ac-diagnostic-run.json`.
+`testl $0x7fffffff, %gs:0x2fff8fc(%rip)` по `0xffffffff8141d729` проходит (retired 1201748035 → 1201748037: TEST и следующий `jne +0x0d`, переход выполнен; `cr3_changes` = 4, `last_cr3_change`: `0x3ffe000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8141d743` (GPA `0x141d743`), байты `65 0f b7 3d 05 a0 01 03 e8 d0 df ff ff 0f 20 d8` — `movzwl %gs:0x301a005(%rip), %edi` (`0F B7 /r` MOVZX r32, r/m16 с GS: ModRM `0x3d` = mod 00, reg 111 = EDI,
+rm 101 = RIP-relative, disp32 `0x0301a005`; длина 8; далее `call -0x2030`, `mov %cr3, %rax`); `Unsupported { opcode: 0xb7 }` (183), `set_exit_detail` = `Run(Unsupported { opcode: 183 })`, `exit_kind` = `unsupported`, retired = 1201748037.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = RCX = RDX = RSI = RDI = R8–R11 = 0, RBX = `0x7e00000`, R12 = `0x100000`, R13 = `0x8000000`, R14 = `0x20000000`,
+R15 = `0x7cb0000`, RSP = RBP = `0xffffffff83a03e48`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOVZX r32, r/m16` (`[64|65] 0F B7 /r`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0; не реализован (решение — по этой границе).
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOVZX r32, r/m16` и `MOVZX r64, r/m16` (`0F B7 /r`) с префиксом FS/GS в наборе CPL0 (S4-38L7ad)
+
+Граница S4-38L7ac (`65 0f b7 3d 05 a0 01 03`, `movzwl %gs:0x301a005(%rip), %edi`, RIP `0xffffffff8141d743`, `Unsupported { opcode: 0xb7 }`) — MOVZX из
+word в памяти с сегментным префиксом GS. Срез добавляет `[64|65] [REX] 0F B7 /r` (dword-приёмник, REX без W) и `[64|65] REX.W 0F B7 /r` (qword-приёмник)
+с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB без базы и индекса, REX.R приёмник r8–r15,
+REX.B/REX.X база/индекс). Тот же `REX.W`-путь, что у dword-формы: отдельного кода для `REX.W` нет, различие только в `RegisterView` приёмника.
+Семантика дана **по памяти SDM** (Vol. 2 «MOVZX»: читается r/m16, нулевое расширение до r32/r64; запись в r32 в 64-битном режиме обнуляет биты 63:32;
+флаги не меняются; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4: в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер (выбор пути).** Не расширяется `Operation::Extend` (у неё нет поля сегмента, а общая проверка в конце `decode` отказывает всем `Extend` с памятью
+и префиксом FS/GS), а добавляются две операции по образцу S4-38L7m: `Operation::MovzxFsLoadW { dst, src }` и `MovzxGsLoadW { dst, src }`
+(`dst: RegisterView` размера dword или qword, `src: MemoryOperand` размера word). Они порождаются в той же ветке `0x63 | 0F B6/B7/BE/BF`, в которой
+декодируется `Extend`, только для `0F B7`, сегмента `0x64`/`0x65` и memory-источника; для остальных кодировок ветка прежняя, дублирования декодирования
+ModRM/SIB/disp нет (`rm_operand` общий). `flag_effects` — без флагов. Длина: префикс + REX? + `0F B7` + ModRM + SIB? + disp; RIP-relative — от конца
+инструкции (граничная форма — 8 байт). REX допустим только непосредственно перед `0F` (REX.W — qword, REX.R — приёмник, REX.B/X — база/индекс);
+REX не последним — устаревший, отказ (как у S4-38L7m/o/r/ac; по SDM Vol. 2 §2.2.1 такой REX игнорируется, здесь консервативно).
+
+**Отказы без мутации (`Unsupported { opcode: 0xb7 }`).** LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` (приёмник word — консервативно, в том числе
+`66` с REX.W: приоритет по первоисточнику не сверен); `67`; второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед опкодом
+(`41 65 0f b7 …`, `65 41 48 0f b7 …`). Тест `segment_movzx_word_forms_outside_the_slice_are_refused_with_the_exact_opcode` (16 кодировок) и декодерный тест.
+
+**Не менялось.** Регистровая форма (mod = 11) **не отказывается**: `65 0f b7 c3` (`movzwl %bx, %eax`), `64 0f b7 c3`, `65 48 0f b7 c3` исполняются как
+обычный `MOVZX r, r16` (сегментный префикс на форме без memory-операнда не имеет смысла и игнорируется, как в S4-38L7o/p/q/r/aa/ac; тест
+`movzx_word_register_form_and_plain_form_keep_their_old_behavior`). Беспрефиксная `0F B7` (регистровая и memory, в том числе RSP-база с `#SS(0)` при
+неканоничном адресе, тест `plain_movzx_word_through_rsp_non_canonical_stays_ss0`) и формы с CS/DS/ES/SS (база игнорируется) исполняются прежним путём `Extend`.
+`MOVZX r, r/m8` (`0F B6`), `MOVSX` (`0F BE/BF`) и `MOVSXD` (`63`) с FS/GS и memory-источником по-прежнему отказывают со своим опкодом
+(тест `segment_movzx_byte_and_movsx_memory_forms_stay_refused_with_their_own_opcodes`).
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`).
+Читаются 2 байта, поэтому каноничность проверяется и для начала, и для последнего байта (`адрес + 1`): иначе `#GP(0)` без мутации и без чтения (для баз
+RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`; без префикса — `#SS(0)`). Последний допустимый word начинается с `0x00007ffffffffffe`; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Значение читается одним `memory.read_integer` размером 2, затем `state.write(dst, значение)`: запись dword-представления обнуляет биты 63:32
+(как в S4-38L7m), qword-представление записывается целиком; значение word не расширяется знаком (`0x8001` → `0x00008001`, `0xffff` → `0x0000ffff`).
+Флаги не меняются, запись в память не выполняется. RIP += длина (с префиксами), retired + 1 только при успехе. При `#GP(0)` и `#PF` на чтении регистры,
+флаги, RIP и retired не меняются. Адрес считается по значениям регистров до записи (приёмник может совпадать с базой или индексом).
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xb7 }` без мутации; в набор CPL3 не допускается
+(`WrongPrivilege`). `mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`), `step_paged_mov` и голые `run`/`step`
+форму не принимают (тест отказа в каждом, с точным опкодом `0xb7`).
+
+**Тесты.** Декодер: `long_decode::tests::segment_movzx_word_decodes_fs_gs_memory_forms_only`. Исполнение (`cpl0_profile_set`): граничная форма
+(`0x8001`, `0xffff`, `0`, `0x1234`, `0xff`; верхняя половина RDI обнулена, флаги и соседние байты не затронуты, `memory.writes` пуст), REX.W, FS с REX.R
+(все r8–r15), нулевая база, SIB+REX.B/REX.X, абсолютная SIB, совпадение приёмника с базой, неканоничность (`#GP(0)`, начало/последний байт, последнее
+допустимое), RSP/RBP (`#GP(0)`), беспрефиксная RSP (`#SS(0)`), `#PF` на чтении, отказы, `0F B6`/`BE`/`BF`/`63` с сегментом, регистровая и беспрефиксная формы,
+вне набора, CPL3. Отказ вне набора: bare `run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`, `paged_probe_profile` — по одному тесту
+(`*_movzx_word_*`). Фасад: `linux_direct::tests::gs_movzx_word_after_wrmsr_gs_base_zero_extends_and_leaves_memory_and_flags_alone` (`GS_BASE` через WRMSR,
+абсолютная SIB, RIP-relative и REX.W; RDI/RCX/RBX = `0x8001`, память и CF не изменились, retired 14).
+
+**Не делалось.** `MOVZX`/`MOVSX` из byte с FS/GS и memory, `MOVSX r, r/m16`, `MOVSXD`, `66`-форма, регистровая форма с сегментным префиксом как отдельная операция.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ad-diagnostic-run.json`.
+`movzwl %gs:0x301a005(%rip), %edi` по `0xffffffff8141d743` проходит (retired 1201748037 → 1201785902, +37865 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8141d4e4` (GPA `0x141d4e4`), байты `65 c6 05 68 a2 01 03 01 5d 31 c0 31 d2 31 c9 31` — `movb $0x1, %gs:0x301a268(%rip)` (`C6 /0 ib` MOV r/m8, imm8 с GS:
+ModRM `0x05` = mod 00, reg 000, rm 101 = RIP-relative, disp32 `0x0301a268`, imm8 `0x01`; длина 8; далее `pop %rbp`, `xor %eax,%eax`, …); `Unsupported { opcode: 0xc6 }` (198),
+`set_exit_detail` = `Run(Unsupported { opcode: 198 })`, `exit_kind` = `unsupported`, retired = 1201785902.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = RCX = RDX = RSI = RDI = R8–R12 = 0, RBX = `0xffffffffff200000`, R13 = `0x5ff`, R14 = `0x1`,
+R15 = `0x63`, RSP = RBP = `0xffffffff83a03d08`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOV r/m8, imm8` (`[64|65] [REX] C6 /0 ib`) с префиксом GS и memory-операндом (RIP-relative) в наборе CPL0 (запись byte-константы в память; новый класс — store с immediate); не реализован (решение — по этой границе).
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOV r/m8, imm8` (`C6 /0 ib`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7ae)
+
+Граница S4-38L7ad (`65 c6 05 68 a2 01 03 01`, `movb $0x1, %gs:0x301a268(%rip)`, RIP `0xffffffff8141d4e4`, `Unsupported { opcode: 0xc6 }`) — запись byte-константы в память
+с сегментным префиксом GS. Срез добавляет `[64|65] [REX] C6 /0 ib` с memory-операндом (mod ≠ 11) для любой адресации (RIP-relative, SIB, disp8/disp32, абсолютная SIB
+без базы и индекса, REX.B/REX.X база/индекс). REX допустим только непосредственно перед `C6`; REX.W и REX.R на байтовую запись не влияют (как у S4-38L7o).
+Семантика дана **по памяти SDM** (Vol. 2 «MOV»: непосредственный байт записывается в r/m8; флаги не меняются; Vol. 2 «Segment Override Prefixes» / Vol. 3 §3.4.4:
+в 64-битном режиме добавляется только база FS/GS), по первоисточнику **не сверялась**.
+
+**Декодер (выбор пути).** Не расширяется `Operation::MovImmediate` (у неё нет поля сегмента, а общая проверка в конце `decode` отказывает всем `MovImmediate` с памятью и
+префиксом FS/GS), а добавляются две операции по образцу S4-38L7o: `Operation::MovFsMemByteImm { dst, immediate }` и `MovGsMemByteImm { dst, immediate }`
+(`dst: MemoryOperand` размера byte, `immediate: u8`). Они порождаются в существующей ветке `C6 | C7` (ModRM/SIB/disp и imm8 читаются прежним кодом, дублирования нет)
+только для `C6`, `/0`, сегмента `0x64`/`0x65` и memory-операнда. `flag_effects` — без флагов. Длина: префикс + REX? + `C6` + ModRM + SIB? + disp + imm8; RIP-relative disp32 считается
+от конца **всей** инструкции, immediate включительно (граничная форма — 8 байт; `next_rip` — тот же, что у `LockOrMem`/`TestFsMemByte`).
+
+**Отказы без мутации (`Unsupported { opcode: 0xc6 }`).** LOCK/REP/REPNE (`F0`/`F2`/`F3`) в любой позиции; `66` (в том числе `66` с REX.W: приоритет не сверен); `67`; второй
+сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед опкодом (`44 65 c6 03 01`, `65 41 48 c6 …`); `C6 /1…/7` с сегментом
+(`/7` и `/0` с mod = 11 — XABORT/регистровая форма — прежним путём). Тест `segment_movb_forms_outside_the_slice_are_refused_with_the_exact_opcode` (25 кодировок) и декодерный тест.
+
+**Не менялось.** Регистровая форма (mod = 11) **не отказывается**: `65 c6 c3 7f` (`movb $0x7f, %bl`), `64 c6 c3 7f`, `65 48 c6 c3 7f` исполняются как обычный `MOV r8, imm8`
+(сегментный префикс на форме без memory-операнда игнорируется, как в S4-38L7o/p/q/r/aa/ac/ad; тест `movb_register_form_and_plain_form_keep_their_old_behavior`). Беспрефиксная
+`C6 /0` с memory и формы с CS/DS/ES/SS (база игнорируется) исполняются прежним путём `MovImmediate`. `MOV r/m32|r/m64, imm32` (`C7 /0`) с FS/GS и memory-операндом по-прежнему
+отказывает с опкодом `0xc7` (в тесте — `65 c7 03 …`, `64 c7 …`, `65 48 c7 …`, `65 66 c7 …`); `MOV r/m8, r8` (`88`) с FS/GS — с опкодом `0x88`. LOCK-варианта нет.
+
+**Адрес.** Эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции) плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Записывается один байт, поэтому
+каноничность проверяется для одного адреса: иначе `#GP(0)` без мутации и без записи (для баз RSP/RBP с FS/GS тоже `#GP(0)`, не `#SS`). Последний канонический байт `0x00007fffffffffff`
+допустим; на байт дальше — `#GP(0)`.
+
+**Исполнение.** Одна запись `memory.write_integer` размером 1 значением immediate; память читается ни разу. Регистры и флаги не меняются (`rflags_defined` без изменений). RIP += длина
+(с префиксами), retired + 1 только при успехе. При `#GP(0)` и `#PF` на записи регистры, флаги, RIP и retired не меняются, память не изменена.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0). Вне набора — `Unsupported { opcode: 0xc6 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`).
+`mov_cr3_profile`, paged-cr3-probe, `PagedCpl0ProbeV1`-профиль (`paged_probe_profile`) и голые `run`/`step` форму не принимают (по одному тесту).
+
+**Тесты.** Декодер: `long_decode::tests::segment_mov_byte_immediate_decodes_fs_gs_memory_forms_only`; в `transfer_neighbors_stay_unsupported_and_lea_register_source_is_invalid`
+кодировка `64 c6 03 01` заменена на `64 c7 03 01 00 00 00` (первая теперь декодируется). Исполнение (`cpl0_profile_set`, `*movb*`): граничная форма (`0x01`, `0xff`, `0x00`, `0x80`;
+соседние байты, регистры и флаги не затронуты, `memory.reads` пуст, одна запись в `GS_BASE + RIP + 8 + 0x0301a268`), FS RIP-relative, нулевая база, база+индекс·масштаб+disp8,
+база без смещения/disp8/disp32, абсолютная SIB, REX.B (r8–r15, R12 через SIB), REX.X, REX с любыми W/R, чтение обратно (`testb` по той же базе видит записанный байт),
+неканоничность (`#GP(0)`, последний допустимый байт), RSP/RBP (`#GP(0)`), `#PF` на записи (память, регистры, флаги, RIP не изменены), отказы, регистровая и беспрефиксная формы,
+CS/DS/ES/SS, вне набора, CPL3. Отказ вне набора для `PagedCpl0ProbeV1`: `paged_probe_profile::fs_gs_mov_byte_immediate_stays_unsupported_in_the_paged_probe_profile`.
+Фасад: `linux_direct::tests::gs_mov_byte_immediate_after_wrmsr_gs_base_stores_one_byte_and_reads_back_through_gs` (`GS_BASE` через WRMSR, абсолютная SIB и RIP-relative формы
+пишут байты 0 и 1 qword'а, чтение обратно `MOV RBX, %gs:0x10` и обычным `MOV RDX, [BASE+0x10]` даёт `0x0123456789ABFF01`, CF от `SUB DL,1` сохранён, retired 13).
+
+**Не делалось.** `MOV r/m16|r/m32|r/m64, imm` (`C7`, `66 C7`) с FS/GS, `MOV r/m8, r8` (`88`) с FS/GS, LOCK-форма, регистровая форма с сегментным префиксом как отдельная операция.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ae-diagnostic-run.json`.
+`movb $0x1, %gs:0x301a268(%rip)` по `0xffffffff8141d4e4` проходит (retired 1201785902 → 1202200805, +414903 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f94dd4` (GPA `0x3f94dd4`), байты `2e e8 46 84 7a fe 48 8b 7d d8 e8 5d 97 f7 fd eb` — `cs call rel32` (`E8 cd` с префиксом CS `2e`: rel32 `0xfe7a8446`,
+длина 6; далее `mov -0x28(%rbp),%rdi`, `call …`); `Unsupported { opcode: 0xe8 }` (232), `set_exit_detail` = `Run(Unsupported { opcode: 232 })`, `exit_kind` = `unsupported`, retired = 1202200805.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x82`; RAX = RBX = RCX = RDX = RSI = R8–R11 = R14 = 0, RDI = `0xffffffffff200140`,
+R12 = `0xffffffff82fe1b64`, R13 = `0xffffffff83f39070`, R15 = `0x100000`, RSP = `0xffffffff83a03e48`, RBP = `0xffffffff83a03e70`; `memory_error`/`page_fault` отсутствуют;
+`exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `CALL rel32` с префиксом CS (`2E E8 cd`, в objdump `cs call`, длина 6) в наборе CPL0 (в 64-битном режиме префикс CS игнорируется, ожидается поведение обычного `E8`; решение,
+расширять ли существующий путь `E8` или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `CALL rel32` (`E8 cd`) с одиночным префиксом CS/DS/ES/SS (`2E E8 cd`) (S4-38L7af)
+
+Граница S4-38L7ae (`2e e8 46 84 7a fe`, `cs call rel32`, RIP `0xffffffff83f94dd4`, `Unsupported { opcode: 0xe8 }`) — прямой near `CALL rel32` с префиксом CS. Срез делает `2E E8 cd`
+эквивалентным `E8 cd`: rel32 со знаком, цель = RIP следующей инструкции + rel32, в стек пишется 8-байтовый адрес следующей инструкции (длина 6, для граничных байт). Семантика дана
+**по памяти SDM** (Vol. 2 «CALL»: near relative CALL в 64-битном режиме толкает 8-байтовый RIP следующей инструкции и переходит на RIP + rel32; Vol. 1 §3.4.2.1 / Vol. 3: переопределения
+CS/DS/ES/SS в 64-битном режиме не применяются, базы нулевые), по первоисточнику **не сверялась**. У `CALL rel32` нет memory-операнда, поэтому префикс не меняет ни базу, ни один адрес.
+
+**Что существует (установлено до правки).** Беспрефиксный `E8` декодируется веткой `(OpcodeMap::Primary, 0xe8)` в `long_decode.rs` (`Operation::Call { displacement }`, размер Qword) и исполняется
+в `execute.rs` (`Operation::Call`): цель считается от `next_rip`, неканоническая цель — `#GP(0)` до записи; затем `push_stack_value` (8 байт, адрес `RSP - 8` и его последний байт проверяются
+на каноничность, при неканоническом — `#SS(0)`, запись через `memory.write_integer`, RSP уменьшается только после успешной записи), RIP = цель. `E8` **не** входит в набор CPL0 как отдельный гейт:
+он исполняется в голых `run`/`step`; гейт в `step_configured` (`Operation::Call | Return`) требует `prefixes == Prefixes::default()` и опкод `0xe8|0xc2|0xc3`. Профили `mov_cr3_profile`,
+paged-cr3-probe, `PagedCpl0ProbeV1` и paged-mov-profile отказывают `E8` с `Unsupported { opcode: 0xe8 }` без мутации (как и PUSH/POP) — для `2E E8` так же.
+
+**Декодер.** В ветке `E8` допустим ровно один префикс: сегментный `26`/`2E`/`36`/`3E` (`prefix_count == 1`, `Prefixes` содержит только `segment`). В исполнителе (`step_configured`) гейт для `0xe8`
+расширен тем же условием. Правило no-op распространено на все четыре байта по аналогии с формами, где CS/DS/ES/SS принимаются и игнорируются (повтор перед обычным опкодом — S4-38L7v; прежний путь с игнорированием базы — S4-38L7ac, S4-38L7ad, S4-38L7ae). Общего правила для всех опкодов нет: политика у каждой операции своя (например, `INVLPG m` отказывает CS/DS/ES/SS — S4-38L7ab), поэтому для `E8` она задана явно этим срезом; тесты — на `2E`, `3E`, `26`, `36`.
+
+**Отказы без мутации (`Unsupported { opcode: 0xe8 }`), прежнее поведение.** FS/GS (`64`/`65`) в любом сочетании, в том числе `64 2E`, `2E 64`, `65 3E`; повторное CS/DS/ES/SS (`2E 2E`, `2E 3E`; для `E8`
+не принимается консервативно, хотя перед другими опкодами по S4-38L7v допустимо); `66`, `67` (до и после сегмента), LOCK/REP/REPNE (`F0`/`F2`/`F3` в любой позиции); любой REX, в том числе
+непосредственно перед `E8` (`2E 48 E8`, как у беспрефиксной `48 E8`) и устаревший перед сегментом (`48 2E E8`, `41 2E E8`). Беспрефиксные отказы (`66 E8`, `48 E8`, `67 E8`, `F3 E8`) не менялись.
+
+**Исполнение, каноничность, ошибки.** Без изменений относительно `E8`: цель неканоническая — `#GP(0)` без записи, RSP и RIP не меняются; RSP − 8 или его последний байт неканонический — `#SS(0)`
+(вектор 12, код 0) без записи; ошибка записи (например `#PF`) — RSP, RIP, флаги не меняются, retired не растёт. Флаги не меняются; память не читается; `rflags_defined` без изменений.
+retired + 1 только при успехе.
+
+**Гейт.** Как у беспрефиксного `E8`: набор CPL0 не требуется; голые `run`/`step` и набор CPL0 исполняют форму. `E8` по CPL не гейтится: набор CPL3-пути не даёт (вход набора при CPL3 отказывает `WrongPrivilege` для любых байтов), а голый `run` при CPL3 исполняет префиксную форму так же, как беспрефиксный `E8` (тест `cs_call_rel32_executes_in_bare_run_at_cpl3_like_the_unprefixed_form`); профили `mov_cr3_profile`, paged-cr3-probe,
+`PagedCpl0ProbeV1`, paged-mov-profile отказывают так же, как и `E8` (`Unsupported { opcode: 0xe8 }`, без мутации).
+
+**Тесты.** Декодер: `long_decode::tests` (таблица `direct_relative_control_flow_decodes_signed_offsets_at_full_length` — `2E`/`3E`/`26`/`36` + `E8`, граничные байты, длина 6;
+`direct_call_and_ret_reject_prefixes_and_truncated_immediates` — отказы FS/GS, повтора, 66, REX, LOCK). Исполнение (`cpl0_profile_set`, `cs_call_rel32_*`, `cs_ds_es_ss_call_rel32_*`): граничные байты
+(отрицательный rel32, цель `0xffffffff_fe7a944c`, адрес возврата `RIP + 6`, одна 8-байтовая запись, RSP − 8, соседние байты и флаги не затронуты, `memory.reads` пуст), положительный/нулевой/крайние rel32,
+эквивалентность беспрефиксному `E8` при ненулевых FS/GS базах (длина +1), неканонический стек (три случая → `#SS(0)` без мутации), ошибка записи в стек, таблица из 23 отказов, исполнение в голом `run`
+и с набором `cr3_set`, голый `run` при CPL3 (как беспрефиксный), отказ входа набора при CPL3 (`the_set_entry_refuses_cpl3_for_any_bytes`), усечённый rel32 (`2E E8`, `2E E8 00 00 00` — отказ без мутации). Библиотека `od-isa`: `execute::tests::cs_ds_es_ss_call_rel32_executes_like_the_unprefixed_call_in_bare_run_and_step`, `…cs_call_rel32_with_a_non_canonical_target_is_gp0_before_the_push`;
+профили: `mov_cr3_profile_tests::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_mov_cr3_profile`, `paged_cr3_probe_tests::paged_cr3_probe_keeps_cs_call_rel32_like_the_unprefixed_form`,
+`paged_mov_profile_tests::paged_mov_profile_keeps_cs_call_rel32_like_the_unprefixed_form`; `paged_probe_profile::cs_call_rel32_keeps_the_unprefixed_call_rel32_outcome_in_the_paged_probe_profile`.
+Фасад: `linux_direct::tests::cs_call_rel32_forward_pushes_the_return_address_and_pop_reads_it_back` (вперёд на +1, `POP RAX` возвращает адрес следующей инструкции, qword лежит по `RSP − 8`, retired 4) и
+`…cs_call_rel32_backward_branches_to_an_earlier_target_with_a_negative_displacement` (rel32 = −8, retired 5).
+
+**Не делалось.** FS/GS перед `E8`, повторное CS/DS/ES/SS перед `E8`, `66`/`67`/REX/LOCK/REP-варианты, `CALL` с префиксом в других формах (`FF /2` с CS по-прежнему как было), разрешение `E8` в профилях
+`mov_cr3`/paged (отказывают так же, как беспрефиксная форма).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7af-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`cs call` по `0xffffffff83f94dd4` проходит (retired 1202200805 → 1204882973, +2682168 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f4aa29` (GPA `0x3f4aa29`), байты `f0 80 25 6f 39 f8 ff fe f0 80 25 e7 38 f8 ff fe` — `lock andb $0xfe, -0x7c691(%rip)` (`LOCK` + `80 /4 ib` с memory-операндом
+RIP-relative: disp32 `0xfff8396f`, imm8 `0xfe`, длина 8; далее ещё одна такая же `lock andb`); `Unsupported { opcode: 0x80 }` (128), `set_exit_detail` = `Run(Unsupported { opcode: 128 })`,
+`exit_kind` = `unsupported`, retired = 1204882973.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x86`; RAX = `0xffffffff83f4aa20`, RBX = `0x1000000`, R12 = `0x80000000`, R13 = `0x27`, R15 = `0x100000`,
+RCX = RDX = RSI = RDI = R8–R11 = R14 = 0, RSP = RBP = `0xffffffff83a03e90`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`,
+`cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `LOCK AND m8, imm8` (`F0 80 /4 ib`, memory-операнд RIP-relative) в наборе CPL0 (по аналогии с LOCK OR S4-38L7s; решение, расширять ли существующий путь `F0 80|81|83 /1` на `/4`
+или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK AND m8, imm8` (`F0 [REX] 80 /4 ib`, memory-операнд) в наборе CPL0 (S4-38L7ag)
+
+Граница S4-38L7af: `f0 80 25 6f 39 f8 ff fe` = `lock andb $0xfe, -0x7c691(%rip)` (ModRM `0x25`: mod 00, reg 4 = AND, rm 101 = RIP-relative; disp32 `0xfff8396f` = −0x7c691; imm8 `0xfe`; длина 8),
+RIP `0xffffffff83f4aa29`, `Unsupported { opcode: 0x80 }`, retired 1204882973; следующая инструкция — такая же `lock andb`. Семантика дана **по памяти SDM** (Vol. 2 «AND»: назначение = назначение AND immediate на
+ширине операнда; CF = OF = 0, SF/ZF/PF — по результату, AF не определён), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: новая операция `Operation::LockAndMem { destination, immediate }` (парная к `LockOrMem` из S4-38L7s и `LockAddMem` из S4-38L7z), **та же ветка декодирования**
+`80|81|83` — условие принятия LOCK расширено до `group ∈ {0, 1}` или `group == 4 && opcode == 0x80`, внутри ветки выбор операции по `group`. Чтение ModRM, `rm_operand`, чтение immediate и проверки префиксов
+общие. Принимается только байтовая форма `F0 [REX] 80 /4 ib` с memory-операндом (mod ≠ 11), любой адресацией, без сегментного префикса; REX.W размер не меняет (байт), REX.R на селектор группы не влияет.
+Длина включает immediate (граничная форма — 8 байт), поэтому RIP-relative считается от RIP **после** immediate (следующий RIP = адрес + 8). `flag_effects`: как у `Operation::Logic` и `LockOrMem` —
+определены CF/PF/ZF/SF/OF, AF не определён.
+
+**`81 /4` и `83 /4` с LOCK не принимаются** (остаются отказом с опкодами `0x81`/`0x83`). В коде семейства это была бы однострочная правка (условие `group == 4 && byte == 0x80` → `group == 4`; `LockAndMem` уже
+несёт `immediate`, расширенный до ширины операнда, а исполнитель использует `destination.size`), но срез намеренно ограничен байтовой формой. Остальные члены `80 /n` с LOCK (`/2`, `/3`, `/5`, `/6`, `/7`)
+отказывают с `0x80`; `/0` (ADD) и `/1` (OR) не менялись.
+
+**Без LOCK.** `80 /4` (AND m8, imm8 без LOCK) по-прежнему декодируется в `Operation::Logic { kind: And }`; не менялось.
+
+**Отказы без мутации (`Unsupported { opcode }`, опкод самой инструкции).** `81 /4`, `83 /4` с LOCK (в том числе с REX.W и RIP-relative); регистровая форма (mod = 11); `66`, `67`; `F2`/`F3` вместо LOCK
+или вместе с ним; повторный `F0`; любой сегментный префикс (FS/GS/CS/DS/ES/SS с LOCK); REX до LOCK или не непосредственно перед опкодом; усечённый immediate (разбор отказывает, ничего не исполняется).
+
+**Адрес.** `MemoryOperand::access_address_48` без сегментной базы: неканонический адрес даёт `#GP(0)` (для баз RSP/RBP — `#SS(0)`) до любого доступа, без мутации.
+
+**Исполнение (один vCPU, шина не блокируется).** Порядок: каноничность адреса → `read_integer(Byte)` → общая `logic_result(Byte, And, старое, immediate, RFLAGS)` (CF = OF = 0, SF — по старшему биту, ZF — по нулю результата,
+PF — по результату, AF сохраняется; никакой новой арифметики) → `write_integer(Byte)` **всегда**, даже если результат равен старому байту (для страницы только для чтения это `#PF`) → только после успешной
+записи обновляются флаги. RIP += длина, retired + 1 только при успехе. При `#GP`/`#SS`/`#PF` память, флаги, RIP, регистры и retired не меняются. Меняется ровно один байт памяти.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockOrMem`/`LockAddMem`. Вне набора — `Unsupported { opcode: 0x80 }` без мутации; CPL3 — `WrongPrivilege`. `mov_cr3_profile`,
+paged-cr3-probe, `step_paged_mov`, `step_paged_probe` и голые `run`/`step` форму не принимают.
+
+**Тесты.** `cpl0_profile_set::lock_andb_*` (граничные байты `f0 80 25 6f 39 f8 ff fe`: адрес = RIP + 8 + disp32, один байт читается и записывается, меняются только RIP и флаги, четыре начальных значения;
+флаги на 10 × 8 парах значений при двух начальных RFLAGS по независимому расчёту `and8_flags`, AF сохраняется; запись неизменённого байта; SIB, REX.B/REX.W и RIP-relative; REX.R; `#GP(0)` для неканонического
+адреса и принятие последнего канонического байта; `#SS(0)` для RSP/RBP; `#PF` на записи; усечённый immediate), `lock_and_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mutation` (38 отказов с
+точным опкодом, в том числе `81 /4`, `83 /4`, `80 /2`, `/3`, `/5`–`/7`), `lock_byte_group_or_and_add_still_execute_and_plain_byte_and_is_unchanged`, `lock_and_stays_unsupported_outside_the_set`,
+`lock_and_is_refused_by_the_bare_step_entry_point`, `lock_and_is_not_reachable_from_cpl3`. Ранее принятый отказ `f0 80 63 …` убран из таблицы `lock_or_forms_outside_the_slice_*` и из
+`long_decode::tests::lock_or_decodes_the_memory_immediate_forms_only`, т.к. `/4` с байтовой формой теперь принимается. Декодер: `long_decode::tests::lock_and_decodes_the_byte_memory_immediate_form_only`.
+Отказ вне набора: граничные байты добавлены в `execute::tests::lock_add_stays_unsupported_in_bare_run_and_step`, `mov_cr3_profile_tests::mov_cr3_profile_keeps_lock_add_unsupported`,
+`paged_cr3_probe_tests::paged_cr3_probe_keeps_lock_add_unsupported`, `paged_mov_profile_tests::paged_mov_profile_keeps_lock_add_unsupported`; новый `paged_probe_profile::lock_and_stays_unsupported_in_the_paged_probe_profile`.
+Фасад: `linux_direct::tests::lock_and_byte_rip_relative_with_a_negative_displacement_changes_only_that_byte` (граничная форма с отрицательным disp32, `0x37 & 0xfe = 0x36`, соседние байты qword целы, CF/OF
+сброшены, PF = 1, retired 6).
+
+**Не делалось.** `LOCK AND` в формах `81 /4` и `83 /4`, регистровые формы, `LOCK ADC/SBB/SUB/XOR/CMP`, `LOCK AND r/m, r` (`F0 20/21`), word-форма (`66`), FS/GS-вариант, SMP-упорядочение,
+`PagedCpl0ProbeV1`, `interrupt.rs`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ag-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`lock andb` по `0xffffffff83f4aa29` проходит (retired 1204882973 → 1205413825, +530852 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8158f69b` (GPA `0x158f69b`), байты `65 83 3d 95 79 e9 02 01 41 0f 94 c0 41 f7 c1 00` — `cmpl $0x1, %gs:0x2e97995(%rip)` (GS-префикс + `83 /7 ib`, CMP r/m32, imm8 с
+memory-операндом, ModRM `0x3d`: RIP-relative, disp32 `0x02e97995`, imm8 `1`, длина 8; далее `sete %r8b`, `test $…, %r9d`); `Unsupported { opcode: 0x83 }` (131), `set_exit_detail` =
+`Run(Unsupported { opcode: 131 })`, `exit_kind` = `unsupported`, retired = 1205413825.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; RAX = R9 = R12 = `0x46`, RBX = `0xffffffff84507820`, R15 = `0x100000`,
+RCX = RDX = RSI = RDI = R8 = R10 = R11 = R13 = R14 = 0, RSP = RBP = `0xffffffff83a03e20`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`,
+`cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `CMP r/m32, imm8` с префиксом FS/GS (`[64|65] 83 /7 ib`, memory-операнд RIP-relative) в наборе CPL0 (по аналогии с FS/GS-формами S4-38L7aa/S4-38L7ac; решение, расширять ли существующий
+путь или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `CMP r/m32, imm8` и `CMP r/m64, imm8` (`[64|65] [REX] 83 /7 ib`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7ah)
+
+Граница S4-38L7ag: `65 83 3d 95 79 e9 02 01` = `cmpl $0x1, %gs:0x2e97995(%rip)` (ModRM `0x3d`: mod 00, reg 111 = /7 CMP, rm 101 = RIP-relative; disp32 `0x02e97995`, imm8 `0x01`; длина 8),
+RIP `0xffffffff8158f69b`, `Unsupported { opcode: 0x83 }`, retired 1205413825; далее `sete %r8b`, `test`. Срез повторяет схему S4-38L7aa (`CMP m, r` с FS/GS, см. выше) с непосредственным операндом вместо регистра;
+результат не записывается. Семантика дана **по памяти SDM** (Vol. 2 «CMP»: флаги CF/PF/AF/ZF/SF/OF по результату `назначение − источник` на ширине операнда; imm8 в форме `83` знаково расширяется до ширины
+операнда; назначение не меняется), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::CmpFsMemImm { dst: MemoryOperand, immediate: u64 }` / `CmpGsMemImm` (парные к `CmpFsMem`/`CmpGsMem` из S4-38L7aa; не расширение
+`CmpFsMem`, потому что у неё источник — `RegisterView`), в той же ветке декодирования `80|81|83`, что и обычный `CMP m, imm`. Новая ветка срабатывает при `опкод == 0x83`, `group == 7`, сегментном префиксе
+FS/GS и memory-операнде (mod ≠ 11); `immediate` — imm8, уже знаково расширенный до 64 бит декодером (как у обычной формы), ширина сравнения берётся из `dst.size` (общая `arithmetic_result` маскирует
+`immediate` по ширине). Принимается любая адресация (RIP-relative, SIB, disp8/disp32, REX.B; REX.X — путь общий с `rm_operand`, индекс R8–R15 отдельным тестом не проверен). С REX.W — qword (`CMP r/m64, imm8`), **без REX.W — dword** (`CMP r/m32, imm8`, граница; допустим пустой REX
+`0x40` и REX.R/B/X без W). Длина включает imm8, поэтому RIP-relative считается от RIP **после** imm8 (следующий RIP = адрес + 8 для граничных байтов). `flag_effects`: все шесть флагов определены (как у
+`Operation::Arithmetic` и `CmpFsMem`). Без префикса FS/GS `83 /7` по-прежнему даёт `Operation::Arithmetic { kind: Cmp, .. }` (не менялось).
+
+**Отказы без мутации (`Unsupported { opcode }`, опкод самой инструкции).** С префиксом FS/GS: `66` (word, в любом порядке с сегментным префиксом), `67`, `F0` (LOCK) / `F2` / `F3`, второй сегментный префикс (в том числе
+`64 65`, `65 64`, `65 65`, `2E 65`), REX не непосредственно перед опкодом (`48 65 83 …`, `65 48 66 83 …`, `41 65 48 83 …`; правило S4-38L7aa) — все с `0x83`; другие селекторы `83 /n` с FS/GS и memory-операндом
+(`/0` ADD, `/1` OR, `/2` ADC, `/3` SBB, `/4` AND, `/5` SUB, `/6` XOR) — `0x83`; `80 /7 ib` и `81 /7 id` с FS/GS и memory-операндом **не расширялись** — по-прежнему отказывают с `0x80` и `0x81`. Принять `81 /7`
+было бы небольшой правкой семейства (тот же `CmpFsMemImm`, immediate уже расширяется декодером, но для `81` — из imm32), но срез намеренно ограничен формой `83 /7`; `80 /7` — байтовая форма, другая ширина. LOCK с CMP (без сегментного префикса и с ним) отказывает с `0x83`: LOCK допускается только для OR/ADD и байтового AND (S4-38L7s, S4-38L7z, S4-38L7ag). Регистровая форма (mod = 11) **не тронута**:
+префикс FS/GS у операции без memory-операнда игнорируется, как в S4-38L7aa; исполняется как обычный `CMP r, imm8` (регистры не меняются, памяти нет; тест
+`segment_prefixed_register_cmp_imm8_is_unchanged_and_ignores_the_prefix`). Усечённый imm8/disp/ModRM — разбор отказывает, ничего не исполняется. Префиксы CS/DS/ES/SS не менялись (нулевая база, обычный `CMP`).
+
+**Адрес.** Как у S4-38L7aa: `MemoryOperand::access_address_48_with_segment_base` — эффективный адрес как без префикса (RIP-relative от RIP следующей инструкции, с учётом байта префикса и imm8; адрес только 64-бит)
+плюс `state.fs_base`/`state.gs_base` (`wrapping_add`). Каноничность проверяется для начального адреса и последнего байта операнда (адрес + 7 для qword, адрес + 3 для dword): иначе `#GP(0)` до чтения, без
+мутации. Для баз RSP/RBP с префиксом FS/GS тоже `#GP(0)`, не `#SS` (правило взято у S4-38L7aa; без префикса для RSP/RBP остаётся `#SS(0)` — не менялось).
+
+**Исполнение.** Один `memory.read_integer(address, context, size)` (4 или 8 байт), затем флаги считает существующая `arithmetic_result(size, Cmp, прочитанное, immediate, RFLAGS)` — та же функция, что у
+не-префиксной формы и у `CmpFsMem`, никакой новой арифметики; результат вычитания отбрасывается. `state.rflags = flags` только после успешного чтения (прочие биты RFLAGS сохраняются); регистры не меняются;
+**записи в память нет** (в тестах журнал записей пуст, взведённая ошибка записи не срабатывает). Для dword сравниваются только младшие 32 бита ячейки. RIP += длина инструкции (с префиксом и imm8),
+retired + 1 только при успехе. При `#GP(0)` или `#PF` на чтении состояние, память и retired не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `CmpFsMem`. Вне набора — `Unsupported { opcode: 0x83 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа для каждого из трёх входов; отдельных тестов для `mov_cr3_profile`, paged-cr3-probe и `step_paged_mov` в этом срезе нет и поведение там не проверялось).
+
+**Тесты.** `cpl0_profile_set`: `gs_cmpl_imm8_boundary_form_*` (граничные байты `65 83 3d 95 79 e9 02 01`: адрес = база GS + RIP + 8 + disp32, читается 4 байта, записи нет, меняются только RIP и флаги, пять
+значений ячейки, верхний dword ячейки игнорируется), `segment_cmp_imm8_matches_the_oracle_for_both_segments_and_widths` (FS и GS × dword и qword × 9 значений imm8 × 23 значения ячейки на границах ширины × два
+начальных RFLAGS, по независимому расчёту `cmp_imm8_oracle` на 128-битной арифметике; чтение по адресу `база + RIP + длина + disp`, записи нет), `segment_cmp_imm8_sign_extends_a_negative_immediate_*`,
+`segment_cmp_imm8_flags_equal_the_non_prefixed_cmp`, `segment_cmp_imm8_with_a_rex_without_w_*` (dword), `gs_cmp_imm8_with_every_extended_base_register_r8_to_r15` (dword и qword, R12 через SIB),
+`segment_cmp_imm8_with_disp8_sib_index_scale_and_displacement` (также mod 00 без смещения и disp32), `segment_cmp_imm8_does_not_modify_its_base_register`, `segment_cmp_imm8_non_canonical_address_is_gp0_*`
+(qword и dword на границе дыры, принятие последнего канонического байта), `gs_cmp_imm8_through_rsp_or_rbp_base_is_gp0_*`, `gs_cmp_imm8_page_fault_on_the_read_*`,
+`segment_cmp_imm8_is_read_only_even_with_a_write_fault_armed`, `segment_cmp_imm8_forms_outside_the_slice_are_refused_*` (29 отказов с точным опкодом: `66`/`67`/LOCK/REP/REPNE, второй сегментный префикс,
+устаревший REX, `80 /7`, `81 /7`, остальные `83 /n`, LOCK CMP), `segment_cmp_imm8_with_a_truncated_immediate_*`, `segment_prefixed_register_cmp_imm8_*`,
+`plain_unprefixed_cmp_imm8_memory_still_reads_*`, `segment_cmp_imm8_stays_unsupported_outside_the_set`, `segment_cmp_imm8_is_refused_by_the_bare_step_entry_point`,
+`segment_cmp_imm8_is_not_reachable_from_cpl3`; `paged_probe_profile::fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile`; декодер:
+`long_decode::tests::segment_cmp_imm8_decodes_fs_gs_memory_forms_only`; фасад: `linux_direct::tests::gs_cmpl_imm8_boundary_bytes_set_flags_and_do_not_write_guest_memory` (граничные байты с исходным disp32
+после `WRMSR IA32_GS_BASE` с отрицательной базой, чтение по расчётному адресу, qword ячейки не меняется, ZF/PF при равенстве, CF/SF/PF/AF при `0 − 1`, retired 9) и
+`fs_cmpq_negative_imm8_through_the_set_loop_compares_sign_extended` (`64 48 83 3d … ff` после `WRMSR IA32_FS_BASE`).
+
+**Не делалось.** `81 /7 id` и `80 /7 ib` с FS/GS, word-форма (`66`), регистровая форма с проверкой префикса, другие `83 /n` с FS/GS (ADD/OR/ADC/SBB/AND/SUB/XOR), LOCK с CMP, тесты отказа в `mov_cr3_profile`,
+paged-cr3-probe и `step_paged_mov`, `PagedCpl0ProbeV1`, `interrupt.rs`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ah-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`cmpl $0x1, %gs:…` по `0xffffffff8158f69b` проходит (retired 1205413825 → 1205772058, +358233 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff817caaa9` (GPA `0x17caaa9`), байты `f0 48 01 3d 8f 02 dc 02 5d 31 ff e9 f7 31 f7 00` — `lock add %rdi, 0x2dc028f(%rip)` (LOCK + REX.W + `01 /r`, ADD r/m64, r64 с memory-назначением,
+ModRM `0x3d`: RIP-relative, reg 111 = RDI, disp32 `0x02dc028f`; длина 8; далее `pop %rbp`, `xor %edi, %edi`, `jmp`); `Unsupported { opcode: 0x01 }` (1), `set_exit_detail` = `Run(Unsupported { opcode: 1 })`,
+`exit_kind` = `unsupported`, retired = 1205772058.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x86`; RAX = R12 = `0xffffea0000000000`, RDI = `0x200`, R15 = `0xffffffffffffffff`,
+RSP = RBP = `0xffffffff83a03d90`, прочие регистры (RBX, RCX, RDX, RSI, R8–R11, R13, R14) = 0; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`,
+`cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `LOCK ADD m64, r64` (`F0 [REX.W] 01 /r`, memory-назначение RIP-relative) в наборе CPL0 (по аналогии с `LOCK ADD m, imm` S4-38L7z и `LOCK CMPXCHG m64, r64` S4-38L7k; решение, расширять ли
+существующие пути или завести отдельную форму, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK ADD r/m32, r32` и `LOCK ADD r/m64, r64` (`F0 [REX] 01 /r`, memory-операнд, регистр-источник) в наборе CPL0 (S4-38L7ai)
+
+Граница S4-38L7ah: `f0 48 01 3d 8f 02 dc 02` = `lock add %rdi, 0x2dc028f(%rip)` (LOCK + REX.W + `01 /r`; ModRM `0x3d`: mod 00, reg 111 = RDI, rm 101 = RIP-relative; disp32 `0x02dc028f`, непосредственного
+операнда нет; длина 8), RIP `0xffffffff817caaa9`, `Unsupported { opcode: 0x01 }`, retired 1205772058. Срез повторяет схему `LOCK ADD m, imm` (S4-38L7z) с регистром-источником вместо непосредственного
+операнда и схему `LOCK CMPXCHG m, r` (S4-38L7k, S4-38L7y) по разбору регистра-источника. Семантика дана **по памяти SDM** (Vol. 2 «ADD»: назначение + источник, флаги CF/PF/AF/ZF/SF/OF по сумме на ширине
+операнда; LOCK на одном vCPU не требует шинной блокировки), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: новая операция `Operation::LockAddMemReg { destination: MemoryOperand, source: RegisterView }` (не расширение `LockAddMem`, у которой источник — непосредственный `u64`), в
+существующей ветке декодирования прямых арифметических опкодов (`ADD/ADC/SBB/SUB/CMP` и логика `00..3D`). Ветка срабатывает при `опкод == 0x01`, префиксе LOCK (`F0`) и memory-операнде; источник — регистр
+из поля reg ModRM с REX.R (`view(reg | REX.R << 3, size, rex_present)`). С REX.W — qword (`LOCK ADD r/m64, r64`), **без REX.W — dword** (`LOCK ADD r/m32, r32`; допустим пустой REX `0x40` и REX.R/B/X без W). Принимается
+любая адресация (RIP-relative, SIB, disp8/disp32, REX.B, REX.X). Длина — префиксы, опкод, ModRM, SIB, смещение; непосредственного операнда нет, поэтому RIP-relative считается от RIP **после** disp32
+(следующий RIP = адрес + 8 для граничных байтов). В проверку «LOCK допустим только для особых форм» добавлен кандидат `locked_memory_add_reg_candidate` (`опкод == 0x01` и `F0`); остальные прямые
+арифметические опкоды с LOCK (`00`, `02`, `03`, `05`, `09`, `11`, `19`, `21`, `29`, `31`, `39`, …) отказывают на этой проверке с собственным опкодом, как и раньше. `flag_effects`: все шесть флагов определены
+(как у `Operation::Arithmetic` и `LockAddMem`). Без LOCK `01 /r` по-прежнему даёт `Operation::Arithmetic { kind: Add, .. }` (не менялось).
+
+**Отказы без мутации (`Unsupported { opcode }`, опкод самой инструкции).** Регистровое назначение с LOCK (mod = 11, с REX и без) — `0x01`; байтовая форма `F0 00 /r` — `0x00`; обратные направления `F0 02 /r`,
+`F0 03 /r` (с REX.W и без) — `0x02`, `0x03`; `F0 05 id` / `F0 REX.W 05 id` (аккумулятор, непосредственный операнд) — `0x05`; остальные ALU-опкоды с регистром-источником и LOCK (`09`, `11`, `19`, `21`, `29`,
+`31`, `39`) — собственный опкод; `66` (word, в любом порядке с LOCK) и `67` — `0x01`; `F3`/`F2` вместо LOCK или вместе с ним (в обоих порядках) и повторный LOCK — `0x01`; сегментные префиксы с LOCK (FS/GS и
+CS/SS, в обоих порядках, с REX и без) — `0x01`: аналога с FS/GS у LOCK-форм нет; REX до LOCK или не непосредственно перед опкодом (`48 F0 01 …`, `41 F0 01 …`, `F0 48 66 01 …`, `F0 48 2E 01 …`) — `0x01`
+(правило устаревшего REX из S4-38L7s/S4-38L7y). Усечённые ModRM/SIB/disp — разбор отказывает (ошибка выборки), ничего не исполняется, память и регистры не меняются. Не расширялись `LOCK ADC/SBB/SUB/AND/OR/XOR/CMP r/m, r`
+и `LOCK ADD r, r/m`.
+
+**Адрес.** Как у `LockAddMem`: `MemoryOperand::access_address_48` — эффективный адрес до любого обращения к памяти (RIP-relative от RIP следующей инструкции; адрес только 64-бит). Каноничность проверяется для
+начального адреса и последнего байта операнда (адрес + 7 для qword, адрес + 3 для dword): иначе `#GP(0)` до чтения, без записи. Для баз RSP/RBP с неканоническим результатом — `#SS(0)` (правило аналога,
+без изменений).
+
+**Исполнение.** Источник читается из регистра (`state.read(source)`, для dword маскируется по ширине вида), затем один `memory.read_integer(address, context, size)` (4 или 8 байт), общая
+`arithmetic_result(size, Add, прочитанное, источник, RFLAGS)` — та же функция, что у `LockAddMem` и обычного `ADD`, никакой новой арифметики, и один `memory.write_integer(address, context, size, сумма)`.
+Запись выполняется всегда (в том числе при нулевом слагаемом), как у остальных LOCK-форм; `state.rflags = flags` только после успешной записи (прочие биты RFLAGS сохраняются), поэтому при ошибке записи
+память, флаги и RIP не меняются; регистры не меняются (источник остаётся прежним). RIP += длина инструкции (с префиксом), retired + 1 только при успехе. При `#GP(0)`/`#SS(0)`/`#PF` состояние и память не
+меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockAddMem`. Вне набора — `Unsupported { opcode: 0x01 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step`,
+`mov_cr3_profile`, paged-cr3-probe, `step_paged_mov` и paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (19): `lock_add_reg_boundary_form_*` (граничные байты `f0 48 01 3d 8f 02 dc 02`: адрес = RIP + 8 + disp32, читается и пишется 8 байт, qword меняется на значение RDI, меняются
+только RIP и флаги, RDI не меняется), `lock_add_reg_flags_follow_the_qword_and_dword_sums` (qword и dword × 12 × 12 значений на границах ширины × два начальных RFLAGS, по независимому расчёту `add_oracle`
+на 128-битной арифметике), `lock_add_reg_flags_on_named_boundary_values` (`0x7fff…` + 1, `0xffff…` + 1, перенос через границу dword, маскирование источника у dword),
+`lock_add_reg_dword_form_*` (читается и пишется 4 байта, верхние биты источника и ячейки не участвуют), `lock_add_reg_writes_back_an_unchanged_value_*`,
+`lock_add_reg_with_every_legacy_and_extended_source_register` (RAX–RDI и R8–R15 через REX.R, qword; dword с R9), `lock_add_reg_with_rsp_sib_and_rip_relative_addresses`,
+`lock_add_reg_with_every_extended_base_register_r8_to_r15` (R12 через SIB), `lock_add_reg_with_every_extended_index_register_r8_to_r15`, `lock_add_reg_non_canonical_address_is_gp0_*` (qword и dword на
+границе дыры, принятие последнего канонического байта), `lock_add_reg_through_a_non_canonical_rsp_or_rbp_base_is_ss0`, `lock_add_reg_write_fault_*` и `lock_add_reg_read_fault_*`,
+`lock_add_reg_forms_outside_the_slice_are_refused_*` (38 отказов с точным опкодом), `plain_add_memory_register_without_lock_*` (обычные `48 01 43 3d` и `48 01 c3` без изменений),
+`lock_add_reg_with_a_truncated_modrm_or_displacement_*`, `lock_add_reg_stays_unsupported_outside_the_set`, `lock_add_reg_is_refused_by_the_bare_step_entry_point`,
+`lock_add_reg_is_not_reachable_from_cpl3`; `paged_probe_profile::lock_add_register_source_stays_unsupported_in_the_paged_probe_profile`; `execute::tests`: граничные байты и dword-форма добавлены в
+`lock_add_stays_unsupported_in_bare_run_and_step`, `mov_cr3_profile_keeps_lock_add_unsupported`, `paged_cr3_probe_keeps_lock_add_unsupported`, `paged_mov_profile_keeps_lock_add_unsupported`; декодер:
+`long_decode::tests::lock_add_register_source_decodes_the_memory_destination_forms_only` (в существующем `arithmetic_groups_and_prefixes_have_explicit_supported_boundaries` форма `F0 48 01 03` больше не
+отказ и заменена на `F0 48 29 03` и регистровую `F0 48 01 C8`); фасад: `linux_direct::tests::lock_add_qword_register_source_rip_relative_adds_to_guest_memory` (граничная форма с исходным
+отрицательным disp32, `0x7fff_ffff_ffff_fff0 + 0x20`, чтение обратно из памяти, OF/SF, retired 6). Проверка `native_v2::admission` в `tools/x86-runner` (`f0 48 01 0b` отказ) собирается только на
+Linux x86_64 и на этой машине (macOS) не запускалась.
+
+**Не делалось.** `LOCK` с остальными ALU-опкодами (`ADC`/`SBB`/`SUB`/`AND`/`OR`/`XOR`/`CMP` с регистром-источником, `ADD r, r/m`, `ADD AL/EAX/RAX, imm`), байтовая и word-формы, регистровое назначение,
+LOCK с сегментными префиксами, `PagedCpl0ProbeV1`, `interrupt.rs`, `docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ai-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`lock add %rdi, 0x2dc028f(%rip)` по `0xffffffff817caaa9` проходит (retired 1205772058 → 1207604143, +1832085 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f52b4b` (GPA `0x3f52b4b`), байты `65 c7 05 ca f3 4c 00 ec 00 00 00 65 c7 05 c3 f3` — `movl $0xec, %gs:0x4cf3ca(%rip)` (префикс GS + `C7 /0 id`, MOV r/m32, imm32 с
+memory-назначением, ModRM `0x05`: RIP-relative, disp32 `0x004cf3ca`, imm32 `0x000000ec`; длина 11; далее такая же `movl … %gs:…(%rip)`); `Unsupported { opcode: 0xc7 }` (199), `set_exit_detail` =
+`Run(Unsupported { opcode: 199 })`, `exit_kind` = `unsupported`, retired = 1207604143.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` —
+прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOV r/m32, imm32` (`GS C7 /0 id`, memory-операнд RIP-relative; с REX.W — `MOV r/m64, imm32`) с префиксом FS/GS в наборе CPL0 (по аналогии с `MOV r/m8, imm8` с FS/GS, S4-38L7ae); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOV r/m32, imm32` и `MOV r/m64, imm32` (`[64|65] [REX.W] C7 /0 id`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7aj)
+
+Граница S4-38L7ai: `65 c7 05 ca f3 4c 00 ec 00 00 00` = `movl $0xec, %gs:0x4cf3ca(%rip)` (префикс GS + `C7 /0 id`; ModRM `0x05`: mod 00, reg 000 = /0, rm 101 = RIP-relative; disp32 `0x004cf3ca`, imm32
+`0x000000ec`; длина 11), RIP `0xffffffff83f52b4b`, `Unsupported { opcode: 0xc7 }`, retired 1207604143. Срез повторяет схему `MOV m8, imm8` с FS/GS (S4-38L7ae) для `C7`: операция «запись непосредственного
+операнда» с адресом `база FS/GS + эффективный адрес`. Семантика дана **по памяти SDM** (Vol. 2 «MOV»: непосредственный операнд записывается в назначение, флаги не меняются; с REX.W imm32 расширяется знаком до 64 бит;
+Vol. 3 3.4.4: база FS/GS прибавляется к эффективному адресу), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::MovFsMemImm { dst: MemoryOperand, immediate: u64 }` и `Operation::MovGsMemImm { .. }` (форма `MovFsMemByteImm`/`MovGsMemByteImm` из S4-38L7ae
+с шириной назначения `dst.size` и значением нужной ширины, не расширение байтовых операций). В общей ветке `C6`/`C7` условие «сегментный префикс FS/GS и memory-операнд» теперь общее для обоих опкодов; для `C6`
+результат прежний (`MovFsMemByteImm`/`MovGsMemByteImm`), для `C7` — новые операции. `immediate` уже имеет итоговую ширину: без REX.W — нулевое расширение imm32 (назначение dword, пишется ровно 4 байта), с REX.W — imm32,
+расширенный знаком до 64 бит (назначение qword, пишется ровно 8 байт, младший байт первым). REX допустим непосредственно перед опкодом (пустой `0x40`, REX.R, REX.B, REX.X, REX.W; REX.B/REX.X достигают базы и
+индекса); REX.W выбирает qword. Принимается любая адресация (RIP-relative, база без смещения, disp8, disp32, SIB с индексом и масштабом, абсолютный SIB без базы и индекса). Длина — префиксы, опкод, ModRM, SIB, смещение, imm32;
+RIP-relative считается от конца **всей** инструкции с imm32 (для граничных байтов следующий RIP = адрес + 11; для `64 48 c7 05 … imm32` — адрес + 12). В пост-проверке «сегментный префикс с memory-операндом»
+операции добавлены как принимаемые; в списке `executable` и в списке операций, исполняемых в наборе, они стоят рядом с `MovFsMemByteImm`/`MovGsMemByteImm`. `flag_effects`: нет определённых и неопределённых флагов
+(MOV не меняет флаги). Без FS/GS `C7 /0` по-прежнему даёт `Operation::MovImmediate` (не менялось).
+
+**Регистровая форма (mod = 11) с FS/GS — политика не менялась.** Префикс FS/GS перед регистровой формой `C7 /0` игнорируется, и она декодируется как обычный `Operation::MovImmediate` (так же, как регистровые формы
+`C6` в S4-38L7ae и другие регистровые формы с FS/GS); отдельного отказа нет, память не затрагивается. Это проверено тестом `segment_prefixed_register_mov_imm32_is_unchanged_*`.
+
+**Отказы без мутации (`Unsupported { opcode: 0xc7 }`).** `C7 /n` при n ≠ 0 с FS/GS (`/1`, `/2`, `/7`, в том числе с REX.W); LOCK, REP, REPNE (до и после сегментного префикса, с REX.W); `66` (word, в любом
+порядке с сегментным префиксом, с REX.W) — форма с word-непосредственным операндом не входит в срез; `67` (в обоих порядках); второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед
+опкодом (`44 65 C7 …`, `48 64 C7 …`, `41 65 40 C7 …`, `65 48 66 C7 …`; правило устаревшего REX из S4-38L7o). `88`/`89` с FS/GS отказывают с собственными опкодами (`0x88`/`0x89`), `C6` — срез S4-38L7ae, не менялся.
+Усечённый imm32, disp32, ModRM — разбор отказывает (ошибка выборки), ничего не исполняется, память и регистры не меняются.
+
+**Адрес.** `MemoryOperand::access_address_48_with_segment_base(state, next_rip, state.fs_base | state.gs_base)`, как у `MovFsStore`/`MovGsStore` и `MovFsMemByteImm`: база + эффективный адрес до любого обращения
+к памяти; каноничность проверяется для начального адреса и последнего байта операнда (адрес + 3 для dword, адрес + 7 для qword): иначе `#GP(0)` до записи, без записи. Для баз RSP/RBP с неканоническим результатом —
+`#GP(0)`, не `#SS(0)` (правило аналога, не менялось).
+
+**Исполнение.** Один `memory.write_integer(address, context, dst.size, immediate)` (4 или 8 байт, little-endian); назначение не читается, цикла чтение-изменение-запись нет; регистры и флаги не меняются. RIP += длина
+инструкции (с префиксом и imm32), retired + 1 только при успехе. При `#GP(0)` и при ошибке записи (`#PF` и т. п.) состояние (RIP, регистры, флаги) и память не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у остальных FS/GS-форм. Вне набора — `Unsupported { opcode: 0xc7 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (17 новых): `gs_movl_boundary_form_stores_one_dword_*` (граничные байты: адрес = база GS + RIP + 11 + disp32, пишется ровно 4 байта `ec 00 00 00`, соседние 4 + 4 байта не меняются,
+меняется только RIP на 11, флаги не меняются), `fs_movl_rip_relative_and_a_zero_base_*` (FS и нулевая база), `segment_movq_sign_extends_the_immediate_to_eight_bytes` (FS и GS; imm32 `0xfffffffe`, `0x80000000`,
+`0x7fffffff`, `1`, `0`; 8 записанных байт равны расширенному знаком значению по независимой проверке, соседние байты не меняются), `gs_movl_and_movq_with_base_register_disp8_disp32_and_sib` (база без смещения,
+disp8, disp32, база+индекс×масштаб+disp, абсолютный SIB, FS), `movl_and_movq_with_rex_b_and_rex_x_reach_r8_to_r15` (REX.B: R8, R9, R15, R13, R12 через SIB, dword и qword; REX.X: R9), `movl_accepts_a_rex_directly_before_the_opcode_*`
+(`40`, `44` — dword; `48`, `4C` — qword), `movl_read_back_through_the_same_segment_base_*` (чтение `mov %gs:…, %eax` читает записанный dword), `segment_mov_imm32_non_canonical_first_or_last_byte_is_gp0_*`
+(dword и qword, FS и GS, начало и последний байт на границе дыры, принятие последнего канонического dword/qword), `gs_mov_imm32_through_rsp_or_rbp_base_is_gp0_*`, `mov_imm32_write_fault_leaves_flags_rip_registers_and_memory_unchanged`,
+`segment_mov_imm32_forms_outside_the_slice_are_refused_*` (25 отказов с точным опкодом), `segment_mov_imm32_with_a_truncated_immediate_*`, `segment_prefixed_register_mov_imm32_*`,
+`plain_unprefixed_and_cs_ds_es_ss_mov_imm32_memory_keep_ignoring_the_segment_bases`, `segment_mov_imm32_stays_unsupported_outside_the_set`, `segment_mov_imm32_is_refused_by_the_bare_step_entry_point`,
+`segment_mov_imm32_is_not_reachable_from_cpl3`; в существующем `segment_movb_forms_outside_the_slice_are_refused_*` убраны три записи `C7` (теперь принимаются), оставлена `66 C7`. Покрытие REX: REX.B и REX.X проверены
+(как у аналога), REX.R и пустой REX — принятие; REX.W — qword. `paged_probe_profile::fs_gs_mov_imm32_stays_unsupported_in_the_paged_probe_profile`; декодер:
+`long_decode::tests::segment_mov_imm32_decodes_fs_gs_memory_forms_only` (в `segment_mov_byte_immediate_decodes_*` и `transfer_neighbors_stay_unsupported_*` записи `C7` с FS/GS, которые теперь принимаются,
+заменены отказами `66 C7` и устаревший REX); фасад: `linux_direct::tests::gs_mov_imm32_after_wrmsr_gs_base_stores_a_dword_and_a_qword_and_reads_back_through_gs` (`WRMSR IA32_GS_BASE`, граничная форма
+`65 c7 05 disp32 ec 00 00 00` меняет только младший dword qword-ячейки, `65 48 c7 04 25 … fe ff ff ff` пишет `0xfffffffffffffffe`, чтение обратно через ту же базу и обычным `mov`, CF от `SUB DL,1` сохранён,
+retired 15). Результаты: `cpl0_profile_set` 706, `paged_probe_profile` 41, `od-isa --lib` 2267, `od-machine --lib` 891 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
+`native_v2::admission` для новых операций на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** `88`/`89` с FS/GS (`C6` с FS/GS сделан целиком в S4-38L7ae), `C7` с 66 (word) и `C7 /n` для n ≠ 0 с FS/GS, регистровая форма с проверкой префикса, LOCK с `C7`, `PagedCpl0ProbeV1`, `interrupt.rs`,
+`docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7aj-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`movl $0xec, %gs:0x4cf3ca(%rip)` по `0xffffffff83f52b4b` проходит (retired 1207604143 → 1208148606, +544463 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff813c2007` (GPA `0x13c2007`), байты `65 4c 63 3d 25 b0 05 03 65 4c 8b 25 11 b0 05 03` — `movslq %gs:0x305b025(%rip), %r15` (префикс GS + REX.W + REX.R + `63 /r`, MOVSXD r64, r/m32 с
+memory-источником, ModRM `0x3d`: RIP-relative, reg 111 + REX.R = R15, disp32 `0x0305b025`; длина 8; далее `mov %gs:0x305b011(%rip), %r12` — `65 4c 8b 25 …`); `Unsupported { opcode: 0x63 }` (99),
+`set_exit_detail` = `Run(Unsupported { opcode: 99 })`, `exit_kind` = `unsupported`, retired = 1208148606.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x82`; RAX = RBX = RCX = RDX = RSI = 0, RDI = 1, R13 = `0x27`, R14 = 1, RSP = `0xffffffff83a03e68`,
+RBP = `0xffffffff83a03eb0`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOVSXD r64, r/m32` (`GS REX.W 63 /r`, memory-источник RIP-relative) с префиксом FS/GS в наборе CPL0 (по аналогии с FS/GS-загрузками `MOVZX r, m16` S4-38L7ad и `MOV r32, m32` S4-38L7m); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOVSXD r64, r/m32` (`[64|65] REX.W 63 /r`, memory-источник) с префиксом FS/GS в наборе CPL0 (S4-38L7ak)
+
+Граница S4-38L7aj: `65 4c 63 3d 25 b0 05 03` = `movslq %gs:0x305b025(%rip), %r15` (префикс GS + REX.W + REX.R + `63 /r`; ModRM `0x3d`: mod 00, reg 111 + REX.R = R15, rm 101 = RIP-relative; disp32 `0x0305b025`;
+длина 8), RIP `0xffffffff813c2007`, `Unsupported { opcode: 0x63 }`, retired 1208148606. Срез повторяет схему FS/GS-загрузок `MOVZX r, m16` (S4-38L7ad) и `MOV r32, m32` (S4-38L7m): операция «загрузка со знаковым
+расширением» с источником dword и 64-битным регистром-приёмником. Семантика дана **по памяти SDM** (Vol. 2 «MOVSXD»: dword читается и расширяется знаком до 64 бит, флаги не меняются; Vol. 3 3.4.4: база FS/GS
+прибавляется к эффективному адресу), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::MovsxdFsLoad { dst: RegisterView, src: MemoryOperand }` и `Operation::MovsxdGsLoad { .. }` (форма `MovzxFsLoadW`/`MovzxGsLoadW`; `src.size` = dword, `dst` —
+qword-вид регистра, REX.R выбирает R8–R15). Они выбираются в общей ветке `63`/`0F B6/B7/BE/BF` только при: опкод `63` основной карты, сегментный префикс FS/GS, memory-источник, REX.W (размер операнда qword), нет
+LOCK/REP, нет `66`, нет `67`, REX (если есть) стоит непосредственно перед опкодом. Принимается любая адресация (RIP-relative, база без смещения, disp8, disp32, SIB с индексом и масштабом, абсолютный SIB без базы и
+индекса; REX.B/REX.X достигают базы и индекса). RIP-relative считается от конца всей инструкции (для граничных байтов следующий RIP = адрес + 8). В пост-проверке «сегментный префикс с memory-операндом» операции
+добавлены как принимаемые; в списке `executable` и в списке операций, исполняемых в наборе, они стоят рядом с `MovzxFsLoadW`/`MovzxGsLoadW`. `flag_effects`: нет определённых и неопределённых флагов. Без FS/GS
+`63` по-прежнему даёт `Operation::Extend { signed: true }` (не менялось).
+
+**Что нашлось в существующем коде и что не менялось.** Раньше любая форма `63` с FS/GS и memory-источником декодировалась как `Extend` и отказывалась общей пост-проверкой с `Unsupported { opcode: 0x63 }` (так
+же отказывалось и `65 48 63 …`). Теперь так отказываются только формы вне среза (ниже). Регистровая форма (mod = 11) с FS/GS — политика не менялась: префикс игнорируется, форма декодируется как обычный
+`Extend` и исполняется (`65 48 63 c3` = `movslq %ebx, %rax`, `65 63 c3` = `movl %ebx, %eax`), отдельного отказа нет, память не затрагивается. Беспрефиксные `63`, а также `63` с CS/DS/ES/SS не менялись.
+
+**Отказы без мутации (`Unsupported { opcode: 0x63 }`).** Memory-формы с FS/GS без REX.W (dword-приёмник; с пустым REX, REX.R, REX.B); LOCK, REP, REPNE (до и после сегментного префикса, с REX.W и без);
+`66` (в обоих порядках с сегментным префиксом, с REX.W и без); `67` (в обоих порядках); второй сегментный префикс (`64 65`, `65 64`, `65 65`, `64 64`); REX не непосредственно перед опкодом (`48 65 63 …`,
+`48 65 41 63 …`, `65 48 41 63 …`, `65 48 66 63 …`, `65 48 40 63 …`) — отказ по действующему REX без W (или по `66`), а не по правилу устаревшего REX из S4-38L7o: устаревший REX перед другим REX обнуляет `prefixes.rex` и отказ даёт проверка размера; проверка «устаревший REX» в декодере (`long_decode.rs`, пост-проверка) решает исход только для REX.W последним после ещё одного REX (`65 41 48 63 …`), эта форма пока не покрыта тестом. Усечённый disp32/ModRM — разбор отказывает (ошибка выборки), ничего не исполняется.
+
+**Адрес.** `MemoryOperand::access_address_48_with_segment_base(state, next_rip, state.fs_base | state.gs_base)`, как у `MovFsLoadD`/`MovzxFsLoadW`: база + эффективный адрес до любого обращения к памяти;
+каноничность проверяется для начального адреса и последнего байта операнда (адрес + 3): иначе `#GP(0)` до чтения, регистры не меняются. Для баз RSP/RBP с неканоническим результатом — `#GP(0)`, не `#SS(0)`
+(правило аналога, не менялось).
+
+**Исполнение.** Один `memory.read_integer(address, context, Dword)`; значение расширяется знаком явно (`value as u32 as i32 as i64 as u64`) и записывается в 64-битный регистр; регистры, кроме приёмника, и
+флаги не меняются, в память ничего не пишется. RIP += длина инструкции, retired + 1 только при успехе. При `#GP(0)` и при ошибке чтения (`#PF` и т. п.) состояние не меняется.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у остальных FS/GS-форм. Вне набора — `Unsupported { opcode: 0x63 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (15 новых): `gs_movsxd_boundary_form_loads_r15_sign_extended_and_keeps_flags` (граничные байты; значения `0x80000000`, `0xffffffff`, `0x7fffffff`, `0`, `0x12345678`, `0x87654321`;
+читается ровно 4 байта по адресу база GS + RIP + 8 + disp32, соседние байты не читаются, меняются только R15 и RIP на 8, флаги не меняются), `fs_and_gs_movsxd_use_their_own_base_and_sign_extend`,
+`movsxd_with_a_zero_base_uses_the_effective_address`, `movsxd_every_destination_register_gets_the_sign_extended_dword` (все приёмники R8–R15 через REX.R и RAX–RDI без REX.R, остальные регистры не меняются),
+`gs_movsxd_base_disp8_sib_and_rex_xb_forms` (база без смещения, disp8, база = приёмник, REX.B: R8, R12 через SIB, R13 с disp8 и R8–R15 с disp8, REX.R+REX.X+REX.B с индексом и масштабом, абсолютный SIB с FS),
+`movsxd_non_canonical_address_is_gp0_without_mutation_or_read` (начало, `-1` и `-3` от границы дыры, принятие последнего канонического dword), `gs_movsxd_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical`,
+`movsxd_read_fault_leaves_flags_rip_and_registers_unchanged`, `segment_movsxd_forms_outside_the_slice_are_refused_with_the_exact_opcode` (29 отказов с точным опкодом `0x63`),
+`segment_movsxd_with_a_truncated_displacement_is_refused_without_mutation`, `segment_prefixed_register_movsxd_is_unchanged_and_ignores_the_prefix`,
+`plain_unprefixed_and_cs_ds_es_ss_movsxd_memory_keep_ignoring_the_segment_bases`, `segment_movsxd_stays_unsupported_outside_the_set`, `segment_movsxd_is_refused_by_the_bare_step_entry_point`,
+`segment_movsxd_is_not_reachable_from_cpl3`; в существующем `segment_movzx_byte_and_movsx_memory_forms_stay_refused_*` запись `65 48 63 …` (теперь принимается) заменена записью `65 63 …` без REX.W.
+`paged_probe_profile::fs_gs_movsxd_stays_unsupported_in_the_paged_probe_profile`; декодер: `long_decode::tests::segment_movsxd_decodes_fs_gs_rex_w_memory_forms_only`; фасад:
+`linux_direct::tests::gs_movsxd_after_wrmsr_gs_base_sign_extends_a_dword_into_r15_and_changes_nothing_else` (`WRMSR IA32_GS_BASE`, обычные записи dword `0x80000000` и `0x7fffffff`, граничная форма
+`65 4c 63 3d disp32` кладёт в R15 `0xffffffff80000000`, `65 48 63 1c 25 …` кладёт в RBX `0x7fffffff`, остальные регистры, память и CF от `SUB DL,1` сохранены, retired 12). Покрытие REX: REX.R, REX.X, REX.B и REX.W
+проверены. Результаты: `cpl0_profile_set` 721, `paged_probe_profile` 42, `od-isa --lib` 2268, `od-machine --lib` 892 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
+`native_v2::admission` для новых операций на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** `63` с FS/GS без REX.W (dword- и word-приёмник), LOCK/`66`/`67` с `63`, регистровая форма с проверкой префикса, прочие знаковые загрузки с FS/GS (`0F BE`/`0F BF`/`0F B6`), `PagedCpl0ProbeV1`,
+`interrupt.rs`, `docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ak-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`movslq %gs:0x305b025(%rip), %r15` по `0xffffffff813c2007` проходит (retired 1208148606 → 1208150235, +1629 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8140948c` (GPA `0x140948c`), байты `0f 01 45 e6 89 df e8 59 00 32 01 48 3b 45 e8 74` — `0f 01 /0` с ModRM `0x45` (mod 01, reg 000 = /0, rm 101 = `[rbp+disp8]`, disp8 `0xe6` = −26),
+то есть `sgdt -0x1a(%rbp)` (SGDT m, длина 4; далее `89 df` = `mov %ebx, %edi`); `Unsupported { opcode: 0x01 }` (1), `set_exit_detail` = `Run(Unsupported { opcode: 1 })`, `exit_kind` = `unsupported`,
+retired = 1208150235. CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x56`; RAX = RBX = RCX = RDX = RSI = RDI = 0, R8 = R10 = `0x890030004087`,
+R9 = R11 = `0xfffffe00`, R12 = `0xffff8880833fb000`, R13 = 0, R14 = 1, R15 = 0, RSP = `0xffffffff83a03e38`, RBP = `0xffffffff83a03e58`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30;
+`set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `SGDT m` (`0F 01 /0`, memory-операнд) в наборе CPL0; не реализован; источник значения GDTR (в состоянии есть `gdtr: Option<Gdtr>`) в этом срезе не исследовался. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `SGDT m` (`[64|65] [REX] 0F 01 /0`, memory-операнд) в наборе CPL0 (S4-38L7al)
+
+Граница S4-38L7ak: `0f 01 45 e6` = `sgdt -0x1a(%rbp)` (ModRM `0x45`: mod 01, reg 000 = /0, rm 101 = `[rbp+disp8]`; disp8 `0xe6` = −26; длина 4), RIP `0xffffffff8140948c`, `Unsupported { opcode: 0x01 }`,
+retired 1208150235. Семантика дана **по памяти SDM** (Vol. 2 «SGDT»: в память по операнду записывается 10-байтовый псевдодескриптор GDTR — предел 2 байта little-endian по смещению 0, 64-битная база 8 байт little-endian по смещению 2;
+флаги и регистры не меняются), по первоисточнику **не сверялась**.
+
+**Источник значения GDTR (исследовано до реализации).** В `LongModeState` есть `gdtr: Option<Gdtr>` (`Gdtr { base: u64, limit: u16 }`). Значение задают две вещи: (1) загрузчик платы (`linux_load.rs`) кладёт в состояние входа Linux
+`gdtr = Some(base 0x12_0000, limit 31)` (null, 32-битный код, `__BOOT_CS`, `__BOOT_DS`; проверка `LinuxLoadError::EntryGdtr`); (2) `LGDT m` в наборе CPL0 (S2-47a) заменяет его значением из памяти гостя — ядро Linux перезагружает GDTR само.
+Поэтому на границе значение — то, что последним загрузил гость; SGDT копирует его без преобразований (предел и база — поля `Gdtr`). Значение GDTR на самой границе в JSON диагностического прогона не записывается — **не сверялось**. Если `gdtr` равен `None`, SGDT отказывает (`Unsupported { opcode: 0x01 }`, без мутации): значение не выдумывается. Плата `gdtr` всегда задаёт.
+
+**Декодер.** Новая операция `Operation::StoreGdtr { dst: MemoryOperand }` (размер операнда — заглушка, запись всегда 10 байт). Принимается `0F 01 /0` с memory-операндом (mod ≠ 11, любая адресация: RIP-relative, SIB, disp8/disp32, абсолютный SIB) без
+префиксов (ветка рядом с LGDT/LIDT), а также с одним FS (`64`) или GS (`65`) префиксом и/или REX непосредственно перед опкодом без REX.W — той же веткой и по тем же правилам, что `INVLPG m` (S4-38L7ab; REX.R/X/B и пустой `0x40` допустимы).
+Отказ (`Unsupported { opcode: 0x01 }` без мутации): LOCK/REP/REPNE, `66`, `67`, REX.W, второй сегментный префикс (`64 65`, `65 64`, `65 65`, `64 64`), CS/DS/ES/SS-префикс, REX не непосредственно перед опкодом, регистровые формы
+(`0F 01 C0..C7`, mod = 11), `0F 01 /n` при n ≠ 0 кроме уже реализованных (`/1` SIDT, `/4` SMSW, `/5`, `/6` LMSW; `/2` LGDT, `/3` LIDT, `/7` INVLPG и `F8` SWAPGS не менялись). SIDT, LGDT, LIDT этим срезом не расширялись.
+
+**Исполнение и гейт.** Только набор CPL0 (`control_policy` задан, CPL0, Long64) и только при смоделированном `gdtr`; иначе `Unsupported { opcode: 0x01 }` без мутации (голые `run`/`step`, `mov_cr3_profile`, paged-cr3-probe, `step_paged_mov`,
+paged-probe — тест отказа в каждом; в набор CPL3 не допускается, `WrongPrivilege`).
+
+**Адрес и проверки.** Адрес = эффективный адрес + база FS/GS (только для формы с префиксом `64`/`65`; беспрефиксная форма базу не прибавляет); RIP-relative считается от конца всей инструкции (SGDT непосредственного операнда не имеет).
+Начальный и последний (+9) байты должны быть каноническими, иначе `#GP(0)` до любой записи; при переполнении 2^64 (адрес + 9 вне `u64`) — тоже `#GP(0)` (как у чтения псевдодескриптора LGDT; поведение аппаратуры при заворачивании по первоисточнику не сверено). Для беспрефиксной базы RSP/RBP при неканоническом адресе — `#SS(0)` (в том числе при переполнении: код выбирает исключение по базе операнда, а не по причине).
+Правило баз RSP/RBP: для **беспрефиксной** формы с базой RSP/RBP неканонический результат даёт `#SS(0)` (вектор 12; та же логика, что у `read_pseudo_descriptor_qwords` для LGDT/LIDT); для формы с FS/GS — `#GP(0)` (правило аналогов
+FS/GS-операций S4-38L7aj/S4-38L7ak); R12/R13 — обычные регистры данных (`#GP(0)`).
+
+**Запись.** Адаптеры платы не умеют 10-байтовую запись (адаптер набора CPL0 принимает 1/2/4/8 байт), поэтому запись — две перекрывающиеся qword-записи: `[a, a+8)` (предел и младшие шесть байт базы) и `[a+2, a+10)` (вся база);
+перекрывающиеся байты одинаковы. Операнд не читается. Чтобы ошибка записи не оставляла частичного результата при операнде на границе страниц, первой идёт запись, затрагивающая все страницы операнда: `[a+2, a+10)`, если смещение
+в странице `a & 0xfff` меньше `0xffe`, иначе `[a, a+8)`; запись, затрагивающая отказывающую страницу, падает первой, и ничего не фиксируется (для платы с кросс-страничной записью `cpl0_set_cross_page_store` она сама проверяет обе страницы перед записью).
+Регистры и флаги не меняются; RIP += длина инструкции (с префиксами), retired + 1 только при успехе. Любая ошибка (`#GP`, `#PF`, ошибка бэкенда) не меняет RIP, регистры и флаги; память не меняется при обычных условиях (обе записи проверяются до первой фиксации на уровне адаптера платы, см. `cpl0_set_cross_page_store`). Гарантия не абсолютна: вторая запись может упасть на ошибке бэкенда уже после первой, если первая попала в таблицы страниц, через которые идёт трансляция второй; это не проверено на границе таблиц.
+
+**Тесты.** `cpl0_profile_set` (14 новых, `sgdt_*`): граничные байты `0f 01 45 e6` с известным GDTR (`limit 0xa57f`, `base 0xfffffe0011223344`: 10 байт проверены побайтно, соседние байты не меняются, RIP + 4, флаги, регистры и GDTR не меняются,
+следующая инструкция не поглощается, два qword-записи в ожидаемом порядке, чтений нет); произвольные значения GDTR (в том числе нулевое и `u64::MAX`); GS, FS и беспрефиксная формы (база прибавляется только с префиксом); 15 форм адресации
+(база, disp8, disp32, база+индекс×масштаб, абсолютный SIB, RSP, REX.B r8/r15, REX.X, REX.R, пустой REX, RIP-relative с GS и без); неканонический первый/последний байт, граница дыры и заворачивание (с GS-базой и без) — `#GP(0)` без записи и без
+мутации; база RSP/RBP — `#SS(0)` без префикса, `#GP(0)` с FS/GS и для R13; ошибка записи без фиксации; операнд на границе страниц при отказе страницы A или B для смещений `0xfe8..=0xfff` (проверена на мутации порядка записи: тест падает,
+если первой всегда идёт запись `[a+2, a+10)`); 31 отказ с точным опкодом `0x01`; усечённые disp8/disp32 без мутации; `gdtr = None` — отказ без мутации; отказ вне набора (голый `run`, обе формы `gdtr`), голый `step`, CPL3.
+`paged_probe_profile::sgdt_stays_unsupported_in_the_paged_probe_profile`; `execute::tests::{sgdt_stays_unsupported_in_bare_run_and_step, sgdt_stays_unsupported_in_the_mov_cr3_profile, paged_cr3_probe_keeps_sgdt_unsupported,
+paged_mov_profile_keeps_sgdt_unsupported}`; декодер: `long_decode::tests::sgdt_decodes_memory_forms_only`; фасад: `linux_direct::tests::sgdt_after_wrmsr_gs_base_stores_the_board_gdtr_through_gs_and_plain` (`WRMSR IA32_GS_BASE`, маркерные
+записи, `65 0f 01 45 e6` пишет 10 байт GDTR платы (`0x12_0000`, 31) по `BASE+0x12`, `0f 01 45 e6` — по `BASE+0x40` без базы GS, окружающие байты маркера не тронуты, RAX/CF сохранены, retired 18). В тестовый `BitsMemory` добавлено поле
+`write_fault_range` (ошибка записи только для записей, пересекающих диапазон; прежнее поведение без диапазона не менялось). Результаты: `cpl0_profile_set` 735, `paged_probe_profile` 43, `od-isa --lib` 2273, `od-machine --lib` 893 (6 ignored),
+`od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
+`native_v2::admission` для новой операции на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** `SIDT`, `LGDT`/`LIDT` (не менялись), `SMSW`/`LMSW`, регистровые формы `0F 01 C0..C7`, SGDT с CS/DS/ES/SS, с `66`/`67`/LOCK/REP, 16/32-битные формы псевдодескриптора, UMIP, `PagedCpl0ProbeV1`, `interrupt.rs`,
+`docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7al-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`sgdt -0x1a(%rbp)` по `0xffffffff8140948c` проходит (retired 1208150235 → 1208150259, +24 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff814094a2` (GPA `0x14094a2`), байты `0f 00 d8 48 8b 45 f0 65 48 2b 05 57 3b 01 03 75` — `0f 00 /3` с ModRM `0xd8` (mod 11, reg 011 = /3, rm 000 = AX), то есть `ltr %ax`
+(LTR r/m16, регистровая форма, длина 3; RAX = `0x40` — селектор TSS; далее `mov -0x10(%rbp), %rax`, `sub %gs:0x3013b57(%rip), %rax`, `jne`); `Unsupported { opcode: 0x00 }` (байт `00` карты `0F`), `set_exit_detail` = `Run(Unsupported { opcode: 0 })`,
+`exit_kind` = `unsupported`, retired = 1208150259. CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x6`; RAX = `0x40`, RBX = RCX = RDX = RSI = RDI = 0, R8 = R10 = `0x890030004087`,
+R9 = R11 = `0xfffffe00`, R12 = `0xffff8880833fb000`, R13 = 0, R14 = 1, R15 = 0, RSP = `0xffffffff83a03e38`, RBP = `0xffffffff83a03e58`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние
+(`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `LTR r/m16` (`0F 00 /3`, регистровая форма `ltr %ax`) в наборе CPL0 (в проекте уже есть пагинированный `LTR` вне набора CPL0 — `step_paged_ltr_ax` (`crates/od-machine/src/paged_descriptor.rs`), `prepare_paged_ltr_ax`/`prepare_paged_ltr_commit` (`execute.rs`), `PagedLtrError`; решение, как его использовать, — по этой границе); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LTR r/m16` (`[REX.B] 0F 00 /3`, регистровая форма) в наборе CPL0 (S4-38L7am)
+
+Граница S4-38L7al: `0f 00 d8` = `ltr %ax` (ModRM `0xd8`: mod 11, reg 011 = /3, rm 000 = AX; длина 3), RIP `0xffffffff814094a2`, `Unsupported { opcode: 0x00 }`, retired 1208150259; RAX = `0x40` — селектор TSS.
+Семантика дана **по памяти SDM** (Vol. 2 «LTR»: селектор из операнда, 16-байтовый системный дескриптор TSS читается из GDT, в записи GDT выставляется бит занятости (type 9 → 11), в TR кэшируются селектор, база, предел и атрибуты; флаги и регистры не меняются),
+по первоисточнику **не сверялась**.
+
+**Исследование до реализации.** (1) Состояние TR есть: `LongModeState::tr: Option<TaskRegisterCache>` (`state.rs`; селектор, 64-битная база, предел с учётом G, байт доступа, ниббл AVL/G), см. S4-18d; ранее его заполнял только пагинированный `LTR AX` вне набора CPL0
+(`step_paged_ltr_ax` в `crates/od-machine/src/paged_descriptor.rs`, `prepare_paged_ltr_ax`/`prepare_paged_ltr_commit` в `execute.rs`, `PagedLtrError`/`PagedLtrRejection`, транзакция `commit_paged_ltr_descriptor` в `page_walk.rs`). STR, LLDT и переключения задач нигде не реализованы.
+(2) Плата TR не задаёт: `linux_load.rs` кладёт в состояние входа Linux `gdtr = Some(base 0x12_0000, limit 31)` и `tr = None` (поле остаётся по умолчанию); значение TR задаёт только гость своим `LTR`. Ядро выполняет `LTR` при ранней настройке TSS процессора после того, как само загрузило GDT (`LGDT`, S2-47a); граница — этот вызов.
+(3) Правила пагинированного `LTR AX` (`prepare_paged_ltr_ax` + `validate_tss_descriptor`): CPL != 0 — `#GP(0)`; нулевой селектор (`selector & !3 == 0`) — `#GP(0)`; TI = 1 или 16-байтовая запись за пределом GDT (`(selector & !7) + 15 > limit`) — `#GP(selector & !3)`; переполнение или неканоничность адреса дескриптора (первого или последнего байта) — `#GP(0)`;
+дескриптор не в пределах одной страницы (`адрес & 0xfff > 0xff0`) — не моделируется (`Unsupported`); после чтения: `access & 0x1f != 9` (занятый TSS, несистемный и другие системные типы) — `#GP(selector & !3)`; не present — `#NP(selector & !3)`; ненулевое поле типа в верхнем dword — `#GP(selector & !3)`; неканоническая база — `#GP(0)`.
+(4) Чтение 16 байт и запись нужны от адаптера памяти: набор CPL0 уже читает и пишет qword с происхождением доступа таблицы дескрипторов (`context.descriptor_table()`, как `MOV Sreg, r16` по S4-38L6c: чтение дескриптора и запись бита accessed одним qword). Новых возможностей адаптера не требуется.
+Вывод: TR в состоянии есть, правила переносятся без изменений, адаптер достаточен; реализация небольшая и проверяемая — срез реализован.
+
+**Декодер.** Новая операция `Operation::LoadTr { source: Register }`. Принимается `0F 00 /3` с mod = 11 (rm — любой из 16 регистров; REX.B выбирает r8..r15, пустой REX `0x40` допустим, REX.R/X игнорируются) без других префиксов и без REX.W; REX должен стоять непосредственно перед опкодом.
+Отказ (`Unsupported { opcode: 0x00 }` без мутации): LOCK/REP/REPNE, `66`, `67`, любой сегментный префикс, REX.W, REX не непосредственно перед опкодом, memory-форма `/3` (`0F 00 18` и т. п.), `/0` SLDT, `/1` STR, `/2` LLDT, `/4` VERR, `/5` VERW (в том числе `0F 00 E8` в наборе CPL0, где VERW AX допускается только на CPL3), `/6`, `/7`.
+Усечённый вход (`0F 00`, `41 0F 00`) даёт ошибку декодирования без мутации; у форм с REX отказ при усечении теперь тоже ошибка чтения, а не `Unsupported` (как у ветки `0F 01`).
+
+**Исполнение и гейт.** Только набор CPL0 (`control_policy` задан, CPL0, Long64) и только при смоделированном `gdtr`; иначе `Unsupported { opcode: 0x00 }` без мутации (голые `run`/`step`, paged-probe, CPL3 — `WrongPrivilege` — тест отказа в каждом); значение TR не выдумывается.
+Порядок (`load_tr_cpl0`): селектор — младшие 16 бит регистра (RPL сохраняется в `tr.selector`, на поиск не влияет); проверки селектора и адреса дескриптора — по правилам выше, **без** чтения памяти; отказ страницы (`адрес & 0xfff > 0xff0`) — `Unsupported` без обращений, как в пагинированном пути;
+два qword-чтения `[a, a+8)`, `[a+8, a+16)` (контекст таблицы дескрипторов); `validate_tss_descriptor` без изменений (тип, present, поле типа, база); бит занятости ставится в образе; запись **одним qword** `[a, a+8)` (байт 5 лежит в младшей половине); только потом `tr = Some(..)` с обновлённым байтом доступа и RIP += длина (retired + 1).
+Любая ошибка (`#GP`, `#NP`, `#PF` чтения или записи, ошибка бэкенда) не меняет TR, RIP, регистры и флаги; единственная запись — одна, поэтому частичного результата нет. Повторный `LTR` того же селектора видит занятый TSS и даёт `#GP(selector)` (тест).
+Не моделируется и в пагинированном пути отсутствует: переключение задач, содержимое TSS, `TableAlias`/`TranslationChanged` (отказы `commit_paged_ltr_descriptor`), поведение при отображении GDT только для чтения (запись бита занятости идёт как явная запись таблицы дескрипторов через адаптер; на границе не исследовалось).
+
+**Тесты.** `cpl0_profile_set` (16 новых, `ltr_*`; всего 751): граничные байты `0f 00 d8` (RAX = `0x40`; два чтения qword, одна запись qword, бит занятости `0x89 → 0x8b`, соседние байты GDT не тронуты, TR = ожидаемому, RIP + 3, регистры, флаги и GDTR не меняются,
+следующая инструкция не поглощается); совпадение с `prepare_paged_ltr_commit` (TR и образ дескриптора) для четырёх форм дескриптора (обычный, G + AVL, DPL 3, зарезервированные биты верхнего dword); селектор из каждого из 16 регистров (rm 0..7, REX `0x40`, REX.B) и только младшие 16 бит;
+RPL сохраняется; отказы селектора (нулевой, RPL у нулевого, TI, за пределом) и адреса (переполнение, неканоничность первого/последнего байта) — до любого чтения; типы и present (занятый TSS, LDT, шлюз, сегмент, тип 0, not present = `#NP`, поле типа верхнего dword, неканоническая база) с точными кодами и без записи; повторная загрузка занятого TSS;
+отказ чтения и записи без мутации (при отказе записи читаются обе половины, TR остаётся `None`); граница страницы (`0xff1`, `0xffc`, `0xfff` отказ без обращений, `0xff0` загружается); 31 форма вне среза с точным опкодом `0x00`; усечения; `gdtr = None`; отказ вне набора (голый `run`, обе формы `gdtr`), голый `step`, CPL3.
+`paged_probe_profile::ltr_register_form_stays_unsupported_in_the_paged_probe_profile`; декодер: `long_decode::tests::ltr_decodes_the_register_form_with_optional_rex_only`; фасад: `linux_direct::tests::{ltr_ax_loads_tr_from_a_tss_descriptor_in_the_board_gdt_and_marks_it_busy,
+ltr_ax_with_a_selector_beyond_the_board_gdt_limit_is_gp_and_loads_nothing}` (программа пишет TSS-дескриптор поверх записи GDT платы по селектору `0x10` и загружает его: TR, бит занятости в памяти, retired 7; селектор `0x40` за пределом 31 платы — `#GP`, TR остаётся `None`).
+Результаты: `cpl0_profile_set` 751, `paged_probe_profile` 44, `od-isa --lib` 2274, `od-machine --lib` 895 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux не компилируется (ранее существовавшая ошибка `E0063`); файл не менялся, `native_v2::admission` для новой операции на Linux не проверялась. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** Memory-форма `LTR m16`, `SLDT`, `STR`, `LLDT`, `VERR`/`VERW` в наборе CPL0, REX.W, `66`/`67`/LOCK/REP/сегментные префиксы, 16/32-битные режимы, переключение задач и содержимое TSS, `PagedCpl0ProbeV1`, `interrupt.rs`, `docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7am-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`ltr %ax` по `0xffffffff814094a2` проходит (retired 1208150259 → 1208151283, +1024 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); дескриптор TSS по селектору `0x40` в GDT, загруженной ядром, прошёл все проверки, запись бита занятости принята (значение TR в JSON не записывается — не сверялось).
+Новая граница: RIP `0xffffffff813c2499` (GPA `0x13c2499`), байты `65 89 05 e0 0f 07 03 e9 80 fe ff ff e8 56 6c 03` — `65` (GS) + `89 /r` с ModRM `0x05` (mod 00, reg 000 = EAX, rm 101 = `[rip+disp32]`, disp32 `0x03070fe0`), то есть `mov %eax, %gs:0x3070fe0(%rip)`
+(MOV m32, r32 с префиксом GS, длина 7; далее `e9 80 fe ff ff` = `jmp rel32`); `Unsupported { opcode: 0x89 }` (137), `set_exit_detail` = `Run(Unsupported { opcode: 137 })`, `exit_kind` = `unsupported`, retired = 1208151283.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x87`; RAX = RBX = RDI = RSI = 0, RCX = `0xffff8880833fb000`, RDX = `0xffffffff84421db8`, R8 = R9 = R10 = R11 = 0, R12 = `0xffffffff83a134c0`, R13 = `0x27`, R14 = `0xffffffff84433480`, R15 = 0,
+RSP = `0xffffffff83a03e78`, RBP = `0xffffffff83a03eb0`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOV m32, r32` (`89 /r`) с префиксом GS в наборе CPL0 (аналоги с FS/GS уже есть для других операций: S4-38L7aj, S4-38L7ak); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOV r/m32, r32` и `MOV r/m64, r64` (`[64|65] [REX] 89 /r`, memory-назначение) с FS/GS в наборе CPL0 (S4-38L7an)
+
+Граница S4-38L7am: `65 89 05 e0 0f 07 03` = `mov %eax, %gs:0x3070fe0(%rip)` (ModRM `0x05`: mod 00, reg 000 = EAX, rm 101 = `[rip+disp32]`; длина 7), RIP `0xffffffff813c2499`, `Unsupported { opcode: 0x89 }`, retired 1208151283.
+Семантика дана **по памяти SDM** (Vol. 2 «MOV»: в память пишутся младшие 4 байта регистра-источника, а с REX.W — все 8; флаги не меняются; Vol. 3 §3.4.4: в 64-битном режиме к адресу добавляется только база FS/GS; RIP-относительное смещение отсчитывается от конца всей инструкции),
+по первоисточнику **не сверялась**.
+
+**Исследование до реализации.** Qword-форма `[64|65] REX.W 89 /r` уже существует (S4-38L7g: `Operation::MovFsStore`/`MovGsStore { dst: MemoryOperand, src: RegisterView }`, исполнение — адрес `access_address_48_with_segment_base` до чтения источника, затем одна запись `write_integer` шириной `dst.size`).
+Операция не привязана к ширине: ширину задают `dst.size` и вид регистра `src`, а гейт (`control_policy` + CPL0) и ветка исполнения уже общие. Поэтому dword-форма не получила новых операций: изменился только декодер (ветка `0x89` с `64`/`65`), как у dword-загрузки `8B` (S4-38L7m) рядом с qword-загрузкой (S4-38L7i).
+Остальные формы `89`: без префикса и с `2E/3E/36/26` — обычный `Operation::Mov` (база сегмента не применяется, тест `plain_unprefixed_and_cs_ds_es_ss_dword_store_keep_ignoring_the_segment_bases`; без изменений); регистровое назначение (mod = 11) с FS/GS отказывается с `0x89` ещё со S4-38L7g — политика сохранена (у `C7`, S4-38L7aj, наоборот, регистровая форма игнорирует префикс).
+
+**Декодер.** Ветка `89` с `64`/`65` принимает memory-назначение при размере операнда Dword (без REX.W) или Qword (REX.W) и без LOCK/REP, `66`, `67`; REX.R выбирает источник r8..r15 (для Dword — `r8d..r15d`), REX.B/REX.X — базу и индекс, как у аналогов; пустой REX `0x40` допустим.
+Dword-форма с REX, не стоящим непосредственно перед опкодом (`41 65 89 ..`, `48 65 89 ..`, `65 41 40 89 ..`), консервативно отказывается (как dword-загрузка S4-38L7m; по SDM Vol. 2 §2.2.1 такой REX игнорируется). Qword-форма с валидным REX.W перед опкодом и лишним ранним REX (`48 65 48 89 ..`) принимается, как и раньше (S4-38L7g, S4-38L7i) — не менялось (тест `segment_qword_store_keeps_accepting_a_valid_rex_w_after_a_stale_rex`).
+Повтор или смесь сегментных префиксов (`64 64`, `65 65`, `64 65`, `65 64`, `65 2E`, `2E 65`, `64 3E`) отказывается общей проверкой дубликатов (S4-38L7v). Усечённая кодировка даёт ошибку декодирования без мутации.
+
+**Исполнение.** Только набор CPL0 (`control_policy` задан, CPL0, Long64); иначе `Unsupported { opcode: 0x89 }` без мутации (голые `run`/`step`, paged-probe; CPL3 — `WrongPrivilege` при входе в набор). Порядок прежний: адрес `база + эффективный адрес` (каноничность первого и последнего байта, иначе `#GP(0)` до записи;
+для базы RSP/RBP при FS/GS — `#GP(0)`, не `#SS`), затем чтение источника и одна запись `write_integer` на 4 или 8 байт. Отказ записи оставляет память, флаги, RIP и регистры без изменений. Назначение не читается, чтение-модификация-запись нет, флаги не меняются, RIP += полная длина.
+
+**Тесты.** `cpl0_profile_set` (16 новых; всего 767): граничные байты `65 89 05 e0 0f 07 03` (4 байта EAX по адресу GS-базы + next RIP + disp32, соседние байты не тронуты, RIP + 7, флаги, EAX и RAX не меняются, чтений нет); FS и GS, нулевая база;
+источник из каждого из 8 регистров без REX, с `0x40`, с REX.W и из r8..r15 через REX.R (dword и qword; в состоянии у каждого регистра свои значения); база-регистр, disp8, disp32 и SIB, абсолютный адрес без базы, qword; REX.B (r8, r9, r15, R13 с disp8, R12 через SIB), REX.X, REX.R+X+B вместе;
+чтение назад через `8B` (S4-38L7m); неканоничность первого и последнего байта (`#GP(0)` без записи; граничные канонические адреса принимаются; dword помещается там, где qword нет); база RSP/RBP; отказ записи без фиксации; 31 форма вне среза с точным опкодом `0x89` (регистровое назначение с FS/GS, LOCK/REP/REPNE до и после сегмента, `66`, `67`, повтор и смесь сегментных префиксов, stale REX); усечённые кодировки;
+без префикса и с `2E/3E/36/26` — обычный MOV; отказ вне набора (голый `run`), голый `step`, CPL3. Обновлены прежние тесты, считавшие dword-форму отказом (S4-38L7g, S4-38L7aj): отказ с `0x89` для `65 89 ..` убран, регистровая форма и `66` остались.
+`paged_probe_profile::fs_gs_mov_store_stays_unsupported_in_the_paged_probe_profile`; декодер: `long_decode::tests::segment_store_decodes_fs_gs_dword_and_qword_memory_forms_only`; фасад: `linux_direct::tests::gs_mov_store_r32_after_wrmsr_gs_base_writes_four_bytes_of_eax_and_keeps_the_neighbours`
+(программа задаёт GS через `WRMSR`, пишет известный образец в два qword, затем `65 89 05 disp32` меняет только 4 байта `0x14..0x18`, qword-запись `65 48 89 ..` и чтение назад через GS; retired 16, CF от `SUB` сохраняется).
+Результаты: `cpl0_profile_set` 767, `paged_probe_profile` 45, `od-isa --lib` 2274, `od-machine --lib` 896 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `88`/байтовые формы с FS/GS, `8B`, `8C` и другие опкоды; word-форма (`66 89`); регистровое назначение с FS/GS; LOCK/REP/`67`; расширение допустимых форм со stale REX у qword; `PagedCpl0ProbeV1`, `interrupt.rs`, `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7an-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`mov %eax, %gs:0x3070fe0(%rip)` по `0xffffffff813c2499` проходит (retired 1208151283 → 1208151352, +69 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff814094fb` (GPA `0x14094fb`), байты `0f 30 66 90 31 c0 31 d2 31 c9 31 f6 31 ff e9 a2` — `0f 30` = `wrmsr` (далее `66 90` = `xchg %ax, %ax`, затем обнуление регистров); ECX = `0xc0000081` (`IA32_STAR`), EDX:EAX = `0x00230010:0x00000000` (RAX = 0, RDX = `0x230010`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151352. `WRMSR` в наборе уже моделируется для `IA32_FS_BASE`/`IA32_GS_BASE` (S4-38L6b) и `IA32_EFER` (SCE, S4-38L7f); запись `IA32_STAR` в них не входит (S4-38L7f: прочие MSR — `Unsupported`).
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x2`; RAX = RBX = 0, RCX = RDI = `0xc0000081`, RDX = `0x230010`, RSI = `0x23001000000000`, R8..R11 = 0, R12 = `0xffffffff83a134c0`, R13 = `0x27`, R14 = `0xffffffff84433480`, R15 = 0,
+RSP = `0xffffffff83a03e58`, RBP = `0xffffffff83a03e68`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `WRMSR` в `IA32_STAR` (`0xC0000081`) в наборе CPL0 (`0f 30`; граница настройки `SYSCALL`); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `WRMSR` в `IA32_STAR` (`0xC000_0081`) в наборе CPL0 (S4-38L7ao)
+
+Граница S4-38L7an: `0f 30` = `wrmsr` (длина 2), RIP `0xffffffff814094fb`, ECX = `0xc0000081` (`IA32_STAR`), EDX:EAX = `0x00230010:0x00000000` (EDX = `__USER32_CS << 16 | __KERNEL_CS`), `Unsupported { opcode: 0x30 }`, retired 1208151352.
+Семантика дана **по памяти SDM** (Vol. 4 «MSRs»: `IA32_STAR` — 64-битный MSR настройки `SYSCALL`/`SYSRET`; запись `WRMSR` кладёт `EDX:EAX` в MSR; проверки канонического адреса для STAR нет — у него нет адресного поля, только селекторы в битах 63:32 и legacy EIP в 31:0), по первоисточнику **не сверялась**. Побитовая семантика STAR не моделируется: значение хранится как есть.
+
+**Исследование до реализации.**
+- Представление MSR. В `od-isa` MSR — не общая таблица, а закрытый перечень профилей `MsrProfile` (`SysenterProbeV1`, `GsBaseV1`, `FsBaseV1`, `KernelGsBaseV1`, `EferReadOnlyV1`; `crates/od-isa/src/msr.rs`) и две ветки диспетча по `ECX` в одной ветке `ReadMsr`/`WriteMsr` шага (`execute.rs`): профиль, который обрабатывает индекс, плюс члены набора `msr_bases` (FS/GS base, S4-38L6b) и `msr_efer` (запись EFER.SCE через ячейку `Cell<u64>` вызывающего, S4-38L7f). FS/GS base живут в `LongModeState.fs_base`/`gs_base`; EFER — в ячейке, которой владеет плата (`guest_efer`); `kernel_gs_base` — `Option<u64>` в состоянии.
+- Хранилища для STAR в наборе CPL0 не было: ни поля в `LongModeState` для набора, ни ячейки, ни платы; `grep` по `0xc0000081` находил только тесты отказа («прочие MSR — `Unsupported`», S4-38L7f). STAR есть лишь в отдельном ограниченном диагностическом профиле `crates/od-isa/src/syscall.rs` (`LongModeState.syscall: Option<SyscallState { efer, star, lstar, fmask, .. }>`, шаг `syscall::step` с CPL3-пробой `stage4_cpl3_syscall_probe` в `od-machine`): он включается только явным входом, требует точные CR0/CR4, CS-кэши и пару CPL, шаг набора CPL0 его не читает и не пишет, и доска Linux его не заполняет. Подмешивать запись STAR из набора в `SyscallState` нельзя без остальных полей (`efer`, `lstar`, `fmask`) и без точного входного состояния профиля, поэтому он не использован.
+- Чтение. `RDMSR` STAR в наборе нет и не добавляется: он остаётся `Unsupported { opcode: 0x32 }`. Значение наблюдаемо только через ячейку вызывающего / плату / запись стопа (`guest_star`).
+- `SYSCALL`/`SYSRET` не моделируются в наборе: в длинном декодере нет операций `SYSCALL`/`SYSRET` (`0F 05`/`0F 07` — `Unsupported`), `execute.rs` не обращается к `state.syscall`; `SYSENTER`/`SYSEXIT` — `Unsupported` (или `#UD` под `SepProfile::SepDisabledV1`). Значит ничто в наборе и на плате STAR не читает. Отказ закреплён тестом `syscall_and_sysret_stay_unsupported_in_the_set_with_the_star_member` (`0F 05`, `0F 07`, с REX.W, после записи STAR).
+- Выбор места хранения. Поле в `LongModeState` потребовало бы правки ~120 литералов состояния в тестах и меняло бы публичную структуру; ячейка по образцу EFER/CONFIG_ADDRESS (S4-38L7f, S4-38L7w) — одно поле `ExecutionProfiles` (механически 110 литералов `msr_star: None`), владелец — плата, состояние CPU не меняется. Выбрана ячейка. Нового MSR-профиля (`MsrProfile`) не вводится: обработка — короткая ветка до выбора профиля.
+
+**Реализация.** `Cpl0ProfileSet::with_msr_star_write(&Cell<u64>)`. Условия записи: член задан, `control_policy` задан (набор CPL0), CPL0, Long64, `WRMSR` без префиксов и REX, длина 2 (`0F 30`), `ECX` (32 бита, как у всех MSR) = `0xC000_0081`. Тогда в ячейку пишется ровно `EDX << 32 | EAX` (старшие половины RAX/RDX и RCX игнорируются; без проверок канонического адреса и зарезервированных битов), RIP += 2, флаги и регистры не меняются, `Advanced`. Любая другая форма (префиксы, `RDMSR`, нет члена, нет набора, не Long64) проходит прежний путь: профиль индекс `0xC000_0081` не обрабатывает, поэтому `Unsupported { opcode }` без мутации (`0x30` для `WRMSR`, `0x32` для `RDMSR`). `WRMSR` любого другого MSR (EFER без записи, LSTAR/CSTAR/SYSCALL_MASK, KERNEL_GS_BASE, APIC_BASE, SYSENTER_*) не изменился. CPL3 — `WrongPrivilege` при входе в набор; голые `run`/`step` и paged-probe-профили — прежний отказ.
+Плата: `LoadedFirmwareBoard::guest_star()` (0 до первой записи; `set_guest_star` — между запусками, как `guest_efer`), член `LinuxCpl0SetMembers::msr_star` (имя в `set_members`: `msr:star_write`, включён в `linux_default`, выключен в `minimal`), поле `guest_star` в `LinuxStopRecord` и в JSON стопа (`stop.guest_star`, hex).
+
+**Тесты.** `cpl0_profile_set` (10 новых; всего 777): граничные байты `0f 30` с ECX = `0xc0000081`, EDX:EAX = `0x230010:0` → ячейка `0x0023001000000000`, изменился только RIP; значение ровно `EDX<<32|EAX` (старшие половины RAX/RDX и RCX игнорируются, неканоническое значение хранится как есть, повторная запись заменяет, ноль — значение); совместная работа с FS/GS base и EFER; другие MSR отказываются с `0x30` без мутации; `RDMSR` STAR отказывается с `0x32` и после записи; отказ без члена в других наборах; отказ в голом `run` и `run_with_msr_profile` для каждого профиля (тот же выход, что у неизвестного MSR); префиксы `66`/`F3`/`F2`/`2E`/`3E`/`67`/REX отказываются; тот же 32-битный индекс с другими разрядами (`0x81`, `0xC0010081`, `0xC081`) — другой MSR, отказ `0x30`; `SYSCALL`/`SYSRET` отказывают с точными `0x05`/`0x07`; CPL3 не доходит до члена.
+`paged_probe_profile::paged_probe_profiles_keep_wrmsr_ia32_star_unsupported_and_pure` (46 всего): базовый paged-probe, stack-, cr3- и cr0-wp-профили отказывают с `0x30` без мутации. Фасад `od-machine`: `wrmsr_star_runs_through_the_board_set_and_the_board_keeps_the_value` (цикл через плату: запись, значение в записи стопа и на плате, сохранение между запусками, отказ без члена с retired 3) и `rdmsr_star_and_other_msr_writes_stay_the_stop_through_the_board_set` (`RDMSR` STAR и `WRMSR` LSTAR — стоп; цепочка двух запусков на одной плате — запись в первом, то же значение во втором); раннер: `set_cpl0_reports_the_guest_star_after_a_wrmsr_of_ia32_star`. Обновлены списки `set_members` (`msr:star_write` после `msr:fs_gs_base`) и тест S4-38L7f, использовавший STAR как «чужой» MSR (теперь APIC_BASE `0x1B`, не из семейства SYSCALL).
+Результаты: `cpl0_profile_set` 777, `paged_probe_profile` 46, `od-isa --lib` 2274, `od-machine --lib` 898 (6 ignored), `od-x86-runner` 8 + 6, `od-runner` без отказов, `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `RDMSR` STAR; побитовая семантика STAR; `SYSCALL`/`SYSRET`; `WRMSR` LSTAR/CSTAR/SYSCALL_MASK (`0xC000_0082`/`83`/`84`); префиксованные формы; `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ao-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`wrmsr` STAR по `0xffffffff814094fb` проходит (retired 1208151352 → 1208151372, +20 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); `guest_star` = `0x23001000000000`.
+Новая граница: тот же RIP `0xffffffff814094fb` (GPA `0x14094fb`; это общая обёртка записи MSR ядра), байты `0f 30 66 90 31 c0 31 d2 31 c9 31 f6 31 ff e9 a2` — `wrmsr`; ECX = `0xc0000082` (`IA32_LSTAR`), EDX:EAX = `0xffffffff:0x81000080` (RAX = `0x81000080`, RDX = `0xffffffff`; значение `0xffffffff81000080`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151372.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x7`; `exceptions_delivered` = 30; `memory_error`/`page_fault` отсутствуют; `pci_config_address` = `0x8000f80a`; `set_members` — прежние плюс `msr:star_write`.
+Следующий срез — `WRMSR` в `IA32_LSTAR` (`0xC0000082`) в наборе CPL0 (`0f 30`; продолжение настройки `SYSCALL`, значение — адрес точки входа); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `WRMSR` в `IA32_LSTAR` (`0xC000_0082`) в наборе CPL0 (S4-38L7ap)
+
+Граница S4-38L7ao: `0f 30` = `wrmsr` (длина 2), RIP `0xffffffff814094fb`, ECX = `0xc0000082` (`IA32_LSTAR`), EDX:EAX = `0xffffffff:0x81000080` (значение `0xffffffff81000080` — адрес точки входа `SYSCALL`), `Unsupported { opcode: 0x30 }`, retired 1208151372.
+Семантика дана **по памяти SDM** (Vol. 4 «MSRs»: `IA32_LSTAR` — 64-битный MSR с целевым RIP `SYSCALL` в 64-битном режиме; `WRMSR` кладёт `EDX:EAX` в MSR; настоящий CPU при записи неканонического адреса даёт `#GP(0)`), по первоисточнику **не сверялась**. В этом срезе, как у STAR, значение хранится как есть: проверка канонического адреса и побитовая семантика не моделируются (граничное значение каноническое, `SYSCALL` ничего не читает).
+
+**Решение по хранению (литералы).** В S4-38L7ao поле `msr_star` потребовало ~110 механических вставок `msr_star: None` в литералы `ExecutionProfiles`. Здесь поле `ExecutionProfiles::msr_star` получило тип `Option<SyscallMsrCells>`, где `SyscallMsrCells { star, lstar }` — пара необязательных ячеек `Cell<u64>`; `None` в существующих литералах остаётся верным. Само поле затем переименовано в `syscall_msrs` отдельным механическим коммитом (литералы `None` заменены только в `ExecutionProfiles`; `msr_star` у `Cpl0ProfileSet` — поле только для STAR — не менялось). `Cpl0ProfileSet` получил отдельное поле `msr_lstar` (литерал один — `Cpl0ProfileSet::new`), `LinuxCpl0SetMembers` — поле `msr_lstar` (литералы: `minimal`, `linux_default` и два теста). Следующие MSR семейства (CSTAR, SYSCALL_MASK) добавляются в `SyscallMsrCells` без правки литералов.
+
+**Реализация.** `Cpl0ProfileSet::with_msr_lstar_write(&Cell<u64>)`. Ветка записи STAR в шаге `WriteMsr` обобщена: по индексу выбирается ячейка (`0xC000_0081` — STAR, `0xC000_0082` — LSTAR), условия те же и ничего не ослаблено: член задан, `control_policy` задан (набор CPL0), CPL0, Long64, `WRMSR` без префиксов и REX, длина 2 (`0F 30`), `ECX` (32 бита) равен индексу члена. В ячейку пишется ровно `EDX << 32 | EAX` (старшие половины RAX/RDX и RCX игнорируются), RIP += 2, прочее состояние не меняется, `Advanced`. Член LSTAR не открывает STAR и наоборот. Любая другая форма (префиксы, `RDMSR`, нет члена, нет набора, не Long64, другой индекс) идёт прежним путём: `Unsupported { opcode }` без мутации (`0x30`/`0x32`). `RDMSR` LSTAR остаётся `Unsupported { opcode: 0x32 }`; `SYSCALL`/`SYSRET` не моделируются и отказывают с точными `0x05`/`0x07`; CSTAR (`0xC000_0083`) и SYSCALL_MASK (`0xC000_0084`) остаются отказом `0x30`. Поведение STAR не менялось: тесты STAR в `od-isa` не правились; тест S4-38L7ao в `od-machine` изменён (LSTAR → CSTAR/SYSCALL_MASK).
+Плата: `LoadedFirmwareBoard::guest_lstar()` (0 до первой записи; `set_guest_lstar` — между запусками, как `guest_star`), член `LinuxCpl0SetMembers::msr_lstar` (имя в `set_members`: `msr:lstar_write` после `msr:star_write`; включён в `linux_default`, выключен в `minimal`), поле `guest_lstar` в `LinuxStopRecord` и в JSON стопа (`stop.guest_lstar`, hex).
+
+**Тесты.** `cpl0_profile_set` (12 новых; всего 789): граничные байты `0f 30` с ECX = `0xc0000082`, EDX:EAX = `0xffffffff:0x81000080` → ячейка `0xffffffff81000080`, изменился только RIP; значение ровно `EDX<<32|EAX` (старшие половины RAX/RDX и RCX игнорируются, неканоническое значение хранится как есть, повторная запись заменяет, ноль — значение); независимость ячеек STAR и LSTAR и совместная работа с FS/GS base и EFER (восемь инструкций подряд); член LSTAR без STAR не принимает STAR и наоборот; при обоих членах одна запись STAR не трогает ячейку LSTAR и наоборот (значения-маркеры в обеих ячейках); другие MSR при члене LSTAR отказывают с `0x30` без мутации; CSTAR и SYSCALL_MASK отказывают при обоих членах; `RDMSR` LSTAR отказывает с `0x32` и после записи; отказ без члена в других наборах (в том числе с одним членом STAR); отказ в голом `run` и `run_with_msr_profile` для каждого профиля (тот же выход, что у неизвестного MSR); префиксы `66`/`F3`/`F2`/`2E`/`3E`/`67`/REX (`48`, `40`) отказываются; тот же 32-битный индекс с другими разрядами (`0x82`, `0xC0010082`, `0xC082`, `0xC0000002`) — другой MSR, отказ `0x30`; `SYSCALL`/`SYSRET` отказывают с точными `0x05`/`0x07` с обоими членами и после записи; CPL3 не доходит до члена.
+`paged_probe_profile::paged_probe_profiles_keep_wrmsr_ia32_lstar_unsupported_and_pure` (47 всего): базовый paged-probe, stack-, cr3- и cr0-wp-профили отказывают с `0x30` без мутации. Фасад `od-machine`: `wrmsr_lstar_runs_through_the_board_set_and_the_board_keeps_the_value` (запись через плату, значение в записи стопа и на плате, сохранение между запусками, цепочка двух запусков на одной плате, отказ без члена с retired 3 при `minimal` и при `msr_lstar: false`) и `rdmsr_lstar_and_syscall_stay_the_stop_through_the_board_set` (после записи LSTAR `RDMSR`, `SYSCALL`, `SYSRET` — стоп с `0x32`/`0x05`/`0x07`); раннер: `set_cpl0_reports_the_guest_lstar_after_a_wrmsr_of_ia32_lstar`. Обновлены списки `set_members` (`msr:lstar_write` после `msr:star_write`), тест `linux_default` и тест S4-38L7ao `rdmsr_star_and_other_msr_writes_stay_the_stop_through_the_board_set`, где LSTAR служил «чужим» MSR (теперь CSTAR `0xC0000083` и SYSCALL_MASK `0xC0000084`; смысл проверки тот же).
+Результаты: `cpl0_profile_set` 789, `paged_probe_profile` 47, `od-isa --lib` 2274, `od-machine --lib` 900 (6 ignored), `od-x86-runner` 8 + 6, `od-runner` без отказов, `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `RDMSR` LSTAR; проверка канонического адреса и побитовая семантика LSTAR; `SYSCALL`/`SYSRET`; `WRMSR` CSTAR/SYSCALL_MASK (`0xC000_0083`/`84`); префиксованные формы; `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ap-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`wrmsr` LSTAR по `0xffffffff814094fb` проходит (retired 1208151372 → 1208151396, +24 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); `guest_lstar` = `0xffffffff81000080`, `guest_star` = `0x23001000000000`.
+Новая граница: тот же RIP `0xffffffff814094fb` (GPA `0x14094fb`; общая обёртка записи MSR ядра), байты `0f 30 66 90 31 c0 31 d2 31 c9 31 f6 31 ff e9 a2` — `wrmsr`; ECX = `0xc0000083` (`IA32_CSTAR`), EDX:EAX = `0xffffffff:0x81001ab0` (RAX = `0x81001ab0`, RDX = `0xffffffff`; значение `0xffffffff81001ab0`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151396.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x7`; `exceptions_delivered` = 30; `memory_error`/`page_fault` отсутствуют; `pci_config_address` = `0x8000f80a`; `set_members` — прежние плюс `msr:lstar_write`.
+Следующий срез — `WRMSR` в `IA32_CSTAR` (`0xC0000083`) в наборе CPL0 (`0f 30`; продолжение настройки `SYSCALL`, адрес точки входа compat-режима); не реализован. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `WRMSR` в `IA32_CSTAR` (`0xC000_0083`) в наборе CPL0 (S4-38L7aq)
+
+Граница S4-38L7ap: `0f 30` = `wrmsr` (длина 2), RIP `0xffffffff814094fb`, ECX = `0xc0000083` (`IA32_CSTAR`), EDX:EAX = `0xffffffff:0x81001ab0` (значение `0xffffffff81001ab0` — адрес точки входа `SYSCALL` из compat-режима), `Unsupported { opcode: 0x30 }`, retired 1208151396.
+Семантика дана **по памяти SDM** (Vol. 4 «MSRs»: `IA32_CSTAR` — 64-битный MSR с целевым RIP `SYSCALL` в режиме совместимости; `WRMSR` кладёт `EDX:EAX` в MSR; настоящий CPU при записи неканонического адреса даёт `#GP(0)`), по первоисточнику **не сверялась**. Как у STAR и LSTAR, значение хранится как есть: проверка канонического адреса и побитовая семантика не моделируются (граничное значение каноническое, `SYSCALL` ничего не читает).
+
+**Хранение.** Новая ячейка идёт внутрь `SyscallMsrCells` (поле `cstar` рядом с `star` и `lstar`), литералы `syscall_msrs: None` в `ExecutionProfiles` не менялись. `Cpl0ProfileSet` получил отдельное поле `msr_cstar` (литерал один — `Cpl0ProfileSet::new`), `LinuxCpl0SetMembers` — поле `msr_cstar` (литералы: `minimal`, `linux_default` и тест `linux_default_set_is_cli_cr3_cpuid_and_popf`; остальные тестовые литералы используют `..minimal()` или `..linux_default()`).
+
+**Реализация.** `Cpl0ProfileSet::with_msr_cstar_write(&Cell<u64>)`. Выбор ячейки по `ECX` в ветке записи шага `WriteMsr` получил третий индекс (`0xC000_0083` — CSTAR); условия те же и ничего не ослаблено: член задан, `control_policy` задан (набор CPL0), CPL0, Long64, `WRMSR` без префиксов и REX, длина 2 (`0F 30`), `ECX` (32 бита) равен индексу члена. В ячейку пишется ровно `EDX << 32 | EAX` (старшие половины RAX/RDX и RCX игнорируются), RIP += 2, прочее состояние не меняется, `Advanced`. Член CSTAR не открывает STAR/LSTAR и наоборот; одна запись меняет только свою ячейку. Любая другая форма (префиксы, `RDMSR`, нет члена, нет набора, не Long64, другой индекс) идёт прежним путём: `Unsupported { opcode }` без мутации (`0x30`/`0x32`). `RDMSR` CSTAR остаётся `Unsupported { opcode: 0x32 }`; `SYSCALL`/`SYSRET` не моделируются и отказывают с точными `0x05`/`0x07`; SYSCALL_MASK (`0xC000_0084`) остаётся отказом `0x30` (в этом срезе не добавлялся). Поведение STAR и LSTAR не менялось.
+Плата: `LoadedFirmwareBoard::guest_cstar()` (0 до первой записи; `set_guest_cstar` — между запусками, как `guest_lstar`), член `LinuxCpl0SetMembers::msr_cstar` (имя в `set_members`: `msr:cstar_write` после `msr:lstar_write`; включён в `linux_default`, выключен в `minimal`), поле `guest_cstar` в `LinuxStopRecord` и в JSON стопа (`stop.guest_cstar`, hex).
+
+**Тесты.** `cpl0_profile_set` (12 новых; всего 801): граничные байты `0f 30` с ECX = `0xc0000083`, EDX:EAX = `0xffffffff:0x81001ab0` → ячейка `0xffffffff81001ab0`, изменился только RIP; значение ровно `EDX<<32|EAX` (старшие половины RAX/RDX и RCX игнорируются, неканоническое значение хранится как есть, повторная запись заменяет, ноль — значение); три члена подряд с FS/GS base и EFER (одиннадцать инструкций); независимость: при всех трёх членах и значениях-маркерах в каждой ячейке одна запись любого из STAR/LSTAR/CSTAR меняет только свою ячейку; отказ без члена CSTAR в других наборах (в том числе только STAR, только LSTAR и STAR+LSTAR); отказ в голом `run` и `run_with_msr_profile` для каждого профиля (тот же выход, что у неизвестного MSR); другие MSR при члене CSTAR (в том числе STAR, LSTAR, SYSCALL_MASK) отказывают с `0x30` без мутации; SYSCALL_MASK отказывает при всех трёх членах; `RDMSR` CSTAR отказывает с `0x32` и после записи; префиксы `66`/`F3`/`F2`/`2E`/`3E`/`67`/REX (`48`, `40`) отказываются; тот же 32-битный индекс с другими разрядами (`0x83`, `0xC0010083`, `0xC083`, `0xC0000003`) — другой MSR, отказ `0x30`; `SYSCALL`/`SYSRET` отказывают с точными `0x05`/`0x07` со всеми членами и после записи; CPL3 не доходит до члена.
+`paged_probe_profile::paged_probe_profiles_keep_wrmsr_ia32_cstar_unsupported_and_pure` (48 всего): базовый paged-probe, stack-, cr3- и cr0-wp-профили отказывают с `0x30` без мутации. Фасад `od-machine`: `wrmsr_cstar_runs_through_the_board_set_and_the_board_keeps_the_value` (запись через плату, значение в записи стопа и на плате, STAR/LSTAR не тронуты, сохранение между запусками, цепочка двух запусков на одной плате, отказ без члена с retired 3 при `minimal`, при `msr_star`+`msr_lstar` без CSTAR и при `msr_cstar: false`) и `rdmsr_cstar_and_syscall_mask_stay_the_stop_through_the_board_set` (после записи CSTAR `RDMSR`, `SYSCALL`, `SYSRET` — стоп с `0x32`/`0x05`/`0x07`; `WRMSR` SYSCALL_MASK — стоп, все три ячейки 0); раннер: `set_cpl0_reports_the_guest_cstar_after_a_wrmsr_of_ia32_cstar`. Обновлены списки `set_members` (`msr:cstar_write` после `msr:lstar_write`, три теста `od-machine` и три теста раннера) и тест `linux_default`.
+Изменённые прежние тесты: `linux_direct::tests::rdmsr_star_and_other_msr_writes_stay_the_stop_through_the_board_set` (S4-38L7ao) — при `linux_default` CSTAR теперь член набора, поэтому индекс `0x83` убран из цикла «чужих» MSR, остался SYSCALL_MASK `0x84` (смысл проверки тот же: другой MSR семейства SYSCALL, не член, остаётся стопом со STAR/LSTAR/CSTAR нулевыми; добавлена проверка `guest_cstar == 0`). Тесты `cpl0_profile_set` S4-38L7ao/S4-38L7ap, использующие CSTAR как «чужой» MSR при наборе без члена CSTAR (`wrmsr_other_msrs_stay_unsupported_with_the_star_member`, `..._with_the_lstar_member`), не менялись: набор в них не содержит члена CSTAR, отказ остаётся верным; `cstar_and_syscall_mask_stay_unsupported_with_both_syscall_msr_members` переименован в `cstar_and_syscall_mask_stay_unsupported_with_the_star_and_lstar_members_only` (смысл тот же, имя уточнено, чтобы не читаться как «при всех членах»).
+Результаты: `cpl0_profile_set` 801, `paged_probe_profile` 48, `od-isa --lib` 2274, `od-machine --lib` 902 (6 ignored), `od-x86-runner` 8 + 6, `od-runner` без отказов (203 теста бинаря плюс интеграционные), `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `RDMSR` CSTAR; проверка канонического адреса и побитовая семантика CSTAR; `SYSCALL`/`SYSRET`; `WRMSR` SYSCALL_MASK (`0xC000_0084`); префиксованные формы; `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7aq-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`wrmsr` CSTAR по `0xffffffff814094fb` проходит (retired 1208151396 → 1208151413, +17 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); `guest_cstar` = `0xffffffff81001ab0`, `guest_lstar` = `0xffffffff81000080`, `guest_star` = `0x23001000000000`.
+Новая граница: RIP `0xffffffff8140925b` (GPA `0x140925b`), байты `0f 30 31 c0 66 90 31 d2 31 c9 31 f6 31 ff e9 42` — `wrmsr` (другой экземпляр обёртки записи MSR ядра, не тот, что на `0xffffffff814094fb`); ECX = `0x174` (`IA32_SYSENTER_CS`), EDX:EAX = `0:0x10` (RAX = RSI = `0x10`, RDX = 0, RCX = RDI = `0x174`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151413.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; `exceptions_delivered` = 30; `memory_error`/`page_fault` отсутствуют; `pci_config_address` = `0x8000f80a`; `set_members` — прежние плюс `msr:cstar_write`.
+SYSCALL_MASK (`0xC0000084`) этим прогоном не достигнут: ядро перешло к `IA32_SYSENTER_CS` раньше (порядок записей в ядре определяет сам образ; из прогона он не выводится).
+Следующая граница — `WRMSR` в `IA32_SYSENTER_CS` (`0x174`) в наборе CPL0 (`0f 30`, значение `0x10`); не реализована, выбор следующего среза (SYSENTER_CS или SYSCALL_MASK) не сделан. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `WRMSR` в `IA32_SYSENTER_CS` (`0x174`) в наборе CPL0 (S4-38L7ar)
+
+Граница S4-38L7aq: `0f 30` = `wrmsr` (длина 2), RIP `0xffffffff8140925b`, ECX = `0x174` (`IA32_SYSENTER_CS`), EDX:EAX = `0:0x10` (`0x10` — селектор кода ядра), `Unsupported { opcode: 0x30 }`, retired 1208151413.
+Семантика дана **по памяти SDM** (Vol. 4 «MSRs»: `IA32_SYSENTER_CS` — селектор кода для `SYSENTER`, в реальном CPU 16-битный; `WRMSR` кладёт `EDX:EAX` в MSR), по первоисточнику **не сверялась**. **Раскладка регистра не моделируется:** ячейка хранит полное 64-битное значение `EDX << 32 | EAX` как есть (без урезания до 16 бит, без проверки зарезервированных разрядов и канонического адреса); граничное значение `0x10` укладывается в селектор, `SYSENTER`/`SYSEXIT` ничего не читают.
+
+**Хранение.** SYSENTER — не SYSCALL, поэтому на публичных границах ячейка отдельная: `Cpl0ProfileSet::msr_sysenter_cs` (литерал один — `Cpl0ProfileSet::new`), `LinuxCpl0SetMembers::msr_sysenter_cs`, плата `guest_sysenter_cs`, `LinuxStopRecord.guest_sysenter_cs`. Во внутреннем носителе `ExecutionProfiles` ячейка идёт тем же необязательным пакетом, что и ячейки SYSCALL, поэтому пакет переименован: `SyscallMsrCells` → `GuestMsrCells` (новое поле `sysenter_cs`), поле `ExecutionProfiles::syscall_msrs` → `guest_msrs`. Это механическая замена идентификатора в ~110 литералах `ExecutionProfiles` (`guest_msrs: None`, смысл `None` не менялся); поле `Cpl0ProfileSet` литералов не затрагивало. Ячейка не лежит в структуре под именем SYSCALL.
+
+**Приоритет профиля `SysenterProbeV1` (решение оркестратора).** `MsrProfile::SysenterProbeV1` обрабатывает `0x174..=0x176` и отвечает `#GP(0)` на `RDMSR`/`WRMSR` при любом CPL (политика «только отказ» Stage 2). Член не отменяет её молча: если профиль MSR, выбранный `with_msr`, — `SysenterProbeV1`, член `with_msr_sysenter_cs_write` не действует, и прежний `#GP(0)` остаётся (ячейка не пишется, ничего не retired, состояние без изменений; прежние тесты не менялись). Приоритет проверяется при выполнении по профилю набора, поэтому порядок вызовов построителя (член, затем профиль или профиль, затем член) не влияет. С остальными профилями (`EferReadOnlyV1` и т. д.) член действует. Набор Linux `SysenterProbeV1` **не содержит**: `run_linux_direct_board_set` задаёт `with_msr(&MsrProfile::EferReadOnlyV1(board EFER))` и больше ни одного MSR-профиля (проверено по `crates/od-machine/src/linux_direct.rs`, `firmware_board.rs`, раннеру); там член действует.
+
+**Реализация.** `Cpl0ProfileSet::with_msr_sysenter_cs_write(&Cell<u64>)`. Выбор ячейки по `ECX` в ветке записи шага `WriteMsr` получил индекс `0x174` (только если профиль MSR набора не `SysenterProbeV1`); условия те же, что у STAR/LSTAR/CSTAR, ничего не ослаблено: член задан, `control_policy` задан (набор CPL0), CPL0, Long64, `WRMSR` без префиксов и REX, длина 2 (`0F 30`), `ECX` (32 бита) равен `0x174` (старшие половины RAX/RDX и RCX игнорируются, как у остальных ячеек). В ячейку пишется ровно `EDX << 32 | EAX`, RIP += 2, прочее состояние не меняется, `Advanced`. Любая другая форма идёт прежним путём: `Unsupported { opcode }` без мутации (`0x30`/`0x32`). `RDMSR` `0x174` остаётся `Unsupported { opcode: 0x32 }` (как у остальных ячеек, чтения нет); `SYSENTER`/`SYSEXIT` не моделируются; `SYSCALL`/`SYSRET` отказывают с `0x05`/`0x07`; SYSENTER_ESP (`0x175`) и SYSENTER_EIP (`0x176`) остаются отказом `0x30` (в этом срезе не добавлялись); SYSCALL_MASK (`0xC000_0084`) остаётся `0x30`. STAR, LSTAR, CSTAR не менялись по смыслу и тестам.
+Плата: `LoadedFirmwareBoard::guest_sysenter_cs()` (0 до первой записи; `set_guest_sysenter_cs` — между запусками), член `LinuxCpl0SetMembers::msr_sysenter_cs` (имя в `set_members`: `msr:sysenter_cs_write` после `msr:cstar_write`; включён в `linux_default`, выключен в `minimal`), поле `guest_sysenter_cs` в `LinuxStopRecord` и в JSON стопа (`stop.guest_sysenter_cs`, hex).
+
+**Тесты.** `cpl0_profile_set` (14 новых; всего 815): граничные байты `0f 30` с ECX = `0x174`, EDX:EAX = `0:0x10` → ячейка `0x10`, изменился только RIP; значение ровно `EDX<<32|EAX` (старшие половины RAX/RDX и RCX игнорируются, 64-битное значение хранится как есть, повторная запись заменяет, ноль — значение); совместная работа со STAR, FS/GS base и EFER (восемь инструкций); независимость: при четырёх членах (STAR, LSTAR, CSTAR, SYSENTER_CS) и значениях-маркерах одна запись меняет только свою ячейку; отказ без члена в других наборах; отказ в голом `run` и `run_with_msr_profile` для каждого профиля (с состоянием платы это отказ на входе до выборки, `Unsupported { opcode: 0x0f }`, `fetches == 0`: ветки MSR он не достигает и показывает лишь, что член вне набора ничего не добавляет); ветка MSR голого запуска проверена отдельно на состоянии по умолчанию (две выборки): `SysenterProbeV1` даёт `#GP(0)` для `0x174` и `Unsupported { opcode: 0x30 }` для неизвестного индекса, `GsBaseV1` — `Unsupported { opcode: 0x30 }` для `0x174`; приоритет профиля, обрабатывающего `0x174` (`SysenterProbeV1`; условие через `handles_index(0x174)`), для `WRMSR` и `RDMSR` в обоих порядках построителя (`#GP(0)`, ячейка не тронута, ничего не retired), там же `#GP(0)` ESP/EIP и работа STAR рядом; член действует при `EferReadOnlyV1` + FS/GS base в обоих порядках; другие MSR (ESP, EIP, STAR, LSTAR, CSTAR, SYSCALL_MASK, EFER, FS/GS base, KERNEL_GS_BASE, APIC_BASE) при члене отказывают с `0x30`; соседние 32-битные индексы (`0x10174`, `0x80000174`, `0xC0000174`, `0x74`, `0x1740`, `0x173`) — другой MSR, отказ `0x30`; `RDMSR` `0x174` отказывает с `0x32` и после записи; префиксы `66`/`F3`/`F2`/`2E`/`3E`/`67`/REX (`48`, `40`) отказываются; `SYSENTER`/`SYSEXIT`/`SYSCALL`/`SYSRET` отказывают с точными `0x34`/`0x35`/`0x05`/`0x07`; CPL3 не доходит до члена.
+`paged_probe_profile::paged_probe_profiles_keep_wrmsr_ia32_sysenter_cs_unsupported_and_pure` (49 всего): базовый paged-probe, stack-, cr3- и cr0-wp-профили отказывают с `0x30` без мутации (MSR-профиля у них нет, приоритет `SysenterProbeV1` к ним не относится). Фасад `od-machine`: `wrmsr_sysenter_cs_runs_through_the_board_set_and_the_board_keeps_the_value` (запись через плату, значение в записи стопа и на плате, ячейки SYSCALL не тронуты, сохранение между запусками, цепочка двух запусков на одной плате, отказ без члена с retired 3 при `minimal`, при трёх членах SYSCALL без SYSENTER_CS и при `msr_sysenter_cs: false`), `wrmsr_sysenter_cs_keeps_the_full_64_bit_value_and_never_touches_the_other_cells` (`0xffffffff81001ab0` хранится целиком) и `rdmsr_sysenter_cs_esp_eip_and_sysenter_stay_the_stop_through_the_board_set` (после записи `RDMSR`/`SYSENTER`/`SYSEXIT` — стоп с `0x32`/`0x34`/`0x35`; `WRMSR` ESP и EIP — стоп с `0x30`); раннер: `set_cpl0_reports_the_guest_sysenter_cs_after_a_wrmsr_of_ia32_sysenter_cs`. Обновлены списки `set_members` (`msr:sysenter_cs_write` после `msr:cstar_write`, три теста `od-machine` и три теста раннера) и тест `linux_default`.
+Результаты: `cpl0_profile_set` 815, `paged_probe_profile` 49, `od-isa --lib` 2274, `od-machine --lib` 905 (6 ignored), `od-x86-runner` 8 + 6, `od-runner` без отказов (204 теста бинаря плюс интеграционные), `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `RDMSR` SYSENTER_CS; 16-битная раскладка и побитовая семантика SYSENTER_CS; `WRMSR` SYSENTER_ESP/EIP (`0x175`/`0x176`); `SYSENTER`/`SYSEXIT`; `WRMSR` SYSCALL_MASK; префиксованные формы; `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ar-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`wrmsr` SYSENTER_CS по `0xffffffff8140925b` проходит (retired 1208151413 → 1208151449, +36 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); `guest_sysenter_cs` = `0x10`, `guest_cstar` = `0xffffffff81001ab0`, `guest_lstar` = `0xffffffff81000080`, `guest_star` = `0x23001000000000`.
+Новая граница: тот же RIP `0xffffffff8140925b` (GPA `0x140925b`, та же обёртка записи MSR ядра), байты `0f 30 31 c0 66 90 31 d2 31 c9 31 f6 31 ff e9 42` — `wrmsr`; ECX = `0x175` (`IA32_SYSENTER_ESP`), EDX:EAX = `0xfffffe00:0x3000` (RAX = `0x3000`, RDX = `0xfffffe00`, RSI = `0xfffffe0000003000`, RCX = RDI = `0x175`; значение `0xfffffe0000003000`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151449.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x6`; `exceptions_delivered` = 30; `memory_error`/`page_fault` отсутствуют; `pci_config_address` = `0x8000f80a`; `set_members` — прежние плюс `msr:sysenter_cs_write`.
+Следующая граница — `WRMSR` в `IA32_SYSENTER_ESP` (`0x175`) в наборе CPL0 (`0f 30`); не реализована. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `WRMSR` в `IA32_SYSENTER_ESP` (`0x175`) и `IA32_SYSENTER_EIP` (`0x176`) в наборе CPL0 (S4-38L7as)
+
+Граница S4-38L7ar: `0f 30` = `wrmsr` (длина 2), RIP `0xffffffff8140925b`, ECX = `0x175` (`IA32_SYSENTER_ESP`), EDX:EAX = `0xfffffe00:0x3000` (значение `0xfffffe0000003000`), `Unsupported { opcode: 0x30 }`, retired 1208151449. Запись `IA32_SYSENTER_EIP` (`0x176`) ожидалась следом в том же пути ядра; срез покрывает оба индекса.
+Семантика дана **по памяти SDM** (Vol. 4 «MSRs»: `IA32_SYSENTER_ESP` и `IA32_SYSENTER_EIP` — указатель стека и точка входа для `SYSENTER`; `WRMSR` кладёт `EDX:EAX` в MSR), по первоисточнику **не сверялась**. **Раскладка регистров не моделируется:** каждая ячейка хранит полное 64-битное значение `EDX << 32 | EAX` как есть (без проверки канонического адреса и без побитовой семантики); `SYSENTER`/`SYSEXIT` ничего не читают.
+
+**Хранение.** Одна ячейка на индекс, обе внутри пакета `GuestMsrCells` (`ExecutionProfiles::guest_msrs`): новые поля `sysenter_esp` и `sysenter_eip` (пакет пополнен только полями; ~109 литералов `guest_msrs: None` не менялись — число совпадает с S4-38L7ar). На публичных границах это один член: `Cpl0ProfileSet::msr_sysenter_stack` (пара ячеек, литерал один — `Cpl0ProfileSet::new`), `LinuxCpl0SetMembers::msr_sysenter_stack`, плата `guest_sysenter_esp`/`guest_sysenter_eip`, `LinuxStopRecord.guest_sysenter_esp`/`guest_sysenter_eip`. Ячейки SYSCALL и SYSENTER_CS остаются отдельными и не затронуты.
+
+**Приоритет профиля `SysenterProbeV1` (решение оркестратора, как для `0x174`).** `MsrProfile::SysenterProbeV1` обрабатывает `0x174..=0x176` и отвечает `#GP(0)` на `RDMSR`/`WRMSR` при любом CPL. Если профиль MSR набора (`with_msr`) обрабатывает индекс (`handles_index`), член на этом индексе не действует и прежний `#GP(0)` остаётся (ячейка не пишется, ничего не retired, состояние без изменений). Проверка идёт при выполнении (`!msr_profile.is_some_and(|p| p.handles_index(index))`), поэтому порядок вызовов построителя не влияет. Набор Linux использует только `EferReadOnlyV1`; там член действует.
+
+**Реализация.** `Cpl0ProfileSet::with_msr_sysenter_stack_write(&Cell<u64>, &Cell<u64>)` (ESP, EIP). Выбор ячейки по `ECX` в ветке записи шага `WriteMsr` получил индексы `0x175` и `0x176` (каждый с проверкой приоритета профиля); условия те же, что у остальных ячеек, ничего не ослаблено: член задан, `control_policy` задан (набор CPL0), CPL0, Long64, `WRMSR` без префиксов и REX, длина 2 (`0F 30`), `ECX` (32 бита) равен индексу. В ячейку своего индекса пишется ровно `EDX << 32 | EAX`, RIP += 2, прочее состояние не меняется, `Advanced`; одна запись меняет только свою ячейку (ESP не трогает EIP и наоборот). Любая другая форма идёт прежним путём: `Unsupported { opcode }` без мутации (`0x30`/`0x32`). `RDMSR` `0x175`/`0x176` остаётся `Unsupported { opcode: 0x32 }`; `SYSENTER`/`SYSEXIT` не моделируются и отказывают с `0x34`/`0x35`; `SYSCALL`/`SYSRET` — `0x05`/`0x07`; SYSCALL_MASK (`0xC000_0084`) остаётся `0x30`. STAR, LSTAR, CSTAR, SYSENTER_CS не менялись по смыслу и тестам.
+Плата: `LoadedFirmwareBoard::guest_sysenter_esp()`/`guest_sysenter_eip()` (0 до первой записи; `set_guest_sysenter_esp`/`set_guest_sysenter_eip` — между запусками), член `LinuxCpl0SetMembers::msr_sysenter_stack` (имя в `set_members`: `msr:sysenter_stack_write` после `msr:sysenter_cs_write`; включён в `linux_default`, выключен в `minimal`), поля в `LinuxStopRecord` и в JSON стопа (`stop.guest_sysenter_esp`, `stop.guest_sysenter_eip`, hex).
+
+**Тесты.** `cpl0_profile_set` (14 новых; всего 829): граничные байты `0f 30` с ECX = `0x175`/`0x176`, EDX:EAX = `0xfffffe00:0x3000` → ячейка `0xfffffe0000003000`, изменился только RIP, другая ячейка не тронута; значение ровно `EDX<<32|EAX` (старшие половины RAX/RDX и RCX игнорируются, `RCX | 1<<32` принимается как `0x175`/`0x176`, повторная запись заменяет, ноль — значение); совместная работа с SYSENTER_CS, STAR, FS/GS base и EFER (одиннадцать инструкций); независимость: при шести ячейках (STAR, LSTAR, CSTAR, SYSENTER_CS, ESP, EIP) и значениях-маркерах одна запись любого индекса меняет только свою ячейку; отказ без члена (в том числе только SYSENTER_CS и все четыре прежних члена) для обоих индексов; отказ в голом `run` и `run_with_msr_profile` для каждого профиля (с состоянием платы это отказ на входе, `Unsupported { opcode: 0x0f }`, `fetches == 0`); ветка MSR голого запуска на состоянии по умолчанию (две выборки): `SysenterProbeV1` даёт `#GP(0)` для `0x175`/`0x176`, `GsBaseV1` — `Unsupported { opcode: 0x30 }`; приоритет `SysenterProbeV1` для `WRMSR` и `RDMSR` обоих индексов в обоих порядках построителя (`#GP(0)`, ячейки не тронуты), там же `#GP(0)` для `0x174` при всех членах и работа STAR рядом; член действует при `EferReadOnlyV1` + FS/GS base в обоих порядках; другие MSR (SYSENTER_CS без своего члена, `0x177`, `0x173`, SYSCALL-MSR, SYSCALL_MASK, EFER, FS/GS base, KERNEL_GS_BASE, APIC_BASE) при члене отказывают с `0x30`; соседние 32-битные индексы (`0x10175`, `0x80000175`, `0xC0000175`, `0x75`, `0x1750` и формы `0x176`) — другой MSR, отказ `0x30`; `RDMSR` отказывает с `0x32` и после записи; префиксы `66`/`F3`/`F2`/`2E`/`3E`/`67`/REX (`48`, `40`) отказываются; `SYSENTER`/`SYSEXIT`/`SYSCALL`/`SYSRET` отказывают с точными `0x34`/`0x35`/`0x05`/`0x07`; CPL3 не доходит до члена.
+`paged_probe_profile::paged_probe_profiles_keep_wrmsr_ia32_sysenter_esp_and_eip_unsupported_and_pure` (50 всего): базовый paged-probe, stack-, cr3- и cr0-wp-профили отказывают с `0x30` без мутации для обоих индексов. Фасад `od-machine`: `wrmsr_sysenter_esp_and_eip_run_through_the_board_set_and_the_board_keeps_the_values` (две записи через плату, значения в записи стопа и на плате, остальные ячейки не тронуты, сохранение между запусками, цепочка двух запусков на одной плате с остановкой между ESP и EIP, отказ без члена с retired 3 при `minimal`, при четырёх прежних членах и при `msr_sysenter_stack: false`), `wrmsr_sysenter_esp_and_eip_keep_the_full_64_bit_value_and_never_touch_the_other_cells` и `rdmsr_sysenter_esp_eip_and_sysenter_stay_the_stop_after_the_stack_writes_through_the_board_set` (после двух записей `RDMSR`/`SYSENTER`/`SYSEXIT` — стоп с `0x32`/`0x34`/`0x35`, retired 7); раннер: `set_cpl0_reports_the_guest_sysenter_esp_and_eip_after_their_wrmsr`. Обновлены списки `set_members` (`msr:sysenter_stack_write` после `msr:sysenter_cs_write`, три теста `od-machine` и три теста раннера) и тест `linux_default`.
+Изменённый прежний тест: `linux_direct::tests::rdmsr_sysenter_cs_esp_eip_and_sysenter_stay_the_stop_through_the_board_set` (S4-38L7ar) — при `linux_default` `WRMSR` `0x175`/`0x176` теперь член набора, поэтому его проверка «ESP/EIP остаются стопом» выполняется с `msr_sysenter_stack: false` (смысл проверки: без члена это стоп `0x30`, три ячейки SYSENTER нулевые). Тесты `cpl0_profile_set` S4-38L7ar не менялись (наборы в них не содержат нового члена).
+Результаты: `cpl0_profile_set` 829, `paged_probe_profile` 50, `od-isa --lib` 2274, `od-machine --lib` 908 (6 ignored), `od-x86-runner` 8 + 6, `od-runner` без отказов (205 тестов бинаря плюс интеграционные), `cargo fmt --all -- --check` чисто.
+
+**Не делалось.** `RDMSR` SYSENTER_ESP/EIP; побитовая семантика и проверка канонического адреса; `SYSENTER`/`SYSEXIT`; `WRMSR` SYSCALL_MASK; префиксованные формы; `docs/plans/STAGE_4.md`, `tools/x86-runner/src/native_v2.rs` (прежняя ошибка `E0063` под Linux, открытый пункт).
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7as-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+Обе записи по `0xffffffff8140925b` проходят (retired 1208151449 → 1208151481, +32 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`); `guest_sysenter_esp` = `0xfffffe0000003000`, `guest_sysenter_eip` = `0xffffffff810019f0`, `guest_sysenter_cs` = `0x10`, `guest_cstar` = `0xffffffff81001ab0`, `guest_lstar` = `0xffffffff81000080`, `guest_star` = `0x23001000000000`.
+Новая граница: RIP `0xffffffff814094fb` (GPA `0x14094fb`, первая обёртка записи MSR ядра, через которую прошла запись CSTAR), байты `0f 30 66 90 31 c0 31 d2 31 c9 31 f6 31 ff e9 a2` — `wrmsr`; ECX = `0xc0000084` (`IA32_SYSCALL_MASK`, он же `IA32_FMASK`), EDX:EAX = `0:0x257fd5` (RAX = RSI = `0x257fd5`, RDX = 0, RCX = RDI = `0xc0000084`);
+`Unsupported { opcode: 0x30 }` (48), `set_exit_detail` = `Run(Unsupported { opcode: 48 })`, `exit_kind` = `unsupported`, retired = 1208151481.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; `exceptions_delivered` = 30; `memory_error`/`page_fault` отсутствуют; `pci_config_address` = `0x8000f80a`; `set_members` — прежние плюс `msr:sysenter_stack_write`.
+Следующая граница — `WRMSR` в `IA32_SYSCALL_MASK` (`0xC000_0084`) в наборе CPL0 (`0f 30`, значение `0x257fd5`); не реализована. Расшифровка байтов и названия MSR — по таблицам по памяти, не по SDM.

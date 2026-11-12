@@ -2159,3 +2159,13 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** the main checkout contains a root `smoke/` directory that is not mapped by the project layout, so the layout check exits unsuccessfully. The directory was left untouched as requested; this slice does not change its ownership or contents.
 - **Основание:** running `python3 tools/check_layout.py` from `/Users/senya/projects/open_desktop` returned `ERROR: Unmapped root directory: smoke` (exit code 1).
 - **Следующий шаг:** determine the intended owner and purpose of root `smoke/`, then update the project layout or directory placement in a separately scoped change. Do not silently remove or remap it as part of S4-14c.
+
+<a id="issue-076-native-v2-linux-e0063"></a>
+### ISSUE-076 — `tools/x86-runner/src/native_v2.rs` does not compile on Linux (E0063)
+
+- **Дата обнаружения:** 2026-11-12.
+- **Компонент:** `tools/x86-runner/src/native_v2.rs`, test helper `fn state` (около строки 2066).
+- **Статус:** открыта; pre-existing, не вносится срезами этапа 4.
+- **Суть и последствия:** под Linux x86_64 крейт `od-x86-runner` не собирается с `E0063` (missing fields `cr2`, `fs_unusable`, `gs_unusable` и др. в инициализаторе `LongModeState`): поля добавлены позже, чем последний раз менялся этот модуль (2026-11-05). Поэтому `native_v2::admission` не запускается ни на одной платформе; на macOS `od-x86-runner` проходит только за счёт `cfg(target_os = "linux")`. Срезы S4-38L7ai…ap проверяли admission только по чтению кода.
+- **Основание:** `cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --tests` (агент S4-38L7ai, ревью Opus S4-38L7ai).
+- **Следующий шаг:** в отдельном срезе обновить тестовый конструктор `state` под текущие поля `LongModeState` и прогнать `native_v2` admission на Linux x86_64. До этого не считать admission проверенным для новых операций.

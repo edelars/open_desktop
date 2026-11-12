@@ -580,6 +580,17 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["guest_efer"] = json!(hex64(record.guest_efer));
     // S4-38L7w: the guest PCI CONFIG_ADDRESS (port 0xCF8).
     stop["pci_config_address"] = json!(hex64(u64::from(record.pci_config_address)));
+    // S4-38L7ao: the guest IA32_STAR (write-only for the guest).
+    stop["guest_star"] = json!(hex64(record.guest_star));
+    // S4-38L7ap: the guest IA32_LSTAR (write-only for the guest).
+    stop["guest_lstar"] = json!(hex64(record.guest_lstar));
+    // S4-38L7aq: the guest IA32_CSTAR (write-only for the guest).
+    stop["guest_cstar"] = json!(hex64(record.guest_cstar));
+    // S4-38L7ar: the guest IA32_SYSENTER_CS (write-only for the guest; the full 64-bit value).
+    stop["guest_sysenter_cs"] = json!(hex64(record.guest_sysenter_cs));
+    // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP (write-only for the guest).
+    stop["guest_sysenter_esp"] = json!(hex64(record.guest_sysenter_esp));
+    stop["guest_sysenter_eip"] = json!(hex64(record.guest_sysenter_eip));
     stop
 }
 
@@ -1432,6 +1443,12 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "msr:star_write",
+                "msr:lstar_write",
+                "msr:cstar_write",
+                "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -1476,6 +1493,128 @@ mod tests {
         let value = run_case("efer-control", &[0xF4], 10);
         assert_eq!(value["stop"]["guest_efer"], "0xd00");
         assert_eq!(value["stop"]["efer"], "0xd00");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_star_after_a_wrmsr_of_ia32_star() {
+        // MOV ECX,0xC0000081; XOR EAX,EAX; MOV EDX,0x230010; WRMSR (S4-38L7ao).
+        let code = [
+            0xB9, 0x81, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-star", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_star"], "0x23001000000000");
+        // Without the set nothing writes STAR.
+        let value = run_case("star-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_star"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_lstar_after_a_wrmsr_of_ia32_lstar() {
+        // MOV ECX,0xC0000082; MOV EAX,0x81000080; MOV EDX,0xFFFFFFFF; WRMSR (S4-38L7ap).
+        let code = [
+            0xB9, 0x82, 0x00, 0x00, 0xC0, 0xB8, 0x80, 0x00, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-lstar", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_lstar"], "0xffffffff81000080");
+        assert_eq!(stop["guest_star"], "0x0");
+        // Without the set nothing writes LSTAR.
+        let value = run_case("lstar-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_lstar"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_cstar_after_a_wrmsr_of_ia32_cstar() {
+        // MOV ECX,0xC0000083; MOV EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR (S4-38L7aq).
+        let code = [
+            0xB9, 0x83, 0x00, 0x00, 0xC0, 0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-cstar", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_cstar"], "0xffffffff81001ab0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        // Without the set nothing writes CSTAR.
+        let value = run_case("cstar-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_cstar"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_sysenter_cs_after_a_wrmsr_of_ia32_sysenter_cs() {
+        // MOV ECX,0x174; MOV EAX,0x10; XOR EDX,EDX; WRMSR (S4-38L7ar).
+        let code = [
+            0xB9, 0x74, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-sysenter-cs",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_sysenter_cs"], "0x10");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes SYSENTER_CS.
+        let value = run_case("sysenter-cs-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_sysenter_cs"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_sysenter_esp_and_eip_after_their_wrmsr() {
+        // MOV ECX,0x175; MOV EAX,0x3000; MOV EDX,0xFFFFFE00; WRMSR; MOV ECX,0x176;
+        // MOV EAX,0x81000010; WRMSR (S4-38L7as).
+        let code = [
+            0xB9, 0x75, 0x01, 0x00, 0x00, 0xB8, 0x00, 0x30, 0x00, 0x00, 0xBA, 0x00, 0xFE, 0xFF,
+            0xFF, 0x0F, 0x30, 0xB9, 0x76, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x81, 0x0F,
+            0x30,
+        ];
+        let mut case = Case::new(
+            "set-sysenter-stack",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(7);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 7, "{value:#}");
+        assert_eq!(stop["guest_sysenter_esp"], "0xfffffe0000003000");
+        assert_eq!(stop["guest_sysenter_eip"], "0xfffffe0081000010");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes them.
+        let value = run_case("sysenter-stack-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_sysenter_esp"], "0x0");
+        assert_eq!(value["stop"]["guest_sysenter_eip"], "0x0");
     }
 
     #[test]
@@ -1564,6 +1703,12 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "msr:star_write",
+                "msr:lstar_write",
+                "msr:cstar_write",
+                "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -1850,6 +1995,12 @@ mod tests {
                 "cpuid:DiagnosticV1",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
+                "msr:star_write",
+                "msr:lstar_write",
+                "msr:cstar_write",
+                "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
+                "pio_u8",
                 "popf_cpl0",
                 "pci_config"
             ])
