@@ -35764,12 +35764,12 @@ fn segment_cmpxchg_byte_forms_outside_the_slice_are_refused_with_opcode_b0_witho
 }
 
 #[test]
-fn segment_cmpxchg_dword_and_qword_forms_with_fs_gs_stay_refused_with_opcode_b1() {
-    // `0F B1` with FS/GS (dword, qword and register forms) is not part of the byte slice.
+fn segment_cmpxchg_register_forms_with_fs_gs_stay_refused_with_opcode_b1() {
+    // The `0F B1` memory forms with FS/GS are S4-38L7bo; the register forms (mod = 11) stay refused.
     for code in [
-        &[0x65u8, 0x0f, 0xb1, 0x0f][..],
-        &[0x64, 0x0f, 0xb1, 0x0f][..],
-        &[0x65, 0x48, 0x0f, 0xb1, 0x0f][..],
+        &[0x65u8, 0x0f, 0xb1, 0xc1][..],
+        &[0x64, 0x0f, 0xb1, 0xc1][..],
+        &[0x65, 0x48, 0x0f, 0xb1, 0xc1][..],
         &[0x64, 0x48, 0x0f, 0xb1, 0xc1][..],
     ] {
         let mut state = board_state();
@@ -37502,4 +37502,659 @@ fn dx_forms_keep_their_behaviour_next_to_the_imm8_forms() {
     assert_eq!(pio.writes, [(0x3f9, 0xa5)]);
     assert_eq!(pio.reads, [0x3f9]);
     assert_eq!(state.rip, RIP + 2, "each DX form is one byte long");
+}
+
+// ---- S4-38L7bo: FS/GS-based `CMPXCHG r/m32, r32` and `CMPXCHG r/m64, r64` (`[64|65] [REX] 0F B1 /r`,
+// memory destination, no LOCK; SDM Vol.2 CMPXCHG: compare EAX/RAX with the destination; equal:
+// ZF = 1 and the destination = the source register, otherwise ZF = 0 and EAX/RAX = the destination;
+// the flags are those of CMP accumulator, destination; from memory, not re-checked against the
+// SDM text). REX.W selects r64, no REX.W r32 (the other REX bits extend the registers). The
+// destination is read once and written once on both branches (the S4-38L7k policy: the old value is
+// written back on inequality); the accumulator is written only on inequality, and a dword write
+// zero-extends into RAX (the S4-38L7y convention); on equality RAX is not touched. The source
+// register is unchanged. ----
+
+/// The S4-38L7bn diagnostic boundary bytes: `cmpxchg %rsi, %gs:0x2c116cc(%rip)`, 9 bytes.
+const GS_CMPXCHG_RSI_RIP_DIAG: [u8; 9] = [0x65, 0x48, 0x0f, 0xb1, 0x35, 0xcc, 0x16, 0xc1, 0x02];
+/// `cmpxchg %rcx, %gs:(%rdi)`.
+const GS_CMPXCHG_RCX_RDI: [u8; 5] = [0x65, 0x48, 0x0f, 0xb1, 0x0f];
+/// `cmpxchg %rcx, %fs:(%rdi)`.
+const FS_CMPXCHG_RCX_RDI: [u8; 5] = [0x64, 0x48, 0x0f, 0xb1, 0x0f];
+/// `cmpxchg %ecx, %gs:(%rdi)`.
+const GS_CMPXCHG_ECX_RDI: [u8; 4] = [0x65, 0x0f, 0xb1, 0x0f];
+/// `cmpxchg %ecx, %fs:(%rdi)`.
+const FS_CMPXCHG_ECX_RDI: [u8; 4] = [0x64, 0x0f, 0xb1, 0x0f];
+/// `cmpxchg %rcx, %gs:0x1234(%rip)`.
+const GS_CMPXCHG_RCX_RIP: [u8; 9] = [0x65, 0x48, 0x0f, 0xb1, 0x0d, 0x34, 0x12, 0x00, 0x00];
+/// `cmpxchg %rcx, %fs:0x1234(%rip)`.
+const FS_CMPXCHG_RCX_RIP: [u8; 9] = [0x64, 0x48, 0x0f, 0xb1, 0x0d, 0x34, 0x12, 0x00, 0x00];
+/// `cmpxchg %ecx, %gs:0x1234(%rip)`.
+const GS_CMPXCHG_ECX_RIP: [u8; 8] = [0x65, 0x0f, 0xb1, 0x0d, 0x34, 0x12, 0x00, 0x00];
+/// `cmpxchg %ecx, %fs:0x1234(%rip)`.
+const FS_CMPXCHG_ECX_RIP: [u8; 8] = [0x64, 0x0f, 0xb1, 0x0d, 0x34, 0x12, 0x00, 0x00];
+
+const CMPXCHG_SOURCE: u64 = 0xdead_beef_cafe_f00d;
+
+fn run_cmpxchg_wide(state: &mut LongModeState, memory: &mut BitsMemory) -> Cpl0ProfileSetResult {
+    let result = run_bts_set(state, memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    result
+}
+
+#[test]
+fn gs_cmpxchg_qword_diagnostic_bytes_equal_store_rsi_set_zf_and_advance_by_nine() {
+    // The bytes of the S4-38L7bn boundary: the target is gs_base + (RIP + 9) + 0x02c116cc.
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 9 + 0x02c1_16cc;
+    let mut memory = BitsMemory::new(&GS_CMPXCHG_RSI_RIP_DIAG);
+    memory.set_qword(at, 0x1111_2222_3333_4444);
+    memory.data.insert(at - 1, 0xaa);
+    memory.data.insert(at + 8, 0xbb);
+    let mut state = board_state(); // RAX = 0x1111_2222_3333_4444 = the memory value
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_7777_0000;
+    state.gpr[Register::Rsi as usize] = 0x0123_4567_89ab_cdef;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_SF | FLAG_AF;
+    let mut expected = state.clone();
+    let result = run_cmpxchg_wide(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(
+        memory.writes,
+        vec![(at, 0x0123_4567_89ab_cdefu64.to_le_bytes().to_vec())]
+    );
+    assert_eq!(memory.qword(at), 0x0123_4567_89ab_cdef);
+    assert_eq!(
+        (byte_at(&memory, at - 1), byte_at(&memory, at + 8)),
+        (0xaa, 0xbb)
+    );
+    expected.rip += 9;
+    // RAX is untouched on equality; a zero result sets ZF and PF and clears CF/OF/SF/AF.
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_ZF | FLAG_PF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_cmpxchg_qword_diagnostic_bytes_not_equal_load_rax_and_write_the_old_value_back() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 9 + 0x02c1_16cc;
+    let mut memory = BitsMemory::new(&GS_CMPXCHG_RSI_RIP_DIAG);
+    memory.set_qword(at, 0x1111_2222_3333_4440);
+    let mut state = board_state(); // RAX = 0x1111_2222_3333_4444
+    state.gs_base = gs_base;
+    state.gpr[Register::Rsi as usize] = 0x0123_4567_89ab_cdef;
+    state.rflags |= FLAG_ZF | FLAG_CF;
+    let mut expected = state.clone();
+    run_cmpxchg_wide(&mut state, &mut memory);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    // The old value is written back although the compare failed.
+    assert_eq!(
+        memory.writes,
+        vec![(at, 0x1111_2222_3333_4440u64.to_le_bytes().to_vec())]
+    );
+    expected.rip += 9;
+    expected.gpr[Register::Rax as usize] = 0x1111_2222_3333_4440;
+    // ...4444 - ...4440 = 4: one set bit (PF clear), no borrow, positive: every flag clear.
+    expected.rflags &= !ARITH;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn fs_gs_cmpxchg_qword_flags_accumulator_and_memory_follow_hand_computed_cases() {
+    // (RAX, memory, expected flags of CMP RAX, memory); every flag value is worked out by hand.
+    let cases: [(u64, u64, u64); 6] = [
+        // equal: zero result -> ZF and PF.
+        (5, 5, FLAG_ZF | FLAG_PF),
+        // 0 - 1 = 0xffff...ffff: borrow, negative, low byte 0xff (even parity), nibble borrow.
+        (0, 1, FLAG_CF | FLAG_SF | FLAG_PF | FLAG_AF),
+        // 0x8000...0 - 1 = 0x7fff...ffff: signed overflow, no borrow, PF (0xff), nibble borrow.
+        (0x8000_0000_0000_0000, 1, FLAG_OF | FLAG_PF | FLAG_AF),
+        // 0x10 - 0x01 = 0x0f: four set bits -> PF, nibble borrow -> AF.
+        (0x10, 0x01, FLAG_PF | FLAG_AF),
+        // 0x7fff...f - 0xffff...f = 0x8000...0: borrow, negative, overflow, low byte 0 -> PF.
+        (
+            0x7fff_ffff_ffff_ffff,
+            0xffff_ffff_ffff_ffff,
+            FLAG_CF | FLAG_SF | FLAG_PF | FLAG_OF,
+        ),
+        // 4 - 0 = 4: one set bit, nothing else.
+        (4, 0, 0),
+    ];
+    for (code, gs) in [
+        (&GS_CMPXCHG_RCX_RDI[..], true),
+        (&FS_CMPXCHG_RCX_RDI[..], false),
+    ] {
+        for (rax, cell, flags) in cases {
+            let base = 0xffff_8880_1234_0000u64;
+            let at = base + 0x2000;
+            let mut memory = BitsMemory::new(code);
+            memory.set_qword(at, cell);
+            let mut state = board_state();
+            state.gs_base = if gs { base } else { 0xffff_8880_9999_0000 };
+            state.fs_base = if gs { 0xffff_8880_9999_0000 } else { base };
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.gpr[Register::Rax as usize] = rax;
+            state.gpr[Register::Rcx as usize] = CMPXCHG_SOURCE;
+            state.rflags |= ARITH;
+            let mut expected = state.clone();
+            run_cmpxchg_wide(&mut state, &mut memory);
+            let equal = rax == cell;
+            assert_eq!(memory.reads, vec![(at, 8)], "{rax:#x} vs {cell:#x}");
+            assert_eq!(memory.writes.len(), 1, "{rax:#x} vs {cell:#x}");
+            assert_eq!(
+                memory.qword(at),
+                if equal { CMPXCHG_SOURCE } else { cell },
+                "{rax:#x} vs {cell:#x}"
+            );
+            expected.rip += code.len() as u64;
+            if !equal {
+                expected.gpr[Register::Rax as usize] = cell;
+            }
+            expected.rflags = (expected.rflags & !ARITH) | flags;
+            assert_eq!(state, expected, "{rax:#x} vs {cell:#x} gs={gs}");
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_dword_flags_accumulator_and_memory_follow_hand_computed_cases() {
+    // (EAX, memory dword, expected flags of CMP EAX, memory at dword width), by hand.
+    let cases: [(u32, u32, u64); 6] = [
+        (5, 5, FLAG_ZF | FLAG_PF),
+        // 0 - 1 = 0xffff_ffff.
+        (0, 1, FLAG_CF | FLAG_SF | FLAG_PF | FLAG_AF),
+        // 0x8000_0000 - 1 = 0x7fff_ffff: signed overflow.
+        (0x8000_0000, 1, FLAG_OF | FLAG_PF | FLAG_AF),
+        // 0x3333_4444 - 5 = 0x3333_443f: low byte 0x3f has six set bits -> PF; nibble borrow.
+        (0x3333_4444, 5, FLAG_PF | FLAG_AF),
+        // 0x7fff_ffff - 0xffff_ffff = 0x8000_0000: borrow, negative, overflow, low byte 0 -> PF.
+        (
+            0x7fff_ffff,
+            0xffff_ffff,
+            FLAG_CF | FLAG_SF | FLAG_PF | FLAG_OF,
+        ),
+        (4, 0, 0),
+    ];
+    for (code, gs) in [
+        (&GS_CMPXCHG_ECX_RDI[..], true),
+        (&FS_CMPXCHG_ECX_RDI[..], false),
+    ] {
+        for (eax, cell, flags) in cases {
+            let base = 0xffff_8880_1234_0000u64;
+            let at = base + 0x2000;
+            let mut memory = BitsMemory::new(code);
+            set_dword(&mut memory, at, cell);
+            memory.data.insert(at - 1, 0xaa);
+            memory.data.insert(at + 4, 0xbb);
+            let mut state = board_state();
+            state.gs_base = if gs { base } else { 0xffff_8880_9999_0000 };
+            state.fs_base = if gs { 0xffff_8880_9999_0000 } else { base };
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            // A non-zero upper half must be dropped on inequality and kept on equality.
+            state.gpr[Register::Rax as usize] = 0xffff_ffff_0000_0000 | eax as u64;
+            state.gpr[Register::Rcx as usize] = CMPXCHG_SOURCE;
+            state.rflags |= ARITH;
+            let mut expected = state.clone();
+            run_cmpxchg_wide(&mut state, &mut memory);
+            let equal = eax == cell;
+            assert_eq!(memory.reads, vec![(at, 4)], "{eax:#x} vs {cell:#x}");
+            assert_eq!(memory.writes.len(), 1, "{eax:#x} vs {cell:#x}");
+            assert_eq!(
+                dword_at(&memory, at),
+                if equal { 0xcafe_f00d } else { cell },
+                "{eax:#x} vs {cell:#x}"
+            );
+            assert_eq!(
+                (byte_at(&memory, at - 1), byte_at(&memory, at + 4)),
+                (0xaa, 0xbb)
+            );
+            expected.rip += code.len() as u64;
+            if !equal {
+                // The dword register write zero-extends into RAX.
+                expected.gpr[Register::Rax as usize] = cell as u64;
+            }
+            expected.rflags = (expected.rflags & !ARITH) | flags;
+            assert_eq!(state, expected, "{eax:#x} vs {cell:#x} gs={gs}");
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_cmpxchg_wide_use_their_own_base_and_ignore_the_other() {
+    let fs = 0xffff_8880_1000_0000u64;
+    let gs = 0xffff_8880_2000_0000u64;
+    for (code, use_gs, size) in [
+        (&GS_CMPXCHG_RCX_RDI[..], true, 8usize),
+        (&FS_CMPXCHG_RCX_RDI[..], false, 8),
+        (&GS_CMPXCHG_ECX_RDI[..], true, 4),
+        (&FS_CMPXCHG_ECX_RDI[..], false, 4),
+    ] {
+        let mut memory = BitsMemory::new(code);
+        // The accumulator matches the cell at both bases, so only the access log shows the base.
+        memory.set_qword(fs + 0x40, 0x1111_2222_3333_4444);
+        memory.set_qword(gs + 0x40, 0x1111_2222_3333_4444);
+        let mut state = board_state();
+        state.fs_base = fs;
+        state.gs_base = gs;
+        state.gpr[Register::Rdi as usize] = 0x40;
+        state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+        state.gpr[Register::Rcx as usize] = 0x5555_6666_7777_8888;
+        run_cmpxchg_wide(&mut state, &mut memory);
+        let (used, other) = if use_gs { (gs, fs) } else { (fs, gs) };
+        assert_eq!(memory.reads, vec![(used + 0x40, size)], "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1);
+        assert_eq!(memory.writes[0].0, used + 0x40);
+        assert_eq!(memory.qword(other + 0x40), 0x1111_2222_3333_4444);
+        assert_ne!(state.rflags & FLAG_ZF, 0, "{code:02x?}");
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_with_every_extended_source_register_r8_to_r15() {
+    // `cmpxchg %rN, %gs:(%rdi)` / `cmpxchg %rNd, %gs:(%rdi)`: REX.R extends reg; modrm = 0x07 | reg << 3.
+    for (index, register) in EXTENDED.into_iter().enumerate() {
+        for (rex, qword) in [(0x4cu8, true), (0x44, false)] {
+            let code = [0x65, rex, 0x0f, 0xb1, 0x07 | ((index as u8) << 3)];
+            let at = 0xffff_8880_0000_0000u64 + 0x300;
+            let mut memory = BitsMemory::new(&code);
+            memory.set_qword(at, 0x0102_0304_0506_0708);
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.gpr[Register::Rdi as usize] = 0x300;
+            state.gpr[Register::Rax as usize] = 0x0102_0304_0506_0708;
+            state.gpr[register as usize] = 0xa1a2_a3a4_a5a6_a7a8;
+            run_cmpxchg_wide(&mut state, &mut memory);
+            // Equal: the source register is stored; the other bytes of a dword store stay.
+            let expected = if qword {
+                0xa1a2_a3a4_a5a6_a7a8
+            } else {
+                0x0102_0304_a5a6_a7a8
+            };
+            assert_eq!(memory.qword(at), expected, "{code:02x?}");
+            assert_eq!(state.gpr[register as usize], 0xa1a2_a3a4_a5a6_a7a8);
+            assert_eq!(state.rip, RIP + 5);
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_with_rex_b_bases_r8_to_r15_and_the_sib_forms() {
+    let gs = 0xffff_8880_0000_0000u64;
+    // `cmpxchg %rcx, %gs:8(%rN)` via REX.W + REX.B: mod = 01, disp8 8; R12 needs a SIB byte.
+    for (index, register) in EXTENDED.into_iter().enumerate() {
+        let mut code = vec![0x65, 0x49, 0x0f, 0xb1];
+        if index == 4 {
+            code.extend_from_slice(&[0x4c, 0x24, 0x08]);
+        } else {
+            code.extend_from_slice(&[0x48 | index as u8, 0x08]);
+        }
+        let at = gs + 0x500 + 8;
+        let mut memory = BitsMemory::new(&code);
+        memory.set_qword(at, 7);
+        let mut state = board_state();
+        state.gs_base = gs;
+        state.gpr[register as usize] = 0x500;
+        state.gpr[Register::Rax as usize] = 7;
+        state.gpr[Register::Rcx as usize] = 0x77;
+        run_cmpxchg_wide(&mut state, &mut memory);
+        assert_eq!(memory.qword(at), 0x77, "{register:?}");
+        assert_eq!(memory.reads, vec![(at, 8)], "{register:?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{register:?}");
+    }
+    // R14 base, dword: `cmpxchg %ecx, %gs:8(%r14)` = 65 41 0f b1 4e 08.
+    let code = [0x65, 0x41, 0x0f, 0xb1, 0x4e, 0x08];
+    let at = gs + 0x500 + 8;
+    let mut memory = BitsMemory::new(&code);
+    set_dword(&mut memory, at, 9);
+    let mut state = board_state();
+    state.gs_base = gs;
+    state.gpr[Register::R14 as usize] = 0x500;
+    state.gpr[Register::Rax as usize] = 0x9;
+    state.gpr[Register::Rcx as usize] = 0xffff_ffff_1234_5678;
+    run_cmpxchg_wide(&mut state, &mut memory);
+    assert_eq!(dword_at(&memory, at), 0x1234_5678);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    // Base + index * scale + disp32 (REX.X for r9): `cmpxchg %rcx, %fs:0x100(%rbx,%r9,4)`.
+    let code = [0x64, 0x4a, 0x0f, 0xb1, 0x8c, 0x8b, 0x00, 0x01, 0x00, 0x00];
+    let fs = 0xffff_8880_4000_0000u64;
+    let at = fs + 0x1000 + 0x10 * 4 + 0x100;
+    let mut memory = BitsMemory::new(&code);
+    memory.set_qword(at, 3);
+    let mut state = board_state();
+    state.fs_base = fs;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::R9 as usize] = 0x10;
+    state.gpr[Register::Rax as usize] = 4; // not equal
+    state.gpr[Register::Rcx as usize] = 0x99;
+    run_cmpxchg_wide(&mut state, &mut memory);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert_eq!(memory.qword(at), 3);
+    assert_eq!(state.gpr[Register::Rax as usize], 3);
+    assert_eq!(state.rflags & FLAG_ZF, 0);
+    assert_eq!(state.rip, RIP + 10);
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_rax_as_accumulator_source_and_base_uses_the_pre_state() {
+    // `cmpxchg %rax, %gs:(%rax)` = 65 48 0f b1 00: RAX is accumulator, source and base at once.
+    let gs = 0xffff_8880_0000_0000u64;
+    let mut memory = BitsMemory::new(&[0x65, 0x48, 0x0f, 0xb1, 0x00]);
+    memory.set_qword(gs + 0x1111, 0x1111);
+    let mut state = board_state();
+    state.gs_base = gs;
+    state.gpr[Register::Rax as usize] = 0x1111;
+    run_cmpxchg_wide(&mut state, &mut memory);
+    // Equal: the cell receives the source (= RAX = 0x1111), ZF = 1.
+    assert_eq!(memory.reads, vec![(gs + 0x1111, 8)]);
+    assert_eq!(memory.qword(gs + 0x1111), 0x1111);
+    assert_ne!(state.rflags & FLAG_ZF, 0);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1111);
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_non_canonical_address_is_gp0_without_any_change() {
+    // The RIP-relative address is base + (RIP + length) + 0x1234; `target` places it exactly.
+    let target = |address: u64, code: &[u8]| {
+        let mut state = board_state();
+        let base = address.wrapping_sub(RIP + code.len() as u64 + 0x1234);
+        state.gs_base = base;
+        state.fs_base = base;
+        state.gpr[Register::Rax as usize] = 0x42;
+        state.gpr[Register::Rcx as usize] = 0x99;
+        state.rflags |= FLAG_CF | FLAG_ZF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(address, 0x42);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        (state, before, memory, result)
+    };
+    for (code, width) in [
+        (&GS_CMPXCHG_RCX_RIP[..], 8u64),
+        (&FS_CMPXCHG_RCX_RIP[..], 8),
+        (&GS_CMPXCHG_ECX_RIP[..], 4),
+        (&FS_CMPXCHG_ECX_RIP[..], 4),
+    ] {
+        // Non-canonical start, and a canonical start whose last byte crosses into the hole.
+        for address in [
+            0x0000_8000_0000_0000u64,
+            0xffff_7fff_ffff_ffff,
+            0x0000_7fff_ffff_ffff - (width - 2),
+        ] {
+            let (state, before, memory, result) = target(address, code);
+            assert_eq!(exit(&result), &RunExit::Fault(GP0), "{address:#x} {width}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "{address:#x} {width}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+        // The last fully canonical operand of each half is accepted.
+        for address in [
+            0x0000_7fff_ffff_ffffu64 - (width - 1),
+            0xffff_8000_0000_0000,
+        ] {
+            let (state, _, memory, result) = target(address, code);
+            assert_eq!(result.instructions_executed, 1, "{address:#x} {width}");
+            assert_eq!(memory.writes.len(), 1);
+            assert_ne!(state.rflags & FLAG_ZF, 0);
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_through_a_non_canonical_rsp_or_rbp_base_is_gp0_with_the_segment() {
+    // With an explicit FS/GS the stack bases follow the shared FS/GS address policy: #GP(0), not
+    // #SS(0). `cmpxchg %rcx, %gs:(%rsp)` = 65 48 0f b1 0c 24; `...%fs:0x0(%rbp)` = 64 48 0f b1 4d 00.
+    for (code, base) in [
+        (&[0x65u8, 0x48, 0x0f, 0xb1, 0x0c, 0x24][..], Register::Rsp),
+        (&[0x64, 0x48, 0x0f, 0xb1, 0x4d, 0x00][..], Register::Rbp),
+        (&[0x65, 0x0f, 0xb1, 0x0c, 0x24][..], Register::Rsp),
+        (&[0x64, 0x0f, 0xb1, 0x4d, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gpr[base as usize] = 0x0000_8000_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_write_fault_leaves_memory_rax_flags_and_rip_unchanged() {
+    // A read-only page: the always-performed write faults on both branches, so RAX (not equal)
+    // and the flags are not committed either. RAX = 0x1111_2222_3333_4442: the cell
+    // 0x1111_2222_3333_4442 is equal for the qword form (whole RAX) and for the dword form (the
+    // cell's low dword 0x3333_4442 = EAX), so those cases take the equal branch; 0x42 and 0x05
+    // differ in both widths (inequality).
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for code in [
+        &GS_CMPXCHG_RCX_RIP[..],
+        &FS_CMPXCHG_RCX_RIP[..],
+        &GS_CMPXCHG_ECX_RIP[..],
+        &FS_CMPXCHG_ECX_RIP[..],
+    ] {
+        for cell in [0x1111_2222_3333_4442u64, 0x42u64, 0x05] {
+            let mut state = board_state();
+            state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4442;
+            state.gpr[Register::Rcx as usize] = 0x99;
+            state.rflags |= FLAG_CF | FLAG_OF;
+            let before = state.clone();
+            let mut memory = CasMemory::new(code, cell);
+            memory.write_fault = Some(fault.clone());
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{cell:#x}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "{code:02x?} cell {cell:#x}");
+            assert_eq!(memory.cell, cell);
+            assert!(memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_read_fault_changes_nothing() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for code in [
+        &GS_CMPXCHG_RCX_RIP[..],
+        &FS_CMPXCHG_RCX_RIP[..],
+        &GS_CMPXCHG_ECX_RIP[..],
+        &FS_CMPXCHG_ECX_RIP[..],
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rcx as usize] = 0x99;
+        state.rflags |= FLAG_CF | FLAG_OF;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 0x44);
+        memory.read_fault = Some(fault.clone());
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty());
+        assert_eq!(memory.cell, 0x44);
+    }
+}
+
+#[test]
+fn segment_cmpxchg_wide_forms_outside_the_slice_are_refused_with_opcode_b1_without_mutation() {
+    let cases: &[&[u8]] = &[
+        // No segment prefix: the plain dword form (memory or register) stays outside the set.
+        &[0x0f, 0xb1, 0x0f],
+        &[0x0f, 0xb1, 0xc1],
+        // CS/DS/ES/SS overrides are not FS/GS.
+        &[0x2e, 0x0f, 0xb1, 0x0f],
+        &[0x3e, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x26, 0x0f, 0xb1, 0x0f],
+        &[0x36, 0x48, 0x0f, 0xb1, 0x0f],
+        // The register destination (mod = 11) with FS/GS, dword and qword.
+        &[0x65, 0x0f, 0xb1, 0xc1],
+        &[0x65, 0x48, 0x0f, 0xb1, 0xc1],
+        &[0x64, 0x0f, 0xb1, 0xc1],
+        &[0x64, 0x48, 0x0f, 0xb1, 0xc1],
+        &[0x64, 0x4d, 0x0f, 0xb1, 0xc8],
+        // 0x66 (word) in both orders, with and without REX.W, and 0x67.
+        &[0x66, 0x65, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x66, 0x0f, 0xb1, 0x0f],
+        &[0x66, 0x64, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x66, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x67, 0x0f, 0xb1, 0x0f],
+        &[0x67, 0x64, 0x48, 0x0f, 0xb1, 0x0f],
+        // LOCK with FS/GS, both orders (not modeled).
+        &[0xf0, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0xf0, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0xf0, 0x64, 0x0f, 0xb1, 0x0f],
+        &[0x64, 0xf0, 0x0f, 0xb1, 0x0f],
+        // REP / REPNE.
+        &[0xf3, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0xf3, 0x0f, 0xb1, 0x0f],
+        &[0xf2, 0x64, 0x0f, 0xb1, 0x0f],
+        &[0x64, 0xf2, 0x48, 0x0f, 0xb1, 0x0f],
+        // A stale REX (not directly before the opcode).
+        &[0x41, 0x65, 0x0f, 0xb1, 0x0f],
+        &[0x48, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x41, 0x48, 0x0f, 0xb1, 0x0f],
+        // Repeated and mixed segment prefixes.
+        &[0x64, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x64, 0x0f, 0xb1, 0x0f],
+        &[0x65, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x64, 0x64, 0x0f, 0xb1, 0x0f],
+        // FS/GS combined with another segment override.
+        &[0x2e, 0x65, 0x48, 0x0f, 0xb1, 0x0f],
+        &[0x64, 0x3e, 0x0f, 0xb1, 0x0f],
+    ];
+    for code in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdi as usize] = 0x500;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xb1 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_with_a_truncated_modrm_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x48, 0x0f, 0xb1][..],
+        &[0x65, 0x0f, 0xb1][..],
+        &[0x64, 0x41, 0x0f, 0xb1][..],
+        &[0x65, 0x48, 0x0f, 0xb1, 0x0d, 0x34, 0x12][..],
+        &[0x65, 0x0f, 0xb1, 0x4c][..],
+        &[0x65, 0x48, 0x0f, 0xb1, 0x4c, 0x24][..],
+        &[0x64, 0x0f, 0xb1, 0x8f, 0x00, 0x10][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdi as usize] = 0x500;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_cmpxchg_wide_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for code in [
+        &GS_CMPXCHG_RCX_RDI[..],
+        &FS_CMPXCHG_ECX_RDI[..],
+        &GS_CMPXCHG_RSI_RIP_DIAG[..],
+        &GS_CMPXCHG_ECX_RIP[..],
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0xb1 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_cmpxchg_wide_is_refused_by_the_bare_step_entry_point() {
+    for code in [&GS_CMPXCHG_RCX_RDI[..], &FS_CMPXCHG_ECX_RDI[..]] {
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = od_isa::execute::step(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        );
+        assert_eq!(
+            result,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xb1 })
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_cmpxchg_wide_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    for code in [&GS_CMPXCHG_RSI_RIP_DIAG[..], &FS_CMPXCHG_ECX_RDI[..]] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
 }
