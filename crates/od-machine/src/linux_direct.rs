@@ -4385,7 +4385,9 @@ mod tests {
         // the facade stops on the fault without a TR and without delivery (no IDT is loaded).
         let mut code = mov_eax(0x40);
         code.extend([0x0F, 0x00, 0xD8, 0xF4]);
+        let ltr_offset = code.len() as u64 - 4;
         let (mut boot, file) = boot_with_entry(&code);
+        let ltr_rip = boot.board.state().rip + ltr_offset;
         let record = run_set_facade(
             &mut boot,
             &file,
@@ -4395,8 +4397,19 @@ mod tests {
                 ..LinuxCpl0SetMembers::linux_default()
             },
         );
-        assert_eq!(record.retired, 1, "{record:?}");
-        assert_ne!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        // The exit is the architectural #GP(0x40) of the executed LTR, not an `Unsupported`
+        // refusal (opcode 0x00) and not the HLT after it.
+        let PagedProbeExit::Fault(fault) = &record.exit else {
+            panic!("expected the #GP fault exit: {record:?}");
+        };
+        assert_eq!(fault.vector, 13, "{record:?}");
+        assert_eq!(fault.error_code, Some(0x40), "{record:?}");
+        assert_eq!(record.exit_kind, "fault");
+        assert_eq!(record.retired, 1, "only the MOV EAX retired: {record:?}");
+        // RIP stays at the faulting LTR (`0f 00 d8`), not at the HLT after it.
+        assert_eq!(record.rip, ltr_rip, "{record:?}");
+        assert_eq!(boot.board.state().rip, ltr_rip);
+        assert_eq!(record.rip_bytes[..3], [0x0F, 0x00, 0xD8], "{record:?}");
         assert!(boot.board.state().tr.is_none());
     }
 
