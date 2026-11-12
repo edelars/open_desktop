@@ -3901,8 +3901,9 @@ mod tests {
     }
 
     /// Ports the profile binds (or, without the flag, leaves as a trap).
-    const LINUX_PROFILE_PORTS: [u16; 15] = [
+    const LINUX_PROFILE_PORTS: [u16; 17] = [
         0x40, 0x41, 0x42, 0x43, 0x61, 0x20, 0x21, 0xA0, 0xA1, 0x70, 0x71, 0xED, 0x80, 0x60, 0x64,
+        0x4D0, 0x4D1,
     ];
 
     #[test]
@@ -3920,6 +3921,11 @@ mod tests {
                 Err(BusAccessError::UnmappedPort(io_port(port))),
                 "write {port:#x}"
             );
+        }
+        // With the profile the PIC ELCR ports (S4-38L7bs) are mapped and read 0.
+        let mut linux = linux_board();
+        for port in [0x4D0u16, 0x4D1] {
+            assert_eq!(inb(&mut linux, port), Ok(0), "linux read {port:#x}");
         }
         // The default board is unchanged byte for byte.
         let mut default = load(&hlt_image());
