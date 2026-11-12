@@ -37924,7 +37924,10 @@ fn fs_gs_cmpxchg_wide_through_a_non_canonical_rsp_or_rbp_base_is_gp0_with_the_se
 #[test]
 fn fs_gs_cmpxchg_wide_write_fault_leaves_memory_rax_flags_and_rip_unchanged() {
     // A read-only page: the always-performed write faults on both branches, so RAX (not equal)
-    // and the flags are not committed either.
+    // and the flags are not committed either. RAX = 0x1111_2222_3333_4442: the cell
+    // 0x1111_2222_3333_4442 is equal for the qword form (whole RAX) and for the dword form (the
+    // cell's low dword 0x3333_4442 = EAX), so those cases take the equal branch; 0x42 and 0x05
+    // differ in both widths (inequality).
     let fault = ArchitecturalFault {
         vector: 14,
         error_code: Some(0x3),
@@ -37936,7 +37939,7 @@ fn fs_gs_cmpxchg_wide_write_fault_leaves_memory_rax_flags_and_rip_unchanged() {
         &GS_CMPXCHG_ECX_RIP[..],
         &FS_CMPXCHG_ECX_RIP[..],
     ] {
-        for cell in [0x42u64, 0x05] {
+        for cell in [0x1111_2222_3333_4442u64, 0x42u64, 0x05] {
             let mut state = board_state();
             state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4442;
             state.gpr[Register::Rcx as usize] = 0x99;
