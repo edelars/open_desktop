@@ -494,6 +494,10 @@ pub struct LinuxStopRecord {
     /// 64-bit value written (the flag clearing of the real FMASK is not modelled). Write-only for
     /// the guest (`RDMSR` of SYSCALL_MASK is refused).
     pub guest_syscall_mask: u64,
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au) after the run; `0` when never written. The full
+    /// 64-bit value written (no canonical check, `SWAPGS` not modelled). Write-only for the guest
+    /// (`RDMSR` of KERNEL_GS_BASE is refused).
+    pub guest_kernel_gs_base: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -644,6 +648,7 @@ fn stop_record(
         guest_sysenter_esp: boot.board.guest_sysenter_esp(),
         guest_sysenter_eip: boot.board.guest_sysenter_eip(),
         guest_syscall_mask: boot.board.guest_syscall_mask(),
+        guest_kernel_gs_base: boot.board.guest_kernel_gs_base(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -743,6 +748,13 @@ pub struct LinuxCpl0SetMembers {
     /// stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled. Independent of [`Self::msr`], the
     /// other MSR members. No MSR profile covers the index today, so nothing overrides the member.
     pub msr_syscall_mask: bool,
+    /// `with_msr_kernel_gs_base_write` (S4-38L7au): `WRMSR` of IA32_KERNEL_GS_BASE (`0xC000_0102`)
+    /// at CPL0 stores `EDX:EAX` (the full 64-bit value, no canonical check) in the board
+    /// (`guest_kernel_gs_base` of the stop record). Write-only: `RDMSR` of it and every other MSR
+    /// stay `Unsupported`; `SWAPGS` is not modelled. Independent of [`Self::msr`], the other MSR
+    /// members and the FS/GS base member (which covers `0xC000_0100`/`0xC000_0101` only). The board
+    /// set's MSR profile is `EferReadOnlyV1`, which does not handle the index.
+    pub msr_kernel_gs_base: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
@@ -789,6 +801,7 @@ impl LinuxCpl0SetMembers {
             msr_sysenter_cs: false,
             msr_sysenter_stack: false,
             msr_syscall_mask: false,
+            msr_kernel_gs_base: false,
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
@@ -820,6 +833,7 @@ impl LinuxCpl0SetMembers {
             msr_sysenter_cs: true,
             msr_sysenter_stack: true,
             msr_syscall_mask: true,
+            msr_kernel_gs_base: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
             ..Self::minimal()
@@ -874,6 +888,8 @@ pub fn run_linux_direct_board_set(
     let sysenter_eip_cell = Cell::new(boot.board.guest_sysenter_eip());
     // S4-38L7at: the guest IA32_SYSCALL_MASK, kept by the board between runs.
     let syscall_mask_cell = Cell::new(boot.board.guest_syscall_mask());
+    // S4-38L7au: the guest IA32_KERNEL_GS_BASE, kept by the board between runs.
+    let kernel_gs_base_cell = Cell::new(boot.board.guest_kernel_gs_base());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -921,6 +937,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_syscall_mask_write(&syscall_mask_cell);
         names.push("msr:syscall_mask_write".into());
     }
+    if members.msr_kernel_gs_base {
+        set = set.with_msr_kernel_gs_base_write(&kernel_gs_base_cell);
+        names.push("msr:kernel_gs_base_write".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -953,6 +973,8 @@ pub fn run_linux_direct_board_set(
     boot.board.set_guest_sysenter_esp(sysenter_esp_cell.get());
     boot.board.set_guest_sysenter_eip(sysenter_eip_cell.get());
     boot.board.set_guest_syscall_mask(syscall_mask_cell.get());
+    boot.board
+        .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -6445,6 +6467,207 @@ mod tests {
         assert_eq!(record.guest_syscall_mask, 0);
     }
 
+    // ---- S4-38L7au: WRMSR IA32_KERNEL_GS_BASE through the board facade (write-only) ----
+
+    /// MOV ECX,0xC0000102; MOV EAX,0x12345678; MOV EDX,0xFFFF8880; WRMSR: a write of a
+    /// kernel-pointer-like value (EDX:EAX = 0xFFFF8880:0x12345678). The boundary bytes of the
+    /// diagnostic run are the same `0F 30` with EDX:EAX = 0:0 (see the zero-write test).
+    const KERNEL_GS_BASE_CODE: [u8; 17] = [
+        0xB9, 0x02, 0x01, 0x00, 0xC0, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x80, 0x88, 0xFF, 0xFF,
+        0x0F, 0x30,
+    ];
+
+    #[test]
+    fn wrmsr_kernel_gs_base_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // Two writes in one program: the first is KERNEL_GS_BASE_CODE; the second (MOV
+        // EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR) replaces it with a value that has all 64 bits
+        // set in the upper half.
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code.extend_from_slice(&[
+            0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x30, 0xF4,
+        ]);
+        let first = 0xFFFF_8880_1234_5678u64;
+        let second = 0xFFFF_FFFF_8100_1AB0u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 8,
+            "MOV, MOV, MOV, WRMSR, MOV, MOV, WRMSR, HLT"
+        );
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0102);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8100_1AB0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0xFFFF_FFFF);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; the
+        // other cells and the EFER did not move.
+        assert_eq!(record.guest_kernel_gs_base, second);
+        assert_eq!(boot.board.guest_kernel_gs_base(), second);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                record.guest_sysenter_cs,
+                record.guest_sysenter_esp,
+                record.guest_sysenter_eip,
+                record.guest_syscall_mask
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(
+            record
+                .set_members
+                .contains(&"msr:kernel_gs_base_write".to_string())
+        );
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_kernel_gs_base(first);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_kernel_gs_base, first);
+
+        // A real chain on one board: run 1 stops by budget right after the first write (MOV, MOV,
+        // MOV, WRMSR), run 2 on the same `boot` retires the rest (MOV, MOV, WRMSR, HLT) and
+        // reports the replaced value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let run1 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run1.retired, 4, "{run1:?}");
+        assert_eq!(run1.guest_kernel_gs_base, first);
+        assert_eq!(boot.board.guest_kernel_gs_base(), first);
+        let run2 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run2.exit, PagedProbeExit::Halted, "{run2:?}");
+        assert_eq!(run2.retired, 4, "MOV, MOV, WRMSR, HLT");
+        assert_eq!(run2.guest_kernel_gs_base, second);
+        assert_eq!(boot.board.guest_kernel_gs_base(), second);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, MOV) and the cell stays 0; the
+        // other MSR members do not admit KERNEL_GS_BASE.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_fs_gs_base: true,
+                msr_star: true,
+                msr_lstar: true,
+                msr_cstar: true,
+                msr_sysenter_cs: true,
+                msr_sysenter_stack: true,
+                msr_syscall_mask: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_kernel_gs_base: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_kernel_gs_base, 0);
+            assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:kernel_gs_base_write".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn wrmsr_kernel_gs_base_of_zero_is_a_write_through_the_board_set() {
+        // The boundary of the diagnostic run: MOV ECX,0xC0000102; XOR EAX,EAX; XOR EDX,EDX; WRMSR
+        // (EDX:EAX = 0:0), here after a non-zero value, so that the zero is observable as a write.
+        let code = [
+            0xB9, 0x02, 0x01, 0x00, 0xC0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30, 0xF4,
+        ];
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        boot.board.set_guest_kernel_gs_base(0xFFFF_8880_1234_5678);
+        let record = run_set_facade(&mut boot, &file, 16, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "MOV, XOR, XOR, WRMSR, HLT");
+        assert_eq!(record.guest_kernel_gs_base, 0);
+        assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+    }
+
+    #[test]
+    fn rdmsr_swapgs_syscall_and_sysenter_stay_the_stop_after_the_kernel_gs_base_write_through_the_board_set()
+     {
+        // The write is retired, the next instruction is the stop (RDMSR: not readable; SWAPGS,
+        // SYSCALL, SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record.
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x01, 0xF8], 0x01),
+            (&[0x0F, 0x05], 0x05),
+            (&[0x0F, 0x07], 0x07),
+            (&[0x0F, 0x34], 0x34),
+            (&[0x0F, 0x35], 0x35),
+        ] {
+            let mut code = KERNEL_GS_BASE_CODE.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{tail:02X?} {record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_kernel_gs_base, 0xFFFF_8880_1234_5678);
+        }
+
+        // The neighbours 0xC0000103, 0xC0010102 and 0xC0000002 are no member and are the stop with
+        // KERNEL_GS_BASE untouched (patching the ECX immediate: bytes 1..=4 of the first MOV).
+        for ecx in [
+            [0x03, 0x01, 0x00, 0xC0],
+            [0x02, 0x01, 0x01, 0xC0],
+            [0x02, 0x00, 0x00, 0xC0],
+        ] {
+            let mut code = KERNEL_GS_BASE_CODE.to_vec();
+            code[1..5].copy_from_slice(&ecx);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{ecx:02X?} {record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_kernel_gs_base, 0);
+        }
+        // The neighbours 0xC0000101 (GS base, its own member) and 0xC0000084 (SYSCALL_MASK, its
+        // own member) retire their write and leave KERNEL_GS_BASE untouched.
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code[1] = 0x01;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_kernel_gs_base, 0);
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code[1..3].copy_from_slice(&[0x84, 0x00]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_syscall_mask, 0xFFFF_8880_1234_5678);
+        assert_eq!(record.guest_kernel_gs_base, 0);
+    }
+
     #[test]
     fn linux_default_set_is_cli_cr3_cpuid_and_popf() {
         assert_eq!(
@@ -6462,6 +6685,7 @@ mod tests {
                 msr_sysenter_cs: true,
                 msr_sysenter_stack: true,
                 msr_syscall_mask: true,
+                msr_kernel_gs_base: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
@@ -6485,6 +6709,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -6578,6 +6803,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
@@ -6755,6 +6981,7 @@ mod tests {
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
