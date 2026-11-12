@@ -4170,6 +4170,73 @@ mod tests {
         assert_eq!(guest_qword(&mut boot, 0x0200_00F8), next);
     }
 
+    // ---- S4-38L7ak: FS/GS-based MOVSXD r64, m32 through the board facade ----
+
+    #[test]
+    fn gs_movsxd_after_wrmsr_gs_base_sign_extends_a_dword_into_r15_and_changes_nothing_else() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR;
+        // MOV R15,imm64 (a marker that must be replaced);
+        // MOV DWORD [BASE+0x10],0x80000000 and MOV DWORD [BASE+0x14],0x7FFFFFFF (plain stores);
+        // SUB DL,1 (0 - 1 borrows: CF = 1);
+        // MOVSXD R15,%gs:disp(%rip) (`65 4c 63 3d disp32`, the S4-38L7aj boundary shape,
+        // effective address 0x10: the next RIP is after the whole instruction);
+        // MOVSXD RBX,%gs:0x14 (`65 48 63 1c 25 14 00 00 00`: positive dword); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0x49, 0xBF]);
+        code.extend(0x5555_5555_5555_5555u64.to_le_bytes());
+        code.extend([0xC7, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend(0x8000_0000u32.to_le_bytes());
+        code.extend([0xC7, 0x04, 0x25, 0x14, 0x00, 0x00, 0x02]);
+        code.extend(0x7FFF_FFFFu32.to_le_bytes());
+        code.extend([0x80, 0xEA, 0x01]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x4C, 0x63, 0x3D]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x65, 0x48, 0x63, 0x1C, 0x25, 0x14, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 12,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV R15, store x2, SUB, MOVSXD x2, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x7FFF_FFFF_8000_0000,
+            "no memory write"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.gpr[od_isa::Register::R15 as usize],
+            0xFFFF_FFFF_8000_0000
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rbx as usize], 0x7FFF_FFFF);
+        // Nothing else changed: the registers set by the prologue keep their values, the loaded
+        // dwords are still in memory and the CF set by SUB DL,1 is still set.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], BASE);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0xC000_0101);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 0xFF);
+        assert_eq!(state.rflags & 1, 1, "CF");
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]
