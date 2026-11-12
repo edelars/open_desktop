@@ -1088,13 +1088,17 @@ fn fs_gs_mov_imm32_stays_unsupported_in_the_paged_probe_profile() {
 
 #[test]
 fn fs_gs_mov_store_stays_unsupported_in_the_paged_probe_profile() {
-    // S4-38L7an (and S4-38L7g) belong to the CPL0 set only; this profile refuses the forms
+    // S4-38L7an and S4-38L7av (and S4-38L7g) belong to the CPL0 set only; this profile refuses the forms
     // without mutation.
     for bytes in [
         &[0x65, 0x89, 0x05, 0xe0, 0x0f, 0x07, 0x03][..],
         &[0x64, 0x89, 0x03][..],
         &[0x65, 0x44, 0x89, 0x0b][..],
         &[0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        // S4-38L7av: the word forms (`66`, no REX.W).
+        &[0x65, 0x66, 0x89, 0x05, 0xad, 0xaa, 0x01, 0x03][..],
+        &[0x65, 0x66, 0x89, 0x15, 0xa7, 0xaa, 0x01, 0x03][..],
+        &[0x64, 0x66, 0x44, 0x89, 0x0b][..],
     ] {
         let mut memory = Memory::new(bytes);
         let mut cpu = state();

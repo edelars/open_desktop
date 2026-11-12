@@ -25665,7 +25665,8 @@ fn ltr_is_not_reachable_from_cpl3() {
 // reuses its operations. The register destination (mod = 11) with FS/GS is refused with opcode
 // 0x89 (the S4-38L7g policy, unlike `C7`); unprefixed and CS/DS/ES/SS-prefixed `89` stays the plain
 // MOV (the segment base is ignored). LOCK/REP, 0x66, 0x67, a second segment prefix and a stale
-// REX are refused with opcode 0x89. ----
+// REX are refused with opcode 0x89 (S4-38L7av: 0x66 without REX.W is the word store, tested
+// below). ----
 
 /// `mov %eax, %gs:0x3070fe0(%rip)` (the S4-38L7am diagnostic boundary bytes, 7 bytes long).
 const GS_MOVL_STORE_BOUNDARY: [u8; 7] = [0x65, 0x89, 0x05, 0xe0, 0x0f, 0x07, 0x03];
@@ -26118,12 +26119,10 @@ fn segment_store_forms_outside_the_slice_are_refused_with_opcode_0x89() {
         &[0xf3, 0x65, 0x89, 0x03],
         &[0x65, 0xf3, 0x89, 0x03],
         &[0xf2, 0x64, 0x89, 0x03],
-        // 0x66 (a word store), in both orders and with REX.
-        &[0x66, 0x65, 0x89, 0x03],
-        &[0x65, 0x66, 0x89, 0x03],
-        &[0x66, 0x64, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
-        &[0x65, 0x66, 0x44, 0x89, 0x03],
+        // 0x66 with REX.W (the word store without REX.W is S4-38L7av, tested there).
+        &[0x66, 0x65, 0x48, 0x89, 0x03],
         &[0x65, 0x66, 0x48, 0x89, 0x03],
+        &[0x65, 0x66, 0x4c, 0x89, 0x03],
         // 0x67.
         &[0x65, 0x67, 0x89, 0x03],
         &[0x67, 0x64, 0x89, 0x03],
@@ -26351,6 +26350,650 @@ fn segment_qword_store_keeps_accepting_a_valid_rex_w_after_a_stale_rex() {
             assert_eq!(state, expected, "{code:02x?}");
         }
     }
+}
+
+// ---- S4-38L7av: FS/GS-based `MOV r/m16, r16` (`[64|65] 66 [REX] 89 /r`, REX.W absent), memory
+// destination. SDM Vol.2 MOV: the low 2 bytes of the source register are stored, flags and
+// registers are unchanged; the existing FS/GS store operations are reused with a Word destination
+// and a Word register view. The RIP-relative displacement is relative to the end of the whole
+// instruction (66, segment and REX bytes included). The register destination (mod = 11), 0x66 with
+// REX.W, 0x67, LOCK/REP, a second segment prefix, a repeated 0x66 and a stale REX are refused with
+// opcode 0x89; unprefixed and CS/DS/ES/SS-prefixed `66 89` stays the plain MOV. ----
+
+/// `mov %ax, %gs:0x301aaad(%rip)` (the S4-38L7au diagnostic boundary bytes, 8 bytes long).
+const GS_MOVW_STORE_BOUNDARY: [u8; 8] = [0x65, 0x66, 0x89, 0x05, 0xad, 0xaa, 0x01, 0x03];
+const GS_MOVW_STORE_DISP: u64 = 0x0301_aaad;
+/// The next instruction of the boundary: `mov %dx, %gs:0x301aaa7(%rip)`.
+const GS_MOVW_STORE_NEXT: [u8; 8] = [0x65, 0x66, 0x89, 0x15, 0xa7, 0xaa, 0x01, 0x03];
+const GS_MOVW_STORE_NEXT_DISP: u64 = 0x0301_aaa7;
+
+/// `mov{w} %reg, %{fs,gs}:0x1234(%rip)`: segment prefix, 0x66, optional REX, `89`, ModRM
+/// (mod = 00, rm = 101), disp32 `0x1234`.
+fn seg_store_word_rip(segment: u8, rex: Option<u8>, reg: u8) -> Vec<u8> {
+    let mut code = vec![segment, 0x66];
+    code.extend(rex);
+    code.extend([0x89, 0x05 | (reg << 3), 0x34, 0x12, 0x00, 0x00]);
+    code
+}
+
+#[test]
+fn gs_movw_store_boundary_form_writes_two_bytes_of_ax_and_keeps_everything_else() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 8 + GS_MOVW_STORE_DISP;
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::Rax as usize] = 0x1111_2222_3333_89ab;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_AF | FLAG_PF;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVW_STORE_BOUNDARY);
+    set_bytes(&mut memory, at - 4, 0xaa, 4);
+    set_bytes(&mut memory, at, 0x55, 2);
+    set_bytes(&mut memory, at + 2, 0xbb, 4);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        result.rflags_defined,
+        od_isa::INTEGER_FLAGS,
+        "no flag becomes undefined"
+    );
+    assert!(memory.reads.is_empty(), "a store does not read");
+    assert_eq!(memory.writes, vec![(at, vec![0xab, 0x89])]);
+    for offset in 1..=4 {
+        assert_eq!(memory.data.get(&(at - offset)), Some(&0xaa), "-{offset}");
+        assert_eq!(
+            memory.data.get(&(at + 1 + offset)),
+            Some(&0xbb),
+            "+{offset}"
+        );
+    }
+    assert_eq!(
+        [0u64, 1].map(|n| memory.data.get(&(at + n)).copied()),
+        [Some(0xab), Some(0x89)]
+    );
+    expected.rip += 8;
+    assert_eq!(state, expected, "only RIP changes (by the full length)");
+    assert_eq!(
+        state.gpr[Register::Rax as usize],
+        0x1111_2222_3333_89ab,
+        "AX (and the upper bits of RAX) is unchanged"
+    );
+}
+
+#[test]
+fn gs_movw_store_next_boundary_instruction_stores_dx_and_the_pair_runs_in_one_run() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let first = gs_base + RIP + 8 + GS_MOVW_STORE_DISP;
+    // The second instruction starts at RIP + 8 and ends at RIP + 16.
+    let second = gs_base + RIP + 16 + GS_MOVW_STORE_NEXT_DISP;
+    let mut code = GS_MOVW_STORE_BOUNDARY.to_vec();
+    code.extend(GS_MOVW_STORE_NEXT);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_1234;
+    state.gpr[Register::Rdx as usize] = 0xeeee_eeee_eeee_5678;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&code);
+    // The two words are adjacent (`second = first + 2`); the outer neighbours keep their value.
+    assert_eq!(second, first + 2);
+    set_bytes(&mut memory, first - 2, 0xaa, 2);
+    set_bytes(&mut memory, second + 2, 0xbb, 2);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(
+        memory.writes,
+        vec![(first, vec![0x34, 0x12]), (second, vec![0x78, 0x56])]
+    );
+    assert_eq!(memory.data.get(&(first - 1)), Some(&0xaa));
+    assert_eq!(memory.data.get(&(second + 2)), Some(&0xbb));
+    assert_eq!(
+        [0u64, 1, 2, 3].map(|n| memory.data.get(&(first + n)).copied()),
+        [Some(0x34), Some(0x12), Some(0x78), Some(0x56)]
+    );
+    expected.rip += 16;
+    assert_eq!(state, expected);
+
+    // The second instruction alone, with DX: it is relative to the end of its own bytes.
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rdx as usize] = 0x9abc;
+    let mut memory = BitsMemory::new(&GS_MOVW_STORE_NEXT);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        memory.writes,
+        vec![(
+            gs_base + RIP + 8 + GS_MOVW_STORE_NEXT_DISP,
+            vec![0xbc, 0x9a]
+        )]
+    );
+}
+
+#[test]
+fn fs_and_gs_movw_store_use_their_own_base_or_the_effective_address_for_a_zero_base() {
+    let fs_base = 0xffff_8880_4321_0000u64;
+    let mut state = board_state();
+    state.fs_base = fs_base;
+    state.gs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let code = seg_store_word_rip(0x64, None, 0);
+    let mut memory = BitsMemory::new(&code);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        memory.writes,
+        vec![(fs_base + RIP + 8 + 0x1234, vec![0x44, 0x44])]
+    );
+    expected.rip += 8;
+    assert_eq!(state, expected);
+
+    // A zero base: the effective address alone (FS and GS).
+    for code in [
+        &GS_MOVW_STORE_BOUNDARY[..],
+        &seg_store_word_rip(0x64, None, 0)[..],
+        &seg_store_word_rip(0x65, None, 0)[..],
+    ] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
+        let disp = if code[4] == 0xad {
+            GS_MOVW_STORE_DISP
+        } else {
+            0x1234
+        };
+        assert_eq!(memory.writes[0].0, RIP + code.len() as u64 + disp);
+    }
+
+    // The order of the 0x66 and the segment prefix does not matter (`66 65` = `65 66`).
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    let mut memory = BitsMemory::new(&[0x66, 0x65, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00]);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_0000_0000 + RIP + 8 + 0x1234, vec![0x44, 0x44])]
+    );
+}
+
+#[test]
+fn movw_store_takes_the_source_register_from_modrm_reg_and_rex_r() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    for segment in [0x65u8, 0x64] {
+        for reg in 0u8..8 {
+            // No REX and REX (0x40) select r0..r7 (AX..DI, not AH..BH: a word view); REX.R (0x44)
+            // selects r8w..r15w.
+            for (rex, index) in [
+                (None, usize::from(reg)),
+                (Some(0x40u8), usize::from(reg)),
+                (Some(0x44), usize::from(reg) + 8),
+            ] {
+                let code = seg_store_word_rip(segment, rex, reg);
+                let mut state = board_state();
+                state.gs_base = gs_base;
+                state.fs_base = gs_base;
+                for (i, value) in state.gpr.iter_mut().enumerate() {
+                    *value = store_register_value(i);
+                }
+                state.rflags |= FLAG_CF | FLAG_ZF;
+                let mut expected = state.clone();
+                let mut memory = BitsMemory::new(&code);
+                let result = run_movb_set(&mut state, &mut memory).unwrap();
+                assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+                let at = gs_base + RIP + code.len() as u64 + 0x1234;
+                let value = store_register_value(index).to_le_bytes();
+                assert_eq!(
+                    memory.writes,
+                    vec![(at, value[..2].to_vec())],
+                    "{code:02x?}"
+                );
+                assert!(memory.reads.is_empty(), "{code:02x?}");
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "{code:02x?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn gs_movw_store_with_base_register_disp8_disp32_and_sib() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    // (code, effective offset, rip advance); rbx = 0x20_0000, rcx = 3,
+    // rax = 0x1111_2222_3333_4444 (AX = 0x4444).
+    let cases: [(&[u8], u64, u64); 6] = [
+        // `movw %ax, %gs:(%rbx)`
+        (&[0x65, 0x66, 0x89, 0x03], 0x20_0000, 4),
+        // `movw %bx, %gs:(%rbx)`
+        (&[0x65, 0x66, 0x89, 0x1b], 0x20_0000, 4),
+        // `movw %ax, %gs:-0x8(%rbx)`
+        (&[0x65, 0x66, 0x89, 0x43, 0xf8], 0x20_0000 - 8, 5),
+        // `movw %ax, %gs:0x100(%rbx)`
+        (
+            &[0x65, 0x66, 0x89, 0x83, 0x00, 0x01, 0x00, 0x00],
+            0x20_0100,
+            8,
+        ),
+        // `movw %ax, %gs:0x10(%rbx,%rcx,4)`
+        (
+            &[0x65, 0x66, 0x89, 0x44, 0x8b, 0x10],
+            0x20_0000 + 12 + 0x10,
+            6,
+        ),
+        // `movw %ax, %fs:0x20`
+        (&[0x64, 0x66, 0x89, 0x04, 0x25, 0x20, 0, 0, 0], 0x20, 9),
+    ];
+    for (code, offset, advance) in cases {
+        let mut state = bts_state(0x1111_2222_3333_4444);
+        state.gs_base = gs_base;
+        state.fs_base = gs_base;
+        state.gpr[Register::Rcx as usize] = 3;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(code);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        let bytes = if code[3] == 0x1b {
+            vec![0x00, 0x00] // BX = 0x20_0000 -> low word 0
+        } else {
+            vec![0x44, 0x44]
+        };
+        assert_eq!(
+            memory.writes,
+            vec![(gs_base + offset, bytes)],
+            "{code:02x?}"
+        );
+        expected.rip += advance;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn movw_store_with_rex_b_and_rex_x_reaches_r8_to_r15_addresses() {
+    // REX.B base: `movw %ax, %gs:0x8(%r8..%r15)` = 65 66 41 89 40+n 08. R13 uses disp8.
+    for (n, register) in [
+        (0u8, Register::R8),
+        (1, Register::R9),
+        (7, Register::R15),
+        (5, Register::R13),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[register as usize] = 0x4000;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&[0x65, 0x66, 0x41, 0x89, 0x40 + n, 0x08]);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            memory.writes,
+            vec![(0xffff_8880_0000_4008, vec![0x44, 0x44])],
+            "{register:?}"
+        );
+        expected.rip += 6;
+        assert_eq!(state, expected, "{register:?}");
+    }
+    // R12 through a SIB byte: 65 66 41 89 44 24 08.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R12 as usize] = 0x4000;
+    let mut memory = BitsMemory::new(&[0x65, 0x66, 0x41, 0x89, 0x44, 0x24, 0x08]);
+    run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_0000_4008, vec![0x44, 0x44])]
+    );
+    assert_eq!(state.rip, RIP + 7);
+    // REX.X index: `movw %ax, %gs:(%rbx,%r9,2)` = 65 66 42 89 04 4b.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rbx as usize] = 0x1000;
+    state.gpr[Register::R9 as usize] = 0x30;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&[0x65, 0x66, 0x42, 0x89, 0x04, 0x4b]);
+    run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_0000_1060, vec![0x44, 0x44])]
+    );
+    expected.rip += 6;
+    assert_eq!(state, expected);
+    // REX.R, REX.X and REX.B together: `movw %r10w, %gs:0x8(%r11,%r9,2)` = 65 66 47 89 54 4b 08.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::R10 as usize] = 0x0102_0304_0506_0708;
+    state.gpr[Register::R11 as usize] = 0x1000;
+    state.gpr[Register::R9 as usize] = 0x30;
+    let mut memory = BitsMemory::new(&[0x65, 0x66, 0x47, 0x89, 0x54, 0x4b, 0x08]);
+    run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_0000_1068, vec![0x08, 0x07])]
+    );
+}
+
+#[test]
+fn movw_store_non_canonical_first_or_last_byte_is_gp0_without_write() {
+    // The effective linear address (base + RIP + length + 0x1234) is placed directly; the word
+    // store writes address..address+1. (address, faults).
+    let cases = [
+        (0x0000_8000_0000_0000u64, true),
+        // Start canonical, last byte past the hole (the 2-byte access crosses the boundary).
+        (0x0000_7fff_ffff_ffffu64, true),
+        // The last canonical word is accepted.
+        (0x0000_7fff_ffff_fffe, false),
+        // The lowest canonical upper-half address is accepted; the byte below is non-canonical.
+        (0xffff_8000_0000_0000, false),
+        (0xffff_7fff_ffff_ffff, true),
+    ];
+    for (address, faults) in cases {
+        for segment in [0x65u8, 0x64] {
+            let code = seg_store_word_rip(segment, None, 0);
+            let base = address
+                .wrapping_sub(0x1234)
+                .wrapping_sub(code.len() as u64)
+                .wrapping_sub(RIP);
+            let mut state = board_state();
+            state.gs_base = base;
+            state.fs_base = base;
+            state.rflags |= FLAG_CF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            if faults {
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Fault(GP0),
+                    "{address:#x} {code:02x?}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before, "{address:#x} {code:02x?}");
+                assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            } else {
+                assert_eq!(result.instructions_executed, 1, "{address:#x} {code:02x?}");
+                assert_eq!(memory.writes.len(), 1);
+                assert_eq!(memory.writes[0].0, address);
+            }
+        }
+    }
+    // The boundary bytes with a non-canonical base: #GP(0) without access.
+    let mut state = board_state();
+    state.gs_base = 0x0000_8000_0000_0000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVW_STORE_BOUNDARY);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn gs_movw_store_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `movw %ax, %gs:(%rsp)` = 65 66 89 04 24 and `movw %ax, %gs:0x0(%rbp)` = 65 66 89 45 00.
+    for (code, register) in [
+        (&[0x65u8, 0x66, 0x89, 0x04, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0x66, 0x89, 0x45, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn movw_store_write_fault_leaves_flags_rip_registers_and_memory_unchanged() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    for code in [
+        &GS_MOVW_STORE_BOUNDARY[..],
+        &seg_store_word_rip(0x64, None, 0)[..],
+        &seg_store_word_rip(0x65, Some(0x44), 1)[..],
+    ] {
+        let disp = if code[4] == 0xad {
+            GS_MOVW_STORE_DISP
+        } else {
+            0x1234
+        };
+        let at = gs_base + RIP + code.len() as u64 + disp;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x3),
+            linear_address: Some(at),
+        };
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        state.fs_base = gs_base;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.write_fault = Some(fault.clone());
+        set_bytes(&mut memory, at, 0x55, 2);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+        assert!(memory.reads.is_empty(), "the destination is not read");
+        for offset in 0..2 {
+            assert_eq!(memory.data.get(&(at + offset)), Some(&0x55));
+        }
+    }
+}
+
+#[test]
+fn segment_word_store_forms_outside_the_slice_are_refused_with_opcode_0x89() {
+    let cases: &[&[u8]] = &[
+        // Register destination (mod = 11) with FS/GS (the S4-38L7g/an policy).
+        &[0x65, 0x66, 0x89, 0xc3],
+        &[0x64, 0x66, 0x89, 0xd8],
+        &[0x66, 0x65, 0x89, 0xc3],
+        &[0x65, 0x66, 0x44, 0x89, 0xc3],
+        // 0x66 with REX.W is not the word store.
+        &[0x65, 0x66, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00],
+        &[0x66, 0x64, 0x48, 0x89, 0x03],
+        &[0x65, 0x66, 0x4c, 0x89, 0x03],
+        // A repeated 0x66.
+        &[0x65, 0x66, 0x66, 0x89, 0x03],
+        &[0x66, 0x65, 0x66, 0x89, 0x03],
+        &[0x66, 0x66, 0x64, 0x89, 0x03],
+        // 0x67 (address-size override).
+        &[0x65, 0x66, 0x67, 0x89, 0x03],
+        &[0x67, 0x65, 0x66, 0x89, 0x03],
+        &[0x66, 0x67, 0x64, 0x89, 0x03],
+        // LOCK, REP, REPNE.
+        &[0xf0, 0x65, 0x66, 0x89, 0x03],
+        &[0x65, 0x66, 0xf0, 0x89, 0x03],
+        &[0xf3, 0x64, 0x66, 0x89, 0x03],
+        &[0x65, 0xf3, 0x66, 0x89, 0x03],
+        &[0xf2, 0x65, 0x66, 0x89, 0x03],
+        // A repeated or mixed segment prefix.
+        &[0x64, 0x64, 0x66, 0x89, 0x03],
+        &[0x65, 0x65, 0x66, 0x89, 0x03],
+        &[0x64, 0x65, 0x66, 0x89, 0x03],
+        &[0x65, 0x64, 0x66, 0x89, 0x03],
+        &[0x65, 0x66, 0x2e, 0x89, 0x03],
+        &[0x2e, 0x65, 0x66, 0x89, 0x03],
+        &[0x66, 0x64, 0x3e, 0x89, 0x03],
+        // REX not immediately before the opcode (stale).
+        &[0x41, 0x65, 0x66, 0x89, 0x03],
+        &[0x44, 0x66, 0x64, 0x89, 0x03],
+        &[0x48, 0x65, 0x66, 0x89, 0x03],
+        &[0x40, 0x65, 0x66, 0x89, 0x03],
+        &[0x65, 0x41, 0x66, 0x89, 0x03],
+        &[0x65, 0x66, 0x41, 0x40, 0x89, 0x03],
+    ];
+    for &code in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x89 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_word_store_with_a_truncated_encoding_is_refused_without_mutation() {
+    for code in [
+        // The boundary bytes without the last displacement byte, and shorter.
+        &GS_MOVW_STORE_BOUNDARY[..7],
+        &GS_MOVW_STORE_BOUNDARY[..5],
+        &GS_MOVW_STORE_BOUNDARY[..4],
+        &GS_MOVW_STORE_BOUNDARY[..3],
+        &GS_MOVW_STORE_BOUNDARY[..2],
+        &GS_MOVW_STORE_BOUNDARY[..1],
+        &[0x64u8, 0x66, 0x44, 0x89][..],
+        // disp8, SIB and disp32 forms with the tail missing.
+        &[0x65u8, 0x66, 0x89, 0x43][..],
+        &[0x65u8, 0x66, 0x89, 0x44][..],
+        &[0x65u8, 0x66, 0x89, 0x44, 0x8b][..],
+        &[0x65u8, 0x66, 0x89, 0x83, 0x00, 0x01][..],
+        &[0x65u8, 0x66, 0x89, 0x04, 0x25, 0x20, 0x00][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 5),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn plain_unprefixed_and_cs_ds_es_ss_word_store_keep_ignoring_the_segment_bases() {
+    // `66 89` without a segment prefix and with a CS/DS/ES/SS override is the plain MOV
+    // (unchanged by S4-38L7av): the FS/GS bases do not apply. `movw %ax, (%rbx)`.
+    for prefix in [None, Some(0x2eu8), Some(0x3e), Some(0x36), Some(0x26)] {
+        let mut code = Vec::new();
+        code.extend(prefix);
+        code.extend([0x66, 0x89, 0x03]);
+        let mut state = bts_state(0x1111_2222_3333_4444);
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_0000, vec![0x44, 0x44])],
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn segment_word_store_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS word forms are refused without
+    // mutation.
+    for code in [
+        &GS_MOVW_STORE_BOUNDARY[..],
+        &GS_MOVW_STORE_NEXT[..],
+        &seg_store_word_rip(0x64, None, 0)[..],
+        &seg_store_word_rip(0x65, Some(0x44), 1)[..],
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x89 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_word_store_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVW_STORE_BOUNDARY);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x89 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_word_store_is_not_reachable_from_cpl3() {
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVW_STORE_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
 
 // ---- S4-38L7at: WRMSR IA32_SYSCALL_MASK in the CPL0 set (one member, one cell) ----

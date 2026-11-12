@@ -4700,6 +4700,85 @@ mod tests {
         assert_eq!(state.rflags & 1, 1, "CF");
     }
 
+    // ---- S4-38L7av: FS/GS-based MOV m16, r16 through the board facade ----
+
+    #[test]
+    fn gs_mov_store_r16_after_wrmsr_gs_base_writes_two_bytes_and_keeps_the_neighbours() {
+        const BASE: u64 = 0x0200_0000;
+        const PATTERN: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+        const VALUE: u64 = 0x0123_4567_89AB_CDEF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,PATTERN;
+        // MOV [BASE+0x10],RAX; MOV [BASE+0x18],RAX (plain); MOV RAX,VALUE;
+        // SUB DL,1 (0 - 1 borrows: CF = 1); MOV EDX,0x55667788;
+        // MOV %ax,%gs:disp(%rip) (`65 66 89 05 disp32`, effective address 0x12: the S4-38L7au
+        // boundary shape, the next RIP is after the 8 bytes: only the two bytes 0x12..0x14
+        // change); MOV %dx,%gs:disp(%rip) (`65 66 89 15 disp32`, effective address 0x14);
+        // MOV RBX,[BASE+0x10] and MOV RCX,[BASE+0x18] (plain); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(PATTERN));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x18, 0x00, 0x00, 0x02]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0xBA, 0x88, 0x77, 0x66, 0x55]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x12u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x66, 0x89, 0x05]);
+        code.extend(disp.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x14u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x66, 0x89, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x48, 0x8B, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x8B, 0x0C, 0x25, 0x18, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 16,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store x2, MOV, SUB, MOV EDX, GS word store x2, \
+             load x2, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // Only the words at 0x12 (AX = 0xCDEF) and 0x14 (DX = 0x7788) changed; the bytes around
+        // them and the qword above stayed.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            0xAAAA_7788_CDEF_AAAA,
+            "bytes 0x10..0x18"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rcx as usize],
+            PATTERN,
+            "bytes 0x18..0x20"
+        );
+        // The source registers are unchanged.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE, "RAX kept");
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x5566_7788,
+            "RDX kept"
+        );
+        // MOV changes no flag: the CF set by SUB DL,1 is still set.
+        assert_eq!(state.rflags & 1, 1, "CF");
+    }
+
     // ---- S4-38L7ae: FS/GS-based MOV m8, imm8 through the board facade ----
 
     #[test]
