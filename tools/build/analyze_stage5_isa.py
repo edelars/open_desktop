@@ -335,6 +335,7 @@ PCMPEQB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 PCMPEQD_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 PMOVMSKB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 PMULUDQ_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
+MOVSS_REGISTER_ALLOWED_PREFIXES = {(0xF3,), (0xF3, 0x40), (0xF3, 0x41), (0xF3, 0x44), (0xF3, 0x45)}
 MOVAPD_REGISTER_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PACKUSWB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PCMPGTD_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
@@ -773,6 +774,25 @@ def pmuludq_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.62-PMULUDQ-XMM-register-register"
 
 
+def movss_register_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-34.8a legacy MOVSS XMM register form."""
+    if row["mnemonic"] != "movss" or row["signature"] != "movss xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x10):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in MOVSS_REGISTER_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory F3 + optional REX.R/B + 0F 10 + register ModR/M.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-34.8a-MOVSS-XMM-register-register"
+
+
 def psrlq_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.45 XMM register immediate form."""
     if row["mnemonic"] != "psrlq" or row["signature"] != "psrlq xmm,imm":
@@ -945,6 +965,9 @@ def local_profile_candidate(row: dict) -> str | None:
     pmuludq_candidate = pmuludq_local_profile_candidate(row)
     if pmuludq_candidate is not None:
         return pmuludq_candidate
+    movss_register_candidate = movss_register_local_profile_candidate(row)
+    if movss_register_candidate is not None:
+        return movss_register_candidate
     psubq_candidate = psubq_local_profile_candidate(row)
     if psubq_candidate is not None:
         return psubq_candidate

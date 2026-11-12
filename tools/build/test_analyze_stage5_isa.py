@@ -1326,6 +1326,67 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  403f00: {encoding} {operands}")
             self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
 
+    def test_s2_34_8a_movss_matches_all_xmm_pairs_and_strict_legacy_gate(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-34.8a-MOVSS-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "f3 " if rex == 0x40 else f"f3 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 10 {modrm:02x}"
+                operands = f"movss xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  404700: {encoding} {operands}")
+                self.assertEqual(row["signature"], "movss xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        # A neutral REX byte is accepted even though it extends neither operand.
+        neutral = analyzer.parse_row("  404650: f3 40 0f 10 c1 movss xmm0,xmm1")
+        self.assertEqual(analyzer.local_profile_candidate(neutral), expected)
+        rejected = (
+            ("0f 10 c1", "movss xmm0,xmm1"),
+            ("f3 0f 11 c1", "movss xmm1,xmm0"),
+            ("40 f3 0f 10 c1", "movss xmm0,xmm1"),
+            ("f3 f3 0f 10 c1", "movss xmm0,xmm1"),
+            ("f2 0f 10 c1", "movsd xmm0,xmm1"),
+            ("66 0f 10 c1", "movupd xmm0,xmm1"),
+            ("f3 42 0f 10 c1", "movss xmm0,xmm1"),
+            ("f3 48 0f 10 c1", "movss xmm0,xmm1"),
+            ("f3 4c 0f 10 c1", "movss xmm8,xmm1"),
+            ("f3 66 0f 10 c1", "movss xmm0,xmm1"),
+            ("66 f3 0f 10 c1", "movss xmm0,xmm1"),
+            ("67 f3 0f 10 c1", "movss xmm0,xmm1"),
+            ("64 f3 0f 10 c1", "movss xmm0,xmm1"),
+            ("f3 0f 10 01", "movss xmm0,DWORD PTR [rcx]"),
+            ("f3 0f 10", "movss xmm0,xmm1"),
+            ("f3 0f 10 c1 90", "movss xmm0,xmm1"),
+            ("c5 fa 10 c1", "vmovss xmm0,xmm1,xmm2"),
+            ("62 f1 7e 08 10 c1", "vmovss xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  404800: {encoding} {operands}")
+            self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
+
+    def test_s2_34_8a_movss_registry_records_fresh_review_and_state_semantics(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.8a MOVSS XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("both raw x87 and SSE state", profile["gate"])
+        self.assertIn("fresh independent review", profile["gate"])
+        family = profile["families"][0]
+        self.assertIn("F3 [one optional REX.R/B] 0F 10 /r", family["encoding"])
+        self.assertIn("REX.R extends destination", family["gate"])
+        self.assertIn("preserves old DEST[127:32]", family["outcome"])
+        self.assertIn("no floating-point operation", family["outcome"])
+
     def test_s2_35_62_pmuludq_matches_all_xmm_pairs_and_rex_extensions(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)

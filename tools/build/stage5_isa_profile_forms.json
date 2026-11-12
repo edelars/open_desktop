@@ -1780,6 +1780,32 @@
         "docs/plans/STAGE_2.md:14969-14971",
         "docs/reports/STAGE_2_REPORT.md:16235-16237"
       ]
+    },
+    {
+      "task": "S2-34.8a MOVSS XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE state setup and MMX/SSE transition preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice approved the existing decoder/schema/state/semantic gates and reran focused ISA, testkit, and fixture checks; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-34.8a",
+          "encoding": "F3 [one optional REX.R/B] 0F 10 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSS XMM register-register form only: mandatory F3; no REX or one REX.R/B byte (40/41/44/45) immediately after F3; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "local interpreter copies raw SRC[31:0] to DEST[31:0], preserves old DEST[127:32], updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback; no floating-point operation, MXCSR, or flags change is implied",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11515-11529",
+            "docs/plans/STAGE_2.md:13161-13179",
+            "docs/reports/STAGE_2_REPORT.md:14237-14248"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11515-11529",
+        "docs/plans/STAGE_2.md:13161-13179",
+        "docs/reports/STAGE_2_REPORT.md:14237-14248"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

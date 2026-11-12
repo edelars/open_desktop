@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1058)
-                self.assertEqual(fields["unclassified_normalized_forms"], 211)
+                self.assertEqual(fields["classified_normalized_forms"], 1059)
+                self.assertEqual(fields["unclassified_normalized_forms"], 210)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295864 if full_key else 6296148
-                expected_unclassified_rows = 214536 if full_key else 214597
+                expected_supported_rows = 6295879 if full_key else 6296163
+                expected_unclassified_rows = 214521 if full_key else 214582
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -110,8 +110,10 @@ class NormalizedFormTests(unittest.TestCase):
                     self.assertNotIn("PMOVMSKB", fields[scope_key])
                 report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
                 local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
-                self.assertIn("6 293 797", local_scope_line)
-                self.assertIn("6 293 513", local_scope_line)
+                report_status = next(line for line in report_lines if line.startswith("S5-21 сейчас **blocked**"))
+                self.assertIn("210 из 1 269 normalized forms (214 521 rootfs-only rows; 214 582 rows с E ELF)", report_status)
+                self.assertIn("6 293 812", local_scope_line)
+                self.assertIn("6 293 528", local_scope_line)
                 scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
                 c_totals = fields["scenario_classification_frequencies"]["C"]
                 d_totals = fields["scenario_classification_frequencies"]["D"]
@@ -130,15 +132,26 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "211 normalized forms / 214 536 rootfs-only rows (214 597 с E ELF)",
+                    "210 normalized forms / 214 521 rootfs-only rows (214 582 с E ELF)",
                     issue_section,
                 )
                 self.assertIn("7 PMOVMSKB rows", issue_section)
                 self.assertIn("Both x87 and SSE state are required", issue_section)
                 self.assertIn("8 PMULUDQ rows", issue_section)
+                self.assertIn("MOVSS S2-34.8a adds 15 rows", issue_section)
+                for digest in (
+                    "399c057dcae4729d6f4fb2dcc8bc776d485b3e670a704f09b6a96cd6637c5c9a",
+                    "4ad0a02ee2f44ef8f719f0fc2395a08a543ba22fa2f64132b2bd8b140e18f6d8",
+                    "ffb484be566dbb55993a8b3a7da343ca851798aec716905521ed8012e44cecc1",
+                    "e1e70bc959664a98c181a5e769e10d7dde25258cc2b7595e6f2e1af10700618f",
+                ):
+                    self.assertIn(digest, issue_section)
+                self.assertIn("6 295 879 bounded-profile evidence, 214 521 unclassified", issue_section)
+                self.assertIn("6 296 163 evidence, 214 582 unclassified", issue_section)
+                self.assertIn("1 059 из 1 269 normalized forms имеют bounded evidence, 210 остаётся unclassified", issue_section)
                 aggregate_summary = next(line for line in report_lines if line.startswith("The paired rootfs inventory contains 6,510,400 instruction rows:"))
-                self.assertIn("6,295,864 `proven_supported` and 214,536 `unclassified`", aggregate_summary)
-                self.assertIn("6,296,148 supported and 214,597 unclassified", aggregate_summary)
+                self.assertIn("6,295,879 `proven_supported` and 214,521 `unclassified`", aggregate_summary)
+                self.assertIn("6,296,163 supported and 214,582 unclassified", aggregate_summary)
                 report_binary_rows = {}
                 for line in report_lines:
                     cells = [cell.strip() for cell in line.split("|")]
@@ -435,6 +448,31 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["pmuludq_register_encoding_forms"], 2)
                 self.assertIn("both x87 and SSE state", fields["pmuludq_scope"])
                 self.assertIn("fresh independent review", fields["pmuludq_scope"])
+                movss_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movss xmm,xmm"
+                ]
+                self.assertEqual(len(movss_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movss_forms), 15)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-34.8a-MOVSS-XMM-register-register", 0) for row in movss_forms), 15)
+                movss_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "10"]
+                    and row["dimensions"]["operand_signature"] == "movss xmm,xmm"
+                ]
+                self.assertEqual(len(movss_encodings), 5)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in movss_encodings}, {"CA": 7, "C1": 3, "D0": 3, "C5": 1, "C6": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in movss_encodings))
+                self.assertEqual(
+                    {row["dimensions"]["modrm"]["raw"]: row["binary_frequencies"] for row in movss_encodings},
+                    {"CA": {"bash": 1, "gcc-cc1": 6}, "C1": {"bash": 1, "gcc-cc1": 2}, "D0": {"gcc-cc1": 1, "gcc-collect2": 1, "gcc-driver": 1}, "C5": {"gcc-cc1": 1}, "C6": {"gcc-cc1": 1}},
+                )
+                self.assertEqual(fields["movss_register_rows"], 15)
+                self.assertEqual(fields["movss_register_normalized_forms"], 1)
+                self.assertEqual(fields["movss_register_encoding_forms"], 5)
+                self.assertIn("both x87 and SSE state", fields["movss_scope"])
+                self.assertIn("fresh independent review", fields["movss_scope"])
                 pcmpgtd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]
