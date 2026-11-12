@@ -26976,7 +26976,7 @@ fn wrmsr_kernel_gs_base_composes_with_the_efer_base_and_other_members_in_one_run
     let esp = Cell::new(0);
     let eip = Cell::new(0);
     let syscall_mask = Cell::new(0);
-    let mask = Cell::new(0);
+    let kernel_gs = Cell::new(0);
     let set = base()
         .with_msr(&efer)
         .with_msr_efer_write(&efer_cell)
@@ -26985,11 +26985,11 @@ fn wrmsr_kernel_gs_base_composes_with_the_efer_base_and_other_members_in_one_run
         .with_msr_sysenter_cs_write(&sysenter_cs)
         .with_msr_sysenter_stack_write(&esp, &eip)
         .with_msr_syscall_mask_write(&syscall_mask)
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     let (state, before, result) = run_star(&set, &code, (0, 0, 0), 8);
     assert_eq!(result.instructions_executed, 8);
     assert_eq!(star_cell.get(), 0x0023_0010_0000_0000);
-    assert_eq!(mask.get(), KERNEL_GS_BASE_VALUE);
+    assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
     assert_eq!(
         (sysenter_cs.get(), esp.get(), eip.get(), syscall_mask.get()),
         (0, 0, 0, 0)
@@ -27011,11 +27011,11 @@ fn the_fs_gs_base_member_and_the_kernel_gs_base_member_are_separate() {
         0x30,
     ];
     let efer = MsrProfile::EferReadOnlyV1(0xd00);
-    let mask = Cell::new(0x77);
+    let kernel_gs = Cell::new(0x77);
     let set = base()
         .with_msr(&efer)
         .with_msr_fs_gs_base()
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     let (state, before, result) = run_star(&set, &code, (0, 0, 0), 8);
     assert_eq!(result.instructions_executed, 8);
     assert_eq!(
@@ -27023,7 +27023,7 @@ fn the_fs_gs_base_member_and_the_kernel_gs_base_member_are_separate() {
         "GS base: its own member"
     );
     assert_eq!(
-        mask.get(),
+        kernel_gs.get(),
         KERNEL_GS_BASE_VALUE,
         "KERNEL_GS_BASE: its own member"
     );
@@ -27273,15 +27273,15 @@ fn wrmsr_kernel_gs_base_is_effective_under_every_msr_profile_but_kernel_gs_base_
         MsrProfile::SysenterProbeV1,
     ] {
         for member_first in [true, false] {
-            let mask = Cell::new(0);
+            let kernel_gs = Cell::new(0);
             let set = if member_first {
                 base()
-                    .with_msr_kernel_gs_base_write(&mask)
+                    .with_msr_kernel_gs_base_write(&kernel_gs)
                     .with_msr(&profile)
             } else {
                 base()
                     .with_msr(&profile)
-                    .with_msr_kernel_gs_base_write(&mask)
+                    .with_msr_kernel_gs_base_write(&kernel_gs)
             };
             let (_, _, result) = run_star(
                 &set,
@@ -27293,7 +27293,7 @@ fn wrmsr_kernel_gs_base_is_effective_under_every_msr_profile_but_kernel_gs_base_
                 result.instructions_executed, 1,
                 "{profile:?} member_first={member_first}"
             );
-            assert_eq!(mask.get(), KERNEL_GS_BASE_VALUE);
+            assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
         }
     }
 
@@ -27302,12 +27302,12 @@ fn wrmsr_kernel_gs_base_is_effective_under_every_msr_profile_but_kernel_gs_base_
     let sysenter = Cell::new(0x66);
     let esp = Cell::new(0x77);
     let eip = Cell::new(0x88);
-    let mask = Cell::new(0);
+    let kernel_gs = Cell::new(0);
     let set = base()
         .with_msr(&probe)
         .with_msr_sysenter_cs_write(&sysenter)
         .with_msr_sysenter_stack_write(&esp, &eip)
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     for index in [SYSENTER_CS_MSR, SYSENTER_ESP_MSR, SYSENTER_EIP_MSR] {
         let (state, before, result) = run_star(&set, &WRMSR, (index, 1, 2), 1);
         assert_eq!(exit(&result), &gp0(), "{index:#x}");
@@ -27320,7 +27320,7 @@ fn wrmsr_kernel_gs_base_is_effective_under_every_msr_profile_but_kernel_gs_base_
         1,
     );
     assert_eq!(result.instructions_executed, 1);
-    assert_eq!(mask.get(), KERNEL_GS_BASE_VALUE);
+    assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
     assert_eq!((sysenter.get(), esp.get(), eip.get()), (0x66, 0x77, 0x88));
 }
 
@@ -27332,15 +27332,15 @@ fn the_kernel_gs_base_msr_profile_wins_over_the_member_in_both_builder_orders() 
     // the cell stays untouched, where the member alone would have stored and advanced.
     let profile = MsrProfile::KernelGsBaseV1;
     for member_first in [true, false] {
-        let mask = Cell::new(0x77);
+        let kernel_gs = Cell::new(0x77);
         let set = if member_first {
             base()
-                .with_msr_kernel_gs_base_write(&mask)
+                .with_msr_kernel_gs_base_write(&kernel_gs)
                 .with_msr(&profile)
         } else {
             base()
                 .with_msr(&profile)
-                .with_msr_kernel_gs_base_write(&mask)
+                .with_msr_kernel_gs_base_write(&kernel_gs)
         };
         let (state, before, result) = run_star(
             &set,
@@ -27355,7 +27355,7 @@ fn the_kernel_gs_base_msr_profile_wins_over_the_member_in_both_builder_orders() 
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
-        assert_eq!(mask.get(), 0x77, "member_first={member_first}");
+        assert_eq!(kernel_gs.get(), 0x77, "member_first={member_first}");
     }
 }
 
@@ -27365,8 +27365,8 @@ fn wrmsr_other_msrs_stay_unsupported_with_the_kernel_gs_base_member() {
     // SYSCALL and SYSENTER MSRs (no member here), EFER (no profile in this set), FS/GS base (no
     // base member: 0xC0000100/0xC0000101), 0xC0000103 and the look-alikes 0xC0010102 and
     // 0xC0000002, APIC_BASE and an unknown index: refused with 0x30, the cell untouched.
-    let mask = Cell::new(0xabcd);
-    let set = base().with_msr_kernel_gs_base_write(&mask);
+    let kernel_gs = Cell::new(0xabcd);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
     for index in [
         CSTAR_MSR,
         SYSCALL_MASK_MSR,
@@ -27398,7 +27398,7 @@ fn wrmsr_other_msrs_stay_unsupported_with_the_kernel_gs_base_member() {
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
-        assert_eq!(mask.get(), 0xabcd);
+        assert_eq!(kernel_gs.get(), 0xabcd);
     }
 }
 
@@ -27407,8 +27407,8 @@ fn wrmsr_with_the_kernel_gs_base_low_bits_but_another_index_is_unsupported_witho
     // ECX is a 32-bit index: 0x102 in the low bits with other bits set in the low half or the
     // index class changed is another MSR. (RCX with the bits above 31 set is not in this list:
     // only ECX counts, so it is KERNEL_GS_BASE, see the first test.)
-    let mask = Cell::new(0x77);
-    let set = base().with_msr_kernel_gs_base_write(&mask);
+    let kernel_gs = Cell::new(0x77);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
     for index in [
         0x0001_0102u64,
         0x0000_0102,
@@ -27433,15 +27433,15 @@ fn wrmsr_with_the_kernel_gs_base_low_bits_but_another_index_is_unsupported_witho
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
-        assert_eq!(mask.get(), 0x77);
+        assert_eq!(kernel_gs.get(), 0x77);
     }
 }
 
 #[test]
 fn rdmsr_kernel_gs_base_stays_unsupported_even_after_a_write() {
     // No RDMSR of KERNEL_GS_BASE in the set: the written value is observable only through the cell.
-    let mask = Cell::new(0);
-    let set = base().with_msr_kernel_gs_base_write(&mask);
+    let kernel_gs = Cell::new(0);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
     let (state, before, result) = run_star(&set, &RDMSR, (KERNEL_GS_BASE_MSR, 0, 0), 1);
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
     assert_eq!(state, before);
@@ -27450,7 +27450,7 @@ fn rdmsr_kernel_gs_base_stays_unsupported_even_after_a_write() {
     let set = base()
         .with_msr(&efer)
         .with_msr_fs_gs_base()
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     // mov ecx,0xc0000102; mov eax,0x12345678; mov edx,0xffff8880; wrmsr; rdmsr
     let mut code = vec![
         0xb9, 0x02, 0x01, 0x00, 0xc0, 0xb8, 0x78, 0x56, 0x34, 0x12, 0xba, 0x80, 0x88, 0xff, 0xff,
@@ -27460,7 +27460,7 @@ fn rdmsr_kernel_gs_base_stays_unsupported_even_after_a_write() {
     let (state, _, result) = run_star(&set, &code, (0, 0, 0), 6);
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
     assert_eq!(result.instructions_executed, 4, "the RDMSR is not retired");
-    assert_eq!(mask.get(), KERNEL_GS_BASE_VALUE);
+    assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
     assert_eq!(state.rip, RIP + 17, "stopped at the RDMSR");
 }
 
@@ -27476,8 +27476,8 @@ fn wrmsr_kernel_gs_base_with_prefixes_is_unsupported_without_mutation() {
         &[0x3e, 0x0f, 0x30],
         &[0x67, 0x0f, 0x30],
     ] {
-        let mask = Cell::new(0x77);
-        let set = base().with_msr_kernel_gs_base_write(&mask);
+        let kernel_gs = Cell::new(0x77);
+        let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
         let (state, before, result) = run_star(
             &set,
             code,
@@ -27490,7 +27490,7 @@ fn wrmsr_kernel_gs_base_with_prefixes_is_unsupported_without_mutation() {
             "{code:02x?}"
         );
         assert_eq!(state, before);
-        assert_eq!(mask.get(), 0x77);
+        assert_eq!(kernel_gs.get(), 0x77);
     }
 }
 
@@ -27501,11 +27501,11 @@ fn syscall_and_sysenter_instructions_stay_unsupported_with_the_kernel_gs_base_me
     // without mutation, also with the other members present.
     let star = Cell::new(0x0023_0010_0000_0000);
     let sysenter_cs = Cell::new(0x10);
-    let mask = Cell::new(KERNEL_GS_BASE_VALUE);
+    let kernel_gs = Cell::new(KERNEL_GS_BASE_VALUE);
     let set = base()
         .with_msr_star_write(&star)
         .with_msr_sysenter_cs_write(&sysenter_cs)
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     for (code, opcode) in [
         (&[0x0f, 0x34][..], 0x34u8),
         (&[0x0f, 0x35], 0x35),
@@ -27528,7 +27528,7 @@ fn syscall_and_sysenter_instructions_stay_unsupported_with_the_kernel_gs_base_me
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(
-            (star.get(), sysenter_cs.get(), mask.get()),
+            (star.get(), sysenter_cs.get(), kernel_gs.get()),
             (0x0023_0010_0000_0000, 0x10, KERNEL_GS_BASE_VALUE)
         );
     }
@@ -27538,10 +27538,10 @@ fn syscall_and_sysenter_instructions_stay_unsupported_with_the_kernel_gs_base_me
 fn swapgs_stays_unsupported_with_the_kernel_gs_base_member() {
     // The stored KERNEL_GS_BASE is never consumed: SWAPGS (`0F 01 F8`) keeps its refusal in the
     // set, without mutation, whether or not the cell has been written; gs_base is not swapped.
-    let mask = Cell::new(KERNEL_GS_BASE_VALUE);
+    let kernel_gs = Cell::new(KERNEL_GS_BASE_VALUE);
     let set = base()
         .with_msr_fs_gs_base()
-        .with_msr_kernel_gs_base_write(&mask);
+        .with_msr_kernel_gs_base_write(&kernel_gs);
     let (state, before, result) = run_star(
         &set,
         &[0x0f, 0x01, 0xf8],
@@ -27551,14 +27551,14 @@ fn swapgs_stays_unsupported_with_the_kernel_gs_base_member() {
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
-    assert_eq!(mask.get(), KERNEL_GS_BASE_VALUE);
+    assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
 }
 
 #[test]
 fn wrmsr_kernel_gs_base_at_cpl3_never_reaches_the_member() {
     // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch or write.
-    let mask = Cell::new(0x77);
-    let set = base().with_msr_kernel_gs_base_write(&mask);
+    let kernel_gs = Cell::new(0x77);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
     let mut state = board_state();
     state.gpr[1] = KERNEL_GS_BASE_MSR;
     state.gpr[0] = KERNEL_GS_BASE_EAX;
@@ -27580,5 +27580,55 @@ fn wrmsr_kernel_gs_base_at_cpl3_never_reaches_the_member() {
     );
     assert_eq!(state, before);
     assert_eq!(memory.fetches, 0);
-    assert_eq!(mask.get(), 0x77);
+    assert_eq!(kernel_gs.get(), 0x77);
+}
+
+#[test]
+fn the_kernel_gs_base_msr_profile_stores_into_the_state_not_the_member_cell() {
+    // Positive case of the precedence: with `KernelGsBaseV1` and a canonical `kernel_gs_base` in
+    // the state, `WRMSR` of 0xC0000102 takes the profile's path in either builder order: the value
+    // `EDX:EAX` goes to `state.kernel_gs_base`, RIP += 2, nothing else changes, and the member's
+    // cell is untouched. Without the `!handles_index` guard the member would store into the cell
+    // and leave the state alone, so the asserts distinguish the two paths. A non-canonical value
+    // (EDX:EAX = 0x00010000:0, bit 48 set) gives the profile's `#GP(0)`: nothing is written to the
+    // state or to the cell (the member alone would have stored it without any check).
+    let profile = MsrProfile::KernelGsBaseV1;
+    for member_first in [true, false] {
+        for (eax, edx, canonical) in [
+            (KERNEL_GS_BASE_EAX, KERNEL_GS_BASE_EDX, true),
+            (0, 0x0001_0000, false),
+        ] {
+            let kernel_gs = Cell::new(0x77);
+            let set = if member_first {
+                base()
+                    .with_msr_kernel_gs_base_write(&kernel_gs)
+                    .with_msr(&profile)
+            } else {
+                base()
+                    .with_msr(&profile)
+                    .with_msr_kernel_gs_base_write(&kernel_gs)
+            };
+            let mut state = board_state();
+            state.kernel_gs_base = Some(0x1000);
+            state.gpr[1] = KERNEL_GS_BASE_MSR;
+            state.gpr[0] = eax;
+            state.gpr[2] = edx;
+            let before = state.clone();
+            let mut memory = Memory::code(&WRMSR);
+            let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+            let label = format!("member_first={member_first} canonical={canonical}");
+            assert_eq!(kernel_gs.get(), 0x77, "{label}");
+            if canonical {
+                assert_eq!(result.instructions_executed, 1, "{label}");
+                let mut expected = before;
+                expected.rip += 2;
+                expected.kernel_gs_base = Some(0xffff_8880_1234_5678);
+                assert_eq!(state, expected, "{label}");
+            } else {
+                assert_eq!(exit(&result), &gp0(), "{label}");
+                assert_eq!(result.instructions_executed, 0, "{label}");
+                assert_eq!(state, before, "{label}");
+            }
+        }
+    }
 }
