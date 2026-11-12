@@ -33240,9 +33240,11 @@ fn step_configured(
                 0xc000_0081 => cells.star,
                 0xc000_0082 => cells.lstar,
                 0xc000_0083 => cells.cstar,
-                // S4-38L7ar: the SYSENTER probe profile handles 0x174 and faults it with
-                // #GP(0) at any CPL; the member never overrides that policy.
-                0x174 if msr_profile != Some(&MsrProfile::SysenterProbeV1) => cells.sysenter_cs,
+                // S4-38L7ar: a profile that handles 0x174 (SysenterProbeV1: #GP(0) at any CPL)
+                // keeps the index; the member never overrides it.
+                0x174 if !msr_profile.is_some_and(|profile| profile.handles_index(0x174)) => {
+                    cells.sysenter_cs
+                }
                 _ => None,
             }
             && control_policy.is_some()

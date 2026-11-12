@@ -8859,10 +8859,10 @@ fn wrmsr_sysenter_cs_without_the_member_is_unsupported_in_every_other_set() {
 
 #[test]
 fn wrmsr_sysenter_cs_outside_the_set_stays_refused_in_bare_run_and_msr_profiles() {
-    // Outside the set the refusal is the existing one: the exit of SYSENTER_CS equals the exit of
-    // an unmodelled MSR (a control index), nothing retires and the state is unchanged, also with
-    // `SysenterProbeV1` in this bare-run context (its #GP(0) in the set and at every CPL is
-    // covered by the precedence test below and by the `sysenter_msr_probes_fault_...` lib test).
+    // Outside the set the refusal is the existing one. With the board state (CR0/CR4/activity
+    // set) the bare `run` and `run_with_msr_profile` refuse at ENTRY, before any fetch, for every
+    // profile and index: `Unsupported { opcode: 0x0f }`, `fetches == 0`. This part only shows the
+    // member adds nothing outside the set; it does not reach the MSR branch.
     let check = |profile: Option<&MsrProfile>, index: u64| {
         let mut state = board_state();
         state.gpr[1] = index;
@@ -8887,6 +8887,7 @@ fn wrmsr_sysenter_cs_outside_the_set_stays_refused_in_bare_run_and_msr_profiles(
         };
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
+        assert_eq!(memory.fetches, 0, "refused at entry, before the fetch");
         result.exit
     };
     let unsupported = check(None, 0x1234_5678);
@@ -8908,6 +8909,45 @@ fn wrmsr_sysenter_cs_outside_the_set_stays_refused_in_bare_run_and_msr_profiles(
             "{profile:?}"
         );
     }
+}
+
+#[test]
+fn the_msr_branch_of_the_bare_run_with_fetch_treats_0x174_by_profile_only() {
+    // A default state (no CR0/CR4/activity) gets past the entry of the bare run with an MSR
+    // profile, so the MSR branch is reached (two fetches, `0F 30`). `SysenterProbeV1` handles
+    // 0x174 and faults it with #GP(0) (a fault commits nothing); any other profile does not
+    // handle it, and so does an unknown index under the probe profile: `Unsupported { 0x30 }`.
+    // The set member is not involved: this is the behaviour the member must not override.
+    let run_once = |profile: &MsrProfile, index: u64| {
+        let mut state = LongModeState {
+            rip: RIP,
+            ..LongModeState::default()
+        };
+        state.gpr[1] = index;
+        state.gpr[0] = SYSENTER_CS_EAX;
+        state.gpr[2] = SYSENTER_CS_EDX;
+        let before = state.clone();
+        let mut memory = Memory::code(&WRMSR);
+        let result = run_with_msr_profile(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            profile,
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 0, "{profile:?} {index:#x}");
+        assert_eq!(state, before, "{profile:?} {index:#x}");
+        (result.exit, memory.fetches)
+    };
+    let (exit_probe, fetches) = run_once(&MsrProfile::SysenterProbeV1, SYSENTER_CS_MSR);
+    assert_eq!(exit_probe, gp0());
+    assert_eq!(fetches, 2, "the MSR branch was reached");
+    let (exit_unknown, fetches) = run_once(&MsrProfile::SysenterProbeV1, 0x1234_5678);
+    assert_eq!(exit_unknown, RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(fetches, 2);
+    let (exit_gs, fetches) = run_once(&MsrProfile::GsBaseV1, SYSENTER_CS_MSR);
+    assert_eq!(exit_gs, RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(fetches, 2);
 }
 
 #[test]
@@ -9041,9 +9081,9 @@ fn wrmsr_other_msrs_stay_unsupported_with_the_sysenter_cs_member() {
 
 #[test]
 fn wrmsr_with_the_sysenter_cs_low_bits_but_another_index_is_unsupported_without_mutation() {
-    // ECX is a 32-bit index: 0x174 under another high half or with other bits set is another
-    // MSR (a prefix-like 0x1_0000_0174 in RCX is the exception: RCX[63:32] is ignored, as for
-    // every cell, see the first test). 0xc000_0174 and 0x8000_0174 are not SYSENTER_CS.
+    // ECX is a 32-bit index: 0x174 with other bits set in ECX is another MSR. (RCX = 0x1_0000_0174
+    // is not in this list: only the low 32 bits of RCX, i.e. ECX, are taken into account for every
+    // cell, so it is SYSENTER_CS, see the first test.) 0xc000_0174 and 0x8000_0174 are not it.
     let cell = Cell::new(0x77);
     let set = base().with_msr_sysenter_cs_write(&cell);
     for index in [
