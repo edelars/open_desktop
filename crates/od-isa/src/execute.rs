@@ -33256,9 +33256,10 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar: `WRMSR` of IA32_STAR / IA32_LSTAR /
-        // IA32_CSTAR / IA32_SYSENTER_CS stores EDX:EAX in the set's cell. No MSR profile except
-        // `SysenterProbeV1` (which wins for 0x174) handles these indexes, so every other form
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: `WRMSR` of IA32_STAR / IA32_LSTAR /
+        // IA32_CSTAR / IA32_SYSENTER_CS / IA32_SYSENTER_ESP / IA32_SYSENTER_EIP stores EDX:EAX in
+        // the set's cell for that index. An MSR profile that handles the index (`handles_index`;
+        // today `SysenterProbeV1` for 0x174..=0x176) wins for its own index, so every other form
         // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
         // the existing refusal below.
         if instruction.operation == Operation::WriteMsr
