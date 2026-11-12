@@ -70,8 +70,8 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1033)
-                self.assertEqual(fields["unclassified_normalized_forms"], 236)
+                self.assertEqual(fields["classified_normalized_forms"], 1035)
+                self.assertEqual(fields["unclassified_normalized_forms"], 234)
                 pshufd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["operand_signature"] == "pshufd xmm,xmm,imm"
@@ -91,6 +91,21 @@ class NormalizedFormTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(pshufd_memory), 1)
                 self.assertEqual(pshufd_memory[0]["classification_frequencies"], {"unclassified": 1})
+                psrldq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "73"]
+                    and row["instruction_form"]["operand_signature"] == "psrldq xmm,imm"
+                ]
+                self.assertEqual(len(psrldq_forms), 2)
+                self.assertEqual(sum(row["count"] for row in psrldq_forms), 355)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.47-PSRLDQ-XMM-immediate-register", 0) for row in psrldq_forms),
+                    355,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrldq_forms),
+                    355,
+                )
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
                     hashlib.sha256(compact_path.read_bytes()).hexdigest(),

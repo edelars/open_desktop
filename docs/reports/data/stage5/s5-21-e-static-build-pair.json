@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pshufd-e-static-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pshufd-e-static-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-pshufd-e-static-pass1.json",
-    "compact_inventory_sha256": "d0e63966e3362331d7b5ee2372089e9092cafded21db7ccdcb66e235036693a8",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psrldq-e-static-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psrldq-e-static-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-psrldq-e-static-pass1.json",
+    "compact_inventory_sha256": "f308159161f89a3c87e4fbd083d2a0dd64fd972a29316ae2b997b51bf7ea1bc3",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "c7dc09ab9a818cb4083120ddedcafc159b61bee6b7df18a0fc33c973d16eeed5",
+    "raw_inventory_sha256": "5103a1d3b70e21a75efcd96eb0e35349326b441f2f7b01522c94d690f722e094",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,23 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1033,
-    "unclassified_normalized_forms": 236,
+    "classified_normalized_forms": 1035,
+    "unclassified_normalized_forms": 234,
     "classification_frequencies": {
-      "proven_supported": 6295420,
-      "unclassified": 215325
+      "proven_supported": 6295775,
+      "unclassified": 214970
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293069,
+      "local_interpreter_profile": 6293424,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "d0e63966e3362331d7b5ee2372089e9092cafded21db7ccdcb66e235036693a8",
+    "compact_repeat_sha256": "f308159161f89a3c87e4fbd083d2a0dd64fd972a29316ae2b997b51bf7ea1bc3",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pshufd-e-static-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pshufd-e-static-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psrldq-e-static-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psrldq-e-static-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -98,12 +98,12 @@
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322675,
-        "unclassified": 23474
+        "proven_supported": 322687,
+        "unclassified": 23462
       },
       "D": {
-        "proven_supported": 6226105,
-        "unclassified": 210109
+        "proven_supported": 6226450,
+        "unclassified": 209764
       }
     },
     "local_simd_logic_rows": 1858,
@@ -136,7 +136,17 @@
     "pshufd_register_rows_by_profile": {
       "S2-35.35-PSHUFD-XMM-register-register": 805
     },
-    "pshufd_scope": "Accepted local-only register forms; imm8 unrestricted; no MMX, REX.W/X, extra prefixes, VEX/EVEX, CPL3/native/JIT/physical evidence."
+    "pshufd_scope": "Accepted local-only register forms; imm8 unrestricted; no MMX, REX.W/X, extra prefixes, VEX/EVEX, CPL3/native/JIT/physical evidence.",
+    "psrldq_register_rows": 355,
+    "psrldq_register_normalized_forms": 2,
+    "psrldq_register_rows_by_profile": {
+      "S2-35.47-PSRLDQ-XMM-immediate-register": 355
+    },
+    "psrldq_register_rows_by_prefix": {
+      "operand_size": 345,
+      "operand_size+rex": 10
+    },
+    "psrldq_scope": "Accepted local-only legacy register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /3, unsigned imm8; no CPL3/native/JIT/physical evidence."
   },
   "unchanged_rootfs_binary_inputs": true
 }

@@ -307,6 +307,63 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("REX.W/X", family["gate"])
         self.assertIn("no native/JIT/physical or machine-CPL evidence", profile["gate"])
 
+    def test_s2_35_47_psrldq_matches_all_destinations_and_imm8_values(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.47-PSRLDQ-XMM-immediate-register"
+        for destination in range(16):
+            rex = "41 " if destination >= 8 else ""
+            modrm = 0xD8 | (destination & 7)  # ModR/M.mod=3, /3 selector.
+            for count in range(256):
+                encoding = f"66 {rex}0f 73 {modrm:02x} {count:02x}"
+                operands = f"psrldq xmm{destination},0x{count:x}"
+                row = analyzer.parse_row(f"  401900: {encoding} {operands}")
+                self.assertEqual(row["signature"], "psrldq xmm,imm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+        rejected = (
+            ("0f 73 d8 01", "psrldq xmm0,0x1"),  # no mandatory 66.
+            ("66 40 0f 73 d8 01", "psrldq xmm0,0x1"),  # bare neutral REX.
+            ("66 42 0f 73 d8 01", "psrldq xmm0,0x1"),  # REX.X.
+            ("66 44 0f 73 d8 01", "psrldq xmm0,0x1"),  # REX.R.
+            ("66 48 0f 73 d8 01", "psrldq xmm0,0x1"),  # REX.W.
+            ("66 45 0f 73 d8 01", "psrldq xmm0,0x1"),  # REX.R/B.
+            ("66 66 0f 73 d8 01", "psrldq xmm0,0x1"),
+            ("66 f2 0f 73 d8 01", "psrldq xmm0,0x1"),
+            ("66 f3 0f 73 d8 01", "psrldq xmm0,0x1"),
+            ("41 66 0f 73 d8 01", "psrldq xmm0,0x1"),  # REX before 66.
+            ("66 0f 73 18 01", "psrldq xmm0,0x1"),  # ModR/M.mod=0.
+            ("66 0f 73 58 00 01", "psrldq xmm0,0x1"),  # ModR/M.mod=1.
+            ("66 0f 73 98 00 00 00 00 01", "psrldq xmm0,0x1"),  # ModR/M.mod=2.
+            ("66 0f 73 d0 01", "psrldq xmm0,0x1"),  # /2 selector.
+            ("66 0f 73 f8 01", "psrldq xmm0,0x1"),  # /7 selector.
+            ("66 0f 73 d8", "psrldq xmm0,0x1"),  # Missing imm8.
+            ("66 0f 73 d8 01 90", "psrldq xmm0,0x1"),  # Trailing byte.
+            ("66 0f 72 d8 01", "psrldq xmm0,0x1"),  # Different opcode.
+            ("c5 f9 73 d8 01", "vpsrldq xmm0,xmm1,0x1"),
+            ("62 f1 7d 08 73 d8 01", "vpsrldq xmm0,xmm1,0x1"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  401b00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_47_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.47 PSRLDQ XMM immediate register-only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertEqual(len(profile["families"]), 1)
+        family = profile["families"][0]
+        self.assertEqual(family["task"], "S2-35.47")
+        self.assertIn("no REX or optional 41", family["encoding"])
+        self.assertIn("ModR/M.reg=/3", family["gate"])
+        self.assertIn("bare REX 40", family["gate"])
+        self.assertIn("no CPL3/native/JIT/physical evidence", profile["gate"])
+
     def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

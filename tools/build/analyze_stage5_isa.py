@@ -319,6 +319,7 @@ PUNPCK_ALLOWED_PREFIXES = {
     (0x66, 0x45),
 }
 PSHUFD_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
+PSRLDQ_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 
 
 SIMD_LOGIC_NO_PREFIX_PROFILES = {
@@ -411,6 +412,25 @@ def pshufd_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.35-PSHUFD-XMM-register-register"
 
 
+def psrldq_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-35.47 XMM register immediate form."""
+    if row["mnemonic"] != "psrldq" or row["signature"] != "psrldq xmm,imm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x73):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PSRLDQ_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3 or ((modrm >> 3) & 7) != 3:
+        return None
+    # Mandatory 66 + optional REX.B + 0F 73 /3 + immediate byte.
+    if len(row["byte_values"]) != len(prefixes) + 4:
+        return None
+    return "S2-35.47-PSRLDQ-XMM-immediate-register"
+
+
 def pxor_local_profile_candidate(row: dict) -> str | None:
     """Match accepted S2-35.1 XMM register-only PXOR, never MMX or memory."""
     if row["mnemonic"] != "pxor" or row["signature"] != "pxor xmm,xmm":
@@ -497,6 +517,9 @@ def movups_local_profile_candidate(row: dict) -> str | None:
 
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    psrldq_candidate = psrldq_local_profile_candidate(row)
+    if psrldq_candidate is not None:
+        return psrldq_candidate
     pshufd_candidate = pshufd_local_profile_candidate(row)
     if pshufd_candidate is not None:
         return pshufd_candidate
