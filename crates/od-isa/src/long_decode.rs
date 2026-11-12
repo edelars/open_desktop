@@ -818,6 +818,19 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S4-38L7bg: `64 [REX] 0F B0 /r` (CMPXCHG m8, r8 with the FS base), memory destination only,
+    /// no LOCK; AL is the accumulator. Executed only in the CPL0 set; the destination is always
+    /// written back (as `LockCmpxchgMem`).
+    CmpxchgFsMemByte {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
+    /// S4-38L7bg: `65 [REX] 0F B0 /r` (CMPXCHG m8, r8 with the GS base), memory destination only.
+    /// Executed only in the CPL0 set.
+    CmpxchgGsMemByte {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// S4-38L7l: `F0 [REX] FF /0` (LOCK INC m32, and with REX.W m64), memory destination only.
     /// Executed only in the CPL0 set; the destination is always written back.
     LockIncMem {
@@ -2347,7 +2360,11 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::CmpxchgMemory { .. } | Operation::LockCmpxchgMem { .. } => FlagEffects {
+            // S4-38L7bg: as the plain CMPXCHG: all six flags defined (CMP of AL with the destination).
+            Operation::CmpxchgMemory { .. }
+            | Operation::LockCmpxchgMem { .. }
+            | Operation::CmpxchgFsMemByte { .. }
+            | Operation::CmpxchgGsMemByte { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -3163,7 +3180,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -8022,6 +8039,48 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
+            (OpcodeMap::Escape0f, 0xb0) => {
+                // S4-38L7bg: only `[64|65] [REX] 0F B0 /r` with a memory destination (CMPXCHG
+                // m8, r8; AL is the accumulator, REX.W is ignored). Everything else (no segment
+                // prefix, CS/DS/ES/SS, the register form, LOCK/REP/REPNE, 0x66, 0x67, a REX byte
+                // that is not immediately before the opcode) is refused with 0xb0. A second
+                // segment prefix is already refused by the shared duplicate check.
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let Some(segment @ (0x64 | 0x65)) = prefixes.segment else {
+                    return Err(self.unsupported(opcode));
+                };
+                if stale_rex
+                    || prefixes.group1.is_some()
+                    || prefixes.operand_override
+                    || prefixes.address_override
+                {
+                    return Err(self.unsupported(opcode));
+                }
+                size = OperandSize::Byte;
+                let modrm = self.byte()?;
+                let source = view(
+                    ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    OperandSize::Byte,
+                    prefixes.rex.is_some(),
+                );
+                let Operand::Memory(destination) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                if segment == 0x64 {
+                    Operation::CmpxchgFsMemByte {
+                        destination,
+                        source,
+                    }
+                } else {
+                    Operation::CmpxchgGsMemByte {
+                        destination,
+                        source,
+                    }
+                }
+            }
             (OpcodeMap::Escape0f, 0xb1) => {
                 let qword =
                     size == OperandSize::Qword && prefixes.rex.is_some_and(|rex| rex & 8 != 0);
@@ -9817,6 +9876,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::TestGsMemWide { .. } => false,
                 Operation::IncDecFsMem { .. } => false,
                 Operation::IncDecGsMem { .. } => false,
+                Operation::CmpxchgFsMemByte { .. } => false,
+                Operation::CmpxchgGsMemByte { .. } => false,
                 Operation::MovFsSelectorToRax => false,
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
@@ -24543,6 +24604,90 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn segment_cmpxchg_byte_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7bg: `[64|65] [REX] 0F B0 /r` with a memory destination. The S4-38L7bf diagnostic
+        // boundary: `cmpxchg %cl, %gs:(%rdi)`, 4 bytes.
+        let mut memory = Memory::new(&[0x65, 0x0f, 0xb0, 0x0f]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.operand_size, OperandSize::Byte);
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmpxchgGsMemByte { destination, source }
+                if source == RegisterView::low(Register::Rcx, OperandSize::Byte)
+                    && destination.base == AddressBase::Register(Register::Rdi)
+                    && destination.displacement == 0
+                    && destination.size == OperandSize::Byte
+        ));
+        // FS with REX.W + REX.R (W ignored): `cmpxchg %r8b, %fs:0x1234(%rip)`.
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x0f, 0xb0, 0x05, 0x34, 0x12, 0x00, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpxchgFsMemByte { destination, source }
+                if source == RegisterView::low(Register::R8, OperandSize::Byte)
+                    && destination.base == AddressBase::NextRip
+                    && destination.size == OperandSize::Byte
+        ));
+        // Without REX the source reg 4 is AH; with an (empty) REX it is SPL.
+        let mut memory = Memory::new(&[0x65, 0x0f, 0xb0, 0x27]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpxchgGsMemByte { source, .. }
+                if source == RegisterView::decode_byte(4, false).unwrap()
+        ));
+        let mut memory = Memory::new(&[0x65, 0x40, 0x0f, 0xb0, 0x27]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpxchgGsMemByte { source, .. }
+                if source == RegisterView::low(Register::Rsp, OperandSize::Byte)
+        ));
+        // REX.B base r8 with a disp8: `cmpxchg %cl, %gs:8(%r8)`.
+        let mut memory = Memory::new(&[0x65, 0x41, 0x0f, 0xb0, 0x48, 0x08]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpxchgGsMemByte { destination, .. }
+                if destination.base == AddressBase::Register(Register::R8)
+                    && destination.displacement == 8
+        ));
+        // The plain form, CS/DS/ES/SS, the register form, LOCK/REP/REPNE, 0x66, 0x67, a second
+        // segment prefix and a stale REX are refused with 0xb0.
+        for bytes in [
+            &[0x0f, 0xb0, 0x0f][..],
+            &[0x2e, 0x0f, 0xb0, 0x0f][..],
+            &[0x3e, 0x48, 0x0f, 0xb0, 0x0f][..],
+            &[0x65, 0x0f, 0xb0, 0xc1][..],
+            &[0x0f, 0xb0, 0xc1][..],
+            &[0xf0, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0xf0, 0x0f, 0xb0, 0x0f][..],
+            &[0xf3, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0xf2, 0x64, 0x0f, 0xb0, 0x0f][..],
+            &[0x66, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0x65, 0x66, 0x48, 0x0f, 0xb0, 0x0f][..],
+            &[0x65, 0x67, 0x0f, 0xb0, 0x0f][..],
+            &[0x64, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0x65, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0x41, 0x65, 0x0f, 0xb0, 0x0f][..],
+            &[0x65, 0x41, 0x48, 0x0f, 0xb0, 0x0f][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xb0
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // `0F B1` with FS/GS keeps its refusal with 0xb1.
+        let mut memory = Memory::new(&[0x65, 0x0f, 0xb1, 0x0f]);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xb1
+        ));
     }
 
     #[test]
