@@ -583,6 +583,9 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["guest_cstar"] = json!(hex64(record.guest_cstar));
     // S4-38L7ar: the guest IA32_SYSENTER_CS (write-only for the guest; the full 64-bit value).
     stop["guest_sysenter_cs"] = json!(hex64(record.guest_sysenter_cs));
+    // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP (write-only for the guest).
+    stop["guest_sysenter_esp"] = json!(hex64(record.guest_sysenter_esp));
+    stop["guest_sysenter_eip"] = json!(hex64(record.guest_sysenter_eip));
     stop
 }
 
@@ -1439,6 +1442,7 @@ mod tests {
                 "msr:lstar_write",
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1576,6 +1580,39 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_guest_sysenter_esp_and_eip_after_their_wrmsr() {
+        // MOV ECX,0x175; MOV EAX,0x3000; MOV EDX,0xFFFFFE00; WRMSR; MOV ECX,0x176;
+        // MOV EAX,0x81000010; WRMSR (S4-38L7as).
+        let code = [
+            0xB9, 0x75, 0x01, 0x00, 0x00, 0xB8, 0x00, 0x30, 0x00, 0x00, 0xBA, 0x00, 0xFE, 0xFF,
+            0xFF, 0x0F, 0x30, 0xB9, 0x76, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x81, 0x0F,
+            0x30,
+        ];
+        let mut case = Case::new(
+            "set-sysenter-stack",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(7);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 7, "{value:#}");
+        assert_eq!(stop["guest_sysenter_esp"], "0xfffffe0000003000");
+        assert_eq!(stop["guest_sysenter_eip"], "0xfffffe0081000010");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes them.
+        let value = run_case("sysenter-stack-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_sysenter_esp"], "0x0");
+        assert_eq!(value["stop"]["guest_sysenter_eip"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
         // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
         let code = [
@@ -1665,6 +1702,7 @@ mod tests {
                 "msr:lstar_write",
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1956,6 +1994,7 @@ mod tests {
                 "msr:lstar_write",
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"

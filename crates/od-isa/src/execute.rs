@@ -1905,6 +1905,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_lstar: Option<&'a Cell<u64>>,
     msr_cstar: Option<&'a Cell<u64>>,
     msr_sysenter_cs: Option<&'a Cell<u64>>,
+    msr_sysenter_stack: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1926,6 +1927,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_lstar: None,
             msr_cstar: None,
             msr_sysenter_cs: None,
+            msr_sysenter_stack: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2037,6 +2039,26 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// of the two builder calls.
     pub const fn with_msr_sysenter_cs_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_sysenter_cs = Some(cell);
+        self
+    }
+
+    /// S4-38L7as: admit `WRMSR` of IA32_SYSENTER_ESP (`0x175`) and IA32_SYSENTER_EIP (`0x176`) at
+    /// CPL0 under Long64, with the conditions of [`Self::with_msr_sysenter_cs_write`]: `esp` and
+    /// `eip` are the caller's guest cells for the two indexes and each receives `EDX:EAX` exactly
+    /// (full 64-bit value, no canonical check, no bit semantics, no other state change). One
+    /// member covers both indexes; a write changes only the cell of its own index. Only the bare
+    /// two-byte form `0F 30` is admitted, `RDMSR` of both stays `Unsupported`, `SYSENTER`/`SYSEXIT`
+    /// are not modelled, so nothing in the set consumes the values.
+    ///
+    /// Precedence: as for SYSENTER_CS, an MSR profile that handles the index
+    /// ([`MsrProfile::SysenterProbeV1`]: `#GP(0)` at any CPL) keeps it, whatever the order of the
+    /// builder calls; the member has no effect for that index.
+    pub const fn with_msr_sysenter_stack_write(
+        mut self,
+        esp: &'a Cell<u64>,
+        eip: &'a Cell<u64>,
+    ) -> Self {
+        self.msr_sysenter_stack = Some((esp, eip));
         self
     }
 
@@ -2215,17 +2237,19 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
-/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar: the guest-owned write-only MSR cells of a set: the
-/// SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR) and IA32_SYSENTER_CS. One optional bundle,
-/// so that adding such an MSR does not touch every `ExecutionProfiles` literal. SYSENTER_CS is
-/// only carried here; in the set, the board and the stop record it is a separate cell, not a
-/// SYSCALL one.
+/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: the guest-owned write-only MSR cells of a
+/// set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR) and IA32_SYSENTER_CS, _ESP and _EIP.
+/// One optional bundle, so that adding such an MSR does not touch every `ExecutionProfiles`
+/// literal. The SYSENTER cells are only carried here; in the set, the board and the stop record
+/// they are separate cells, not SYSCALL ones.
 #[derive(Clone, Copy)]
 struct GuestMsrCells<'a> {
     star: Option<&'a Cell<u64>>,
     lstar: Option<&'a Cell<u64>>,
     cstar: Option<&'a Cell<u64>>,
     sysenter_cs: Option<&'a Cell<u64>>,
+    sysenter_esp: Option<&'a Cell<u64>>,
+    sysenter_eip: Option<&'a Cell<u64>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2234,8 +2258,8 @@ struct ExecutionProfiles<'a> {
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
-    /// The set's write-only guest MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSENTER_CS);
-    /// `None` outside a set or when the set has none.
+    /// The set's write-only guest MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSENTER_CS,
+    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP); `None` outside a set or when the set has none.
     guest_msrs: Option<GuestMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
@@ -20333,12 +20357,15 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_lstar.is_some()
                 || set.msr_cstar.is_some()
                 || set.msr_sysenter_cs.is_some()
+                || set.msr_sysenter_stack.is_some()
             {
                 Some(GuestMsrCells {
                     star: set.msr_star,
                     lstar: set.msr_lstar,
                     cstar: set.msr_cstar,
                     sysenter_cs: set.msr_sysenter_cs,
+                    sysenter_esp: set.msr_sysenter_stack.map(|(esp, _)| esp),
+                    sysenter_eip: set.msr_sysenter_stack.map(|(_, eip)| eip),
                 })
             } else {
                 None
@@ -33229,9 +33256,10 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar: `WRMSR` of IA32_STAR / IA32_LSTAR /
-        // IA32_CSTAR / IA32_SYSENTER_CS stores EDX:EAX in the set's cell. No MSR profile except
-        // `SysenterProbeV1` (which wins for 0x174) handles these indexes, so every other form
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: `WRMSR` of IA32_STAR / IA32_LSTAR /
+        // IA32_CSTAR / IA32_SYSENTER_CS / IA32_SYSENTER_ESP / IA32_SYSENTER_EIP stores EDX:EAX in
+        // the set's cell for that index. An MSR profile that handles the index (`handles_index`;
+        // today `SysenterProbeV1` for 0x174..=0x176) wins for its own index, so every other form
         // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
         // the existing refusal below.
         if instruction.operation == Operation::WriteMsr
@@ -33244,6 +33272,13 @@ fn step_configured(
                 // keeps the index; the member never overrides it.
                 0x174 if !msr_profile.is_some_and(|profile| profile.handles_index(0x174)) => {
                     cells.sysenter_cs
+                }
+                // S4-38L7as: the same precedence for SYSENTER_ESP and SYSENTER_EIP.
+                0x175 if !msr_profile.is_some_and(|profile| profile.handles_index(0x175)) => {
+                    cells.sysenter_esp
+                }
+                0x176 if !msr_profile.is_some_and(|profile| profile.handles_index(0x176)) => {
+                    cells.sysenter_eip
                 }
                 _ => None,
             }
