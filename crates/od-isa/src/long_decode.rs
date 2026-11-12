@@ -7788,7 +7788,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // S4-38L7ax: `MOV DRn, r64` (`0F 23 /r`, mod = 11) takes no prefix or a lone REX
                 // directly before the opcode. REX.R would select DR8..DR15 and is refused; REX.W
                 // and REX.X do not change a 64-bit register-to-register MOV; every other prefix
-                // and the memory forms stay unsupported.
+                // and mod != 11 stay unsupported (not modeled: on hardware the mod bits are
+                // ignored and the register form executes, SDM from memory).
                 let stale_rex = prefix_bytes[..prefix_count]
                     .iter()
                     .enumerate()
@@ -27517,7 +27518,7 @@ mod tests {
             &[0x44, 0x0f, 0x23, 0xfe],       // REX.R: DR8..DR15
             &[0x4c, 0x0f, 0x23, 0xc6],       // REX.W+R
             &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
-            &[0x0f, 0x23, 0x3e],             // memory forms
+            &[0x0f, 0x23, 0x3e],             // mod != 11 (not modeled)
             &[0x0f, 0x23, 0x7e, 0x08],
             &[0x41, 0x0f, 0x23, 0x3e],
             &[0x0f, 0x21, 0xfe], // MOV r64, DR7 stays unsupported

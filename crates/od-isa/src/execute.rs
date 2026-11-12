@@ -49223,16 +49223,25 @@ fn step_configured(
             state.ldtr_null_selector = Some(selector);
         }
         Operation::WriteDebugRegister { index, source } => {
-            // S4-38L7ax: DR0..DR3, DR6 and DR7 store the full 64-bit source value with no
-            // reserved-bit check and no breakpoint behaviour; only RIP and the stored slot
-            // change. DR4/DR5 depend on CR4.DE (alias of DR6/DR7 or #UD) and are refused with
-            // the opcode, without mutation.
-            if matches!(index, 4 | 5) {
+            // S4-38L7ax: DR0..DR3 store the full 64-bit source value (addresses have no effect
+            // while no breakpoint is enabled); DR6 and DR7 are narrowed to the modeled values:
+            // a one in the upper 32 bits is #GP(0) on hardware (SDM from memory) and DR7 bits
+            // L0..G3 (0xff) and GD (bit 13) enable breakpoints / #DB, which are not modeled, so
+            // those writes are refused. Only RIP and the stored slot change. DR4/DR5 depend on
+            // CR4.DE (alias of DR6/DR7 or #UD). Every refusal carries the opcode, no mutation.
+            let value = state.gpr[source as usize];
+            let refused = match index {
+                4 | 5 => true,
+                6 => value >> 32 != 0,
+                7 => value >> 32 != 0 || value & 0x20ff != 0,
+                _ => false,
+            };
+            if refused {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
                 });
             }
-            state.debug_registers[index as usize] = Some(state.gpr[source as usize]);
+            state.debug_registers[index as usize] = Some(value);
         }
         Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
             // Null load (admitted by the CPL0 set only). The visible selector becomes 0 and

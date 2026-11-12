@@ -25960,7 +25960,9 @@ fn mov_drn_stores_into_each_supported_register_and_keeps_the_others() {
         (3, 1),
         (6, 0xffff_0ff0),
         (7, 0x400),
-        (7, 0xdead_beef_0000_0455),
+        (7, 0),
+        (7, 0x0000_0000_ffff_dc00), // no L0..G3 bit and no GD (bits 13, 7..0 clear)
+        (6, 0),
     ] {
         let mut state = ltr_state();
         state.gpr[Register::Rax as usize] = value;
@@ -25992,14 +25994,73 @@ fn mov_drn_overwrites_the_previous_value_of_the_same_register() {
 }
 
 #[test]
-fn mov_drn_keeps_all_64_bits_of_the_source() {
-    // The stored value is the full 64-bit source (no truncation, no reserved-bit rule).
-    let mut state = ltr_state();
-    state.gpr[Register::Rcx as usize] = 0xa5a5_5a5a_f0f0_0f0f;
-    let mut memory = ltr_memory(&[0x0f, 0x23, 0xf9], ltr_tss_descriptor()); // mov %rcx, %db7
-    let result = run_movb_set(&mut state, &mut memory).unwrap();
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(state.debug_registers[7], Some(0xa5a5_5a5a_f0f0_0f0f));
+fn mov_dr0_to_dr3_keep_all_64_bits_of_the_source() {
+    // DR0..DR3 hold the full 64-bit source (no truncation, no reserved-bit rule).
+    for index in 0u8..4 {
+        let mut state = ltr_state();
+        state.gpr[Register::Rcx as usize] = 0xa5a5_5a5a_f0f0_0f0f;
+        // `mov %rcx, %dbN`: ModRM = 11 reg 001.
+        let mut memory = ltr_memory(&[0x0f, 0x23, 0xc1 | (index << 3)], ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "DR{index}");
+        assert_eq!(
+            state.debug_registers[index as usize],
+            Some(0xa5a5_5a5a_f0f0_0f0f)
+        );
+    }
+}
+
+#[test]
+fn mov_dr6_dr7_accept_the_values_the_kernel_writes() {
+    // DR6 = 0xffff0ff0 (reserved bits set, no status bit) and DR7 = 0x400 (reset value).
+    for (modrm, value, index) in [(0xf1u8, 0xffff_0ff0u64, 6usize), (0xf9, 0x400, 7)] {
+        let mut state = ltr_state();
+        state.gpr[Register::Rcx as usize] = value;
+        let mut expected = state.clone();
+        let mut memory = ltr_memory(&[0x0f, 0x23, modrm], ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "DR{index}");
+        expected.debug_registers[index] = Some(value);
+        expected.rip += 3;
+        assert_eq!(state, expected, "DR{index}");
+    }
+}
+
+#[test]
+fn mov_dr6_dr7_unmodeled_values_are_refused_with_0x23_without_mutation() {
+    // Upper 32 bits non-zero (#GP(0) on hardware, SDM from memory) for DR6 and DR7; for DR7
+    // also the enable bits L0..G3 (0xff) and GD (bit 13). The 0x20ff mask is the union of those.
+    let cases: &[(u8, u64)] = &[
+        (6, 0x1_0000_0000),
+        (6, 0xffff_ffff_ffff_0ff0),
+        (6, 0x8000_0000_0000_0000),
+        (7, 0x1_0000_0400),
+        (7, 0xdead_beef_0000_0455), // L0 set
+        (7, 0xffff_ffff_ffff_ffff),
+        (7, 0x401),  // L0
+        (7, 0x402),  // G0
+        (7, 0x480),  // G3
+        (7, 0x440),  // L3
+        (7, 0x2400), // GD (bit 13)
+        (7, 0x20ff),
+    ];
+    for &(index, value) in cases {
+        let mut state = ltr_state();
+        state.gpr[Register::Rcx as usize] = value;
+        state.debug_registers[index as usize] = Some(0x400);
+        let before = state.clone();
+        // `mov %rcx, %dbN`: ModRM = 11 reg rm(RCX = 1).
+        let mut memory = ltr_memory(&[0x0f, 0x23, 0xc1 | (index << 3)], ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x23 },
+            "DR{index} = {value:#x}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "DR{index} = {value:#x}");
+        assert_eq!(state, before, "DR{index} = {value:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
 }
 
 #[test]
@@ -26057,7 +26118,7 @@ fn mov_drn_forms_outside_the_slice_are_refused_without_mutation() {
         &[0x0f, 0x23, 0xee], // DR5
         &[0x48, 0x0f, 0x23, 0xe0],
         &[0x41, 0x0f, 0x23, 0xed],
-        &[0x0f, 0x23, 0x3e], // memory forms (mod 00/01/10)
+        &[0x0f, 0x23, 0x3e], // mod != 11: not modeled (hardware ignores mod, SDM from memory)
         &[0x0f, 0x23, 0x7e, 0x08],
         &[0x0f, 0x23, 0xbe, 0, 0, 0, 0],
         &[0x0f, 0x23, 0x05, 0, 0, 0, 0],
