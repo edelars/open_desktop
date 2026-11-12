@@ -13,6 +13,7 @@ mod firmware_board;
 mod identity_memory_adapter;
 mod interrupt_pump;
 mod io_apic;
+mod irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_direct;

@@ -570,6 +570,12 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
                 inputs.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash)),
         },
     });
+    // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
+    stop["irqs_delivered"] = json!(record.irqs_delivered);
+    stop["irq0_edges"] = json!(record.irq0_edges);
+    stop["irq_refused_masked"] = json!(record.irq_refused_masked);
+    stop["irq_refused_shadow"] = json!(record.irq_refused_shadow);
+    stop["quantum_cut_by_deadline"] = json!(record.quantum_cut_by_deadline);
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
@@ -1453,10 +1459,21 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        // S4-38L8b: the interrupt hook counters are in the record and zero (no source yet).
+        for counter in [
+            "irqs_delivered",
+            "irq0_edges",
+            "irq_refused_masked",
+            "irq_refused_shadow",
+            "quantum_cut_by_deadline",
+        ] {
+            assert_eq!(stop[counter], 0, "{counter}");
+        }
         // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches
         // (four instructions in all); the stop is the REX-prefix filler after the code, whose
         // 15-byte window has no opcode: #GP(0).
@@ -1779,7 +1796,8 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         // Leaf 0x80000001 as well.
@@ -2075,7 +2093,8 @@ mod tests {
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter
