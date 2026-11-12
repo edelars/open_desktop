@@ -637,6 +637,19 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S4-38L7bc: `64 [REX] 01 /r` (ADD m32, r32, or m64, r64 with REX.W, with the FS base),
+    /// memory destination only. The operand is read, added to the register and written back
+    /// (one read, one write); the source register is unchanged. Executed only in the CPL0 set.
+    AddFsMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
+    /// S4-38L7bc: `65 [REX] 01 /r` (ADD m32/m64, r with the GS base), memory destination only.
+    /// Executed only in the CPL0 set.
+    AddGsMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// S4-38L7ah: `64 [REX] 83 /7 ib` (CMP m32, imm8, or m64, imm8 with REX.W, with the FS base),
     /// memory operand only. `immediate` is the imm8 already sign-extended to 64 bits; the compare
     /// masks it to the operand width. Only the flags change (no write). Executed only in the CPL0
@@ -2238,6 +2251,9 @@ impl Instruction {
             // S4-38L7aa: as the plain CMP (`Operation::Arithmetic`): all six flags defined.
             Operation::SubFsMem { .. }
             | Operation::SubGsMem { .. }
+            // S4-38L7bc: and the FS/GS-based ADD m, r as the plain ADD.
+            | Operation::AddFsMem { .. }
+            | Operation::AddGsMem { .. }
             | Operation::CmpFsMem { .. }
             | Operation::CmpGsMem { .. }
             | Operation::CmpFsMemImm { .. }
@@ -8496,9 +8512,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             Operation::SubGsMem { dst, src }
                         }
                     } else if matches!(prefixes.segment, Some(0x64 | 0x65))
-                        && matches!(byte, 0x09 | 0x39)
+                        && matches!(byte, 0x01 | 0x09 | 0x39)
                         && modrm >> 6 != 3
                     {
+                        // S4-38L7bc: the same shape for `[64|65] [REX] 01 /r` (ADD m32, r32, or
+                        // m64, r64), read, added and written back (`AddFsMem`/`AddGsMem`).
                         // S4-38L7aa: `[64|65] [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W)
                         // with a memory destination. S4-38L7az: the same shape for
                         // `[64|65] [REX] 09 /r` (OR m32, r32, or m64, r64), which is read, ORed
@@ -8525,6 +8543,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         match (byte, prefixes.segment) {
                             (0x39, Some(0x64)) => Operation::CmpFsMem { dst, src },
                             (0x39, _) => Operation::CmpGsMem { dst, src },
+                            (0x01, Some(0x64)) => Operation::AddFsMem {
+                                destination: dst,
+                                source: src,
+                            },
+                            (0x01, _) => Operation::AddGsMem {
+                                destination: dst,
+                                source: src,
+                            },
                             (_, Some(0x64)) => Operation::OrFsMem {
                                 destination: dst,
                                 source: src,
@@ -9685,6 +9711,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovsxGsLoadB { .. } => false,
                 Operation::SubFsMem { .. } => false,
                 Operation::SubGsMem { .. } => false,
+                Operation::AddFsMem { .. } => false,
+                Operation::AddGsMem { .. } => false,
                 Operation::CmpFsMem { .. } => false,
                 Operation::CmpGsMem { .. } => false,
                 Operation::CmpFsMemImm { .. } => false,
@@ -25167,6 +25195,82 @@ mod tests {
     }
 
     #[test]
+    fn segment_add_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7bc: `[64|65] [REX] 01 /r` with a memory destination.
+        let rax = RegisterView::low(Register::Rax, OperandSize::Qword);
+        // The S4-38L7bb diagnostic boundary bytes: `addq %rax, %gs:0x2c02636(%rip)`.
+        let mut memory = Memory::new(&[0x65, 0x48, 0x01, 0x05, 0x36, 0x26, 0xc0, 0x02]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::AddGsMem { destination, source }
+                if source == rax
+                    && destination.size == OperandSize::Qword
+                    && destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x02c0_2636
+        ));
+        // REX.W with REX.R: qword, source R12, FS.
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x01, 0x24, 0x25, 0x10, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::AddFsMem { destination, source }
+                if source == RegisterView::low(Register::R12, OperandSize::Qword)
+                    && destination.size == OperandSize::Qword
+        ));
+        // No segment prefix: still the plain arithmetic operation.
+        let mut memory = Memory::new(&[0x01, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                ..
+            }
+        ));
+        // The register form (mod = 11) is not touched: the prefix is ignored, plain ADD.
+        for bytes in [&[0x65, 0x48, 0x01, 0xd0][..], &[0x64, 0x01, 0xd0][..]] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Arithmetic {
+                        kind: ArithmeticKind::Add,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for (bytes, refused_opcode) in [
+            // 0x66, 0x67, LOCK, REP, REPNE.
+            (&[0x66, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x65, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x65, 0x67, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0xf0, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0xf3, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0xf2, 0x64, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            // A second segment prefix.
+            (&[0x64, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x2e, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            // REX not directly before the opcode.
+            (&[0x48, 0x65, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x65, 0x48, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            // The neighbouring forms stay outside the slice.
+            (&[0x65, 0x48, 0x03, 0x15, 1, 0, 0, 0][..], 0x03),
+            (&[0x65, 0x48, 0x00, 0x15, 1, 0, 0, 0][..], 0x00),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn segment_cmp_imm8_decodes_fs_gs_memory_forms_only() {
         // S4-38L7ah: `[64|65] [REX] 83 /7 ib` with a memory destination.
         // The S4-38L7ag diagnostic boundary bytes: `cmpl $1, %gs:0x2e97995(%rip)`.
@@ -26315,7 +26419,9 @@ mod tests {
             &[0xf0, 0x48, 0x29, 0x03],
             &[0xf0, 0x48, 0x01, 0xc8],
             &[0xf3, 0x48, 0x01, 0xc8],
-            &[0x64, 0x48, 0x01, 0x03],
+            // S4-38L7bc decodes `[64|65] [REX] 01 /r` with a memory destination; the word form
+            // with a segment prefix stays refused.
+            &[0x64, 0x66, 0x01, 0x03],
             &[0x65, 0x48, 0x03, 0x03],
             &[0x64, 0x80, 0x03, 1],
             &[0x65, 0xfe, 0x03],
