@@ -441,14 +441,16 @@ pub enum Operation {
         src: MemoryOperand,
     },
     /// S4-38L7g: `64 REX.W 89 /r` (MOV m64 with the FS base, r64). S4-38L7an: also `64 [REX] 89 /r`
-    /// without REX.W (MOV m32, r32; the low 4 bytes of `src` are stored). Memory destination only.
-    /// Executed only in the CPL0 set.
+    /// without REX.W (MOV m32, r32; the low 4 bytes of `src` are stored). S4-38L7av: also
+    /// `64 66 [REX] 89 /r` (MOV m16, r16; the low 2 bytes of `src` are stored, `dst.size` is Word).
+    /// Memory destination only. Executed only in the CPL0 set.
     MovFsStore {
         dst: MemoryOperand,
         src: RegisterView,
     },
     /// S4-38L7g: `65 REX.W 89 /r` (MOV m64 with the GS base, r64). S4-38L7an: also
-    /// `65 [REX] 89 /r` without REX.W (MOV m32, r32). Executed only in the CPL0 set.
+    /// `65 [REX] 89 /r` without REX.W (MOV m32, r32). S4-38L7av: also `65 66 [REX] 89 /r`
+    /// (MOV m16, r16). Executed only in the CPL0 set.
     MovGsStore {
         dst: MemoryOperand,
         src: RegisterView,
@@ -9156,19 +9158,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // S4-38L7g: `[64|65] REX.W 89 /r` (MOV r/m64, r64) with a memory
                     // destination. S4-38L7an: `[64|65] [REX] 89 /r` without REX.W (MOV r/m32,
                     // r32) with a memory destination takes the same operations (the width is
-                    // `dst.size`/`src.size`). Qword/Dword only; LOCK/REP, 0x66 and 0x67 stay
-                    // refused, and for the dword form a stale REX (not immediately before the
-                    // opcode, SDM Vol.2 2.2.1) is refused conservatively as in S4-38L7m.
+                    // `dst.size`/`src.size`). S4-38L7av: `[64|65] 66 [REX] 89 /r` (MOV r/m16,
+                    // r16, REX.W absent) takes them too with a Word destination and source.
+                    // LOCK/REP and 0x67 stay refused, 0x66 is accepted only for the word form
+                    // (REX.W with 0x66 stays refused conservatively: architecturally REX.W
+                    // takes precedence and `66` is ignored, so `65 66 48 89 /r` is a valid qword
+                    // store that a real CPU executes; executing it is a separate decision), and
+                    // for the dword and word forms a stale
+                    // REX (not immediately before the opcode, SDM Vol.2 2.2.1) is refused
+                    // conservatively as in S4-38L7m.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
-                    if (stale_rex && size == OperandSize::Dword)
-                        || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                    if (stale_rex && size != OperandSize::Qword)
+                        || !matches!(
+                            size,
+                            OperandSize::Qword | OperandSize::Dword | OperandSize::Word
+                        )
                         || (size == OperandSize::Qword)
                             != prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         || prefixes.group1.is_some()
-                        || prefixes.operand_override
+                        || (prefixes.operand_override && size != OperandSize::Word)
                         || prefixes.address_override
                     {
                         return Err(self.unsupported(opcode));
@@ -9520,7 +9531,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
             _ => unreachable!("known forms handled above"),
         };
         // FS/GS bases are modeled by the exact S2-22a/22b MOV loads and by the
-        // S4-38L7g qword and S4-38L7an dword store forms (MovFsStore/MovGsStore) decoded above.
+        // S4-38L7g qword, S4-38L7an dword and S4-38L7av word store forms (MovFsStore/MovGsStore)
+        // decoded above.
         // LEA ignores segment bases and evaluates only its effective offset.
         if matches!(prefixes.segment, Some(0x64 | 0x65))
             && match operation {
@@ -24931,7 +24943,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_store_decodes_fs_gs_dword_and_qword_memory_forms_only() {
+    fn segment_store_decodes_fs_gs_word_dword_and_qword_memory_forms_only() {
         // S4-38L7g: `[64|65] REX.W 89 /r` with a memory destination.
         let rax = RegisterView::low(Register::Rax, OperandSize::Qword);
         let mut memory = Memory::new(&[0x65, 0x48, 0x89, 0x05, 0x41, 0x1b, 0x51, 0x00]);
@@ -24972,6 +24984,32 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::MovFsStore { src, dst } if src == eax && dst.size == OperandSize::Dword
         ));
+        // S4-38L7av: the word forms (`66`, no REX.W) decode to the same operations with a word
+        // source and a word destination, in either order of the 66 and the segment prefix.
+        let ax = RegisterView::low(Register::Rax, OperandSize::Word);
+        let dx = RegisterView::low(Register::Rdx, OperandSize::Word);
+        let r9w = RegisterView::low(Register::R9, OperandSize::Word);
+        for (bytes, src, gs) in [
+            (&[0x65, 0x66, 0x89, 0x05, 1, 0, 0, 0][..], ax, true),
+            (&[0x65, 0x66, 0x89, 0x15, 1, 0, 0, 0][..], dx, true),
+            (&[0x66, 0x65, 0x89, 0x05, 1, 0, 0, 0][..], ax, true),
+            (&[0x65, 0x66, 0x40, 0x89, 0x05, 1, 0, 0, 0][..], ax, true),
+            (&[0x65, 0x66, 0x44, 0x89, 0x0d, 1, 0, 0, 0][..], r9w, true),
+            (&[0x64, 0x66, 0x89, 0x00][..], ax, false),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            match decoded.operation {
+                Operation::MovGsStore { dst, src: s } if gs => {
+                    assert!(s == src && dst.size == OperandSize::Word, "{bytes:02x?}")
+                }
+                Operation::MovFsStore { dst, src: s } if !gs => {
+                    assert!(s == src && dst.size == OperandSize::Word, "{bytes:02x?}")
+                }
+                other => panic!("{bytes:02x?}: {other:?}"),
+            }
+        }
         for bytes in [
             &[0x65, 0x48, 0x89, 0xc0][..],
             &[0x65, 0x89, 0xc0][..],
@@ -24979,8 +25017,14 @@ mod tests {
             &[0xf0, 0x65, 0x48, 0x89, 0x00][..],
             &[0xf0, 0x65, 0x89, 0x00][..],
             &[0x66, 0x65, 0x48, 0x89, 0x00][..],
-            &[0x66, 0x65, 0x89, 0x00][..],
-            &[0x65, 0x66, 0x89, 0x00][..],
+            &[0x66, 0x64, 0x48, 0x89, 0x00][..],
+            &[0x65, 0x66, 0x48, 0x89, 0x00][..],
+            &[0x66, 0x65, 0x66, 0x89, 0x00][..],
+            &[0x65, 0x66, 0x66, 0x89, 0x00][..],
+            &[0x65, 0x66, 0x89, 0xc0][..],
+            &[0xf0, 0x65, 0x66, 0x89, 0x00][..],
+            &[0x41, 0x65, 0x66, 0x89, 0x00][..],
+            &[0x65, 0x67, 0x66, 0x89, 0x00][..],
             &[0x65, 0x67, 0x48, 0x89, 0x00][..],
             &[0x65, 0x67, 0x89, 0x00][..],
             &[0xf3, 0x65, 0x89, 0x00][..],
