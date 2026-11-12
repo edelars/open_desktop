@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
+
+### ISSUE-080 — S5-06: guest suite подготовлен, но не проверен на Linux; endpoint F отсутствует
+
+- **Дата обнаружения:** 2026-11-12, при подготовке сценариев A–G.
+- **Компонент:** `guest/linux/tests/`, `tests/fixtures/guest/stage5/`; проверка набора зависит от S5-01 и физического Linux стенда.
+- **Владелец:** Stage 5 для скриптов и сценарных критериев; runner S5-07 для nonce/config/stop evidence; Stage 11 для модели NIC и сетевого endpoint.
+- **Статус:** открыта; подготовленный скриптовый срез не принят. S5-06 остаётся `blocked` до обязательной Linux guest проверки и входов, перечисленных ниже.
+- **Основание и последствия:** семь scripts A–G прошли host-side syntax check; пять guest C sources прошли Apple Clang syntax-only; nonce refusal проверен для всех семи. Отдельный host-only classifier harness проверяет connect-error allowlist и drop outcomes без сокетов. Ни один script не компилировался/исполнялся внутри Linux guest и не запускался на физическом стенде. Сценарий A безопасно отказывается от poweroff без предварительных test-only kernel cmdline opt-in, nonce match и VM indication; текущий runner не доставляет эти поля и не подтверждает `MachineStopReason::Shutdown`. Сценарий F требует удалённый TCP echo, accept-and-close и разрешаемый, но недоступный endpoint; сервис не реализован, а `S11-32`, `S11-31e` и `S11-33` не приняты. Локальный файл или loopback не являются заменой сетевого пути. Из-за `S5-01` и отсутствия physical Linux run нельзя утверждать работу сценариев, guest compilation, JIT/SMC или persistence.
+- **Следующий шаг:** после входов S5-01 и доступного стенда выполнить все семь scripts внутри обычного Linux guest; runner S5-07 должен передать nonce и A-опт-ин через конфигурацию boot командной строки, затем записать observed shutdown reason. Согласовать F endpoint с S11-33 и провести transfer/drop/unreachable checks только через фактический NIC/NAT путь. До этих проверок оставлять S5-06 unaccepted; E ограничен interpreter profile, JIT claim ждёт S3-23/S3-24.
+
 <a id="issue-079-s5-21-accepted-profile-registry-is-incomplete"></a>
 
 ### ISSUE-079 — S5-21: профильный реестр ISA не является полным CPL0/CPL3 allowlist
