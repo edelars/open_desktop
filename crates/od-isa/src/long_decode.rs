@@ -440,12 +440,15 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
-    /// S4-38L7g: `64 REX.W 89 /r` (MOV m64 with the FS base, r64). Executed only in the CPL0 set.
+    /// S4-38L7g: `64 REX.W 89 /r` (MOV m64 with the FS base, r64). S4-38L7an: also `64 [REX] 89 /r`
+    /// without REX.W (MOV m32, r32; the low 4 bytes of `src` are stored). Memory destination only.
+    /// Executed only in the CPL0 set.
     MovFsStore {
         dst: MemoryOperand,
         src: RegisterView,
     },
-    /// S4-38L7g: `65 REX.W 89 /r` (MOV m64 with the GS base, r64). Executed only in the CPL0 set.
+    /// S4-38L7g: `65 REX.W 89 /r` (MOV m64 with the GS base, r64). S4-38L7an: also
+    /// `65 [REX] 89 /r` without REX.W (MOV m32, r32). Executed only in the CPL0 set.
     MovGsStore {
         dst: MemoryOperand,
         src: RegisterView,
@@ -9151,9 +9154,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     );
                 if matches!(prefixes.segment, Some(0x64 | 0x65)) && byte == 0x89 {
                     // S4-38L7g: `[64|65] REX.W 89 /r` (MOV r/m64, r64) with a memory
-                    // destination. Qword only; LOCK/REP, 0x66 and 0x67 stay refused.
-                    if size != OperandSize::Qword
-                        || prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                    // destination. S4-38L7an: `[64|65] [REX] 89 /r` without REX.W (MOV r/m32,
+                    // r32) with a memory destination takes the same operations (the width is
+                    // `dst.size`/`src.size`). Qword/Dword only; LOCK/REP, 0x66 and 0x67 stay
+                    // refused, and for the dword form a stale REX (not immediately before the
+                    // opcode, SDM Vol.2 2.2.1) is refused conservatively as in S4-38L7m.
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if (stale_rex && size == OperandSize::Dword)
+                        || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                        || (size == OperandSize::Qword)
+                            != prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         || prefixes.group1.is_some()
                         || prefixes.operand_override
                         || prefixes.address_override
@@ -24918,7 +24931,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_store_decodes_fs_gs_qword_memory_forms_only() {
+    fn segment_store_decodes_fs_gs_dword_and_qword_memory_forms_only() {
         // S4-38L7g: `[64|65] REX.W 89 /r` with a memory destination.
         let rax = RegisterView::low(Register::Rax, OperandSize::Qword);
         let mut memory = Memory::new(&[0x65, 0x48, 0x89, 0x05, 0x41, 0x1b, 0x51, 0x00]);
@@ -24934,14 +24947,47 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::MovFsStore { src, .. } if src == rax
         ));
+        // S4-38L7an: the dword forms (no REX.W) decode to the same operations with a dword source.
+        let eax = RegisterView::low(Register::Rax, OperandSize::Dword);
+        let r9d = RegisterView::low(Register::R9, OperandSize::Dword);
+        for (bytes, src) in [
+            (&[0x65, 0x89, 0x05, 1, 0, 0, 0][..], eax),
+            (&[0x65, 0x40, 0x89, 0x05, 1, 0, 0, 0][..], eax),
+            (&[0x65, 0x44, 0x89, 0x0d, 1, 0, 0, 0][..], r9d),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::MovGsStore { dst, src: s }
+                        if s == src && dst.size == OperandSize::Dword
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        let mut memory = Memory::new(&[0x64, 0x89, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsStore { src, dst } if src == eax && dst.size == OperandSize::Dword
+        ));
         for bytes in [
-            &[0x65, 0x89, 0x05, 1, 0, 0, 0][..],
-            &[0x65, 0x40, 0x89, 0x05, 1, 0, 0, 0][..],
             &[0x65, 0x48, 0x89, 0xc0][..],
+            &[0x65, 0x89, 0xc0][..],
             &[0x65, 0x48, 0x88, 0x00][..],
             &[0xf0, 0x65, 0x48, 0x89, 0x00][..],
+            &[0xf0, 0x65, 0x89, 0x00][..],
             &[0x66, 0x65, 0x48, 0x89, 0x00][..],
+            &[0x66, 0x65, 0x89, 0x00][..],
+            &[0x65, 0x66, 0x89, 0x00][..],
             &[0x65, 0x67, 0x48, 0x89, 0x00][..],
+            &[0x65, 0x67, 0x89, 0x00][..],
+            &[0xf3, 0x65, 0x89, 0x00][..],
+            &[0x41, 0x65, 0x89, 0x00][..],
+            &[0x48, 0x65, 0x89, 0x00][..],
+            &[0x65, 0x65, 0x89, 0x00][..],
+            &[0x64, 0x65, 0x89, 0x00][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
