@@ -35199,6 +35199,8 @@ fn step_configured(
         // S4-38L7ak: and for the FS/GS-based MOVSXD r64, m32.
         | Operation::MovsxdFsLoad { .. }
         | Operation::MovsxdGsLoad { .. }
+        | Operation::MovsxFsLoadB { .. }
+        | Operation::MovsxGsLoadB { .. }
         // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
@@ -49050,6 +49052,8 @@ fn step_configured(
         | Operation::MovzxGsLoadW { .. }
         | Operation::MovsxdFsLoad { .. }
         | Operation::MovsxdGsLoad { .. }
+        | Operation::MovsxFsLoadB { .. }
+        | Operation::MovsxGsLoadB { .. }
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
         | Operation::MovFsMemImm { .. }
@@ -53603,6 +53607,16 @@ fn read_gdt_descriptor(
     }))
 }
 
+/// S4-38L7ba: sign-extends a loaded byte to the dword (REX.W absent) or qword destination width.
+fn sign_extend_byte_load(dst: RegisterView, value: u64) -> u64 {
+    let byte = value as u8 as i8;
+    if dst.size() == OperandSize::Qword {
+        i64::from(byte) as u64
+    } else {
+        i32::from(byte) as u32 as u64
+    }
+}
+
 fn sign_extend_accumulator(state: &mut LongModeState, size: OperandSize, double_width: bool) {
     let width = operand_width(size);
     let accumulator = state.read(RegisterView::low(Register::Rax, size));
@@ -54335,6 +54349,22 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value as u32 as i32 as i64 as u64);
+        }
+        Operation::MovsxFsLoadB { dst, src } => {
+            // S4-38L7ba: base + effective address; a non-canonical address (one byte: first and
+            // last byte coincide) is #GP(0) before the read. The byte is sign-extended explicitly
+            // to the destination width (a dword result zeroes the upper 32 bits); flags are
+            // untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, sign_extend_byte_load(dst, value));
+        }
+        Operation::MovsxGsLoadB { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, sign_extend_byte_load(dst, value));
         }
         Operation::MovFsMemByteImm { dst, immediate } => {
             // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
