@@ -8,6 +8,15 @@
 //! and bit 1 (transmitter holding register empty), the IIR priority and clear
 //! rules, and an MCR OUT2 gate for the interrupt output ([`Uart16550Handle::interrupt_line`]).
 //! The line is a pure level; the session owner routes it to the IOAPIC.
+//!
+//! S4-38L7bq: the line control register (offset 3) stores and returns every
+//! written bit, including DLAB (bit 7). With DLAB set, offsets 0 and 1 are the
+//! divisor latch LSB and MSB (write and read); with DLAB clear they are
+//! THR/RBR and IER. The divisor is only stored: the model has no baud rate
+//! and the divisor never affects time. Semantics follow the 16550 datasheet
+//! from memory and were not checked against a primary source. A THR write
+//! still requires DLAB clear, LCR exactly 8N1 (`0x03`) and a non-zero divisor,
+//! otherwise it is refused with `UnsupportedConfiguration` without mutation.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -252,10 +261,6 @@ impl UartState {
         self.line_control & LCR_DLAB != 0
     }
 
-    fn line_configuration_supported(value: u8) -> bool {
-        value & !LCR_DLAB == LCR_8N1
-    }
-
     fn line_configuration_ready(&self) -> bool {
         !self.dlab() && self.line_control == LCR_8N1 && self.divisor != 0
     }
@@ -353,8 +358,10 @@ impl UartState {
             1 => return Err(DeviceError::UnsupportedConfiguration),
             2 if value == 0 => {}
             2 => return Err(DeviceError::UnsupportedConfiguration),
-            3 if Self::line_configuration_supported(value) => self.line_control = value,
-            3 => return Err(DeviceError::UnsupportedConfiguration),
+            // S4-38L7bq: LCR stores all eight bits (word length, stop, parity,
+            // break, DLAB) and reads them back. Only the THR path interprets
+            // them: a THR write still needs exactly 8N1 with DLAB clear.
+            3 => self.line_control = value,
             4 if value & !MCR_OUT2 == 0 => self.mcr = value,
             // DTR/RTS/OUT1/loopback are not modelled.
             4 => return Err(DeviceError::UnsupportedConfiguration),
@@ -487,10 +494,6 @@ mod tests {
         );
         assert_eq!(
             device.write(access(2), 1),
-            Err(DeviceError::UnsupportedConfiguration)
-        );
-        assert_eq!(
-            device.write(access(3), 0x07),
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(device.read(access(5)), Ok(0x60));
@@ -672,5 +675,120 @@ mod tests {
         assert_eq!(read(&mut device, 1), 0);
         assert_eq!(read(&mut device, 4), 0);
         assert!(!handle.interrupt_line());
+    }
+
+    // S4-38L7bq. Oracles are hand-computed 16550 values (datasheet from
+    // memory): DLAB is LCR bit 7 (0x80); 0x93 = DLAB | 0x13; divisor 0x000c.
+
+    #[test]
+    fn lcr_stores_all_bits_and_dlab_is_bit_7() {
+        let mut device = Uart16550PollingTx::new();
+        assert_eq!(read(&mut device, 3), 0x00);
+        for value in [0x80_u8, 0x93, 0x13, 0x07, 0x3f, 0x7f, 0xff, 0x03, 0x00] {
+            write(&mut device, 3, value);
+            assert_eq!(read(&mut device, 3), value);
+        }
+        // 0x80 alone sets DLAB: offset 1 is then DLM, not IER.
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 1, 0x01);
+        write(&mut device, 3, 0x80);
+        assert_eq!(read(&mut device, 1), 0x00);
+        write(&mut device, 3, 0x00);
+        assert_eq!(read(&mut device, 1), 0x01);
+    }
+
+    #[test]
+    fn dlab_divisor_latch_lsb_and_msb_round_trip() {
+        let mut device = Uart16550PollingTx::new();
+        // The Linux 0x93 write: DLAB | 0x13.
+        write(&mut device, 3, 0x93);
+        assert_eq!(read(&mut device, 3), 0x93);
+        write(&mut device, 0, 0x0c);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        assert_eq!(read(&mut device, 1), 0x00);
+        write(&mut device, 1, 0x00);
+        assert_eq!(read(&mut device, 1), 0x00);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        write(&mut device, 1, 0xa5);
+        assert_eq!(read(&mut device, 1), 0xa5);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        write(&mut device, 0, 0xff);
+        assert_eq!(read(&mut device, 0), 0xff);
+        assert_eq!(read(&mut device, 1), 0xa5);
+        // The latch is only stored: nothing is transmitted or received and
+        // the line status is unchanged.
+        assert_eq!(device.complete_transmission(), None);
+        assert_eq!(read(&mut device, 5), 0x60);
+    }
+
+    #[test]
+    fn dlab_clear_offsets_0_and_1_are_thr_rbr_and_ier() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        write(&mut device, 0, 0x0c);
+        write(&mut device, 1, 0x00);
+        write(&mut device, 3, 0x13);
+        // IER is independent of the divisor MSB; RBR is empty (write-only
+        // THR path unchanged).
+        assert_eq!(read(&mut device, 1), 0x00);
+        write(&mut device, 1, 0x03);
+        assert_eq!(read(&mut device, 1), 0x03);
+        assert_eq!(device.read(access(0)), Err(DeviceError::WriteOnly));
+        device.inject_received_byte(0x5a).unwrap();
+        assert_eq!(read(&mut device, 0), 0x5a);
+        // The divisor survived the DLAB-clear accesses.
+        write(&mut device, 3, 0x93);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        assert_eq!(read(&mut device, 1), 0x00);
+        // IER was not overwritten by DLM writes.
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 1), 0x03);
+    }
+
+    #[test]
+    fn thr_write_still_needs_exact_8n1_dlab_clear_and_nonzero_divisor() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        write(&mut device, 0, 0x0c);
+        write(&mut device, 1, 0x00);
+        // LCR 0x13 (parity-select bit set) and 0x07 are stored but not 8N1.
+        for lcr in [0x13_u8, 0x07] {
+            write(&mut device, 3, lcr);
+            assert_eq!(
+                device.write(access(0), 0x41),
+                Err(DeviceError::UnsupportedConfiguration)
+            );
+            assert_eq!(read(&mut device, 5), 0x60);
+            assert_eq!(read(&mut device, 3), lcr);
+        }
+        write(&mut device, 3, 0x03);
+        write(&mut device, 0, 0x41);
+        assert_eq!(read(&mut device, 5), 0x00);
+        assert!(device.transfer_holding_to_shift());
+        assert_eq!(device.complete_transmission(), Some(0x41));
+    }
+
+    #[test]
+    fn dlab_write_to_unknown_offsets_and_other_refusals_do_not_mutate() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        write(&mut device, 0, 0x0c);
+        write(&mut device, 1, 0x34);
+        let before = device.snapshot();
+        assert_eq!(device.write(access(6), 1), Err(DeviceError::UnknownOffset));
+        assert_eq!(device.write(access(8), 1), Err(DeviceError::UnknownOffset));
+        assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
+        assert_eq!(device.read(access(8)), Err(DeviceError::UnknownOffset));
+        // FCR and MCR refusals are unchanged by the DLAB bit.
+        assert_eq!(
+            device.write(access(2), 0x07),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            device.write(access(4), 0x03),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(device.write(access(5), 0x00), Err(DeviceError::ReadOnly));
+        assert_eq!(device.snapshot(), before);
     }
 }
