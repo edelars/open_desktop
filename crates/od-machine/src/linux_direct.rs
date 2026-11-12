@@ -3666,6 +3666,141 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7bc: FS/GS-based ADD m32, r32 and m64, r64 through the board facade ----
+
+    /// CLI; WRMSR `msr` = `BASE` (the used base) and the other base MSR = `DISTRACTOR`; guest
+    /// qwords `before`/`cell`/`after` at `BASE + 0x8`/`0x10`/`0x18`; MOV RAX,`addend`; `opcode`
+    /// (`65 48 01 05`, ...) with a disp32 landing on `BASE + 0x10`; HLT. Returns the board, the run
+    /// record and the number of instructions up to and including the HLT.
+    fn run_segment_add(
+        used_msr: u32,
+        other_msr: u32,
+        opcode: &[u8],
+        guest: [u64; 3],
+        addend: u64,
+    ) -> (LinuxDirectBoot, LinuxStopRecord, u64) {
+        const BASE: u64 = 0x0200_0000;
+        const DISTRACTOR: u32 = 0x0300_0000;
+        let mut code = vec![0xFA, 0xB9];
+        code.extend(used_msr.to_le_bytes());
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9]);
+        code.extend(other_msr.to_le_bytes());
+        code.extend(mov_eax(DISTRACTOR));
+        code.extend([0x0F, 0x30]);
+        for (offset, value) in [(0x8u8, guest[0]), (0x10, guest[1]), (0x18, guest[2])] {
+            code.extend(mov_rax_imm64(value));
+            code.extend([0x48, 0x89, 0x04, 0x25, offset, 0x00, 0x00, 0x02]);
+        }
+        code.extend(mov_rax_imm64(addend));
+        // ADD: the prefix bytes of `opcode` (all but the trailing ModRM 0x05) + ModRM + disp32.
+        let next_rip = ENTRY + code.len() as u64 + opcode.len() as u64 + 4;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend(opcode);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        // CLI, MOV ECX, MOV EAX, XOR, WRMSR, MOV ECX, MOV EAX, WRMSR, 3 x (MOV RAX, store),
+        // MOV RAX, ADD, HLT.
+        (boot, record, 8 + 6 + 1 + 1 + 1)
+    }
+
+    #[test]
+    fn gs_add_qword_after_wrmsr_gs_base_adds_rax_into_guest_memory_at_the_boundary_form() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 01 05 disp32` = `addq %rax, %gs:disp(%rip)` (the S4-38L7bb Linux boundary form),
+        // GS base = BASE and a distractor FS base. 0x7fff_ffff_ffff_fff0 + 0x10 overflows to the
+        // sign bit.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x01, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x7fff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0x8000_0000_0000_0000);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x10,
+            "source kept"
+        );
+        // 0x8000_0000_0000_0000: OF, SF and PF (zero low byte); no CF, AF, ZF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_add_dword_after_wrmsr_fs_base_wraps_the_low_dword_and_keeps_the_upper_half() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 01 05 disp32` = `addl %eax, %fs:disp(%rip)`, FS base = BASE and a distractor GS
+        // base. The low dword 0xffff_fff0 + 0x20 wraps to 0x10 with CF; the upper dword stays.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x01, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xdead_beef_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0xaaaa_bbbb_0000_0020,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0xdead_beef_0000_0010);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xaaaa_bbbb_0000_0020,
+            "source kept"
+        );
+        // 0x10: CF only (one bit set, so no PF; no AF, ZF, SF, OF).
+        assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
