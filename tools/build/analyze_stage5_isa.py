@@ -334,6 +334,7 @@ PCMPGTB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PCMPEQB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
 MOVAPD_REGISTER_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PACKUSWB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
+PCMPGTD_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 
 
 SIMD_LOGIC_NO_PREFIX_PROFILES = {
@@ -635,6 +636,25 @@ def packuswb_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.33-PACKUSWB-XMM-register-register"
 
 
+def pcmpgtd_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-35.23 XMM register-register form."""
+    if row["mnemonic"] != "pcmpgtd" or row["signature"] != "pcmpgtd xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x66):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PCMPGTD_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory 66 + optional REX.R/B + 0F 66 + register ModR/M.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-35.23-PCMPGTD-XMM-register-register"
+
+
 def pcmpgtb_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.21 XMM register-register form."""
     if row["mnemonic"] != "pcmpgtb" or row["signature"] != "pcmpgtb xmm,xmm":
@@ -824,6 +844,9 @@ def local_profile_candidate(row: dict) -> str | None:
     packuswb_candidate = packuswb_local_profile_candidate(row)
     if packuswb_candidate is not None:
         return packuswb_candidate
+    pcmpgtd_candidate = pcmpgtd_local_profile_candidate(row)
+    if pcmpgtd_candidate is not None:
+        return pcmpgtd_candidate
     pcmpgtb_candidate = pcmpgtb_local_profile_candidate(row)
     if pcmpgtb_candidate is not None:
         return pcmpgtb_candidate

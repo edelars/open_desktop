@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-packuswb-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-packuswb-rootfs-pass1.json",
-      "sha256": "e4012d940f5d619e4f2627745fae8cf2ee99a9a70b4b8211213f711a10508aa4",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-rootfs-pass1.json",
+      "sha256": "58eb84b4fe59ee14504cdae81646384525dc5f6d2ac3976acaa58e4dc70f56f8",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-packuswb-rootfs-pass2.json",
-      "sha256": "e4012d940f5d619e4f2627745fae8cf2ee99a9a70b4b8211213f711a10508aa4",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-rootfs-pass2.json",
+      "sha256": "58eb84b4fe59ee14504cdae81646384525dc5f6d2ac3976acaa58e4dc70f56f8",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295585,
-      "unclassified": 214815
+      "proven_supported": 6295625,
+      "unclassified": 214775
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293234,
+      "local_interpreter_profile": 6293274,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1052,
-    "unclassified_normalized_forms": 217,
+    "classified_normalized_forms": 1053,
+    "unclassified_normalized_forms": 216,
     "scenario_classification_frequencies": {
       "C": {
         "proven_supported": 322703,
         "unclassified": 23446
       },
       "D": {
-        "proven_supported": 6226538,
-        "unclassified": 209676
+        "proven_supported": 6226578,
+        "unclassified": 209636
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "e4012d940f5d619e4f2627745fae8cf2ee99a9a70b4b8211213f711a10508aa4",
+    "raw_inventory_sha256": "58eb84b4fe59ee14504cdae81646384525dc5f6d2ac3976acaa58e4dc70f56f8",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -136,7 +136,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6293234,
+    "local_interpreter_profile_rows": 6293274,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -209,15 +209,22 @@
     "packuswb_register_rows_by_profile": {
       "S2-35.33-PACKUSWB-XMM-register-register": 16
     },
-    "packuswb_scope": "Accepted local-only PACKUSWB register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; signed i16 destination words then source words saturate to [0,255] into destination bytes0-7 then source bytes8-15. No memory callback; CPU_CONTRACT has no PACKUSWB entry; no memory/MMX or CPL3/native/JIT/physical evidence."
+    "packuswb_scope": "Accepted local-only PACKUSWB register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; signed i16 destination words then source words saturate to [0,255] into destination bytes0-7 then source bytes8-15. No memory callback; CPU_CONTRACT has no PACKUSWB entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
+    "pcmpgtd_register_rows": 40,
+    "pcmpgtd_register_normalized_forms": 1,
+    "pcmpgtd_register_encoding_forms": 18,
+    "pcmpgtd_register_rows_by_profile": {
+      "S2-35.23-PCMPGTD-XMM-register-register": 40
+    },
+    "pcmpgtd_scope": "Accepted local-only PCMPGTD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, opcode 0F 66, ModR/M.mod=3, reg destination/r/m source; four signed little-endian i32 lanes write FFFFFFFF iff DEST>SRC, otherwise 00000000. No memory callback; CPU_CONTRACT has no PCMPGTD entry; no memory/MMX or CPL3/native/JIT/physical evidence."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "4bf1d2779399864bff8ee7545d17082420aa56b657aca404e373b0a8f07b382c",
-    "size_bytes": 1004439,
+    "sha256": "caed7052967865c82f7c1385a30f153ff3368b25198a4b93d33836a0e5ae715d",
+    "size_bytes": 1004654,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-packuswb-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-packuswb-rootfs-pass1.json.gz",
-    "repeat_sha256": "4bf1d2779399864bff8ee7545d17082420aa56b657aca404e373b0a8f07b382c",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pcmpgtd-rootfs-pass1.json.gz",
+    "repeat_sha256": "caed7052967865c82f7c1385a30f153ff3368b25198a4b93d33836a0e5ae715d",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },

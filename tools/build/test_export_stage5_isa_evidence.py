@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1052)
-                self.assertEqual(fields["unclassified_normalized_forms"], 217)
+                self.assertEqual(fields["classified_normalized_forms"], 1053)
+                self.assertEqual(fields["unclassified_normalized_forms"], 216)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295585 if full_key else 6295869
-                expected_unclassified_rows = 214815 if full_key else 214876
+                expected_supported_rows = 6295625 if full_key else 6295909
+                expected_unclassified_rows = 214775 if full_key else 214836
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -104,8 +104,8 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
                 report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
                 local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
-                self.assertIn("6 293 518", local_scope_line)
-                self.assertIn("6 293 234", local_scope_line)
+                self.assertIn("6 293 558", local_scope_line)
+                self.assertIn("6 293 274", local_scope_line)
                 scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
                 c_totals = fields["scenario_classification_frequencies"]["C"]
                 d_totals = fields["scenario_classification_frequencies"]["D"]
@@ -124,7 +124,7 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "217 normalized forms / 214 815 rootfs-only rows (214 876 с E ELF)",
+                    "216 normalized forms / 214 775 rootfs-only rows (214 836 с E ELF)",
                     issue_section,
                 )
                 report_binary_rows = {}
@@ -333,6 +333,29 @@ class NormalizedFormTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(packuswb_encodings), 7)
                 self.assertEqual(sum(row["count"] for row in packuswb_encodings), 16)
+                pcmpgtd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpgtd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtd_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pcmpgtd_forms), 40)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.23-PCMPGTD-XMM-register-register", 0) for row in pcmpgtd_forms),
+                    40,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpgtd_forms),
+                    40,
+                )
+                pcmpgtd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "66"]
+                    and row["dimensions"]["operand_signature"] == "pcmpgtd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtd_encodings), 18)
+                self.assertEqual(sum(row["count"] for row in pcmpgtd_encodings), 40)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pcmpgtd_encodings))
                 paddb_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["opcode_bytes"] == ["0F", "FC"]

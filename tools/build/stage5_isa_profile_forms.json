@@ -1654,6 +1654,30 @@
         "docs/plans/STAGE_2.md:14505-14529",
         "docs/reports/STAGE_2_REPORT.md:15384-15420"
       ]
+    },
+    {
+      "task": "S2-35.23 PCMPGTD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decoding. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register-register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. CPU_CONTRACT has no PCMPGTD entry; this bounded registry slice cites only the accepted plan and report.",
+      "families": [
+        {
+          "task": "S2-35.23",
+          "encoding": "66 [one optional REX.R/B] 0F 66 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15); second 66 is opcode",
+          "gate": "Exact legacy PCMPGTD XMM register-register form only: first 66 is mandatory prefix; the second 66 after 0F is opcode; no REX or one REX.R/B byte (40/41/44/45) immediately after the mandatory prefix; ModR/M.mod=3; any register pair. Reject bare MMX, memory, PCMPGTB/W/Q and other comparisons, extra prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter compares four signed little-endian i32 lanes; each destination lane becomes FFFFFFFF iff DEST>SRC, otherwise 00000000; updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13892-13931",
+            "docs/reports/STAGE_2_REPORT.md:15026-15060"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13892-13931",
+        "docs/reports/STAGE_2_REPORT.md:15026-15060"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
