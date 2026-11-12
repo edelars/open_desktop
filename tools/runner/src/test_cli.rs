@@ -6875,6 +6875,9 @@ fn execute_fixture_v2(
 }
 
 pub fn compare_results(args: &[String]) -> ExitCode {
+    if args.iter().any(|argument| argument == "--linux-stage5") {
+        return crate::linux_direct::series::compare_stage5_cli(args);
+    }
     let Some(left_path) = args.first() else {
         return invalid_input(
             "usage: od-runner --compare-results RESULT_A.json RESULT_B.json --case CASE.json --json",

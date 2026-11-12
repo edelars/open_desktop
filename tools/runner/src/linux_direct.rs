@@ -76,6 +76,8 @@ use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
 
+pub(crate) mod series;
+
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
 --ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7]]]";
@@ -114,6 +116,9 @@ struct Options {
 }
 
 pub fn run(args: &[String]) -> ExitCode {
+    if args.iter().any(|argument| argument == "--test-runs") {
+        return series::run(args);
+    }
     let options = match parse(args) {
         Ok(options) => options,
         Err(detail) => {

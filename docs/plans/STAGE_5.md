@@ -329,6 +329,8 @@
 - **Готово:** серия и её сравнение выполняются одной командой на базе `linux-direct`, evidence соответствует методике.
 - **Не делать:** не создавать вторую команду и второй раннер; не дублировать `--compare-results`; не прятать различия в агрегированном выводе; не объявлять серию пройденной при `not_run`.
 
+Текущий статус (2026-11-12): implementation slice для явной серии и Stage 5 comparator в существующем `linux-direct`/`--compare-results` одобрен независимым ревью. Полная S5-07 остаётся `blocked` до S5-01 и не принята; checkbox пустой. Срез требует явный `--test-runs`, задаёт `run_profile=smoke_not_acceptance`, генерирует отдельный nonce для каждого запуска и сохраняет raw runner JSON, stop-scoped COM1 bytes, manifest и hashes. `hardware_status` отделён от `scenario_status`; `loaded` не считается pass. S5 A–G остаются `not_run` до интеграции S5-08; сейчас допустимо только проверить Stage 4 nonce echo. `--linux-stage5` добавляет schema comparison к существующему `--compare-results`, не заменяя fixture comparison. Синтетические тесты подтверждают manifest/marker validation и comparator, но не доказывают запуск гостя или серию Linux. См. [ISSUE-081](../KNOWN_ISSUES.md#issue-081-s5-07-series-evidence-prepared-but-stand-blocked).
+
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
 - [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).

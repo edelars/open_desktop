@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-081-s5-07-series-evidence-prepared-but-stand-blocked"></a>
+
+### ISSUE-081 — S5-07: серия и evidence schema подготовлены, но стенд заблокирован
+
+- **Дата обнаружения:** 2026-11-12, при подготовке orchestration для `linux-direct`.
+- **Компонент:** `tools/runner/src/linux_direct/series.rs`, Stage 5 run evidence и `--compare-results`.
+- **Владелец:** Stage 5 runner; S5-01 владеет методикой повторов/длительности и измерениями стенда.
+- **Статус:** открыта; подготовленный implementation slice одобрен независимым ревью; полная S5-07 остаётся `blocked/unaccepted`, checkbox пустой.
+- **Основание и последствия:** добавлен явный smoke-series path с per-run nonce, collision-refusing evidence directories, raw runner JSON, stop record, runner-recorded COM1 bytes/hash/count, manifests и ordered marker validation. Fixture comparator сохранён; `--linux-stage5` добавляет schema comparison. Синтетические tests проверяют nonce, markers, integrity и comparator, но Linux guest series не запускалась. Текущий COM1 источник — stop-scoped `linux_direct_run_boot_com1`, а не независимая streaming UART capture. `loaded` не является guest scenario pass; Stage 5 A–G остаются `not_run`, поскольку scripts ещё не вызываются boot runner. Нет host/user CPU measurement, выведенного N или soak budget; S5-01 остаётся заблокированным.
+- **Следующий шаг:** после S5-01 и доступного стенда проверить Stage 4 nonce сценарий и собрать полный run evidence; интеграция A–G требует отдельной задачи S5-08 и фактического гостевого запуска. До получения этих условий сохранять S5-07 blocked и не выводить acceptance из синтетических tests.
+
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
 ### ISSUE-080 — S5-06: guest suite подготовлен, но не проверен на Linux; endpoint F отсутствует
