@@ -1,0 +1,50 @@
+{
+  "accepted_existing_rootfs_before_and_after_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "artifact": {
+    "build_id": "none",
+    "e_machine": 62,
+    "elf_class": "ELF64",
+    "endianness": "little",
+    "ignored_path": "work/stage5/s5-21/stage5-e-static.elf",
+    "sha256": "da18de76182af4f986a076c8ec9796ae0db2af365104788929e22643143d8024",
+    "size_bytes": 16504,
+    "stage5_e_static_elf_executed": false
+  },
+  "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
+  "command": "python3 tools/build/test_build_stage5_e_static.py",
+  "date": "2026-11-12",
+  "guest_compiler": "GCC 15.2.0-16ubuntu1, amd64, invoked as /usr/bin/gcc-15 inside chroot; -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none",
+  "paired_builds": [
+    {
+      "e_elf_sha256": "da18de76182af4f986a076c8ec9796ae0db2af365104788929e22643143d8024",
+      "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895"
+    },
+    {
+      "e_elf_sha256": "da18de76182af4f986a076c8ec9796ae0db2af365104788929e22643143d8024",
+      "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895"
+    }
+  ],
+  "paired_test_result": "Ran 3 tests in 17.581s; OK",
+  "purpose": "Build a separate static S5-21 E executable and retain accepted rootfs bytes; ELF was never executed.",
+  "scope_limit": "The paired rootfs recipe executed its pinned guest GCC and a separate generated C smoke program inside chroot, as part of S5-05 build validation. It did not execute the stage5_e.c program or the exported E static ELF. Static E ELF instruction rows do not reveal runtime-generated code bytes; full S5-21 remains blocked by incomplete profile disposition and runtime E evidence.",
+  "source": {
+    "path": "tests/fixtures/guest/stage5/stage5_e.c",
+    "sha256": "9341d7fa286e8355718483e28f05d001ea37275a9e610d5fdbe1944faf08f700"
+  },
+  "static_analysis": {
+    "analysis_target_elfs_executed": false,
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-e-static.json",
+    "compact_inventory_sha256": "f765eee5fa6ab06f04f7d50c2d3766af15eab08a7753e26a2aecfed10050b4de",
+    "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
+    "e_static_instruction_rows": 345,
+    "e_static_unclassified_rows": 62,
+    "input_binary_count": 9,
+    "instruction_rows": 6510745,
+    "raw_inventory_sha256": "666ead737b40c6d7d0841613afd53e933f1882a2efa478ab0f4274bd13330291",
+    "rootfs_builder_executed_guest_gcc": true,
+    "rootfs_builder_executed_separate_c_smoke": true,
+    "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+    "runtime_generated_code_frequency": "not_inferred"
+  },
+  "unchanged_rootfs_binary_inputs": true
+}

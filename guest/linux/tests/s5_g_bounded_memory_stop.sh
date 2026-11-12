@@ -26,7 +26,7 @@ step=prepare
 cp "$source" "$base/stage5_g.c"
 program=$base/stage5_g
 log=$base/build.log
-if ! gcc -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none "$base/stage5_g.c" -o "$program" > "$log" 2>&1; then
+if ! /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none "$base/stage5_g.c" -o "$program" > "$log" 2>&1; then
   cat "$log"
   exit 1
 fi

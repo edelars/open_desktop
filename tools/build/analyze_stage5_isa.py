@@ -20,6 +20,8 @@ PROFILE_PATH = ROOT / "tools/build/stage5_isa_profile_forms.json"
 BUILDER = "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85"
 IMAGE_SHA256 = "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895"
 IMAGE_SIZE = 2_147_483_648
+STAGE5_E_STATIC_SHA256 = "da18de76182af4f986a076c8ec9796ae0db2af365104788929e22643143d8024"
+STAGE5_E_SOURCE_SHA256 = "9341d7fa286e8355718483e28f05d001ea37275a9e610d5fdbe1944faf08f700"
 BINARIES = (
     ("bash", "/usr/bin/bash"),
     ("dash", "/usr/bin/dash"),  # /bin/sh resolves to this ELF.
@@ -452,7 +454,7 @@ def cpl0_misc_candidates(row: dict) -> list[str]:
 
 
 def scenario_summaries(binaries: list[dict]) -> dict:
-    """Aggregate the inspected executables by Stage 5 C/D usage; E is not inferred."""
+    """Aggregate C/D tools and keep E's static ELF separate from generated code."""
     groups = {
         "C": ["bash", "dash", "tar"],
         "D": ["bash", "dash", "gcc-driver", "gcc-cc1", "gcc-collect2", "gcc-as", "gcc-ld-bfd"],
@@ -471,24 +473,70 @@ def scenario_summaries(binaries: list[dict]) -> dict:
             "classification_frequencies": dict(sorted(classes.items())),
             "top_forms": [{"signature": key, "count": count} for key, count in frequencies.most_common(25)],
         }
+    e_static = next((item for item in binaries if item["name"] == "stage5-e-static"), None)
     result["E"] = {
-        "binaries": [],
-        "status": "not_inferred",
-        "reason": "S5-21 static inventory does not include runtime-generated JIT code or execute the Scenario E program.",
+        "status": "static_executable_only" if e_static else "static_executable_not_built",
+        "binaries": [] if e_static is None else ["stage5-e-static"],
+        "static_instruction_count": None if e_static is None else e_static["instruction_count"],
+        "static_classification_frequencies": None if e_static is None else e_static["classification_frequencies"],
+        "runtime_generated_code": {
+            "status": "not_inferred",
+            "frequency": "not_inferred",
+            "reason": "Static disassembly does not execute stage5_e.c or observe its runtime-generated code bytes.",
+        },
     }
     return result
 
 
-def worker_command() -> str:
+def binary_specs(stage5_e_static_elf: Path | None = None) -> list[tuple[str, str, str]]:
+    specs = [(name, image_path, "rootfs") for name, image_path in BINARIES]
+    if stage5_e_static_elf is not None:
+        specs.append(("stage5-e-static", "external:stage5-e-static.elf", "external"))
+    return specs
+
+
+def parse_meta(line: str) -> tuple[int, dict]:
+    fields = line.rstrip("\n").split("\t")
+    if len(fields) != 8 or fields[0] != "S5META":
+        raise ValueError(f"malformed S5META record: {line.rstrip()!r}")
+    _, raw_index, name, image_path, raw_size, sha, machine, build_id = fields
+    return int(raw_index), {
+        "name": name,
+        "image_path": image_path,
+        "size_bytes": int(raw_size),
+        "sha256": sha,
+        "elf_machine": machine,
+        "build_id": build_id,
+    }
+
+
+def validate_stage5_e_static_elf(path: Path) -> None:
+    try:
+        path.relative_to((ROOT / "work/stage5").resolve())
+    except ValueError as error:
+        raise ValueError("Stage 5 E static ELF input must be under ignored work/stage5") from error
+    if digest(path) != STAGE5_E_STATIC_SHA256:
+        raise ValueError(f"Stage 5 E static ELF hash differs from paired pinned build: {path}")
+    with path.open("rb") as source:
+        header = source.read(20)
+    if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != 62:
+        raise ValueError("Stage 5 E static input must be ELF64 little-endian x86-64")
+
+
+def worker_command(specs: list[tuple[str, str, str]] | None = None) -> str:
+    specs = specs or binary_specs()
     lines = [
         "set -eu",
         "dpkg -i /packages/libjansson4_2.14-2build4_arm64.deb /packages/libsframe3_2.46-3ubuntu2_arm64.deb /packages/binutils-common_2.46-3ubuntu2_arm64.deb /packages/binutils-x86-64-linux-gnu_2.46-3ubuntu2_arm64.deb >/dev/null",
         "test \"$(x86_64-linux-gnu-objdump --version | head -n 1)\" = 'GNU objdump (GNU Binutils for Ubuntu) 2.46'",
     ]
-    for i, (name, image_path) in enumerate(BINARIES):
+    for i, (name, image_path, source_kind) in enumerate(specs):
         extracted = f"/tmp/s5-21-{name}"
+        if source_kind == "rootfs":
+            lines.append(f"debugfs -R 'dump {image_path} {extracted}' /input.raw >/dev/null 2>&1")
+        else:
+            lines.append(f"cp /extra/stage5-e-static.elf {extracted}")
         lines += [
-            f"debugfs -R 'dump {image_path} {extracted}' /input.raw >/dev/null 2>&1",
             f"printf 'S5META\\t{i}\\t{name}\\t{image_path}\\t%s\\t%s\\t%s\\t%s\\n' \"$(stat -c %s {extracted})\" \"$(sha256sum {extracted} | awk '{{print $1}}')\" \"$(x86_64-linux-gnu-readelf -h {extracted} | awk -F: '/Machine:/ {{gsub(/^ +/, \"\", $2); print $2}}')\" \"$(x86_64-linux-gnu-readelf -n {extracted} | sed -n 's/.*Build ID: //p' | head -n 1)\"",
             f"printf 'S5BEGIN\\t{i}\\n'",
             f"x86_64-linux-gnu-objdump -d --insn-width=16 -M intel {extracted}",
@@ -542,15 +590,22 @@ def probe_cpl0_exact(image: Path, cache: Path, lock: dict) -> dict:
     }
 
 
-def analyze(image: Path, cache: Path, lock: dict) -> dict:
+def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | None = None) -> dict:
     verify_cache(cache, lock)
+    specs = binary_specs(stage5_e_static_elf)
+    if stage5_e_static_elf is not None:
+        validate_stage5_e_static_elf(stage5_e_static_elf)
     registry = json.loads(PROFILE_PATH.read_text())
     exact_matchers, exclusion_matchers = profile_matcher_maps(registry)
     command = [
         "docker", "run", "--rm", "--platform", "linux/arm64",
         "--mount", f"type=bind,src={image.resolve()},dst=/input.raw,readonly",
         "--mount", f"type=bind,src={cache.resolve()},dst=/packages,readonly",
-        BUILDER, "/bin/sh", "-ec", worker_command(),
+    ]
+    if stage5_e_static_elf is not None:
+        command += ["--mount", f"type=bind,src={stage5_e_static_elf.resolve()},dst=/extra/stage5-e-static.elf,readonly"]
+    command += [
+        BUILDER, "/bin/sh", "-ec", worker_command(specs),
     ]
     meta: dict[int, dict] = {}
     per_binary: dict[int, dict] = {}
@@ -564,9 +619,10 @@ def analyze(image: Path, cache: Path, lock: dict) -> dict:
     assert process.stdout is not None
     for line in process.stdout:
         if line.startswith("S5META\t"):
-            _, idx, name, guest_path, size, sha, machine, build_id = line.rstrip().split("\t")
-            i = int(idx)
-            meta[i] = {"name": name, "image_path": guest_path, "size_bytes": int(size), "sha256": sha, "elf_machine": machine, "build_id": build_id}
+            i, record = parse_meta(line)
+            if record["name"] == "stage5-e-static" and record["sha256"] != STAGE5_E_STATIC_SHA256:
+                raise RuntimeError("copied Stage 5 E ELF hash differs from the pinned static input")
+            meta[i] = record
             per_binary[i] = {"count": 0, "nondecoded_byte_rows": 0, "nondecoded_samples": [], "forms": Counter(), "mnemonics": Counter(), "classifications": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter()}
         elif line.startswith("S5BEGIN\t"):
             current = int(line.split("\t", 1)[1])
@@ -667,7 +723,7 @@ def analyze(image: Path, cache: Path, lock: dict) -> dict:
                 form["samples"].append({"binary": meta[current]["name"], "address": row["address"], "bytes": row["bytes"], "assembly": row["mnemonic"] + (" " + row["operands"] if row["operands"] else "")})
     rc = process.wait()
     if rc: raise RuntimeError(f"pinned disassembly container exited {rc}")
-    if len(meta) != len(BINARIES): raise RuntimeError("container did not report every requested ELF")
+    if len(meta) != len(specs): raise RuntimeError("container did not report every requested ELF")
     all_forms = []
     for signature, data in sorted(forms.items(), key=lambda p: (-p[1]["count"], p[0])):
         counts = dict(data["classification_counts"])
@@ -690,7 +746,7 @@ def analyze(image: Path, cache: Path, lock: dict) -> dict:
             "sample_raw_rows": data["samples"],
         })
     binaries = []
-    for i in range(len(BINARIES)):
+    for i in range(len(specs)):
         item = meta[i]
         item["instruction_count"] = per_binary[i]["count"]
         item["nondecoded_byte_rows"] = per_binary[i]["nondecoded_byte_rows"]
@@ -713,9 +769,10 @@ def analyze(image: Path, cache: Path, lock: dict) -> dict:
         conditional_totals.update(data["conditional_candidates"])
     return {
         "schema_version": 2,
-        "analysis": "GNU objdump static executable-section disassembly; guest ELF files are not executed.",
+        "analysis": "GNU objdump disassembles each target executable statically; this analyzer does not execute any target ELF.",
         "source_image": {"sha256": digest(image), "size_bytes": image.stat().st_size, "filesystem": "ext4", "root_device": "/dev/nvme0n1"},
-        "disassembler": {"binary": "x86_64-linux-gnu-objdump", "version": lock["tool_version"], "host": "linux/arm64", "builder_image": BUILDER, "command": "x86_64-linux-gnu-objdump -d -M intel <debugfs-dumped-ELF>"},
+        "external_inputs": [] if stage5_e_static_elf is None else [{"name": "stage5-e-static", "path": stage5_e_static_elf.relative_to(ROOT).as_posix(), "sha256": digest(stage5_e_static_elf), "source_c_path": "tests/fixtures/guest/stage5/stage5_e.c", "source_c_sha256": STAGE5_E_SOURCE_SHA256, "build": "pinned Stage 5 guest rootfs GCC 15.2.0-16ubuntu1; ELF is statically disassembled only, not executed"}],
+        "disassembler": {"binary": "x86_64-linux-gnu-objdump", "version": lock["tool_version"], "host": "linux/arm64", "builder_image": BUILDER, "command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF-or-mounted-external-ELF>"},
         "profile_comparison": {"accepted_profile_file": str(PROFILE_PATH.relative_to(ROOT)), "registry_complete": registry["registry_complete"], "policy": registry["classification_policy"], "scopes": ["local_interpreter_profile", "composed_cpl0_profile", "machine_cpl3_profile"], "scope_labels_are_nonexclusive": True, "conditional_candidates_can_overlap_supported_rows": True, "limitation": registry["known_limit"]},
         "conditional_candidates": {"unique_instruction_rows": conditional_candidate_unique_rows, "supported_overlap_rows": conditional_candidate_supported_overlap_rows, "hit_count": sum(conditional_totals.values()), "candidate_labels_are_nonexclusive": True},
         "binaries": binaries,
@@ -729,6 +786,7 @@ def main() -> int:
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--tool-cache", type=Path, default=ROOT / "work/stage5/isa-tool-cache")
     ap.add_argument("--output", type=Path)
+    ap.add_argument("--stage5-e-static-elf", type=Path, help="include the pinned, separately built Stage 5 E static ELF; never executes it")
     ap.add_argument("--probe-cpl0-exact", action="store_true", help="Count only exact S4-20c CPL0 kernel-tail byte rows; do not run the full inventory")
     args = ap.parse_args()
     image, cache = args.image.resolve(), args.tool_cache.resolve()
@@ -744,7 +802,7 @@ def main() -> int:
         raise ValueError("--output is required for the full inventory")
     output = args.output.resolve()
     if output.exists(): raise ValueError(f"refusing to overwrite {output}")
-    report = analyze(image, cache, lock)
+    report = analyze(image, cache, lock, args.stage5_e_static_elf.resolve() if args.stage5_e_static_elf else None)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x") as stream: json.dump(report, stream, indent=2, sort_keys=True); stream.write("\n")
     inv = report["inventory"]

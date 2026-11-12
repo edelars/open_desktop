@@ -49,7 +49,7 @@ received=$base/received.bin
 log=$base/build.log
 step=build-client
 cp "$source" "$base/stage5_f.c"
-if ! gcc -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none "$base/stage5_f.c" -o "$client" > "$log" 2>&1; then
+if ! /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none "$base/stage5_f.c" -o "$client" > "$log" 2>&1; then
   cat "$log"
   exit 1
 fi

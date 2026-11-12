@@ -9,6 +9,7 @@ import lzma
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).with_name("analyze_stage5_isa.py")
 SPEC = importlib.util.spec_from_file_location("analyze_stage5_isa", MODULE_PATH)
@@ -169,6 +170,43 @@ class ParseObjdumpTests(unittest.TestCase):
         register_nop = analyzer.parse_row("  401063: 0f 1f c0 nop eax")
         self.assertEqual(analyzer.cpl0_misc_candidates(memory_nop), ["S4-38L4d-multi-byte-memory-NOP"])
         self.assertNotIn("S4-38L4d-multi-byte-memory-NOP", analyzer.cpl0_misc_candidates(register_nop))
+
+    def test_optional_e_static_elf_is_a_separate_static_input(self) -> None:
+        specs = analyzer.binary_specs(Path("work/stage5/s5-21/stage5-e-static.elf"))
+        self.assertEqual(len(specs), len(analyzer.BINARIES) + 1)
+        self.assertEqual(specs[-1], ("stage5-e-static", "external:stage5-e-static.elf", "external"))
+        command = analyzer.worker_command(specs)
+        self.assertIn("cp /extra/stage5-e-static.elf /tmp/s5-21-stage5-e-static", command)
+        self.assertIn("x86_64-linux-gnu-objdump -d --insn-width=16 -M intel /tmp/s5-21-stage5-e-static", command)
+        self.assertNotIn("qemu", command)
+        self.assertNotIn("chroot", command)
+
+    def test_static_elf_metadata_preserves_empty_build_id(self) -> None:
+        index, record = analyzer.parse_meta("S5META\t8\tstage5-e-static\texternal:stage5-e-static.elf\t4096\tabc123\tAdvanced Micro Devices X86-64\t\n")
+        self.assertEqual(index, 8)
+        self.assertEqual(record["name"], "stage5-e-static")
+        self.assertEqual(record["build_id"], "")
+
+    def test_analyzer_rejects_copied_e_elf_hash_mismatch(self) -> None:
+        class FakeProcess:
+            stdout = iter(["S5META\t8\tstage5-e-static\texternal:stage5-e-static.elf\t16504\t" + "0" * 64 + "\tAdvanced Micro Devices X86-64\t\n"])
+
+        with patch.object(analyzer, "verify_cache"), \
+             patch.object(analyzer, "validate_stage5_e_static_elf"), \
+             patch.object(analyzer.subprocess, "Popen", return_value=FakeProcess()):
+            with self.assertRaisesRegex(RuntimeError, "copied Stage 5 E ELF hash"):
+                analyzer.analyze(Path("unused-image"), Path("unused-cache"), {"tool_version": "pinned"}, Path("work/stage5/e.elf"))
+
+    def test_e_static_summary_does_not_infer_runtime_generated_code(self) -> None:
+        summary = analyzer.scenario_summaries([{
+            "name": "stage5-e-static",
+            "instruction_count": 123,
+            "classification_frequencies": {"unclassified": 100, "proven_supported": 23},
+        }])
+        self.assertEqual(summary["E"]["status"], "static_executable_only")
+        self.assertEqual(summary["E"]["static_instruction_count"], 123)
+        self.assertEqual(summary["E"]["runtime_generated_code"]["status"], "not_inferred")
+        self.assertEqual(summary["E"]["runtime_generated_code"]["frequency"], "not_inferred")
 
     def test_lgdt_lidt_require_0f01_group_memory_encoding(self) -> None:
         lgdt = analyzer.parse_row("  401070: 0f 01 10 lgdt FWORD PTR [rax]")

@@ -142,6 +142,43 @@ class NormalizedFormTests(unittest.TestCase):
         self.assertIn("bash", result["scenarios"]["C"]["binaries"])
         self.assertIn("bash", result["scenarios"]["D"]["binaries"])
 
+    def test_e_static_inventory_is_separate_from_runtime_generated_code(self) -> None:
+        exact = exact_form(["48"], "00", {"form": "base_only", "size": 64, "segment": None}, 7, "stage5-e-static", "unclassified")
+        inventory = {
+            "source_image": {"sha256": "accepted-rootfs"},
+            "disassembler": {},
+            "profile_comparison": {"registry_complete": False},
+            "external_inputs": [{
+                "name": "stage5-e-static",
+                "path": "work/stage5/s5-21/stage5-e-static.elf",
+                "sha256": "static-elf-hash",
+                "source_c_sha256": "source-hash",
+            }],
+            "inventory": {
+                "encoding_forms": [exact],
+                "instruction_count": 7,
+                "classification_frequencies": {"unclassified": 7},
+                "evidence_scope_frequencies": {},
+                "conditional_cpl0_candidate_frequencies": {},
+            },
+            "conditional_candidates": {"supported_overlap_rows": 0},
+            "binaries": [{
+                "name": "stage5-e-static", "image_path": "external:stage5-e-static.elf", "size_bytes": 100,
+                "sha256": "static-elf-hash", "elf_machine": "Advanced Micro Devices X86-64",
+                "build_id": "", "instruction_count": 7,
+                "classification_frequencies": {"unclassified": 7},
+            }],
+        }
+        result = exporter.aggregate(inventory)
+        e = result["scenarios"]["E"]
+        self.assertEqual(e["status"], "static_executable_only")
+        self.assertEqual(e["static_executable"]["sha256"], "static-elf-hash")
+        self.assertEqual(e["static_executable"]["unclassified_instruction_rows"], 7)
+        self.assertEqual(e["runtime_generated_code"]["status"], "not_inferred")
+        self.assertEqual(e["runtime_generated_code"]["frequency"], "not_inferred")
+        self.assertNotIn("stage5-e-static", result["scenarios"]["C"]["binaries"])
+        self.assertNotIn("stage5-e-static", result["scenarios"]["D"]["binaries"])
+
 
 if __name__ == "__main__":
     unittest.main()

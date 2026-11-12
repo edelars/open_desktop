@@ -163,17 +163,40 @@ def aggregate(inventory: dict) -> dict:
             },
             "top_unclassified_forms": [{"instruction_form": form, "count": count} for form, count in rows[:25]],
         }
+    e_static = by_binary.get("stage5-e-static")
+    e_forms = []
+    if e_static is not None:
+        for form in normalized_forms:
+            count = form["binary_classification_frequencies"].get("stage5-e-static", {}).get("unclassified", 0)
+            if count:
+                e_forms.append((form["instruction_form"], count))
+        e_forms.sort(key=lambda pair: (-pair[1], json.dumps(pair[0], sort_keys=True)))
     scenarios["E"] = {
-        "status": "not_inferred",
-        "unclassified_instruction_rows": None,
-        "conditional_candidate_frequencies": None,
-        "top_unclassified_forms": None,
-        "reason": "Static executable inventory has no runtime-generated JIT code and no guest program was executed.",
+        "status": "static_executable_only" if e_static else "static_executable_not_built",
+        "static_executable": None if e_static is None else {
+            "binary": "stage5-e-static",
+            "image_path": e_static["image_path"],
+            "sha256": e_static["sha256"],
+            "size_bytes": e_static["size_bytes"],
+            "elf_machine": e_static["elf_machine"],
+            "build_id": e_static["build_id"],
+            "instruction_count": e_static["instruction_count"],
+            "classification_frequencies": e_static["classification_frequencies"],
+            "unclassified_instruction_rows": sum(count for _, count in e_forms),
+            "top_unclassified_forms": [{"instruction_form": form, "count": count} for form, count in e_forms[:25]],
+        },
+        "runtime_generated_code": {
+            "status": "not_inferred",
+            "frequency": "not_inferred",
+            "instruction_rows": None,
+            "reason": "Static executable disassembly does not execute the E program or observe its runtime-generated code bytes.",
+        },
     }
     return {
         "schema_version": 1,
         "source_rootfs_sha256": inventory["source_image"]["sha256"],
         "source_image": inventory["source_image"],
+        "external_inputs": inventory.get("external_inputs", []),
         "disassembler": inventory["disassembler"],
         "profile_comparison": inventory["profile_comparison"],
         "instruction_count": inventory["inventory"]["instruction_count"],

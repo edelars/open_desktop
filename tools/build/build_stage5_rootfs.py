@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ SECTOR_BYTES = 512
 IMAGE_BYTES = 2 * 1024 * 1024 * 1024
 ROOT_UUID = "5a5e5a05-0000-4000-8000-000000000005"
 ROOT_DEVICE = "/dev/nvme0n1"
+STAGE5_E_SOURCE = ROOT / "tests/fixtures/guest/stage5/stage5_e.c"
+STAGE5_E_SOURCE_SHA256 = "9341d7fa286e8355718483e28f05d001ea37275a9e610d5fdbe1944faf08f700"
 
 CONTAINER_BUILD = r"""
 set -eu
@@ -48,6 +51,14 @@ chroot /tmp/rootfs /usr/bin/gcc-15 -Wall -Wextra -Werror /tmp/stage5-c-smoke.c -
 test "$(od -An -t u2 -j 18 -N 2 /tmp/rootfs/tmp/stage5-c-smoke | tr -d ' ')" = 62
 chroot /tmp/rootfs /tmp/stage5-c-smoke | grep -Fx 'stage5-c-smoke-ok'
 rm /tmp/rootfs/tmp/stage5-c-smoke.c /tmp/rootfs/tmp/stage5-c-smoke
+if [ "${STAGE5_E_BUILD:-0}" = 1 ]; then
+  cp /inputs/stage5_e.c /tmp/rootfs/tmp/stage5_e.c
+  chroot /tmp/rootfs /usr/bin/gcc-15 -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none /tmp/stage5_e.c -o /tmp/stage5-e-static
+  test "$(od -An -t u2 -j 18 -N 2 /tmp/rootfs/tmp/stage5-e-static | tr -d ' ')" = 62
+  cp /tmp/rootfs/tmp/stage5-e-static /stage5-e-output
+  test -s /stage5-e-output
+  rm /tmp/rootfs/tmp/stage5_e.c /tmp/rootfs/tmp/stage5-e-static
+fi
 rm -rf /tmp/rootfs/var/cache/apt /tmp/rootfs/var/lib/apt/lists /tmp/rootfs/var/log
 mkdir -p /tmp/rootfs/var/cache/apt /tmp/rootfs/var/lib/apt/lists /tmp/rootfs/var/log /tmp/rootfs/tmp /tmp/rootfs/var/tmp
 : > /tmp/rootfs/etc/machine-id
@@ -93,6 +104,23 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def create_owned_empty_file(path: Path) -> tuple[int, int]:
+    with path.open("xb") as output:
+        metadata = os.fstat(output.fileno())
+    return metadata.st_dev, metadata.st_ino
+
+
+def unlink_if_identity(path: Path, identity: tuple[int, int] | None) -> None:
+    if identity is None:
+        return
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == identity:
+        path.unlink(missing_ok=True)
 
 
 def run(command: list[str]) -> str:
@@ -185,7 +213,7 @@ def prepare_inputs() -> None:
         download_verified(package["url"], PACKAGE_CACHE / package["filename"], package["sha256"])
 
 
-def build(output: Path) -> str:
+def build(output: Path, stage5_e_output: Path | None = None) -> str:
     output = output.resolve()
     try:
         output.relative_to(WORK.resolve())
@@ -194,6 +222,21 @@ def build(output: Path) -> str:
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         raise BuildError(f"refusing to replace existing output: {output}")
+    if stage5_e_output is not None:
+        stage5_e_output = stage5_e_output.resolve()
+        try:
+            stage5_e_output.relative_to(WORK.resolve())
+        except ValueError as error:
+            raise BuildError("Stage 5 E output must be under ignored work/stage5") from error
+        if stage5_e_output == output:
+            raise BuildError("rootfs and Stage 5 E outputs must be different files")
+        stage5_e_output.parent.mkdir(parents=True, exist_ok=True)
+        if stage5_e_output.exists():
+            raise BuildError(f"refusing to replace existing Stage 5 E output: {stage5_e_output}")
+        if not STAGE5_E_SOURCE.is_file():
+            raise BuildError(f"Stage 5 E source is missing: {STAGE5_E_SOURCE}")
+        if sha256(STAGE5_E_SOURCE) != STAGE5_E_SOURCE_SHA256:
+            raise BuildError("Stage 5 E source differs from the pinned fixture input")
     prepare_inputs()
     docker = shutil.which("docker")
     if not docker:
@@ -203,19 +246,30 @@ def build(output: Path) -> str:
         "create-raw", str(output.parent), output.name, str(IMAGE_BYTES),
     ])
     package_list = output.parent / f"{output.name}.package-files.txt"
-    package_list.write_text("".join(f"{package['filename']}\n" for package in load_lock()))
-    mounts = [
-        "--mount", f"type=bind,src={BASE_ARCHIVE.resolve()},dst=/inputs/base.tar.gz,readonly",
-        "--mount", f"type=bind,src={PACKAGE_CACHE.resolve()},dst=/packages,readonly",
-        "--mount", f"type=bind,src={PACKAGE_LOCK.resolve()},dst=/inputs/package-lock.json,readonly",
-        "--mount", f"type=bind,src={package_list.resolve()},dst=/inputs/rootfs-package-files.txt,readonly",
-        "--mount", f"type=bind,src={output},dst=/image",
-    ]
+    stage5_e_identity = None
     try:
-        validation = run([docker, "run", "--rm", "--pull=missing", "--platform", "linux/arm64", *mounts,
+        package_list.write_text("".join(f"{package['filename']}\n" for package in load_lock()))
+        mounts = [
+            "--mount", f"type=bind,src={BASE_ARCHIVE.resolve()},dst=/inputs/base.tar.gz,readonly",
+            "--mount", f"type=bind,src={PACKAGE_CACHE.resolve()},dst=/packages,readonly",
+            "--mount", f"type=bind,src={PACKAGE_LOCK.resolve()},dst=/inputs/package-lock.json,readonly",
+            "--mount", f"type=bind,src={package_list.resolve()},dst=/inputs/rootfs-package-files.txt,readonly",
+            "--mount", f"type=bind,src={output},dst=/image",
+        ]
+        env = []
+        if stage5_e_output is not None:
+            stage5_e_identity = create_owned_empty_file(stage5_e_output)
+            mounts += [
+                "--mount", f"type=bind,src={STAGE5_E_SOURCE.resolve()},dst=/inputs/stage5_e.c,readonly",
+                "--mount", f"type=bind,src={stage5_e_output},dst=/stage5-e-output",
+            ]
+            env = ["-e", "STAGE5_E_BUILD=1"]
+        validation = run([docker, "run", "--rm", "--pull=missing", "--platform", "linux/arm64", *env, *mounts,
                           BUILDER_IMAGE, "bash", "-ec", CONTAINER_BUILD])
-    except BuildError:
+    except (BuildError, OSError):
         output.unlink(missing_ok=True)
+        if stage5_e_output is not None:
+            unlink_if_identity(stage5_e_output, stage5_e_identity)
         raise
     finally:
         package_list.unlink(missing_ok=True)
@@ -226,10 +280,13 @@ def build(output: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=WORK / "rootfs/stage5-rootfs.raw")
+    parser.add_argument("--stage5-e-output", type=Path, help="also compile stage5_e.c in the pinned amd64 guest rootfs and export its static ELF without running it")
     args = parser.parse_args(argv)
     try:
-        digest = build(args.output)
+        digest = build(args.output, args.stage5_e_output)
         print(f"image={args.output.resolve()}\nsha256={digest}\nbytes={IMAGE_BYTES}\nsector_bytes={SECTOR_BYTES}\nroot={ROOT_DEVICE}\nroot_uuid={ROOT_UUID}")
+        if args.stage5_e_output is not None:
+            print(f"stage5_e_static_elf={args.stage5_e_output.resolve()}\nstage5_e_static_elf_sha256={sha256(args.stage5_e_output.resolve())}")
         return 0
     except (BuildError, OSError) as error:
         print(f"build_error={error}", file=sys.stderr)
