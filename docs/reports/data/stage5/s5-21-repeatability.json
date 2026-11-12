@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --output <fresh output path>",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-psraw-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-psrlq-rootfs-pass1.json",
-      "sha256": "5e6013548652ddbb5904225d9d449e8430f840bee95037a8393a1f143ce55591",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-psraw-rootfs-pass1.json",
+      "sha256": "4668a58a1a09489a8ccdd39959d4eb1f56d89483bac179934523ad0196fe3e14",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-psrlq-rootfs-pass2.json",
-      "sha256": "5e6013548652ddbb5904225d9d449e8430f840bee95037a8393a1f143ce55591",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-psraw-rootfs-pass2.json",
+      "sha256": "4668a58a1a09489a8ccdd39959d4eb1f56d89483bac179934523ad0196fe3e14",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295498,
-      "unclassified": 214902
+      "proven_supported": 6295504,
+      "unclassified": 214896
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293147,
+      "local_interpreter_profile": 6293153,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1037,
-    "unclassified_normalized_forms": 232,
+    "classified_normalized_forms": 1039,
+    "unclassified_normalized_forms": 230,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322689,
-        "unclassified": 23460
+        "proven_supported": 322691,
+        "unclassified": 23458
       },
       "D": {
-        "proven_supported": 6226457,
-        "unclassified": 209757
+        "proven_supported": 6226461,
+        "unclassified": 209753
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "5e6013548652ddbb5904225d9d449e8430f840bee95037a8393a1f143ce55591",
+    "raw_inventory_sha256": "4668a58a1a09489a8ccdd39959d4eb1f56d89483bac179934523ad0196fe3e14",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -115,15 +115,25 @@
       "D0": 4,
       "D3": 1
     },
-    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence."
+    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psraw_register_rows": 6,
+    "psraw_register_normalized_forms": 2,
+    "psraw_register_rows_by_profile": {
+      "S2-35.39-PSRAW-XMM-immediate-register": 6
+    },
+    "psraw_register_rows_by_prefix": {
+      "operand_size": 5,
+      "operand_size+rex": 1
+    },
+    "psraw_scope": "Accepted local-only PSRAW register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8 count with signed i16 arithmetic shifts; counts >=16 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "f14b77b1a69fc9e040f935d1efb85c11d18f53ad1f8e7549c58e2cfc792b9f1b",
-    "size_bytes": 1003607,
+    "sha256": "885856327dacac8105692212a4606e61993f2f3656a33605836276a0fcbfadb1",
+    "size_bytes": 1003690,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psrlq-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psrlq-rootfs-pass1.json.gz",
-    "repeat_sha256": "f14b77b1a69fc9e040f935d1efb85c11d18f53ad1f8e7549c58e2cfc792b9f1b",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psraw-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psraw-rootfs-pass1.json.gz",
+    "repeat_sha256": "885856327dacac8105692212a4606e61993f2f3656a33605836276a0fcbfadb1",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },

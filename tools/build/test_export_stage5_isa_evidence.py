@@ -70,8 +70,22 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1037)
-                self.assertEqual(fields["unclassified_normalized_forms"], 232)
+                self.assertEqual(fields["classified_normalized_forms"], 1039)
+                self.assertEqual(fields["unclassified_normalized_forms"], 230)
+                self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
+                expected_rows = 6510400 if full_key else 6510745
+                expected_unclassified_rows = 214896 if full_key else 214957
+                self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
+                self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
+                if "local_interpreter_profile_rows" in fields:
+                    self.assertEqual(
+                        fields["local_interpreter_profile_rows"],
+                        fields["evidence_scope_frequencies"]["local_interpreter_profile"],
+                    )
+                    self.assertEqual(
+                        fields["machine_cpl3_profile_rows"],
+                        fields["evidence_scope_frequencies"]["machine_cpl3_profile"],
+                    )
                 pshufd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["operand_signature"] == "pshufd xmm,xmm,imm"
@@ -136,6 +150,26 @@ class NormalizedFormTests(unittest.TestCase):
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrlq_forms),
                     5,
                 )
+                psraw_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "71"]
+                    and row["instruction_form"]["operand_signature"] == "psraw xmm,imm"
+                ]
+                self.assertEqual(len(psraw_forms), 2)
+                self.assertEqual(sum(row["count"] for row in psraw_forms), 6)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.39-PSRAW-XMM-immediate-register", 0) for row in psraw_forms),
+                    6,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psraw_forms),
+                    6,
+                )
+                prefix_counts = {
+                    prefix: sum(row["count"] for row in psraw_forms if row["instruction_form"]["semantic_prefixes"] == semantic)
+                    for prefix, semantic in (("operand_size", ["operand_size"]), ("operand_size+rex", ["operand_size", "rex"]))
+                }
+                self.assertEqual(prefix_counts, {"operand_size": 5, "operand_size+rex": 1})
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
                     hashlib.sha256(compact_path.read_bytes()).hexdigest(),

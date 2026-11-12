@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psrlq-e-static-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psrlq-e-static-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-psrlq-e-static-pass1.json",
-    "compact_inventory_sha256": "8c5b50a160f225117965be34c13f3573c73ba3d9b5c521602cb8abb29d8f7b89",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psraw-e-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psraw-e-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-psraw-e-pass1.json",
+    "compact_inventory_sha256": "8b2539b236892b54695c5d830652938cb9074f5fe4b088805b6e184ec827f894",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "77fe7e1c9456ec91472f1dd1736d1328c0d77b6c5adfe3cb68a1212f37b4a5e9",
+    "raw_inventory_sha256": "3073266b4bd0433acb66afe70bbb5d588fad486eb5fc74d0c8db20786248827f",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,23 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1037,
-    "unclassified_normalized_forms": 232,
+    "classified_normalized_forms": 1039,
+    "unclassified_normalized_forms": 230,
     "classification_frequencies": {
-      "proven_supported": 6295782,
-      "unclassified": 214963
+      "proven_supported": 6295788,
+      "unclassified": 214957
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293431,
+      "local_interpreter_profile": 6293437,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "8c5b50a160f225117965be34c13f3573c73ba3d9b5c521602cb8abb29d8f7b89",
+    "compact_repeat_sha256": "8b2539b236892b54695c5d830652938cb9074f5fe4b088805b6e184ec827f894",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psrlq-e-static-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psrlq-e-static-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psraw-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psraw-e-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -94,16 +94,16 @@
       "punpckhqdq xmm,mem128": 1
     },
     "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence",
-    "local_interpreter_profile_rows": 6292264,
+    "local_interpreter_profile_rows": 6293437,
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322689,
-        "unclassified": 23460
+        "proven_supported": 322691,
+        "unclassified": 23458
       },
       "D": {
-        "proven_supported": 6226457,
-        "unclassified": 209757
+        "proven_supported": 6226461,
+        "unclassified": 209753
       }
     },
     "local_simd_logic_rows": 1858,
@@ -165,7 +165,17 @@
       "D0": 4,
       "D3": 1
     },
-    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence."
+    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psraw_register_rows": 6,
+    "psraw_register_normalized_forms": 2,
+    "psraw_register_rows_by_profile": {
+      "S2-35.39-PSRAW-XMM-immediate-register": 6
+    },
+    "psraw_register_rows_by_prefix": {
+      "operand_size": 5,
+      "operand_size+rex": 1
+    },
+    "psraw_scope": "Accepted local-only PSRAW register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8 count with signed i16 arithmetic shifts; counts >=16 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence."
   },
   "unchanged_rootfs_binary_inputs": true
 }
