@@ -66,6 +66,7 @@
 //! too (there is no file to write it to). Every `refused` and `loaded` result is printed and
 //! written to `--out`.
 
+use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
     load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
@@ -78,7 +79,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -111,6 +112,9 @@ struct Options {
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
     diagnostic_past_c7: bool,
+    /// `--cpuid-profile diagnostic|stage4a` (S4-38L9a, only with `--set-cpl0`): the CPUID profile
+    /// of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
+    cpuid_profile: CpuidProfile,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -153,7 +157,11 @@ fn evaluate(options: &Options) -> (Value, u8) {
         "nonce": options.nonce,
         "ram_mib": options.ram_mib,
     });
-    mark_acceptance(&mut evidence, options.diagnostic_past_c7);
+    mark_acceptance(
+        &mut evidence,
+        options.diagnostic_past_c7,
+        options.cpuid_profile,
+    );
     let io_failure = |evidence: Value, stage: &str, detail: String| {
         (refusal("invalid_input", stage, detail, evidence), 3)
     };
@@ -263,6 +271,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // translation cache (same results, more page walks).
                             fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
                             diagnostic_past_c7: options.diagnostic_past_c7,
+                            cpuid_profile: options.cpuid_profile,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -295,14 +304,26 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// present: `acceptance` is `counted` without `--diagnostic-past-c7` and `diagnostic_not_counted`
 /// with it (CPUID boundary off, DiagnosticV1 answers leaf 1 and 0x80000001, result NOT counted).
 /// The marker follows the request of the flag, not its effect.
-fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool) {
+///
+/// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
+/// a subset of the target, TSC only) and the result is not counted either: `acceptance` is
+/// `diagnostic_not_counted` and `cpuid_profile` says `X8664V1Stage4A` (the key is absent for the
+/// default profile, so its evidence is unchanged). `diagnostic_past_c7` still follows its flag.
+fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
+    let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+    evidence["acceptance"] = json!(if diagnostic_past_c7 || subset {
         "diagnostic_not_counted"
     } else {
         "counted"
     });
-    if diagnostic_past_c7 {
+    if subset {
+        evidence["cpuid_profile"] = json!(format!("{cpuid_profile:?}"));
+        evidence["diagnostic_note"] = json!(
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC only; checkpoint \
+             C7 boundary off by the profile); not the full target CPU, the result is NOT counted"
+        );
+    } else if diagnostic_past_c7 {
         evidence["diagnostic_note"] = json!(
             "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); \
              not a profile of the target CPU, the result is NOT counted"
@@ -620,6 +641,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
     let mut budget = None;
+    let mut cpuid_profile_text: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -663,6 +685,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--ram-mib" => &mut ram_mib,
             "--out" => &mut out,
             "--budget" => &mut budget,
+            "--cpuid-profile" => &mut cpuid_profile_text,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -695,6 +718,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--diagnostic-past-c7 needs --run and --set-cpl0; usage: {USAGE}"
         ));
     }
+    if cpuid_profile_text.is_some() && !set_cpl0 {
+        return Err(format!(
+            "--cpuid-profile needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
+    let cpuid_profile = match cpuid_profile_text.as_deref() {
+        None | Some("diagnostic") => CpuidProfile::DiagnosticV1,
+        Some("stage4a") => CpuidProfile::X8664V1Stage4A,
+        Some(other) => {
+            return Err(format!(
+                "invalid --cpuid-profile '{other}': diagnostic or stage4a; usage: {USAGE}"
+            ));
+        }
+    };
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -741,6 +778,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         budget,
         set_cpl0,
         diagnostic_past_c7,
+        cpuid_profile,
     })
 }
 
@@ -863,6 +901,7 @@ mod tests {
                 budget: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
+                cpuid_profile: CpuidProfile::DiagnosticV1,
             };
             Self { dir, options }
         }
@@ -1840,7 +1879,7 @@ mod tests {
         };
         for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
             let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
-            mark_acceptance(&mut base, flag);
+            mark_acceptance(&mut base, flag, CpuidProfile::DiagnosticV1);
             let value = run_failure(&error, base);
             assert_eq!(value["status"], "refused");
             assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
@@ -1936,6 +1975,129 @@ mod tests {
         }
     }
 
+    // ---- S4-38L9a: --cpuid-profile ----
+
+    fn parse_base(extra: &[&str]) -> Result<Options, String> {
+        let mut args: Vec<String> = [
+            "--vmlinuz",
+            "k",
+            "--initramfs",
+            "i",
+            "--acpi-blob",
+            "a",
+            "--nonce",
+            "n",
+            "--expected-vmlinuz-sha256",
+            &"0".repeat(64),
+            "--expected-acpi-manifest-hash",
+            &"0".repeat(64),
+            "--expected-initramfs-sha256",
+            &"0".repeat(64),
+            "--ram-mib",
+            "128",
+            "--out",
+            "o",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        args.extend(extra.iter().map(|s| s.to_string()));
+        parse(&args)
+    }
+
+    #[test]
+    fn cpuid_profile_flag_parses_and_defaults_to_diagnostic_v1() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let with = |tail: &[&str]| parse_base(&[&run[..], tail].concat());
+        assert_eq!(with(&[]).unwrap().cpuid_profile, CpuidProfile::DiagnosticV1);
+        assert_eq!(
+            with(&["--cpuid-profile", "diagnostic"])
+                .unwrap()
+                .cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+        assert_eq!(
+            with(&["--cpuid-profile", "stage4a"]).unwrap().cpuid_profile,
+            CpuidProfile::X8664V1Stage4A
+        );
+        assert!(with(&["--cpuid-profile", "stage4a", "--diagnostic-past-c7"]).is_ok());
+        for bad in [
+            vec!["--cpuid-profile", "full"],
+            vec!["--cpuid-profile"],
+            vec!["--cpuid-profile", "stage4a", "--cpuid-profile", "stage4a"],
+        ] {
+            assert!(with(&bad).is_err(), "{bad:?}");
+        }
+        // Needs --run and --set-cpl0.
+        assert!(parse_base(&["--cpuid-profile", "stage4a"]).is_err());
+        assert!(parse_base(&["--run", "--budget", "1", "--cpuid-profile", "stage4a"]).is_err());
+    }
+
+    #[test]
+    fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_not_counted() {
+        // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let mut case = Case::new(
+            "stage4a-leaf1",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4A;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_ne!(stop["exit_kind"], "cpuid_divergence", "{value:#}");
+        assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        // Oracle from the contract table: EDX has only the TSC bit.
+        assert_eq!(stop["gpr"]["rax"], "0x600");
+        assert_eq!(stop["gpr"]["rbx"], "0x100");
+        assert_eq!(stop["gpr"]["rcx"], "0x0");
+        assert_eq!(stop["gpr"]["rdx"], "0x10");
+        assert_eq!(
+            stop["retired"], 3,
+            "CLI, MOV, CPUID; HLT is outside the set"
+        );
+        // The profile is a subset of the target: not counted; the flag itself follows the request.
+        assert_eq!(value["acceptance"], "diagnostic_not_counted", "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4A");
+        assert_eq!(value["diagnostic_past_c7"], false);
+        assert_eq!(stop["diagnostic_past_c7"], false);
+        assert_eq!(
+            stop["set_members"],
+            json!([
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:X8664V1Stage4A",
+                "rdtsc",
+                "msr:EferReadOnlyV1(3328)",
+                "msr:fs_gs_base",
+                "msr:star_write",
+                "msr:lstar_write",
+                "msr:cstar_write",
+                "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
+                "pio_u8",
+                "sti",
+                "popf_cpl0",
+                "pci_config",
+                "irq"
+            ])
+        );
+    }
+
+    #[test]
+    fn default_profile_evidence_has_no_cpuid_profile_key() {
+        let (value, _) = cpuid_leaf_case("default-profile-evidence", 1, false);
+        assert!(value.get("cpuid_profile").is_none(), "{value:#}");
+        assert_eq!(value["acceptance"], "counted");
+        assert_eq!(value["stop"]["exit_kind"], "cpuid_divergence");
+    }
+
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
     /// instruction runs. Run with `-- --ignored` on a machine that has `work/stage4`.
     #[test]
@@ -1958,6 +2120,7 @@ mod tests {
             budget: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1999,6 +2162,7 @@ mod tests {
             budget: Some(1000),
             set_cpl0: false,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2047,6 +2211,7 @@ mod tests {
             budget: Some(30_000_000),
             set_cpl0: true,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");

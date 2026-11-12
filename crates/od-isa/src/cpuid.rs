@@ -3,6 +3,11 @@
 //! `DiagnosticV1` is a deliberately non-bootable diagnostic identity. Its
 //! feature masks are zero, so it is not an `x86-64-v1` CPU and is not an
 //! Ubuntu boot contract.
+//!
+//! `X8664V1Stage4A` (S4-38L9a) is the first named subset of the Linux board target
+//! `od-x86-64-v1-neutral-v0.1` (`docs/specs/CPU_CONTRACT.md`): it declares only the features whose
+//! behaviour the board's CPU set already implements (TSC, through `RDTSC`). It is not the full
+//! target table and not an Ubuntu boot contract.
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -18,11 +23,22 @@ pub struct CpuidResult {
 pub enum CpuidProfile {
     /// Local diagnostic identity with all CPUID feature masks disabled.
     DiagnosticV1,
+    /// Subset L9a of the Linux board target: `DiagnosticV1` plus the TSC bit
+    /// (CPUID.01H:EDX[4]) and nothing else. Every other feature bit of the target table (APIC,
+    /// PAT, SEP, ...) stays clear until the slice that implements its behaviour declares it.
+    X8664V1Stage4A,
 }
+
+/// CPUID.01H:EDX bit 4 (TSC); the bit position is from the Intel SDM, from memory.
+const LEAF1_EDX_TSC: u32 = 1 << 4;
 
 impl CpuidProfile {
     /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
+        let leaf1_edx = match self {
+            Self::DiagnosticV1 => 0,
+            Self::X8664V1Stage4A => LEAF1_EDX_TSC,
+        };
         match leaf {
             0 => CpuidResult {
                 eax: 1,
@@ -34,7 +50,7 @@ impl CpuidProfile {
                 eax: 0x600,
                 ebx: 0x100,
                 ecx: 0,
-                edx: 0,
+                edx: leaf1_edx,
             },
             0x8000_0000 => CpuidResult {
                 eax: 0x8000_0008,
@@ -128,6 +144,113 @@ mod tests {
                     expected,
                     "leaf={leaf:#x}, ecx={subleaf:#x}"
                 );
+            }
+        }
+    }
+
+    /// S4-38L9a. Oracles written by hand from the contract table (`CPU_CONTRACT.md`, row
+    /// `CPUID(1)`: EAX 0x600, EBX 0x100, ECX 0) and the SDM TSC bit (EDX bit 4), not from the
+    /// implementation.
+    #[test]
+    fn stage4a_leaf_1_declares_only_tsc() {
+        let leaf1 = CpuidProfile::X8664V1Stage4A.query(1, 0);
+        assert_eq!(leaf1.eax, 0x0000_0600);
+        assert_eq!(leaf1.ebx, 0x0000_0100);
+        assert_eq!(leaf1.ecx, 0);
+        assert_eq!(leaf1.edx, 0x0000_0010, "only EDX bit 4 (TSC)");
+        // Feature bits of the target table (0x0781A379) that this subset must not declare.
+        for (bit, name) in [
+            (0, "FPU"),
+            (3, "PSE"),
+            (5, "MSR"),
+            (6, "PAE"),
+            (8, "CX8"),
+            (9, "APIC"),
+            (11, "SEP"),
+            (13, "PGE"),
+            (15, "CMOV"),
+            (16, "PAT"),
+            (23, "MMX"),
+            (24, "FXSR"),
+            (25, "SSE"),
+            (26, "SSE2"),
+        ] {
+            assert_eq!(leaf1.edx & (1 << bit), 0, "{name} must not be declared");
+        }
+        // TSC-deadline (ECX bit 24) stays clear too.
+        assert_eq!(leaf1.ecx & (1 << 24), 0);
+    }
+
+    #[test]
+    fn stage4a_leaf_0_keeps_max_leaf_1_and_the_vendor() {
+        let leaf0 = CpuidProfile::X8664V1Stage4A.query(0, 0);
+        assert_eq!(leaf0.eax, 1);
+        assert_eq!(leaf0.ebx, u32::from_le_bytes(*b"Open"));
+        assert_eq!(leaf0.ecx, u32::from_le_bytes(*b"top "));
+        assert_eq!(leaf0.edx, u32::from_le_bytes(*b"Desk"));
+    }
+
+    #[test]
+    fn stage4a_unclaimed_leaves_are_zero_and_ecx_is_ignored() {
+        let profile = CpuidProfile::X8664V1Stage4A;
+        // 0x80000001 (SYSCALL/NX/LM of the target) is not declared by L9a: all zero.
+        let zero_leaves = [
+            2,
+            3,
+            4,
+            7,
+            0xB,
+            0x0D,
+            0x8000_0001,
+            0x8000_0002,
+            0x8000_0003,
+            0x8000_0004,
+            0x8000_0005,
+            0x8000_0006,
+            0x8000_0007,
+            0x8000_0009,
+            0x4000_0000,
+            u32::MAX,
+        ];
+        for leaf in zero_leaves {
+            for subleaf in [0, 1, u32::MAX] {
+                assert_eq!(
+                    profile.query(leaf, subleaf),
+                    CpuidResult::default(),
+                    "leaf={leaf:#x}, ecx={subleaf:#x}"
+                );
+            }
+        }
+        // The two extended leaves of the table are the same as in DiagnosticV1.
+        let max_ext = profile.query(0x8000_0000, 0);
+        assert_eq!(max_ext.eax, 0x8000_0008);
+        assert_eq!((max_ext.ebx, max_ext.ecx, max_ext.edx), (0, 0, 0));
+        let widths = profile.query(0x8000_0008, 0);
+        assert_eq!(widths.eax, 0x0000_3024);
+        assert_eq!((widths.ebx, widths.ecx, widths.edx), (0, 0, 0));
+        // ECX never changes any listed leaf.
+        for leaf in [0, 1, 0x8000_0000, 0x8000_0008] {
+            for subleaf in [1, 7, 0x1234_5678, u32::MAX] {
+                assert_eq!(
+                    profile.query(leaf, subleaf),
+                    profile.query(leaf, 0),
+                    "leaf={leaf:#x}, ecx={subleaf:#x}"
+                );
+            }
+        }
+    }
+
+    /// The new profile differs from `DiagnosticV1` in leaf 1 EDX only.
+    #[test]
+    fn stage4a_differs_from_diagnostic_v1_in_leaf_1_edx_only() {
+        for leaf in [0, 1, 2, 0x8000_0000, 0x8000_0001, 0x8000_0008, 0x8000_0009] {
+            let old = CpuidProfile::DiagnosticV1.query(leaf, 0);
+            let new = CpuidProfile::X8664V1Stage4A.query(leaf, 0);
+            if leaf == 1 {
+                assert_eq!((new.eax, new.ebx, new.ecx), (old.eax, old.ebx, old.ecx));
+                assert_eq!((old.edx, new.edx), (0, 0x10));
+            } else {
+                assert_eq!(new, old, "leaf={leaf:#x}");
             }
         }
     }
