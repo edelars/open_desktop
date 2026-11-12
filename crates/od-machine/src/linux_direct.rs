@@ -5360,6 +5360,23 @@ mod tests {
         assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
         assert_eq!(record.guest_star, 0x0023_0010_0000_0000);
 
+        // A real chain on one board: run 1 (guest WRMSR) stops by budget right after the write,
+        // run 2 on the same `boot` retires the rest and still reports the stored value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let first = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(first.retired, 4, "{first:?}");
+        assert_eq!(first.guest_star, 0x0023_0010_0000_0000);
+        assert_eq!(boot.board.guest_star(), 0x0023_0010_0000_0000);
+        let second = run_set_facade(&mut boot, &file, 1, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 1, "HLT");
+        assert_eq!(second.guest_star, 0x0023_0010_0000_0000);
+        assert_eq!(boot.board.guest_star(), 0x0023_0010_0000_0000);
+
         // Without the member the WRMSR is the stop (after MOV, XOR, MOV) and STAR stays 0.
         for members in [
             LinuxCpl0SetMembers::minimal(),
@@ -5465,16 +5482,17 @@ mod tests {
         assert_eq!(record.retired, 3);
         assert_eq!(boot.board.guest_efer(), 0xD00);
         assert_eq!(record.guest_efer, 0xD00);
-        // LSTAR is not EFER (STAR is admitted since S4-38L7ao): MOV ECX,0xC0000082; WRMSR is
-        // the stop as well.
-        let lstar = [0xB9, 0x82, 0x00, 0x00, 0xC0, 0x0F, 0x30];
-        let (mut boot, file) = boot_with_entry(&lstar);
+        // STAR is admitted since S4-38L7ao and the SYSCALL family (LSTAR, ...) is next, so the
+        // "other MSR" is IA32_APIC_BASE: MOV ECX,0x1B; WRMSR is the stop as well.
+        let apic_base = [0xB9, 0x1B, 0x00, 0x00, 0x00, 0x0F, 0x30];
+        let (mut boot, file) = boot_with_entry(&apic_base);
         let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
         assert_eq!(
             record.exit,
             PagedProbeExit::Unsupported { opcode: 0x30 },
             "{record:?}"
         );
+        assert_eq!(record.guest_efer, 0xD00);
         assert_eq!(record.retired, 1);
         assert_eq!(boot.board.guest_efer(), 0xD00);
     }

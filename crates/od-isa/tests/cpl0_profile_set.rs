@@ -7892,6 +7892,9 @@ fn wrmsr_star_with_prefixes_is_unsupported_without_mutation() {
         &[0xf2, 0x0f, 0x30],
         &[0x48, 0x0f, 0x30],
         &[0x40, 0x0f, 0x30],
+        &[0x2e, 0x0f, 0x30],
+        &[0x3e, 0x0f, 0x30],
+        &[0x67, 0x0f, 0x30],
     ] {
         let cell = Cell::new(0x77);
         let set = base().with_msr_star_write(&cell);
@@ -7912,21 +7915,39 @@ fn syscall_and_sysret_stay_unsupported_in_the_set_with_the_star_member() {
     // refused without mutation, also after a STAR write.
     let cell = Cell::new(0x0023_0010_0000_0000);
     let set = base().with_msr_star_write(&cell);
-    for code in [
-        &[0x0f, 0x05][..],
-        &[0x0f, 0x07],
-        &[0x48, 0x0f, 0x07],
-        &[0x48, 0x0f, 0x05],
+    for (code, opcode) in [
+        (&[0x0f, 0x05][..], 0x05u8),
+        (&[0x0f, 0x07], 0x07),
+        (&[0x48, 0x0f, 0x07], 0x07),
+        (&[0x48, 0x0f, 0x05], 0x05),
     ] {
         let (state, before, result) = run_star(&set, code, (STAR_MSR, 0, STAR_EDX), 1);
-        assert!(
-            matches!(exit(&result), RunExit::Unsupported { .. }),
-            "{code:02x?}: {:?}",
-            exit(&result)
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
         );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(cell.get(), 0x0023_0010_0000_0000);
+    }
+}
+
+#[test]
+fn wrmsr_with_the_star_low_half_but_another_index_is_unsupported_without_mutation() {
+    // ECX is a 32-bit index: the same low 16 bits with another index is another MSR.
+    let cell = Cell::new(0x77);
+    let set = base().with_msr_star_write(&cell);
+    for index in [0x0000_0081u64, 0xc001_0081, 0x0000_c081, 0xc000_0001] {
+        let (state, before, result) = run_star(&set, &WRMSR, (index, 0, STAR_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x77);
     }
 }
 
