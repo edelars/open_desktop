@@ -1294,6 +1294,32 @@
         "docs/specs/CPU_CONTRACT.md:11875-11888",
         "docs/reports/STAGE_2_REPORT.md:15752-15778"
       ]
+    },
+    {
+      "task": "S2-35.41 PSLLD XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/6 register form, no data-memory callback; CPL3/native/JIT/physical evidence is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.41",
+          "encoding": "66 [no REX or optional 41] 0F 72 /6 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSLLD XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/6; any unsigned imm8. Reject /2, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSLLD with unmasked unsigned dword shift count; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14269-14283",
+            "docs/specs/CPU_CONTRACT.md:11822-11836",
+            "docs/reports/STAGE_2_REPORT.md:15564-15595"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14269-14283",
+        "docs/specs/CPU_CONTRACT.md:11822-11836",
+        "docs/reports/STAGE_2_REPORT.md:15564-15595"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
