@@ -1,0 +1,58 @@
+[
+  {
+    "architecture": "arm64",
+    "filename": "cpio_2.15+dfsg-2.1_arm64.deb",
+    "package": "cpio",
+    "sha256": "7c42a7942c807e8b9fdbc79ffbcb8f107e1f0c4c1b5336375bbe989a1ba64e0b",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/c/cpio/cpio_2.15+dfsg-2.1_arm64.deb",
+    "version": "2.15+dfsg-2.1"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "kmod_34.2-2ubuntu2_arm64.deb",
+    "package": "kmod",
+    "sha256": "047184a7fe39fd3a66d5d379b92675ae9bcc027fc472e557c228a7933271d12d",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/k/kmod/kmod_34.2-2ubuntu2_arm64.deb",
+    "version": "34.2-2ubuntu2"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "libkmod2_34.2-2ubuntu2_arm64.deb",
+    "package": "libkmod2",
+    "sha256": "316b1b38662217a0948110c9263af9ec2d4bf71ca8ce6e36b9a315127bd291b3",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/k/kmod/libkmod2_34.2-2ubuntu2_arm64.deb",
+    "version": "34.2-2ubuntu2"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "libssl3t64_3.5.5-1ubuntu3_arm64.deb",
+    "package": "libssl3t64",
+    "sha256": "9ada8cf212787ead17a496fa39c3e727d7273b2e900da96aa921949d404b16bb",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/o/openssl/libssl3t64_3.5.5-1ubuntu3_arm64.deb",
+    "version": "3.5.5-1ubuntu3"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "libzstd1_1.5.7+dfsg-3_arm64.deb",
+    "package": "libzstd1",
+    "sha256": "af32dd47238a84108c46536baddb7f7b6b0ca7914707dfe1beb95f56ef3a37dd",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/libz/libzstd/libzstd1_1.5.7+dfsg-3_arm64.deb",
+    "version": "1.5.7+dfsg-3"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "openssl-provider-legacy_3.5.5-1ubuntu3_arm64.deb",
+    "package": "openssl-provider-legacy",
+    "sha256": "4b62817ee4b0bde35063f4d2c4c06d99fd1cf97a7bbb0b7725184bf22fafa45c",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/o/openssl/openssl-provider-legacy_3.5.5-1ubuntu3_arm64.deb",
+    "version": "3.5.5-1ubuntu3"
+  },
+  {
+    "architecture": "arm64",
+    "filename": "zstd_1.5.7+dfsg-3_arm64.deb",
+    "package": "zstd",
+    "sha256": "6b52d6d48ca352454b70178c21e0d3fb3c2f5c35c7e404aa4efff1914dfb361a",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/libz/libzstd/zstd_1.5.7+dfsg-3_arm64.deb",
+    "version": "1.5.7+dfsg-3"
+  }
+]

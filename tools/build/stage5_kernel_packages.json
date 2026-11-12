@@ -1,0 +1,16 @@
+[
+  {
+    "filename": "linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+    "package": "linux-image-7.0.0-38-generic",
+    "sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/l/linux-signed/linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+    "version": "7.0.0-38.38"
+  },
+  {
+    "filename": "linux-modules-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+    "package": "linux-modules-7.0.0-38-generic",
+    "sha256": "ad2fed69c4430fea2d67f23bd672a4e68773049cf9984a63894f093879ec2ae0",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/l/linux/linux-modules-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+    "version": "7.0.0-38.38"
+  }
+]
