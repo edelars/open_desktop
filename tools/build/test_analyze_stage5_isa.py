@@ -1326,6 +1326,65 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  403f00: {encoding} {operands}")
             self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
 
+    def test_s2_35_61_pmovmskb_matches_all_xmm_gpr_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.61-PMOVMSKB-XMM-source-GPR32-destination"
+        gprs = ("eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
+                "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d")
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f d7 {modrm:02x}"
+                operands = f"pmovmskb {gprs[destination]},xmm{source}"
+                row = analyzer.parse_row(f"  404100: {encoding} {operands}")
+                self.assertEqual(row["signature"], "pmovmskb r32,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  404200: 66 40 0f d7 c0 pmovmskb eax,xmm0")), expected)
+        rejected = (
+            ("0f d7 c0", "pmovmskb eax,mm0"),
+            ("0f d7 c0", "pmovmskb eax,xmm0"),
+            ("66 42 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("66 48 0f d7 c0", "pmovmskb rax,xmm0"),
+            ("66 4c 0f d7 c0", "pmovmskb r8d,xmm0"),
+            ("66 66 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("66 f2 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("66 f3 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("67 66 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("64 66 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("40 66 0f d7 c0", "pmovmskb eax,xmm0"),
+            ("66 0f d7 00", "pmovmskb eax,XMMWORD PTR [rax]"),
+            ("66 0f d7", "pmovmskb eax,xmm0"),
+            ("66 0f d7 c0 90", "pmovmskb eax,xmm0"),
+            ("c5 f9 d7 c0", "vpmovmskb eax,xmm0"),
+            ("62 f1 7d 08 d7 c0", "vpmovmskb eax,xmm0"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  404300: {encoding} {operands}")
+            self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
+
+    def test_s2_35_61_pmovmskb_registry_records_fresh_review_and_both_state_gate(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.61 PMOVMSKB XMM source to GPR32 register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("both raw x87 and SSE state", profile["gate"])
+        self.assertIn("fresh independent review for this bounded inventory slice", profile["gate"])
+        family = profile["families"][0]
+        self.assertIn("66 [one optional REX.R/B] 0F D7 /r", family["encoding"])
+        self.assertIn("REX.R extends the GPR32 destination", family["gate"])
+        self.assertIn("zero-extends into GPR64", family["outcome"])
+
     def test_s2_35_20_pcmpeqd_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

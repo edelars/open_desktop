@@ -1728,6 +1728,32 @@
         "docs/plans/STAGE_2.md:13806-13821",
         "docs/reports/STAGE_2_REPORT.md:14929-14957"
       ]
+    },
+    {
+      "task": "S2-35.61 PMOVMSKB XMM source to GPR32 register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice reviewed the existing decoder/executor/testkit and reran the focused suites; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-35.61",
+          "encoding": "66 [one optional REX.R/B] 0F D7 /r; ModR/M.mod=3; ModR/M.reg selects a GPR32 destination and ModR/M.r/m selects XMM0-XMM15 source",
+          "gate": "Exact legacy XMM-source PMOVMSKB register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends the GPR32 destination, REX.B extends the XMM source. Reject REX.W/X, memory, MMX source, extra prefixes and VEX/EVEX.",
+          "outcome": "local interpreter copies source byte bits 7 into the low 16 mask bits in byte order; the 32-bit GPR destination write zero-extends into GPR64; on success the destination GPR changes and RIP advances, while all other state is preserved; makes no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12492-12494",
+            "docs/plans/STAGE_2.md:14965-14967",
+            "docs/reports/STAGE_2_REPORT.md:16231-16233"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12492-12494",
+        "docs/plans/STAGE_2.md:14965-14967",
+        "docs/reports/STAGE_2_REPORT.md:16231-16233"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
