@@ -323,6 +323,7 @@ PSRLDQ_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 PSLLD_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 PSRLQ_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 PSRAW_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
+PSRLD_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 
 
 SIMD_LOGIC_NO_PREFIX_PROFILES = {
@@ -453,6 +454,25 @@ def pslld_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.41-PSLLD-XMM-immediate-register"
 
 
+def psrld_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-35.42 XMM register immediate form."""
+    if row["mnemonic"] != "psrld" or row["signature"] != "psrld xmm,imm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x72):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PSRLD_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3 or ((modrm >> 3) & 7) != 2:
+        return None
+    # Mandatory 66 + optional REX.B + 0F 72 /2 + full imm8 byte.
+    if len(row["byte_values"]) != len(prefixes) + 4:
+        return None
+    return "S2-35.42-PSRLD-XMM-immediate-register"
+
+
 def psrlq_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.45 XMM register immediate form."""
     if row["mnemonic"] != "psrlq" or row["signature"] != "psrlq xmm,imm":
@@ -580,6 +600,9 @@ def local_profile_candidate(row: dict) -> str | None:
     psraw_candidate = psraw_local_profile_candidate(row)
     if psraw_candidate is not None:
         return psraw_candidate
+    psrld_candidate = psrld_local_profile_candidate(row)
+    if psrld_candidate is not None:
+        return psrld_candidate
     psrlq_candidate = psrlq_local_profile_candidate(row)
     if psrlq_candidate is not None:
         return psrlq_candidate
