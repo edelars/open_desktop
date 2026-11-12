@@ -35211,6 +35211,9 @@ fn step_configured(
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        // S4-38L7az: and for the FS/GS-based OR m32/m64, r.
+        | Operation::OrFsMem { .. }
+        | Operation::OrGsMem { .. }
         // S4-38L7o: and for the FS/GS-based TEST m8, imm8.
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
@@ -49057,6 +49060,8 @@ fn step_configured(
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        | Operation::OrFsMem { .. }
+        | Operation::OrGsMem { .. }
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
         | Operation::TestFsMemWord { .. }
@@ -54437,6 +54442,39 @@ fn transfer(
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
+            state.rflags = flags;
+        }
+        Operation::OrFsMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7az: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before any access. The
+            // source register is read before the access. read -> write through the shared
+            // `logic_result` of the non-prefixed OR (CF = OF = 0, SF/ZF from the top bit, PF from
+            // the low byte of the result, AF kept); the result is written back even when it
+            // equals the old value and the flags commit only after the write succeeded, so a
+            // faulting write leaves memory and flags untouched. Nothing is written to a register.
+            let value = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::OrGsMem {
+            destination,
+            source,
+        } => {
+            let value = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
         Operation::TestFsMemByte { src, immediate } => {
