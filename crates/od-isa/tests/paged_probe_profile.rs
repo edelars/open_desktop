@@ -1993,6 +1993,39 @@ fn fs_gs_movsx_byte_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn fs_gs_mov_byte_store_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bb belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x88, 0x01][..],
+        &[0x64, 0x88, 0x01][..],
+        &[0x65, 0x40, 0x88, 0x31][..],
+        &[0x64, 0x88, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x88 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn paged_probe_profiles_keep_wrmsr_ia32_star_unsupported_and_pure() {
     // S4-38L7ao: the IA32_STAR write belongs to the CPL0 set only. Every paged probe profile
     // keeps `WRMSR` (ECX = 0xC000_0081, EDX:EAX = 0x0023_0010:0) refused with the opcode 0x30.
