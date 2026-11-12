@@ -35973,6 +35973,15 @@ fn step_configured(
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
         }
+        // S4-38L7am: LTR r/m16 (register form) reads the TSS descriptor from the modeled GDT;
+        // admitted only inside the CPL0 profile set at CPL0 in Long64 and only when a GDTR is
+        // modeled (no TR value is invented).
+        Operation::LoadTr { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gdtr.is_some()
+        }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
         Operation::Leave | Operation::FarReturn | Operation::IretQ => {
@@ -48854,6 +48863,18 @@ fn step_configured(
                 return report_memory_error(error);
             }
         }
+        Operation::LoadTr { source } => {
+            let selector = state.gpr[source as usize] as u16;
+            match load_tr_cpl0(state, memory, context, selector) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
+                Err(error) => return report_memory_error(error),
+            }
+        }
         Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
             // Null load (admitted by the CPL0 set only). The visible selector becomes 0 and
             // the register is marked unusable; the FS base MSR value and any modeled cache
@@ -52933,6 +52954,78 @@ fn load_sreg_cpl0(
             state.gs_unusable = false;
         }
     }
+    Ok(true)
+}
+
+/// `LTR r/m16` register form (`0F 00 /3`, mod = 11) inside the CPL0 profile set (S4-38L7am), at
+/// CPL0 in 64-bit mode with a modeled GDTR. The selector and descriptor rules are those of the
+/// bounded paged `LTR AX` (`prepare_paged_ltr_ax`, `validate_tss_descriptor`):
+///
+/// * a null selector (`selector & !3 == 0`) is `#GP(0)`; TI = 1 or a 16-byte entry beyond the GDT
+///   limit is `#GP(selector & !3)`; an overflowing or non-canonical descriptor address is `#GP(0)`;
+/// * after the 16-byte descriptor is read as two qwords: a type other than an available 64-bit TSS
+///   (a busy TSS, a non-system or other system descriptor) is `#GP(selector & !3)`, a not-present
+///   TSS is `#NP(selector & !3)`, a nonzero type field in the upper dword is `#GP(selector & !3)`,
+///   a non-canonical base is `#GP(0)`.
+///
+/// A descriptor whose 16 bytes would cross a page (`address & 0xfff > 0xff0`) is not modeled, as
+/// in the paged path: `Ok(false)` without any access. On success the busy bit is written back as
+/// one qword (the low half of the descriptor; the board adapter writes whole qwords) and only then
+/// TR (selector, base, limit, access with the busy bit, flags) is committed, so every error leaves
+/// the CPU state and the descriptor untouched. RIP is advanced by the caller.
+fn load_tr_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    selector: u16,
+) -> Result<bool, MemoryError> {
+    let Some(gdtr) = state.gdtr else {
+        return Ok(false);
+    };
+    let fault = |vector: u8, code: u32| {
+        MemoryError::Architectural(ArchitecturalFault {
+            vector,
+            error_code: Some(code),
+            linear_address: None,
+        })
+    };
+    if selector & !3 == 0 {
+        return Err(fault(13, 0));
+    }
+    let code = u32::from(selector & !3);
+    let table_offset = u64::from(selector & !7);
+    if selector & 4 != 0 || table_offset + 15 > u64::from(gdtr.limit) {
+        return Err(fault(13, code));
+    }
+    let Some(address) = gdtr.base.checked_add(table_offset) else {
+        return Err(fault(13, 0));
+    };
+    let Some(end) = address.checked_add(15) else {
+        return Err(fault(13, 0));
+    };
+    if !canonical(address) || !canonical(end) {
+        return Err(fault(13, 0));
+    }
+    if address & 0xfff > 0xff0 {
+        return Ok(false);
+    }
+    let table = context.descriptor_table();
+    let low = memory.read_integer(address, table, OperandSize::Qword)?;
+    let high = memory.read_integer(address + 8, table, OperandSize::Qword)?;
+    let mut descriptor = [0u8; 16];
+    descriptor[..8].copy_from_slice(&low.to_le_bytes());
+    descriptor[8..].copy_from_slice(&high.to_le_bytes());
+    let mut tr = crate::validate_tss_descriptor(PrivilegeLevel::Ring0, selector, gdtr, descriptor)
+        .map_err(MemoryError::Architectural)?;
+    descriptor[5] |= 2;
+    tr.access = descriptor[5];
+    memory.write_integer(
+        address,
+        table,
+        OperandSize::Qword,
+        u64::from_le_bytes(descriptor[..8].try_into().expect("eight bytes")),
+    )?;
+    state.tr = Some(tr);
     Ok(true)
 }
 
