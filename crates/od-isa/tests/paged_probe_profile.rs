@@ -1969,7 +1969,7 @@ fn paged_probe_profiles_keep_wrmsr_ia32_lstar_unsupported_and_pure() {
 #[test]
 fn paged_probe_profiles_keep_wrmsr_ia32_cstar_unsupported_and_pure() {
     // S4-38L7aq: the IA32_CSTAR write belongs to the CPL0 set only. Every paged probe profile
-    // keeps `WRMSR` (ECX = 0xC000_0082, EDX:EAX = 0xffff_ffff:0x8100_1ab0) refused with 0x30.
+    // keeps `WRMSR` (ECX = 0xC000_0083, EDX:EAX = 0xffff_ffff:0x8100_1ab0) refused with 0x30.
     fn cstar_state(cr3: Option<u64>) -> LongModeState {
         let mut cpu = state();
         cpu.cr3 = cr3;

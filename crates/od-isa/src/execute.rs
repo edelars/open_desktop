@@ -2197,8 +2197,8 @@ enum FxCr0GateControls {
 }
 
 /// S4-38L7ao/S4-38L7ap/S4-38L7aq: the guest-owned SYSCALL MSR cells of a set (IA32_STAR,
-/// IA32_LSTAR, IA32_CSTAR). One
-/// optional bundle, so that adding a SYSCALL MSR does not touch every `ExecutionProfiles` literal.
+/// IA32_LSTAR, IA32_CSTAR). One optional bundle, so that adding a SYSCALL MSR does not touch
+/// every `ExecutionProfiles` literal.
 #[derive(Clone, Copy)]
 struct SyscallMsrCells<'a> {
     star: Option<&'a Cell<u64>>,
@@ -2212,8 +2212,8 @@ struct ExecutionProfiles<'a> {
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
-    /// The set's write-only SYSCALL MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR); `None` outside a set or
-    /// when the set has none.
+    /// The set's write-only SYSCALL MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR); `None` outside
+    /// a set or when the set has none.
     syscall_msrs: Option<SyscallMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
@@ -33205,9 +33205,10 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap/S4-38L7aq: `WRMSR` of IA32_STAR / IA32_LSTAR / IA32_CSTAR stores EDX:EAX in the set's cell.
-        // No MSR profile handles these indexes, so every other form (RDMSR, a prefix, CPL > 0, a
-        // set without the member, any other index) falls through to the existing refusal below.
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq: `WRMSR` of IA32_STAR / IA32_LSTAR / IA32_CSTAR stores
+        // EDX:EAX in the set's cell. No MSR profile handles these indexes, so every other form
+        // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
+        // the existing refusal below.
         if instruction.operation == Operation::WriteMsr
             && let Some(cells) = syscall_msr_cells
             && let Some(cell) = match msr_index {

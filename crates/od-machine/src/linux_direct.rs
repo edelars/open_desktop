@@ -5455,22 +5455,20 @@ mod tests {
 
         // WRMSR of SYSCALL_MASK (0xC0000084) with the same values stays the stop, STAR untouched
         // (LSTAR is a member since S4-38L7ap and CSTAR since S4-38L7aq; SYSCALL_MASK is not).
-        for index in [0x84u8] {
-            let cstar = [
-                0xB9, index, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
-            ];
-            let (mut boot, file) = boot_with_entry(&cstar);
-            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
-            assert_eq!(
-                record.exit,
-                PagedProbeExit::Unsupported { opcode: 0x30 },
-                "{record:?}"
-            );
-            assert_eq!(record.retired, 3);
-            assert_eq!(record.guest_star, 0);
-            assert_eq!(record.guest_lstar, 0);
-            assert_eq!(record.guest_cstar, 0);
-        }
+        let mask = [
+            0xB9, 0x84, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
+        ];
+        let (mut boot, file) = boot_with_entry(&mask);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(record.guest_star, 0);
+        assert_eq!(record.guest_lstar, 0);
+        assert_eq!(record.guest_cstar, 0);
     }
 
     // ---- S4-38L7ap: WRMSR IA32_LSTAR through the board facade (write-only) ----
