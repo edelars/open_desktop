@@ -1,12 +1,22 @@
 # Методика стенда Linux (этап 5)
 
-Статус: **методика подготовлена, ожидает ревью; S5-01 пока неполон.** Срез задаёт формат и критерии будущих доказательств, но не сообщает о принятой загрузке или гостевом сценарии. Число повторов S5-15 и длительность S5-16 пока заблокированы недостающими измеренными входами; см. [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing).
+Статус: **Method gate готов к независимому ревью; Numeric calibration gate blocked; полный S5-01 blocked.** Срез задаёт формат и критерии будущих доказательств, но не сообщает о принятой загрузке или гостевом сценарии. Число повторов S5-15 и длительность S5-16 не назначены; см. [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing).
 
 Связанные документы: [план этапа 5](../plans/STAGE_5.md), [методика машины](MACHINE.md), [инвентаризация стенда](STAND.md), [базовая методика измерений](BENCHMARKS.md), [отчёт этапа 5](../reports/STAGE_5_REPORT.md).
 
 ## 1. Область и стенд
 
 Эта методика описывает сбор evidence для Linux guest workloads этапа 5: уровни unit/contract/scenario/repeatability/soak/measurement, формат одного прогона, правила сравнения результатов и границы временных оценок. Она не утверждает, что сценарий выполнен, и не переносит проверки с одного host или build на другой.
+
+### Два gates S5-01 и порядок работ
+
+**Method gate** содержит проверяемую evidence schema, pass/fail правила, workload/profile определения, критерии расхождений, формулы и порядок калибровки. Он готов к независимому ревью, но пока не принят. Его отдельное одобрение разрешает использовать методику для подготовки и одиночных функциональных проверок, не меняя checkbox или overall status S5-01.
+
+Для ревью Method gate проверяет, что: шесть уровней evidence имеют однозначные pass criteria; один run record задаёт все идентификаторы, конфигурацию, markers, observations, hashes, stop и артефакты; каждый workload имеет именованный профиль/входы; измерения `I_boot`, `W_boot`, `I_cycle`, `W_cycle` имеют определённые границы начала/конца и host/build fingerprint; формулы используют budgets, объявленные до калибровки; отсутствующее поле или prerequisite даёт `blocked`/`not_run`, а не pass. Этого достаточно для отдельных функциональных проверок и подготовки, но не для числового acceptance.
+
+**Numeric calibration gate** остаётся blocked до появления всех фактических входов: `I_boot`/`W_boot` из уже принятого S5-08 calibration boot path; `I_cycle`/`W_cycle` из уже принятого повторяемого C+D+G cycle после S5-10/11/14; и заранее заданных, обоснованных `B_series`/`B_soak`. Gate вычисляет `N`/`D_soak_estimate`; только его принятие вместе с Method gate позволяет принять полный S5-01.
+
+S5-06/07 могут готовить guest сценарии и evidence orchestration по Method gate. Одиночный функциональный сценарий можно выполнить по той же методике только после собственных prerequisites: S5-08 остаётся blocked до S4-39/S4-31; S5-09 — до принятия S7-16, PCI binding и IRQ route; C/D/G — до принятия S5-09 и относящихся к ним ISA/profile gates S5-21. Numeric gate не требуется для этих functional checks. Ограниченные повторы, требуемые собственными критериями задач (например, второй boot S5-08, повторная сборка S5-11 или явно заданный S5-07 smoke count), могут закрывать критерии именно этих задач, если полностью проверены. Они не задают приёмочный `N` S5-15 или soak target S5-16. S5-15 и S5-16 начинаются только после принятия Numeric gate и полного S5-01; их итоговые серии не используются для ретроактивного вычисления собственных бюджетов.
 
 По [инвентаризации стенда](STAND.md#основной-host) основной host — MacBook Pro с Apple M3 Max под macOS 26.7.1, arm64. Физический x86 oracle — отдельный Mac mini с Intel Core i5-3210M под Ubuntu 25.10. Это разные машины, ОС и цели проверки: результаты нельзя объединять в одну временную baseline. Каждая запись evidence фиксирует реальный host, ОС, архитектуру CPU, сборку runner, исходную ревизию и параметры guest machine.
 
@@ -76,21 +86,21 @@ T_C5_projection_at_R = I_C5_historical / R
 
 Число C5 — **историческая** baseline checkpoint, не текущий frontier. Stage 4 позднее достиг C7 на настоящем ядре; затем диагностический S4-38L7w прогон (DiagnosticV1, не засчитывается) достиг retired 1,185,015,387 и остановился на `IN AL, DX` ([план S4-38L7w](../plans/STAGE_4.md) и [raw evidence](../reports/data/stage4/s4-38l7w-diagnostic-run.json)). Это diagnostic progress, не подтверждённая загрузка Linux userspace. Отдельный release sample в Stage 4 сообщает около 2.8M instructions/s на 1.1B run; это другая сборка/измерение и его нельзя смешивать с S4-13 user-CPU rate или использовать как замену измерению целевого workload. C5 projection выше — только user-CPU estimate на historical checkpoint, не измеренный wall time и не время завершённой загрузки. Для масштаба уменьшенного diagnostic profile checkpoint 200,000,000 retired instructions соответствует 554 user-CPU-s (9 min 14 s). Он проверяет только bounded diagnostic evidence; **не** удовлетворяет S5-15, не подтверждает полный boot и не является soak для S5-16.
 
-Число одной завершённой загрузки не выводится из historical C5 checkpoint или более позднего diagnostic run. После подтверждения целевого guest path нужно измерить `I_boot` до заранее заданного гостевого success marker и wall time `W_boot` в выбранной host/build конфигурации. `I_boot / R` даёт лишь user-CPU estimate при сопоставимой скорости; runner обязан отдельно записать фактический wall elapsed.
+Число одной завершённой загрузки не выводится из historical C5 checkpoint или более позднего diagnostic run. После подтверждения и принятия целевого S5-08 guest path выполнить отдельный calibration run: измерить `I_boot` до заранее заданного гостевого success marker и wall time `W_boot` на зафиксированном host/build. Этот run — калибровочный вход, а не одна из повторных загрузок S5-15. `I_boot / R` даёт лишь user-CPU estimate при сопоставимой скорости; runner обязан отдельно записать фактический wall elapsed.
 
 ### S5-15: число повторов
 
-Пусть `B_series` — выделенный budget wall time серии, а `W_boot` — измеренный wall time одной и той же завершённой S5-15 загрузки при зафиксированных host/build/guest inputs. Тогда:
+Пусть `B_series` — заранее выделенный и обоснованный budget wall time серии, а `W_boot` — измеренный calibration wall time принятого S5-08 boot path при зафиксированных host/build/guest inputs. Число `N` можно вычислить до S5-15 из этого отдельного калибровочного прогона:
 
 ```text
 N = floor(B_series / W_boot), with N >= 2 for a comparison
 ```
 
-На дату этого документа числовой N не назначается: `I_boot`/`W_boot` отсутствуют, потому что S4-39 ещё не подтвердил целевой userspace marker, а budget серии не задан в планах стенда. Значит, серия S5-15 остаётся blocked/incomplete; сокращать N до произвольного числа нельзя.
+На дату этого документа числовой N не назначается: `I_boot`/`W_boot` отсутствуют, потому что S4-39 ещё не подтвердил целевой userspace marker, и `B_series` ещё не задан. Поэтому Numeric gate и полный S5-01 остаются blocked; S5-15 не стартует до их принятия. Сокращать N до произвольного числа нельзя.
 
 ### S5-16: длительность soak
 
-Сначала S5-10/S5-11/S5-14 фиксируют повторяемый mixed C+D+G cycle. После этого измеряются `I_cycle` (retired guest instructions) и `W_cycle` (wall time одной полной итерации) на выбранных host/build/inputs. Отдельно должен быть задан целевой soak budget `B_soak` с обоснованием и временным окном стенда. Тогда допустимо вычислить число циклов, покрывающее budget, и фактическую продолжительность:
+После принятия S5-10/S5-11/S5-14 их зафиксированные workload profiles составляют калибровочный mixed C+D+G cycle; порядок, начальное состояние, inputs, completion markers и граница цикла должны быть перечислены в calibration record, без изменений сценарных критериев. До запуска S5-16 отдельный calibration run измеряет `I_cycle` (retired guest instructions) и `W_cycle` (wall time одной полной итерации) на выбранных host/build/inputs. Отдельно заранее задаётся целевой soak budget `B_soak` с обоснованием и временным окном стенда. Эти входы позволяют пройти Numeric gate до самого soak:
 
 ```text
 K_estimate = ceil(B_soak / W_cycle)
@@ -100,9 +110,9 @@ T_cycle_user_estimate = I_cycle / R   # только user-CPU projection, не w
 
 `K_estimate` и `D_soak_estimate` — плановые оценки, а не фактические elapsed. Во время принятого soak time gate проверяет фактический wall elapsed и прекращает прогон после завершения текущего цикла, когда `elapsed >= B_soak`; записываются фактические `K_actual`, `elapsed_actual` и завершённые/незавершённые циклы. Они могут отличаться от estimate из-за разброса `W_cycle`; estimate нельзя выдавать за runtime evidence.
 
-Числовые `I_cycle`, `W_cycle`, `B_soak`, `K_estimate` и `D_soak_estimate` отсутствуют: сценарии C/D/G ещё не готовы, target budget не задан. Поэтому длительность S5-16 остаётся blocked/incomplete до измерения и обоснования этих входов; длительность нельзя назначать как круглое «overnight» число.
+Числовые `I_cycle`, `W_cycle`, `B_soak`, `K_estimate` и `D_soak_estimate` отсутствуют: принятый C+D+G cycle и target budget ещё не заданы. Поэтому Numeric gate, полный S5-01 и S5-16 остаются blocked; длительность нельзя назначать как круглое «overnight» число.
 
-Точный блокер и next step занесены в [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing). Его устранение требует результата S4-39, измеренного S5-15 guest path и отдельно заданного/измеренного C+D+G cycle + soak budget. Предварительные числа не объявляются приёмкой.
+Точный блокер и следующий порядок шагов занесены в [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing). `I_boot`/`W_boot` берутся из уже принятого S5-08 calibration path, а не из серии S5-15; `I_cycle`/`W_cycle` — из уже принятого C+D+G cycle, а не из S5-16. Предварительные числа не объявляются приёмкой.
 
 ## 6. Сопоставление guest и host hashes
 
