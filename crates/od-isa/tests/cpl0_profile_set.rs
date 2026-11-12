@@ -8064,6 +8064,38 @@ fn wrmsr_lstar_and_star_are_independent_cells_and_compose_with_the_other_members
 }
 
 #[test]
+fn a_single_syscall_msr_write_leaves_the_other_cell_untouched_with_both_members() {
+    // Both members present, sentinels in both cells: one WRMSR changes exactly one cell.
+    let star = Cell::new(0x1111_2222_3333_4444);
+    let lstar = Cell::new(0x5555_6666_7777_8888);
+    let set = base()
+        .with_msr_star_write(&star)
+        .with_msr_lstar_write(&lstar);
+    let (_, _, result) = run_star(&set, &WRMSR, (STAR_MSR, 0x0000_0001, 0x0000_0002), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(star.get(), 0x0000_0002_0000_0001);
+    assert_eq!(
+        lstar.get(),
+        0x5555_6666_7777_8888,
+        "LSTAR untouched by a STAR write"
+    );
+
+    let star = Cell::new(0x1111_2222_3333_4444);
+    let lstar = Cell::new(0x5555_6666_7777_8888);
+    let set = base()
+        .with_msr_star_write(&star)
+        .with_msr_lstar_write(&lstar);
+    let (_, _, result) = run_star(&set, &WRMSR, (LSTAR_MSR, 0x0000_0003, 0x0000_0004), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(lstar.get(), 0x0000_0004_0000_0003);
+    assert_eq!(
+        star.get(),
+        0x1111_2222_3333_4444,
+        "STAR untouched by an LSTAR write"
+    );
+}
+
+#[test]
 fn wrmsr_other_msrs_stay_unsupported_with_the_lstar_member() {
     // EFER (no profile in this set), STAR, CSTAR, SYSCALL_MASK, KERNEL_GS_BASE, FS/GS base (no
     // base member), APIC_BASE, SYSENTER_CS and an unknown index: refused with 0x30, the cell
