@@ -10628,15 +10628,15 @@ mod tests {
             }
         }
 
-        const IRQ_IDT_AT: u64 = DATA + 0x2000;
-        const IRQ_HANDLER_AT: u64 = ENTRY + 0x100;
-        const IRQ_VECTOR: u8 = 0x30;
+        pub(super) const IRQ_IDT_AT: u64 = DATA + 0x2000;
+        pub(super) const IRQ_HANDLER_AT: u64 = ENTRY + 0x100;
+        pub(super) const IRQ_VECTOR: u8 = 0x30;
         /// `CLD`: a one-byte instruction the minimal set retires.
-        const CLD: u8 = 0xFC;
+        pub(super) const CLD: u8 = 0xFC;
 
         /// A board whose entry is `code`, with an IDT whose gate `IRQ_VECTOR` is an interrupt gate
         /// to a handler of `CLD`s, IF = 1, the loader's `Clear` shadow and `Running` activity.
-        fn irq_board(code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+        pub(super) fn irq_board(code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
             let (mut boot, file) = boot_with_entry(code);
             write_phys(&mut boot, IRQ_HANDLER_AT, &[CLD; 8]);
             let mut gate = [0u8; 16];
@@ -11102,6 +11102,305 @@ mod tests {
             let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
             let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
             assert_eq!((record.retired, record.quanta), (6, 1));
+        }
+    }
+
+    // ---- S4-38L8c: the PIT -> IOAPIC INTIN2 source on a synthetic guest ----
+
+    /// The source of the board (PIT OUT0 -> IOAPIC INTIN2 -> Local APIC) driven by a flat guest
+    /// that programs the PIT with its own `OUT`s and idles in `JMP $`. The guest cannot touch the
+    /// Local APIC or the IOAPIC (the set loop has RAM and ports only), so the host writes entry 2
+    /// and SVR before the run and the EOI between the chunks of the run, through the same device
+    /// registers a guest store would reach.
+    mod irq_pit_source {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
+        use super::*;
+        use crate::irq_source::BoardIrqSource;
+        use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
+        use crate::{AccessWidth, IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE, pit_ticks};
+        use od_isa::StiProfile;
+
+        const PIT_HZ: u64 = 1_193_182;
+        const MASKED: u64 = 1 << 16;
+        /// `IRETQ`.
+        const IRETQ: [u8; 2] = [0x48, 0xCF];
+        /// `JMP $`.
+        const SPIN: [u8; 2] = [0xEB, 0xFE];
+        /// Instructions per call of the board loop; one instruction is one ns, so the chunk is
+        /// far inside one PIT period of the tests (the EOI latency of the host).
+        const CHUNK: u64 = 500;
+
+        /// The deadline of the PIT tick, by hand: `ceil(tick * 1e9 / 1_193_182)`.
+        fn deadline(tick: u64) -> u64 {
+            (tick * 1_000_000_000).div_ceil(PIT_HZ)
+        }
+
+        /// `MOV AL, control; MOV DX, 0x43; OUT DX, AL; MOV AL, lo; MOV DX, 0x40; OUT DX, AL;
+        /// MOV AL, hi; OUT DX, AL`.
+        fn program(control: u8, n: u16) -> Vec<u8> {
+            vec![
+                0xB0,
+                control,
+                0x66,
+                0xBA,
+                0x43,
+                0x00,
+                0xEE,
+                0xB0,
+                n as u8,
+                0x66,
+                0xBA,
+                0x40,
+                0x00,
+                0xEE,
+                0xB0,
+                (n >> 8) as u8,
+                0xEE,
+            ]
+        }
+
+        /// `MOV AL, 0x30; MOV DX, 0x43; OUT DX, AL`: channel 0 mode 0 without a count.
+        const SHUTDOWN: [u8; 7] = [0xB0, 0x30, 0x66, 0xBA, 0x43, 0x00, 0xEE];
+
+        fn mmio_write(boot: &mut LinuxDirectBoot, address: u64, value: u64) {
+            boot.board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .expect("the register accepts the write");
+        }
+
+        /// The board of `irq_board` with an `IRETQ` handler, the source installed, SVR enabled and
+        /// entry 2 (`entry2`) in the IOAPIC.
+        fn pit_board(code: &[u8], entry2: u64) -> (LinuxDirectBoot, PitIoapicIrqSource) {
+            let (mut boot, _) = irq_board(code);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &IRETQ);
+            let source = boot
+                .board
+                .pit_ioapic_irq_source()
+                .expect("the Linux board has a PIT");
+            boot.board.set_irq_source(Box::new(source.clone()));
+            mmio_write(&mut boot, LOCAL_APIC_MMIO_BASE + 0xF0, 0x1ff);
+            mmio_write(&mut boot, IO_APIC_MMIO_BASE, 0x14);
+            mmio_write(&mut boot, IO_APIC_MMIO_BASE + 0x10, entry2);
+            (boot, source)
+        }
+
+        fn vector_state(boot: &LinuxDirectBoot) -> (bool, bool) {
+            boot.board.local_apic().vector_state(IRQ_VECTOR)
+        }
+
+        #[derive(Debug, Default)]
+        struct Totals {
+            delivered: u64,
+            refused_masked: u64,
+            cut_by_deadline: u64,
+            quanta: u64,
+        }
+
+        /// Runs the board loop in chunks until the clock is at `until_ns`; with `eoi` the host
+        /// writes the Local APIC EOI register after each chunk that left a vector in service.
+        fn run_until(boot: &mut LinuxDirectBoot, until_ns: u64, eoi: bool) -> Totals {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_sti(&sti);
+            let mut totals = Totals::default();
+            while boot.board.clock().now_ns() < until_ns {
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(CHUNK, &set, false, false, true)
+                    .expect("runs");
+                assert_eq!(
+                    report.run.exit,
+                    PagedProbeExit::BudgetExhausted,
+                    "{report:?}"
+                );
+                totals.delivered += report.irq.irqs_delivered;
+                totals.refused_masked += report.irq.irq_refused_masked;
+                totals.cut_by_deadline += report.irq.quantum_cut_by_deadline;
+                totals.quanta += report.run.quanta;
+                if eoi && vector_state(boot).1 {
+                    mmio_write(boot, LOCAL_APIC_MMIO_BASE + 0xB0, 0);
+                }
+            }
+            totals
+        }
+
+        /// Edges of a mode 2 count of `n` ticks loaded at `t0` whose deadline is `<= now`.
+        fn edges_due(t0: u64, n: u64, now: u64) -> u64 {
+            (1..).take_while(|k| deadline(t0 + k * n) <= now).count() as u64
+        }
+
+        #[test]
+        fn the_helper_formula_matches_the_model_tick_function() {
+            for tick in [1, 4, 10, 1003, 1_000_000] {
+                assert_eq!(pit_ticks(deadline(tick)), tick);
+                assert!(pit_ticks(deadline(tick) - 1) < tick);
+            }
+        }
+
+        #[test]
+        fn the_board_gives_a_source_because_it_has_the_linux_profile_pit() {
+            let (boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.pit_ioapic_irq_source().is_some());
+        }
+
+        #[test]
+        fn a_thousand_periods_give_a_thousand_vectors_with_an_eoi_and_an_iretq_each() {
+            let n = 4u16;
+            let mut code = program(0x34, n);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // The count is loaded by the guest's own OUTs in the first microseconds.
+            let mut totals = run_until(&mut boot, 1000, true);
+            let run = source.channel0_run().expect("loaded by the guest");
+            assert_eq!(run.reload, u32::from(n));
+            let t0 = run.start_tick;
+            let until = deadline(t0 + 1000 * u64::from(n)) + 1000;
+            let rest = run_until(&mut boot, until, true);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 1000, "{totals:?} {rest:?}");
+            let stats = source.stats();
+            assert_eq!(stats.edges, 1000);
+            assert_eq!(stats.acknowledged, 1000);
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0)
+            );
+            // The IRETQ circle is balanced: stack, IF and the spin loop are as before.
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert!(
+                state.rip == IRQ_HANDLER_AT
+                    || (ENTRY..ENTRY + code.len() as u64).contains(&state.rip),
+                "rip {:#x}",
+                state.rip
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+            assert!(rest.cut_by_deadline >= 990, "{rest:?}");
+            assert_eq!(rest.refused_masked, 0);
+        }
+
+        #[test]
+        fn without_an_eoi_the_second_irq_is_not_delivered() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, false);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 40) + 1000, false);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 1, "{totals:?}");
+            // Four edges happened; the vector is in service and one request waits in IRR.
+            assert_eq!(source.stats().edges, 4);
+            assert_eq!(vector_state(&boot), (true, true));
+            // The EOI delivers exactly the one coalesced request.
+            mmio_write(&mut boot, LOCAL_APIC_MMIO_BASE + 0xB0, 0);
+            let now = boot.board.clock().now_ns();
+            let rest = run_until(&mut boot, now + 100, false);
+            assert_eq!(rest.delivered, 1, "{rest:?}");
+        }
+
+        #[test]
+        fn a_masked_entry_delivers_nothing_and_the_edges_are_lost() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, MASKED | u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 40) + 1000, true);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 0);
+            assert_eq!(totals.refused_masked + rest.refused_masked, 0);
+            assert_eq!(
+                source.stats().edges,
+                4,
+                "the edges are presented and lost at the IOAPIC"
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+        }
+
+        #[test]
+        fn a_pit_shutdown_leaves_no_event_and_no_delivery() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SHUTDOWN);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let totals = run_until(&mut boot, 300_000, true);
+            assert_eq!(totals.delivered, 0);
+            assert_eq!(source.next_deadline_ns(), None);
+            assert_eq!(source.queued(), 0);
+            assert_eq!(source.channel0_run(), None);
+            let stats = source.stats();
+            // Control word (mode, no count), the loaded count, then the shutdown word.
+            assert_eq!(
+                (stats.edges, stats.cancelled, stats.generation_changes),
+                (0, 1, 3)
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+        }
+
+        #[test]
+        fn a_reprogram_cancels_the_old_generation_and_the_new_period_gives_the_edges() {
+            let mut code = program(0x34, 1003);
+            code.extend_from_slice(&program(0x34, 10));
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let run = source.channel0_run().expect("the new count");
+            assert_eq!(run.reload, 10);
+            let t0 = run.start_tick;
+            // Past the first edge of the old count (about t0 + 1003 ticks, 840 us).
+            let rest = run_until(&mut boot, deadline(t0 + 1010) + 1000, true);
+            totals.delivered += rest.delivered;
+            let now = boot.board.clock().now_ns();
+            assert!(now > deadline(t0 + 1004), "the old first edge is behind");
+            // The question applies the last due edge, as the loop would at its next boundary.
+            let _ = source.next_deadline_ns();
+            let expected = edges_due(t0, 10, now);
+            assert!(expected >= 100);
+            let stats = source.stats();
+            assert_eq!(stats.edges, expected, "only the new period gives edges");
+            assert!(stats.cancelled >= 1);
+            // Every edge but the last (applied after the final chunk) was delivered once.
+            assert!(totals.delivered + 1 >= expected, "{totals:?}");
+            assert!(totals.delivered <= expected, "{totals:?}");
+        }
+
+        #[test]
+        fn with_if_clear_the_vector_is_refused_and_the_deadline_never_falls_behind() {
+            let mut code = program(0x34, 10);
+            code.push(0xFA); // CLI
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 200) + 1000, true);
+            totals.delivered += rest.delivered;
+            totals.quanta += rest.quanta;
+            assert_eq!(totals.delivered, 0);
+            assert!(rest.refused_masked > 0, "{rest:?}");
+            assert_eq!(boot.board.state().rflags & (1 << 9), 0);
+            assert_eq!(vector_state(&boot), (true, false), "waiting in IRR");
+            // About one quantum per edge (plus the PIT writes and the chunk ends): a deadline in
+            // the past would cut every quantum to one instruction.
+            let chunks = boot.board.clock().now_ns() / CHUNK + 1;
+            assert!(
+                totals.quanta <= source.stats().edges + chunks + 8,
+                "{totals:?}"
+            );
+            let next = source.next_deadline_ns().expect("the next edge");
+            assert!(next > boot.board.clock().now_ns());
         }
     }
 }

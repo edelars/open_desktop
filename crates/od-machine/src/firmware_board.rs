@@ -12,6 +12,7 @@ use crate::paged_memory_adapter::{
     IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
+use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -1086,10 +1087,32 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
-    /// Test injection (S4-38L8b): replaces the board's interrupt source.
-    #[cfg(test)]
+    /// Replaces the board's interrupt source (S4-38L8b). Nothing in production code calls it
+    /// yet: the board has [`NoIrqSource`] by default and the runner has no flag for a source
+    /// (S4-38L8c).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_irq_source(&mut self, source: Box<dyn BoardIrqSource>) {
         self.irq_source = source;
+    }
+
+    /// A source of the PIT channel 0 line through the IOAPIC INTIN2 and the Local APIC of this
+    /// board (S4-38L8c), on the board clock; `None` without the Linux profile (no PIT). It is not
+    /// installed: the caller gives it to [`Self::set_irq_source`] (a clone of it stays a handle
+    /// for the counters). The board does this for no run today: the Linux board has no APIC in
+    /// CPUID, and a synthetic guest or a test installs the source itself.
+    ///
+    /// The IOAPIC handle is made from the Local APIC handle the way `assemble_board` makes the
+    /// IOAPIC device: both views share one pair state.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pit_ioapic_irq_source(&self) -> Option<PitIoapicIrqSource> {
+        let pit = self.pit.clone()?;
+        let io_apic = IoApic::new(self.lapic.clone()).handle();
+        Some(PitIoapicIrqSource::new(
+            pit,
+            io_apic,
+            self.lapic.clone(),
+            self.clock.clone(),
+        ))
     }
 
     /// True under `linux_profile`: the RDTSC time source (and with it the tick) exists only
@@ -4283,6 +4306,13 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.virtual_ns, 1);
         assert_eq!(board.clock().now_ns(), 1);
+    }
+
+    #[test]
+    fn the_pit_ioapic_irq_source_exists_only_with_the_linux_profile_pit() {
+        // S4-38L8c: no PIT, no source; the board's own source stays the empty one.
+        assert!(load(&hlt_image()).pit_ioapic_irq_source().is_none());
+        assert!(linux_board().pit_ioapic_irq_source().is_some());
     }
 
     #[test]
