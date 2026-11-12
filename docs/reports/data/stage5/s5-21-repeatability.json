@@ -14,12 +14,12 @@
   "runs": [
     {
       "output": "work/stage5/s5-21/s5-21-isa-inventory-rootfs-profile-expansion.json",
-      "sha256": "b3d765a24b7e433abe6289027a97895bb31a092f322077488788d7f11b86a2de",
+      "sha256": "217b6c6d8469eb582c7baddc3b72eda4b39d729371009da74003a5c49e11db2e",
       "exit_code": 0
     },
     {
-      "output": "/private/tmp/s5-21-inventory-pxor-rootfs-final2.json",
-      "sha256": "b3d765a24b7e433abe6289027a97895bb31a092f322077488788d7f11b86a2de",
+      "output": "/private/tmp/s5-21-inventory-punpck-rootfs-final2.json",
+      "sha256": "217b6c6d8469eb582c7baddc3b72eda4b39d729371009da74003a5c49e11db2e",
       "exit_code": 0
     }
   ],
@@ -32,11 +32,11 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6280750,
-      "unclassified": 229650
+      "proven_supported": 6292473,
+      "unclassified": 217927
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6278399,
+      "local_interpreter_profile": 6290122,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
@@ -61,16 +61,37 @@
     "pxor_xmm_xmm_normalized_forms": 2,
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
-    "classified_normalized_forms": 1009,
-    "unclassified_normalized_forms": 260
+    "classified_normalized_forms": 1023,
+    "unclassified_normalized_forms": 246,
+    "punpck_register_rows": 11723,
+    "punpck_local_profile_normalized_forms": 14,
+    "punpck_register_rows_by_profile": {
+      "S2-35.24-PUNPCKLBW": 5,
+      "S2-35.25-PUNPCKHBW": 5,
+      "S2-35.26-PUNPCKLWD": 1126,
+      "S2-35.27-PUNPCKHWD": 50,
+      "S2-35.28-PUNPCKLDQ": 625,
+      "S2-35.29-PUNPCKHDQ": 6,
+      "S2-35.30-PUNPCKLQDQ": 9877,
+      "S2-35.31-PUNPCKHQDQ": 29
+    },
+    "punpck_memory_unclassified_rows": 53,
+    "punpck_memory_unclassified_forms": 7,
+    "punpck_memory_rows_by_signature": {
+      "punpcklwd xmm,mem128": 24,
+      "punpckhwd xmm,mem128": 24,
+      "punpcklqdq xmm,mem128": 4,
+      "punpckhqdq xmm,mem128": 1
+    },
+    "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence"
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "5aa05907e72302c3e663834fd638f04ebe439ea966fe1883be79bf273388ede1",
-    "size_bytes": 998775,
+    "sha256": "2308d7b05aa64916794434a2cb6a0b5e26baf902d2063965bc21eb89b0ec6794",
+    "size_bytes": 1001429,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-pxor-rootfs-final1.json /private/tmp/s5-21-inventory-pxor-rootfs-evidence1.json.gz",
-    "repeat_sha256": "5aa05907e72302c3e663834fd638f04ebe439ea966fe1883be79bf273388ede1",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-punpck-rootfs-final1.json /private/tmp/s5-21-evidence-punpck-rootfs-final1.json.gz",
+    "repeat_sha256": "2308d7b05aa64916794434a2cb6a0b5e26baf902d2063965bc21eb89b0ec6794",
     "repeat_cmp_exit_code": 0
   },
   "limits": [
@@ -79,6 +100,7 @@
     "Candidate labels are non-exclusive and do not upgrade support; 40 rows have both a conditional candidate label and a supported local-profile classification.",
     "Scenario E JIT/SMC machine-code output is runtime-generated and is not inferred from these static executables.",
     "S2-35.1 matches only the exact local interpreter PXOR XMM register-register profile: 3,305 rows across two normalized forms; five observed PXOR XMM-memory rows remain unclassified. This does not establish machine CPL3/native/JIT support.",
-    "The two raw and compact outputs were produced from the same accepted rootfs and frozen analyzer/registry; only output paths differ. No target ELF was executed."
+    "The two raw and compact outputs were produced from the same accepted rootfs and frozen analyzer/registry; only output paths differ. No target ELF was executed.",
+    "S2-35.24–.31 matches only eight exact local interpreter XMM register-register profiles: 11,723 rows in 14 normalized forms. Fifty-three observed XMM-memory PUNPCK rows in seven forms remain unclassified. No machine CPL3/native/physical support is inferred."
   ]
 }

@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-pxor-e-final1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-pxor-e-final2.json",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-punpck-e-final1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-punpck-e-final2.json",
     "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-e-static-profile-expansion.json",
-    "compact_inventory_sha256": "e5e829878d2c58e22b7fca3a5ba9b6e25ab0f390d80fbdb1654630d0433add74",
+    "compact_inventory_sha256": "dfbdb1cbf2f9cfb4fc012a72f2e0e7873a9b5dfc660e1938b9a0c2326406c479",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "e70ab07649fc6eac0e29dbf6b558eb10383e754301bf1620e4eb4fa3959b86eb",
+    "raw_inventory_sha256": "4a389c52050c3f90ad002954bde8a26d87b1e8f1fe12ff9d30ada3942765235f",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,44 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1009,
-    "unclassified_normalized_forms": 260,
+    "classified_normalized_forms": 1023,
+    "unclassified_normalized_forms": 246,
     "classification_frequencies": {
-      "proven_supported": 6281034,
-      "unclassified": 229711
+      "proven_supported": 6292757,
+      "unclassified": 217988
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6278683,
+      "local_interpreter_profile": 6290406,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "e5e829878d2c58e22b7fca3a5ba9b6e25ab0f390d80fbdb1654630d0433add74",
+    "compact_repeat_sha256": "dfbdb1cbf2f9cfb4fc012a72f2e0e7873a9b5dfc660e1938b9a0c2326406c479",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-pxor-e-final1.json /private/tmp/s5-21-inventory-pxor-e-evidence1.json.gz"
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-punpck-e-final1.json /private/tmp/s5-21-evidence-punpck-e-final1.json.gz",
+    "punpck_register_rows": 11723,
+    "punpck_local_profile_normalized_forms": 14,
+    "punpck_register_rows_by_profile": {
+      "S2-35.24-PUNPCKLBW": 5,
+      "S2-35.25-PUNPCKHBW": 5,
+      "S2-35.26-PUNPCKLWD": 1126,
+      "S2-35.27-PUNPCKHWD": 50,
+      "S2-35.28-PUNPCKLDQ": 625,
+      "S2-35.29-PUNPCKHDQ": 6,
+      "S2-35.30-PUNPCKLQDQ": 9877,
+      "S2-35.31-PUNPCKHQDQ": 29
+    },
+    "punpck_memory_unclassified_rows": 53,
+    "punpck_memory_unclassified_forms": 7,
+    "punpck_memory_rows_by_signature": {
+      "punpcklwd xmm,mem128": 24,
+      "punpckhwd xmm,mem128": 24,
+      "punpcklqdq xmm,mem128": 4,
+      "punpckhqdq xmm,mem128": 1
+    },
+    "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence"
   },
   "unchanged_rootfs_binary_inputs": true
 }

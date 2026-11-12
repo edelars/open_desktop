@@ -257,6 +257,87 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertEqual(len(profile["families"]), 1)
         self.assertTrue(profile["families"][0]["encoding"].startswith("66 [one optional REX.R/B] 0F EF /r; ModR/M.mod=3"))
 
+    def test_s2_35_24_to_31_punpck_matches_only_all_exact_xmm_register_forms(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        allowed_rex = (None, 0x40, 0x41, 0x44, 0x45)
+
+        for opcode, (mnemonic, task) in analyzer.PUNPCK_LOCAL_PROFILES.items():
+            for destination in range(16):
+                for source in range(16):
+                    modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                    for rex in allowed_rex:
+                        prefix = "66" if rex is None else f"66 {rex:02x}"
+                        encoding = f"{prefix} 0f {opcode:02x} {modrm:02x}"
+                        operands = f"xmm{destination},xmm{source}"
+                        row = analyzer.parse_row(f"  401500: {encoding} {mnemonic} {operands}")
+                        self.assertEqual(row["signature"], f"{mnemonic} xmm,xmm", encoding)
+                        self.assertEqual(analyzer.local_profile_candidate(row), task, encoding)
+                        self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+            # Exercise all 256 ModR/M values under each legal prefix shape.
+            # Only mod=3 is register-register; every memory addressing mode is denied.
+            for modrm in range(0xC0):
+                for rex in allowed_rex:
+                    prefix = "66" if rex is None else f"66 {rex:02x}"
+                    encoding = f"{prefix} 0f {opcode:02x} {modrm:02x}"
+                    row = analyzer.parse_row(f"  401600: {encoding} {mnemonic} xmm0,XMMWORD PTR [rax]")
+                    self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+            for rex in range(0x40, 0x50):
+                if rex in {0x40, 0x41, 0x44, 0x45}:
+                    continue
+                encoding = f"66 {rex:02x} 0f {opcode:02x} c1"
+                row = analyzer.parse_row(f"  401700: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+            for encoding in (
+                f"0f {opcode:02x} c1",  # mandatory 66 absent: MMX or unsupported.
+                f"66 66 0f {opcode:02x} c1",
+                f"66 67 0f {opcode:02x} c1",
+                f"66 f0 0f {opcode:02x} c1",
+                f"66 f2 0f {opcode:02x} c1",
+                f"66 f3 0f {opcode:02x} c1",
+                f"66 2e 0f {opcode:02x} c1",
+                f"66 36 0f {opcode:02x} c1",
+                f"66 3e 0f {opcode:02x} c1",
+                f"66 26 0f {opcode:02x} c1",
+                f"66 64 0f {opcode:02x} c1",
+                f"66 65 0f {opcode:02x} c1",
+                f"41 66 0f {opcode:02x} c1",  # REX before mandatory 66.
+                f"66 41 44 0f {opcode:02x} c1",  # multiple REX bytes.
+                f"66 0f {opcode:02x}",
+                f"66 0f {opcode:02x} c1 90",
+                f"c5 f9 {opcode:02x} c1",  # VEX.
+                f"62 f1 7d 08 {opcode:02x} c1",  # EVEX.
+            ):
+                row = analyzer.parse_row(f"  401800: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+            for other_opcode in analyzer.PUNPCK_LOCAL_PROFILES:
+                if other_opcode == opcode:
+                    continue
+                encoding = f"66 0f {other_opcode:02x} c1"
+                row = analyzer.parse_row(f"  401900: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_24_to_31_registry_is_local_only_and_memory_free(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.24–.31 PUNPCK XMM register-only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("no CPUID, exception-delivery, native/JIT, physical-execution, or machine-CPL evidence", profile["gate"])
+        self.assertEqual([f["task"] for f in profile["families"]], [
+            "S2-35.24", "S2-35.25", "S2-35.26", "S2-35.27",
+            "S2-35.28", "S2-35.29", "S2-35.30", "S2-35.31",
+        ])
+        for family in profile["families"]:
+            self.assertIn("ModR/M.mod=3", family["encoding"])
+            self.assertIn("memory operands", family["gate"])
+
     def test_l7x_as_candidates_are_cpl0_only_and_index_safe(self) -> None:
         cases = (
             ("f0 0f b1 0b", "lock cmpxchg DWORD PTR [rbx],ecx", "S4-38L7y-LOCK-CMPXCHG-dword"),

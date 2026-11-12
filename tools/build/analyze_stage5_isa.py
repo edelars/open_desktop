@@ -297,6 +297,51 @@ def _widths_allowed(task: str, row: dict) -> bool:
     return True
 
 
+PUNPCK_LOCAL_PROFILES = {
+    0x60: ("punpcklbw", "S2-35.24-PUNPCKLBW"),
+    0x68: ("punpckhbw", "S2-35.25-PUNPCKHBW"),
+    0x61: ("punpcklwd", "S2-35.26-PUNPCKLWD"),
+    0x69: ("punpckhwd", "S2-35.27-PUNPCKHWD"),
+    0x62: ("punpckldq", "S2-35.28-PUNPCKLDQ"),
+    0x6A: ("punpckhdq", "S2-35.29-PUNPCKHDQ"),
+    0x6C: ("punpcklqdq", "S2-35.30-PUNPCKLQDQ"),
+    0x6D: ("punpckhqdq", "S2-35.31-PUNPCKHQDQ"),
+}
+PUNPCK_LOCAL_PROFILES_BY_MNEMONIC = {
+    mnemonic: (opcode, profile)
+    for opcode, (mnemonic, profile) in PUNPCK_LOCAL_PROFILES.items()
+}
+PUNPCK_ALLOWED_PREFIXES = {
+    (0x66,),
+    (0x66, 0x40),
+    (0x66, 0x41),
+    (0x66, 0x44),
+    (0x66, 0x45),
+}
+
+
+def punpck_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted local XMM register-register PUNPCK slices."""
+    entry = PUNPCK_LOCAL_PROFILES_BY_MNEMONIC.get(row["mnemonic"])
+    if entry is None:
+        return None
+    opcode, profile = entry
+    if row["signature"] != f"{row['mnemonic']} xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, opcode):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PUNPCK_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return profile
+
+
 def pxor_local_profile_candidate(row: dict) -> str | None:
     """Match accepted S2-35.1 XMM register-only PXOR, never MMX or memory."""
     if row["mnemonic"] != "pxor" or row["signature"] != "pxor xmm,xmm":
@@ -383,6 +428,9 @@ def movups_local_profile_candidate(row: dict) -> str | None:
 
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    punpck_candidate = punpck_local_profile_candidate(row)
+    if punpck_candidate is not None:
+        return punpck_candidate
     pxor_candidate = pxor_local_profile_candidate(row)
     if pxor_candidate is not None:
         return pxor_candidate
