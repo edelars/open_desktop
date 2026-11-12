@@ -892,6 +892,66 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("F2 is mandatory and is not REPNE", family["gate"])
         self.assertIn("no CPL3/native/JIT/physical claim", profile["gate"])
 
+    def test_s2_35_21_pcmpgtb_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.21-PCMPGTB-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 64 {modrm:02x}"
+                operands = f"pcmpgtb xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  402f00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "pcmpgtb xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        neutral_rex = analyzer.parse_row("  403100: 66 40 0f 64 c1 pcmpgtb xmm0,xmm1")
+        self.assertEqual(analyzer.local_profile_candidate(neutral_rex), expected)
+
+        rejected = (
+            ("0f 64 c1", "pcmpgtb mm0,mm1"),  # bare MMX.
+            ("0f 64 c1", "pcmpgtb xmm0,xmm1"),  # missing mandatory 66.
+            ("66 42 0f 64 c1", "pcmpgtb xmm0,xmm1"),  # REX.X.
+            ("66 48 0f 64 c1", "pcmpgtb xmm0,xmm1"),  # REX.W.
+            ("66 4c 0f 64 c1", "pcmpgtb xmm0,xmm1"),  # REX.R/W.
+            ("66 66 0f 64 c1", "pcmpgtb xmm0,xmm1"),  # duplicate prefix.
+            ("66 f2 0f 64 c1", "pcmpgtb xmm0,xmm1"),
+            ("66 f3 0f 64 c1", "pcmpgtb xmm0,xmm1"),
+            ("67 66 0f 64 c1", "pcmpgtb xmm0,xmm1"),
+            ("44 66 0f 64 c1", "pcmpgtb xmm0,xmm1"),  # REX before 66.
+            ("66 0f 64 01", "pcmpgtb xmm0,XMMWORD PTR [rcx]"),  # memory mod=0.
+            ("66 0f 64 41 00", "pcmpgtb xmm0,XMMWORD PTR [rcx]"),  # memory mod=1.
+            ("66 0f 64 81 00 00 00 00", "pcmpgtb xmm0,XMMWORD PTR [rcx]"),  # memory mod=2.
+            ("66 0f 65 c1", "pcmpgtb xmm0,xmm1"),  # PCMPGTW.
+            ("66 0f 64", "pcmpgtb xmm0,xmm1"),  # truncated ModR/M.
+            ("66 0f 64 c1 90", "pcmpgtb xmm0,xmm1"),  # trailing byte.
+            ("c5 f9 64 c1", "vpcmpgtb xmm0,xmm1,xmm2"),
+            ("62 f1 75 08 64 c1", "vpcmpgtb xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403000: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_21_pcmpgtb_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.21 PCMPGTB XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertEqual(family["task"], "S2-35.21")
+        self.assertIn("one optional REX.R/B", family["encoding"])
+        self.assertIn("ModR/M.mod=3", family["gate"])
+        self.assertIn("signed i8", family["outcome"])
+        self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
+
     def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

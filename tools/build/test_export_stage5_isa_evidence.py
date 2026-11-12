@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1045)
-                self.assertEqual(fields["unclassified_normalized_forms"], 224)
+                self.assertEqual(fields["classified_normalized_forms"], 1047)
+                self.assertEqual(fields["unclassified_normalized_forms"], 222)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295534 if full_key else 6295818
-                expected_unclassified_rows = 214866 if full_key else 214927
+                expected_supported_rows = 6295537 if full_key else 6295821
+                expected_unclassified_rows = 214863 if full_key else 214924
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -290,6 +290,21 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in movsd_register_forms),
                     2,
+                )
+                pcmpgtb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "64"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpgtb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtb_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpgtb_forms), 3)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.21-PCMPGTB-XMM-register-register", 0) for row in pcmpgtb_forms),
+                    3,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpgtb_forms),
+                    3,
                 )
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
