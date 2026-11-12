@@ -1056,6 +1056,61 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("CPU_CONTRACT has no PSUBQ entry", profile["gate"])
         self.assertIn("modulo 2^64", family["outcome"])
 
+    def test_s2_34_11_movaps_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-34.11-MOVAPS-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "" if rex == 0x40 else f"{rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 28 {modrm:02x}"
+                operands = f"movaps xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  403a00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "movaps xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  403b00: 40 0f 28 c1 movaps xmm0,xmm1")), expected)
+        rejected = (
+            ("42 0f 28 c1", "movaps xmm0,xmm1"),
+            ("48 0f 28 c1", "movaps xmm0,xmm1"),
+            ("4c 0f 28 c1", "movaps xmm0,xmm1"),
+            ("66 0f 28 c1", "movapd xmm0,xmm1"),
+            ("f2 0f 28 c1", "movaps xmm0,xmm1"),
+            ("f3 0f 28 c1", "movaps xmm0,xmm1"),
+            ("67 0f 28 c1", "movaps xmm0,xmm1"),
+            ("2e 0f 28 c1", "movaps xmm0,xmm1"),
+            ("f0 0f 28 c1", "movaps xmm0,xmm1"),
+            ("40 41 0f 28 c1", "movaps xmm0,xmm1"),
+            ("0f 28 00", "movaps xmm0,XMMWORD PTR [rax]"),
+            ("0f 29 c1", "movaps xmm0,xmm1"),
+            ("0f 28", "movaps xmm0,xmm1"),
+            ("0f 28 c1 90", "movaps xmm0,xmm1"),
+            ("c5 f8 28 c1", "vmovaps xmm0,xmm1"),
+            ("62 f1 7c 08 28 c1", "vmovaps xmm0,xmm1"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403c00: {encoding} {operands}")
+            self.assertNotEqual(analyzer.local_profile_candidate(row), expected, encoding)
+
+    def test_s2_34_11_movaps_registry_is_forward_register_only(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.11 MOVAPS forward XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertIn("[one optional REX.R/B] 0F 28 /r", family["encoding"])
+        self.assertIn("reverse 0F 29", family["gate"])
+        self.assertIn("no data-memory callback", family["outcome"])
+
     def test_s2_34_13_movapd_matches_all_register_pairs_and_rex_extensions(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)
@@ -1097,7 +1152,11 @@ class ParseObjdumpTests(unittest.TestCase):
         )
         for encoding, operands in rejected:
             row = analyzer.parse_row(f"  403a00: {encoding} {operands}")
-            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+            self.assertNotEqual(
+                analyzer.local_profile_candidate(row),
+                "S2-34.13-MOVAPD-XMM-register-register",
+                encoding,
+            )
 
     def test_s2_34_13_movapd_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())

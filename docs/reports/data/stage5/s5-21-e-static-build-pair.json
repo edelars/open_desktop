@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-e-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-e-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-e-pass1.json",
-    "compact_inventory_sha256": "d0d23306181179c5519c678ffcac7615f3e030879d444981334186c4aad459da",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-movaps-e-pass1-final.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-movaps-e-pass2-final.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-movaps-e-pass1-final.json",
+    "compact_inventory_sha256": "d22536ce43af1500fa5e7cb43a8b60341336d9d1280d7c15f1603c8c541d6cb8",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "8dc2175366ec01a1c59b13aa3df4ff5f82ddade499446c3855f9a4df56d53698",
+    "raw_inventory_sha256": "31fcb1a0a37fced122362865a18b751c83d3aafa5a6a9480c6bf02461dc3455a",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,23 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1053,
-    "unclassified_normalized_forms": 216,
+    "classified_normalized_forms": 1054,
+    "unclassified_normalized_forms": 215,
     "classification_frequencies": {
-      "proven_supported": 6295909,
-      "unclassified": 214836
+      "proven_supported": 6296007,
+      "unclassified": 214738
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293558,
+      "local_interpreter_profile": 6293656,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "d0d23306181179c5519c678ffcac7615f3e030879d444981334186c4aad459da",
+    "compact_repeat_sha256": "d22536ce43af1500fa5e7cb43a8b60341336d9d1280d7c15f1603c8c541d6cb8",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pcmpgtd-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pcmpgtd-e-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movaps-e-pass1-final.json work/stage5/s5-21/s5-21-isa-evidence-movaps-e-pass1-final.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -94,16 +94,16 @@
       "punpckhqdq xmm,mem128": 1
     },
     "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence",
-    "local_interpreter_profile_rows": 6293558,
+    "local_interpreter_profile_rows": 6293656,
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322703,
-        "unclassified": 23446
+        "proven_supported": 322704,
+        "unclassified": 23445
       },
       "D": {
-        "proven_supported": 6226578,
-        "unclassified": 209636
+        "proven_supported": 6226675,
+        "unclassified": 209539
       }
     },
     "local_simd_logic_rows": 1858,
@@ -267,7 +267,14 @@
     "pcmpgtd_register_rows_by_profile": {
       "S2-35.23-PCMPGTD-XMM-register-register": 40
     },
-    "pcmpgtd_scope": "Accepted local-only PCMPGTD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, opcode 0F 66, ModR/M.mod=3, reg destination/r/m source; four signed little-endian i32 lanes write FFFFFFFF iff DEST>SRC, otherwise 00000000. No memory callback; CPU_CONTRACT has no PCMPGTD entry; no memory/MMX or CPL3/native/JIT/physical evidence."
+    "pcmpgtd_scope": "Accepted local-only PCMPGTD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, opcode 0F 66, ModR/M.mod=3, reg destination/r/m source; four signed little-endian i32 lanes write FFFFFFFF iff DEST>SRC, otherwise 00000000. No memory callback; CPU_CONTRACT has no PCMPGTD entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
+    "movaps_register_rows": 98,
+    "movaps_register_normalized_forms": 1,
+    "movaps_register_encoding_forms": 12,
+    "movaps_register_rows_by_profile": {
+      "S2-34.11-MOVAPS-XMM-register-register": 98
+    },
+    "movaps_scope": "Accepted local-only S2-34.11 MOVAPS forward XMM register-register profile: no prefix or optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3; raw 128-bit copy. No data-memory callback. Alignment/fault semantics and real #UD/#NM gates are not modeled; no memory/reverse 0F29/MOVAPD 66 or CPL3/native/JIT/physical evidence."
   },
   "unchanged_rootfs_binary_inputs": true
 }
