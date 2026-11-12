@@ -30300,19 +30300,37 @@ const GS_MOVSXB_EAX: [u8; 4] = [0x65, 0x0f, 0xbe, 0x01];
 /// `movsbq %fs:0x1234(%rip), %rax` (9 bytes).
 const FS_MOVSXB_RIP: [u8; 9] = [0x64, 0x48, 0x0f, 0xbe, 0x05, 0x34, 0x12, 0x00, 0x00];
 
+/// Hand-written expectations of MOVSX from a byte: (byte, 64-bit result, 32-bit result zero-extended
+/// into the 64-bit register). Not derived with the executor's cast chain.
+const SIGN_EXTENDED_BYTES: [(u8, u64, u64); 11] = [
+    (0x00, 0x0000_0000_0000_0000, 0x0000_0000),
+    (0x01, 0x0000_0000_0000_0001, 0x0000_0001),
+    (0x7e, 0x0000_0000_0000_007e, 0x0000_007e),
+    (0x7f, 0x0000_0000_0000_007f, 0x0000_007f),
+    (0x80, 0xffff_ffff_ffff_ff80, 0xffff_ff80),
+    (0x81, 0xffff_ffff_ffff_ff81, 0xffff_ff81),
+    (0x90, 0xffff_ffff_ffff_ff90, 0xffff_ff90),
+    (0xc0, 0xffff_ffff_ffff_ffc0, 0xffff_ffc0),
+    (0xf0, 0xffff_ffff_ffff_fff0, 0xffff_fff0),
+    (0xfe, 0xffff_ffff_ffff_fffe, 0xffff_fffe),
+    (0xff, 0xffff_ffff_ffff_ffff, 0xffff_ffff),
+];
+
+/// Looks a byte up in `SIGN_EXTENDED_BYTES` (panics for a byte without a hand-written entry).
 fn sign_extended_byte(value: u8, qword: bool) -> u64 {
-    if qword {
-        i64::from(value as i8) as u64
-    } else {
-        i32::from(value as i8) as u32 as u64
-    }
+    let (_, wide, narrow) = SIGN_EXTENDED_BYTES
+        .iter()
+        .copied()
+        .find(|(byte, _, _)| *byte == value)
+        .unwrap_or_else(|| panic!("no hand-written MOVSX expectation for {value:#x}"));
+    if qword { wide } else { narrow }
 }
 
 #[test]
 fn gs_movsx_byte_boundary_form_sign_extends_into_rax_and_keeps_flags() {
     let gs_base = 0xffff_8880_0000_0000u64;
     let at = gs_base + 0x2000;
-    for value in [0x7fu8, 0x80, 0xff, 0x00, 0x01, 0xfe, 0x81] {
+    for (value, wide, _) in SIGN_EXTENDED_BYTES {
         let mut state = board_state();
         state.gs_base = gs_base;
         state.fs_base = 0xffff_8880_9999_0000;
@@ -30334,7 +30352,7 @@ fn gs_movsx_byte_boundary_form_sign_extends_into_rax_and_keeps_flags() {
         );
         assert_eq!(memory.reads, vec![(at, 1)], "{value:#x}");
         assert!(memory.writes.is_empty());
-        expected.gpr[Register::Rax as usize] = sign_extended_byte(value, true);
+        expected.gpr[Register::Rax as usize] = wide;
         expected.rip += 5;
         assert_eq!(state, expected, "{value:#x}: only RAX and RIP change");
     }
@@ -30343,7 +30361,7 @@ fn gs_movsx_byte_boundary_form_sign_extends_into_rax_and_keeps_flags() {
 #[test]
 fn gs_movsx_byte_second_boundary_instruction_loads_r8_from_rdx_plus_disp8() {
     let gs_base = 0xffff_8880_0000_0000u64;
-    for value in [0x7fu8, 0x80, 0xff, 0x00] {
+    for (value, wide, _) in SIGN_EXTENDED_BYTES {
         let mut state = board_state();
         state.gs_base = gs_base;
         state.gpr[Register::Rdx as usize] = 0x4000;
@@ -30355,7 +30373,7 @@ fn gs_movsx_byte_second_boundary_instruction_loads_r8_from_rdx_plus_disp8() {
         let result = run_test32_set(&mut state, &mut memory).unwrap();
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(memory.reads, vec![(at, 1)], "{value:#x}");
-        expected.gpr[Register::R8 as usize] = sign_extended_byte(value, true);
+        expected.gpr[Register::R8 as usize] = wide;
         expected.rip += 6;
         assert_eq!(state, expected, "{value:#x}");
     }
@@ -30364,7 +30382,7 @@ fn gs_movsx_byte_second_boundary_instruction_loads_r8_from_rdx_plus_disp8() {
 #[test]
 fn movsx_byte_without_rex_w_sign_extends_to_32_bits_and_zeroes_the_upper_half() {
     let gs_base = 0xffff_8880_0000_0000u64;
-    for value in [0x7fu8, 0x80, 0xff, 0x00] {
+    for (value, _, narrow) in SIGN_EXTENDED_BYTES {
         let mut state = board_state();
         state.gs_base = gs_base;
         state.gpr[Register::Rcx as usize] = 0x2000;
@@ -30376,7 +30394,7 @@ fn movsx_byte_without_rex_w_sign_extends_to_32_bits_and_zeroes_the_upper_half() 
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(memory.reads, vec![(gs_base + 0x2000, 1)]);
         assert!(memory.writes.is_empty());
-        expected.gpr[Register::Rax as usize] = sign_extended_byte(value, false);
+        expected.gpr[Register::Rax as usize] = narrow;
         expected.rip += 4;
         assert_eq!(state, expected, "{value:#x}");
         assert_eq!(state.gpr[Register::Rax as usize] >> 32, 0);
@@ -30666,6 +30684,42 @@ fn movsx_byte_read_fault_leaves_flags_rip_and_registers_unchanged() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn movsx_byte_with_an_empty_rex_0x40_loads_through_the_rcx_base_without_rex_w() {
+    // `65 40 0f be 01` = movsbl %gs:(%rcx), %eax and `64 40 0f be 01` with the FS base: the empty
+    // REX (0x40) right before the opcode is accepted; with no REX.W the destination is 32-bit.
+    let used = 0xffff_8880_4321_0000u64;
+    let other = 0xffff_8880_9999_0000u64;
+    for (code, fs) in [
+        (&[0x65u8, 0x40, 0x0f, 0xbe, 0x01][..], false),
+        (&[0x64, 0x40, 0x0f, 0xbe, 0x01][..], true),
+    ] {
+        for (value, expected) in [
+            (0x80u8, 0xffff_ff80u64),
+            (0xff, 0xffff_ffff),
+            (0x7f, 0x7f),
+            (0x00, 0x0),
+        ] {
+            let mut state = board_state();
+            state.fs_base = if fs { used } else { other };
+            state.gs_base = if fs { other } else { used };
+            state.gpr[Register::Rcx as usize] = 0x2000;
+            assert_eq!(state.gpr[Register::Rax as usize] >> 32, 0x1111_2222);
+            let mut expected_state = state.clone();
+            let mut memory = BitsMemory::new(code);
+            memory.data.insert(used + 0x2000, value);
+            memory.data.insert(other + 0x2000, 0x11);
+            let result = run_test32_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?} {value:#x}");
+            assert_eq!(memory.reads, vec![(used + 0x2000, 1)], "{code:02x?}");
+            assert!(memory.writes.is_empty());
+            expected_state.gpr[Register::Rax as usize] = expected;
+            expected_state.rip += 5;
+            assert_eq!(state, expected_state, "{code:02x?} {value:#x}");
+        }
     }
 }
 
