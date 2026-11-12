@@ -51,7 +51,7 @@ use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
 };
 use od_isa::msr::MsrProfile;
-use od_isa::{CliProfile, HaltProfile, Register};
+use od_isa::{CliProfile, HaltProfile, Register, StiProfile};
 use std::cell::Cell;
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
@@ -757,6 +757,10 @@ pub struct LinuxCpl0SetMembers {
     pub msr_kernel_gs_base: bool,
     /// `with_halt`.
     pub halt: bool,
+    /// `with_sti` (S4-38L7bp): the bare `STI` (`FB`): IF := 1 and the one-instruction shadow. The
+    /// board delivers no interrupt (IRQ delivery is S4-38, ISSUE-069); the member models the
+    /// instruction only. `false` in [`Self::minimal`], `true` in [`Self::linux_default`].
+    pub sti: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
     /// board bus (COM1, PM block with the timer, and with the Linux profile PIT, port B, PIC,
     /// CMOS, `0xED`, `0x80`, and the byte accesses to PCI conf1 `0xCF8..=0xCFF`).
@@ -803,6 +807,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: false,
             msr_kernel_gs_base: false,
             halt: false,
+            sti: false,
             pio_u8: false,
             popf_cpl0: false,
             pci_config: false,
@@ -825,6 +830,7 @@ impl LinuxCpl0SetMembers {
             cpuid: true,
             rdtsc: true,
             popf_cpl0: true,
+            sti: true,
             pio_u8: true,
             pci_config: true,
             msr: true,
@@ -950,6 +956,11 @@ pub fn run_linux_direct_board_set(
     if members.pio_u8 {
         set = set.with_pio_u8();
         names.push("pio_u8".into());
+    }
+    let sti = StiProfile::NonPviLong64V1;
+    if members.sti {
+        set = set.with_sti(&sti);
+        names.push("sti".into());
     }
     if members.popf_cpl0 {
         set = set.with_popf_cpl0();
@@ -8190,6 +8201,7 @@ mod tests {
                 cpuid: true,
                 rdtsc: true,
                 popf_cpl0: true,
+                sti: true,
                 pio_u8: true,
                 pci_config: true,
                 msr: true,
@@ -8227,11 +8239,31 @@ mod tests {
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
+    }
+
+    #[test]
+    fn linux_default_runs_sti_and_minimal_does_not() {
+        // S4-38L7bp: `STI; NOP; HLT`. With the default set STI and NOP retire (IF = 1, no
+        // interrupt is delivered) and the run stops at the HLT, which the default set lacks.
+        assert!(LinuxCpl0SetMembers::linux_default().sti);
+        assert!(!LinuxCpl0SetMembers::minimal().sti);
+        let (mut boot, file) = boot_with_entry(&[0xFB, 0x90, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.exit_kind, "unsupported", "{record:?}");
+        assert_eq!(record.unsupported_opcode, Some(0xF4), "{record:?}");
+        assert_eq!((record.retired, record.rip), (2, ENTRY + 2), "{record:?}");
+        assert_eq!(record.rflags & (1 << 9), 1 << 9, "{record:?}");
+        // The minimal set stops at the STI itself.
+        let (mut boot, file) = boot_with_entry(&[0xFB, 0x90, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.unsupported_opcode, Some(0xFB), "{record:?}");
+        assert_eq!((record.retired, record.rip), (0, ENTRY), "{record:?}");
     }
 
     #[test]
@@ -8323,6 +8355,7 @@ mod tests {
                 "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ]
@@ -8502,6 +8535,7 @@ mod tests {
                 "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ]

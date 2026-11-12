@@ -1451,6 +1451,7 @@ mod tests {
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -1776,6 +1777,7 @@ mod tests {
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ])
@@ -2071,6 +2073,7 @@ mod tests {
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
                 "pci_config"
             ])

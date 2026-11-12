@@ -38158,3 +38158,298 @@ fn segment_cmpxchg_wide_is_not_reachable_from_cpl3() {
         assert!(memory.reads.is_empty() && memory.writes.is_empty());
     }
 }
+
+// S4-38L7bp: `STI` (`FB`) under `with_sti`. The oracles are hand-computed from the SDM as
+// remembered (not checked against the primary source): STI sets only RFLAGS.IF (bit 9), RIP += 1,
+// one retired instruction; the interrupt shadow covers the next instruction only.
+static STI: od_isa::StiProfile = od_isa::StiProfile::NonPviLong64V1;
+static STI_CLI: CliProfile = CliProfile::NonPviLong64V1;
+
+fn sti_set() -> Cpl0ProfileSet<'static> {
+    Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_sti(&STI)
+}
+
+fn sti_cli_set() -> Cpl0ProfileSet<'static> {
+    sti_set().with_cli(&STI_CLI)
+}
+
+/// Board state with IF = 0 and the given RFLAGS arithmetic/other bits.
+fn if_clear_state(extra: u64) -> LongModeState {
+    let mut state = board_state();
+    state.rflags = 2 | extra;
+    state
+}
+
+#[test]
+fn sti_sets_if_arms_the_shadow_and_touches_nothing_else() {
+    // CF, ZF, DF, OF and IOPL = 0 stay; the undefined AF bit stays undefined.
+    let extra = 1 | (1 << 6) | (1 << 10) | (1 << 11);
+    let mut state = if_clear_state(extra);
+    let mut expected = state.clone();
+    expected.rflags = 2 | extra | IF;
+    expected.rip = RIP + 1;
+    expected.sti_shadow = Some(StiShadow::Blocking);
+    let defined = od_isa::INTEGER_FLAGS & !(1 << 4);
+    let mut memory = Memory::code(&[0xfb]);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        defined,
+        &sti_set(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(state.rflags, 0x2 | extra | IF);
+    assert_eq!(state, expected);
+    assert_eq!(memory.fetches, 1);
+}
+
+#[test]
+fn sti_with_if_already_set_arms_no_shadow_and_keeps_iopl() {
+    let extra = IF | (3 << 12) | 1;
+    let mut state = if_clear_state(extra);
+    let mut memory = Memory::code(&[0xfb]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rflags, 2 | extra);
+    assert_eq!(state.rip, RIP + 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+}
+
+#[test]
+fn sti_shadow_covers_exactly_the_next_instruction() {
+    // `sti; nop; nop`: after one instruction the shadow is armed, after two it is clear.
+    let set = sti_set();
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0x90, 0x90]);
+    run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    // The run ended right after STI: the shadow is carried into the next run, which retires one
+    // instruction (the NOP) and clears it.
+    let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags & IF, IF);
+
+    // The same in one run.
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0x90, 0x90]);
+    let result = run_set(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rip, RIP + 2);
+}
+
+#[test]
+fn sti_shadow_is_cleared_by_a_branch_inside_the_shadow() {
+    // `sti; jmp +0` (EB 00): the JMP retires inside the shadow and clears it.
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xeb, 0x00]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // The Linux boundary bytes: `fb e9 ea 4d 01 00` is `sti; jmp +0x14dea`.
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xe9, 0xea, 0x4d, 0x01, 0x00]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 6 + 0x14dea);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rflags & IF, IF);
+}
+
+#[test]
+fn a_carried_shadow_is_admitted_only_under_with_sti() {
+    let mut carried = if_clear_state(IF);
+    carried.sti_shadow = Some(StiShadow::Blocking);
+    for set in [
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&STI_CLI),
+    ] {
+        let mut state = carried.clone();
+        let mut memory = Memory::code(&[0x90]);
+        assert_eq!(
+            run_set(&mut state, &mut memory, &set, 1).unwrap_err(),
+            Cpl0ProfileSetInputError::StiShadowActive
+        );
+        assert_eq!(memory.fetches, 0);
+        assert_eq!(state, carried);
+    }
+    let mut state = carried.clone();
+    let mut memory = Memory::code(&[0x90]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+}
+
+#[test]
+fn cli_after_sti_and_sti_after_cli_follow_the_cli_policy() {
+    // `sti; cli`: CLI retires inside the shadow; IF ends 0, shadow clear.
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xfa]);
+    let result = run_set(&mut state, &mut memory, &sti_cli_set(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rflags, 2);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // `cli; sti` from IF = 1: IF 0 then 1, shadow armed.
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0xfa, 0xfb]);
+    let result = run_set(&mut state, &mut memory, &sti_cli_set(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rflags, 2 | IF);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    // CLI is not admitted by `with_sti` alone.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xfa]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfa });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sti_inside_an_armed_shadow_is_refused_without_mutation() {
+    // `sti; sti`: the first retires, the second is refused (opcode 0xfb).
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xfb]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 1);
+    assert_eq!(state.rflags, 2 | IF);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    // A carried MOV SS shadow (IF = 0) refuses STI too.
+    let mut state = if_clear_state(0);
+    state.sti_shadow = Some(StiShadow::Blocking);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xfb]);
+    let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sti_stays_closed_without_its_member_and_with_unadmitted_forms() {
+    // Without `with_sti`, with or without CLI.
+    for set in [
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
+        Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&STI_CLI),
+    ] {
+        let mut state = if_clear_state(0);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0xfb]);
+        let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+    // Prefixed forms: the exact opcode, no mutation. LOCK follows the CLI policy (#UD).
+    let ud = RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    });
+    let cases: [(&[u8], RunExit); 10] = [
+        (&[0x66, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x67, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0xf3, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0xf2, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x2e, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x64, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x65, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x40, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0x48, 0xfb], RunExit::Unsupported { opcode: 0xfb }),
+        (&[0xf0, 0xfb], ud),
+    ];
+    for (bytes, expected) in cases {
+        let mut state = if_clear_state(0);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &sti_cli_set(), 4).unwrap();
+        assert_eq!(exit(&result), &expected, "{bytes:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn sti_is_not_reachable_from_cpl_above_zero_or_with_pvi() {
+    for privilege in [
+        PrivilegeLevel::Ring1,
+        PrivilegeLevel::Ring2,
+        PrivilegeLevel::Ring3,
+    ] {
+        let mut state = if_clear_state(0);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0xfb]);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(privilege, 1),
+            od_isa::INTEGER_FLAGS,
+            &sti_set(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!(memory.fetches, 0);
+        assert_eq!(state, before);
+    }
+    // CR4.PVI is outside the policy: rejected at entry before any fetch.
+    let mut state = if_clear_state(0);
+    state.cr4 = Some(CR4_BASE | (1 << 1));
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xfb]);
+    assert!(run_set(&mut state, &mut memory, &sti_set(), 1).is_err());
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sti_at_cpl0_ignores_iopl_like_cli() {
+    for iopl in 0..4u64 {
+        let mut state = if_clear_state(iopl << 12);
+        let mut memory = Memory::code(&[0xfb]);
+        let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "iopl {iopl}");
+        assert_eq!(state.rflags, 2 | (iopl << 12) | IF, "iopl {iopl}");
+    }
+}
+
+#[test]
+fn sti_is_outside_the_bare_entries() {
+    // Bare `run` and `step` keep refusing STI (without CR0/CR4 the opcode is reached).
+    let mut state = board_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.rflags = 2;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xfb]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xfb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let mut memory = Memory::code(&[0xfb]);
+    let outcome = od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
+    assert_eq!(
+        outcome,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xfb })
+    );
+    assert_eq!(state, before);
+}
