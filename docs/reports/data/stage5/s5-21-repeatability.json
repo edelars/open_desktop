@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-paddw-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movsdreg-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddw-rootfs-pass1.json",
-      "sha256": "4d1b06fbd241aaf77b15dea0c7bdb396daa7f3543744139b03e7d60d90509063",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movsdreg-rootfs-pass1.json",
+      "sha256": "fcd9b8c1989e08461ed062be15bb12e10541b436b1db510397b38f44644ea9b9",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddw-rootfs-pass2.json",
-      "sha256": "4d1b06fbd241aaf77b15dea0c7bdb396daa7f3543744139b03e7d60d90509063",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movsdreg-rootfs-pass2.json",
+      "sha256": "fcd9b8c1989e08461ed062be15bb12e10541b436b1db510397b38f44644ea9b9",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295532,
-      "unclassified": 214868
+      "proven_supported": 6295534,
+      "unclassified": 214866
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293181,
+      "local_interpreter_profile": 6293183,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1044,
-    "unclassified_normalized_forms": 225,
+    "classified_normalized_forms": 1045,
+    "unclassified_normalized_forms": 224,
     "scenario_classification_frequencies": {
       "C": {
         "proven_supported": 322696,
         "unclassified": 23453
       },
       "D": {
-        "proven_supported": 6226488,
-        "unclassified": 209726
+        "proven_supported": 6226490,
+        "unclassified": 209724
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "4d1b06fbd241aaf77b15dea0c7bdb396daa7f3543744139b03e7d60d90509063",
+    "raw_inventory_sha256": "fcd9b8c1989e08461ed062be15bb12e10541b436b1db510397b38f44644ea9b9",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -136,7 +136,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6293181,
+    "local_interpreter_profile_rows": 6293183,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -167,15 +167,22 @@
     "paddw_register_rows_by_profile": {
       "S2-35.6-PADDW-XMM-register-register": 2
     },
-    "paddw_scope": "Accepted local-only PADDW XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; eight independent little-endian u16 lanes add modulo 65536; no MMX/memory/saturation/other widths/other prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence."
+    "paddw_scope": "Accepted local-only PADDW XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; eight independent little-endian u16 lanes add modulo 65536; no MMX/memory/saturation/other widths/other prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "movsd_register_rows": 2,
+    "movsd_register_normalized_forms": 1,
+    "movsd_register_encoding_forms": 1,
+    "movsd_register_rows_by_profile": {
+      "S2-34.9a-MOVSD-XMM-register-register": 2
+    },
+    "movsd_register_scope": "Accepted local-only MOVSD XMM register-register profile: mandatory F2 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; copies raw source low qword and preserves destination high qword; F2 is opcode prefix, not REPNE. No data-memory callback, reverse MOVSD, memory/string, VEX/EVEX or CPL3/native/JIT/physical evidence."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "e40107ec61fef4ef564beb14bff89ee789c325ec95780aec841f5a55e8fff32c",
-    "size_bytes": 1003925,
+    "sha256": "d72102996d562c1bc20658767307f9e168c917887d883b568b3588a689c07aa6",
+    "size_bytes": 1003961,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-paddw-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-paddw-rootfs-pass1.json.gz",
-    "repeat_sha256": "e40107ec61fef4ef564beb14bff89ee789c325ec95780aec841f5a55e8fff32c",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movsdreg-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movsdreg-rootfs-pass1.json.gz",
+    "repeat_sha256": "d72102996d562c1bc20658767307f9e168c917887d883b568b3588a689c07aa6",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },

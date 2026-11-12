@@ -838,6 +838,60 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("Reject bare MMX", family["gate"])
         self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
 
+    def test_s2_34_9a_movsd_register_matches_all_xmm_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-34.9a-MOVSD-XMM-register-register"
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "f2 " if rex == 0x40 else f"f2 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 10 {modrm:02x}"
+                operands = f"movsd xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  402d00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "movsd xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+        rejected = (
+            ("0f 10 c1", "movsd xmm0,xmm1"),  # F2 is mandatory.
+            ("f2 42 0f 10 c1", "movsd xmm0,xmm1"),  # REX.X.
+            ("f2 48 0f 10 c1", "movsd xmm0,xmm1"),  # REX.W.
+            ("f2 4c 0f 10 c1", "movsd xmm0,xmm1"),  # REX.R/W.
+            ("f2 f2 0f 10 c1", "movsd xmm0,xmm1"),
+            ("f2 66 0f 10 c1", "movsd xmm0,xmm1"),
+            ("f3 0f 10 c1", "movsd xmm0,xmm1"),
+            ("44 f2 0f 10 c1", "movsd xmm0,xmm1"),  # REX before mandatory F2.
+            ("f2 0f 10 01", "movsd xmm0,QWORD PTR [rcx]"),  # memory source.
+            ("f2 0f 10 41 00", "movsd xmm0,QWORD PTR [rcx]"),
+            ("f2 0f 10 81 00 00 00 00", "movsd xmm0,QWORD PTR [rcx]"),
+            ("f2 0f 11 c1", "movsd xmm0,xmm1"),  # reverse direction.
+            ("f2 a5", "movsd QWORD PTR [rdi],QWORD PTR [rsi]"),  # string MOVSD.
+            ("f2 0f 10", "movsd xmm0,xmm1"),  # Truncated ModR/M.
+            ("f2 0f 10 c1 90", "movsd xmm0,xmm1"),  # Trailing byte.
+            ("c5 fb 10 c1", "vmovsd xmm0,xmm1,xmm2"),
+            ("62 f1 ff 08 10 c1", "vmovsd xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  402e00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_34_9a_movsd_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.9a MOVSD XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertEqual(family["task"], "S2-34.9a")
+        self.assertIn("REX.R/B", family["encoding"])
+        self.assertIn("ModR/M.mod=3", family["gate"])
+        self.assertIn("F2 is mandatory and is not REPNE", family["gate"])
+        self.assertIn("no CPL3/native/JIT/physical claim", profile["gate"])
+
     def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

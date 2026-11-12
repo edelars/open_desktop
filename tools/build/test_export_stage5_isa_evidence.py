@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1044)
-                self.assertEqual(fields["unclassified_normalized_forms"], 225)
+                self.assertEqual(fields["classified_normalized_forms"], 1045)
+                self.assertEqual(fields["unclassified_normalized_forms"], 224)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295532 if full_key else 6295816
-                expected_unclassified_rows = 214868 if full_key else 214929
+                expected_supported_rows = 6295534 if full_key else 6295818
+                expected_unclassified_rows = 214866 if full_key else 214927
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -274,6 +274,21 @@ class NormalizedFormTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in paddw_forms),
+                    2,
+                )
+                movsd_register_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movsd xmm,xmm"
+                ]
+                self.assertEqual(len(movsd_register_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movsd_register_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-34.9a-MOVSD-XMM-register-register", 0) for row in movsd_register_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in movsd_register_forms),
                     2,
                 )
                 self.assertEqual(
