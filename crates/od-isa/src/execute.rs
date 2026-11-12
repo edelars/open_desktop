@@ -36197,13 +36197,35 @@ fn step_configured(
                 && destination.size == OperandSize::Qword
                 && source.size() == OperandSize::Qword
                 && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                && instruction
-                    .prefixes
-                    .group1
-                    .is_none_or(|prefix| prefix == 0xf0)
+                && instruction.prefixes.group1.is_none()
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
                 && instruction.prefixes.segment.is_none()
+                // S4-38L7ay: the CPL0 set models only the LOCK form (`LockXaddMem`); the board
+                // adapters have no atomic fetch-add, so the bare memory form is refused there.
+                && control_policy.is_none()
+        }
+        // S4-38L7ay: LOCK XADD m32/m64. In the CPL0 set (Ring0) it is read -> write on the single
+        // vCPU; the decoder has already validated the prefixes. Outside the set only the S2-21f
+        // qword form exists (one atomic fetch-add call); the dword form is refused there.
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } => {
+            if control_policy.is_some() {
+                context.privilege == PrivilegeLevel::Ring0
+            } else {
+                instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc1
+                    && instruction.operand_size == OperandSize::Qword
+                    && destination.size == OperandSize::Qword
+                    && source.size() == OperandSize::Qword
+                    && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    && instruction.prefixes.group1 == Some(0xf0)
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.segment.is_none()
+            }
         }
         Operation::CmpxchgMemory {
             destination,
@@ -49000,6 +49022,34 @@ fn step_configured(
             x87.status_word = (x87.status_word & !(7 << 11)) | (u16::from(new_top) << 11);
             x87.instruction_pointer = state.rip;
         }
+        // S4-38L7ay: outside the CPL0 set the LOCK form keeps the S2-21f path (one atomic call).
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } if control_policy.is_none() => {
+            // Save the register input before resolving or mutating anything;
+            // it may also provide the memory base or index.
+            let addend = state.read(source);
+            let address = match destination.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let old =
+                match memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)
+                {
+                    Ok(old) => old,
+                    Err(error) => return report_memory_error(error),
+                };
+            let (_, flags) = arithmetic_result(
+                OperandSize::Qword,
+                ArithmeticKind::Add,
+                old,
+                addend,
+                state.rflags,
+            );
+            state.write(source, old);
+            state.rflags = flags;
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -49037,6 +49087,7 @@ fn step_configured(
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
         | Operation::LockAddMemReg { .. }
+        | Operation::LockXaddMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
         | Operation::MovSregStore { .. }
@@ -54605,6 +54656,27 @@ fn transfer(
                 state.rflags,
             );
             memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7ay: as LockAddMemReg, plus the exchange. One vCPU, so read -> write needs no
+            // bus lock. The addend is read before the access (it may also be the base or index
+            // register); the address (non-canonical start or last byte is #GP(0), RSP/RBP bases
+            // #SS(0)) is resolved before any access. The sum is written back through one write
+            // (a read-only page faults), and the old value goes to the source register and the
+            // flags commit only after that write succeeded, so a faulting write leaves memory,
+            // register and flags untouched.
+            let size = destination.size;
+            let addend = state.read(source);
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, size)?;
+            let (result, flags) =
+                arithmetic_result(size, ArithmeticKind::Add, old, addend, state.rflags);
+            memory.write_integer(address, context, size, result)?;
+            state.write(source, old);
             state.rflags = flags;
         }
         Operation::LockAndMem {
@@ -155832,6 +155904,39 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn lock_dword_xadd_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ay: the LOCK dword form exists in the CPL0 set only; this profile refuses it (and
+        // the register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+        for bytes in [
+            &[0xf0, 0x0f, 0xc1, 0x13][..],
+            &[0xf0, 0x44, 0x0f, 0xc1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            &[0xf0, 0x48, 0x0f, 0xc1, 0xd3][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xc1 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn lock_bts_stays_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7n belongs to the CPL0 set only; this profile refuses the form without mutation.
         for bytes in [
@@ -159054,6 +159159,33 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb1 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_lock_dword_xadd_unsupported() {
+        // S4-38L7ay: the LOCK dword form exists in the CPL0 set only; this profile refuses it (and
+        // the register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+        for code in [
+            &[0xf0, 0x0f, 0xc1, 0x13][..],
+            &[0xf0, 0x44, 0x0f, 0xc1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            &[0xf0, 0x48, 0x0f, 0xc1, 0xd3][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc1 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

@@ -708,8 +708,17 @@ pub enum Operation {
         destination: RegisterView,
         source: RegisterView,
     },
-    /// Bare long-mode qword XADD from a GPR into ordinary memory.
+    /// Bare (no LOCK) long-mode qword XADD from a GPR into ordinary memory.
     XaddMemory {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
+    /// S4-38L7ay: `F0 [REX] 0F C1 /r` (LOCK XADD m32, r32, or m64, r64 with REX.W), memory
+    /// destination only. Outside the CPL0 set the qword form keeps the S2-21f behaviour (one
+    /// `GuestMemory::atomic_fetch_add_integer` call) and the dword form is refused; in the CPL0
+    /// set it is read -> write on the single vCPU (the sum is always written back, the register
+    /// source receives the old value).
+    LockXaddMem {
         destination: MemoryOperand,
         source: RegisterView,
     },
@@ -2242,7 +2251,7 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::XaddMemory { .. } => FlagEffects {
+            Operation::XaddMemory { .. } | Operation::LockXaddMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -7876,8 +7885,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0xc1) => {
-                if size != OperandSize::Qword
-                    || !prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                // S4-38L7ay: the dword form is LOCK + memory only; a REX byte that is not
+                // immediately before the opcode is refused for the LOCK forms (it would otherwise
+                // silently change the operand width).
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let qword =
+                    size == OperandSize::Qword && prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+                let lock = prefixes.group1 == Some(0xf0);
+                let dword = size == OperandSize::Dword && lock;
+                if !(qword || dword)
+                    || (lock && stale_rex)
                     || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
                     || prefixes.segment.is_some()
                     || prefixes.operand_override
@@ -7894,8 +7914,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             source,
                         }
                     }
+                    Operand::Memory(destination) if lock && destination.size == size => {
+                        Operation::LockXaddMem {
+                            destination,
+                            source,
+                        }
+                    }
                     Operand::Memory(destination)
-                        if size == OperandSize::Qword && destination.size == OperandSize::Qword =>
+                        if qword && destination.size == OperandSize::Qword =>
                     {
                         Operation::XaddMemory {
                             destination,
@@ -19768,14 +19794,16 @@ mod tests {
     }
 
     #[test]
-    fn lock_qword_memory_xadd_decodes_only_the_profile_form() {
+    fn lock_memory_xadd_decodes_the_qword_and_dword_forms_only() {
+        // S4-38L7ay: the LOCK memory form is `LockXaddMem` (S2-21f decoded it as `XaddMemory`,
+        // which is now the bare form only); the dword form (no REX.W) is new.
         let mut memory = Memory::new(&[0xf0, 0x49, 0x0f, 0xc1, 0x0c, 0x24]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.length, 6);
         assert_eq!(instruction.prefixes.group1, Some(0xf0));
         assert_eq!(
             instruction.operation,
-            Operation::XaddMemory {
+            Operation::LockXaddMem {
                 destination: MemoryOperand {
                     base: AddressBase::Register(Register::R12),
                     index: None,
@@ -19788,14 +19816,44 @@ mod tests {
             }
         );
 
+        let mut memory = Memory::new(&[0xf0, 0x44, 0x0f, 0xc1, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(
+            instruction.operation,
+            Operation::LockXaddMem {
+                destination: MemoryOperand {
+                    base: AddressBase::Register(Register::Rax),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Dword,
+                },
+                source: RegisterView::low(Register::R8, OperandSize::Dword),
+            }
+        );
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0xc1, 0x00]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockXaddMem { destination, .. } if destination.size == OperandSize::Dword
+        ));
+
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xc1, 0xc0][..], // LOCK register destination
-            &[0xf0, 0x0f, 0xc1, 0x00][..],       // default dword width
+            &[0xf0, 0x0f, 0xc1, 0xc0][..],       // LOCK dword register destination
+            &[0x0f, 0xc1, 0x00][..],             // bare dword memory destination
             &[0xf0, 0x66, 0x48, 0x0f, 0xc1, 0x00],
+            &[0xf0, 0x66, 0x0f, 0xc1, 0x00],
             &[0xf0, 0x67, 0x48, 0x0f, 0xc1, 0x00],
+            &[0xf0, 0x67, 0x0f, 0xc1, 0x00],
             &[0xf0, 0x2e, 0x48, 0x0f, 0xc1, 0x00],
+            &[0xf0, 0x2e, 0x0f, 0xc1, 0x00],
             &[0xf2, 0x48, 0x0f, 0xc1, 0x00],
             &[0xf3, 0x48, 0x0f, 0xc1, 0x00],
+            &[0xf0, 0xf0, 0x48, 0x0f, 0xc1, 0x00],
+            &[0x48, 0xf0, 0x0f, 0xc1, 0x00], // REX before LOCK
+            &[0x41, 0xf0, 0x0f, 0xc1, 0x00],
         ] {
             assert!(
                 matches!(

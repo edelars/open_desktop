@@ -715,6 +715,37 @@ fn lock_add_register_source_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn lock_dword_xadd_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ay belongs to the CPL0 set only; this profile refuses the LOCK dword form (and the
+    // register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+    for bytes in [
+        &[0xf0, 0x0f, 0xc1, 0x43, 0x58][..],
+        &[0xf0, 0x44, 0x0f, 0xc1, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        &[0xf0, 0x48, 0x0f, 0xc1, 0xc3][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xc1 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn lock_and_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7ag belongs to the CPL0 set only; this profile refuses the forms without mutation.
     for bytes in [
