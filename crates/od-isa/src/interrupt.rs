@@ -534,8 +534,10 @@ enum GateRefusal {
     NonCanonicalStackSpan,
 }
 
-/// Where a gate delivery failed on a memory access; `StackWrite` carries the index of the
-/// frame word (0 = SS, 1 = RSP, 2 = RFLAGS, 3 = CS, 4 = RIP, 5 = error code).
+/// Where a gate delivery failed on a memory access; `StackWrite` carries the zero-based
+/// index of the frame word in store order (0 = SS, 1 = RSP, 2 = RFLAGS, 3 = CS, 4 = RIP,
+/// 5 = error code). The tests count the stores from one (store 1 = SS = index 0, store 5 = RIP,
+/// store 6 = the error code or, without one, the Accessed-bit write).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GateAbortPhase {
     IdtGateRead,

@@ -7333,6 +7333,81 @@ fn ext_delivery_refuses_masked_blocked_and_not_running_states() {
     );
 }
 
+/// Refuse before the IDT and GDT are read: no write, no read, no CPU change.
+fn assert_ext_refused_before_any_access(
+    tweak: impl FnOnce(&mut LongModeState),
+    expected: od_isa::Cpl0ExternalInterruptRefusal,
+    label: &str,
+) {
+    let (mut state, mut memory) = ext_state();
+    tweak(&mut state);
+    let before = state.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(expected),
+        "{label}"
+    );
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+    assert!(memory.reads.is_empty(), "{label}");
+}
+
+#[test]
+fn ext_delivery_checks_if_before_the_sti_shadow() {
+    // IF = 0 with a blocking shadow: the IF check comes first.
+    assert_ext_refused_before_any_access(
+        |state| {
+            state.rflags &= !IF;
+            state.sti_shadow = Some(StiShadow::Blocking);
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::InterruptsMasked,
+        "IF = 0 and Blocking",
+    );
+}
+
+#[test]
+fn ext_delivery_checks_the_activity_before_if() {
+    // Halted with IF = 0: the activity check comes first.
+    assert_ext_refused_before_any_access(
+        |state| {
+            state.rflags &= !IF;
+            state.activity = Some(CpuActivity::Halted);
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::ActivityOutsideProfile,
+        "Halted and IF = 0",
+    );
+}
+
+#[test]
+fn ext_delivery_trap_gate_with_ist_reports_the_ist() {
+    // The trap-gate refusal comes after the gate checks: IST 1 wins over the gate type.
+    assert_ext_refused(
+        |_, memory| {
+            ext_put_gate(
+                memory,
+                EXT_VECTOR,
+                pf_gate_bytes(EXT_HANDLER, 0x10, 1, 0x8f),
+            )
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::UnsupportedIst(1),
+        "trap gate with IST 1",
+    );
+    // A trap gate to a bad descriptor reports the descriptor, not the gate type.
+    assert_ext_refused(
+        |_, memory| {
+            ext_put_gate(
+                memory,
+                EXT_VECTOR,
+                pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8f),
+            );
+            memory.put(LRETQ_GDT + 0x10, CODE64 | (3 << 45));
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::InvalidTargetCodeDescriptor,
+        "trap gate with a DPL 3 descriptor",
+    );
+}
+
 #[test]
 fn ext_delivery_refuses_a_cpl3_context() {
     let (mut state, mut memory) = ext_state();
