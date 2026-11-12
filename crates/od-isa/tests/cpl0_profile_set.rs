@@ -25905,6 +25905,273 @@ fn lldt_is_not_reachable_from_cpl3() {
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
 
+// ---- S4-38L7ax: `MOV DRn, r64` (`[REX] 0F 23 /r`, mod = 11), write only. SDM Vol.2 MOV (debug
+// registers) / Vol.3 17.2 (stated from memory, not re-checked): the source is a 64-bit register
+// in 64-bit mode; DR4/DR5 alias DR6/DR7 or raise #UD depending on CR4.DE, which is not modeled
+// per register, so they are refused (0x23); DR8..DR15 (REX.R) are not defined and are refused.
+// The value is stored whole (no reserved-bit check, no breakpoint behaviour); only RIP and the
+// stored slot change. The read direction `0F 21` stays unsupported. ----
+
+/// `mov %rsi, %db7; xor %esi,%esi; xor %edi,%edi; jmp ...; mov %rsi, %db1` (the S4-38L7aw
+/// diagnostic boundary bytes).
+const MOV_DR7_RSI_BOUNDARY: [u8; 16] = [
+    0x0f, 0x23, 0xfe, 0x31, 0xf6, 0x31, 0xff, 0xe9, 0xf9, 0x4c, 0x01, 0x00, 0x0f, 0x23, 0xce, 0x31,
+];
+
+#[test]
+fn mov_dr7_rsi_boundary_form_stores_the_value_and_changes_only_rip() {
+    let mut state = ltr_state();
+    state.gpr[Register::Rsi as usize] = 0x400;
+    let mut expected = state.clone();
+    let mut memory = ltr_memory(&MOV_DR7_RSI_BOUNDARY, ltr_tss_descriptor());
+    let data_before = memory.data.clone();
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(memory.data, data_before);
+    expected.debug_registers[7] = Some(0x400);
+    expected.rip += 3;
+    assert_eq!(state, expected, "only DR7 and RIP change");
+    assert_eq!(state.debug_registers[..7], [None; 7]);
+}
+
+#[test]
+fn mov_dr1_rsi_second_boundary_form_stores_into_dr1() {
+    // `0f 23 ce`: reg = 1 (DR1), rm = 6 (RSI).
+    let mut state = ltr_state();
+    state.gpr[Register::Rsi as usize] = 0;
+    let mut expected = state.clone();
+    let mut memory = ltr_memory(&[0x0f, 0x23, 0xce, 0x31], ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    expected.debug_registers[1] = Some(0);
+    expected.rip += 3;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn mov_drn_stores_into_each_supported_register_and_keeps_the_others() {
+    for (index, value) in [
+        (0u8, 0x0123_4567_89ab_cdefu64),
+        (1, 0xffff_ffff_ffff_ffff),
+        (2, 0x8000_0000_0000_0000),
+        (3, 1),
+        (6, 0xffff_0ff0),
+        (7, 0x400),
+        (7, 0xdead_beef_0000_0455),
+    ] {
+        let mut state = ltr_state();
+        state.gpr[Register::Rax as usize] = value;
+        // A previous value in another slot survives.
+        let other = (index as usize + 1) % 4;
+        state.debug_registers[other] = Some(0x77);
+        let mut expected = state.clone();
+        // `mov %rax, %dbN`: ModRM = 11 reg rm(RAX = 0).
+        let mut memory = ltr_memory(&[0x0f, 0x23, 0xc0 | (index << 3)], ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "DR{index}");
+        expected.debug_registers[index as usize] = Some(value);
+        expected.rip += 3;
+        assert_eq!(state, expected, "DR{index} = {value:#x}");
+        // The write does not change the source register.
+        assert_eq!(state.gpr[Register::Rax as usize], value);
+    }
+}
+
+#[test]
+fn mov_drn_overwrites_the_previous_value_of_the_same_register() {
+    let mut state = ltr_state();
+    state.gpr[Register::Rsi as usize] = 0x400;
+    state.debug_registers[7] = Some(0xffff_ffff);
+    let mut memory = ltr_memory(&[0x0f, 0x23, 0xfe], ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.debug_registers[7], Some(0x400));
+}
+
+#[test]
+fn mov_drn_keeps_all_64_bits_of_the_source() {
+    // The stored value is the full 64-bit source (no truncation, no reserved-bit rule).
+    let mut state = ltr_state();
+    state.gpr[Register::Rcx as usize] = 0xa5a5_5a5a_f0f0_0f0f;
+    let mut memory = ltr_memory(&[0x0f, 0x23, 0xf9], ltr_tss_descriptor()); // mov %rcx, %db7
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.debug_registers[7], Some(0xa5a5_5a5a_f0f0_0f0f));
+}
+
+#[test]
+fn mov_drn_takes_every_source_register_and_rex_without_r() {
+    for register in 0u8..16 {
+        for (rex, rex_len) in [
+            (None, 0u64),
+            (Some(0x40u8), 1),
+            (Some(0x48), 1),
+            (Some(0x42), 1),
+        ] {
+            // REX.B (r8..r15) needs a REX; the low registers also accept none or 40/48/42.
+            let rex_byte = match (register >= 8, rex) {
+                (true, None) => continue,
+                (true, Some(base)) => Some(base | 1),
+                (false, rex) => rex,
+            };
+            let mut code: Vec<u8> = Vec::new();
+            code.extend(rex_byte);
+            code.extend([0x0f, 0x23, 0xc0 | (3 << 3) | (register & 7)]); // DR3
+            let mut state = ltr_state();
+            state.gpr[register as usize] = 0x1122_3344_5566_7788 ^ ((register as u64) << 8);
+            let value = state.gpr[register as usize];
+            let mut expected = state.clone();
+            let mut memory = ltr_memory(&code, ltr_tss_descriptor());
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            expected.debug_registers[3] = Some(value);
+            expected.rip += 3 + rex_len;
+            assert_eq!(state, expected, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn mov_drn_forms_outside_the_slice_are_refused_without_mutation() {
+    // Opcode 0x23 for the write direction, 0x21 for the read direction (MOV r64, DRn).
+    let cases: &[&[u8]] = &[
+        &[0xf0, 0x0f, 0x23, 0xfe], // LOCK
+        &[0xf3, 0x0f, 0x23, 0xfe], // REP
+        &[0xf2, 0x0f, 0x23, 0xfe], // REPNE
+        &[0x66, 0x0f, 0x23, 0xfe], // 0x66
+        &[0x67, 0x0f, 0x23, 0xfe], // 0x67
+        &[0x64, 0x0f, 0x23, 0xfe], // segment overrides
+        &[0x65, 0x0f, 0x23, 0xfe],
+        &[0x2e, 0x0f, 0x23, 0xfe],
+        &[0x3e, 0x0f, 0x23, 0xfe],
+        &[0x44, 0x0f, 0x23, 0xfe], // REX.R: DR15
+        &[0x4c, 0x0f, 0x23, 0xc6], // REX.W+R: DR8
+        &[0x45, 0x0f, 0x23, 0xc6],
+        &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
+        &[0x41, 0x41, 0x0f, 0x23, 0xfe],
+        &[0x66, 0x41, 0x0f, 0x23, 0xfe],
+        &[0x0f, 0x23, 0xe6], // DR4 (CR4.DE rule not modeled)
+        &[0x0f, 0x23, 0xee], // DR5
+        &[0x48, 0x0f, 0x23, 0xe0],
+        &[0x41, 0x0f, 0x23, 0xed],
+        &[0x0f, 0x23, 0x3e], // memory forms (mod 00/01/10)
+        &[0x0f, 0x23, 0x7e, 0x08],
+        &[0x0f, 0x23, 0xbe, 0, 0, 0, 0],
+        &[0x0f, 0x23, 0x05, 0, 0, 0, 0],
+        &[0x41, 0x0f, 0x23, 0x3e],
+        &[0x0f, 0x21, 0xfe], // MOV r64, DR7 (read direction)
+        &[0x0f, 0x21, 0xce],
+        &[0x48, 0x0f, 0x21, 0xc0],
+        &[0x0f, 0x21, 0x3e],
+    ];
+    for &code in cases {
+        let mut state = ltr_state();
+        for value in state.gpr.iter_mut() {
+            *value = 0x400;
+        }
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let opcode = if code.contains(&0x21) { 0x21 } else { 0x23 };
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(state.debug_registers, [None; 8], "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn mov_drn_truncated_input_is_refused_without_mutation() {
+    for code in [&[0x0fu8, 0x23][..], &[0x41, 0x0f, 0x23][..], &[0x0f][..]] {
+        let mut state = ltr_state();
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn mov_drn_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): refused without mutation.
+    let mut state = legacy_state();
+    state.gpr[Register::Rsi as usize] = 0x400;
+    let before = state.clone();
+    let mut memory = ltr_memory(&MOV_DR7_RSI_BOUNDARY, ltr_tss_descriptor());
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x23 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn mov_drn_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gpr[Register::Rsi as usize] = 0x400;
+    let before = state.clone();
+    let mut memory = ltr_memory(&MOV_DR7_RSI_BOUNDARY, ltr_tss_descriptor());
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x23 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn mov_drn_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = ltr_state();
+    state.gpr[Register::Rsi as usize] = 0x400;
+    let before = state.clone();
+    let mut memory = ltr_memory(&MOV_DR7_RSI_BOUNDARY, ltr_tss_descriptor());
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
 // ---- S4-38L7an: FS/GS-based `MOV r/m32, r32` (`[64|65] [REX] 89 /r`) and `MOV r/m64, r64`
 // (`[64|65] REX.W 89 /r`), memory destination. SDM Vol.2 MOV: the low 4 bytes (or all 8) of the
 // source register are stored at the destination, flags are unchanged; Vol.3 3.4.4 FS/GS base (from

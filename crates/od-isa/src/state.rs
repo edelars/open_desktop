@@ -260,6 +260,11 @@ pub struct LongModeState {
     /// S4-38L7aw: LDTR made unusable by `LLDT` with a null selector (0..=3). Holds the visible
     /// selector; no descriptor cache exists in this state. `None` means no LDTR value is modeled.
     pub ldtr_null_selector: Option<u16>,
+    /// S4-38L7ax: debug registers DR0..DR7 as written by `MOV DRn, r64`. Slot `n` holds the last
+    /// written value; `None` means the register was never written (no power-up value is
+    /// modeled). Slots 4 and 5 (aliases of DR6/DR7) are never written. The values have no effect
+    /// on execution: no breakpoint or single-step behaviour is modeled.
+    pub debug_registers: [Option<u64>; 8],
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,
     /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
@@ -442,6 +447,7 @@ impl Default for LongModeState {
             idtr: None,
             tr: None,
             ldtr_null_selector: None,
+            debug_registers: [None; 8],
             fs_cache: None,
             gs_cache: None,
             x87: None,
@@ -487,6 +493,7 @@ pub enum FragmentAdapterError {
     UnsupportedIdtr(Idtr),
     UnsupportedTaskRegister(TaskRegisterCache),
     UnsupportedLdtr(u16),
+    UnsupportedDebugRegister { index: u8, value: u64 },
     UnsupportedDsCache(DsDescriptorCache),
     UnsupportedEsCache(DataSegmentDescriptorCache),
     UnsupportedCsSelector(u16),
@@ -587,6 +594,14 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(selector) = state.ldtr_null_selector {
             return Err(FragmentAdapterError::UnsupportedLdtr(selector));
+        }
+        for (index, value) in state.debug_registers.iter().enumerate() {
+            if let Some(value) = *value {
+                return Err(FragmentAdapterError::UnsupportedDebugRegister {
+                    index: index as u8,
+                    value,
+                });
+            }
         }
         if let Some(fs_cache) = state.fs_cache {
             return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
@@ -853,6 +868,7 @@ mod tests {
                         cr2: None,
                         tr: None,
                         ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -1192,6 +1208,19 @@ mod task_register_tests {
         assert_eq!(
             FragmentState::try_from(&state),
             Err(FragmentAdapterError::UnsupportedLdtr(0))
+        );
+    }
+
+    #[test]
+    fn fragment_adapter_rejects_debug_register_state() {
+        let mut state = LongModeState::default();
+        state.debug_registers[7] = Some(0x400);
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedDebugRegister {
+                index: 7,
+                value: 0x400
+            })
         );
     }
 }

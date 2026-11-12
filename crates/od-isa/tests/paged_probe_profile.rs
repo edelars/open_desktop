@@ -909,6 +909,38 @@ fn lldt_register_form_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn mov_drn_write_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ax belongs to the CPL0 set only; this profile refuses `MOV DRn, r64` without mutation.
+    for bytes in [
+        &[0x0f, 0x23, 0xfe][..],
+        &[0x41, 0x0f, 0x23, 0xfe][..],
+        &[0x48, 0x0f, 0x23, 0xc0][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsi as usize] = 0x400;
+        cpu.gpr[Register::Rax as usize] = 0x400;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x23 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(cpu.debug_registers, [None; 8]);
+    }
+}
+
+#[test]
 fn sgdt_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7al belongs to the CPL0 set only; this profile refuses it without mutation.
     for bytes in [

@@ -4630,6 +4630,76 @@ mod tests {
         assert_eq!(boot.board.state().ldtr_null_selector, None);
     }
 
+    // ---- S4-38L7ax: MOV DRn, r64 (register form, write only) through the board facade ----
+
+    #[test]
+    fn mov_dr7_rsi_stores_the_value_readable_through_the_board_state() {
+        // MOV ESI,0x400; MOV DR7,RSI (`0f 23 fe`, the S4-38L7aw boundary bytes); XOR ESI,ESI;
+        // MOV DR1,RSI (`0f 23 ce`); INC EAX to show execution continues; HLT.
+        let mut code = vec![0xBE];
+        code.extend(0x400u32.to_le_bytes());
+        code.extend([
+            0x0F, 0x23, 0xFE, 0x31, 0xF6, 0x0F, 0x23, 0xCE, 0xFF, 0xC0, 0xF4,
+        ]);
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(
+            boot.board.state().debug_registers,
+            [None; 8],
+            "the board entry state has no debug register value"
+        );
+        let rax_before = boot.board.state().gpr[od_isa::Register::Rax as usize];
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, MOV DR7, XOR, MOV DR1, INC, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        let mut expected = [None; 8];
+        expected[7] = Some(0x400);
+        expected[1] = Some(0);
+        assert_eq!(state.debug_registers, expected);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            rax_before.wrapping_add(1) & 0xffff_ffff
+        );
+    }
+
+    #[test]
+    fn mov_dr4_is_refused_with_opcode_0x23_through_the_board() {
+        // MOV DR4,RAX (`0f 23 e0`): the CR4.DE rule is not modeled, so the facade stops on it.
+        let code = [0x0F, 0x23, 0xE0, 0xF4];
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip = boot.board.state().rip;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x23 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0, "{record:?}");
+        assert_eq!(record.rip, rip, "{record:?}");
+        assert_eq!(record.rip_bytes[..3], [0x0F, 0x23, 0xE0], "{record:?}");
+        assert_eq!(boot.board.state().debug_registers, [None; 8]);
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]
