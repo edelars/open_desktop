@@ -1056,6 +1056,62 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("CPU_CONTRACT has no PSUBQ entry", profile["gate"])
         self.assertIn("modulo 2^64", family["outcome"])
 
+    def test_s2_34_13_movapd_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-34.13-MOVAPD-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 28 {modrm:02x}"
+                operands = f"movapd xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  403800: {encoding} {operands}")
+                self.assertEqual(row["signature"], "movapd xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  403900: 66 40 0f 28 c1 movapd xmm0,xmm1")), expected)
+        rejected = (
+            ("0f 28 c1", "movaps xmm0,xmm1"),  # no mandatory 66.
+            ("0f 28 c1", "movapd xmm0,xmm1"),
+            ("66 42 0f 28 c1", "movapd xmm0,xmm1"),  # REX.X.
+            ("66 48 0f 28 c1", "movapd xmm0,xmm1"),  # REX.W.
+            ("66 4c 0f 28 c1", "movapd xmm0,xmm1"),  # REX.R/W.
+            ("66 66 0f 28 c1", "movapd xmm0,xmm1"),  # duplicate prefix.
+            ("66 f2 0f 28 c1", "movapd xmm0,xmm1"),
+            ("66 f3 0f 28 c1", "movapd xmm0,xmm1"),
+            ("67 66 0f 28 c1", "movapd xmm0,xmm1"),
+            ("44 66 0f 28 c1", "movapd xmm0,xmm1"),  # REX before 66.
+            ("66 0f 28 00", "movapd xmm0,XMMWORD PTR [rax]"),
+            ("66 0f 29 c1", "movapd xmm0,xmm1"),  # reverse direction.
+            ("66 0f 10 c1", "movupd xmm0,xmm1"),
+            ("66 0f 28", "movapd xmm0,xmm1"),  # truncated ModR/M.
+            ("66 0f 28 c1 90", "movapd xmm0,xmm1"),  # trailing byte.
+            ("c5 f9 28 c1", "vmovapd xmm0,xmm1"),
+            ("62 f1 fd 08 28 c1", "vmovapd xmm0,xmm1"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403a00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_34_13_movapd_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.13 MOVAPD XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertIn("0F 28 /r", family["encoding"])
+        self.assertIn("ModR/M.mod=3", family["gate"])
+        self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
+
     def test_s2_35_18_pcmpeqb_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-psubq-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movapd-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-psubq-rootfs-pass1.json",
-      "sha256": "88d315de42ed95d2950c79804228dff3cfb4f6bc43c871fc2b4697b1bf4f3b72",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movapd-rootfs-pass1.json",
+      "sha256": "7abe3490d95e467664c3cb881544afb28b250bf069624d66c1e02b284fb943b5",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-psubq-rootfs-pass2.json",
-      "sha256": "88d315de42ed95d2950c79804228dff3cfb4f6bc43c871fc2b4697b1bf4f3b72",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movapd-rootfs-pass2.json",
+      "sha256": "7abe3490d95e467664c3cb881544afb28b250bf069624d66c1e02b284fb943b5",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295555,
-      "unclassified": 214845
+      "proven_supported": 6295569,
+      "unclassified": 214831
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293204,
+      "local_interpreter_profile": 6293218,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1049,
-    "unclassified_normalized_forms": 220,
+    "classified_normalized_forms": 1050,
+    "unclassified_normalized_forms": 219,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322697,
-        "unclassified": 23452
+        "proven_supported": 322703,
+        "unclassified": 23446
       },
       "D": {
-        "proven_supported": 6226510,
-        "unclassified": 209704
+        "proven_supported": 6226522,
+        "unclassified": 209692
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "88d315de42ed95d2950c79804228dff3cfb4f6bc43c871fc2b4697b1bf4f3b72",
+    "raw_inventory_sha256": "7abe3490d95e467664c3cb881544afb28b250bf069624d66c1e02b284fb943b5",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -136,7 +136,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6293204,
+    "local_interpreter_profile_rows": 6293218,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -195,15 +195,22 @@
     "psubq_register_rows_by_profile": {
       "S2-35.17-PSUBQ-XMM-register-register": 12
     },
-    "psubq_scope": "Accepted local-only PSUBQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; two little-endian u64 lanes independently compute (DEST-SRC) modulo 2^64. No data-memory callback; CPU_CONTRACT has no PSUBQ entry. No memory/MMX or CPL3/native/JIT/physical evidence."
+    "psubq_scope": "Accepted local-only PSUBQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; two little-endian u64 lanes independently compute (DEST-SRC) modulo 2^64. No data-memory callback; CPU_CONTRACT has no PSUBQ entry. No memory/MMX or CPL3/native/JIT/physical evidence.",
+    "movapd_register_rows": 14,
+    "movapd_register_normalized_forms": 1,
+    "movapd_register_encoding_forms": 7,
+    "movapd_register_rows_by_profile": {
+      "S2-34.13-MOVAPD-XMM-register-register": 14
+    },
+    "movapd_scope": "Accepted local-only MOVAPD forward XMM register-register profile: mandatory 66 with optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3, reg destination/r/m source; copies raw 128-bit source, advances RIP on success and preserves other state. No data-memory callback; SSE2/CR0/CR4 are assumptions only; no memory, reverse 0F29, MOVUPD 0F10, or CPL3/native/JIT/physical evidence."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "e1d239ba7894ce121de3bd48c8f737b215aceef57176da606ecafeb6b51b6cea",
-    "size_bytes": 1004128,
+    "sha256": "565cd6a9a2c031bbb51db942894aea7918b7feeed7fbe1caa1950c4eb205993a",
+    "size_bytes": 1004264,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psubq-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psubq-rootfs-pass1.json.gz",
-    "repeat_sha256": "e1d239ba7894ce121de3bd48c8f737b215aceef57176da606ecafeb6b51b6cea",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movapd-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movapd-rootfs-pass1.json.gz",
+    "repeat_sha256": "565cd6a9a2c031bbb51db942894aea7918b7feeed7fbe1caa1950c4eb205993a",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },
