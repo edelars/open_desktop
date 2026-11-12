@@ -45,6 +45,10 @@ pub(crate) struct RunManifest {
     pub scenario_status: ScenarioStatus,
     pub reason: Option<String>,
     pub runner: RunnerEvidence,
+    /// Typed machine stop observation derived from the raw runner stop record. Missing fields in
+    /// older raw JSON are represented as unobserved (`None`).
+    #[serde(default)]
+    pub machine_stop_reason: Option<MachineStopReasonEvidence>,
     pub host: HostEvidence,
     pub configuration: Value,
     pub artifact_hashes: BTreeMap<String, String>,
@@ -52,6 +56,13 @@ pub(crate) struct RunManifest {
     pub uart: UartEvidence,
     pub timing: TimingEvidence,
     pub expected_stop_kind: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MachineStopReasonEvidence {
+    Reset,
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -246,6 +257,10 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             .to_string();
         let guest_started = runner_value["guest_started"].as_bool().unwrap_or(false);
         let stop = runner_value.get("stop").cloned();
+        let machine_stop_reason = match machine_stop_reason_from_stop(stop.as_ref()) {
+            Ok(value) => value,
+            Err(error) => return invalid_input(&error),
+        };
         let scenario_status = scenario_status(
             &cli.scenario_id,
             &hardware_status,
@@ -288,6 +303,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 raw_json: raw_json_relative,
                 raw_json_sha256: raw_sha256,
             },
+            machine_stop_reason,
             host: HostEvidence {
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
@@ -882,6 +898,9 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     {
         return Err("run manifest configuration or artifact hashes do not match raw JSON".into());
     }
+    if manifest.machine_stop_reason != machine_stop_reason_from_stop(raw_value.get("stop"))? {
+        return Err("run manifest machine stop reason does not match raw runner JSON".into());
+    }
     let uart_path = safe_relative(root, &manifest.uart.path)?;
     let uart =
         fs::read(&uart_path).map_err(|error| format!("could not read UART capture: {error}"))?;
@@ -987,6 +1006,10 @@ fn compare_run(
             left.expected_stop_kind == right.expected_stop_kind,
         ),
         (
+            "machine_stop_reason",
+            left.machine_stop_reason == right.machine_stop_reason,
+        ),
+        (
             "artifact_hashes",
             left.artifact_hashes == right.artifact_hashes,
         ),
@@ -1014,8 +1037,14 @@ fn compare_run(
     if left_config != right_config {
         unexplained.push(format!("{prefix}.configuration differs"));
     }
-    let left_stop = normalize_nonce(&without_uart(left.runner.stop.as_ref()), &left.nonce);
-    let right_stop = normalize_nonce(&without_uart(right.runner.stop.as_ref()), &right.nonce);
+    let left_stop = normalize_nonce(
+        &without_uart_and_stop_reason(left.runner.stop.as_ref()),
+        &left.nonce,
+    );
+    let right_stop = normalize_nonce(
+        &without_uart_and_stop_reason(right.runner.stop.as_ref()),
+        &right.nonce,
+    );
     if left_stop != right_stop {
         unexplained.push(format!("{prefix}.machine_observations differs"));
     }
@@ -1062,13 +1091,31 @@ fn compare_run(
     Ok(())
 }
 
-fn without_uart(stop: Option<&Value>) -> Value {
+fn without_uart_and_stop_reason(stop: Option<&Value>) -> Value {
     let mut value = stop.cloned().unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
         object.remove("com1_hex");
         object.remove("com1_text");
+        object.remove("machine_stop_reason");
     }
     value
+}
+
+fn machine_stop_reason_from_stop(
+    stop: Option<&Value>,
+) -> Result<Option<MachineStopReasonEvidence>, String> {
+    let Some(value) = stop.and_then(|stop| stop.get("machine_stop_reason")) else {
+        // Old linux-direct JSON did not expose the typed PM request. Keep it unobserved.
+        return Ok(None);
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::String(reason) if reason == "reset" => Ok(Some(MachineStopReasonEvidence::Reset)),
+        Value::String(reason) if reason == "shutdown" => {
+            Ok(Some(MachineStopReasonEvidence::Shutdown))
+        }
+        _ => Err("stop.machine_stop_reason must be reset, shutdown, or null".into()),
+    }
 }
 
 fn normalize_nonce(value: &Value, nonce: &str) -> Value {
@@ -1336,6 +1383,7 @@ mod tests {
         let raw_value: Value = serde_json::from_slice(&raw).unwrap();
         let expected = vec![format!("A_{marker}")];
         let marker_evidence = validate_markers(&uart, nonce, &expected).evidence;
+        let machine_stop_reason = machine_stop_reason_from_stop(raw_value.get("stop")).unwrap();
         let run = RunManifest {
             schema_version: SERIES_SCHEMA_VERSION,
             series_id: series_id.into(),
@@ -1346,6 +1394,7 @@ mod tests {
             hardware_status: "loaded".into(),
             scenario_status: ScenarioStatus::NotRun,
             reason: Some("S5-08 guest scenario invocation is not integrated".into()),
+            machine_stop_reason,
             runner: RunnerEvidence {
                 exit_code: 0,
                 guest_started: true,
@@ -1430,6 +1479,38 @@ mod tests {
         fs::write(series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
     }
 
+    fn set_machine_stop_reason(series_path: &Path, reason: Option<&str>) {
+        let root = series_path.parent().unwrap();
+        let mut series: Value = serde_json::from_slice(&fs::read(series_path).unwrap()).unwrap();
+        let manifest_path = root.join(series["runs"][0]["manifest"].as_str().unwrap());
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let raw_path = root.join(manifest["runner"]["raw_json"].as_str().unwrap());
+        let mut raw: Value = serde_json::from_slice(&fs::read(&raw_path).unwrap()).unwrap();
+        let stop = raw["stop"].as_object_mut().unwrap();
+        match reason {
+            Some(reason) => {
+                stop.insert("machine_stop_reason".into(), json!(reason));
+                manifest["machine_stop_reason"] = json!(reason);
+            }
+            None => {
+                stop.remove("machine_stop_reason");
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("machine_stop_reason");
+            }
+        }
+        let raw_bytes = serde_json::to_vec_pretty(&raw).unwrap();
+        fs::write(&raw_path, &raw_bytes).unwrap();
+        manifest["runner"]["raw_json_sha256"] = json!(od_testkit::sha256_hex(&raw_bytes));
+        manifest["runner"]["stop"] = raw["stop"].clone();
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(&manifest_path, &manifest_bytes).unwrap();
+        series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&manifest_bytes));
+        fs::write(series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+    }
+
     fn append_failed_test_run(series_path: &Path, nonce: &str) {
         let root = series_path.parent().unwrap();
         let mut series: Value = serde_json::from_slice(&fs::read(series_path).unwrap()).unwrap();
@@ -1466,6 +1547,7 @@ mod tests {
         fs::write(run_dir.join("runner.json"), &raw_bytes).unwrap();
         let raw_value: Value = serde_json::from_slice(&raw_bytes).unwrap();
         let markers = validate_markers(&uart, nonce, &["A_PASS".to_string()]).evidence;
+        let machine_stop_reason = machine_stop_reason_from_stop(raw_value.get("stop")).unwrap();
         let run = RunManifest {
             schema_version: SERIES_SCHEMA_VERSION,
             series_id: series_id.clone(),
@@ -1476,6 +1558,7 @@ mod tests {
             hardware_status: "failed".into(),
             scenario_status: ScenarioStatus::Failed,
             reason: Some("runner execution failed after guest start".into()),
+            machine_stop_reason,
             runner: RunnerEvidence {
                 exit_code: 1,
                 guest_started: true,
@@ -1566,6 +1649,112 @@ mod tests {
                 .iter()
                 .any(|value| value.contains("host_environment"))
         );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn typed_machine_stop_reason_is_validated_and_legacy_absence_is_unobserved() {
+        assert_eq!(
+            machine_stop_reason_from_stop(Some(&json!({"machine_stop_reason":"reset"}))).unwrap(),
+            Some(MachineStopReasonEvidence::Reset)
+        );
+        assert_eq!(
+            machine_stop_reason_from_stop(Some(&json!({"machine_stop_reason":"shutdown"})))
+                .unwrap(),
+            Some(MachineStopReasonEvidence::Shutdown)
+        );
+        assert_eq!(
+            machine_stop_reason_from_stop(Some(&json!({"machine_stop_reason":null}))).unwrap(),
+            None
+        );
+        assert_eq!(
+            machine_stop_reason_from_stop(Some(&json!({}))).unwrap(),
+            None
+        );
+        assert_eq!(machine_stop_reason_from_stop(None).unwrap(), None);
+        assert!(
+            machine_stop_reason_from_stop(Some(&json!({"machine_stop_reason":"halt"})))
+                .unwrap_err()
+                .contains("reset, shutdown, or null")
+        );
+
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-stop-reason-legacy-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let legacy = write_test_series(&temp, "legacy-series", "nonceLegacyStop0001", "PASS");
+        // Simulate both legacy JSON layers predating the additive field.
+        set_machine_stop_reason(&legacy, None);
+        assert!(compare_series_paths(&legacy, &legacy).unwrap().matches);
+        let manifest = fresh_manifest(&legacy).unwrap();
+        let loaded = load_series_runs(&legacy, &manifest).unwrap();
+        assert_eq!(loaded[0].machine_stop_reason, None);
+        assert_eq!(loaded[0].scenario_status, ScenarioStatus::NotRun);
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn typed_machine_stop_reason_is_integrity_checked_and_compared_without_passing_scenario() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-stop-reason-compare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let reset = write_test_series(
+            &temp.join("reset"),
+            "reset-series",
+            "nonceResetStop00001",
+            "PASS",
+        );
+        let shutdown = write_test_series(
+            &temp.join("shutdown"),
+            "shutdown-series",
+            "nonceShutdownStop001",
+            "PASS",
+        );
+        set_machine_stop_reason(&reset, Some("reset"));
+        set_machine_stop_reason(&shutdown, Some("shutdown"));
+
+        let manifest = fresh_manifest(&reset).unwrap();
+        let reset_run = load_series_runs(&reset, &manifest).unwrap();
+        assert_eq!(reset_run[0].scenario_status, ScenarioStatus::NotRun);
+        assert_eq!(
+            reset_run[0].machine_stop_reason,
+            Some(MachineStopReasonEvidence::Reset)
+        );
+        let comparison = compare_series_paths(&reset, &shutdown).unwrap();
+        assert!(!comparison.matches);
+        assert!(
+            comparison
+                .unexplained_differences
+                .iter()
+                .any(|difference| difference == "run[0].machine_stop_reason differs")
+        );
+
+        let tampered = write_test_series(
+            &temp.join("tampered"),
+            "tampered-series",
+            "nonceTamperedStop001",
+            "PASS",
+        );
+        set_machine_stop_reason(&tampered, Some("shutdown"));
+        rewrite_run_and_series(&tampered, |manifest| {
+            manifest["machine_stop_reason"] = json!("reset");
+        });
+        assert!(
+            compare_series_paths(&reset, &tampered)
+                .unwrap_err()
+                .contains("machine stop reason does not match raw runner JSON")
+        );
+
         let _ = fs::remove_dir_all(temp);
     }
 

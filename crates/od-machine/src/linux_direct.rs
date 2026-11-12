@@ -36,7 +36,6 @@
 //! kernel and initrd bytes back from guest memory, so it describes what the guest will see, not
 //! what the loader meant to write.
 
-use crate::GuestPhysicalAddress;
 use crate::PagedProbeExit;
 use crate::acpi_blob::{
     AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
@@ -46,6 +45,7 @@ use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimag
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
+use crate::{GuestPhysicalAddress, MachineStopReason};
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
@@ -438,6 +438,9 @@ pub struct LinuxStopRecord {
     pub exit_kind: &'static str,
     /// The `Debug` text of `exit` (carries the fault, rejection or backend details).
     pub exit_detail: String,
+    /// Typed ACPI PM stop request, when the board stopped because the guest requested Reset or
+    /// Shutdown. It is independent of `exit_kind`, which remains `stopped` for either PM request.
+    pub stop_reason: Option<MachineStopReason>,
     /// The opcode byte of an `Unsupported` exit.
     pub unsupported_opcode: Option<u8>,
     pub rip: u64,
@@ -619,6 +622,7 @@ fn stop_record(
             exit_kind(&report.exit)
         },
         exit_detail: format!("{:?}", report.exit),
+        stop_reason: report.stop_reason,
         exit: report.exit,
         unsupported_opcode,
         rip: state.rip,
