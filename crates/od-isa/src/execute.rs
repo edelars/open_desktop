@@ -35212,6 +35212,9 @@ fn step_configured(
         // S4-38L7bc: and for the FS/GS-based ADD m32/m64, r.
         | Operation::AddFsMem { .. }
         | Operation::AddGsMem { .. }
+        // S4-38L7bd: and for the FS/GS-based ADD r32/r64, m.
+        | Operation::AddFsLoad { .. }
+        | Operation::AddGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -49065,6 +49068,8 @@ fn step_configured(
         | Operation::SubGsMem { .. }
         | Operation::AddFsMem { .. }
         | Operation::AddGsMem { .. }
+        | Operation::AddFsLoad { .. }
+        | Operation::AddGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -54553,6 +54558,40 @@ fn transfer(
                 state.rflags,
             );
             memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddFsLoad { dst, src } => {
+            // S4-38L7bd: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before the read, so
+            // before any register or flag write. The qword/dword is read once, added to the
+            // destination through the shared `arithmetic_result` of the non-prefixed ADD at the
+            // destination width, and `state.write` masks and (for a dword) zero-extends it.
+            // Memory is not written.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Add,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::AddGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Add,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
             state.rflags = flags;
         }
         Operation::TestFsMemByte { src, immediate } => {

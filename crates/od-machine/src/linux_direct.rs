@@ -3801,6 +3801,99 @@ mod tests {
         assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
     }
 
+    // ---- S4-38L7bd: FS/GS-based ADD r32, m32 and r64, m64 through the board facade ----
+    // The destination is RAX (`run_segment_add` loads RAX last); the memory qword is only read.
+
+    #[test]
+    fn gs_add_load_qword_after_wrmsr_gs_base_adds_guest_memory_into_rax_and_leaves_it_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 03 05 disp32` = `add %gs:disp(%rip), %rax` (the S4-38L7bc Linux boundary form
+        // with RAX as the destination), GS base = BASE and a distractor FS base.
+        // RAX 0x10 + 0x7fff_ffff_ffff_fff0 overflows to the sign bit.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x03, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x7fff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x7fff_ffff_ffff_fff0,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8000_0000_0000_0000
+        );
+        // 0x8000_0000_0000_0000: OF, SF and PF (zero low byte); no CF, AF, ZF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_add_load_dword_after_wrmsr_fs_base_zero_extends_into_rax_and_leaves_memory_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 03 05 disp32` = `add %fs:disp(%rip), %eax`, FS base = BASE and a distractor GS
+        // base. EAX 0xffff_fff0 + the low dword 0x20 of the memory qword wraps to 0x10 with CF;
+        // the upper half of RAX is dropped (zero-extension).
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x03, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_0000_0020,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_ffff_fff0,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_0000_0020,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x10);
+        // 0x10: CF only (one bit set, so no PF; no AF, ZF, SF, OF).
+        assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the

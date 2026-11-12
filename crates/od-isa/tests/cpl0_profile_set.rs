@@ -11785,7 +11785,7 @@ fn segment_sub_forms_outside_the_slice_are_refused_without_mutation() {
         ),
         // Memory destination SUB m64, r64 (29) and the neighbouring ALU forms stay refused.
         (&[0x65, 0x4c, 0x29, 0x25, 0x34, 0x12, 0x00, 0x00], 0x29),
-        (&[0x65, 0x4c, 0x03, 0x25, 0x34, 0x12, 0x00, 0x00], 0x03),
+        (&[0x65, 0x4c, 0x02, 0x25, 0x34, 0x12, 0x00, 0x00], 0x02),
         (&[0x65, 0x4c, 0x3b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x3b),
         (&[0x64, 0x4c, 0x1b, 0x25, 0x34, 0x12, 0x00, 0x00], 0x1b),
         (&[0x64, 0x4c, 0x13, 0x25, 0x34, 0x12, 0x00, 0x00], 0x13),
@@ -32152,7 +32152,7 @@ fn fs_gs_add_read_fault_changes_nothing() {
 fn segment_add_forms_outside_the_slice_are_refused_without_mutation() {
     // (code, expected refused opcode): the 0x01 forms refuse with 0x01 (the 0x66 word form is not
     // added, as in S4-38L7az); the neighbouring ALU forms with a FS/GS memory operand refuse with
-    // their own opcode.
+    // their own opcode (S4-38L7bd: the `03` forms moved to their own tests, `33`/`3B` stand in).
     let cases: [(&[u8], u8); 23] = [
         // 0x66 (word), in both orders, and 0x67.
         (&[0x66, 0x65, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
@@ -32177,8 +32177,8 @@ fn segment_add_forms_outside_the_slice_are_refused_without_mutation() {
         // stay refused with their own opcodes.
         (&[0x65, 0x48, 0x00, 0x15, 0x34, 0x12, 0, 0], 0x00),
         (&[0x65, 0x48, 0x02, 0x15, 0x34, 0x12, 0, 0], 0x02),
-        (&[0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
-        (&[0x64, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x48, 0x33, 0x15, 0x34, 0x12, 0, 0], 0x33),
+        (&[0x64, 0x3b, 0x15, 0x34, 0x12, 0, 0], 0x3b),
         (&[0x65, 0x48, 0x11, 0x15, 0x34, 0x12, 0, 0], 0x11),
         (&[0x64, 0x48, 0x13, 0x15, 0x34, 0x12, 0, 0], 0x13),
         (&[0x65, 0x48, 0x21, 0x15, 0x34, 0x12, 0, 0], 0x21),
@@ -32360,6 +32360,788 @@ fn segment_add_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = CasMemory::new(&GS_ADD_RAX_BOUNDARY, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7bd: FS/GS-based `ADD r32, r/m32` and `ADD r64, r/m64` (`[64|65] [REX] 03 /r`, memory
+// source; SDM Vol.2 ADD: DEST = DEST + SRC, CF/OF/SF/ZF/PF/AF all defined by the result; from
+// memory, not re-checked against the SDM text). The destination is the ModRM reg register (REX.R
+// extends it); the source is read at the operand width (dword without REX.W, qword with it) at
+// base + effective address. One read, no memory write; a dword result zero-extends into the 64-bit
+// register. The flags are those of the plain ADD (`add_oracle`). ----
+
+/// `add %gs:0x2be617f(%rip), %rbx` (the S4-38L7bc diagnostic boundary bytes, 8 bytes).
+const GS_ADD_RBX_BOUNDARY: [u8; 8] = [0x65, 0x48, 0x03, 0x1d, 0x7f, 0x61, 0xbe, 0x02];
+/// `add %gs:0x1234(%rip), %rdx`.
+const GS_ADD_LOAD_RDX_RIP: [u8; 8] = [0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00];
+/// `add %fs:0x1234(%rip), %rdx`.
+const FS_ADD_LOAD_RDX_RIP: [u8; 8] = [0x64, 0x48, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00];
+/// `add %gs:0x1234(%rip), %edx`.
+const GS_ADD_LOAD_EDX_RIP: [u8; 7] = [0x65, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00];
+/// `add %fs:0x1234(%rip), %edx`.
+const FS_ADD_LOAD_EDX_RIP: [u8; 7] = [0x64, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00];
+
+#[test]
+fn gs_add_load_boundary_form_adds_the_qword_into_rbx_and_touches_nothing_else() {
+    // The S4-38L7bc boundary `65 48 03 1d 7f 61 be 02`: next RIP (RIP + 8) + disp32 + the GS base.
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let at = gs_base + RIP + 8 + 0x02be_617f;
+    let mut memory = BitsMemory::new(&GS_ADD_RBX_BOUNDARY);
+    memory.set_qword(at - 8, 0x7777_8888_9999_aaaa);
+    memory.set_qword(at, 0x1111_2222_0000_00f0);
+    memory.set_qword(at + 8, 0x3333_4444_5555_6666);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::Rbx as usize] = 0x0000_0001_0000_0020;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_AF;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert!(memory.writes.is_empty(), "no memory write");
+    let sum = 0x1111_2223_0000_0110u64;
+    assert_eq!(0x1111_2222_0000_00f0u64 + 0x0000_0001_0000_0020, sum);
+    assert_eq!(memory.qword(at - 8), 0x7777_8888_9999_aaaa);
+    assert_eq!(memory.qword(at), 0x1111_2222_0000_00f0);
+    assert_eq!(memory.qword(at + 8), 0x3333_4444_5555_6666);
+    expected.rip += 8;
+    expected.gpr[Register::Rbx as usize] = sum;
+    // 0x...0110: low byte 0x10 (one bit set, PF clear), no carry/overflow/sign/zero, no nibble
+    // carry (AF clear): the stale CF/OF/ZF/AF are all cleared.
+    expected.rflags &= !ARITH;
+    assert_eq!(state, expected, "only RIP, RBX and the flags change");
+}
+
+#[test]
+fn gs_add_load_boundary_flag_corners_follow_the_plain_add_and_differ_from_or() {
+    // (rbx, memory, expected result, expected arithmetic flags), by hand: carry out, signed
+    // overflow, carry and overflow together, nibble carry, sign without overflow, parity, carry
+    // out of the low dword only. The cases with overlapping bits make ADD differ from OR.
+    let cases: [(u64, u64, u64, u64); 7] = [
+        (u64::MAX, 1, 0, FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF),
+        (
+            0x7fff_ffff_ffff_ffff,
+            1,
+            0x8000_0000_0000_0000,
+            FLAG_OF | FLAG_SF | FLAG_AF | FLAG_PF,
+        ),
+        (
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0,
+            FLAG_CF | FLAG_OF | FLAG_PF | FLAG_ZF,
+        ),
+        (0x0f, 0x01, 0x10, FLAG_AF),
+        (0x8000_0000_0000_0000, 0x10, 0x8000_0000_0000_0010, FLAG_SF),
+        (0x03, 0x00, 0x03, FLAG_PF),
+        (0x0000_0000_ffff_ffff, 0x1, 0x1_0000_0000, FLAG_PF | FLAG_AF),
+    ];
+    for (rbx, value, result_expected, flags) in cases {
+        let gs_base = 0xffff_8880_1234_0000u64;
+        let at = gs_base + RIP + 8 + 0x02be_617f;
+        let mut memory = BitsMemory::new(&GS_ADD_RBX_BOUNDARY);
+        memory.set_qword(at, value);
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.rflags |= ARITH;
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rbx:#x} + {value:#x}");
+        assert_eq!(
+            state.gpr[Register::Rbx as usize],
+            result_expected,
+            "{rbx:#x} + {value:#x}"
+        );
+        assert_eq!(state.rflags & ARITH, flags, "{rbx:#x} + {value:#x}");
+        assert_eq!(memory.qword(at), value, "memory unchanged");
+        assert!(memory.writes.is_empty());
+        if rbx & value != 0 {
+            assert_ne!(result_expected, rbx | value, "ADD differs from OR");
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_add_load_use_their_own_base_and_ignore_the_other() {
+    for (code, fs, gs, width) in [
+        (&FS_ADD_LOAD_RDX_RIP[..], true, false, 8usize),
+        (&GS_ADD_LOAD_RDX_RIP[..], false, true, 8),
+        (&FS_ADD_LOAD_EDX_RIP[..], true, false, 4),
+        (&GS_ADD_LOAD_EDX_RIP[..], false, true, 4),
+    ] {
+        let used = 0xffff_8880_4321_0000u64;
+        let other = 0xffff_8880_9999_0000u64;
+        let mut state = board_state();
+        state.fs_base = if fs { used } else { other };
+        state.gs_base = if gs { used } else { other };
+        state.gpr[Register::Rdx as usize] = 0x0f0f;
+        let mut memory = CasMemory::new(code, 0x1000_0000_f0f0);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        let at = used + RIP + code.len() as u64 + 0x1234;
+        assert_eq!(memory.reads, vec![(at, width)], "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(memory.cell, 0x1000_0000_f0f0, "{code:02x?}");
+        // 0xf0f0 + 0x0f0f = 0xffff; the dword form does not see the upper half of the memory qword,
+        // the qword form adds the whole qword.
+        let sum = if width == 8 {
+            0x1000_0000_f0f0 + 0x0f0f
+        } else {
+            0xffff
+        };
+        assert_eq!(state.gpr[Register::Rdx as usize], sum, "{code:02x?}");
+    }
+}
+
+#[test]
+fn fs_and_gs_add_load_with_a_zero_base_use_the_effective_address() {
+    for code in [GS_ADD_LOAD_RDX_RIP, FS_ADD_LOAD_RDX_RIP] {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        state.gpr[Register::Rdx as usize] = 3;
+        let mut memory = CasMemory::new(&code, 0x10);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 8)]);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x13);
+    }
+}
+
+#[test]
+fn fs_and_gs_add_load_flags_and_results_follow_the_oracle_for_both_widths() {
+    let values: [u64; 10] = [
+        0,
+        1,
+        0x80,
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_ffff,
+        0x7fff_ffff_ffff_ffff,
+        0x8000_0000_0000_0000,
+        0xffff_ffff_ffff_ffff,
+        0x1234_5678_9abc_def0,
+    ];
+    for (code, bits) in [
+        (&GS_ADD_LOAD_RDX_RIP[..], 64u32),
+        (&FS_ADD_LOAD_RDX_RIP[..], 64),
+        (&GS_ADD_LOAD_EDX_RIP[..], 32),
+        (&FS_ADD_LOAD_EDX_RIP[..], 32),
+    ] {
+        for old in values {
+            for rhs in values {
+                for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                    // `old` is the register, `rhs` the memory operand.
+                    let (result, flags) = add_expected(bits, old, rhs, initial);
+                    let mut state = board_state();
+                    state.rflags = initial;
+                    state.gpr[Register::Rdx as usize] = old;
+                    let mut expected = state.clone();
+                    let mut memory = CasMemory::new(code, rhs);
+                    let run = run_cas_set(&mut state, &mut memory).unwrap();
+                    let label = format!("{bits}-bit {old:#x} + {rhs:#x} from {initial:#x}");
+                    assert_eq!(run.instructions_executed, 1, "{label}");
+                    assert_eq!(memory.reads.len(), 1, "{label}");
+                    assert!(memory.writes.is_empty(), "{label}");
+                    assert_eq!(memory.cell, rhs, "{label}");
+                    expected.rip += code.len() as u64;
+                    expected.rflags = flags;
+                    // The oracle result is masked to the width: a dword result zero-extends.
+                    expected.gpr[Register::Rdx as usize] = result;
+                    assert_eq!(state, expected, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_gs_add_load_flags_equal_the_non_prefixed_add() {
+    for (prefixed, plain) in [
+        (
+            &FS_ADD_LOAD_RDX_RIP[..],
+            &[0x48, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ),
+        (
+            &GS_ADD_LOAD_EDX_RIP[..],
+            &[0x03, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        ),
+    ] {
+        for (lhs, rhs) in [
+            (0u64, 0u64),
+            (1, 2),
+            (0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffff),
+            (0xffff_ffff_0000_0000, 0x0000_0000_ffff_ffff),
+            (0x1234_5678_9abc_def0, 0x0fed_cba9_8765_4321),
+        ] {
+            let mut a = board_state();
+            a.rflags |= FLAG_CF | FLAG_OF | FLAG_AF;
+            a.gpr[Register::Rdx as usize] = lhs;
+            let mut b = a.clone();
+            let mut memory = CasMemory::new(prefixed, rhs);
+            run_cas_set(&mut a, &mut memory).unwrap();
+            let mut memory = CasMemory::new(plain, rhs);
+            run_cas_set(&mut b, &mut memory).unwrap();
+            assert_eq!(a.gpr, b.gpr, "{lhs:#x} + {rhs:#x}");
+            assert_eq!(a.rflags, b.rflags, "{lhs:#x} + {rhs:#x}");
+        }
+    }
+}
+
+#[test]
+fn gs_add_load_dword_form_zero_extends_and_adds_only_the_low_32_bits() {
+    // `addl %gs:0x1234(%rip), %ebx` (65 03 1d ...): the upper half of RBX is discarded (the 32-bit
+    // destination zero-extends), the upper dword of the memory qword is not part of the operation.
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let code = [0x65u8, 0x03, 0x1d, 0x34, 0x12, 0x00, 0x00];
+    let at = gs_base + RIP + 7 + 0x1234;
+    let mut memory = BitsMemory::new(&code);
+    memory.set_qword(at - 8, 0x1111_1111_1111_1111);
+    memory.set_qword(at, 0xaaaa_bbbb_0000_0020);
+    memory.set_qword(at + 8, 0x2222_2222_2222_2222);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rbx as usize] = 0xdead_beef_ffff_fff0;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert!(memory.writes.is_empty());
+    assert_eq!(memory.qword(at - 8), 0x1111_1111_1111_1111);
+    assert_eq!(memory.qword(at), 0xaaaa_bbbb_0000_0020);
+    assert_eq!(memory.qword(at + 8), 0x2222_2222_2222_2222);
+    // 0xfffffff0 + 0x20 = 0x1_0000_0010: the 32-bit sum is 0x10, with CF; the upper half is zero.
+    expected.gpr[Register::Rbx as usize] = 0x10;
+    expected.rip += 7;
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_CF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_add_load_qword_form_reads_the_whole_qword_and_keeps_the_neighbours() {
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 8 + 0x1234;
+    let mut memory = BitsMemory::new(&GS_ADD_LOAD_RDX_RIP);
+    memory.set_qword(at - 8, 0x1111_1111_1111_1111);
+    memory.set_qword(at, 0x0000_0001_0000_0020);
+    memory.set_qword(at + 8, 0x2222_2222_2222_2222);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rdx as usize] = 0x0000_0002_0000_0030;
+    run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(at, 8)]);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0000_0003_0000_0050);
+    assert_eq!(memory.qword(at), 0x0000_0001_0000_0020);
+    assert_eq!(memory.qword(at - 8), 0x1111_1111_1111_1111);
+    assert_eq!(memory.qword(at + 8), 0x2222_2222_2222_2222);
+}
+
+#[test]
+fn gs_add_load_with_every_extended_destination_register_r8_to_r15() {
+    // `add %gs:0x1234(%rip), %rN` via REX.W + REX.R (0x4c) and `..., %rNd` via REX.R (0x44).
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        for prefix in [0x65u8, 0x64] {
+            for (rex, bits) in [(0x4cu8, 64u32), (0x44, 32)] {
+                let code = [prefix, rex, 0x03, ((i as u8) << 3) | 0x05, 0x34, 0x12, 0, 0];
+                let old = 0x1_0000_0100 + i as u64;
+                let rhs = 0x2_0000_0200u64;
+                let mut state = board_state();
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8880_0000_0000;
+                state.gpr[Register::Rdx as usize] = 0x7777;
+                state.gpr[register as usize] = old;
+                let mut expected = state.clone();
+                let mut memory = CasMemory::new(&code, rhs);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                let label = format!("r{} {prefix:#x} {rex:#x}", i + 8);
+                assert_eq!(result.instructions_executed, 1, "{label}");
+                assert_eq!(
+                    memory.reads,
+                    vec![(
+                        0xffff_8880_0000_0000 + RIP + 8 + 0x1234,
+                        (bits / 8) as usize
+                    )],
+                    "{label}"
+                );
+                assert!(memory.writes.is_empty(), "{label}");
+                let (sum, flags) = add_expected(bits, old, rhs, expected.rflags);
+                // 64-bit: 0x3_0000_0300 + i. 32-bit: the upper dwords are dropped, 0x300 + i.
+                assert_eq!(
+                    sum,
+                    if bits == 64 {
+                        0x3_0000_0300 + i as u64
+                    } else {
+                        0x300 + i as u64
+                    },
+                    "{label}"
+                );
+                expected.gpr[register as usize] = sum;
+                expected.rip += 8;
+                expected.rflags = flags;
+                assert_eq!(state, expected, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn gs_add_load_with_every_legacy_destination_register_and_the_empty_rex() {
+    // Destination encodings 0..7 (RSP and RBP included) without REX and with the empty REX 0x40
+    // (the dword form), and with REX.W (qword). Only the destination changes.
+    let order = [
+        Register::Rax,
+        Register::Rcx,
+        Register::Rdx,
+        Register::Rbx,
+        Register::Rsp,
+        Register::Rbp,
+        Register::Rsi,
+        Register::Rdi,
+    ];
+    for (i, register) in order.into_iter().enumerate() {
+        for (prefixes, bits) in [
+            (&[0x65u8][..], 32u32),
+            (&[0x65, 0x40][..], 32),
+            (&[0x65, 0x48][..], 64),
+        ] {
+            let mut code = prefixes.to_vec();
+            code.extend([0x03, ((i as u8) << 3) | 0x05, 0x34, 0x12, 0, 0]);
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.gpr[register as usize] = 0x5_0000_0010;
+            let mut expected = state.clone();
+            let mut memory = CasMemory::new(&code, 0x20);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            let label = format!("{code:02x?}");
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert_eq!(memory.reads.len(), 1, "{label}");
+            assert_eq!(memory.reads[0].1, (bits / 8) as usize, "{label}");
+            expected.gpr[register as usize] = if bits == 64 { 0x5_0000_0030 } else { 0x30 };
+            expected.rip += code.len() as u64;
+            expected.rflags = add_expected(bits, 0x5_0000_0010, 0x20, expected.rflags).1;
+            assert_eq!(state, expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn gs_add_load_with_the_destination_also_the_base_uses_the_pre_state_address() {
+    // `add %gs:0x8(%rax), %rax` = 65 48 03 40 08: the address uses the unchanged RAX, then RAX is
+    // replaced by RAX + memory.
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rax as usize] = 0x100;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&[0x65, 0x48, 0x03, 0x40, 0x08], 0x2);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_0000_0108, 8)]);
+    expected.gpr[Register::Rax as usize] = 0x102;
+    expected.rip += 5;
+    expected.rflags = add_expected(64, 0x100, 2, expected.rflags).1;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn gs_and_fs_add_load_with_base_disp8_and_sib_addressing() {
+    let base = 0xffff_8880_0000_0000u64;
+    // (code, address relative to the segment base, width).
+    // add %gs:(%rbx), %rdx                -> 65 48 03 13
+    // add %fs:0x3d(%rbx), %rdx            -> 64 48 03 53 3d
+    // add %gs:0x10(%rbx,%rcx,4), %rdx     -> 65 48 03 54 8b 10
+    // add %fs:-0x4(%rsp), %rdx            -> 64 48 03 54 24 fc
+    // add %gs:0x10(%rbx,%rcx,8), %edx     -> 65 03 54 cb 10
+    let cases: [(&[u8], u64, usize); 5] = [
+        (&[0x65, 0x48, 0x03, 0x13], 0x1000, 8),
+        (&[0x64, 0x48, 0x03, 0x53, 0x3d], 0x1000 + 0x3d, 8),
+        (&[0x65, 0x48, 0x03, 0x54, 0x8b, 0x10], 0x1000 + 12 + 0x10, 8),
+        (&[0x64, 0x48, 0x03, 0x54, 0x24, 0xfc], 0x2000 - 4, 8),
+        (&[0x65, 0x03, 0x54, 0xcb, 0x10], 0x1000 + 24 + 0x10, 4),
+    ];
+    for (code, offset, width) in cases {
+        let mut state = board_state();
+        state.gs_base = base;
+        state.fs_base = base;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rsp as usize] = 0x2000;
+        state.gpr[Register::Rdx as usize] = 0x0f00;
+        let mut memory = CasMemory::new(code, 0x00f0);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(base + offset, width)], "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x0ff0, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64, "{code:02x?}");
+    }
+}
+
+#[test]
+fn gs_add_load_with_every_extended_base_and_index_register_r8_to_r15() {
+    // `add %gs:0x0(%rN), %rdx` via REX.W + REX.B (0x49): mod = 01 with disp8 0; R12 needs a SIB.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        for prefix in [0x65u8, 0x64] {
+            let mut code = vec![prefix, 0x49, 0x03];
+            if i == 4 {
+                code.extend([0x54, 0x24, 0x00]);
+            } else {
+                code.extend([0x50 | i as u8, 0x00]);
+            }
+            let address = 0x40_0000 + (i as u64) * 0x1000;
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.fs_base = 0xffff_8880_0000_0000;
+            state.gpr[register as usize] = address;
+            state.gpr[Register::Rdx as usize] = 5;
+            let mut memory = CasMemory::new(&code, 0x10);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            let label = format!("base r{} {prefix:#x}", i + 8);
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert_eq!(
+                memory.reads,
+                vec![(0xffff_8880_0000_0000 + address, 8)],
+                "{label}"
+            );
+            assert_eq!(state.gpr[Register::Rdx as usize], 0x15, "{label}");
+        }
+    }
+    // `add %gs:0x20(%rbx,%rN), %rdx` via REX.W + REX.X (0x4a); scale 1.
+    for (i, register) in EXTENDED.into_iter().enumerate() {
+        let code = [0x65, 0x4a, 0x03, 0x54, ((i as u8) << 3) | 3, 0x20];
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x40_0000;
+        state.gpr[register as usize] = 0x100 * (i as u64 + 1);
+        state.gpr[Register::Rdx as usize] = 5;
+        let mut memory = CasMemory::new(&code, 0x10);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "index r{}", i + 8);
+        let at = 0xffff_8880_0000_0000 + 0x40_0000 + 0x100 * (i as u64 + 1) + 0x20;
+        assert_eq!(memory.reads, vec![(at, 8)], "index r{}", i + 8);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0x15, "index r{}", i + 8);
+    }
+}
+
+#[test]
+fn fs_gs_add_load_non_canonical_address_is_gp0_without_mutation() {
+    // Qword: the start is canonical but the last byte (address + 7) crosses into the hole.
+    for base in [
+        0x0000_8000_0000_0000u64,
+        0x7fff_ffff_ffff_fff0,
+        0x0000_7fff_ffff_ffff - 0x1234 - 8 - RIP - 3,
+    ] {
+        for code in [GS_ADD_LOAD_RDX_RIP, FS_ADD_LOAD_RDX_RIP] {
+            let mut state = board_state();
+            state.gs_base = base;
+            state.fs_base = base;
+            state.gpr[Register::Rdx as usize] = 1;
+            state.rflags |= FLAG_CF;
+            let before = state.clone();
+            let mut memory = CasMemory::new(&code, 1);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(exit(&result), &RunExit::Fault(GP0), "{base:#x}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "{base:#x}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+    // The last canonical qword (address + 7 = 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fff8 - 0x1234 - 8 - RIP;
+    let mut memory = CasMemory::new(&GS_ADD_LOAD_RDX_RIP, 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    // Dword: address + 3 is the last byte, so a start of 0x7fff_ffff_fffd is refused.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fffd - 0x1234 - 7 - RIP;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_ADD_LOAD_EDX_RIP, 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    // ... and 0x7fff_ffff_fffc (last byte 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gs_base = 0x0000_7fff_ffff_fffc - 0x1234 - 7 - RIP;
+    let mut memory = CasMemory::new(&GS_ADD_LOAD_EDX_RIP, 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+}
+
+#[test]
+fn gs_add_load_through_rsp_and_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `add %gs:(%rsp), %rdx` = 65 48 03 14 24 and `add %gs:0x0(%rbp), %rdx` = 65 48 03 55 00.
+    for (code, register) in [
+        (&[0x65u8, 0x48, 0x03, 0x14, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0x48, 0x03, 0x55, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn fs_gs_add_load_read_fault_changes_nothing() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for code in [
+        &GS_ADD_LOAD_RDX_RIP[..],
+        &FS_ADD_LOAD_RDX_RIP[..],
+        &GS_ADD_LOAD_EDX_RIP[..],
+        &GS_ADD_RBX_BOUNDARY[..],
+    ] {
+        let mut state = board_state();
+        state.rflags |= FLAG_CF | FLAG_OF;
+        state.gpr[Register::Rdx as usize] = 9;
+        state.gpr[Register::Rbx as usize] = 9;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        memory.read_fault = Some(fault.clone());
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty());
+        assert_eq!(memory.cell, 1);
+    }
+}
+
+#[test]
+fn segment_add_load_forms_outside_the_slice_are_refused_without_mutation() {
+    // (code, expected refused opcode): the `03` forms refuse with 0x03 (the 0x66 word form is not
+    // added, as in S4-38L7bc); the neighbouring ALU forms with a FS/GS memory operand keep their
+    // own opcode.
+    let cases: [(&[u8], u8); 22] = [
+        // 0x66 (word), in both orders, and 0x67.
+        (&[0x66, 0x65, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x66, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x64, 0x66, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x67, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x67, 0x64, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        // LOCK, REP, REPNE, in both orders.
+        (&[0xf0, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0xf0, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0xf3, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0xf2, 0x64, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        // A second or a different segment prefix, including a CS prefix before GS.
+        (&[0x64, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x64, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x2e, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        // REX not directly before the opcode (dword and qword).
+        (&[0x48, 0x65, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x65, 0x48, 0x66, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x41, 0x65, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        // ADD r8, m8, ADC, OR, AND, XOR and CMP (reversed forms) with a FS/GS memory operand stay
+        // refused with their own opcodes (SUB r, m is S4-38L7j and is not tested here).
+        (&[0x65, 0x48, 0x02, 0x15, 0x34, 0x12, 0, 0], 0x02),
+        (&[0x64, 0x48, 0x13, 0x15, 0x34, 0x12, 0, 0], 0x13),
+        (&[0x65, 0x48, 0x0b, 0x15, 0x34, 0x12, 0, 0], 0x0b),
+        (&[0x64, 0x48, 0x23, 0x15, 0x34, 0x12, 0, 0], 0x23),
+        (&[0x65, 0x48, 0x33, 0x15, 0x34, 0x12, 0, 0], 0x33),
+        (&[0x64, 0x48, 0x3b, 0x15, 0x34, 0x12, 0, 0], 0x3b),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn fs_gs_add_load_with_a_truncated_modrm_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x48, 0x03][..],
+        &[0x65, 0x03][..],
+        &[0x64, 0x48, 0x03, 0x15][..],
+        &[0x65, 0x03, 0x1d, 0x7f, 0x61, 0xbe][..],
+        &[0x65, 0x48, 0x03, 0x54][..],
+        &[0x65, 0x48, 0x03, 0x54, 0x8b][..],
+        &[0x65, 0x48, 0x03, 0x53][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(memory.cell, 5);
+    }
+}
+
+#[test]
+fn segment_prefixed_register_add_load_is_unchanged_and_ignores_the_prefix() {
+    // The register form (mod = 11) with FS/GS keeps the existing policy: the prefix is ignored and
+    // the instruction is the plain `add r, r`: same result and flags as the unprefixed form, no
+    // memory access, RIP advances by the full length (prefix included).
+    let cases: [(&[u8], &[u8]); 4] = [
+        (&[0x65, 0x48, 0x03, 0xd8], &[0x48, 0x03, 0xd8]),
+        (&[0x64, 0x48, 0x03, 0xc2], &[0x48, 0x03, 0xc2]),
+        (&[0x64, 0x03, 0xc8], &[0x03, 0xc8]),
+        (&[0x65, 0x03, 0xd0], &[0x03, 0xd0]),
+    ];
+    for (prefixed, plain) in cases {
+        for (rax, rdx, rcx) in [
+            (5u64, 0x70u64, 0x1_0000_0003u64),
+            (0, 0, 0),
+            (0x8000_0000_0000_0000, 1, 0x8000_0000),
+        ] {
+            let seed = |code: &[u8]| {
+                let mut state = board_state();
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8880_0000_0000;
+                state.gpr[Register::Rax as usize] = rax;
+                state.gpr[Register::Rdx as usize] = rdx;
+                state.gpr[Register::Rcx as usize] = rcx;
+                state.gpr[Register::Rbx as usize] = 0x44;
+                let mut memory = CasMemory::new(code, 1);
+                let result = run_cas_set(&mut state, &mut memory).unwrap();
+                (state, memory, result)
+            };
+            let (state, memory, result) = seed(prefixed);
+            let (plain_state, _, plain_result) = seed(plain);
+            assert_eq!(result.instructions_executed, 1, "{prefixed:02x?}");
+            assert_eq!(plain_result.instructions_executed, 1, "{plain:02x?}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            assert_eq!(state.gpr, plain_state.gpr, "{prefixed:02x?}");
+            assert_eq!(state.rflags, plain_state.rflags, "{prefixed:02x?}");
+            assert_eq!(state.rip, RIP + prefixed.len() as u64, "{prefixed:02x?}");
+        }
+    }
+}
+
+#[test]
+fn plain_unprefixed_add_load_still_adds_from_the_effective_address_ignoring_other_bases() {
+    // Regression: `add 0x1234(%rip), %rdx`, the dword form and a CS/DS/ES/SS override ignore the
+    // FS/GS bases and read the effective address.
+    for (code, width) in [
+        (&[0x48u8, 0x03, 0x15, 0x34, 0x12, 0, 0][..], 8usize),
+        (&[0x03, 0x15, 0x34, 0x12, 0, 0][..], 4),
+        (&[0x2e, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0][..], 8),
+        (&[0x3e, 0x03, 0x15, 0x34, 0x12, 0, 0][..], 4),
+        (&[0x26, 0x48, 0x03, 0x15, 0x34, 0x12, 0, 0][..], 8),
+        (&[0x36, 0x03, 0x15, 0x34, 0x12, 0, 0][..], 4),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdx as usize] = 0x0f;
+        let mut memory = CasMemory::new(code, 0xf0);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(
+            memory.reads,
+            vec![(RIP + code.len() as u64 + 0x1234, width)],
+            "{code:02x?}"
+        );
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rdx as usize], 0xff, "{code:02x?}");
+        assert_eq!(state.rflags & ARITH & !FLAG_AF, FLAG_PF, "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_add_load_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for code in [
+        &GS_ADD_RBX_BOUNDARY[..],
+        &GS_ADD_LOAD_RDX_RIP[..],
+        &FS_ADD_LOAD_RDX_RIP[..],
+        &GS_ADD_LOAD_EDX_RIP[..],
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x03 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_add_load_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_ADD_RBX_BOUNDARY, 1);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x03 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_add_load_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_ADD_RBX_BOUNDARY, 1);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
