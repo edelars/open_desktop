@@ -10935,10 +10935,11 @@ fn gs_store_through_rsp_base_is_gp0_not_ss_when_non_canonical() {
 fn segment_store_forms_outside_the_slice_are_refused_without_mutation() {
     // (code, expected refused opcode): the store forms refuse with 0x89,
     // the byte store refuses with its own opcode 0x88.
-    // (The dword form without REX.W is the S4-38L7an slice, tested there.)
+    // (The dword form without REX.W is the S4-38L7an slice, tested there; the byte store with a
+    // memory destination is the S4-38L7bb slice, so only its register form is refused here.)
     let cases: [(&[u8], u8); 6] = [
-        // Byte store.
-        (&[0x65, 0x88, 0x05, 0x34, 0x12, 0x00, 0x00], 0x88),
+        // Byte store, register destination (mod = 11).
+        (&[0x65, 0x88, 0xc3], 0x88),
         // Register destination (mod = 11).
         (&[0x65, 0x48, 0x89, 0xc3], 0x89),
         // LOCK, 0x66 and 0x67.
@@ -21030,7 +21031,7 @@ fn movb_write_fault_leaves_flags_rip_and_registers_unchanged() {
 
 #[test]
 fn segment_movb_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
-    let cases: [(&[u8], u8); 22] = [
+    let cases: [(&[u8], u8); 20] = [
         // Other C6 group members with a segment base stay outside this slice.
         (&[0x65, 0xc6, 0x0b, 0x01], 0xc6),
         (&[0x65, 0xc6, 0x13, 0x01], 0xc6),
@@ -21058,9 +21059,8 @@ fn segment_movb_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         // `C7` with a segment prefix is the S4-38L7aj slice (its refusals are tested there); the
         // 0x66-prefixed word form is still refused.
         (&[0x65, 0x66, 0xc7, 0x03, 0x01, 0], 0xc7),
-        // MOV r/m8, r8 (88) with a segment prefix stays refused with its own opcode.
-        (&[0x65, 0x88, 0x03], 0x88),
-        (&[0x64, 0x88, 0x03], 0x88),
+        // (MOV r/m8, r8 (88) with a segment prefix and a memory destination is the S4-38L7bb
+        // slice; its refusals are tested there.)
     ];
     for (code, opcode) in cases {
         let mut state = board_state();
@@ -23803,8 +23803,8 @@ fn segment_mov_imm32_forms_outside_the_slice_are_refused_with_the_exact_opcode()
         (&[0x48, 0x64, 0xc7, 0x03, 1, 0, 0, 0], 0xc7),
         (&[0x41, 0x65, 0x40, 0xc7, 0x03, 1, 0, 0, 0], 0xc7),
         (&[0x65, 0x48, 0x66, 0xc7, 0x03, 1, 0, 0, 0], 0xc7),
-        // MOV r/m8, r8 with a segment prefix is not part of this slice (`89` is S4-38L7an).
-        (&[0x65, 0x88, 0x03], 0x88),
+        // (MOV r/m8, r8 (`88`) with a segment prefix and a memory destination is the S4-38L7bb
+        // slice; its refusals are tested there.)
     ];
     for &(code, opcode) in cases {
         let mut state = board_state();
@@ -30934,6 +30934,610 @@ fn segment_movsx_byte_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = BitsMemory::new(&GS_MOVSXB_BOUNDARY);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L7bb: FS/GS-based `MOV r/m8, r8` (`[64|65] [REX] 88 /r`, memory destination). SDM
+// Vol.2 MOV: the low byte of the source register is stored at the destination, flags are
+// unchanged; Vol.3 3.4.4 FS/GS base; from memory, not re-checked against the primary source. The
+// byte register of ModRM.reg is selected as the unprefixed `88` does (AL/CL/DL/BL, AH/CH/DH/BH
+// without REX, SPL/BPL/SIL/DIL with any REX, r8b-r15b with REX.R). REX.W is accepted and ignored
+// (as in the `C6` form). The register form (mod = 11), 0x66, 0x67, LOCK/REP, a second segment
+// prefix and a stale REX are refused with opcode 0x88. ----
+
+/// `movb %al, %gs:(%rcx)` (the S4-38L7ba diagnostic boundary bytes, 3 bytes).
+const GS_MOVB_AL_RCX: [u8; 3] = [0x65, 0x88, 0x01];
+/// `movb %al, %fs:(%rcx)`.
+const FS_MOVB_AL_RCX: [u8; 3] = [0x64, 0x88, 0x01];
+const MOVB_GS_BASE: u64 = 0xffff_8880_0000_0000;
+const MOVB_FS_BASE: u64 = 0xffff_8880_9999_0000;
+const MOVB_BASE_OFFSET: u64 = 0x20_0000;
+
+/// A state with distinct bytes in every byte lane of every register: register `i` holds the bytes
+/// `0xa0 + i`, `0xb0 + i`, `0xc0 + i`, ... (low byte first), so every byte register view has its own
+/// value. RCX is the address base, RAX is `0x1122_3344_5566_775a` (AL = 0x5a).
+fn movb_store_state() -> LongModeState {
+    let mut state = board_state();
+    for (index, register) in state.gpr.iter_mut().enumerate() {
+        let mut bytes = [0u8; 8];
+        for (lane, byte) in bytes.iter_mut().enumerate() {
+            *byte = 0xa0u8
+                .wrapping_add((lane as u8) * 0x10)
+                .wrapping_add(index as u8);
+        }
+        *register = u64::from_le_bytes(bytes);
+    }
+    state.gs_base = MOVB_GS_BASE;
+    state.fs_base = MOVB_FS_BASE;
+    state.gpr[Register::Rcx as usize] = MOVB_BASE_OFFSET;
+    state.gpr[Register::Rax as usize] = 0x1122_3344_5566_775a;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_AF | FLAG_PF;
+    state
+}
+
+const R8_TO_R15: [Register; 8] = [
+    Register::R8,
+    Register::R9,
+    Register::R10,
+    Register::R11,
+    Register::R12,
+    Register::R13,
+    Register::R14,
+    Register::R15,
+];
+
+#[test]
+fn gs_movb_store_boundary_form_stores_the_low_byte_of_al_at_the_gs_address_and_changes_only_rip() {
+    let at = MOVB_GS_BASE + MOVB_BASE_OFFSET;
+    let mut state = movb_store_state();
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVB_AL_RCX);
+    memory.data.insert(at - 1, 0xaa);
+    memory.data.insert(at, 0x11);
+    memory.data.insert(at + 1, 0xbb);
+    // A distractor at the same offset of the other base and at the bare effective address.
+    memory.data.insert(MOVB_FS_BASE + MOVB_BASE_OFFSET, 0x22);
+    memory.data.insert(MOVB_BASE_OFFSET, 0x33);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        result.rflags_defined,
+        od_isa::INTEGER_FLAGS,
+        "no flag becomes undefined"
+    );
+    assert!(memory.reads.is_empty(), "a store does not read");
+    assert_eq!(memory.writes, vec![(at, vec![0x5a])]);
+    assert_eq!(memory.data.get(&(at - 1)), Some(&0xaa));
+    assert_eq!(memory.data.get(&at), Some(&0x5a));
+    assert_eq!(memory.data.get(&(at + 1)), Some(&0xbb));
+    assert_eq!(
+        memory.data.get(&(MOVB_FS_BASE + MOVB_BASE_OFFSET)),
+        Some(&0x22)
+    );
+    assert_eq!(memory.data.get(&MOVB_BASE_OFFSET), Some(&0x33));
+    expected.rip += 3;
+    assert_eq!(state, expected, "RAX, flags and every other register stay");
+}
+
+#[test]
+fn fs_movb_store_uses_the_fs_base_and_ignores_the_gs_base() {
+    let at = MOVB_FS_BASE + MOVB_BASE_OFFSET;
+    let mut state = movb_store_state();
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&FS_MOVB_AL_RCX);
+    memory.data.insert(MOVB_GS_BASE + MOVB_BASE_OFFSET, 0x22);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.writes, vec![(at, vec![0x5a])]);
+    assert_eq!(
+        memory.data.get(&(MOVB_GS_BASE + MOVB_BASE_OFFSET)),
+        Some(&0x22)
+    );
+    expected.rip += 3;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn movb_store_with_a_zero_base_uses_the_effective_address() {
+    for code in [GS_MOVB_AL_RCX, FS_MOVB_AL_RCX] {
+        let mut state = movb_store_state();
+        state.gs_base = 0;
+        state.fs_base = 0;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(memory.writes, vec![(MOVB_BASE_OFFSET, vec![0x5a])]);
+    }
+}
+
+#[test]
+fn movb_store_selects_the_byte_register_like_the_unprefixed_88() {
+    // `movb %<reg>, %gs:0x10(%rip)` (65 [REX] 88 05+reg*8 disp32) for every ModRM.reg value.
+    // Hand-written expectations: register `i` holds the bytes 0xa0+i (bits 7:0), 0xb0+i (bits 15:8)
+    // (RAX is 0x...775a). (ModRM.reg, REX byte, expected stored byte)
+    let cases: [(u8, Option<u8>, u8); 24] = [
+        // No REX: AL, CL, DL, BL, AH, CH, DH, BH.
+        (0, None, 0x5a),
+        (1, None, 0xa1),
+        (2, None, 0xa2),
+        (3, None, 0xa3),
+        (4, None, 0x77), // AH: bits 15:8 of RAX
+        (5, None, 0xb1), // CH
+        (6, None, 0xb2), // DH
+        (7, None, 0xb3), // BH
+        // Empty REX 0x40: AL, CL, DL, BL, SPL, BPL, SIL, DIL.
+        (0, Some(0x40), 0x5a),
+        (1, Some(0x40), 0xa1),
+        (2, Some(0x40), 0xa2),
+        (3, Some(0x40), 0xa3),
+        (4, Some(0x40), 0xa4), // SPL
+        (5, Some(0x40), 0xa5), // BPL
+        (6, Some(0x40), 0xa6), // SIL
+        (7, Some(0x40), 0xa7), // DIL
+        // REX.W (0x48) is ignored for the byte store and still selects SPL..DIL.
+        (0, Some(0x48), 0x5a),
+        (3, Some(0x48), 0xa3),
+        (4, Some(0x48), 0xa4),
+        (5, Some(0x48), 0xa5),
+        (6, Some(0x48), 0xa6),
+        (7, Some(0x48), 0xa7),
+        // REX.X (no effect for a RIP-relative operand) also selects SPL/DIL.
+        (4, Some(0x42), 0xa4),
+        (7, Some(0x42), 0xa7),
+    ];
+    for gs in [true, false] {
+        for (reg, rex, byte) in cases {
+            let mut code = vec![if gs { 0x65u8 } else { 0x64 }];
+            code.extend(rex);
+            code.extend([0x88, 0x05 | (reg << 3), 0x10, 0, 0, 0]);
+            let base = if gs { MOVB_GS_BASE } else { MOVB_FS_BASE };
+            let at = base + RIP + code.len() as u64 + 0x10;
+            let mut state = movb_store_state();
+            // RCX is not an address base here: give it back its distinct byte pattern.
+            state.gpr[Register::Rcx as usize] = 0x11_01_f1_e1_d1_c1_b1_a1;
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            assert_eq!(memory.writes, vec![(at, vec![byte])], "{code:02x?}");
+            assert!(memory.reads.is_empty(), "{code:02x?}");
+            expected.rip += code.len() as u64;
+            assert_eq!(state, expected, "{code:02x?}: only RIP changes");
+
+            // The unprefixed form picks the same byte (the oracle for the register mapping).
+            let mut plain: Vec<u8> = rex.into_iter().collect();
+            plain.extend([0x88, 0x05 | (reg << 3), 0x10, 0, 0, 0]);
+            let mut state = movb_store_state();
+            state.gpr[Register::Rcx as usize] = 0x11_01_f1_e1_d1_c1_b1_a1;
+            let mut memory = BitsMemory::new(&plain);
+            run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                memory.writes,
+                vec![(RIP + plain.len() as u64 + 0x10, vec![byte])],
+                "{plain:02x?}: the unprefixed 88 agrees"
+            );
+        }
+    }
+}
+
+#[test]
+fn movb_store_with_rex_r_stores_r8b_to_r15b() {
+    // `movb %r8b..%r15b, %gs:0x10(%rip)` = 65 44 88 05+n*8 10 00 00 00 (REX.R, reg n).
+    for rex in [0x44u8, 0x4c] {
+        for n in 0u8..8 {
+            let code = [0x65, rex, 0x88, 0x05 | (n << 3), 0x10, 0, 0, 0];
+            let mut state = movb_store_state();
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                memory.writes,
+                vec![(
+                    MOVB_GS_BASE + RIP + code.len() as u64 + 0x10,
+                    vec![0xa8 + n]
+                )],
+                "{code:02x?}"
+            );
+            expected.rip += code.len() as u64;
+            assert_eq!(state, expected, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn movb_store_with_rex_b_uses_every_base_r8_to_r15_including_r12_sib_and_r13_disp8() {
+    for (n, register) in R8_TO_R15.into_iter().enumerate() {
+        let n = n as u8;
+        // `movb %al, %gs:(%rN)`; R12 needs a SIB byte, R13 a disp8.
+        let code: Vec<u8> = match n {
+            4 => vec![0x65, 0x41, 0x88, 0x04, 0x24],
+            5 => vec![0x65, 0x41, 0x88, 0x45, 0x00],
+            _ => vec![0x65, 0x41, 0x88, n],
+        };
+        let mut state = movb_store_state();
+        state.gpr[Register::Rax as usize] = 0x5a;
+        state.gpr[register as usize] = 0x4000;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            memory.writes,
+            vec![(MOVB_GS_BASE + 0x4000, vec![0x5a])],
+            "{code:02x?}"
+        );
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn movb_store_with_rex_x_uses_every_index_r8_to_r15_and_scale() {
+    for (n, register) in R8_TO_R15.into_iter().enumerate() {
+        // `movb %al, %gs:(%rbx,%rN,2)` = 65 42 88 04 (scale 2 | index n | base rbx).
+        let sib = (1 << 6) | ((n as u8) << 3) | 3;
+        let code = [0x65, 0x42, 0x88, 0x04, sib];
+        let mut state = movb_store_state();
+        state.gpr[Register::Rax as usize] = 0x5a;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[register as usize] = 0x30;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            memory.writes,
+            vec![(MOVB_GS_BASE + 0x1000 + 0x60, vec![0x5a])],
+            "{code:02x?}"
+        );
+        expected.rip += 5;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn movb_store_base_register_disp8_disp32_sib_and_absolute_forms() {
+    // (code, effective offset added to the selected base)
+    let cases: [(&[u8], u64); 8] = [
+        // `movb %al, %gs:(%rbx)`
+        (&[0x65, 0x88, 0x03], 0x20_0000),
+        // `movb %al, %gs:-0x8(%rbx)`
+        (&[0x65, 0x88, 0x43, 0xf8], 0x20_0000 - 8),
+        // `movb %al, %gs:0x100(%rbx)`
+        (&[0x65, 0x88, 0x83, 0x00, 0x01, 0x00, 0x00], 0x20_0100),
+        // `movb %al, %gs:0x10(%rbx,%rdx,4)` (RDX = 3)
+        (&[0x65, 0x88, 0x44, 0x93, 0x10], 0x20_0000 + 12 + 0x10),
+        // `movb %al, %fs:(%rbx)`
+        (&[0x64, 0x88, 0x03], 0x20_0000),
+        // `movb %al, %fs:0x20` (absolute SIB, no base, no index)
+        (&[0x64, 0x88, 0x04, 0x25, 0x20, 0, 0, 0], 0x20),
+        // `movb %al, %gs:-0x20` (absolute SIB, negative disp32 sign-extended)
+        (
+            &[0x65, 0x88, 0x04, 0x25, 0xe0, 0xff, 0xff, 0xff],
+            0xffff_ffff_ffff_ffe0,
+        ),
+        // `movb %al, %gs:0x7fffffff` (largest positive disp32)
+        (
+            &[0x65, 0x88, 0x04, 0x25, 0xff, 0xff, 0xff, 0x7f],
+            0x7fff_ffff,
+        ),
+    ];
+    for (code, offset) in cases {
+        let mut state = movb_store_state();
+        state.gpr[Register::Rax as usize] = 0x5a;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::Rdx as usize] = 3;
+        let mut expected = state.clone();
+        let base = if code[0] == 0x64 {
+            MOVB_FS_BASE
+        } else {
+            MOVB_GS_BASE
+        };
+        let mut memory = BitsMemory::new(code);
+        run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            memory.writes,
+            vec![(base.wrapping_add(offset), vec![0x5a])],
+            "{code:02x?}"
+        );
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+}
+
+#[test]
+fn movb_store_with_the_base_register_aliasing_the_source_uses_the_pre_store_value() {
+    // `movb %cl, %gs:(%rcx)` (65 88 09): the address is RCX, the stored byte is CL.
+    let mut state = movb_store_state();
+    state.gpr[Register::Rcx as usize] = 0x20_0044;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&[0x65, 0x88, 0x09]);
+    run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.writes, vec![(MOVB_GS_BASE + 0x20_0044, vec![0x44])]);
+    expected.rip += 3;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn movb_store_read_back_through_the_same_segment_base_sees_the_stored_byte() {
+    // `movb %al, %gs:(%rcx)` then `testb $1, %gs:(%rcx)`: the TEST reads the byte just stored.
+    let mut state = movb_store_state();
+    state.gpr[Register::Rax as usize] = 0x01;
+    let mut memory = BitsMemory::new(&[0x65, 0x88, 0x01, 0x65, 0xf6, 0x01, 0x01]);
+    memory.data.insert(MOVB_GS_BASE + MOVB_BASE_OFFSET, 0x00);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(memory.reads, vec![(MOVB_GS_BASE + MOVB_BASE_OFFSET, 1)]);
+    assert_eq!(state.rflags & FLAG_ZF, 0, "the byte read back is 1");
+}
+
+#[test]
+fn movb_store_non_canonical_address_is_gp0_without_mutation_or_write() {
+    for (code, segment_base, rcx) in [
+        (GS_MOVB_AL_RCX, 0x0000_8000_0000_0000u64, 0u64),
+        (GS_MOVB_AL_RCX, 0x7fff_ffff_ffff_fff0, 0x10),
+        (GS_MOVB_AL_RCX, 0xffff_8000_0000_0000, 0xffff_ffff_ffff_ffff),
+        (FS_MOVB_AL_RCX, 0x0000_8000_0000_0000, 0),
+    ] {
+        let mut state = movb_store_state();
+        state.gs_base = segment_base;
+        state.fs_base = segment_base;
+        state.gpr[Register::Rcx as usize] = rcx;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(GP0),
+            "{code:02x?} {segment_base:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?} {segment_base:#x}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn movb_store_canonical_boundaries_are_written() {
+    // A single byte is stored, so the last canonical byte of each half is accessible.
+    for (segment_base, rcx) in [
+        (0x0000_7fff_ffff_fff0u64, 0xfu64),
+        (0xffff_8000_0000_0000, 0),
+    ] {
+        let mut state = movb_store_state();
+        state.gs_base = segment_base;
+        state.gpr[Register::Rcx as usize] = rcx;
+        let mut memory = BitsMemory::new(&GS_MOVB_AL_RCX);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{segment_base:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(segment_base.wrapping_add(rcx), vec![0x5a])],
+            "{segment_base:#x}"
+        );
+    }
+}
+
+#[test]
+fn gs_movb_store_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `movb %al, %gs:(%rsp)` = 65 88 04 24 and `movb %al, %gs:0x0(%rbp)` = 65 88 45 00.
+    for (code, register) in [
+        (&[0x65u8, 0x88, 0x04, 0x24][..], Register::Rsp),
+        (&[0x65u8, 0x88, 0x45, 0x00][..], Register::Rbp),
+    ] {
+        let mut state = movb_store_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn movb_store_write_fault_leaves_flags_rip_registers_and_memory_unchanged() {
+    let at = MOVB_GS_BASE + MOVB_BASE_OFFSET;
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(at),
+    };
+    let mut state = movb_store_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVB_AL_RCX);
+    memory.write_fault = Some(fault.clone());
+    memory.data.insert(at, 0x11);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.data.get(&at), Some(&0x11));
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn segment_movb_store_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
+    let cases: [&[u8]; 21] = [
+        // Register destination (mod = 11), with and without REX.
+        &[0x65, 0x88, 0xc1],
+        &[0x64, 0x88, 0xc1],
+        &[0x65, 0x40, 0x88, 0xc6],
+        &[0x65, 0x48, 0x88, 0xc1],
+        // LOCK, REP, REPNE (several positions).
+        &[0xf0, 0x65, 0x88, 0x01],
+        &[0x65, 0xf0, 0x88, 0x01],
+        &[0xf3, 0x65, 0x88, 0x01],
+        &[0x65, 0xf3, 0x88, 0x01],
+        &[0xf2, 0x64, 0x88, 0x01],
+        // 0x66 in both orders, also with REX.W.
+        &[0x66, 0x65, 0x88, 0x01],
+        &[0x65, 0x66, 0x88, 0x01],
+        &[0x65, 0x66, 0x48, 0x88, 0x01],
+        // 0x67.
+        &[0x67, 0x65, 0x88, 0x01],
+        &[0x65, 0x67, 0x40, 0x88, 0x01],
+        // A second segment prefix.
+        &[0x64, 0x65, 0x88, 0x01],
+        &[0x65, 0x65, 0x88, 0x01],
+        &[0x65, 0x64, 0x88, 0x01],
+        // REX not immediately before the opcode (stale).
+        &[0x44, 0x65, 0x88, 0x01],
+        &[0x48, 0x64, 0x88, 0x01],
+        &[0x41, 0x65, 0x40, 0x88, 0x01],
+        &[0x65, 0x41, 0x48, 0x88, 0x01],
+    ];
+    for code in cases {
+        let mut state = movb_store_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x88 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_movb_store_does_not_widen_to_the_byte_load_8a() {
+    // `8A` (MOV r8, r/m8) with a segment prefix is not part of this slice and keeps refusing with
+    // its own opcode.
+    let mut state = movb_store_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&[0x65, 0x8a, 0x01]);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8a });
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn fs_gs_movb_store_with_a_truncated_modrm_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x88][..],
+        &[0x65, 0x40, 0x88][..],
+        &[0x64, 0x88, 0x05, 0x34, 0x12][..],
+        &[0x65, 0x88, 0x44][..],
+        &[0x65, 0x88, 0x44, 0x8b][..],
+        &[0x65, 0x88, 0x43][..],
+        &[0x65, 0x88, 0x83, 0x00, 0x01][..],
+    ] {
+        let mut state = movb_store_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn plain_and_cs_ds_es_ss_movb_store_keep_ignoring_the_fs_gs_bases() {
+    for prefix in [None, Some(0x2eu8), Some(0x3e), Some(0x36), Some(0x26)] {
+        let mut code: Vec<u8> = prefix.into_iter().collect();
+        code.extend([0x88, 0x01]);
+        let mut state = movb_store_state();
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{prefix:?}");
+        assert_eq!(
+            memory.writes,
+            vec![(MOVB_BASE_OFFSET, vec![0x5a])],
+            "{prefix:?}"
+        );
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{prefix:?}");
+    }
+}
+
+#[test]
+fn segment_movb_store_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS form is refused without mutation.
+    for code in [&GS_MOVB_AL_RCX[..], &FS_MOVB_AL_RCX[..]] {
+        let mut state = legacy_state();
+        state.gs_base = MOVB_GS_BASE;
+        state.fs_base = MOVB_FS_BASE;
+        state.gpr[Register::Rcx as usize] = MOVB_BASE_OFFSET;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x88 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_movb_store_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gs_base = MOVB_GS_BASE;
+    state.gpr[Register::Rcx as usize] = MOVB_BASE_OFFSET;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVB_AL_RCX);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x88 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_movb_store_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = movb_store_state();
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&GS_MOVB_AL_RCX);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,

@@ -4632,6 +4632,63 @@ mod tests {
         assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0xFFFF_FFFF);
     }
 
+    // ---- S4-38L7bb: FS/GS-based MOV r/m8, r8 through the board facade ----
+
+    #[test]
+    fn gs_movb_store_after_wrmsr_gs_base_stores_al_and_r8b_ignoring_the_fs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE;
+        // plain byte stores: [BASE+0xf] = 0xAA, [BASE+0x10] = 0x00, [BASE+0x11] = 0xBB,
+        // [FS_DISTRACTOR+0x10] = 0x22; SUB DL,1 (0 - 1 borrows: CF = 1);
+        // MOV ECX,0x10; MOV EAX,0x5A; MOVB %al,%gs:(%rcx) (`65 88 01`, the S4-38L7ba boundary
+        // form); MOV R8D,0x7E; MOVB %r8b,%gs:2(%rcx) (`65 44 88 41 02`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x0F, 0x00, 0x00, 0x02, 0xAA]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x00]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xBB]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x22]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0xB9, 0x10, 0x00, 0x00, 0x00]);
+        code.extend(mov_eax(0x5A));
+        code.extend([0x65, 0x88, 0x01]);
+        code.extend([0x41, 0xB8, 0x7E, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x44, 0x88, 0x41, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 20, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // Bytes BASE+0xf..: AA (kept), 5A (new), BB (kept), 7E (new), then zeros.
+        assert_eq!(guest_qword(&mut boot, BASE + 0x0F), 0x7EBB_5AAA);
+        // The FS distractor byte is untouched: a store through the wrong base would change it.
+        assert_eq!(guest_qword(&mut boot, FS_DISTRACTOR + 0x10) & 0xFF, 0x22);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        // Nothing else changed: CF set by SUB DL,1 survives and the sources keep their values.
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x5A);
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 0x7E);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x10);
+    }
+
     // ---- S4-38L7ak: FS/GS-based MOVSXD r64, m32 through the board facade ----
 
     #[test]
