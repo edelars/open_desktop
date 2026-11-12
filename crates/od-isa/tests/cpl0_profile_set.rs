@@ -22927,3 +22927,536 @@ fn sgdt_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L7am: `LTR r/m16` (`0F 00 /3`, register form, optional REX without W) in the CPL0 set. The
+// selector is the low word of the register; the 16-byte TSS descriptor is read from the modeled GDT
+// as two qwords, the busy bit is written back as one qword (the low half), and only then TR is
+// loaded. Selector and descriptor rules are those of the bounded paged `LTR AX`
+// (`validate_tss_descriptor`). Semantics from memory of SDM Vol.2 LTR, not re-checked against the
+// primary source. ----
+
+/// `ltr %ax` (the S4-38L7al diagnostic boundary bytes).
+const LTR_AX: [u8; 3] = [0x0f, 0x00, 0xd8];
+const LTR_GDT: od_isa::state::Gdtr = od_isa::state::Gdtr {
+    base: 0x4000,
+    limit: 0x7f,
+};
+const LTR_SELECTOR: u16 = 0x40;
+const LTR_TSS_BASE: u64 = 0xffff_fe00_1234_5678;
+
+/// An available 64-bit TSS descriptor (access `0x89`) with the base `LTR_TSS_BASE` and the limit
+/// `0x206b`.
+fn ltr_tss_descriptor() -> [u8; 16] {
+    let mut descriptor = [0u8; 16];
+    descriptor[0] = 0x6b;
+    descriptor[1] = 0x20;
+    descriptor[2] = 0x78;
+    descriptor[3] = 0x56;
+    descriptor[4] = 0x34;
+    descriptor[5] = 0x89;
+    descriptor[6] = 0x00;
+    descriptor[7] = 0x12;
+    descriptor[8..12].copy_from_slice(&0xffff_fe00u32.to_le_bytes());
+    descriptor
+}
+
+fn ltr_state() -> LongModeState {
+    let mut state = board_state();
+    state.gdtr = Some(LTR_GDT);
+    state.rflags |= ARITH | (1 << 10);
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x0101_0101_0101_0101u64.wrapping_mul(index as u64 + 1);
+    }
+    state.gpr[Register::Rax as usize] = 0xdead_beef_0000_0000 | u64::from(LTR_SELECTOR);
+    state
+}
+
+fn ltr_memory(code: &[u8], descriptor: [u8; 16]) -> BitsMemory {
+    let mut memory = BitsMemory::new(code);
+    // The GDT carries a marker that must stay untouched outside the TSS entry.
+    for address in 0x4000u64..0x4080 {
+        memory.data.insert(address, 0xaa);
+    }
+    for (index, byte) in descriptor.into_iter().enumerate() {
+        memory.data.insert(0x4040 + index as u64, byte);
+    }
+    memory
+}
+
+fn ltr_expected_tr(access: u8) -> od_isa::TaskRegisterCache {
+    od_isa::TaskRegisterCache {
+        selector: LTR_SELECTOR,
+        base: LTR_TSS_BASE,
+        limit: 0x206b,
+        access,
+        flags: 0,
+    }
+}
+
+#[test]
+fn ltr_boundary_form_loads_tr_marks_the_descriptor_busy_and_changes_only_rip() {
+    let mut state = ltr_state();
+    let mut expected = state.clone();
+    // The boundary stream: `ltr %ax; mov -0x10(%rbp), %rax`. One instruction retires.
+    let code = [0x0f, 0x00, 0xd8, 0x48, 0x8b, 0x45, 0xf0];
+    let mut memory = ltr_memory(&code, ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    // The descriptor is read as two qwords; the busy bit goes back as the low qword only.
+    assert_eq!(memory.reads, vec![(0x4040, 8), (0x4048, 8)]);
+    let mut busy = ltr_tss_descriptor();
+    busy[5] = 0x8b;
+    assert_eq!(memory.writes, vec![(0x4040, busy[..8].to_vec())]);
+    assert_eq!(memory.data[&0x4045], 0x8b, "the busy bit is set in the GDT");
+    for address in (0x4000u64..0x4040).chain(0x4050..0x4080) {
+        assert_eq!(memory.data[&address], 0xaa, "{address:#x}");
+    }
+    for (index, byte) in busy[8..].iter().enumerate() {
+        assert_eq!(memory.data[&(0x4048 + index as u64)], *byte);
+    }
+    expected.tr = Some(ltr_expected_tr(0x8b));
+    expected.rip += 3;
+    assert_eq!(
+        state, expected,
+        "only TR and RIP change (flags, registers, GDTR)"
+    );
+}
+
+#[test]
+fn ltr_matches_the_paged_ltr_commit_for_every_accepted_descriptor_shape() {
+    use od_isa::execute::{PagedLtrPreparation, prepare_paged_ltr_commit};
+    let mut shapes = vec![ltr_tss_descriptor()];
+    let mut granular = ltr_tss_descriptor();
+    granular[0] = 0xff;
+    granular[1] = 0x0f;
+    granular[6] = 0x80 | 0x10 | 0x03; // G, AVL, limit[19:16] = 3
+    shapes.push(granular);
+    let mut dpl3 = ltr_tss_descriptor();
+    dpl3[5] = 0xe9; // present, DPL 3, available TSS
+    shapes.push(dpl3);
+    let mut reserved_upper = ltr_tss_descriptor();
+    reserved_upper[12] = 0xff; // reserved bits of the upper dword are ignored
+    reserved_upper[15] = 0xe0;
+    shapes.push(reserved_upper);
+    for descriptor in shapes {
+        let mut state = ltr_state();
+        let mut memory = ltr_memory(&LTR_AX, descriptor);
+        let mut expected = state.clone();
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{descriptor:02x?}");
+        let preparation = PagedLtrPreparation::Ready {
+            selector: LTR_SELECTOR,
+            descriptor_address: 0x4040,
+            next_rip: RIP + 3,
+        };
+        let commit =
+            prepare_paged_ltr_commit(&preparation, PrivilegeLevel::Ring0, LTR_GDT, descriptor)
+                .unwrap()
+                .unwrap();
+        let busy = *commit.busy_descriptor();
+        commit.commit(&mut expected);
+        assert_eq!(state, expected, "{descriptor:02x?}");
+        for (index, byte) in busy.iter().enumerate() {
+            assert_eq!(
+                memory.data[&(0x4040 + index as u64)],
+                *byte,
+                "{descriptor:02x?} byte {index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ltr_reads_the_selector_from_every_register_and_the_low_word_only() {
+    // `0F 00 D8+r` selects rm = r; REX.B (`41`) selects r8..r15; a bare `40` keeps rm 0..7.
+    for (prefix, high) in [(None, 0u8), (Some(0x40u8), 0), (Some(0x41), 8)] {
+        for rm in 0u8..8 {
+            let mut code = Vec::new();
+            code.extend(prefix);
+            code.extend([0x0f, 0x00, 0xd8 | rm]);
+            let register = Register::from_encoding(rm | high).unwrap();
+            let mut state = ltr_state();
+            // Every other register holds a selector that would #GP (null).
+            for value in state.gpr.iter_mut() {
+                *value = 0xffff_ffff_ffff_0000;
+            }
+            state.gpr[register as usize] = 0x1234_5678_9abc_0000 | u64::from(LTR_SELECTOR);
+            let mut expected = state.clone();
+            let mut memory = ltr_memory(&code, ltr_tss_descriptor());
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{code:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            expected.tr = Some(ltr_expected_tr(0x8b));
+            expected.rip += code.len() as u64;
+            assert_eq!(state, expected, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn ltr_selector_rpl_bits_are_kept_in_tr_and_do_not_change_the_descriptor_lookup() {
+    let mut state = ltr_state();
+    state.gpr[Register::Rax as usize] = 0x43;
+    let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    let mut tr = ltr_expected_tr(0x8b);
+    tr.selector = 0x43;
+    assert_eq!(state.tr, Some(tr));
+}
+
+fn ltr_fault(vector: u8, error_code: u32) -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector,
+        error_code: Some(error_code),
+        linear_address: None,
+    })
+}
+
+/// Runs `LTR AX` for a prepared state and checks the exit, no instruction, no write and an
+/// unchanged state and memory. Returns the memory for read checks.
+fn ltr_expect_exit(
+    mut state: LongModeState,
+    mut memory: BitsMemory,
+    expected: RunExit,
+    context: &str,
+) -> BitsMemory {
+    let before = state.clone();
+    let data_before = memory.data.clone();
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &expected, "{context}: {result:?}");
+    assert_eq!(result.instructions_executed, 0, "{context}");
+    assert_eq!(state, before, "{context}");
+    assert!(memory.writes.is_empty(), "{context}: {:?}", memory.writes);
+    assert_eq!(memory.data, data_before, "{context}");
+    memory
+}
+
+#[test]
+fn ltr_selector_faults_use_the_paged_ltr_codes_before_any_read() {
+    for (selector, expected) in [
+        (0u16, ltr_fault(13, 0)),
+        (3, ltr_fault(13, 0)),       // null with RPL bits
+        (0x44, ltr_fault(13, 0x44)), // TI = 1
+        (0x7c, ltr_fault(13, 0x7c)), // TI = 1 and beyond the limit
+        (0x78, ltr_fault(13, 0x78)), // the 16-byte entry would end at 0x87 > limit
+        (0x100, ltr_fault(13, 0x100)),
+        (0xfff8, ltr_fault(13, 0xfff8)),
+    ] {
+        let mut state = ltr_state();
+        state.gpr[Register::Rax as usize] = u64::from(selector);
+        let memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+        let memory = ltr_expect_exit(state, memory, expected, &format!("selector {selector:#x}"));
+        assert!(memory.reads.is_empty(), "selector {selector:#x}");
+    }
+}
+
+#[test]
+fn ltr_descriptor_address_faults_are_gp0_before_any_read() {
+    for gdtr in [
+        // The base plus the selector offset overflows 2^64.
+        od_isa::state::Gdtr {
+            base: u64::MAX - 0x10,
+            limit: 0xffff,
+        },
+        // A non-canonical first byte.
+        od_isa::state::Gdtr {
+            base: 0x0000_8000_0000_0000,
+            limit: 0xffff,
+        },
+        // The last byte (+15) leaves the canonical range.
+        od_isa::state::Gdtr {
+            base: 0x0000_7fff_ffff_fff8 - 0x40,
+            limit: 0xffff,
+        },
+    ] {
+        let mut state = ltr_state();
+        state.gdtr = Some(gdtr);
+        let memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+        let memory = ltr_expect_exit(state, memory, ltr_fault(13, 0), &format!("{gdtr:?}"));
+        assert!(memory.reads.is_empty(), "{gdtr:?}");
+    }
+}
+
+#[test]
+fn ltr_descriptor_type_presence_and_base_faults_follow_the_paged_ltr_codes() {
+    let tss = ltr_tss_descriptor();
+    let with = |index: usize, value: u8| {
+        let mut descriptor = tss;
+        descriptor[index] = value;
+        descriptor
+    };
+    for (descriptor, expected, what) in [
+        (with(5, 0x8b), ltr_fault(13, 0x40), "busy TSS"),
+        (with(5, 0x82), ltr_fault(13, 0x40), "LDT descriptor"),
+        (with(5, 0x8c), ltr_fault(13, 0x40), "call gate"),
+        (with(5, 0x99), ltr_fault(13, 0x40), "code/data segment"),
+        (with(5, 0x00), ltr_fault(13, 0x40), "type 0, not present"),
+        (
+            with(5, 0x09),
+            ltr_fault(11, 0x40),
+            "not-present available TSS",
+        ),
+        (with(13, 0x01), ltr_fault(13, 0x40), "upper type field"),
+        (
+            with(13, 0x08),
+            ltr_fault(13, 0x40),
+            "upper type field bit 3",
+        ),
+        (with(11, 0x80), ltr_fault(13, 0), "non-canonical base"),
+    ] {
+        let state = ltr_state();
+        let memory = ltr_memory(&LTR_AX, descriptor);
+        let memory = ltr_expect_exit(state, memory, expected, what);
+        assert_eq!(memory.reads, vec![(0x4040, 8), (0x4048, 8)], "{what}");
+    }
+}
+
+#[test]
+fn ltr_a_second_load_of_the_same_selector_faults_on_the_busy_descriptor() {
+    let mut state = ltr_state();
+    let code = [0x0f, 0x00, 0xd8, 0x0f, 0x00, 0xd8];
+    let mut memory = ltr_memory(&code, ltr_tss_descriptor());
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &ltr_fault(13, 0x40));
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.tr, Some(ltr_expected_tr(0x8b)));
+    assert_eq!(state.rip, RIP + 3, "RIP stays at the faulting LTR");
+    assert_eq!(
+        memory.writes.len(),
+        1,
+        "only the first load wrote the busy bit"
+    );
+}
+
+#[test]
+fn ltr_read_and_write_faults_change_neither_memory_nor_state() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0x4040),
+    };
+    // A refused read.
+    let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    memory.read_fault = Some(fault.clone());
+    let memory = ltr_expect_exit(
+        ltr_state(),
+        memory,
+        RunExit::Fault(fault.clone()),
+        "read fault",
+    );
+    assert!(memory.writes.is_empty());
+    // A refused write: the descriptor was read and validated, nothing is committed.
+    let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    memory.write_fault = Some(fault.clone());
+    let mut state = ltr_state();
+    let before = state.clone();
+    let data_before = memory.data.clone();
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(memory.reads, vec![(0x4040, 8), (0x4048, 8)]);
+    assert_eq!(state, before, "TR stays unloaded and RIP is unchanged");
+    assert_eq!(state.tr, None);
+    assert_eq!(memory.data, data_before);
+}
+
+#[test]
+fn ltr_descriptor_crossing_a_page_is_refused_without_any_access() {
+    // The paged LTR does not model a 16-byte entry that crosses a page; neither does the set.
+    for address in [0x4ff1u64, 0x4ffc, 0x4fff] {
+        let mut state = ltr_state();
+        state.gdtr = Some(od_isa::state::Gdtr {
+            base: address - 0x40,
+            limit: 0x7f,
+        });
+        let memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+        let memory = ltr_expect_exit(
+            state,
+            memory,
+            RunExit::Unsupported { opcode: 0x00 },
+            &format!("descriptor at {address:#x}"),
+        );
+        assert!(memory.reads.is_empty(), "descriptor at {address:#x}");
+    }
+    // The last accepted offset in the page (`0xff0`) is loaded.
+    let mut state = ltr_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: 0x4ff0 - 0x40,
+        limit: 0x7f,
+    });
+    let mut memory = BitsMemory::new(&LTR_AX);
+    for (index, byte) in ltr_tss_descriptor().into_iter().enumerate() {
+        memory.data.insert(0x4ff0 + index as u64, byte);
+    }
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.tr, Some(ltr_expected_tr(0x8b)));
+}
+
+#[test]
+fn ltr_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
+    let cases: &[&[u8]] = &[
+        &[0xf0, 0x0f, 0x00, 0xd8], // LOCK
+        &[0xf3, 0x0f, 0x00, 0xd8], // REP
+        &[0xf2, 0x0f, 0x00, 0xd8], // REPNE
+        &[0x66, 0x0f, 0x00, 0xd8], // 0x66
+        &[0x67, 0x0f, 0x00, 0xd8], // 0x67
+        &[0x64, 0x0f, 0x00, 0xd8], // FS/GS and CS/DS/ES/SS overrides
+        &[0x65, 0x0f, 0x00, 0xd8],
+        &[0x2e, 0x0f, 0x00, 0xd8],
+        &[0x3e, 0x0f, 0x00, 0xd8],
+        &[0x48, 0x0f, 0x00, 0xd8], // REX.W
+        &[0x49, 0x0f, 0x00, 0xd8],
+        &[0x41, 0x66, 0x0f, 0x00, 0xd8], // stale REX
+        &[0x41, 0x41, 0x0f, 0x00, 0xd8],
+        &[0x66, 0x41, 0x0f, 0x00, 0xd8],
+        &[0x0f, 0x00, 0xc0], // /0 SLDT
+        &[0x0f, 0x00, 0xc8], // /1 STR
+        &[0x0f, 0x00, 0xd0], // /2 LLDT
+        &[0x0f, 0x00, 0xe0], // /4 VERR
+        &[0x0f, 0x00, 0xe8], // /5 VERW AX
+        &[0x0f, 0x00, 0xf0], // /6
+        &[0x0f, 0x00, 0xf8], // /7
+        &[0x41, 0x0f, 0x00, 0xc0],
+        &[0x41, 0x0f, 0x00, 0xe8],
+        &[0x0f, 0x00, 0x18], // /3 memory forms
+        &[0x0f, 0x00, 0x1b],
+        &[0x0f, 0x00, 0x5d, 0xf0],
+        &[0x0f, 0x00, 0x1d, 0x00, 0x10, 0x00, 0x00],
+        &[0x41, 0x0f, 0x00, 0x18],
+        &[0x65, 0x0f, 0x00, 0x18],
+        &[0x0f, 0x00, 0x00], // other memory forms
+        &[0x0f, 0x00, 0x20],
+    ];
+    for &code in cases {
+        let mut state = ltr_state();
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x00 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn ltr_truncated_input_is_refused_without_mutation() {
+    for code in [&[0x0fu8, 0x00][..], &[0x41, 0x0f, 0x00][..], &[0x0f][..]] {
+        let mut state = ltr_state();
+        let before = state.clone();
+        let mut memory = ltr_memory(code, ltr_tss_descriptor());
+        let result = run_movb_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn ltr_without_a_modeled_gdtr_stays_unsupported_and_invents_nothing() {
+    let mut state = ltr_state();
+    state.gdtr = None;
+    let memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    let memory = ltr_expect_exit(
+        state,
+        memory,
+        RunExit::Unsupported { opcode: 0x00 },
+        "no GDTR",
+    );
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn ltr_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): refused without mutation, GDTR modeled or not.
+    for gdtr in [Some(LTR_GDT), None] {
+        let mut state = legacy_state();
+        state.gdtr = gdtr;
+        state.gpr[Register::Rax as usize] = u64::from(LTR_SELECTOR);
+        let before = state.clone();
+        let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x00 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn ltr_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    state.gdtr = Some(LTR_GDT);
+    state.gpr[Register::Rax as usize] = u64::from(LTR_SELECTOR);
+    let before = state.clone();
+    let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x00 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn ltr_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = ltr_state();
+    let before = state.clone();
+    let mut memory = ltr_memory(&LTR_AX, ltr_tss_descriptor());
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

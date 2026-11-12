@@ -4313,6 +4313,93 @@ mod tests {
         assert_eq!(state.rflags & 1, 1, "CF");
     }
 
+    // ---- S4-38L7am: LTR r/m16 (register form) through the board facade ----
+
+    #[test]
+    fn ltr_ax_loads_tr_from_a_tss_descriptor_in_the_board_gdt_and_marks_it_busy() {
+        // The board GDT (base 0x12_0000, limit 31) has no TSS entry, so the program writes an
+        // available 64-bit TSS descriptor over the entry at selector 0x10 (its 16 bytes end at
+        // the limit) and loads it.
+        const GDT: u32 = 0x12_0000;
+        let mut code = Vec::new();
+        // MOV RAX,low qword; MOV [GDT+0x10],RAX; MOV RAX,high qword; MOV [GDT+0x18],RAX;
+        code.extend(mov_rax_imm64(0x1200_8934_5678_206b));
+        code.extend([0x48, 0x89, 0x04, 0x25]);
+        code.extend((GDT + 0x10).to_le_bytes());
+        code.extend(mov_rax_imm64(0x0000_0000_ffff_fe00));
+        code.extend([0x48, 0x89, 0x04, 0x25]);
+        code.extend((GDT + 0x18).to_le_bytes());
+        // MOV EAX,0x10; LTR AX (`0f 00 d8`, the S4-38L7al boundary bytes); HLT.
+        code.extend(mov_eax(0x10));
+        code.extend([0x0F, 0x00, 0xD8, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        assert!(
+            boot.board.state().tr.is_none(),
+            "the board entry state has no TR"
+        );
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 7,
+            "MOV, store, MOV, store, MOV EAX, LTR, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(
+            state.tr,
+            Some(od_isa::TaskRegisterCache {
+                selector: 0x10,
+                base: 0xffff_fe00_1234_5678,
+                limit: 0x206b,
+                access: 0x8b,
+                flags: 0,
+            })
+        );
+        let gdtr = state.gdtr.expect("the board models a GDTR");
+        assert_eq!((gdtr.base, gdtr.limit), (0x12_0000, 31));
+        // The busy bit is set in the GDT; the other descriptor bytes are untouched.
+        let mut bytes = [0u8; 16];
+        read(&mut boot.board, u64::from(GDT) + 0x10, &mut bytes).expect("read");
+        assert_eq!(
+            bytes,
+            [
+                0x6b, 0x20, 0x78, 0x56, 0x34, 0x8b, 0x00, 0x12, 0x00, 0xfe, 0xff, 0xff, 0, 0, 0, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn ltr_ax_with_a_selector_beyond_the_board_gdt_limit_is_gp_and_loads_nothing() {
+        // The board GDT limit is 31: selector 0x40 is #GP(0x40) before any descriptor access, so
+        // the facade stops on the fault without a TR and without delivery (no IDT is loaded).
+        let mut code = mov_eax(0x40);
+        code.extend([0x0F, 0x00, 0xD8, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.retired, 1, "{record:?}");
+        assert_ne!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert!(boot.board.state().tr.is_none());
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]

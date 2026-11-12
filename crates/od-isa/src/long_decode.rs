@@ -652,6 +652,11 @@ pub enum Operation {
     StoreGdtr {
         dst: MemoryOperand,
     },
+    /// S4-38L7am: `LTR r/m16` (`0F 00 /3`, register form only, optional REX without W). The
+    /// selector is the low 16 bits of `source`. Executed only in the CPL0 profile set.
+    LoadTr {
+        source: Register,
+    },
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
@@ -7725,10 +7730,34 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x00) => {
-                if prefixes != Prefixes::default() || self.byte()? != 0xe8 {
+                // S4-38L7am: `LTR r/m16` (`0F 00 /3`, register form only) takes no prefix or a
+                // lone REX (no REX.W) directly before the opcode; every other prefix and every
+                // other `0F 00 /n` (SLDT, STR, LLDT, VERR, VERW, memory forms) stays unsupported.
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let ltr_prefixes = prefixes.group1.is_none()
+                    && prefixes.segment.is_none()
+                    && !prefixes.operand_override
+                    && !prefixes.address_override
+                    && !stale_rex
+                    && prefixes.rex.is_none_or(|rex| rex & 8 == 0);
+                if prefixes != Prefixes::default() && !ltr_prefixes {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::VerwGdt
+                let modrm = self.byte()?;
+                if prefixes == Prefixes::default() && modrm == 0xe8 {
+                    Operation::VerwGdt
+                } else if ltr_prefixes && modrm >> 6 == 3 && (modrm >> 3) & 7 == 3 {
+                    let rex = prefixes.rex.unwrap_or(0);
+                    Operation::LoadTr {
+                        source: Register::from_encoding((modrm & 7) | ((rex & 1) << 3))
+                            .expect("a four-bit register encoding"),
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
             }
             (OpcodeMap::Escape0f, 0x01) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xf8 {
@@ -27190,6 +27219,59 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn ltr_decodes_the_register_form_with_optional_rex_only() {
+        // S4-38L7am: `[REX.B] 0F 00 /3` with mod = 11.
+        for (bytes, length, register) in [
+            (&[0x0fu8, 0x00, 0xd8][..], 3u8, Register::Rax), // ltr %ax: the boundary
+            (&[0x0f, 0x00, 0xdf], 3, Register::Rdi),
+            (&[0x0f, 0x00, 0xdc], 3, Register::Rsp),
+            (&[0x40, 0x0f, 0x00, 0xde], 4, Register::Rsi),
+            (&[0x41, 0x0f, 0x00, 0xd8], 4, Register::R8),
+            (&[0x41, 0x0f, 0x00, 0xdf], 4, Register::R15),
+            (&[0x44, 0x0f, 0x00, 0xd9], 4, Register::Rcx), // REX.R is ignored
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(
+                decoded.operation,
+                Operation::LoadTr { source: register },
+                "{bytes:02x?}"
+            );
+        }
+        // Trailing bytes are not consumed.
+        let decoded = Memory::new(&[0x0f, 0x00, 0xd8, 0x48, 0x8b, 0x45, 0xf0])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 3);
+        for bytes in [
+            &[0xf0u8, 0x0f, 0x00, 0xd8][..],
+            &[0x66, 0x0f, 0x00, 0xd8],
+            &[0x67, 0x0f, 0x00, 0xd8],
+            &[0x65, 0x0f, 0x00, 0xd8],
+            &[0x48, 0x0f, 0x00, 0xd8],       // REX.W
+            &[0x41, 0x66, 0x0f, 0x00, 0xd8], // stale REX
+            &[0x0f, 0x00, 0xc0],             // SLDT
+            &[0x0f, 0x00, 0xc8],             // STR
+            &[0x0f, 0x00, 0xd0],             // LLDT
+            &[0x0f, 0x00, 0xe0],             // VERR
+            &[0x0f, 0x00, 0x18],             // LTR m16
+            &[0x41, 0x0f, 0x00, 0x18],
+            &[0x41, 0x0f, 0x00, 0xe8], // VERW with REX
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // The bare `0F 00 E8` stays VERW AX.
+        let verw = Memory::new(&[0x0f, 0x00, 0xe8]).decode().unwrap();
+        assert!(matches!(verw.operation, Operation::VerwGdt));
     }
 
     #[test]
