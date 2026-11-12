@@ -6271,6 +6271,60 @@ mod tests {
         assert_eq!(state.rflags & 1, 0);
     }
 
+    // ---- S4-38L7bi: LOCK BTS m32/m64, imm8 through the board facade ----
+
+    #[test]
+    fn lock_bts_imm_sets_bits_in_guest_memory_and_leaves_neighbours_alone() {
+        const BASE: u64 = 0x0200_0100;
+        // MOV R12,BASE; MOV RDI,0x1100; MOV [R12],RDI; MOV [R12+8],RDI; MOV [R12-8],RDI;
+        // LOCK BTS $0,(%r12) (the S4-38L7bh boundary: qword bit 0 was clear, CF = 0, 0x1101);
+        // LOCK BTS $0x45,(%r12) without REX.W (dword bit 0x45 % 32 = 5, 0x1121);
+        // LOCK BTS $0,(%r12) again (bit already set: CF = 1, the value stays 0x1121);
+        // MOV RDX,[R12]; MOV RCX,[R12+8]; MOV RSI,[R12-8]; HLT.
+        let mut code = vec![0x49, 0xBC];
+        code.extend(BASE.to_le_bytes());
+        code.extend([0x48, 0xBF]);
+        code.extend(0x1100u64.to_le_bytes());
+        code.extend([0x49, 0x89, 0x3C, 0x24]);
+        code.extend([0x49, 0x89, 0x7C, 0x24, 0x08]);
+        code.extend([0x49, 0x89, 0x7C, 0x24, 0xF8]);
+        code.extend([0xF0, 0x49, 0x0F, 0xBA, 0x2C, 0x24, 0x00]);
+        code.extend([0xF0, 0x41, 0x0F, 0xBA, 0x2C, 0x24, 0x45]);
+        code.extend([0xF0, 0x49, 0x0F, 0xBA, 0x2C, 0x24, 0x00]);
+        code.extend([0x49, 0x8B, 0x14, 0x24]);
+        code.extend([0x49, 0x8B, 0x4C, 0x24, 0x08]);
+        code.extend([0x49, 0x8B, 0x74, 0x24, 0xF8]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 12,
+            "2 MOV, 3 stores, 3 LOCK BTS, 3 loads, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE), 0x1121);
+        assert_eq!(guest_qword(&mut boot, BASE + 8), 0x1100);
+        assert_eq!(guest_qword(&mut boot, BASE - 8), 0x1100);
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 0x1121);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x1100);
+        assert_eq!(state.gpr[od_isa::Register::Rsi as usize], 0x1100);
+        // The last LOCK BTS found its bit already set: CF = 1.
+        assert_eq!(state.rflags & 1, 1);
+    }
+
     // ---- S4-38L7t: LOCK BTR m64, r64 through the board facade ----
 
     #[test]
