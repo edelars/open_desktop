@@ -668,6 +668,13 @@ pub enum Operation {
     LoadLdt {
         source: Register,
     },
+    /// S4-38L7ax: `MOV DRn, r64` (`0F 23 /r`, register form only, optional REX without R).
+    /// `index` is the `reg` field (0..=7); `source` is the 64-bit GPR from `rm` and REX.B.
+    /// Executed only in the CPL0 profile set, and only for DR0..DR3, DR6 and DR7.
+    WriteDebugRegister {
+        index: u8,
+        source: Register,
+    },
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
@@ -3056,7 +3063,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -7775,6 +7782,36 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                 } else {
                     return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x23) => {
+                // S4-38L7ax: `MOV DRn, r64` (`0F 23 /r`, mod = 11) takes no prefix or a lone REX
+                // directly before the opcode. REX.R would select DR8..DR15 and is refused; REX.W
+                // and REX.X do not change a 64-bit register-to-register MOV; every other prefix
+                // and mod != 11 stay unsupported (not modeled: on hardware the mod bits are
+                // ignored and the register form executes, SDM from memory).
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                let drn_prefixes = prefixes.group1.is_none()
+                    && prefixes.segment.is_none()
+                    && !prefixes.operand_override
+                    && !prefixes.address_override
+                    && !stale_rex
+                    && prefixes.rex.is_none_or(|rex| rex & 4 == 0);
+                if !drn_prefixes {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0);
+                Operation::WriteDebugRegister {
+                    index: (modrm >> 3) & 7,
+                    source: Register::from_encoding((modrm & 7) | ((rex & 1) << 3))
+                        .expect("a four-bit register encoding"),
                 }
             }
             (OpcodeMap::Escape0f, 0x01) => {
@@ -25346,6 +25383,7 @@ mod tests {
                 cr2: None,
                 tr: None,
                 ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -27419,6 +27457,72 @@ mod tests {
             &[0x0f, 0x00, 0xc8], // STR stays refused
             &[0x0f, 0x00, 0xf0], // /6
             &[0x0f, 0x00, 0xf8], // /7
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mov_drn_decodes_the_register_write_form_with_optional_rex_without_r() {
+        // S4-38L7ax: `[REX] 0F 23 /r` with mod = 11.
+        for (bytes, length, index, register) in [
+            (&[0x0fu8, 0x23, 0xfe][..], 3u8, 7u8, Register::Rsi), // mov %rsi, %db7: the boundary
+            (&[0x0f, 0x23, 0xce], 3, 1, Register::Rsi),           // mov %rsi, %db1
+            (&[0x0f, 0x23, 0xc0], 3, 0, Register::Rax),
+            (&[0x0f, 0x23, 0xd3], 3, 2, Register::Rbx),
+            (&[0x0f, 0x23, 0xf4], 3, 6, Register::Rsp),
+            (&[0x48, 0x0f, 0x23, 0xfe], 4, 7, Register::Rsi), // REX.W
+            (&[0x40, 0x0f, 0x23, 0xd7], 4, 2, Register::Rdi),
+            (&[0x41, 0x0f, 0x23, 0xfe], 4, 7, Register::R14), // REX.B
+            (&[0x49, 0x0f, 0x23, 0xc0], 4, 0, Register::R8),
+            (&[0x41, 0x0f, 0x23, 0xdf], 4, 3, Register::R15),
+            (&[0x42, 0x0f, 0x23, 0xd8], 4, 3, Register::Rax), // REX.X is ignored
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert_eq!(
+                decoded.operation,
+                Operation::WriteDebugRegister {
+                    index,
+                    source: register
+                },
+                "{bytes:02x?}"
+            );
+        }
+        // Trailing bytes are not consumed.
+        let decoded = Memory::new(&[0x0f, 0x23, 0xfe, 0x31, 0xf6])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 3);
+        // DR4/DR5 decode (they are refused at execution, by the CR4.DE rule).
+        assert_eq!(
+            Memory::new(&[0x0f, 0x23, 0xe0]).decode().unwrap().operation,
+            Operation::WriteDebugRegister {
+                index: 4,
+                source: Register::Rax
+            }
+        );
+        for bytes in [
+            &[0xf0u8, 0x0f, 0x23, 0xfe][..],
+            &[0xf3, 0x0f, 0x23, 0xfe],
+            &[0x66, 0x0f, 0x23, 0xfe],
+            &[0x67, 0x0f, 0x23, 0xfe],
+            &[0x65, 0x0f, 0x23, 0xfe],
+            &[0x2e, 0x0f, 0x23, 0xfe],
+            &[0x44, 0x0f, 0x23, 0xfe],       // REX.R: DR8..DR15
+            &[0x4c, 0x0f, 0x23, 0xc6],       // REX.W+R
+            &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
+            &[0x0f, 0x23, 0x3e],             // mod != 11 (not modeled)
+            &[0x0f, 0x23, 0x7e, 0x08],
+            &[0x41, 0x0f, 0x23, 0x3e],
+            &[0x0f, 0x21, 0xfe], // MOV r64, DR7 stays unsupported
+            &[0x0f, 0x21, 0xce],
         ] {
             assert!(
                 matches!(
