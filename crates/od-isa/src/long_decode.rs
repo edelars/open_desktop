@@ -863,6 +863,11 @@ pub enum Operation {
     LockIncMem {
         destination: MemoryOperand,
     },
+    /// S4-38L7bn: `F0 [REX] FF /1` (LOCK DEC m32, and with REX.W m64), memory destination only.
+    /// Executed only in the CPL0 set; the destination is always written back.
+    LockDecMem {
+        destination: MemoryOperand,
+    },
     /// S4-38L7s: `F0 [REX] 80 /1 ib`, `F0 [REX] 81 /1 id` and `F0 [REX] 83 /1 ib` (LOCK OR m8,
     /// imm8 / m32, imm32 / m64, imm32 with REX.W / m32 or m64, sign-extended imm8), memory
     /// destination only. `immediate` is already extended to the operand width. Executed only in
@@ -2367,6 +2372,7 @@ impl Instruction {
             },
             // S4-38L7l/S4-38L7p: INC leaves CF alone.
             Operation::LockIncMem { .. }
+            | Operation::LockDecMem { .. }
             | Operation::IncDecFsMem { .. }
             | Operation::IncDecGsMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::CF,
@@ -9211,11 +9217,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         Operation::IncDecGsMem { destination, kind }
                     }
                 } else if prefixes.group1 == Some(0xf0) {
-                    // S4-38L7l: LOCK is admitted for the memory INC alone (dword, or qword with
-                    // REX.W); DEC, the register form, 0x66, 0x67 and segment prefixes keep the
-                    // refusal. Repeated LOCK/REP prefixes are refused by the shared check above.
+                    // S4-38L7l/S4-38L7bn: LOCK is admitted for the memory INC and DEC alone
+                    // (dword, or qword with REX.W); the other FF group members, the register
+                    // form, 0x66, 0x67 and segment prefixes keep the refusal. Repeated LOCK/REP
+                    // prefixes are refused by the shared check above.
                     if byte != 0xff
-                        || group != 0
+                        || !matches!(group, 0 | 1)
                         || modrm >> 6 == 3
                         || prefixes.operand_override
                         || prefixes.address_override
@@ -9227,7 +9234,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     else {
                         unreachable!("the register form is refused above")
                     };
-                    Operation::LockIncMem { destination }
+                    if group == 0 {
+                        Operation::LockIncMem { destination }
+                    } else {
+                        Operation::LockDecMem { destination }
+                    }
                 } else {
                     let kind = match (byte, group) {
                         (0xfe | 0xff, 0) => ArithmeticKind::Inc,
@@ -23711,8 +23722,7 @@ mod tests {
             }
         ));
         for bytes in [
-            // DEC and the other FF group members.
-            &[0xf0, 0xff, 0x4b, 0x58][..],
+            // The other FF group members (DEC is S4-38L7bn).
             &[0xf0, 0xff, 0x53, 0x58][..],
             &[0xf0, 0xff, 0x5b, 0x58][..],
             &[0xf0, 0xff, 0x63, 0x58][..],
@@ -23741,6 +23751,103 @@ mod tests {
             &[0xf0, 0x2e, 0xff, 0x43, 0x58][..],
             // REX not directly before the opcode.
             &[0xf0, 0x48, 0x66, 0xff, 0x43, 0x58][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_dec_decodes_the_memory_form_only() {
+        // S4-38L7bn: `F0 [REX] FF /1` with a memory destination. The S4-38L7bm diagnostic
+        // boundary `lock decl 0x34(%r14)` is five bytes long.
+        let mut memory = Memory::new(&[0xf0, 0x41, 0xff, 0x4e, 0x34]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(decoded.prefixes.group1, Some(0xf0));
+        assert_eq!(
+            decoded.flag_effects().defined,
+            crate::ARITHMETIC_FLAGS & !crate::CF
+        );
+        assert_eq!(decoded.flag_effects().undefined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockDecMem { destination }
+                if destination.base == AddressBase::Register(Register::R14)
+                    && destination.displacement == 0x34
+                    && destination.size == OperandSize::Dword
+        ));
+        // REX.W selects the qword form.
+        let mut memory = Memory::new(&[0xf0, 0x49, 0xff, 0x4e, 0x34]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockDecMem { destination }
+                if destination.size == OperandSize::Qword
+                    && destination.base == AddressBase::Register(Register::R14)
+        ));
+        // RIP-relative and SIB + disp8.
+        let mut memory = Memory::new(&[0xf0, 0xff, 0x0d, 0x34, 0x12, 0x00, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 7);
+        assert!(matches!(
+            decoded.operation,
+            Operation::LockDecMem { destination }
+                if destination.base == AddressBase::NextRip && destination.displacement == 0x1234
+        ));
+        let mut memory = Memory::new(&[0xf0, 0xff, 0x4c, 0x8b, 0x10]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockDecMem { destination }
+                if destination.index == Some(Register::Rcx)
+                    && destination.scale == 4
+                    && destination.displacement == 0x10
+        ));
+        // /0 is still LOCK INC.
+        let mut memory = Memory::new(&[0xf0, 0xff, 0x43, 0x58]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::LockIncMem { .. }
+        ));
+        // Without LOCK the pre-existing arithmetic DEC is decoded unchanged.
+        let mut memory = Memory::new(&[0xff, 0x4b, 0x58]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Dec,
+                ..
+            }
+        ));
+        for bytes in [
+            // The other FF group members.
+            &[0xf0, 0xff, 0x53, 0x58][..],
+            &[0xf0, 0xff, 0x63, 0x58][..],
+            &[0xf0, 0xff, 0x73, 0x58][..],
+            &[0xf0, 0xff, 0x7b, 0x58][..],
+            // Register forms.
+            &[0xf0, 0xff, 0xcb][..],
+            &[0xf0, 0x41, 0xff, 0xce][..],
+            &[0xf0, 0x49, 0xff, 0xce][..],
+            // Byte form (FE /1).
+            &[0xf0, 0xfe, 0x4b, 0x58][..],
+            // 0x66 and 0x67.
+            &[0x66, 0xf0, 0xff, 0x4b, 0x58][..],
+            &[0xf0, 0x66, 0xff, 0x4b, 0x58][..],
+            &[0xf0, 0x67, 0xff, 0x4b, 0x58][..],
+            // REP/REPNE alongside LOCK and a repeated LOCK.
+            &[0xf0, 0xf3, 0xff, 0x4b, 0x58][..],
+            &[0xf3, 0xf0, 0xff, 0x4b, 0x58][..],
+            &[0xf2, 0xf0, 0xff, 0x4b, 0x58][..],
+            &[0xf0, 0xf0, 0xff, 0x4b, 0x58][..],
+            // Segment prefixes.
+            &[0xf0, 0x64, 0xff, 0x4b, 0x58][..],
+            &[0xf0, 0x65, 0xff, 0x4b, 0x58][..],
+            &[0x65, 0xf0, 0xff, 0x4b, 0x58][..],
+            &[0xf0, 0x2e, 0xff, 0x4b, 0x58][..],
+            // REX not directly before the opcode.
+            &[0xf0, 0x48, 0x66, 0xff, 0x4b, 0x58][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
@@ -25225,11 +25332,11 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
-        // LOCK DEC stays unsupported (only LOCK INC exists, S4-38L7l).
+        // LOCK DEC (S4-38L7bn) is a separate operation and is untouched here.
         let mut memory = Memory::new(&[0xf0, 0xff, 0x4b, 0x58]);
         assert!(matches!(
-            memory.decode(),
-            Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xff
+            memory.decode().unwrap().operation,
+            Operation::LockDecMem { .. }
         ));
         // LOCK/REP, 0x66, 0x67, a second segment prefix and a stale REX stay unsupported with the
         // FF opcode.

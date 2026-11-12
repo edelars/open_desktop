@@ -35298,6 +35298,8 @@ fn step_configured(
         | Operation::LockCmpxchgMem { .. }
         // S4-38L7l: and for LOCK INC m32/m64.
         | Operation::LockIncMem { .. }
+        // S4-38L7bn: and for LOCK DEC m32/m64.
+        | Operation::LockDecMem { .. }
         // S4-38L7s: and for LOCK OR m8/m32/m64, imm.
         | Operation::LockOrMem { .. }
         // S4-38L7z: and for LOCK ADD m8/m32/m64, imm.
@@ -49162,6 +49164,7 @@ fn step_configured(
         | Operation::CmpxchgGsMemByte { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
+        | Operation::LockDecMem { .. }
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
         | Operation::LockAddMemReg { .. }
@@ -54949,6 +54952,20 @@ fn transfer(
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) =
                 arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockDecMem { destination } => {
+            // S4-38L7bn: as LockIncMem with the shared DEC (`arithmetic_result` with
+            // `ArithmeticKind::Dec`: OF/SF/ZF/AF/PF from the result, CF kept). One vCPU, so
+            // read -> write needs no bus lock. The address (non-canonical start or last byte is
+            // #GP(0), RSP/RBP bases #SS(0)) is resolved before any access; the result is written
+            // back always; the flags commit only after the write succeeded, so a faulting write
+            // leaves memory and flags untouched.
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, state.rflags);
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
