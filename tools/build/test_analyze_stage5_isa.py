@@ -999,6 +999,63 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  403400: {encoding} {operands}")
             self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
 
+    def test_s2_35_17_psubq_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.17-PSUBQ-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f fb {modrm:02x}"
+                operands = f"psubq xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  403500: {encoding} {operands}")
+                self.assertEqual(row["signature"], "psubq xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  403600: 66 40 0f fb c1 psubq xmm0,xmm1")), expected)
+        rejected = (
+            ("0f fb c1", "psubq mm0,mm1"),
+            ("0f fb c1", "psubq xmm0,xmm1"),
+            ("66 42 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 48 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 4c 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 66 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 f2 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 f3 0f fb c1", "psubq xmm0,xmm1"),
+            ("67 66 0f fb c1", "psubq xmm0,xmm1"),
+            ("44 66 0f fb c1", "psubq xmm0,xmm1"),
+            ("66 0f fb 01", "psubq xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fb 41 00", "psubq xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fb 81 00 00 00 00", "psubq xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fa c1", "psubq xmm0,xmm1"),
+            ("66 0f fb", "psubq xmm0,xmm1"),
+            ("66 0f fb c1 90", "psubq xmm0,xmm1"),
+            ("c5 f9 fb c1", "vpsubq xmm0,xmm1,xmm2"),
+            ("62 f1 75 08 fb c1", "vpsubq xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403700: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_17_psubq_registry_preserves_cpu_contract_gap(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.17 PSUBQ XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertIn("REX.R/B", family["encoding"])
+        self.assertIn("CPU_CONTRACT has no PSUBQ entry", profile["gate"])
+        self.assertIn("modulo 2^64", family["outcome"])
+
     def test_s2_35_18_pcmpeqb_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])

@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pcmpeqb-e-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pcmpeqb-e-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-pcmpeqb-e-pass1.json",
-    "compact_inventory_sha256": "52c4bf0e7d433665d2fa2821c066574c7619675f4f7ef2fc0600ede0f052e2fb",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psubq-e-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-psubq-e-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-psubq-e-pass1.json",
+    "compact_inventory_sha256": "21b8e928e4fee5f7fb35e7339562261505e4374a0bea20695191a01ea419572d",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "d9f5d44dd263c62ab0e8841122486eef33f71686620a5184c98b79ec592e30d8",
+    "raw_inventory_sha256": "b71e5a317cb86e372938e1de8ce9cfd84f0340baa3fb1bc3f00fdb8b6eba1cf8",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,23 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1048,
-    "unclassified_normalized_forms": 221,
+    "classified_normalized_forms": 1049,
+    "unclassified_normalized_forms": 220,
     "classification_frequencies": {
-      "proven_supported": 6295827,
-      "unclassified": 214918
+      "proven_supported": 6295839,
+      "unclassified": 214906
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293476,
+      "local_interpreter_profile": 6293488,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "52c4bf0e7d433665d2fa2821c066574c7619675f4f7ef2fc0600ede0f052e2fb",
+    "compact_repeat_sha256": "21b8e928e4fee5f7fb35e7339562261505e4374a0bea20695191a01ea419572d",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pcmpeqb-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pcmpeqb-e-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-psubq-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-psubq-e-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -94,7 +94,7 @@
       "punpckhqdq xmm,mem128": 1
     },
     "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence",
-    "local_interpreter_profile_rows": 6293476,
+    "local_interpreter_profile_rows": 6293488,
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
@@ -102,8 +102,8 @@
         "unclassified": 23452
       },
       "D": {
-        "proven_supported": 6226498,
-        "unclassified": 209716
+        "proven_supported": 6226510,
+        "unclassified": 209704
       }
     },
     "local_simd_logic_rows": 1858,
@@ -239,7 +239,14 @@
     "pcmpeqb_register_rows_by_profile": {
       "S2-35.18-PCMPEQB-XMM-register-register": 6
     },
-    "pcmpeqb_scope": "Accepted local-only PCMPEQB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen independent byte lanes write FF for equality, otherwise 00. No data-memory callback; no memory/MMX, other comparisons, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence."
+    "pcmpeqb_scope": "Accepted local-only PCMPEQB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen independent byte lanes write FF for equality, otherwise 00. No data-memory callback; no memory/MMX, other comparisons, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "psubq_register_rows": 12,
+    "psubq_register_normalized_forms": 1,
+    "psubq_register_encoding_forms": 5,
+    "psubq_register_rows_by_profile": {
+      "S2-35.17-PSUBQ-XMM-register-register": 12
+    },
+    "psubq_scope": "Accepted local-only PSUBQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; two little-endian u64 lanes independently compute (DEST-SRC) modulo 2^64. No data-memory callback; CPU_CONTRACT has no PSUBQ entry. No memory/MMX or CPL3/native/JIT/physical evidence."
   },
   "unchanged_rootfs_binary_inputs": true
 }

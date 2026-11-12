@@ -328,6 +328,7 @@ PSRAD_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x41)}
 PSUBW_ALLOWED_PREFIXES = {(0x66,), (0x66, 0x40), (0x66, 0x41), (0x66, 0x44), (0x66, 0x45)}
 PADDB_ALLOWED_PREFIXES = PSUBW_ALLOWED_PREFIXES
 PADDW_ALLOWED_PREFIXES = PSUBW_ALLOWED_PREFIXES
+PSUBQ_ALLOWED_PREFIXES = PSUBW_ALLOWED_PREFIXES
 MOVSD_REGISTER_ALLOWED_PREFIXES = {(0xF2,), (0xF2, 0x40), (0xF2, 0x41), (0xF2, 0x44), (0xF2, 0x45)}
 PCMPGTB_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 PCMPEQB_ALLOWED_PREFIXES = PCMPGTB_ALLOWED_PREFIXES
@@ -516,6 +517,25 @@ def psubw_local_profile_candidate(row: dict) -> str | None:
     if len(row["byte_values"]) != len(prefixes) + 3:
         return None
     return "S2-35.7-PSUBW-XMM-register-register"
+
+
+def psubq_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-35.17 XMM register-register form."""
+    if row["mnemonic"] != "psubq" or row["signature"] != "psubq xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0xFB):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PSUBQ_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory 66 + optional REX.R/B + 0F FB + register ModR/M.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-35.17-PSUBQ-XMM-register-register"
 
 
 def paddb_local_profile_candidate(row: dict) -> str | None:
@@ -764,6 +784,9 @@ def local_profile_candidate(row: dict) -> str | None:
     pcmpeqb_candidate = pcmpeqb_local_profile_candidate(row)
     if pcmpeqb_candidate is not None:
         return pcmpeqb_candidate
+    psubq_candidate = psubq_local_profile_candidate(row)
+    if psubq_candidate is not None:
+        return psubq_candidate
     psrlq_candidate = psrlq_local_profile_candidate(row)
     if psrlq_candidate is not None:
         return psrlq_candidate

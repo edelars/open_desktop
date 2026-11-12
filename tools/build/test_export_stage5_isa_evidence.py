@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1048)
-                self.assertEqual(fields["unclassified_normalized_forms"], 221)
+                self.assertEqual(fields["classified_normalized_forms"], 1049)
+                self.assertEqual(fields["unclassified_normalized_forms"], 220)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295543 if full_key else 6295827
-                expected_unclassified_rows = 214857 if full_key else 214918
+                expected_supported_rows = 6295555 if full_key else 6295839
+                expected_unclassified_rows = 214845 if full_key else 214906
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -103,6 +103,9 @@ class NormalizedFormTests(unittest.TestCase):
                     scenario_totals[scenario] = totals
                 self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
                 report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
+                local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
+                self.assertIn("6 293 488", local_scope_line)
+                self.assertIn("6 293 204", local_scope_line)
                 report_binary_rows = {}
                 for line in report_lines:
                     cells = [cell.strip() for cell in line.split("|")]
@@ -245,6 +248,21 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in psubw_forms),
                     1,
+                )
+                psubq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FB"]
+                    and row["instruction_form"]["operand_signature"] == "psubq xmm,xmm"
+                ]
+                self.assertEqual(len(psubq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psubq_forms), 12)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.17-PSUBQ-XMM-register-register", 0) for row in psubq_forms),
+                    12,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psubq_forms),
+                    12,
                 )
                 paddb_forms = [
                     row for row in compact["normalized_instruction_forms"]
