@@ -35237,6 +35237,9 @@ fn step_configured(
         // S4-38L7p/S4-38L7q: and for the FS/GS-based INC/DEC m32/m64.
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
+        // S4-38L7bg: and for the FS/GS-based CMPXCHG m8, r8.
+        | Operation::CmpxchgFsMemByte { .. }
+        | Operation::CmpxchgGsMemByte { .. }
         // S4-38L7k: and for LOCK CMPXCHG m64, r64.
         | Operation::LockCmpxchgMem { .. }
         // S4-38L7l: and for LOCK INC m32/m64.
@@ -49094,6 +49097,8 @@ fn step_configured(
         | Operation::TestGsMemWide { .. }
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
+        | Operation::CmpxchgFsMemByte { .. }
+        | Operation::CmpxchgGsMemByte { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockOrMem { .. }
@@ -54269,6 +54274,37 @@ fn classify_fxsave_x87_value(raw: &[u8; 10]) -> X87Tag {
     }
 }
 
+/// S4-38L7bg: the byte CMPXCHG shared by the FS and GS forms. `address` is already resolved.
+/// AL and the source byte are read before the access; RAX and the flags commit only after the
+/// destination write succeeded.
+fn cmpxchg_byte_at(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    source: RegisterView,
+) -> Result<(), MemoryError> {
+    let accumulator = RegisterView::low(Register::Rax, OperandSize::Byte);
+    let expected = state.read(accumulator);
+    let replacement = state.read(source);
+    let observed = memory.read_integer(address, context, OperandSize::Byte)?;
+    let equal = expected == observed;
+    let stored = if equal { replacement } else { observed };
+    memory.write_integer(address, context, OperandSize::Byte, stored)?;
+    let (_, flags) = arithmetic_result(
+        OperandSize::Byte,
+        ArithmeticKind::Cmp,
+        expected,
+        observed,
+        state.rflags,
+    );
+    if !equal {
+        state.write(accumulator, observed);
+    }
+    state.rflags = flags;
+    Ok(())
+}
+
 fn transfer(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -54752,6 +54788,30 @@ fn transfer(
             let (result, flags) = arithmetic_result(destination.size, kind, old, 1, state.rflags);
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
+        }
+        Operation::CmpxchgFsMemByte {
+            destination,
+            source,
+        } => {
+            // S4-38L7bg: the S4-38L7k read-compare-write at byte width with the FS base: AL is the
+            // accumulator, `source` a byte view (AL..BL / AH..BH / SPL..DIL / r8b..r15b). The base
+            // + effective address (RIP-relative is relative to the end of the instruction) is
+            // resolved before any access: a non-canonical address is #GP(0). The destination is
+            // written on both branches (equal: the source byte; otherwise the observed byte), so a
+            // faulting read or write leaves memory, AL and flags untouched. AL is written only on
+            // inequality (a byte write keeps the rest of RAX); the flags are the CMP of AL with
+            // the destination byte (all six arithmetic flags).
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            cmpxchg_byte_at(state, memory, context, address, source)?;
+        }
+        Operation::CmpxchgGsMemByte {
+            destination,
+            source,
+        } => {
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            cmpxchg_byte_at(state, memory, context, address, source)?;
         }
         Operation::LockCmpxchgMem {
             destination,

@@ -5069,6 +5069,110 @@ mod tests {
         assert_eq!(state.gpr[od_isa::Register::R11 as usize], 0x0D);
     }
 
+    // ---- S4-38L7bg: FS/GS-based CMPXCHG r/m8, r8 through the board facade ----
+
+    #[test]
+    fn gs_cmpxchg_byte_after_wrmsr_gs_base_stores_cl_on_equal_and_loads_al_on_not_equal() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE; plain byte stores:
+        // [BASE+0xf] = 0xAA, [BASE+0x10] = 0x42, [BASE+0x11] = 0xBB, [FS_DISTRACTOR+0x10] = 0x42;
+        // MOV EAX,0x42; MOV ECX,0x99; MOV EDI,0x10; CMPXCHG %cl,%gs:(%rdi) (`65 0f b0 0f`, the
+        // S4-38L7bf boundary form; equal: the byte becomes CL, ZF = 1, AL kept);
+        // MOV EAX,0x55555544; MOV EDI,0x11; CMPXCHG %cl,%gs:(%rdi) (0x44 vs 0xBB: not equal, AL
+        // becomes 0xBB with the upper RAX bytes kept, the byte is written back; CF/SF/AF/OF = 1,
+        // ZF/PF = 0); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x0F, 0x00, 0x00, 0x02, 0xAA]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x42]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xBB]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x42]);
+        code.extend(mov_eax(0x42));
+        code.extend([0xB9, 0x99, 0x00, 0x00, 0x00]);
+        code.extend([0xBF, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB0, 0x0F]);
+        code.extend(mov_eax(0x5555_5544));
+        code.extend([0xBF, 0x11, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB0, 0x0F]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 21, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // [BASE+0xf..=0x11]: the neighbours are unchanged, the equal compare stored CL (0x99), the
+        // failed one wrote the old byte (0xBB) back. The FS distractor byte is untouched.
+        assert_eq!(guest_qword(&mut boot, BASE + 0x0F) & 0xFF_FFFF, 0xBB_99AA);
+        assert_eq!(guest_qword(&mut boot, FS_DISTRACTOR + 0x10) & 0xFF, 0x42);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x5555_55BB);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x99);
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], 0x11);
+        // 0x44 - 0xBB = 0x89: CF, AF, SF, OF set; ZF and PF clear.
+        assert_eq!(state.rflags & 0x8D5, 0x1 | 0x10 | 0x80 | 0x800);
+    }
+
+    #[test]
+    fn fs_cmpxchg_byte_after_wrmsr_fs_base_stores_r9b_ignoring_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const GS_DISTRACTOR: u64 = 0x0300_0000;
+        // As above with the roles swapped; `64 44 0f b0 0a` = CMPXCHG %r9b,%fs:(%rdx) (REX.R).
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(GS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x00, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02, 0x42]);
+        code.extend([0xC6, 0x04, 0x25, 0x20, 0x00, 0x00, 0x03, 0x42]);
+        code.extend(mov_eax(0x42));
+        code.extend([0x41, 0xB9, 0x66, 0x77, 0x00, 0x00]);
+        code.extend([0xBA, 0x20, 0x00, 0x00, 0x00]);
+        code.extend([0x64, 0x44, 0x0F, 0xB0, 0x0A]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 16, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x20) & 0xFF, 0x66);
+        assert_eq!(guest_qword(&mut boot, GS_DISTRACTOR + 0x20) & 0xFF, 0x42);
+        let state = boot.board.state();
+        assert_eq!((state.fs_base, state.gs_base), (BASE, GS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x42);
+        assert_eq!(state.gpr[od_isa::Register::R9 as usize], 0x7766);
+        // Equal: ZF and PF set, everything else clear.
+        assert_eq!(state.rflags & 0x8D5, 0x40 | 0x4);
+    }
+
     // ---- S4-38L7bb: FS/GS-based MOV r/m8, r8 through the board facade ----
 
     #[test]
