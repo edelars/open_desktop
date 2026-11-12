@@ -121,7 +121,7 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIsNone(analyzer.local_profile_candidate(locked))
         self.assertIsNone(analyzer.local_profile_candidate(fs_load))
 
-    def test_machine_exact_profile_and_explicit_exclusion_are_distinct(self) -> None:
+    def test_machine_exact_profile_and_accepted_default_byte_pio_are_distinct(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, excluded = analyzer.profile_matcher_maps(registry)
         load = analyzer.parse_row("  401000: 48 8b 03 mov rax,QWORD PTR [rbx]")
@@ -129,8 +129,75 @@ class ParseObjdumpTests(unittest.TestCase):
         byte_in = analyzer.parse_row("  401005: ec in al,dx")
         self.assertIn("S4-20b/d exact load", {x["task"] for x in analyzer.exact_profile_candidates(load, exact)})
         self.assertIn("S4-20c syscall", {x["task"] for x in analyzer.exact_profile_candidates(syscall, exact)})
-        self.assertIsNotNone(analyzer.excluded_profile_match(byte_in, excluded))
-        self.assertIsNotNone(analyzer.cpl0_encoding_candidate(byte_in))
+        self.assertIsNone(analyzer.excluded_profile_match(byte_in, excluded))
+        self.assertIn("S4-38L7x-byte-PIO", analyzer.cpl0_l7_candidates(byte_in))
+        self.assertEqual(analyzer.local_profile_candidate(byte_in), None)
+        byte_out = analyzer.parse_row("  401006: ee out dx,al")
+        self.assertIn("S4-38L7x-byte-PIO", analyzer.cpl0_l7_candidates(byte_out))
+
+    def test_s2_12_test_accumulator_and_s2_15a_sign_extension_are_local_only(self) -> None:
+        for line in (
+            "  401010: a8 01 test al,0x1",
+            "  401012: a9 01 00 00 00 test eax,0x1",
+        ):
+            self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(line)), "S2-12")
+        for line in (
+            "  401017: 98 cwde",
+            "  401018: 48 98 cdqe",
+            "  40101a: 99 cdq",
+            "  40101b: 48 99 cqo",
+        ):
+            row = analyzer.parse_row(line)
+            self.assertEqual(analyzer.local_profile_candidate(row), "S2-15a")
+            self.assertEqual(analyzer.exact_profile_candidates(row, analyzer.profile_matcher_maps(__import__("json").loads(analyzer.PROFILE_PATH.read_text()))[0]), [])
+
+    def test_l7x_as_candidates_are_cpl0_only_and_index_safe(self) -> None:
+        cases = (
+            ("f0 0f b1 0b", "lock cmpxchg DWORD PTR [rbx],ecx", "S4-38L7y-LOCK-CMPXCHG-dword"),
+            ("f0 83 03 01", "lock add DWORD PTR [rbx],0x1", "S4-38L7z-LOCK-ADD-memory-immediate"),
+            ("65 48 39 03", "cmp QWORD PTR gs:[rbx],rax", "S4-38L7aa-FS-GS-CMP"),
+            ("0f 01 3f", "invlpg FWORD PTR [rdi]", "S4-38L7ab-INVLPG-memory"),
+            ("65 f7 03 ff ff ff 7f", "test DWORD PTR gs:[rbx],0x7fffffff", "S4-38L7ac-FS-GS-TEST32-64"),
+            ("65 0f b7 3b", "movzx edi,WORD PTR gs:[rbx]", "S4-38L7ad-FS-GS-MOVZX-word"),
+            ("65 c6 03 01", "mov BYTE PTR gs:[rbx],0x1", "S4-38L7ae-FS-GS-MOV-imm8"),
+            ("2e e8 00 00 00 00", "cs call 0x401040", "S4-38L7af-prefixed-CALL-rel32"),
+            ("f0 80 23 fe", "lock and BYTE PTR [rbx],0xfe", "S4-38L7ag-LOCK-AND-imm8"),
+            ("64 83 3b 01", "cmp DWORD PTR fs:[rbx],0x1", "S4-38L7ah-FS-GS-CMP-imm8"),
+            ("f0 01 0b", "lock add DWORD PTR [rbx],ecx", "S4-38L7ai-LOCK-ADD-register"),
+            ("64 c7 03 01 00 00 00", "mov DWORD PTR fs:[rbx],0x1", "S4-38L7aj-FS-GS-MOV-immediate"),
+            ("65 48 63 03", "movsxd rax,DWORD PTR gs:[rbx]", "S4-38L7ak-FS-GS-MOVSXD"),
+            ("64 0f 01 03", "sgdt FWORD PTR fs:[rbx]", "S4-38L7al-FS-GS-SGDT"),
+            ("0f 00 d8", "ltr ax", "S4-38L7am-LTR-register"),
+            ("65 89 0b", "mov DWORD PTR gs:[rbx],ecx", "S4-38L7an-FS-GS-MOV-store"),
+        )
+        for i, (encoding, operands, task) in enumerate(cases):
+            row = analyzer.parse_row(f"  401100: {encoding} {operands}")
+            self.assertIn(task, analyzer.cpl0_l7_candidates(row), task)
+            self.assertNotEqual(analyzer.local_profile_candidate(row), task)
+        wrmsr = analyzer.parse_row("  401200: 0f 30 wrmsr")
+        matches = analyzer.cpl0_l7_candidates(wrmsr)
+        self.assertIn("S4-38L7ao-as-WRMSR-index-unobserved", matches)
+        self.assertNotIn("S4-38L7f-WRMSR-EFER", matches)
+        self.assertNotIn("S4-38L7ao-WRMSR-STAR", matches)
+
+    def test_registry_records_l7as_without_claiming_ecx_index_or_complete_allowlist(self) -> None:
+        import json
+        registry = json.loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        self.assertEqual(registry["explicit_profile_exclusions"], [])
+        cpl0 = next(x for x in registry["profiles"] if x.get("task") == "S2-45 / Stage 2 CPL0 composed profile")
+        family_tasks = {family["task"] for family in cpl0["families"]}
+        accepted_l7 = {f"S4-38L7{suffix}" for suffix in ("x", "y", "z", "aa", "ab", "ac", "ad", "ae", "af", "ag", "ah", "ai", "aj", "ak", "al", "am", "an", "ao", "ap", "aq", "ar", "as")}
+        self.assertTrue(accepted_l7.issubset(family_tasks))
+        self.assertEqual(cpl0["evidence_scope"], "composed_cpl0_profile")
+        msr = next(family for family in cpl0["families"] if family["task"] == "S4-38L7ar")
+        self.assertIn("ECX index dynamic and not present", msr["gate"])
+        aa = next(family for family in cpl0["families"] if family["task"] == "S4-38L7aa")
+        al = next(family for family in cpl0["families"] if family["task"] == "S4-38L7al")
+        self.assertIn("only opcode 39", aa["gate"])
+        self.assertNotIn("3B", aa["encoding"])
+        self.assertIn("empty", al["gate"])
+        self.assertIn("non-W REX", al["gate"])
 
     def test_encoding_dimensions_preserve_l7_prefix_opcode_modrm_and_address(self) -> None:
         row = analyzer.parse_row("  401020: 64 48 8b 00 mov rax,QWORD PTR fs:[rax]")
@@ -147,6 +214,152 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("S4-38L7k-LOCK-CMPXCHG-qword", analyzer.cpl0_l7_candidates(locked))
         self.assertEqual(analyzer.local_profile_candidate(locked), "S2-21")
         self.assertNotIn("S4-38L7k-LOCK-CMPXCHG-qword", analyzer.cpl0_l7_candidates(register))
+
+    def test_l7y_dword_cmpxchg_rejects_address_size_override(self) -> None:
+        accepted = analyzer.parse_row("  401037: f0 44 0f b1 0b lock cmpxchg DWORD PTR [rbx],r9d")
+        accepted_rex_b = analyzer.parse_row("  401038: f0 45 0f b1 0b lock cmpxchg DWORD PTR [r11],r9d")
+        address32 = analyzer.parse_row("  40103c: 67 f0 0f b1 0b lock cmpxchg DWORD PTR [ebx],ecx")
+        operand16 = analyzer.parse_row("  40103d: 66 f0 0f b1 0b lock cmpxchg WORD PTR [rbx],cx")
+        repeated_lock = analyzer.parse_row("  40103e: f0 f0 0f b1 0b lock cmpxchg DWORD PTR [rbx],ecx")
+        segment = analyzer.parse_row("  40103f: 64 f0 0f b1 0b lock cmpxchg DWORD PTR fs:[rbx],ecx")
+        rep = analyzer.parse_row("  40103a: f3 f0 0f b1 0b lock cmpxchg DWORD PTR [rbx],ecx")
+        rex_not_last = analyzer.parse_row("  40103b: f0 48 66 0f b1 0b lock cmpxchg DWORD PTR [rbx],rcx")
+        for row in (accepted, accepted_rex_b):
+            self.assertIn("S4-38L7y-LOCK-CMPXCHG-dword", analyzer.cpl0_l7_candidates(row))
+        for row in (address32, operand16, repeated_lock, segment, rep, rex_not_last):
+            self.assertNotIn("S4-38L7y-LOCK-CMPXCHG-dword", analyzer.cpl0_l7_candidates(row))
+
+    def test_l7z_lock_add_immediate_has_exact_prefix_contract(self) -> None:
+        accepted = (
+            ("f0 80 03 01", "lock add BYTE PTR [rbx],0x1"),
+            ("f0 81 03 01 00 00 00", "lock add DWORD PTR [rbx],0x1"),
+            ("f0 83 03 01", "lock add DWORD PTR [rbx],0x1"),
+            ("f0 48 83 03 01", "lock add QWORD PTR [rbx],0x1"),
+        )
+        for encoding, operands in (
+            ("67 f0 83 03 01", "lock add DWORD PTR [ebx],0x1"),
+            ("66 f0 83 03 01", "lock add WORD PTR [rbx],0x1"),
+            ("f0 f0 83 03 01", "lock add DWORD PTR [rbx],0x1"),
+            ("64 f0 83 03 01", "lock add DWORD PTR fs:[rbx],0x1"),
+            ("f0 48 66 83 03 01", "lock add DWORD PTR [rbx],0x1"),
+            ("48 f0 83 03 01", "lock add DWORD PTR [rbx],0x1"),
+            ("f0 83 0b 01", "lock or DWORD PTR [rbx],0x1"),
+        ):
+            row = analyzer.parse_row(f"  401045: {encoding} {operands}")
+            self.assertNotIn("S4-38L7z-LOCK-ADD-memory-immediate", analyzer.cpl0_l7_candidates(row))
+        for encoding, operands in accepted:
+            row = analyzer.parse_row(f"  401040: {encoding} {operands}")
+            self.assertIn("S4-38L7z-LOCK-ADD-memory-immediate", analyzer.cpl0_l7_candidates(row))
+
+    def test_l7ag_lock_and_immediate_has_exact_prefix_contract(self) -> None:
+        accepted = (
+            ("f0 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+            ("f0 48 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+        )
+        for encoding, operands in (
+            ("67 f0 80 23 fe", "lock and BYTE PTR [ebx],0xfe"),
+            ("66 f0 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+            ("f0 f0 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+            ("65 f0 80 23 fe", "lock and BYTE PTR gs:[rbx],0xfe"),
+            ("f0 48 66 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+            ("f0 81 23 fe 00 00 00", "lock and DWORD PTR [rbx],0xfe"),
+            ("f0 83 23 fe", "lock and DWORD PTR [rbx],0xfe"),
+            ("f0 80 e3 fe", "lock and bl,0xfe"),
+            ("48 f0 80 23 fe", "lock and BYTE PTR [rbx],0xfe"),
+        ):
+            row = analyzer.parse_row(f"  401055: {encoding} {operands}")
+            self.assertNotIn("S4-38L7ag-LOCK-AND-imm8", analyzer.cpl0_l7_candidates(row))
+        for encoding, operands in accepted:
+            row = analyzer.parse_row(f"  401050: {encoding} {operands}")
+            self.assertIn("S4-38L7ag-LOCK-AND-imm8", analyzer.cpl0_l7_candidates(row))
+
+    def test_l7ai_lock_add_register_has_exact_prefix_contract(self) -> None:
+        accepted = (
+            ("f0 01 13", "lock add DWORD PTR [rbx],edx"),
+            ("f0 48 01 0b", "lock add QWORD PTR [rbx],rcx"),
+            ("f0 44 01 0b", "lock add DWORD PTR [rbx],r9d"),
+        )
+        for encoding, operands in (
+            ("67 f0 01 0b", "lock add DWORD PTR [ebx],ecx"),
+            ("66 f0 01 0b", "lock add WORD PTR [rbx],cx"),
+            ("f0 f0 01 0b", "lock add DWORD PTR [rbx],ecx"),
+            ("64 f0 01 0b", "lock add DWORD PTR fs:[rbx],ecx"),
+            ("48 f0 01 0b", "lock add QWORD PTR [rbx],rcx"),
+            ("f0 48 66 01 0b", "lock add QWORD PTR [rbx],rcx"),
+            ("f0 00 0b", "lock add BYTE PTR [rbx],cl"),
+            ("f0 03 0b", "lock add ecx,DWORD PTR [rbx]"),
+            ("f0 01 cb", "lock add ebx,ecx"),
+        ):
+            row = analyzer.parse_row(f"  401065: {encoding} {operands}")
+            self.assertNotIn("S4-38L7ai-LOCK-ADD-register", analyzer.cpl0_l7_candidates(row))
+        for encoding, operands in accepted:
+            row = analyzer.parse_row(f"  401060: {encoding} {operands}")
+            self.assertIn("S4-38L7ai-LOCK-ADD-register", analyzer.cpl0_l7_candidates(row))
+
+    def test_l7ac_fs_gs_test_rejects_lock_and_accepts_widths(self) -> None:
+        dword = analyzer.parse_row("  401041: 65 f7 03 ff ff ff 7f test DWORD PTR gs:[rbx],0x7fffffff")
+        qword = analyzer.parse_row("  401048: 65 48 f7 03 ff ff ff 7f test QWORD PTR gs:[rbx],0x7fffffff")
+        locked = analyzer.parse_row("  401051: f0 65 f7 03 ff ff ff 7f lock test DWORD PTR gs:[rbx],0x7fffffff")
+        for row in (dword, qword):
+            self.assertIn("S4-38L7ac-FS-GS-TEST32-64", analyzer.cpl0_l7_candidates(row))
+        self.assertNotIn("S4-38L7ac-FS-GS-TEST32-64", analyzer.cpl0_l7_candidates(locked))
+
+    def test_l7am_ltr_accepts_non_w_rex_but_rejects_other_prefixes(self) -> None:
+        plain = analyzer.parse_row("  401055: 0f 00 d8 ltr ax")
+        rex_b = analyzer.parse_row("  401058: 41 0f 00 d8 ltr r8w")
+        rex_r = analyzer.parse_row("  401059: 44 0f 00 d8 ltr ax")
+        rex_x = analyzer.parse_row("  40105a: 45 0f 00 d8 ltr r8w")
+        operand_size = analyzer.parse_row("  40105c: 66 0f 00 d8 ltr ax")
+        address_size = analyzer.parse_row("  40105d: 67 0f 00 d8 ltr ax")
+        rex_w = analyzer.parse_row("  401060: 48 0f 00 d8 ltr ax")
+        segment = analyzer.parse_row("  401061: 64 0f 00 d8 ltr ax")
+        lock = analyzer.parse_row("  401062: f0 0f 00 d8 ltr ax")
+        memory = analyzer.parse_row("  401063: 0f 00 18 ltr WORD PTR [rax]")
+        for row in (plain, rex_b, rex_r, rex_x):
+            self.assertIn("S4-38L7am-LTR-register", analyzer.cpl0_l7_candidates(row))
+        for row in (operand_size, address_size, rex_w, segment, lock, memory):
+            self.assertNotIn("S4-38L7am-LTR-register", analyzer.cpl0_l7_candidates(row))
+
+    def test_l7_segmented_candidates_obey_each_exact_prefix_matrix(self) -> None:
+        def row(encoding: str, operands: str = "") -> dict:
+            return analyzer.parse_row(f"  401070: {encoding} {operands}")
+
+        # L7aa is only memory-destination CMP 39 /r; reverse direction 3B is excluded.
+        for encoding in ("65 48 39 03", "64 45 39 0b"):
+            self.assertIn("S4-38L7aa-FS-GS-CMP", analyzer.cpl0_l7_candidates(row(encoding, "cmp QWORD PTR gs:[rbx],rax")))
+        for encoding, operands in (("67 65 48 39 03", "cmp QWORD PTR gs:[ebx],rax"), ("65 66 39 03", "cmp WORD PTR gs:[rbx],ax"), ("65 48 3b 03", "cmp rax,QWORD PTR gs:[rbx]")):
+            self.assertNotIn("S4-38L7aa-FS-GS-CMP", analyzer.cpl0_l7_candidates(row(encoding, operands)))
+
+        # L7ab: unprefixed, one non-W REX, one segment, or segment then non-W REX.
+        for encoding in ("0f 01 3f", "40 0f 01 3f", "65 0f 01 3f", "64 45 0f 01 3f"):
+            self.assertIn("S4-38L7ab-INVLPG-memory", analyzer.cpl0_l7_candidates(row(encoding, "invlpg FWORD PTR [rdi]")))
+        for encoding in ("67 0f 01 3f", "48 0f 01 3f", "f0 0f 01 3f", "2e 0f 01 3f", "64 65 0f 01 3f"):
+            self.assertNotIn("S4-38L7ab-INVLPG-memory", analyzer.cpl0_l7_candidates(row(encoding, "invlpg FWORD PTR [rdi]")))
+
+        # L7ad / ae / ah / aj use exactly one FS/GS then optional immediately-final REX.
+        candidate_rows = (
+            ("S4-38L7ad-FS-GS-MOVZX-word", "65 48 0f b7 3b", "movzx rdi,WORD PTR gs:[rbx]", "67 65 48 0f b7 3b", "movzx rdi,WORD PTR gs:[ebx]"),
+            ("S4-38L7ae-FS-GS-MOV-imm8", "64 40 c6 03 01", "mov BYTE PTR fs:[rbx],0x1", "67 64 40 c6 03 01", "mov BYTE PTR fs:[ebx],0x1"),
+            ("S4-38L7ah-FS-GS-CMP-imm8", "64 48 83 3b 01", "cmp QWORD PTR fs:[rbx],0x1", "67 64 48 83 3b 01", "cmp QWORD PTR fs:[ebx],0x1"),
+            ("S4-38L7aj-FS-GS-MOV-immediate", "65 48 c7 03 01 00 00 00", "mov QWORD PTR gs:[rbx],0x1", "67 65 48 c7 03 01 00 00 00", "mov QWORD PTR gs:[ebx],0x1"),
+        )
+        for task, allowed, allowed_ops, rejected, rejected_ops in candidate_rows:
+            self.assertIn(task, analyzer.cpl0_l7_candidates(row(allowed, allowed_ops)))
+            self.assertNotIn(task, analyzer.cpl0_l7_candidates(row(rejected, rejected_ops)))
+
+        # L7ak requires exactly segment + REX.W; L7al also accepts no prefix or non-W REX.
+        self.assertIn("S4-38L7ak-FS-GS-MOVSXD", analyzer.cpl0_l7_candidates(row("65 48 63 03", "movsxd rax,DWORD PTR gs:[rbx]")))
+        for encoding in ("65 63 03", "67 65 48 63 03", "65 48 66 63 03"):
+            self.assertNotIn("S4-38L7ak-FS-GS-MOVSXD", analyzer.cpl0_l7_candidates(row(encoding, "movsxd rax,DWORD PTR gs:[rbx]")))
+        for encoding in ("0f 01 00", "40 0f 01 00", "65 0f 01 00", "64 45 0f 01 00"):
+            self.assertIn("S4-38L7al-FS-GS-SGDT", analyzer.cpl0_l7_candidates(row(encoding, "sgdt [rax]")))
+        for encoding in ("67 0f 01 00", "48 0f 01 00", "f0 65 0f 01 00"):
+            self.assertNotIn("S4-38L7al-FS-GS-SGDT", analyzer.cpl0_l7_candidates(row(encoding, "sgdt [rax]")))
+
+        # L7an additionally retains only the documented [early REX, segment, final REX.W] qword case.
+        stale_qword = row("48 65 48 89 03", "mov QWORD PTR gs:[rbx],rax")
+        self.assertIn("S4-38L7an-FS-GS-MOV-store", analyzer.cpl0_l7_candidates(stale_qword))
+        self.assertNotIn("S4-38L7an-FS-GS-MOV-store", analyzer.cpl0_l7_candidates(row("67 65 89 0b", "mov DWORD PTR gs:[ebx],ecx")))
 
     def test_l7_uses_effective_segment_prefix_and_exact_width_gate(self) -> None:
         effective_fs = analyzer.parse_row("  401040: 2e 64 48 8b 00 mov rax,QWORD PTR fs:[rax]")

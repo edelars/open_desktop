@@ -321,10 +321,12 @@ def local_profile_candidate(row: dict) -> str | None:
     xchg_register = op in {0x86,0x87} and "mem" not in row["signature"] and 0xF0 not in prefixes
     if (op in {0xC6, 0xC7, 0xA0, 0xA1, 0xA2, 0xA3, 0x63, 0x8D} or two in {(0x0F, 0xBE), (0x0F, 0xBF), (0x0F, 0xB6), (0x0F, 0xB7)} or (op is not None and 0x90 <= op <= 0x97) or xchg_register) and mnemonic in {"mov", "movabs", "movsx", "movsxd", "movzx", "lea", "xchg", "nop"} and _widths_allowed("S2-10", row):
         return "S2-10"
+    if op in {0x98, 0x99} and mnemonic in {"cbw", "cwde", "cdqe", "cwd", "cdq", "cqo"} and not prefixes.intersection({0xF0, 0xF2, 0xF3, 0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65}):
+        return "S2-15a"
     arithmetic = {0x00,0x01,0x02,0x03,0x04,0x05,0x10,0x11,0x12,0x13,0x14,0x15,0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x28,0x29,0x2A,0x2B,0x2C,0x2D,0x38,0x39,0x3A,0x3B,0x3C,0x3D}
     if ((op in arithmetic) or _group(opcode, modrm, {0x80,0x81,0x83}, {0,2,3,5,7}) or _group(opcode, modrm, {0xFE,0xFF}, {0,1}) or _group(opcode, modrm, {0xF6,0xF7}, {3})) and mnemonic in {"add","adc","sub","sbb","cmp","inc","dec","neg"} and _widths_allowed("S2-11", row):
         return "S2-11"
-    logic = {0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x20,0x21,0x22,0x23,0x24,0x25,0x30,0x31,0x32,0x33,0x34,0x35}
+    logic = {0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x20,0x21,0x22,0x23,0x24,0x25,0x30,0x31,0x32,0x33,0x34,0x35,0xA8,0xA9}
     if ((op in logic) or _group(opcode, modrm, {0x80,0x81,0x83}, {1,4,6}) or _group(opcode, modrm, {0xF6,0xF7}, {0,2}) or op in {0x84,0x85}) and mnemonic in {"and","or","xor","test","not"} and _widths_allowed("S2-12", row):
         return "S2-12"
     if ((op in {0xC0,0xC1,0xD0,0xD1,0xD2,0xD3} and _group(opcode, modrm, {op}, {0,1,2,3,4,5,7})) or two in {(0x0F,0xA4),(0x0F,0xA5),(0x0F,0xAC),(0x0F,0xAD)}) and mnemonic in {"rol","ror","rcl","rcr","shl","sal","shr","sar","shld","shrd"} and _widths_allowed("S2-13", row):
@@ -372,7 +374,7 @@ def cpl0_encoding_candidate(row: dict) -> str | None:
     """Recognize selected CPL0 opcode candidates without claiming runtime gates."""
     v = opcode_view(row)
     op, two = (v["opcode"][0] if len(v["opcode"]) == 1 else None), v["opcode"]
-    if op in {0xEC,0xED,0xEE,0xEF} or two in {(0x0F,0x20),(0x0F,0x22),(0x0F,0x30),(0x0F,0x32),(0x0F,0xA2),(0x0F,0x31)}:
+    if op in {0xED,0xEF} or two in {(0x0F,0x20),(0x0F,0x22),(0x0F,0x30),(0x0F,0x32),(0x0F,0xA2),(0x0F,0x31)}:
         return "composed_cpl0_profile_candidate; control/state/port gates unresolved"
     return None
 
@@ -391,13 +393,21 @@ def cpl0_l7_candidates(row: dict) -> list[str]:
     effective_segment = segment_prefixes[-1] if segment_prefixes else None
     segment = effective_segment in {0x64,0x65}
     rex_w_effective = bool(p and 0x40 <= p[-1] <= 0x4F and (p[-1] & 8))
+    rex_prefix = lambda value: 0x40 <= value <= 0x4F
+    lock_rex_prefix = p == [0xF0] or (len(p) == 2 and p[0] == 0xF0 and rex_prefix(p[1]))
+    segment_rex_prefix = len(p) == 1 and p[0] in {0x64, 0x65} or len(p) == 2 and p[0] in {0x64, 0x65} and rex_prefix(p[1])
+    optional_segment_nonw_rex = (
+        not p
+        or len(p) == 1 and (p[0] in {0x64, 0x65} or 0x40 <= p[0] <= 0x47)
+        or len(p) == 2 and p[0] in {0x64, 0x65} and 0x40 <= p[1] <= 0x47
+    )
     widths = _widths_in_row(row)
     candidates = []
     if two in {(0x0F,0x20),(0x0F,0x22)} and modrm is not None and ((modrm >> 3) & 7) == 4 and (modrm >> 6) == 3:
         candidates.append("S4-38L7b/c-CR4")
     if two == (0x0F,0x22) and modrm is not None and ((modrm >> 3) & 7) == 3 and (modrm >> 6) == 3:
         candidates.append("S4-38L7h-CR3-write")
-    if two == (0x0F,0x30): candidates.append("S4-38L7f-WRMSR-EFER")
+    if two == (0x0F,0x30): candidates.append("S4-38L7ao-as-WRMSR-index-unobserved")
     if two == (0x0F,0x32): candidates.append("S4-38L7e-RDMSR-EFER")
     if segment and rex_w_effective and memory:
         if op == 0x89: candidates.append("S4-38L7g-FS-GS-qword-store")
@@ -426,6 +436,44 @@ def cpl0_l7_candidates(row: dict) -> list[str]:
         candidates.append("S4-38L7u-FS-GS-segment-store")
     if op in {0xED,0xEF} and widths.intersection({16,32}) and all(value == 0x66 for value in p):
         candidates.append("S4-38L7w-PCI-config-port-word-dword")
+    if op in {0xEC,0xEE} and not p:
+        candidates.append("S4-38L7x-byte-PIO")
+    l7y_prefix = p == [0xF0] or (len(p) == 2 and p[0] == 0xF0 and 0x40 <= p[1] <= 0x4F and not (p[1] & 0x08))
+    if l7y_prefix and memory and two == (0x0F,0xB1) and 32 in widths:
+        candidates.append("S4-38L7y-LOCK-CMPXCHG-dword")
+    if lock_rex_prefix and memory and op in {0x80,0x81,0x83} and modrm is not None and ((modrm >> 3) & 7) == 0 and widths.intersection({8,32,64}):
+        candidates.append("S4-38L7z-LOCK-ADD-memory-immediate")
+    if segment_rex_prefix and memory and op == 0x39 and widths.intersection({32,64}):
+        candidates.append("S4-38L7aa-FS-GS-CMP")
+    if optional_segment_nonw_rex and two == (0x0F,0x01) and modrm is not None and ((modrm >> 3) & 7) == 7 and (modrm >> 6) != 3:
+        candidates.append("S4-38L7ab-INVLPG-memory")
+    l7ac_prefix = p in ([0x64], [0x65]) or (len(p) == 2 and p[0] in {0x64,0x65} and 0x40 <= p[1] <= 0x4F)
+    if l7ac_prefix and segment and memory and op == 0xF7 and modrm is not None and ((modrm >> 3) & 7) == 0 and widths.intersection({32,64}) and 16 not in widths:
+        candidates.append("S4-38L7ac-FS-GS-TEST32-64")
+    if segment_rex_prefix and memory and two == (0x0F,0xB7) and 16 in widths and widths.intersection({32,64}):
+        candidates.append("S4-38L7ad-FS-GS-MOVZX-word")
+    if segment_rex_prefix and memory and op == 0xC6 and modrm is not None and ((modrm >> 3) & 7) == 0 and 8 in widths:
+        candidates.append("S4-38L7ae-FS-GS-MOV-imm8")
+    if op == 0xE8 and len(p) == 1 and p[0] in {0x2E,0x3E,0x26,0x36}:
+        candidates.append("S4-38L7af-prefixed-CALL-rel32")
+    if lock_rex_prefix and memory and op == 0x80 and modrm is not None and ((modrm >> 3) & 7) == 4 and 8 in widths:
+        candidates.append("S4-38L7ag-LOCK-AND-imm8")
+    if segment_rex_prefix and memory and op == 0x83 and modrm is not None and ((modrm >> 3) & 7) == 7 and widths.intersection({32,64}):
+        candidates.append("S4-38L7ah-FS-GS-CMP-imm8")
+    if lock_rex_prefix and memory and op == 0x01 and modrm is not None and widths.intersection({32,64}):
+        candidates.append("S4-38L7ai-LOCK-ADD-register")
+    if segment_rex_prefix and memory and op == 0xC7 and modrm is not None and ((modrm >> 3) & 7) == 0 and widths.intersection({32,64}):
+        candidates.append("S4-38L7aj-FS-GS-MOV-immediate")
+    if len(p) == 2 and p[0] in {0x64, 0x65} and rex_w_effective and op == 0x63 and memory and 32 in widths and 64 in widths:
+        candidates.append("S4-38L7ak-FS-GS-MOVSXD")
+    if optional_segment_nonw_rex and two == (0x0F,0x01) and modrm is not None and ((modrm >> 3) & 7) == 0 and memory:
+        candidates.append("S4-38L7al-FS-GS-SGDT")
+    ltr_rex_prefix = not p or (len(p) == 1 and 0x40 <= p[0] <= 0x47)
+    if ltr_rex_prefix and two == (0x0F,0x00) and modrm is not None and ((modrm >> 3) & 7) == 3 and (modrm >> 6) == 3 and 16 in widths:
+        candidates.append("S4-38L7am-LTR-register")
+    l7an_stale_qword_rex = len(p) == 3 and rex_prefix(p[0]) and p[1] in {0x64, 0x65} and 0x48 <= p[2] <= 0x4F
+    if memory and op == 0x89 and widths.intersection({32,64}) and (segment_rex_prefix or (64 in widths and l7an_stale_qword_rex)):
+        candidates.append("S4-38L7an-FS-GS-MOV-store")
     return candidates
 
 
