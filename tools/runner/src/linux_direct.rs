@@ -577,6 +577,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["pci_config_address"] = json!(hex64(u64::from(record.pci_config_address)));
     // S4-38L7ao: the guest IA32_STAR (write-only for the guest).
     stop["guest_star"] = json!(hex64(record.guest_star));
+    // S4-38L7ap: the guest IA32_LSTAR (write-only for the guest).
+    stop["guest_lstar"] = json!(hex64(record.guest_lstar));
     stop
 }
 
@@ -1430,6 +1432,7 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
+                "msr:lstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1494,6 +1497,27 @@ mod tests {
         // Without the set nothing writes STAR.
         let value = run_case("star-control", &[0xF4], 10);
         assert_eq!(value["stop"]["guest_star"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_lstar_after_a_wrmsr_of_ia32_lstar() {
+        // MOV ECX,0xC0000082; MOV EAX,0x81000080; MOV EDX,0xFFFFFFFF; WRMSR (S4-38L7ap).
+        let code = [
+            0xB9, 0x82, 0x00, 0x00, 0xC0, 0xB8, 0x80, 0x00, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-lstar", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_lstar"], "0xffffffff81000080");
+        assert_eq!(stop["guest_star"], "0x0");
+        // Without the set nothing writes LSTAR.
+        let value = run_case("lstar-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_lstar"], "0x0");
     }
 
     #[test]
@@ -1583,6 +1607,7 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
+                "msr:lstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1871,6 +1896,7 @@ mod tests {
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
+                "msr:lstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
