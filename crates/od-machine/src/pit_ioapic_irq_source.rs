@@ -46,14 +46,13 @@
 //! yet, so it is after the clock: every edge that is due was applied by the catch-up before the
 //! answer. A vector that was applied and cannot be accepted (the guest has IF = 0, the vector is
 //! blocked by ISR or TPR) stays in IRR and does not shorten the quantum: the source never answers
-//! with a time in the past. A pulse that the Local APIC refuses (it is globally disabled) loses
+//! with a time in the past; the code filters the answer (`> now`) and gives `None` after a queue
+//! fault, so the guarantee does not rest on the invariant alone. A pulse that the Local APIC refuses (it is globally disabled) loses
 //! the edge (counted in `edges_refused`); the probe keeps such an event, here a kept event would
 //! stay in the past forever and cut every quantum to one instruction.
 //!
 //! The semantics of the IOAPIC and the Local APIC that the repository does not hold are SDM and
 //! datasheet facts from memory (see the section of `CPU_CONTRACT.md`).
-
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::irq_source::BoardIrqSource;
 use crate::stage4_pit_irq0_probe::{next_out0_rising_tick, pit_tick_deadline_ns};
@@ -177,6 +176,10 @@ impl Inner {
         }
         let now = self.clock.snapshot().now_ns();
         self.sync_generation();
+        if self.stats.queue_faults != 0 {
+            // The old generation could not be dropped: its edges must not be applied.
+            return;
+        }
         self.deliver_due(now);
         self.last_sync_ns = now;
     }
@@ -212,16 +215,20 @@ impl PitIoapicIrqSource {
         })))
     }
 
+    /// Counters for evidence; read by tests only until a host reports them.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stats(&self) -> PitIoapicStats {
         self.0.borrow().stats
     }
 
-    /// The count in progress of PIT channel 0 (what the next edge is computed from).
+    /// The count in progress of PIT channel 0 (what the next edge is computed from); tests only.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn channel0_run(&self) -> Option<PitRun> {
         self.0.borrow().pit.snapshot().channel0.run
     }
 
-    /// Events in the queue, as of the last catch-up.
+    /// Events in the queue, as of the last catch-up; tests only.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn queued(&self) -> usize {
         self.0.borrow().queue.len()
     }
@@ -246,7 +253,17 @@ impl BoardIrqSource for PitIoapicIrqSource {
     fn next_deadline_ns(&self) -> Option<u64> {
         let mut inner = self.0.borrow_mut();
         inner.catch_up();
-        inner.queue.next_deadline()
+        // After a queue fault (never expected) the source has stopped: a leftover event may be
+        // in the past, so no deadline is given. The filter holds the guarantee in the code, not
+        // only in the invariant of `deliver_due`: the answer is never a time that has passed.
+        if inner.stats.queue_faults != 0 {
+            return None;
+        }
+        let now = inner.clock.snapshot().now_ns();
+        inner
+            .queue
+            .next_deadline()
+            .filter(|deadline| *deadline > now)
     }
 
     fn pit_write_ends_quantum(&self) -> bool {
@@ -680,5 +697,39 @@ mod tests {
         assert_eq!(rig.source.pending_vector(), None);
         rig.lapic_write(0xf0, 0x1ff);
         assert_eq!(rig.source.pending_vector(), Some(VECTOR));
+    }
+
+    #[test]
+    fn after_a_queue_fault_the_deadline_is_none_and_the_old_edge_is_not_applied() {
+        let mut rig = Rig::new();
+        rig.program(0x34, 10);
+        assert_eq!(rig.source.next_deadline_ns(), Some(8381));
+        // An artificial fault: the generation counter is exhausted, so the next reprogram cannot
+        // drop the old generation.
+        rig.source
+            .0
+            .borrow_mut()
+            .queue
+            .exhaust_generation_for_test();
+        // The old edge (8381 ns) is past by now; the reprogram is the fault.
+        rig.advance_to(20_000);
+        rig.program(0x34, 20);
+        assert_eq!(
+            rig.source.next_deadline_ns(),
+            None,
+            "no deadline, none in the past"
+        );
+        assert_eq!(
+            rig.source.queued(),
+            1,
+            "the old event is still there, in the past"
+        );
+        let stats = rig.source.stats();
+        assert_eq!((stats.queue_faults, stats.edges), (1, 0));
+        // The old generation's edge was not applied, and later time changes nothing.
+        rig.advance_to(NS);
+        assert_eq!(rig.source.pending_vector(), None);
+        assert_eq!(rig.source.next_deadline_ns(), None);
+        assert_eq!(rig.source.stats().edges, 0);
     }
 }
