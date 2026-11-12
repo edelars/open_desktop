@@ -318,6 +318,7 @@ PUNPCK_ALLOWED_PREFIXES = {
     (0x66, 0x44),
     (0x66, 0x45),
 }
+PSHUFD_ALLOWED_PREFIXES = PUNPCK_ALLOWED_PREFIXES
 
 
 SIMD_LOGIC_NO_PREFIX_PROFILES = {
@@ -388,6 +389,26 @@ def punpck_local_profile_candidate(row: dict) -> str | None:
     if len(row["byte_values"]) != len(prefixes) + 3:
         return None
     return profile
+
+
+def pshufd_local_profile_candidate(row: dict) -> str | None:
+    """Match only accepted S2-35.35 legacy XMM register PSHUFD forms."""
+    if row["mnemonic"] != "pshufd" or row["signature"] != "pshufd xmm,xmm,imm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x70):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PSHUFD_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory 66 + optional REX.R/B + 0F 70 + ModR/M + imm8.
+    # Two opcode bytes, one ModR/M byte, and one imm8 follow the prefixes.
+    if len(row["byte_values"]) != len(prefixes) + 4:
+        return None
+    return "S2-35.35-PSHUFD-XMM-register-register"
 
 
 def pxor_local_profile_candidate(row: dict) -> str | None:
@@ -476,6 +497,9 @@ def movups_local_profile_candidate(row: dict) -> str | None:
 
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    pshufd_candidate = pshufd_local_profile_candidate(row)
+    if pshufd_candidate is not None:
+        return pshufd_candidate
     simd_logic_candidate = simd_logic_local_profile_candidate(row)
     if simd_logic_candidate is not None:
         return simd_logic_candidate

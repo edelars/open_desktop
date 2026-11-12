@@ -1242,6 +1242,32 @@
         "docs/specs/CPU_CONTRACT.md:12196-12231",
         "docs/reports/STAGE_2_REPORT.md:15806-15868"
       ]
+    },
+    {
+      "task": "S2-35.35 PSHUFD XMM register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact register-only ModR/M.mod=3 form, no data-memory callback; no native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-35.35",
+          "encoding": "66 [one optional REX.R/B] 0F 70 /r ib; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PSHUFD XMM register-register form only: mandatory 66; optional single REX byte limited to 40/41/44/45 immediately after 66; ModR/M.mod=3; any imm8. Reject bare MMX, memory operands, other/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PSHUFD; each destination dword selects one of the original source dwords using its corresponding 2-bit imm8 field; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14181-14200",
+            "docs/specs/CPU_CONTRACT.md:11792-11809",
+            "docs/reports/STAGE_2_REPORT.md:15447-15473"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14181-14200",
+        "docs/specs/CPU_CONTRACT.md:11792-11809",
+        "docs/reports/STAGE_2_REPORT.md:15447-15473"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

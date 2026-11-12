@@ -70,8 +70,27 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1031)
-                self.assertEqual(fields["unclassified_normalized_forms"], 238)
+                self.assertEqual(fields["classified_normalized_forms"], 1033)
+                self.assertEqual(fields["unclassified_normalized_forms"], 236)
+                pshufd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["operand_signature"] == "pshufd xmm,xmm,imm"
+                ]
+                self.assertEqual(len(pshufd_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.35-PSHUFD-XMM-register-register", 0) for row in pshufd_forms),
+                    805,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pshufd_forms),
+                    805,
+                )
+                pshufd_memory = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["operand_signature"] == "pshufd xmm,mem128,imm"
+                ]
+                self.assertEqual(len(pshufd_memory), 1)
+                self.assertEqual(pshufd_memory[0]["classification_frequencies"], {"unclassified": 1})
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
                     hashlib.sha256(compact_path.read_bytes()).hexdigest(),

@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-simdlogic-rootfs.json",
-      "sha256": "04523717f2329834d167770bc342f2eabd85973161d52231c5a61d7cffe8295f",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-pshufd-rootfs-pass1.json",
+      "sha256": "0973bf351e4bdf16419634e7b8a6d325e26b27d053a9f8f2d04349ae2511d939",
       "exit_code": 0
     },
     {
-      "output": "/private/tmp/s5-21-inventory-simdlogic-rootfs-final2.json",
-      "sha256": "04523717f2329834d167770bc342f2eabd85973161d52231c5a61d7cffe8295f",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-pshufd-rootfs-pass2.json",
+      "sha256": "0973bf351e4bdf16419634e7b8a6d325e26b27d053a9f8f2d04349ae2511d939",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6294331,
-      "unclassified": 216069
+      "proven_supported": 6295136,
+      "unclassified": 215264
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6291980,
+      "local_interpreter_profile": 6292785,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1031,
-    "unclassified_normalized_forms": 238,
+    "classified_normalized_forms": 1033,
+    "unclassified_normalized_forms": 236,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322662,
-        "unclassified": 23487
+        "proven_supported": 322675,
+        "unclassified": 23474
       },
       "D": {
-        "proven_supported": 6225303,
-        "unclassified": 210911
+        "proven_supported": 6226105,
+        "unclassified": 210109
       }
     },
     "movups_memory_rows": 23912,
@@ -79,15 +79,22 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "04523717f2329834d167770bc342f2eabd85973161d52231c5a61d7cffe8295f"
+    "raw_inventory_sha256": "0973bf351e4bdf16419634e7b8a6d325e26b27d053a9f8f2d04349ae2511d939",
+    "pshufd_register_rows": 805,
+    "pshufd_register_normalized_forms": 2,
+    "pshufd_memory_unclassified_rows": 1,
+    "pshufd_register_rows_by_profile": {
+      "S2-35.35-PSHUFD-XMM-register-register": 805
+    },
+    "pshufd_scope": "Accepted local-only register forms; imm8 unrestricted; no MMX, REX.W/X, extra prefixes, VEX/EVEX, CPL3/native/JIT/physical evidence."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "a0bc2d9226836b76966a459276613bcadeb460492d129ee075d4bf810da9be3b",
-    "size_bytes": 1002592,
+    "sha256": "7f352364b97804bc68a353d23fd1b3b72ffe94dab893d46467046c70a4318e0e",
+    "size_bytes": 1003171,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-simdlogic-rootfs-final1.json /private/tmp/s5-21-evidence-simdlogic-rootfs-final1.json.gz",
-    "repeat_sha256": "a0bc2d9226836b76966a459276613bcadeb460492d129ee075d4bf810da9be3b",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pshufd-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pshufd-rootfs-pass1.json.gz",
+    "repeat_sha256": "7f352364b97804bc68a353d23fd1b3b72ffe94dab893d46467046c70a4318e0e",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },

@@ -245,6 +245,68 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  401400: {encoding} {operands}")
             self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
 
+    def test_s2_35_35_pshufd_matches_all_register_pairs_and_imm8_values(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.35-PSHUFD-XMM-register-register"
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | ((destination >> 3) << 2) | (source >> 3)
+                self.assertIn(rex, {0x40, 0x41, 0x44, 0x45})
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                for control in range(256):
+                    encoding = f"66 {rex:02x} 0f 70 {modrm:02x} {control:02x}"
+                    operands = f"pshufd xmm{destination},xmm{source},0x{control:x}"
+                    row = analyzer.parse_row(f"  401600: {encoding} {operands}")
+                    self.assertEqual(row["signature"], "pshufd xmm,xmm,imm", encoding)
+                    self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                    self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+        # The REX prefix is optional when both registers are in XMM0-XMM7.
+        for control in range(256):
+            row = analyzer.parse_row(
+                f"  401700: 66 0f 70 c1 {control:02x} pshufd xmm0,xmm1,0x{control:x}"
+            )
+            self.assertEqual(analyzer.local_profile_candidate(row), expected)
+
+        rejected = (
+            ("0f 70 c1 01", "pshufd mm0,mm1,0x1"),  # bare MMX form
+            ("66 0f 70 c1", "pshufd xmm0,xmm1,0x1"),  # missing immediate byte
+            ("66 0f 70 c1 01 90", "pshufd xmm0,xmm1,0x1"),  # extra trailing byte
+            ("66 0f 70 01 01", "pshufd xmm0,XMMWORD PTR [rcx],0x1"),  # memory ModR/M
+            ("66 0f 70 41 00 01", "pshufd xmm0,XMMWORD PTR [rcx+0x0],0x1"),
+            ("66 0f 70 81 00 00 00 00 01", "pshufd xmm0,XMMWORD PTR [rcx+0x0],0x1"),
+            ("66 48 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),  # REX.W
+            ("66 42 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),  # REX.X
+            ("66 46 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),  # REX.X plus REX.R
+            ("66 66 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),
+            ("66 f2 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),
+            ("66 f3 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),
+            ("41 66 0f 70 c1 01", "pshufd xmm0,xmm1,0x1"),  # REX before 66
+            ("c5 f9 70 c1 01", "vpshufd xmm0,xmm1,0x1"),
+            ("62 f1 7d 08 70 c1 01", "vpshufd xmm0,xmm1,0x1"),
+            ("66 0f 71 c1 01", "pshufd xmm0,xmm1,0x1"),  # other opcode
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  401800: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_35_registry_is_local_only_and_excludes_memory(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.35 PSHUFD XMM register-only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertEqual(len(profile["families"]), 1)
+        family = profile["families"][0]
+        self.assertEqual(family["task"], "S2-35.35")
+        self.assertIn("ModR/M.mod=3", family["encoding"])
+        self.assertIn("any imm8", family["gate"])
+        self.assertIn("REX.W/X", family["gate"])
+        self.assertIn("no native/JIT/physical or machine-CPL evidence", profile["gate"])
+
     def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])
