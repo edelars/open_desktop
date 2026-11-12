@@ -645,6 +645,13 @@ pub enum Operation {
     LoadIdtr {
         source: MemoryOperand,
     },
+    /// S4-38L7al: `SGDT m` (`0F 01 /0`, memory operand only), with an optional FS/GS override
+    /// (kept in `Instruction::prefixes`). The ten-byte pseudo-descriptor is stored at `dst`
+    /// (the operand size is only a placeholder; the store is always ten bytes). Executed only
+    /// in the CPL0 profile set.
+    StoreGdtr {
+        dst: MemoryOperand,
+    },
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
@@ -2810,6 +2817,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // (the CPL0 profile set admits all of them, legacy paths only
                 // `[RBP+disp8]` for LGDT and `[RSP+disp8]` for LIDT).
                 let reg = (modrm >> 3) & 7;
+                // S4-38L7al: SGDT m (`/0`, memory operand only). The register forms
+                // (`0F 01 C0..C7`, VMX instructions) stay unsupported.
+                if reg == 0 && modrm >> 6 != 3 {
+                    let Operand::Memory(dst) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("SGDT requires the memory form")
+                    };
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Qword,
+                        address_size: OperandSize::Qword,
+                        operation: Operation::StoreGdtr { dst },
+                    });
+                }
                 // S4-38L7ab: INVLPG m (`/7`, memory operand only). The register forms
                 // (`0F 01 F8` SWAPGS handled above, `F9` RDTSCP, ...) stay as before.
                 if reg == 7 && modrm >> 6 != 3 {
@@ -2859,21 +2883,33 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     .enumerate()
                     .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
                 let modrm = self.byte()?;
+                // S4-38L7al: the same prefix policy admits `SGDT m` (`/0`).
+                let reg = (modrm >> 3) & 7;
                 if stale_rex
                     || prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                    || (modrm >> 3) & 7 != 7
+                    || (reg != 7 && reg != 0)
                     || modrm >> 6 == 3
                 {
                     return Err(self.unsupported(opcode));
                 }
-                self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                let Operand::Memory(memory_operand) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    unreachable!("INVLPG/SGDT require the memory form")
+                };
                 return Ok(Instruction {
                     length: self.length,
                     opcode,
                     prefixes,
                     operand_size: OperandSize::Qword,
                     address_size: OperandSize::Qword,
-                    operation: Operation::Invlpg,
+                    operation: if reg == 7 {
+                        Operation::Invlpg
+                    } else {
+                        Operation::StoreGdtr {
+                            dst: memory_operand,
+                        }
+                    },
                 });
             }
             if prefixes.group1 == Some(0xf0)
@@ -27152,6 +27188,67 @@ mod tests {
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sgdt_decodes_memory_forms_only() {
+        // S4-38L7al: `[64|65] [REX.RXB] 0F 01 /0` with a memory operand.
+        for (bytes, length) in [
+            (&[0x0fu8, 0x01, 0x45, 0xe6][..], 4u8), // sgdt -0x1a(%rbp): the boundary
+            (&[0x0f, 0x01, 0x00], 3),               // (%rax)
+            (&[0x0f, 0x01, 0x07], 3),               // (%rdi)
+            (&[0x0f, 0x01, 0x80, 0, 0, 0, 0], 7),   // disp32
+            (&[0x0f, 0x01, 0x05, 0x34, 0x12, 0, 0], 7), // RIP-relative
+            (&[0x0f, 0x01, 0x04, 0x24], 4),         // SIB
+            (&[0x0f, 0x01, 0x44, 0x88, 0x10], 5),   // SIB + disp8
+            (&[0x0f, 0x01, 0x04, 0x25, 0, 0, 0, 0], 8), // SIB, no base, disp32
+            (&[0x41, 0x0f, 0x01, 0x00], 4),         // REX.B (r8)
+            (&[0x42, 0x0f, 0x01, 0x04, 0x20], 5),   // REX.X
+            (&[0x44, 0x0f, 0x01, 0x00], 4),         // REX.R (ignored)
+            (&[0x40, 0x0f, 0x01, 0x00], 4),         // bare REX
+            (&[0x65, 0x0f, 0x01, 0x45, 0xe6], 5),   // GS
+            (&[0x64, 0x0f, 0x01, 0x45, 0xe6], 5),   // FS
+            (&[0x65, 0x41, 0x0f, 0x01, 0x00], 5),   // GS + REX.B
+        ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::StoreGdtr { .. }),
+                "{bytes:02x?}"
+            );
+        }
+        // Trailing bytes are not consumed.
+        let decoded = Memory::new(&[0x0f, 0x01, 0x45, 0xe6, 0x89, 0xdf])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0xf0u8, 0x0f, 0x01, 0x45, 0xe6][..], // LOCK
+            &[0xf3, 0x0f, 0x01, 0x45, 0xe6],       // REP
+            &[0xf2, 0x0f, 0x01, 0x45, 0xe6],       // REPNE
+            &[0x66, 0x0f, 0x01, 0x45, 0xe6],
+            &[0x67, 0x0f, 0x01, 0x45, 0xe6],
+            &[0x65, 0x64, 0x0f, 0x01, 0x45, 0xe6], // two segment prefixes
+            &[0x65, 0x65, 0x0f, 0x01, 0x45, 0xe6],
+            &[0x2e, 0x0f, 0x01, 0x45, 0xe6], // CS/DS/ES/SS stay refused
+            &[0x48, 0x0f, 0x01, 0x45, 0xe6], // REX.W
+            &[0x65, 0x48, 0x0f, 0x01, 0x45, 0xe6],
+            &[0x41, 0x65, 0x0f, 0x01, 0x45, 0xe6], // stale REX
+            &[0x0f, 0x01, 0xc0],                   // register forms of /0
+            &[0x0f, 0x01, 0xc7],
+            &[0x65, 0x0f, 0x01, 0xc1],
+            &[0x41, 0x0f, 0x01, 0xc0],
+            &[0x0f, 0x01, 0x4d, 0xe6], // /1 (SIDT) stays unsupported
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}: {:?}",
+                Memory::new(bytes).decode()
             );
         }
     }

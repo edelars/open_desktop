@@ -4237,6 +4237,82 @@ mod tests {
         assert_eq!(state.rflags & 1, 1, "CF");
     }
 
+    // ---- S4-38L7al: SGDT m through the board facade ----
+
+    #[test]
+    fn sgdt_after_wrmsr_gs_base_stores_the_board_gdtr_through_gs_and_plain() {
+        const BASE: u64 = 0x0200_0000;
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR (IA32_GS_BASE = BASE);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        // MOV RAX,marker; six qword stores that fill [BASE+0x10, BASE+0x28) and
+        // [BASE+0x40, BASE+0x58) with the marker;
+        code.extend(mov_rax_imm64(0xAAAA_AAAA_AAAA_AAAA));
+        for offset in [0x10u8, 0x18, 0x20, 0x40, 0x48, 0x50] {
+            code.extend([0x48, 0x89, 0x04, 0x25, offset, 0x00, 0x00, 0x02]);
+        }
+        // SUB DL,1 (0 - 1 borrows: CF = 1);
+        code.extend([0x80, 0xEA, 0x01]);
+        // MOV EBP,0x12+0x1a; SGDT %gs:-0x1a(%rbp) (`65 0f 01 45 e6`, the S4-38L7ak boundary shape
+        // with GS: the address is BASE+0x12);
+        code.push(0xBD);
+        code.extend((0x12u32 + 0x1a).to_le_bytes());
+        code.extend([0x65, 0x0F, 0x01, 0x45, 0xE6]);
+        // MOV EBP,BASE+0x40+0x1a; SGDT -0x1a(%rbp) (`0f 01 45 e6`, the boundary bytes: the GS base
+        // is ignored, the address is BASE+0x40); HLT.
+        code.push(0xBD);
+        code.extend((BASE as u32 + 0x40 + 0x1a).to_le_bytes());
+        code.extend([0x0F, 0x01, 0x45, 0xE6]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 18,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV RAX, store x6, SUB, MOV EBP, SGDT, MOV EBP, SGDT, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // The board entry GDTR (base 0x12_0000, limit 31), not changed by the program.
+        let gdtr = boot.board.state().gdtr.expect("the board models a GDTR");
+        assert_eq!((gdtr.base, gdtr.limit), (0x12_0000, 31));
+        let mut want = [0u8; 10];
+        want[..2].copy_from_slice(&31u16.to_le_bytes());
+        want[2..].copy_from_slice(&0x12_0000u64.to_le_bytes());
+        for (start, stored_at) in [(0x10u64, 0x12u64), (0x40, 0x40)] {
+            let mut bytes = [0u8; 24];
+            read(&mut boot.board, BASE + start, &mut bytes).expect("read");
+            let mut expected = [0xAAu8; 24];
+            let offset = (stored_at - start) as usize;
+            expected[offset..offset + 10].copy_from_slice(&want);
+            assert_eq!(bytes, expected, "SGDT at BASE+{stored_at:#x}");
+        }
+        let state = boot.board.state();
+        // Nothing else changed: the registers keep their values and the CF set by SUB stays set.
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xAAAA_AAAA_AAAA_AAAA
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbp as usize],
+            BASE + 0x40 + 0x1a
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 0xFF);
+        assert_eq!(state.rflags & 1, 1, "CF");
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]
