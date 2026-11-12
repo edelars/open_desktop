@@ -1112,6 +1112,62 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("ModR/M.mod=3", family["gate"])
         self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
 
+    def test_s2_35_33_packuswb_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.33-PACKUSWB-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f 67 {modrm:02x}"
+                operands = f"packuswb xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  403b00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "packuswb xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  403c00: 66 40 0f 67 c1 packuswb xmm0,xmm1")), expected)
+        rejected = (
+            ("0f 67 c1", "packuswb mm0,mm1"),
+            ("0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 42 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 48 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 4c 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 66 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 f2 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 f3 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("67 66 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("44 66 0f 67 c1", "packuswb xmm0,xmm1"),
+            ("66 0f 67 00", "packuswb xmm0,XMMWORD PTR [rax]"),
+            ("66 0f 63 c1", "packuswb xmm0,xmm1"),  # PACKSSWB.
+            ("66 0f 67", "packuswb xmm0,xmm1"),
+            ("66 0f 67 c1 90", "packuswb xmm0,xmm1"),
+            ("c5 f9 67 c1", "vpackuswb xmm0,xmm1,xmm2"),
+            ("62 f1 75 08 67 c1", "vpackuswb xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  403d00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_33_packuswb_registry_documents_missing_cpu_contract_entry(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.33 PACKUSWB XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("CPU_CONTRACT has no PACKUSWB entry", profile["gate"])
+        family = profile["families"][0]
+        self.assertIn("0F 67 /r", family["encoding"])
+        self.assertIn("signed", family["outcome"])
+        self.assertIn("destination bytes 0-7 then source bytes 8-15", family["outcome"])
+
     def test_s2_35_18_pcmpeqb_registry_is_local_only_and_exact(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])
