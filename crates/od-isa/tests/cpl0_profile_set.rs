@@ -26352,3 +26352,547 @@ fn segment_qword_store_keeps_accepting_a_valid_rex_w_after_a_stale_rex() {
         }
     }
 }
+
+// ---- S4-38L7at: WRMSR IA32_SYSCALL_MASK in the CPL0 set (one member, one cell) ----
+
+/// The Linux boundary value of the write: EDX:EAX = 0:0x257fd5.
+const SYSCALL_MASK_EAX: u64 = 0x25_7fd5;
+const SYSCALL_MASK_EDX: u64 = 0;
+const SYSCALL_MASK_VALUE: u64 = 0x25_7fd5;
+
+#[test]
+fn wrmsr_syscall_mask_stores_exactly_edx_eax_and_changes_only_rip() {
+    // The boundary of the Linux run: `0F 30`, ECX = IA32_SYSCALL_MASK, EDX:EAX = 0:0x257fd5.
+    let cell = Cell::new(0xe5);
+    let set = base().with_msr_syscall_mask_write(&cell);
+    let (state, before, result) = run_star(
+        &set,
+        &WRMSR,
+        (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+        1,
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), SYSCALL_MASK_VALUE);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+
+    // The value is exactly EDX << 32 | EAX (full 64 bits, no canonical or reserved-bit check, no
+    // FMASK flag semantics); the upper halves of RAX, RCX and RDX are ignored (ECX is 32 bits).
+    let cell = Cell::new(0x1234);
+    let set = base().with_msr_syscall_mask_write(&cell);
+    let (_, _, result) = run_star(
+        &set,
+        &WRMSR,
+        (
+            SYSCALL_MASK_MSR | (1 << 32),
+            0xffff_ffff_dead_beef,
+            0xffff_ffff_8000_0001,
+        ),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x8000_0001_dead_beef);
+    // A second write replaces the first; zero is a value too.
+    let (_, _, result) = run_star(&set, &WRMSR, (SYSCALL_MASK_MSR, 0, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0);
+}
+
+#[test]
+fn wrmsr_syscall_mask_composes_with_the_efer_base_and_other_members_in_one_run() {
+    // The Linux path (`syscall_init`): STAR, then SYSCALL_MASK:
+    // mov ecx,0xc0000081; xor eax,eax; mov edx,0x230010; wrmsr;
+    // mov ecx,0xc0000084; mov eax,0x257fd5; xor edx,edx; wrmsr.
+    let code = [
+        0xb9, 0x81, 0x00, 0x00, 0xc0, 0x31, 0xc0, 0xba, 0x10, 0x00, 0x23, 0x00, 0x0f, 0x30, 0xb9,
+        0x84, 0x00, 0x00, 0xc0, 0xb8, 0xd5, 0x7f, 0x25, 0x00, 0x31, 0xd2, 0x0f, 0x30,
+    ];
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star_cell = Cell::new(0);
+    let sysenter_cs = Cell::new(0);
+    let esp = Cell::new(0);
+    let eip = Cell::new(0);
+    let mask = Cell::new(0);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_efer_write(&efer_cell)
+        .with_msr_fs_gs_base()
+        .with_msr_star_write(&star_cell)
+        .with_msr_sysenter_cs_write(&sysenter_cs)
+        .with_msr_sysenter_stack_write(&esp, &eip)
+        .with_msr_syscall_mask_write(&mask);
+    let (state, before, result) = run_star(&set, &code, (0, 0, 0), 8);
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(star_cell.get(), 0x0023_0010_0000_0000);
+    assert_eq!(mask.get(), SYSCALL_MASK_VALUE);
+    assert_eq!((sysenter_cs.get(), esp.get(), eip.get()), (0, 0, 0));
+    assert_eq!(efer_cell.get(), 0xd00);
+    assert_eq!(state.gs_base, before.gs_base);
+    assert_eq!(state.fs_base, before.fs_base);
+}
+
+#[test]
+fn a_single_msr_write_changes_only_its_own_cell_with_all_seven_cells() {
+    // STAR, LSTAR, CSTAR, SYSENTER_CS, SYSENTER_ESP, SYSENTER_EIP and SYSCALL_MASK present with
+    // sentinels: one WRMSR changes exactly one cell.
+    let sentinels = [
+        0x1111_2222_3333_4444u64,
+        0x5555_6666_7777_8888,
+        0x9999_aaaa_bbbb_cccc,
+        0x0123_4567_89ab_cdef,
+        0x0fed_cba9_8765_4321,
+        0x1357_9bdf_0246_8ace,
+        0x2468_ace0_1357_9bdf,
+    ];
+    for (which, index) in [
+        STAR_MSR,
+        LSTAR_MSR,
+        CSTAR_MSR,
+        SYSENTER_CS_MSR,
+        SYSENTER_ESP_MSR,
+        SYSENTER_EIP_MSR,
+        SYSCALL_MASK_MSR,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let star = Cell::new(sentinels[0]);
+        let lstar = Cell::new(sentinels[1]);
+        let cstar = Cell::new(sentinels[2]);
+        let sysenter = Cell::new(sentinels[3]);
+        let esp = Cell::new(sentinels[4]);
+        let eip = Cell::new(sentinels[5]);
+        let mask = Cell::new(sentinels[6]);
+        let set = base()
+            .with_msr_star_write(&star)
+            .with_msr_lstar_write(&lstar)
+            .with_msr_cstar_write(&cstar)
+            .with_msr_sysenter_cs_write(&sysenter)
+            .with_msr_sysenter_stack_write(&esp, &eip)
+            .with_msr_syscall_mask_write(&mask);
+        let (_, _, result) = run_star(&set, &WRMSR, (index, 0x0000_0007, 0x0000_0008), 1);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = sentinels;
+        expected[which] = 0x0000_0008_0000_0007;
+        assert_eq!(
+            [
+                star.get(),
+                lstar.get(),
+                cstar.get(),
+                sysenter.get(),
+                esp.get(),
+                eip.get(),
+                mask.get()
+            ],
+            expected,
+            "{index:#x}"
+        );
+    }
+}
+
+#[test]
+fn wrmsr_syscall_mask_without_the_member_is_unsupported_in_every_other_set() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star_cell = Cell::new(0x66);
+    let lstar_cell = Cell::new(0x88);
+    let cstar_cell = Cell::new(0x99);
+    let sysenter_cs = Cell::new(0xaa);
+    let esp = Cell::new(0xbb);
+    let eip = Cell::new(0xcc);
+    for set in [
+        base(),
+        base().with_msr(&efer),
+        base().with_msr(&efer).with_msr_efer_write(&efer_cell),
+        base().with_msr_fs_gs_base(),
+        base().with_msr_star_write(&star_cell),
+        base().with_msr_lstar_write(&lstar_cell),
+        base().with_msr_cstar_write(&cstar_cell),
+        base().with_msr_sysenter_cs_write(&sysenter_cs),
+        base().with_msr_sysenter_stack_write(&esp, &eip),
+        base()
+            .with_msr_star_write(&star_cell)
+            .with_msr_lstar_write(&lstar_cell)
+            .with_msr_cstar_write(&cstar_cell)
+            .with_msr_sysenter_cs_write(&sysenter_cs)
+            .with_msr_sysenter_stack_write(&esp, &eip),
+        gs_set().with_msr(&efer).with_msr_efer_write(&efer_cell),
+    ] {
+        let (state, before, result) = run_star(
+            &set,
+            &WRMSR,
+            (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+            1,
+        );
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(efer_cell.get(), 0xd00);
+        assert_eq!(
+            (
+                star_cell.get(),
+                lstar_cell.get(),
+                cstar_cell.get(),
+                sysenter_cs.get(),
+                esp.get(),
+                eip.get()
+            ),
+            (0x66, 0x88, 0x99, 0xaa, 0xbb, 0xcc)
+        );
+    }
+}
+
+#[test]
+fn wrmsr_syscall_mask_outside_the_set_stays_refused_in_bare_run_and_msr_profiles() {
+    // Outside the set the refusal is the existing one. With the board state (CR0/CR4/activity
+    // set) the bare `run` and `run_with_msr_profile` refuse at ENTRY, before any fetch, for every
+    // profile and index: `Unsupported { opcode: 0x0f }`, `fetches == 0`. This part only shows the
+    // member adds nothing outside the set; it does not reach the MSR branch.
+    let check = |profile: Option<&MsrProfile>, index: u64| {
+        let mut state = board_state();
+        state.gpr[1] = index;
+        state.gpr[0] = SYSCALL_MASK_EAX;
+        state.gpr[2] = SYSCALL_MASK_EDX;
+        let before = state.clone();
+        let mut memory = Memory::code(&WRMSR);
+        let result = match profile {
+            None => run(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                || false,
+            ),
+            Some(profile) => run_with_msr_profile(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                profile,
+                || false,
+            ),
+        };
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, 0, "refused at entry, before the fetch");
+        result.exit
+    };
+    let unsupported = check(None, 0x1234_5678);
+    assert!(
+        matches!(unsupported, RunExit::Unsupported { .. }),
+        "{unsupported:?}"
+    );
+    assert_eq!(check(None, SYSCALL_MASK_MSR), unsupported);
+    for profile in [
+        MsrProfile::EferReadOnlyV1(0xd00),
+        MsrProfile::GsBaseV1,
+        MsrProfile::FsBaseV1,
+        MsrProfile::KernelGsBaseV1,
+        MsrProfile::SysenterProbeV1,
+    ] {
+        assert_eq!(
+            check(Some(&profile), SYSCALL_MASK_MSR),
+            check(Some(&profile), 0x1234_5678),
+            "{profile:?}"
+        );
+    }
+}
+
+#[test]
+fn the_msr_branch_of_the_bare_run_with_fetch_does_not_cover_syscall_mask_in_any_profile() {
+    // A default state (no CR0/CR4/activity) gets past the entry of the bare run with an MSR
+    // profile, so the MSR branch is reached (two fetches, `0F 30`). No MSR profile handles
+    // 0xC0000084 (`handles_index`), so every one of them refuses with `Unsupported { 0x30 }` and
+    // commits nothing. The set member is not involved: this is the behaviour it must not
+    // override, and the reason why nothing can win over it today.
+    for profile in [
+        MsrProfile::EferReadOnlyV1(0xd00),
+        MsrProfile::GsBaseV1,
+        MsrProfile::FsBaseV1,
+        MsrProfile::KernelGsBaseV1,
+        MsrProfile::SysenterProbeV1,
+    ] {
+        assert!(
+            !profile.handles_index(SYSCALL_MASK_MSR as u32),
+            "{profile:?}"
+        );
+        let mut state = LongModeState {
+            rip: RIP,
+            ..LongModeState::default()
+        };
+        state.gpr[1] = SYSCALL_MASK_MSR;
+        state.gpr[0] = SYSCALL_MASK_EAX;
+        state.gpr[2] = SYSCALL_MASK_EDX;
+        let before = state.clone();
+        let mut memory = Memory::code(&WRMSR);
+        let result = run_with_msr_profile(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            &profile,
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 0, "{profile:?}");
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x30 },
+            "{profile:?}"
+        );
+        assert_eq!(state, before, "{profile:?}");
+        assert_eq!(memory.fetches, 2, "the MSR branch was reached");
+    }
+}
+
+#[test]
+fn wrmsr_syscall_mask_is_effective_under_every_msr_profile_in_both_builder_orders() {
+    // No profile handles 0xC0000084, so the member is effective under all of them (also under
+    // `SysenterProbeV1`, which only covers 0x174..=0x176), in either builder order; the probe
+    // profile's own #GP(0) for 0x174..=0x176 stays.
+    for profile in [
+        MsrProfile::EferReadOnlyV1(0xd00),
+        MsrProfile::GsBaseV1,
+        MsrProfile::FsBaseV1,
+        MsrProfile::KernelGsBaseV1,
+        MsrProfile::SysenterProbeV1,
+    ] {
+        for member_first in [true, false] {
+            let mask = Cell::new(0);
+            let set = if member_first {
+                base().with_msr_syscall_mask_write(&mask).with_msr(&profile)
+            } else {
+                base().with_msr(&profile).with_msr_syscall_mask_write(&mask)
+            };
+            let (_, _, result) = run_star(
+                &set,
+                &WRMSR,
+                (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+                1,
+            );
+            assert_eq!(
+                result.instructions_executed, 1,
+                "{profile:?} member_first={member_first}"
+            );
+            assert_eq!(mask.get(), SYSCALL_MASK_VALUE);
+        }
+    }
+
+    // The probe profile with the stack/CS members: they keep their #GP(0), SYSCALL_MASK stores.
+    let probe = MsrProfile::SysenterProbeV1;
+    let sysenter = Cell::new(0x66);
+    let esp = Cell::new(0x77);
+    let eip = Cell::new(0x88);
+    let mask = Cell::new(0);
+    let set = base()
+        .with_msr(&probe)
+        .with_msr_sysenter_cs_write(&sysenter)
+        .with_msr_sysenter_stack_write(&esp, &eip)
+        .with_msr_syscall_mask_write(&mask);
+    for index in [SYSENTER_CS_MSR, SYSENTER_ESP_MSR, SYSENTER_EIP_MSR] {
+        let (state, before, result) = run_star(&set, &WRMSR, (index, 1, 2), 1);
+        assert_eq!(exit(&result), &gp0(), "{index:#x}");
+        assert_eq!(state, before);
+    }
+    let (_, _, result) = run_star(
+        &set,
+        &WRMSR,
+        (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(mask.get(), SYSCALL_MASK_VALUE);
+    assert_eq!((sysenter.get(), esp.get(), eip.get()), (0x66, 0x77, 0x88));
+}
+
+#[test]
+fn wrmsr_other_msrs_stay_unsupported_with_the_syscall_mask_member() {
+    // The neighbours CSTAR (0xC0000083) and 0xC0000085, the other SYSCALL and SYSENTER MSRs (no
+    // member here), EFER (no profile in this set), KERNEL_GS_BASE, FS/GS base (no base member),
+    // APIC_BASE and an unknown index: refused with 0x30, the cell untouched.
+    let mask = Cell::new(0xabcd);
+    let set = base().with_msr_syscall_mask_write(&mask);
+    for index in [
+        CSTAR_MSR,
+        0xc000_0085u64,
+        STAR_MSR,
+        LSTAR_MSR,
+        SYSENTER_CS_MSR,
+        SYSENTER_ESP_MSR,
+        SYSENTER_EIP_MSR,
+        0xc000_0080,
+        0xc000_0102,
+        0xc000_0100,
+        0xc000_0101,
+        0x1b,
+        0x1234_5678,
+    ] {
+        let (state, before, result) =
+            run_star(&set, &WRMSR, (index, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(mask.get(), 0xabcd);
+    }
+}
+
+#[test]
+fn wrmsr_with_the_syscall_mask_low_bits_but_another_index_is_unsupported_without_mutation() {
+    // ECX is a 32-bit index: 0x84 in the low byte with other bits set in the low half or the
+    // index class changed is another MSR. (RCX with the bits above 31 set is not in this list:
+    // only ECX counts, so it is SYSCALL_MASK, see the first test.)
+    let mask = Cell::new(0x77);
+    let set = base().with_msr_syscall_mask_write(&mask);
+    for index in [
+        0x0001_0084u64,
+        0x0000_0084,
+        0x8000_0084,
+        0xc001_0084,
+        0xc000_0184,
+        0xc000_8084,
+        0xc000_0004,
+        0xc000_0094,
+        0xc000_0840,
+    ] {
+        let (state, before, result) =
+            run_star(&set, &WRMSR, (index, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(mask.get(), 0x77);
+    }
+}
+
+#[test]
+fn rdmsr_syscall_mask_stays_unsupported_even_after_a_write() {
+    // No RDMSR of SYSCALL_MASK in the set: the written value is observable only through the cell.
+    let mask = Cell::new(0);
+    let set = base().with_msr_syscall_mask_write(&mask);
+    let (state, before, result) = run_star(&set, &RDMSR, (SYSCALL_MASK_MSR, 0, 0), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_fs_gs_base()
+        .with_msr_syscall_mask_write(&mask);
+    // mov ecx,0xc0000084; mov eax,0x257fd5; xor edx,edx; wrmsr; rdmsr
+    let mut code = vec![
+        0xb9, 0x84, 0x00, 0x00, 0xc0, 0xb8, 0xd5, 0x7f, 0x25, 0x00, 0x31, 0xd2,
+    ];
+    code.extend_from_slice(&WRMSR);
+    code.extend_from_slice(&RDMSR);
+    let (state, _, result) = run_star(&set, &code, (0, 0, 0), 6);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(result.instructions_executed, 4, "the RDMSR is not retired");
+    assert_eq!(mask.get(), SYSCALL_MASK_VALUE);
+    assert_eq!(state.rip, RIP + 14, "stopped at the RDMSR");
+}
+
+#[test]
+fn wrmsr_syscall_mask_with_prefixes_is_unsupported_without_mutation() {
+    for code in [
+        &[0x66u8, 0x0f, 0x30][..],
+        &[0xf3, 0x0f, 0x30],
+        &[0xf2, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+        &[0x40, 0x0f, 0x30],
+        &[0x2e, 0x0f, 0x30],
+        &[0x3e, 0x0f, 0x30],
+        &[0x67, 0x0f, 0x30],
+    ] {
+        let mask = Cell::new(0x77);
+        let set = base().with_msr_syscall_mask_write(&mask);
+        let (state, before, result) = run_star(
+            &set,
+            code,
+            (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+            1,
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(mask.get(), 0x77);
+    }
+}
+
+#[test]
+fn syscall_and_sysenter_instructions_stay_unsupported_with_the_syscall_mask_member() {
+    // The stored SYSCALL_MASK is never consumed: SYSCALL (0F 05) and SYSRET (0F 07, REX.W 0F 07)
+    // keep 0x05/0x07, SYSENTER (0F 34) and SYSEXIT (0F 35, REX.W 0F 35) keep 0x34/0x35, all
+    // without mutation, also with the other members present.
+    let star = Cell::new(0x0023_0010_0000_0000);
+    let sysenter_cs = Cell::new(0x10);
+    let mask = Cell::new(SYSCALL_MASK_VALUE);
+    let set = base()
+        .with_msr_star_write(&star)
+        .with_msr_sysenter_cs_write(&sysenter_cs)
+        .with_msr_syscall_mask_write(&mask);
+    for (code, opcode) in [
+        (&[0x0f, 0x34][..], 0x34u8),
+        (&[0x0f, 0x35], 0x35),
+        (&[0x48, 0x0f, 0x35], 0x35),
+        (&[0x0f, 0x05], 0x05),
+        (&[0x0f, 0x07], 0x07),
+        (&[0x48, 0x0f, 0x07], 0x07),
+    ] {
+        let (state, before, result) = run_star(
+            &set,
+            code,
+            (SYSCALL_MASK_MSR, SYSCALL_MASK_EAX, SYSCALL_MASK_EDX),
+            1,
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(
+            (star.get(), sysenter_cs.get(), mask.get()),
+            (0x0023_0010_0000_0000, 0x10, SYSCALL_MASK_VALUE)
+        );
+    }
+}
+
+#[test]
+fn wrmsr_syscall_mask_at_cpl3_never_reaches_the_member() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch or write.
+    let mask = Cell::new(0x77);
+    let set = base().with_msr_syscall_mask_write(&mask);
+    let mut state = board_state();
+    state.gpr[1] = SYSCALL_MASK_MSR;
+    state.gpr[0] = SYSCALL_MASK_EAX;
+    state.gpr[2] = SYSCALL_MASK_EDX;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(mask.get(), 0x77);
+}

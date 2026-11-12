@@ -586,6 +586,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP (write-only for the guest).
     stop["guest_sysenter_esp"] = json!(hex64(record.guest_sysenter_esp));
     stop["guest_sysenter_eip"] = json!(hex64(record.guest_sysenter_eip));
+    // S4-38L7at: the guest IA32_SYSCALL_MASK (write-only for the guest; the full 64-bit value).
+    stop["guest_syscall_mask"] = json!(hex64(record.guest_syscall_mask));
     stop
 }
 
@@ -1443,6 +1445,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1613,6 +1616,36 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_guest_syscall_mask_after_its_wrmsr() {
+        // MOV ECX,0xC0000084; MOV EAX,0x257FD5; XOR EDX,EDX; WRMSR (S4-38L7at).
+        let code = [
+            0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0xD5, 0x7F, 0x25, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-syscall-mask",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_syscall_mask"], "0x257fd5");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_sysenter_esp"], "0x0");
+        assert_eq!(stop["guest_sysenter_eip"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes it.
+        let value = run_case("syscall-mask-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_syscall_mask"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
         // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
         let code = [
@@ -1703,6 +1736,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1995,6 +2029,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"

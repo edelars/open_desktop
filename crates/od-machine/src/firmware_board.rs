@@ -982,6 +982,10 @@ pub struct LoadedFirmwareBoard {
     /// The guest `IA32_SYSENTER_EIP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
     /// set. The full 64-bit value written. Only stored; nothing consumes it.
     guest_sysenter_eip: u64,
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written (the flag-clearing behaviour of the real FMASK is not
+    /// modelled). Only stored; nothing consumes it.
+    guest_syscall_mask: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1142,6 +1146,17 @@ impl LoadedFirmwareBoard {
     /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
     pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
         self.guest_sysenter_eip = value;
+    }
+
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSCALL_MASK stays refused.
+    pub const fn guest_syscall_mask(&self) -> u64 {
+        self.guest_syscall_mask
+    }
+
+    /// Stores the SYSCALL_MASK a CPL0-set run left (S4-38L7at).
+    pub(crate) fn set_guest_syscall_mask(&mut self, value: u64) {
+        self.guest_syscall_mask = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -2002,6 +2017,7 @@ impl AssembledBoard {
             guest_sysenter_cs: 0,
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
+            guest_syscall_mask: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -2063,6 +2079,7 @@ impl AssembledBoard {
             guest_sysenter_cs: 0,
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
+            guest_syscall_mask: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]

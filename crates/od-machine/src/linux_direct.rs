@@ -490,6 +490,10 @@ pub struct LinuxStopRecord {
     /// The guest `IA32_SYSENTER_EIP` (S4-38L7as) after the run; `0` when never written. The full
     /// 64-bit value written. Write-only for the guest (`RDMSR` of SYSENTER_EIP is refused).
     pub guest_sysenter_eip: u64,
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at) after the run; `0` when never written. The full
+    /// 64-bit value written (the flag clearing of the real FMASK is not modelled). Write-only for
+    /// the guest (`RDMSR` of SYSCALL_MASK is refused).
+    pub guest_syscall_mask: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -639,6 +643,7 @@ fn stop_record(
         guest_sysenter_cs: boot.board.guest_sysenter_cs(),
         guest_sysenter_esp: boot.board.guest_sysenter_esp(),
         guest_sysenter_eip: boot.board.guest_sysenter_eip(),
+        guest_syscall_mask: boot.board.guest_syscall_mask(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -732,6 +737,12 @@ pub struct LinuxCpl0SetMembers {
     /// profile the member would have no effect (the profile's `#GP(0)` wins); the board set uses
     /// `EferReadOnlyV1`.
     pub msr_sysenter_stack: bool,
+    /// `with_msr_syscall_mask_write` (S4-38L7at): `WRMSR` of IA32_SYSCALL_MASK (`0xC000_0084`) at
+    /// CPL0 stores `EDX:EAX` (the full 64-bit value, no bit semantics) in the board
+    /// (`guest_syscall_mask` of the stop record). Write-only: `RDMSR` of it and every other MSR
+    /// stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled. Independent of [`Self::msr`], the
+    /// other MSR members. No MSR profile covers the index today, so nothing overrides the member.
+    pub msr_syscall_mask: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
@@ -777,6 +788,7 @@ impl LinuxCpl0SetMembers {
             msr_cstar: false,
             msr_sysenter_cs: false,
             msr_sysenter_stack: false,
+            msr_syscall_mask: false,
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
@@ -807,6 +819,7 @@ impl LinuxCpl0SetMembers {
             msr_cstar: true,
             msr_sysenter_cs: true,
             msr_sysenter_stack: true,
+            msr_syscall_mask: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
             ..Self::minimal()
@@ -859,6 +872,8 @@ pub fn run_linux_direct_board_set(
     // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP, kept by the board between runs.
     let sysenter_esp_cell = Cell::new(boot.board.guest_sysenter_esp());
     let sysenter_eip_cell = Cell::new(boot.board.guest_sysenter_eip());
+    // S4-38L7at: the guest IA32_SYSCALL_MASK, kept by the board between runs.
+    let syscall_mask_cell = Cell::new(boot.board.guest_syscall_mask());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -902,6 +917,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_sysenter_stack_write(&sysenter_esp_cell, &sysenter_eip_cell);
         names.push("msr:sysenter_stack_write".into());
     }
+    if members.msr_syscall_mask {
+        set = set.with_msr_syscall_mask_write(&syscall_mask_cell);
+        names.push("msr:syscall_mask_write".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -933,6 +952,7 @@ pub fn run_linux_direct_board_set(
     boot.board.set_guest_sysenter_cs(sysenter_cs_cell.get());
     boot.board.set_guest_sysenter_esp(sysenter_esp_cell.get());
     boot.board.set_guest_sysenter_eip(sysenter_eip_cell.get());
+    boot.board.set_guest_syscall_mask(syscall_mask_cell.get());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -5502,13 +5522,18 @@ mod tests {
         assert_eq!(record.retired, 4);
         assert_eq!(record.guest_star, 0x0023_0010_0000_0000);
 
-        // WRMSR of SYSCALL_MASK (0xC0000084) with the same values stays the stop, STAR untouched
-        // (LSTAR is a member since S4-38L7ap and CSTAR since S4-38L7aq; SYSCALL_MASK is not).
+        // WRMSR of SYSCALL_MASK (0xC0000084) with the same values is the stop when the S4-38L7at
+        // member is off, STAR untouched (LSTAR is a member since S4-38L7ap and CSTAR since
+        // S4-38L7aq; SYSCALL_MASK since S4-38L7at).
         let mask = [
             0xB9, 0x84, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
         ];
         let (mut boot, file) = boot_with_entry(&mask);
-        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        let members = LinuxCpl0SetMembers {
+            msr_syscall_mask: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(
             record.exit,
             PagedProbeExit::Unsupported { opcode: 0x30 },
@@ -5518,6 +5543,7 @@ mod tests {
         assert_eq!(record.guest_star, 0);
         assert_eq!(record.guest_lstar, 0);
         assert_eq!(record.guest_cstar, 0);
+        assert_eq!(record.guest_syscall_mask, 0);
     }
 
     // ---- S4-38L7ap: WRMSR IA32_LSTAR through the board facade (write-only) ----
@@ -5730,12 +5756,17 @@ mod tests {
             assert_eq!(record.guest_cstar, 0xFFFF_FFFF_8100_1AB0);
         }
 
-        // WRMSR of SYSCALL_MASK (0xC0000084) stays the stop with all three members; nothing moved.
+        // WRMSR of SYSCALL_MASK (0xC0000084) is the stop when the S4-38L7at member is off; nothing
+        // moved.
         let mask = [
             0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0x00, 0x77, 0x04, 0x00, 0x31, 0xD2, 0x0F, 0x30,
         ];
         let (mut boot, file) = boot_with_entry(&mask);
-        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        let members = LinuxCpl0SetMembers {
+            msr_syscall_mask: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(
             record.exit,
             PagedProbeExit::Unsupported { opcode: 0x30 },
@@ -5746,6 +5777,7 @@ mod tests {
             (record.guest_star, record.guest_lstar, record.guest_cstar),
             (0, 0, 0)
         );
+        assert_eq!(record.guest_syscall_mask, 0);
     }
 
     // ---- S4-38L7ar: WRMSR IA32_SYSENTER_CS through the board facade (write-only) ----
@@ -6254,6 +6286,165 @@ mod tests {
         }
     }
 
+    // ---- S4-38L7at: WRMSR IA32_SYSCALL_MASK through the board facade (write-only) ----
+
+    /// MOV ECX,0xC0000084; MOV EAX,0x257FD5; XOR EDX,EDX; WRMSR: the boundary bytes `0F 30` of
+    /// the diagnostic run (EDX:EAX = 0:0x257FD5).
+    const SYSCALL_MASK_CODE: [u8; 14] = [
+        0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0xD5, 0x7F, 0x25, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+    ];
+
+    #[test]
+    fn wrmsr_syscall_mask_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // Two writes in one program: the first is the boundary one; the second (MOV EAX,0x81001AB0;
+        // MOV EDX,0xFFFFFFFF; WRMSR) replaces it with a value that has all 64 bits set.
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code.extend_from_slice(&[
+            0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x30, 0xF4,
+        ]);
+        let first = 0x25_7FD5u64;
+        let second = 0xFFFF_FFFF_8100_1AB0u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_syscall_mask(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 8,
+            "MOV, MOV, XOR, WRMSR, MOV, MOV, WRMSR, HLT"
+        );
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0084);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8100_1AB0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0xFFFF_FFFF);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; the
+        // other cells and the EFER did not move.
+        assert_eq!(record.guest_syscall_mask, second);
+        assert_eq!(boot.board.guest_syscall_mask(), second);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                record.guest_sysenter_cs,
+                record.guest_sysenter_esp,
+                record.guest_sysenter_eip
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(
+            record
+                .set_members
+                .contains(&"msr:syscall_mask_write".to_string())
+        );
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_syscall_mask(first);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_syscall_mask, first);
+
+        // A real chain on one board: run 1 stops by budget right after the first write, run 2 on
+        // the same `boot` retires the rest (MOV, MOV, WRMSR, HLT) and reports the replaced value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let run1 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run1.retired, 4, "{run1:?}");
+        assert_eq!(run1.guest_syscall_mask, first);
+        assert_eq!(boot.board.guest_syscall_mask(), first);
+        let run2 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run2.exit, PagedProbeExit::Halted, "{run2:?}");
+        assert_eq!(run2.retired, 4, "MOV, MOV, WRMSR, HLT");
+        assert_eq!(run2.guest_syscall_mask, second);
+        assert_eq!(boot.board.guest_syscall_mask(), second);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, XOR) and the cell stays 0; the
+        // other MSR members do not admit SYSCALL_MASK.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_star: true,
+                msr_lstar: true,
+                msr_cstar: true,
+                msr_sysenter_cs: true,
+                msr_sysenter_stack: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_syscall_mask: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_syscall_mask, 0);
+            assert_eq!(boot.board.guest_syscall_mask(), 0);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:syscall_mask_write".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn rdmsr_syscall_and_sysenter_stay_the_stop_after_the_syscall_mask_write_through_the_board_set()
+    {
+        // The write is retired, the next instruction is the stop (RDMSR: not readable; SYSCALL,
+        // SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record.
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x05], 0x05),
+            (&[0x0F, 0x07], 0x07),
+            (&[0x0F, 0x34], 0x34),
+            (&[0x0F, 0x35], 0x35),
+        ] {
+            let mut code = SYSCALL_MASK_CODE.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_syscall_mask, 0x25_7FD5);
+        }
+
+        // The neighbours 0xC0000083 (CSTAR) and 0xC0000085 write their own cell only; 0xC0000085
+        // is no member and is the stop with SYSCALL_MASK untouched.
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code[1] = 0x85;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(record.guest_syscall_mask, 0);
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code[1] = 0x83;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_cstar, 0x25_7FD5);
+        assert_eq!(record.guest_syscall_mask, 0);
+    }
+
     #[test]
     fn linux_default_set_is_cli_cr3_cpuid_and_popf() {
         assert_eq!(
@@ -6270,6 +6461,7 @@ mod tests {
                 msr_cstar: true,
                 msr_sysenter_cs: true,
                 msr_sysenter_stack: true,
+                msr_syscall_mask: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
@@ -6292,6 +6484,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -6384,6 +6577,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
@@ -6560,6 +6754,7 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
