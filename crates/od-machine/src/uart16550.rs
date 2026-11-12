@@ -20,6 +20,16 @@
 //! (break off) and bit 7 DLAB = 0. Bits 4 (EPS) and 5 (stick parity) have no
 //! effect while PEN = 0 and are ignored, so `0x13` passes. Otherwise the write
 //! is refused with `UnsupportedConfiguration` without mutation.
+//!
+//! S4-38L7br: the modem control register (offset 4) stores bit 0 (DTR), bit 1
+//! (RTS), bit 2 (OUT1) and bit 3 (OUT2) and reads them back. DTR, RTS and OUT1
+//! have no effect: the board has no modem and the lines are not wired, so no
+//! modem signal is modelled. OUT2 keeps its S4-24e role as the gate of the
+//! interrupt line. Bit 4 (LOOP, loopback) and the reserved bits 5..7 are
+//! refused with `UnsupportedConfiguration` without mutation: loopback would
+//! change transmit and receive behaviour and is not modelled. Semantics
+//! follow the 16550 datasheet from memory and were not checked against a
+//! primary source.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -36,7 +46,12 @@ const IIR_THRE: u8 = 0x02;
 const IIR_RDA: u8 = 0x04;
 const IER_RDA: u8 = 0x01;
 const IER_THRE: u8 = 0x02;
+/// MCR bits 0..2 (DTR, RTS, OUT1) are stored and read back only; OUT2
+/// (bit 3) additionally gates the interrupt line. LOOP (bit 4) and bits 5..7
+/// are refused.
+const MCR_STORED_ONLY: u8 = 0x07;
 const MCR_OUT2: u8 = 0x08;
+const MCR_ACCEPTED: u8 = MCR_STORED_ONLY | MCR_OUT2;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
@@ -370,8 +385,9 @@ impl UartState {
             // them: a THR write needs 8N1 with parity off and DLAB clear
             // (bits 4 and 5 are ignored while PEN = 0).
             3 => self.line_control = value,
-            4 if value & !MCR_OUT2 == 0 => self.mcr = value,
-            // DTR/RTS/OUT1/loopback are not modelled.
+            // S4-38L7br: DTR/RTS/OUT1 are stored only; OUT2 gates the line.
+            4 if value & !MCR_ACCEPTED == 0 => self.mcr = value,
+            // Loopback (bit 4) and reserved bits 5..7 are not modelled.
             4 => return Err(DeviceError::UnsupportedConfiguration),
             5 => return Err(DeviceError::ReadOnly),
             7 => self.scratch = value,
@@ -549,7 +565,7 @@ mod tests {
         assert_eq!(device.read(access(8)), Err(DeviceError::UnknownOffset));
         assert_eq!(device.read(access(4)), Ok(0));
         assert_eq!(
-            device.write(access(4), 0x01),
+            device.write(access(4), 0x10),
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(device.write(access(5), 0x20), Err(DeviceError::ReadOnly));
@@ -563,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn ier_accepts_only_rda_and_thre_and_mcr_only_out2() {
+    fn ier_accepts_only_rda_and_thre_and_mcr_accepts_only_bits_0_to_3() {
         let mut device = Uart16550PollingTx::new();
         for value in [0x00, 0x01, 0x02, 0x03] {
             write(&mut device, 1, value);
@@ -578,7 +594,7 @@ mod tests {
         }
         write(&mut device, 4, 0x08);
         assert_eq!(read(&mut device, 4), 0x08);
-        for value in [0x01_u8, 0x02, 0x04, 0x10, 0x18] {
+        for value in [0x10_u8, 0x18, 0x20, 0x40, 0x80, 0xff] {
             assert_eq!(
                 device.write(access(4), u64::from(value)),
                 Err(DeviceError::UnsupportedConfiguration)
@@ -840,10 +856,129 @@ mod tests {
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(
-            device.write(access(4), 0x03),
+            device.write(access(4), 0x10),
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(device.write(access(5), 0x00), Err(DeviceError::ReadOnly));
         assert_eq!(device.snapshot(), before);
+    }
+
+    // S4-38L7br. Oracles are hand-computed 16550 values (datasheet from
+    // memory): MCR bit 0 DTR = 0x01, bit 1 RTS = 0x02, bit 2 OUT1 = 0x04,
+    // bit 3 OUT2 = 0x08, bit 4 LOOP = 0x10, bits 5..7 reserved.
+
+    #[test]
+    fn mcr_stores_and_reads_back_dtr_rts_out1_out2() {
+        let mut device = Uart16550PollingTx::new();
+        assert_eq!(read(&mut device, 4), 0x00);
+        // 0x01 is the Linux 0xffffffff81fee68f write (DTR).
+        for value in [
+            0x01_u8, 0x02, 0x03, 0x04, 0x07, 0x08, 0x09, 0x0b, 0x0f, 0x00,
+        ] {
+            write(&mut device, 4, value);
+            assert_eq!(read(&mut device, 4), value);
+        }
+    }
+
+    #[test]
+    fn mcr_loopback_and_reserved_bits_are_refused_without_mutation() {
+        for stored in [0x00_u8, 0x01, 0x0f] {
+            let mut device = Uart16550PollingTx::new();
+            write(&mut device, 4, stored);
+            let before = device.snapshot();
+            for value in [0x10_u8, 0x11, 0x1f, 0x20, 0x40, 0x80, 0x81, 0xff] {
+                assert_eq!(
+                    device.write(access(4), u64::from(value)),
+                    Err(DeviceError::UnsupportedConfiguration)
+                );
+                assert_eq!(device.snapshot(), before);
+                assert_eq!(read(&mut device, 4), stored);
+            }
+        }
+    }
+
+    #[test]
+    fn mcr_dtr_rts_out1_do_not_gate_the_line_or_touch_other_registers() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        write(&mut device, 3, 0x93);
+        write(&mut device, 0, 0x0c);
+        write(&mut device, 1, 0x00);
+        write(&mut device, 3, 0x03);
+        write(&mut device, 1, 0x01);
+        device.inject_received_byte(0x5a).unwrap();
+        assert!(!handle.interrupt_line());
+        // Without OUT2 the line stays low; the whole state changes only in
+        // the mcr field.
+        for value in [0x01_u8, 0x02, 0x04, 0x07] {
+            let before = device.snapshot();
+            write(&mut device, 4, value);
+            let mut expected = before.clone();
+            expected.mcr = value;
+            assert_eq!(device.snapshot(), expected);
+            assert!(!handle.interrupt_line());
+            assert_eq!(handle.peek_iir(), 0x04);
+            assert_eq!(read(&mut device, 4), value);
+        }
+        // OUT2 together with DTR/RTS/OUT1 raises the line as OUT2 alone did.
+        write(&mut device, 4, 0x0f);
+        assert!(handle.interrupt_line());
+        write(&mut device, 4, 0x07);
+        assert!(!handle.interrupt_line());
+        // The divisor and THR path are intact.
+        write(&mut device, 3, 0x83);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 0), 0x5a);
+        write(&mut device, 0, 0x41);
+        assert!(device.transfer_holding_to_shift());
+        assert_eq!(device.complete_transmission(), Some(0x41));
+    }
+
+    #[test]
+    fn mcr_bits_0_to_2_do_not_gate_a_pending_thre_but_out2_does() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        setup_8n1_divisor(&mut device);
+        // Enabling THRE with an empty holding register raises the condition.
+        write(&mut device, 1, 0x02);
+        assert!(device.snapshot().thre_pending);
+        assert_eq!(handle.peek_iir(), 0x02);
+        for value in [0x01_u8, 0x02, 0x04, 0x07] {
+            write(&mut device, 4, value);
+            assert!(!handle.interrupt_line());
+            assert!(device.snapshot().thre_pending);
+        }
+        // OUT2 raises the line as before, alone or with the stored bits.
+        for value in [0x08_u8, 0x09, 0x0f] {
+            write(&mut device, 4, 0x00);
+            assert!(!handle.interrupt_line());
+            write(&mut device, 4, value);
+            assert!(handle.interrupt_line());
+        }
+        write(&mut device, 4, 0x07);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn mcr_is_the_same_register_with_dlab_set() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        for value in 0x01_u8..=0x07 {
+            let before = device.snapshot();
+            write(&mut device, 4, value);
+            let mut expected = before.clone();
+            expected.mcr = value;
+            assert_eq!(device.snapshot(), expected);
+            assert_eq!(read(&mut device, 4), value);
+        }
+        let before = device.snapshot();
+        assert_eq!(
+            device.write(access(4), 0x10),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(device.snapshot(), before);
+        assert_eq!(read(&mut device, 4), 0x07);
+        assert_eq!(read(&mut device, 3), 0x93);
     }
 }
