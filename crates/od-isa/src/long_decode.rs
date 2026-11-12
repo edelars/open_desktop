@@ -611,6 +611,19 @@ pub enum Operation {
         dst: MemoryOperand,
         src: RegisterView,
     },
+    /// S4-38L7az: `64 [REX] 09 /r` (OR m32, r32, or m64, r64 with REX.W, with the FS base),
+    /// memory destination only. The operand is read, ORed with the register and written back
+    /// (one read, one write); the source register is unchanged. Executed only in the CPL0 set.
+    OrFsMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
+    /// S4-38L7az: `65 [REX] 09 /r` (OR m32/m64, r with the GS base), memory destination only.
+    /// Executed only in the CPL0 set.
+    OrGsMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// S4-38L7ah: `64 [REX] 83 /7 ib` (CMP m32, imm8, or m64, imm8 with REX.W, with the FS base),
     /// memory operand only. `immediate` is the imm8 already sign-extended to 64 bits; the compare
     /// masks it to the operand width. Only the flags change (no write). Executed only in the CPL0
@@ -2291,7 +2304,10 @@ impl Instruction {
                 kind: LogicKind::Not,
                 ..
             } => FlagEffects::default(),
+            // S4-38L7az: and the FS/GS-based OR m, r as the plain OR.
             Operation::Logic { .. }
+            | Operation::OrFsMem { .. }
+            | Operation::OrGsMem { .. }
             | Operation::LockOrMem { .. }
             | Operation::LockAndMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::AF,
@@ -8467,11 +8483,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             Operation::SubGsMem { dst, src }
                         }
                     } else if matches!(prefixes.segment, Some(0x64 | 0x65))
-                        && byte == 0x39
+                        && matches!(byte, 0x09 | 0x39)
                         && modrm >> 6 != 3
                     {
                         // S4-38L7aa: `[64|65] [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W)
-                        // with a memory destination. The register form (mod = 11) is not touched:
+                        // with a memory destination. S4-38L7az: the same shape for
+                        // `[64|65] [REX] 09 /r` (OR m32, r32, or m64, r64), which is read, ORed
+                        // and written back (`OrFsMem`/`OrGsMem`). The register form (mod = 11) is
+                        // not touched:
                         // it takes the plain `binary_operation` path below, the prefix ignored.
                         // LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte that
                         // is not immediately before the opcode (the dword rule of S4-38L7m).
@@ -8490,10 +8509,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         let (Operand::Memory(dst), Operand::Register(src)) = (dst, src) else {
                             return Err(self.unsupported(opcode));
                         };
-                        if prefixes.segment == Some(0x64) {
-                            Operation::CmpFsMem { dst, src }
-                        } else {
-                            Operation::CmpGsMem { dst, src }
+                        match (byte, prefixes.segment) {
+                            (0x39, Some(0x64)) => Operation::CmpFsMem { dst, src },
+                            (0x39, _) => Operation::CmpGsMem { dst, src },
+                            (_, Some(0x64)) => Operation::OrFsMem {
+                                destination: dst,
+                                source: src,
+                            },
+                            _ => Operation::OrGsMem {
+                                destination: dst,
+                                source: src,
+                            },
                         }
                     } else if byte == 0x01 && prefixes.group1 == Some(0xf0) {
                         // S4-38L7ai: `F0 [REX] 01 /r` (LOCK ADD m32, r32, or m64, r64 with
@@ -9638,6 +9664,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::CmpGsMem { .. } => false,
                 Operation::CmpFsMemImm { .. } => false,
                 Operation::CmpGsMemImm { .. } => false,
+                Operation::OrFsMem { .. } => false,
+                Operation::OrGsMem { .. } => false,
                 Operation::TestFsMemByte { .. } => false,
                 Operation::TestGsMemByte { .. } => false,
                 Operation::TestFsMemWord { .. } => false,
@@ -24954,6 +24982,82 @@ mod tests {
             // The neighbouring forms (CMP r, m and CMP m8, r8) stay outside the slice.
             (&[0x65, 0x48, 0x3b, 0x15, 1, 0, 0, 0][..], 0x3b),
             (&[0x65, 0x48, 0x38, 0x15, 1, 0, 0, 0][..], 0x38),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_or_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7az: `[64|65] [REX] 09 /r` with a memory destination.
+        let edx = RegisterView::low(Register::Rdx, OperandSize::Dword);
+        // The S4-38L7ay diagnostic boundary bytes: `or %edx, %gs:0x2f0cf68(%rip)`.
+        let mut memory = Memory::new(&[0x65, 0x09, 0x15, 0x68, 0xcf, 0xf0, 0x02]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 7);
+        assert!(matches!(
+            decoded.operation,
+            Operation::OrGsMem { destination, source }
+                if source == edx
+                    && destination.size == OperandSize::Dword
+                    && destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x02f0_cf68
+        ));
+        // REX.W with REX.R: qword, source R12, FS.
+        let mut memory = Memory::new(&[0x64, 0x4c, 0x09, 0x24, 0x25, 0x10, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::OrFsMem { destination, source }
+                if source == RegisterView::low(Register::R12, OperandSize::Qword)
+                    && destination.size == OperandSize::Qword
+        ));
+        // No segment prefix: still the plain logic operation.
+        let mut memory = Memory::new(&[0x09, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Logic {
+                kind: LogicKind::Or,
+                ..
+            }
+        ));
+        // The register form (mod = 11) is not touched: the prefix is ignored, plain OR.
+        for bytes in [&[0x65, 0x48, 0x09, 0xd0][..], &[0x64, 0x09, 0xd0][..]] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Logic {
+                        kind: LogicKind::Or,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for (bytes, refused_opcode) in [
+            // 0x66, 0x67, LOCK, REP, REPNE.
+            (&[0x66, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x65, 0x67, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf0, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf3, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf2, 0x64, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            // A second segment prefix.
+            (&[0x64, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x2e, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            // REX not directly before the opcode.
+            (&[0x48, 0x65, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x65, 0x48, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            // The neighbouring forms stay outside the slice.
+            (&[0x65, 0x48, 0x0b, 0x15, 1, 0, 0, 0][..], 0x0b),
+            (&[0x65, 0x48, 0x08, 0x15, 1, 0, 0, 0][..], 0x08),
         ] {
             let mut memory = Memory::new(bytes);
             let result = memory.decode();

@@ -3565,6 +3565,107 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7az: FS/GS-based OR m32, r32 and m64, r64 through the board facade ----
+
+    #[test]
+    fn gs_or_dword_after_wrmsr_gs_base_ors_edx_into_guest_memory_at_the_boundary_form() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,cell;
+        // MOV [BASE+0x10],RAX (plain); MOV EDX,0xf; OR %edx,%gs:disp(%rip) landing on effective
+        // address 0x10 (`65 09 15`, the S4-38L7ay Linux boundary form); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(0xdead_beef_0000_00f0));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0xBA, 0x0F, 0x00, 0x00, 0x00]);
+        let next_rip = ENTRY + code.len() as u64 + 7;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x09, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, MOV edx, OR, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let cell = guest_qword(&mut boot, BASE + 0x10);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x0f,
+            "source kept"
+        );
+        // 0xf0 | 0xf = 0xff in the low dword; the upper dword is not touched.
+        assert_eq!(
+            cell, 0xdead_beef_0000_00ff,
+            "only the low dword is rewritten"
+        );
+        // 0xff: PF only (CF, OF, SF, ZF cleared).
+        assert_eq!(state.rflags & 0x8c5, 1 << 2, "{:#x}", state.rflags);
+    }
+
+    #[test]
+    fn fs_or_qword_after_wrmsr_fs_base_ors_rdx_into_guest_memory() {
+        const BASE: u64 = 0x0200_0000;
+        // As above with the FS base (MSR 0xC0000100) and `64 48 09 15` (OR %rdx,%fs:disp(%rip)).
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(0x8000_0000_0000_0001));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(2u64.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x64, 0x48, 0x09, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 10, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let cell = guest_qword(&mut boot, BASE + 0x10);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 2, "source kept");
+        assert_eq!(cell, 0x8000_0000_0000_0003);
+        // 0x8000_0000_0000_0003: SF and PF (two ones in the low byte).
+        assert_eq!(
+            state.rflags & 0x8c5,
+            (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
