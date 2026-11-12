@@ -297,8 +297,73 @@ def _widths_allowed(task: str, row: dict) -> bool:
     return True
 
 
+def movups_local_profile_candidate(row: dict) -> str | None:
+    """Match only accepted S2-34.4/.5/.6a-c local MOVUPS memory forms."""
+    if row["mnemonic"] != "movups" or row["signature"] not in {"movups xmm,mem128", "movups mem128,xmm"}:
+        return None
+    view = opcode_view(row)
+    if view["opcode"] not in {(0x0F, 0x10), (0x0F, 0x11)}:
+        return None
+    prefixes = view["prefixes"]
+    # These local contracts allow at most one effective REX byte. The individual
+    # masks below keep REX.R/B/X/W permissions specific to each profile slice.
+    if len(prefixes) > 1 or any(not 0x40 <= value <= 0x4F for value in prefixes):
+        return None
+    rex = prefixes[0] if prefixes else 0x40
+    rex_bits = rex & 0x0F
+    modrm = view["modrm"]
+    if modrm is None:
+        return None
+    mod, rm = modrm >> 6, modrm & 7
+    if mod == 3:
+        return None
+    data = row["byte_values"]
+    sib_present = rm == 4
+    disp_size = 0
+    if mod == 1:
+        disp_size = 1
+    elif mod == 2:
+        disp_size = 4
+    elif mod == 0 and (rm == 5 or sib_present and view["opcode_index"] + 1 < len(data) and (data[view["opcode_index"] + 1] & 7) == 5):
+        disp_size = 4
+    expected_length = len(prefixes) + 3 + int(sib_present) + disp_size
+    if len(data) != expected_length:
+        return None
+
+    if sib_present:
+        # S2-34.6c accepts only a 64-bit SIB form and REX.R/B/X, never REX.W.
+        if rex_bits & 0x08:
+            return None
+        return "S2-34.6c-MOVUPS-SIB"
+
+    if mod == 0 and rm == 0 and not rex_bits & 0x01:
+        # S2-34.4/.5 are the two exact [RAX] directions; only REX.R is allowed.
+        if rex_bits & ~0x04:
+            return None
+        if view["opcode"] == (0x0F, 0x10) and row["signature"] == "movups xmm,mem128":
+            return "S2-34.4-MOVUPS-memory-load-RAX"
+        if view["opcode"] == (0x0F, 0x11) and row["signature"] == "movups mem128,xmm":
+            return "S2-34.5-MOVUPS-memory-store-RAX"
+        return None
+
+    if mod == 0 and rm == 5:
+        # S2-34.6b is RIP-relative disp32; REX.B/X/W are excluded.
+        if rex_bits & ~0x04:
+            return None
+        return "S2-34.6b-MOVUPS-RIP-relative"
+
+    # S2-34.6a is base+optional displacement without SIB, RIP-relative, or
+    # legacy prefixes; it admits REX.R/B but rejects REX.X/W.
+    if rex_bits & ~0x05:
+        return None
+    return "S2-34.6a-MOVUPS-base-displacement"
+
+
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    movups_candidate = movups_local_profile_candidate(row)
+    if movups_candidate is not None:
+        return movups_candidate
     view = opcode_view(row)
     prefixes = set(view["prefixes"])
     opcode, modrm, mnemonic = view["opcode"], view["modrm"], row["mnemonic"]

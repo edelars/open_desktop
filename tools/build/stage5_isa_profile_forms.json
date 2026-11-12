@@ -310,7 +310,70 @@
         {"task": "S4-38L7d", "qualification": "CR4.PGE policy extension; no new encoding", "source": "docs/specs/CPU_CONTRACT.md:21289"}
       ],
       "source": ["docs/specs/CPU_CONTRACT.md:20178-22451", "docs/plans/STAGE_2.md:20707-20748", "docs/plans/STAGE_4.md:2074"]
-    }
+    },
+  {
+    "task": "S2-34.4/.5/.6a/.6b/.6c MOVUPS",
+    "evidence_scope": "local_interpreter_profile",
+    "status": "accepted_local_bounded_profiles_parent_open",
+    "mode": "Long64",
+    "cpl": null,
+    "gate": "Assume SSE available, CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; interpreter-local bounded GuestMemory only; no native/JIT/physical or machine-CPL evidence.",
+    "families": [
+      {
+        "task": "S2-34.4",
+        "encoding": "0F 10 /r, ModRM mod00/rm000 [RAX], memory source, XMM destination; bare or one REX.R only",
+        "gate": "Reject REX.B/X/W, SIB/displacement, and all legacy prefixes.",
+        "outcome": "local interpreter load only",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:2525-2559",
+          "docs/reports/STAGE_2_REPORT.md:13916-13953"
+        ]
+      },
+      {
+        "task": "S2-34.5",
+        "encoding": "0F 11 /r, ModRM mod00/rm000 [RAX], memory destination, XMM source; bare or one effective REX.R only",
+        "gate": "Reject other prefixes and addressing forms.",
+        "outcome": "local interpreter store only",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:2560-2678",
+          "docs/reports/STAGE_2_REPORT.md:13954-13978"
+        ]
+      },
+      {
+        "task": "S2-34.6a",
+        "encoding": "0F 10/11 /r, ModRM memory modes 00/01/10; GPR base, no SIB, no RIP-relative; disp8/disp32 as encoded",
+        "gate": "REX.R/B allowed; reject REX.X/W, address-size32, legacy prefixes.",
+        "outcome": "local interpreter load/store only",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:2679-2709",
+          "docs/reports/STAGE_2_REPORT.md:13979-14023"
+        ]
+      },
+      {
+        "task": "S2-34.6b",
+        "encoding": "0F 10/11 /r, ModRM mod00/rm101 RIP-relative disp32",
+        "gate": "REX.R allowed; REX.B/X/W, legacy prefixes and address-size32 rejected.",
+        "outcome": "local interpreter load/store only",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:2710-2732",
+          "docs/reports/STAGE_2_REPORT.md:14024-14059"
+        ]
+      },
+      {
+        "task": "S2-34.6c",
+        "encoding": "0F 10/11 /r, memory SIB addressing in ModRM modes 00/01/10",
+        "gate": "Long64 SIB semantics; REX.R/B/X allowed; reject REX.W, legacy prefixes and address-size32.",
+        "outcome": "local interpreter load/store only",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:2733-2779",
+          "docs/reports/STAGE_2_REPORT.md:14060-14107"
+        ]
+      }
+    ],
+    "source": [
+      "docs/plans/STAGE_2.md:5558-5635"
+    ]
+  }
   ],
   "explicit_profile_exclusions": [],
   "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles through S4-38L7as, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."

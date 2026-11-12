@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/analysis-final-review2.json",
-      "sha256": "5a964f8f9323181799e3737ba2017a66847e55c21181f2581e58e1a39388bdba",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-rootfs-profile-expansion.json",
+      "sha256": "94b10c05a9d28415a9048be003f37f784b37fefa6712ac5803851702ede10517",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/analysis-final-review2b.json",
-      "sha256": "5a964f8f9323181799e3737ba2017a66847e55c21181f2581e58e1a39388bdba",
+      "output": "/private/tmp/s5-21-inventory-movups-rootfs-only-r8-final2.json",
+      "sha256": "94b10c05a9d28415a9048be003f37f784b37fefa6712ac5803851702ede10517",
       "exit_code": 0
     }
   ],
@@ -32,16 +32,16 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6236790,
-      "unclassified": 273610
+      "proven_supported": 6277445,
+      "unclassified": 232955
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6234439,
+      "local_interpreter_profile": 6275094,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
-    "conditional_cpl0_candidate_hits": 113190,
-    "unique_instruction_rows_with_any_conditional_candidate": 113113,
+    "conditional_cpl0_candidate_hits": 113232,
+    "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
     "per_binary_normalized_forms": {
       "bash": 612,
@@ -52,18 +52,22 @@
       "gcc-collect2": 571,
       "gcc-as": 628,
       "gcc-ld.bfd": 553
-    }
+    },
+    "movups_memory_rows": 23912,
+    "movups_local_profile_rows": 23912,
+    "movups_unclassified_rows": 0
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "b808c3c335c134805b720019bbadddbcd51399e7ced765911a4e6a608973cd39",
-    "size_bytes": 990917,
+    "sha256": "9504a76e811bf12e5be6ed748d08b4ddc8e9384c5de34178f7d8c6f8efd199a8",
+    "size_bytes": 997783,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/analysis-final-review2.json <fresh gzip output path>",
-    "repeat_sha256": "b808c3c335c134805b720019bbadddbcd51399e7ced765911a4e6a608973cd39",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-movups-rootfs-only-r8-final1.json /private/tmp/s5-21-evidence-movups-rootfs-only-r8-final1.json.gz",
+    "repeat_sha256": "9504a76e811bf12e5be6ed748d08b4ddc8e9384c5de34178f7d8c6f8efd199a8",
     "repeat_cmp_exit_code": 0
   },
   "limits": [
+    "The two passes use the same accepted rootfs SHA and current source-backed local MOVUPS profile; the machine CPL3 candidate matcher is unchanged.",
     "Guest ELF binaries were extracted from the accepted rootfs and statically disassembled; none were executed.",
     "The profile registry is finite and marked incomplete. Rows outside exact documented profiles remain unclassified, not implementation-wide missing.",
     "Candidate labels are non-exclusive and do not upgrade support; 40 rows have both a conditional candidate label and a supported local-profile classification.",

@@ -151,6 +151,60 @@ class ParseObjdumpTests(unittest.TestCase):
             self.assertEqual(analyzer.local_profile_candidate(row), "S2-15a")
             self.assertEqual(analyzer.exact_profile_candidates(row, analyzer.profile_matcher_maps(__import__("json").loads(analyzer.PROFILE_PATH.read_text()))[0]), [])
 
+    def test_s2_34_movups_local_memory_profile_candidates_are_exact_and_local_only(self) -> None:
+        cases = (
+            ("0f 10 00", "movups xmm0,XMMWORD PTR [rax]", "S2-34.4-MOVUPS-memory-load-RAX"),
+            ("44 0f 10 00", "movups xmm8,XMMWORD PTR [rax]", "S2-34.4-MOVUPS-memory-load-RAX"),
+            ("0f 11 00", "movups XMMWORD PTR [rax],xmm0", "S2-34.5-MOVUPS-memory-store-RAX"),
+            ("44 0f 11 00", "movups XMMWORD PTR [rax],xmm8", "S2-34.5-MOVUPS-memory-store-RAX"),
+            ("0f 10 43 01", "movups xmm0,XMMWORD PTR [rbx+0x1]", "S2-34.6a-MOVUPS-base-displacement"),
+            ("0f 11 0b", "movups XMMWORD PTR [rbx],xmm1", "S2-34.6a-MOVUPS-base-displacement"),
+            ("41 0f 10 00", "movups xmm0,XMMWORD PTR [r8]", "S2-34.6a-MOVUPS-base-displacement"),
+            ("45 0f 11 00", "movups XMMWORD PTR [r8],xmm8", "S2-34.6a-MOVUPS-base-displacement"),
+            ("41 0f 11 40 01", "movups XMMWORD PTR [r8+0x1],xmm0", "S2-34.6a-MOVUPS-base-displacement"),
+            ("0f 10 05 01 00 00 00", "movups xmm0,XMMWORD PTR [rip+0x1]", "S2-34.6b-MOVUPS-RIP-relative"),
+            ("44 0f 11 05 ff ff ff ff", "movups XMMWORD PTR [rip-0x1],xmm8", "S2-34.6b-MOVUPS-RIP-relative"),
+            ("0f 10 44 24 01", "movups xmm0,XMMWORD PTR [rsp+0x1]", "S2-34.6c-MOVUPS-SIB"),
+            ("47 0f 11 4c 24 01", "movups XMMWORD PTR [r12+r12+0x1],xmm9", "S2-34.6c-MOVUPS-SIB"),
+        )
+        exact, _ = analyzer.profile_matcher_maps(__import__("json").loads(analyzer.PROFILE_PATH.read_text()))
+        for encoding, operands, expected in cases:
+            row = analyzer.parse_row(f"  401080: {encoding} {operands}")
+            self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+            self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+        rejected = (
+            ("0f 10 c1", "movups xmm0,xmm1"),  # register form belongs to other S2-34 tasks
+            ("66 0f 10 00", "movupd xmm0,XMMWORD PTR [rax]"),
+            ("f3 0f 10 00", "movss xmm0,DWORD PTR [rax]"),
+            ("67 0f 10 43 01", "movups xmm0,XMMWORD PTR [ebx+0x1]"),
+            ("64 0f 10 00", "movups xmm0,XMMWORD PTR fs:[rax]"),
+            ("f0 0f 10 00", "lock movups xmm0,XMMWORD PTR [rax]"),
+            ("48 0f 10 00", "movups xmm0,XMMWORD PTR [rax]"),
+            ("42 0f 10 43 01", "movups xmm0,XMMWORD PTR [rbx+0x1]"),  # base profile rejects REX.X
+            ("49 0f 10 05 01 00 00 00", "movups xmm0,XMMWORD PTR [rip+0x1]"),  # RIP form rejects REX.B
+            ("48 0f 10 44 24 01", "movups xmm0,XMMWORD PTR [rsp+0x1]"),  # SIB form rejects REX.W
+            ("c5 f8 10 00", "vmovups xmm0,XMMWORD PTR [rax]"),
+            ("62 f1 7c 08 10 00", "vmovups xmm0,XMMWORD PTR [rax]"),
+            ("0f 10 44 24", "movups xmm0,XMMWORD PTR [rsp+0x1]"),  # truncated SIB displacement
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  401100: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_34_movups_registry_is_local_and_scoped_to_five_profiles(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"].startswith("S2-34.4/")]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("no native/JIT/physical or machine-CPL evidence", profile["gate"])
+        self.assertEqual(
+            [family["task"] for family in profile["families"]],
+            ["S2-34.4", "S2-34.5", "S2-34.6a", "S2-34.6b", "S2-34.6c"],
+        )
+
     def test_l7x_as_candidates_are_cpl0_only_and_index_safe(self) -> None:
         cases = (
             ("f0 0f b1 0b", "lock cmpxchg DWORD PTR [rbx],ecx", "S4-38L7y-LOCK-CMPXCHG-dword"),
