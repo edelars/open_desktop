@@ -779,6 +779,65 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("Reject bare MMX", family["gate"])
         self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
 
+    def test_s2_35_6_paddw_matches_all_register_pairs_and_rex_extensions(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.6-PADDW-XMM-register-register"
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f fd {modrm:02x}"
+                operands = f"paddw xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  402a00: {encoding} {operands}")
+                self.assertEqual(row["signature"], "paddw xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+        neutral = analyzer.parse_row("  402b00: 66 40 0f fd c1 paddw xmm0,xmm1")
+        self.assertEqual(analyzer.local_profile_candidate(neutral), expected)
+        rejected = (
+            ("0f fd c1", "paddw mm0,mm1"),
+            ("0f fd c1", "paddw xmm0,xmm1"),
+            ("66 42 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 48 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 4c 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 66 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 f2 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 f3 0f fd c1", "paddw xmm0,xmm1"),
+            ("67 66 0f fd c1", "paddw xmm0,xmm1"),
+            ("44 66 0f fd c1", "paddw xmm0,xmm1"),
+            ("66 0f fd 01", "paddw xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fd 41 00", "paddw xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fd 81 00 00 00 00", "paddw xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fc c1", "paddw xmm0,xmm1"),  # PADDB.
+            ("66 0f fe c1", "paddw xmm0,xmm1"),  # PADDD.
+            ("66 0f dd c1", "paddw xmm0,xmm1"),  # PADDUSW.
+            ("66 0f fd", "paddw xmm0,xmm1"),
+            ("66 0f fd c1 90", "paddw xmm0,xmm1"),
+            ("c5 f9 fd c1", "vpaddw xmm0,xmm1,xmm2"),
+            ("62 f1 75 08 fd c1", "vpaddw xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  402c00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_6_paddw_registry_is_local_only_and_exact(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.6 PADDW XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        family = profile["families"][0]
+        self.assertEqual(family["task"], "S2-35.6")
+        self.assertIn("one optional REX.R/B", family["encoding"])
+        self.assertIn("ModR/M.mod=3", family["gate"])
+        self.assertIn("Reject bare MMX", family["gate"])
+        self.assertIn("CPL3/native/JIT/physical behavior is unsupported", profile["gate"])
+
     def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])
