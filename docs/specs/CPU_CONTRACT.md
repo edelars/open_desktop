@@ -23213,3 +23213,64 @@ RBP = `0xffffffff83a03eb0`; `memory_error`/`page_fault` отсутствуют; 
 `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `MOVSXD r64, r/m32` (`GS REX.W 63 /r`, memory-источник RIP-relative) с префиксом FS/GS в наборе CPL0 (по аналогии с FS/GS-загрузками `MOVZX r, m16` S4-38L7ad и `MOV r32, m32` S4-38L7m); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOVSXD r64, r/m32` (`[64|65] REX.W 63 /r`, memory-источник) с префиксом FS/GS в наборе CPL0 (S4-38L7ak)
+
+Граница S4-38L7aj: `65 4c 63 3d 25 b0 05 03` = `movslq %gs:0x305b025(%rip), %r15` (префикс GS + REX.W + REX.R + `63 /r`; ModRM `0x3d`: mod 00, reg 111 + REX.R = R15, rm 101 = RIP-relative; disp32 `0x0305b025`;
+длина 8), RIP `0xffffffff813c2007`, `Unsupported { opcode: 0x63 }`, retired 1208148606. Срез повторяет схему FS/GS-загрузок `MOVZX r, m16` (S4-38L7ad) и `MOV r32, m32` (S4-38L7m): операция «загрузка со знаковым
+расширением» с источником dword и 64-битным регистром-приёмником. Семантика дана **по памяти SDM** (Vol. 2 «MOVSXD»: dword читается и расширяется знаком до 64 бит, флаги не меняются; Vol. 3 3.4.4: база FS/GS
+прибавляется к эффективному адресу), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::MovsxdFsLoad { dst: RegisterView, src: MemoryOperand }` и `Operation::MovsxdGsLoad { .. }` (форма `MovzxFsLoadW`/`MovzxGsLoadW`; `src.size` = dword, `dst` —
+qword-вид регистра, REX.R выбирает R8–R15). Они выбираются в общей ветке `63`/`0F B6/B7/BE/BF` только при: опкод `63` основной карты, сегментный префикс FS/GS, memory-источник, REX.W (размер операнда qword), нет
+LOCK/REP, нет `66`, нет `67`, REX (если есть) стоит непосредственно перед опкодом. Принимается любая адресация (RIP-relative, база без смещения, disp8, disp32, SIB с индексом и масштабом, абсолютный SIB без базы и
+индекса; REX.B/REX.X достигают базы и индекса). RIP-relative считается от конца всей инструкции (для граничных байтов следующий RIP = адрес + 8). В пост-проверке «сегментный префикс с memory-операндом» операции
+добавлены как принимаемые; в списке `executable` и в списке операций, исполняемых в наборе, они стоят рядом с `MovzxFsLoadW`/`MovzxGsLoadW`. `flag_effects`: нет определённых и неопределённых флагов. Без FS/GS
+`63` по-прежнему даёт `Operation::Extend { signed: true }` (не менялось).
+
+**Что нашлось в существующем коде и что не менялось.** Раньше любая форма `63` с FS/GS и memory-источником декодировалась как `Extend` и отказывалась общей пост-проверкой с `Unsupported { opcode: 0x63 }` (так
+же отказывалось и `65 48 63 …`). Теперь так отказываются только формы вне среза (ниже). Регистровая форма (mod = 11) с FS/GS — политика не менялась: префикс игнорируется, форма декодируется как обычный
+`Extend` и исполняется (`65 48 63 c3` = `movslq %ebx, %rax`, `65 63 c3` = `movl %ebx, %eax`), отдельного отказа нет, память не затрагивается. Беспрефиксные `63`, а также `63` с CS/DS/ES/SS не менялись.
+
+**Отказы без мутации (`Unsupported { opcode: 0x63 }`).** Memory-формы с FS/GS без REX.W (dword-приёмник; с пустым REX, REX.R, REX.B); LOCK, REP, REPNE (до и после сегментного префикса, с REX.W и без);
+`66` (в обоих порядках с сегментным префиксом, с REX.W и без); `67` (в обоих порядках); второй сегментный префикс (`64 65`, `65 64`, `65 65`, `64 64`); REX не непосредственно перед опкодом (`48 65 63 …`,
+`48 65 41 63 …`, `65 48 41 63 …`, `65 48 66 63 …`, `65 48 40 63 …`) — отказ по действующему REX без W (или по `66`), а не по правилу устаревшего REX из S4-38L7o: устаревший REX перед другим REX обнуляет `prefixes.rex` и отказ даёт проверка размера; проверка «устаревший REX» в декодере (`long_decode.rs`, пост-проверка) решает исход только для REX.W последним после ещё одного REX (`65 41 48 63 …`), эта форма пока не покрыта тестом. Усечённый disp32/ModRM — разбор отказывает (ошибка выборки), ничего не исполняется.
+
+**Адрес.** `MemoryOperand::access_address_48_with_segment_base(state, next_rip, state.fs_base | state.gs_base)`, как у `MovFsLoadD`/`MovzxFsLoadW`: база + эффективный адрес до любого обращения к памяти;
+каноничность проверяется для начального адреса и последнего байта операнда (адрес + 3): иначе `#GP(0)` до чтения, регистры не меняются. Для баз RSP/RBP с неканоническим результатом — `#GP(0)`, не `#SS(0)`
+(правило аналога, не менялось).
+
+**Исполнение.** Один `memory.read_integer(address, context, Dword)`; значение расширяется знаком явно (`value as u32 as i32 as i64 as u64`) и записывается в 64-битный регистр; регистры, кроме приёмника, и
+флаги не меняются, в память ничего не пишется. RIP += длина инструкции, retired + 1 только при успехе. При `#GP(0)` и при ошибке чтения (`#PF` и т. п.) состояние не меняется.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у остальных FS/GS-форм. Вне набора — `Unsupported { opcode: 0x63 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (15 новых): `gs_movsxd_boundary_form_loads_r15_sign_extended_and_keeps_flags` (граничные байты; значения `0x80000000`, `0xffffffff`, `0x7fffffff`, `0`, `0x12345678`, `0x87654321`;
+читается ровно 4 байта по адресу база GS + RIP + 8 + disp32, соседние байты не читаются, меняются только R15 и RIP на 8, флаги не меняются), `fs_and_gs_movsxd_use_their_own_base_and_sign_extend`,
+`movsxd_with_a_zero_base_uses_the_effective_address`, `movsxd_every_destination_register_gets_the_sign_extended_dword` (все приёмники R8–R15 через REX.R и RAX–RDI без REX.R, остальные регистры не меняются),
+`gs_movsxd_base_disp8_sib_and_rex_xb_forms` (база без смещения, disp8, база = приёмник, REX.B: R8, R12 через SIB, R13 с disp8 и R8–R15 с disp8, REX.R+REX.X+REX.B с индексом и масштабом, абсолютный SIB с FS),
+`movsxd_non_canonical_address_is_gp0_without_mutation_or_read` (начало, `-1` и `-3` от границы дыры, принятие последнего канонического dword), `gs_movsxd_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical`,
+`movsxd_read_fault_leaves_flags_rip_and_registers_unchanged`, `segment_movsxd_forms_outside_the_slice_are_refused_with_the_exact_opcode` (29 отказов с точным опкодом `0x63`),
+`segment_movsxd_with_a_truncated_displacement_is_refused_without_mutation`, `segment_prefixed_register_movsxd_is_unchanged_and_ignores_the_prefix`,
+`plain_unprefixed_and_cs_ds_es_ss_movsxd_memory_keep_ignoring_the_segment_bases`, `segment_movsxd_stays_unsupported_outside_the_set`, `segment_movsxd_is_refused_by_the_bare_step_entry_point`,
+`segment_movsxd_is_not_reachable_from_cpl3`; в существующем `segment_movzx_byte_and_movsx_memory_forms_stay_refused_*` запись `65 48 63 …` (теперь принимается) заменена записью `65 63 …` без REX.W.
+`paged_probe_profile::fs_gs_movsxd_stays_unsupported_in_the_paged_probe_profile`; декодер: `long_decode::tests::segment_movsxd_decodes_fs_gs_rex_w_memory_forms_only`; фасад:
+`linux_direct::tests::gs_movsxd_after_wrmsr_gs_base_sign_extends_a_dword_into_r15_and_changes_nothing_else` (`WRMSR IA32_GS_BASE`, обычные записи dword `0x80000000` и `0x7fffffff`, граничная форма
+`65 4c 63 3d disp32` кладёт в R15 `0xffffffff80000000`, `65 48 63 1c 25 …` кладёт в RBX `0x7fffffff`, остальные регистры, память и CF от `SUB DL,1` сохранены, retired 12). Покрытие REX: REX.R, REX.X, REX.B и REX.W
+проверены. Результаты: `cpl0_profile_set` 721, `paged_probe_profile` 42, `od-isa --lib` 2268, `od-machine --lib` 892 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
+`native_v2::admission` для новых операций на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** `63` с FS/GS без REX.W (dword- и word-приёмник), LOCK/`66`/`67` с `63`, регистровая форма с проверкой префикса, прочие знаковые загрузки с FS/GS (`0F BE`/`0F BF`/`0F B6`), `PagedCpl0ProbeV1`,
+`interrupt.rs`, `docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ak-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`movslq %gs:0x305b025(%rip), %r15` по `0xffffffff813c2007` проходит (retired 1208148606 → 1208150235, +1629 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff8140948c` (GPA `0x140948c`), байты `0f 01 45 e6 89 df e8 59 00 32 01 48 3b 45 e8 74` — `0f 01 /0` с ModRM `0x45` (mod 01, reg 000 = /0, rm 101 = `[rbp+disp8]`, disp8 `0xe6` = −26),
+то есть `sgdt -0x1a(%rbp)` (SGDT m, длина 4; далее `89 df` = `mov %ebx, %edi`); `Unsupported { opcode: 0x01 }` (1), `set_exit_detail` = `Run(Unsupported { opcode: 1 })`, `exit_kind` = `unsupported`,
+retired = 1208150235. CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x56`; RAX = RBX = RCX = RDX = RSI = RDI = 0, R8 = R10 = `0x890030004087`,
+R9 = R11 = `0xfffffe00`, R12 = `0xffff8880833fb000`, R13 = 0, R14 = 1, R15 = 0, RSP = `0xffffffff83a03e38`, RBP = `0xffffffff83a03e58`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30;
+`set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `SGDT m` (`0F 01 /0`, memory-операнд) в наборе CPL0; не реализован; источник значения GDTR (в состоянии есть `gdtr: Option<Gdtr>`) в этом срезе не исследовался. Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.

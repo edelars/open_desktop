@@ -34875,6 +34875,9 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        // S4-38L7ak: and for the FS/GS-based MOVSXD r64, m32.
+        | Operation::MovsxdFsLoad { .. }
+        | Operation::MovsxdGsLoad { .. }
         // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
@@ -48657,6 +48660,8 @@ fn step_configured(
         | Operation::MovGsLoadD { .. }
         | Operation::MovzxFsLoadW { .. }
         | Operation::MovzxGsLoadW { .. }
+        | Operation::MovsxdFsLoad { .. }
+        | Operation::MovsxdGsLoad { .. }
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
         | Operation::MovFsMemImm { .. }
@@ -53720,6 +53725,21 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
+        }
+        Operation::MovsxdFsLoad { dst, src } => {
+            // S4-38L7ak: base + effective address; a non-canonical first or last byte (address+3)
+            // is #GP(0) before the read. The dword is sign-extended to 64 bits explicitly; flags
+            // are untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value as u32 as i32 as i64 as u64);
+        }
+        Operation::MovsxdGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value as u32 as i32 as i64 as u64);
         }
         Operation::MovFsMemByteImm { dst, immediate } => {
             // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the

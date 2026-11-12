@@ -487,6 +487,19 @@ pub enum Operation {
         dst: RegisterView,
         src: MemoryOperand,
     },
+    /// S4-38L7ak: `64 REX.W 63 /r` (MOVSXD r64, m32 with the FS base), memory source only. A dword
+    /// is read and sign-extended into the 64-bit `dst`; flags are kept. Executed only in the CPL0
+    /// set.
+    MovsxdFsLoad {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
+    /// S4-38L7ak: `65 REX.W 63 /r` (MOVSXD r64, m32 with the GS base), memory source only.
+    /// Executed only in the CPL0 set.
+    MovsxdGsLoad {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
     /// S4-38L7ae: `64 [REX] C6 /0 ib` (MOV m8, imm8 with the FS base), memory operand only. The
     /// immediate byte is stored at base + effective address; flags are kept. Executed only in the
     /// CPL0 set.
@@ -9011,6 +9024,32 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     } else {
                         Operation::MovzxGsLoadW { dst, src }
                     }
+                } else if let (
+                    OpcodeMap::Primary,
+                    Some(segment @ (0x64 | 0x65)),
+                    Operand::Memory(src),
+                    OperandSize::Qword,
+                ) = (opcode.map, prefixes.segment, src, size)
+                    && prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    && prefixes.group1.is_none()
+                    && !prefixes.operand_override
+                    && !prefixes.address_override
+                    && !prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count)
+                {
+                    // S4-38L7ak: `[64|65] REX.W 63 /r` (MOVSXD r64, m32) with a memory source. The
+                    // register form (mod=11), the forms without REX.W (a dword or word destination),
+                    // 0x66, 0x67, LOCK/REP and a stale REX are not matched here: the register form
+                    // stays the plain `Extend` (the segment prefix is ignored, as in S4-38L7ad) and
+                    // the memory forms are refused by the segment gate below with 0x63. A second
+                    // segment prefix is already refused by the shared duplicate check.
+                    if segment == 0x64 {
+                        Operation::MovsxdFsLoad { dst, src }
+                    } else {
+                        Operation::MovsxdGsLoad { dst, src }
+                    }
                 } else {
                     Operation::Extend {
                         dst,
@@ -9425,6 +9464,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovGsLoadD { .. } => false,
                 Operation::MovzxFsLoadW { .. } => false,
                 Operation::MovzxGsLoadW { .. } => false,
+                Operation::MovsxdFsLoad { .. } => false,
+                Operation::MovsxdGsLoad { .. } => false,
                 Operation::SubFsMem { .. } => false,
                 Operation::SubGsMem { .. } => false,
                 Operation::CmpFsMem { .. } => false,
@@ -24054,6 +24095,70 @@ mod tests {
                 matches!(
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xb7
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_movsxd_decodes_fs_gs_rex_w_memory_forms_only() {
+        // S4-38L7ak: `[64|65] REX.W 63 /r` with a memory source. The S4-38L7aj diagnostic
+        // boundary: `movslq %gs:0x305b025(%rip), %r15`, 8 bytes.
+        let mut memory = Memory::new(&[0x65, 0x4c, 0x63, 0x3d, 0x25, 0xb0, 0x05, 0x03]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert_eq!(decoded.flag_effects().defined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovsxdGsLoad { dst, src }
+                if dst == RegisterView::low(Register::R15, OperandSize::Qword)
+                    && src.base == AddressBase::NextRip
+                    && src.displacement == 0x0305_b025
+                    && src.size == OperandSize::Dword
+        ));
+        let mut memory = Memory::new(&[0x64, 0x48, 0x63, 0x40, 0x08]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovsxdFsLoad { dst, src }
+                if dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+                    && src.base == AddressBase::Register(Register::Rax)
+                    && src.displacement == 8
+        ));
+        // The register form, the plain form and CS/DS/ES/SS forms keep decoding as `Extend`.
+        for bytes in [
+            &[0x48, 0x63, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+            &[0x65, 0x48, 0x63, 0xc3][..],
+            &[0x65, 0x63, 0xc3][..],
+            &[0x2e, 0x48, 0x63, 0x03][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::Extend { signed: true, .. }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // Without REX.W, 0x66, 0x67, LOCK/REP, a second segment prefix and a stale REX are
+        // refused with 0x63.
+        for bytes in [
+            &[0x65, 0x63, 0x03][..],
+            &[0x65, 0x44, 0x63, 0x03][..],
+            &[0xf0, 0x65, 0x48, 0x63, 0x03][..],
+            &[0xf3, 0x65, 0x48, 0x63, 0x03][..],
+            &[0x65, 0x66, 0x48, 0x63, 0x03][..],
+            &[0x65, 0x67, 0x48, 0x63, 0x03][..],
+            &[0x64, 0x65, 0x48, 0x63, 0x03][..],
+            &[0x48, 0x65, 0x63, 0x03][..],
+            &[0x65, 0x48, 0x41, 0x63, 0x03][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0x63
                 ),
                 "{bytes:02x?}"
             );
