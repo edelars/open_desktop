@@ -500,6 +500,21 @@ pub enum Operation {
         dst: MemoryOperand,
         immediate: u8,
     },
+    /// S4-38L7aj: `64 [REX] C7 /0 id` (MOV m32, imm32 with the FS base; REX.W: MOV m64, imm32
+    /// sign-extended), memory operand only. `immediate` is already the full-width value (the
+    /// zero-extended imm32 for a dword destination, the sign-extended imm32 for a qword one);
+    /// exactly `dst.size` bytes are stored at base + effective address; flags are kept. Executed
+    /// only in the CPL0 set.
+    MovFsMemImm {
+        dst: MemoryOperand,
+        immediate: u64,
+    },
+    /// S4-38L7aj: `65 [REX] C7 /0 id` (MOV m32/m64, imm32 with the GS base), memory operand only.
+    /// Executed only in the CPL0 set.
+    MovGsMemImm {
+        dst: MemoryOperand,
+        immediate: u64,
+    },
     /// S4-38L7o: `64 [REX] F6 /0 ib` (TEST m8, imm8 with the FS base), memory operand only. The
     /// byte is read, ANDed with the immediate and only the flags change. Executed only in the CPL0
     /// set.
@@ -8809,15 +8824,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     raw
                 };
-                if let (0xc6, Some(0x64 | 0x65), Operand::Memory(dst)) =
-                    (byte, prefixes.segment, dst)
-                {
-                    // S4-38L7ae: `[64|65] [REX] C6 /0 ib` (MOV m8, imm8 with the FS/GS base),
-                    // memory operand only. LOCK/REP, 0x66 and 0x67 stay refused; a REX byte that
-                    // is not immediately before the opcode is refused (ambiguous spelling, as in
-                    // S4-38L7o); a REX directly before it is accepted (REX.W/R do not change the
-                    // byte store, REX.B/X reach the base/index). The register form (mod = 11) and
-                    // `C7` with a segment prefix are not touched here.
+                if let (Some(0x64 | 0x65), Operand::Memory(dst)) = (prefixes.segment, dst) {
+                    // S4-38L7ae/S4-38L7aj: `[64|65] [REX] C6 /0 ib` (MOV m8, imm8) and
+                    // `[64|65] [REX] C7 /0 id` (MOV m32, imm32; REX.W: MOV m64, imm32
+                    // sign-extended) with the FS/GS base, memory operand only. LOCK/REP, 0x66 and
+                    // 0x67 stay refused; a REX byte that is not immediately before the opcode is
+                    // refused (ambiguous spelling, as in S4-38L7o); a REX directly before it is
+                    // accepted (for C6 REX.W/R do not change the byte store; for C7 REX.W selects
+                    // the qword store; REX.B/X reach the base/index). The register form (mod = 11)
+                    // is not touched here: the segment prefix is irrelevant for it and it keeps
+                    // decoding as the plain `MovImmediate`.
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
@@ -8829,16 +8845,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     {
                         return Err(self.unsupported(opcode));
                     }
-                    if prefixes.segment == Some(0x64) {
-                        Operation::MovFsMemByteImm {
+                    match (byte, prefixes.segment) {
+                        (0xc6, Some(0x64)) => Operation::MovFsMemByteImm {
                             dst,
                             immediate: value as u8,
-                        }
-                    } else {
-                        Operation::MovGsMemByteImm {
+                        },
+                        (0xc6, _) => Operation::MovGsMemByteImm {
                             dst,
                             immediate: value as u8,
-                        }
+                        },
+                        (_, Some(0x64)) => Operation::MovFsMemImm {
+                            dst,
+                            immediate: value,
+                        },
+                        _ => Operation::MovGsMemImm {
+                            dst,
+                            immediate: value,
+                        },
                     }
                 } else {
                     Operation::MovImmediate { dst, value }
@@ -9387,6 +9410,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovImmediate { dst, .. } => matches!(dst, Operand::Memory(_)),
                 Operation::MovFsMemByteImm { .. } => false,
                 Operation::MovGsMemByteImm { .. } => false,
+                Operation::MovFsMemImm { .. } => false,
+                Operation::MovGsMemImm { .. } => false,
                 Operation::Mov { dst, src } => {
                     matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_))
                 }
@@ -23839,7 +23864,8 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
-        // LOCK/REP, 0x66, 0x67, a second segment prefix, a stale REX, /1 and `C7` are refused.
+        // LOCK/REP, 0x66, 0x67, a second segment prefix, a stale REX and /1 are refused (`C7` with
+        // a segment prefix is S4-38L7aj: only its 0x66 form is listed here).
         for (bytes, byte) in [
             (&[0xf0u8, 0x65, 0xc6, 0x03, 0x01][..], 0xc6u8),
             (&[0xf3, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
@@ -23850,14 +23876,94 @@ mod tests {
             (&[0x41, 0x65, 0xc6, 0x03, 0x01][..], 0xc6),
             (&[0x65, 0x41, 0x48, 0xc6, 0x03, 0x01][..], 0xc6),
             (&[0x65, 0xc6, 0x0b, 0x01][..], 0xc6),
-            (&[0x65, 0xc7, 0x03, 0x01, 0, 0, 0][..], 0xc7),
-            (&[0x64, 0x48, 0xc7, 0x03, 0x01, 0, 0, 0][..], 0xc7),
+            (&[0x65, 0x66, 0xc7, 0x03, 0x01, 0][..], 0xc7),
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
                 matches!(
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == byte
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_mov_imm32_decodes_fs_gs_memory_forms_only() {
+        // S4-38L7aj: `[64|65] [REX] C7 /0 id` with a memory operand. The S4-38L7ai diagnostic
+        // boundary: `movl $0xec, %gs:0x4cf3ca(%rip)`, 11 bytes.
+        let mut memory = Memory::new(&[
+            0x65, 0xc7, 0x05, 0xca, 0xf3, 0x4c, 0x00, 0xec, 0x00, 0x00, 0x00,
+        ]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 11);
+        // MOV changes no flag.
+        assert_eq!(decoded.flag_effects().defined, 0);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovGsMemImm { dst, immediate: 0xec }
+                if dst.base == AddressBase::NextRip
+                    && dst.displacement == 0x004c_f3ca
+                    && dst.size == OperandSize::Dword
+        ));
+        // REX.W: a qword destination with the sign-extended immediate (FS, negative imm32).
+        let mut memory = Memory::new(&[
+            0x64, 0x48, 0xc7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
+        ]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovFsMemImm { dst, immediate: 0xffff_ffff_ffff_fffe }
+                if dst.size == OperandSize::Qword && dst.displacement == 0x1234
+        ));
+        // A dword store keeps the immediate zero-extended (high bit set stays a dword value).
+        let mut memory = Memory::new(&[0x65, 0xc7, 0x03, 0x00, 0x00, 0x00, 0x80]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovGsMemImm { dst, immediate: 0x8000_0000 }
+                if dst.size == OperandSize::Dword
+        ));
+        // REX.B base r8: `movl $1, %gs:0x8(%r8)`.
+        let mut memory = Memory::new(&[0x65, 0x41, 0xc7, 0x40, 0x08, 0x01, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::MovGsMemImm { dst, immediate: 1 }
+                if dst.base == AddressBase::Register(Register::R8) && dst.displacement == 8
+        ));
+        // The register form, the plain form and CS/DS/ES/SS forms keep decoding as the plain
+        // `MovImmediate`.
+        for bytes in [
+            &[0xc7, 0x05, 0x34, 0x12, 0x00, 0x00, 0x01, 0, 0, 0][..],
+            &[0x65, 0xc7, 0xc3, 0x01, 0, 0, 0][..],
+            &[0x64, 0x48, 0xc7, 0xc3, 0x01, 0, 0, 0][..],
+            &[0x2e, 0xc7, 0x03, 0x01, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode().unwrap().operation,
+                    Operation::MovImmediate { .. }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // LOCK/REP, 0x66, 0x67, a second segment prefix, a stale REX and /1 are refused.
+        for bytes in [
+            &[0xf0u8, 0x65, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0xf3, 0x65, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x66, 0x65, 0xc7, 0x03, 1, 0][..],
+            &[0x65, 0x66, 0x48, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x65, 0x67, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x64, 0x65, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x41, 0x65, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x65, 0x41, 0x48, 0xc7, 0x03, 1, 0, 0, 0][..],
+            &[0x65, 0xc7, 0x0b, 1, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xc7
                 ),
                 "{bytes:02x?}"
             );
@@ -25541,9 +25647,10 @@ mod tests {
             assert_eq!(memory.fetched.len(), bytes.len());
         }
         for bytes in [
-            // S4-38L7ae decodes `[64|65] C6 /0 ib`; `C7` with a segment prefix stays refused.
-            &[0x64, 0xc7, 0x03, 1, 0, 0, 0][..],
-            &[0x65, 0x48, 0xc7, 0x03, 1, 2, 3, 4],
+            // S4-38L7ae/S4-38L7aj decode `[64|65] C6 /0 ib` and `[64|65] [REX] C7 /0 id`; the
+            // 0x66 and stale-REX forms with a segment prefix stay refused.
+            &[0x64, 0x66, 0xc7, 0x03, 1, 0][..],
+            &[0x48, 0x65, 0xc7, 0x03, 1, 2, 3, 4],
             &[0x64, 0x0f, 0xbe, 0x03],
         ] {
             let mut memory = Memory::new(bytes);

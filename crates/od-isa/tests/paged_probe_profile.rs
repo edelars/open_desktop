@@ -984,6 +984,39 @@ fn fs_gs_mov_byte_immediate_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn fs_gs_mov_imm32_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7aj belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[
+            0x65, 0xc7, 0x05, 0xca, 0xf3, 0x4c, 0x00, 0xec, 0x00, 0x00, 0x00,
+        ][..],
+        &[
+            0x64, 0x48, 0xc7, 0x05, 0x34, 0x12, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
+        ][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xc7 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn fs_gs_test_dword_qword_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7ac belongs to the CPL0 set only; this profile refuses the forms without mutation.
     for bytes in [

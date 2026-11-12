@@ -34878,6 +34878,8 @@ fn step_configured(
         // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
+        | Operation::MovFsMemImm { .. }
+        | Operation::MovGsMemImm { .. }
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
@@ -48657,6 +48659,8 @@ fn step_configured(
         | Operation::MovzxGsLoadW { .. }
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
+        | Operation::MovFsMemImm { .. }
+        | Operation::MovGsMemImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
         | Operation::CmpFsMem { .. }
@@ -53730,6 +53734,21 @@ fn transfer(
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             memory.write_integer(address, context, dst.size, u64::from(immediate))?;
+        }
+        Operation::MovFsMemImm { dst, immediate } => {
+            // S4-38L7aj: base + effective address (RIP-relative is relative to the end of the
+            // instruction, imm32 included, as `next_rip` is). A non-canonical first or last byte
+            // is #GP(0) before the write. Exactly `dst.size` bytes (dword or qword) are stored;
+            // `immediate` is already zero-extended (dword) or sign-extended (qword). Flags and
+            // registers are untouched; the destination is not read.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            memory.write_integer(address, context, dst.size, immediate)?;
+        }
+        Operation::MovGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            memory.write_integer(address, context, dst.size, immediate)?;
         }
         Operation::SubFsMem { dst, src } => {
             // S4-38L7j: base + effective address; non-canonical (start or last byte) is #GP(0)
