@@ -1,6 +1,6 @@
 # Методика стенда Linux (этап 5)
 
-Статус: **Method gate готов к независимому ревью; Numeric calibration gate blocked; полный S5-01 blocked.** Срез задаёт формат и критерии будущих доказательств, но не сообщает о принятой загрузке или гостевом сценарии. Число повторов S5-15 и длительность S5-16 не назначены; см. [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing).
+Статус: **Method gate принят как отдельный subgate после независимого ревью (2026-11-12); Numeric calibration gate blocked; полный S5-01 blocked.** Срез задаёт формат и критерии будущих доказательств, но не сообщает о принятой загрузке или гостевом сценарии. Число повторов S5-15 и длительность S5-16 не назначены; см. [ISSUE-076](../KNOWN_ISSUES.md#issue-076-s5-01-run-duration-inputs-missing).
 
 Связанные документы: [план этапа 5](../plans/STAGE_5.md), [методика машины](MACHINE.md), [инвентаризация стенда](STAND.md), [базовая методика измерений](BENCHMARKS.md), [отчёт этапа 5](../reports/STAGE_5_REPORT.md).
 
@@ -10,9 +10,9 @@
 
 ### Два gates S5-01 и порядок работ
 
-**Method gate** содержит проверяемую evidence schema, pass/fail правила, workload/profile определения, критерии расхождений, формулы и порядок калибровки. Он готов к независимому ревью, но пока не принят. Его отдельное одобрение разрешает использовать методику для подготовки и одиночных функциональных проверок, не меняя checkbox или overall status S5-01.
+**Method gate** содержит проверяемую evidence schema, pass/fail правила, workload/profile определения, критерии расхождений, формулы и порядок калибровки. Он принят после независимого ревью как отдельный subgate; это разрешает использовать методику для подготовки и функциональных проверок только при выполненных независимых prerequisites. Одобрение не меняет checkbox или overall status S5-01.
 
-Для ревью Method gate проверяет, что: шесть уровней evidence имеют однозначные pass criteria; один run record задаёт все идентификаторы, конфигурацию, markers, observations, hashes, stop и артефакты; каждый workload имеет именованный профиль/входы; измерения `I_boot`, `W_boot`, `I_cycle`, `W_cycle` имеют определённые границы начала/конца и host/build fingerprint; формулы используют budgets, объявленные до калибровки; отсутствующее поле или prerequisite даёт `blocked`/`not_run`, а не pass. Этого достаточно для отдельных функциональных проверок и подготовки, но не для числового acceptance.
+Принятый Method gate фиксирует, что: шесть уровней evidence имеют однозначные pass criteria; один run record задаёт все идентификаторы, конфигурацию, markers, observations, hashes, stop и артефакты; каждый workload имеет именованный профиль/входы; измерения `I_boot`, `W_boot`, `I_cycle`, `W_cycle` имеют определённые границы начала/конца и host/build fingerprint; формулы используют budgets, объявленные до калибровки; отсутствующее поле или prerequisite даёт `blocked`/`not_run`, а не pass. Этого достаточно для отдельных функциональных проверок и подготовки, но не для числового acceptance.
 
 **Numeric calibration gate** остаётся blocked до появления всех фактических входов: `I_boot`/`W_boot` из уже принятого S5-08 calibration boot path; `I_cycle`/`W_cycle` из уже принятого повторяемого C+D+G cycle после S5-10/11/14; и заранее заданных, обоснованных `B_series`/`B_soak`. Gate вычисляет `N`/`D_soak_estimate`; только его принятие вместе с Method gate позволяет принять полный S5-01.
 
@@ -56,7 +56,7 @@ S5-06/07 могут готовить guest сценарии и evidence orchestr
 
 `linux-direct` уже пишет JSON в `--out` и stdout. Успешная загрузка возвращает top-level `status: "loaded"`; ранний отказ — `status: "refused"` с `error.code`, `error.stage`, `error.detail`. Запуск гостя дополнительно отражается в `guest_started` и `retired`; `--run` добавляет `stop`. Входные hashes находятся в `inputs.vmlinuz`, `inputs.initramfs`, `inputs.acpi_blob`; machine-side readback kernel/initramfs — в `memory_sha256`. `ram_mib`, `cmdline`, `acpi.manifest_hash`, `e820`, `entry` и `stop` являются источником machine observations. `status: loaded` означает успешную загрузку образа в board, но не успешное завершение guest workload.
 
-Текущий `od-runner --compare-results` принимает fixture `--case` и два `RunResult`; raw JSON `linux-direct` не является таким fixture result. Этап `S5-07` должен расширить/связать существующий путь сравнения для канонических Stage 5 observations, сохранив прежнюю fixture-семантику. Не запускать raw `linux-direct` JSON через текущую fixture-команду и не утверждать, что сравнение уже реализовано.
+Подготовленный Stage 5 path принимает два `series.json` через `od-runner --compare-results <series-a> <series-b> --linux-stage5 --json`; существующий fixture path `od-runner --compare-results <result-a> <result-b> --case <fixture> --json` сохранён. Raw JSON `linux-direct` не является непосредственным input ни для Stage 5 comparator, ни для fixture comparator: Stage 5 comparator читает run manifests и сверяет ссылки/хеши исходных JSON и runner-recorded COM1 bytes. Его stop record содержит байты COM1 только из `run_boot` для данного stop; это stop-scoped capture, а не полный независимый UART transcript, который требуется на scenario level. Результат `matches: true` означает лишь совпадение сравниваемых series evidence; сам по себе он не доказывает pass guest scenario или acceptance. Для pass всё ещё нужны scenario-specific expected markers/assertions, корректные machine observations, полный UART transcript и guest/host file evidence по критериям раздела 2.
 
 ## 4. Расхождения, pass/fail и целостность
 
@@ -87,6 +87,22 @@ T_C5_projection_at_R = I_C5_historical / R
 Число C5 — **историческая** baseline checkpoint, не текущий frontier. Stage 4 позднее достиг C7 на настоящем ядре; затем диагностический S4-38L7w прогон (DiagnosticV1, не засчитывается) достиг retired 1,185,015,387 и остановился на `IN AL, DX` ([план S4-38L7w](../plans/STAGE_4.md) и [raw evidence](../reports/data/stage4/s4-38l7w-diagnostic-run.json)). Это diagnostic progress, не подтверждённая загрузка Linux userspace. Отдельный release sample в Stage 4 сообщает около 2.8M instructions/s на 1.1B run; это другая сборка/измерение и его нельзя смешивать с S4-13 user-CPU rate или использовать как замену измерению целевого workload. C5 projection выше — только user-CPU estimate на historical checkpoint, не измеренный wall time и не время завершённой загрузки. Для масштаба уменьшенного diagnostic profile checkpoint 200,000,000 retired instructions соответствует 554 user-CPU-s (9 min 14 s). Он проверяет только bounded diagnostic evidence; **не** удовлетворяет S5-15, не подтверждает полный boot и не является soak для S5-16.
 
 Число одной завершённой загрузки не выводится из historical C5 checkpoint или более позднего diagnostic run. После подтверждения и принятия целевого S5-08 guest path выполнить отдельный calibration run: измерить `I_boot` до заранее заданного гостевого success marker и wall time `W_boot` на зафиксированном host/build. Этот run — калибровочный вход, а не одна из повторных загрузок S5-15. `I_boot / R` даёт лишь user-CPU estimate при сопоставимой скорости; runner обязан отдельно записать фактический wall elapsed.
+
+### Обязательная запись calibration run (Method gate)
+
+Каждая будущая boot/cycle calibration записывает один self-contained record со следующими полями и проверками. Record может быть заполнен до измерения идентификаторами и профилем; числовые результаты остаются отсутствующими до фактического run.
+
+| Группа | Обязательные данные и правило |
+|---|---|
+| Идентичность и метод | `calibration_id`, версия/revision этой методики, gate (`boot` или `cycle`), имя и hash workload/profile; для cycle — точный порядок C, D, G и scenario IDs. |
+| Среда и inputs | Host model/OS/build/architecture/CPU, runner/toolchain revision и dirty state; SHA-256 каждого kernel/initramfs/rootfs/disk/script/fixture artifact, board/memory profile, command line и полный configuration fingerprint. Все fingerprints относятся к тому же run, что и измерения. |
+| Границы и время | Именованные `start_event`/`end_event`, монотонные `start_ns`/`end_ns`, clock source и единицы; `W_boot`/`W_cycle` вычисляются из этих границ. Та же самая операция и интервал должны покрывать instruction-counter delta: `I_boot`/`I_cycle` нельзя брать из другого phase/run или смешивать с wall time по иным границам. |
+| Boot operation | Указать фазы до/после boot, которые входят в профиль. Границы должны повторять ту же полную boot operation, которую позже проверяет S5-15: от заранее названного operation-start event до принятого S5-08 guest success marker. Любые исключённые preparation/teardown phases перечислить заранее. |
+| Mixed C+D+G cycle | Зафиксировать исходное состояние/reset, C→D→G order, input/profile hashes, completion marker каждого component run и ссылки на их run records; указать shutdown/restart/kill boundaries. `I_cycle` — сумма только валидных per-run instruction deltas для объявленного цикла через resets; отсутствующий post-kill counter остаётся unavailable и не восстанавливается догадкой. `W_cycle` покрывает объявленные cycle boundaries, включая указанные restart/shutdown интервалы. |
+| Budgets | `B_series` и `B_soak` задать с единицами, rationale, доступным временем стенда и ссылкой на решение/evidence до начала соответствующей calibration. Записывать budget fingerprint/revision и время его фиксации; не выбирать budget под уже увиденный результат. |
+| Проверка полноты | Проверить наличие всех обязательных идентификаторов, hashes, событий, границ, inputs и счётчиков; `end_ns > start_ns`, положительные wall durations, сопоставимость host/build/profile и целостность component run references. Отсутствующий/несопоставимый input означает Numeric `blocked`; не заполнять его inferred value. Если формула даёт `N < 2`, не округлять до двух и не назначать меньший произвольный N — Numeric остаётся blocked до обоснованного изменения budget или measurement profile с новым record. |
+
+Эта схема определяет форму будущего measurement, а не сообщает значения, принятый calibration result или guest pass. Функциональные повторы S5-08/S5-11 сохраняют собственные acceptance criteria; они не становятся автоматически калибровочным record, если не используют заранее утверждённый метод и полный набор полей выше.
 
 ### S5-15: число повторов
 
