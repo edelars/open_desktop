@@ -373,6 +373,30 @@
     "source": [
       "docs/plans/STAGE_2.md:5558-5635"
     ]
+  },
+  {
+    "task": "S2-35.1 PXOR XMM register-only",
+    "evidence_scope": "local_interpreter_profile",
+    "status": "accepted_local_bounded_profile_parent_open",
+    "mode": "Long64",
+    "cpl": null,
+    "gate": "Assume SSE2 available, CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; exact mandatory 66, at most one immediately following REX.R/B, ModR/M.mod=3 and no data-memory callback; no CPUID, no native/JIT/physical or machine-CPL evidence.",
+    "families": [
+      {
+        "task": "S2-35.1",
+        "encoding": "66 [one optional REX.R/B] 0F EF /r; ModR/M.mod=3; ModR/M.reg=XMM destination and r/m=XMM source (XMM0-XMM15)",
+        "gate": "Mandatory 66 selects XMM/SSE2; bare 0F EF is MMX. Reject memory ModR/M, extra/duplicate or reordered prefixes, REX.W/X, VEX/EVEX.",
+        "outcome": "local interpreter XOR of 128 raw XMM bits; unrelated CPU state preserved; no memory callback",
+        "source": [
+          "docs/specs/CPU_CONTRACT.md:11730-11751",
+          "docs/reports/STAGE_2_REPORT.md:14513-14538"
+        ]
+      }
+    ],
+    "source": [
+      "docs/specs/CPU_CONTRACT.md:11730-11751",
+      "docs/reports/STAGE_2_REPORT.md:14513-14538"
+    ]
   }
   ],
   "explicit_profile_exclusions": [],

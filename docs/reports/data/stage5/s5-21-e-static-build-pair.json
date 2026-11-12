@@ -33,23 +33,46 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-movups-r8-final1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-movups-r8-final2.json",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-pxor-e-final1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output /private/tmp/s5-21-inventory-pxor-e-final2.json",
     "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-e-static-profile-expansion.json",
-    "compact_inventory_sha256": "ac1e625d12f48d7e8a815bd19ae683210b581a37766567e790a5ac6ff4a09c56",
+    "compact_inventory_sha256": "e5e829878d2c58e22b7fca3a5ba9b6e25ab0f390d80fbdb1654630d0433add74",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
-    "e_static_unclassified_rows": 62,
+    "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "71ce247d6614982be84b3acef242fb84e0d3398a7511e72d7a627f9274378d9d",
+    "raw_inventory_sha256": "e70ab07649fc6eac0e29dbf6b558eb10383e754301bf1620e4eb4fa3959b86eb",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
     "runtime_generated_code_frequency": "not_inferred",
     "movups_local_profile_rows": 23912,
     "movups_unclassified_rows": 0,
-    "registry_complete": false
+    "registry_complete": false,
+    "pxor_xmm_xmm_rows": 3306,
+    "pxor_xmm_xmm_local_profile_rows": 3306,
+    "pxor_xmm_xmm_normalized_forms": 2,
+    "pxor_xmm_memory_unclassified_rows": 5,
+    "pxor_xmm_memory_unclassified_forms": 2,
+    "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
+    "classified_normalized_forms": 1009,
+    "unclassified_normalized_forms": 260,
+    "classification_frequencies": {
+      "proven_supported": 6281034,
+      "unclassified": 229711
+    },
+    "evidence_scope_frequencies": {
+      "local_interpreter_profile": 6278683,
+      "machine_cpl3_profile": 2351
+    },
+    "conditional_cpl0_candidate_hits": 113292,
+    "unique_instruction_rows_with_any_conditional_candidate": 113215,
+    "conditional_candidate_supported_overlap_rows": 40,
+    "normalized_instruction_forms": 1269,
+    "compact_repeat_sha256": "e5e829878d2c58e22b7fca3a5ba9b6e25ab0f390d80fbdb1654630d0433add74",
+    "compact_repeat_cmp_exit_code": 0,
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-pxor-e-final1.json /private/tmp/s5-21-inventory-pxor-e-evidence1.json.gz"
   },
   "unchanged_rootfs_binary_inputs": true
 }

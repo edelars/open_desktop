@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/isa-tool-cache --output <fresh output path>",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --output <fresh output path>",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -14,12 +14,12 @@
   "runs": [
     {
       "output": "work/stage5/s5-21/s5-21-isa-inventory-rootfs-profile-expansion.json",
-      "sha256": "94b10c05a9d28415a9048be003f37f784b37fefa6712ac5803851702ede10517",
+      "sha256": "b3d765a24b7e433abe6289027a97895bb31a092f322077488788d7f11b86a2de",
       "exit_code": 0
     },
     {
-      "output": "/private/tmp/s5-21-inventory-movups-rootfs-only-r8-final2.json",
-      "sha256": "94b10c05a9d28415a9048be003f37f784b37fefa6712ac5803851702ede10517",
+      "output": "/private/tmp/s5-21-inventory-pxor-rootfs-final2.json",
+      "sha256": "b3d765a24b7e433abe6289027a97895bb31a092f322077488788d7f11b86a2de",
       "exit_code": 0
     }
   ],
@@ -32,11 +32,11 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6277445,
-      "unclassified": 232955
+      "proven_supported": 6280750,
+      "unclassified": 229650
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6275094,
+      "local_interpreter_profile": 6278399,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
@@ -46,31 +46,39 @@
     "per_binary_normalized_forms": {
       "bash": 612,
       "dash": 392,
-      "tar": 543,
-      "gcc-driver": 653,
+      "gcc-as": 628,
       "gcc-cc1": 1181,
       "gcc-collect2": 571,
-      "gcc-as": 628,
-      "gcc-ld.bfd": 553
+      "gcc-driver": 653,
+      "gcc-ld-bfd": 553,
+      "tar": 543
     },
     "movups_memory_rows": 23912,
     "movups_local_profile_rows": 23912,
-    "movups_unclassified_rows": 0
+    "movups_unclassified_rows": 0,
+    "pxor_xmm_xmm_rows": 3305,
+    "pxor_xmm_xmm_local_profile_rows": 3305,
+    "pxor_xmm_xmm_normalized_forms": 2,
+    "pxor_xmm_memory_unclassified_rows": 5,
+    "pxor_xmm_memory_unclassified_forms": 2,
+    "classified_normalized_forms": 1009,
+    "unclassified_normalized_forms": 260
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "9504a76e811bf12e5be6ed748d08b4ddc8e9384c5de34178f7d8c6f8efd199a8",
-    "size_bytes": 997783,
+    "sha256": "5aa05907e72302c3e663834fd638f04ebe439ea966fe1883be79bf273388ede1",
+    "size_bytes": 998775,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-movups-rootfs-only-r8-final1.json /private/tmp/s5-21-evidence-movups-rootfs-only-r8-final1.json.gz",
-    "repeat_sha256": "9504a76e811bf12e5be6ed748d08b4ddc8e9384c5de34178f7d8c6f8efd199a8",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py /private/tmp/s5-21-inventory-pxor-rootfs-final1.json /private/tmp/s5-21-inventory-pxor-rootfs-evidence1.json.gz",
+    "repeat_sha256": "5aa05907e72302c3e663834fd638f04ebe439ea966fe1883be79bf273388ede1",
     "repeat_cmp_exit_code": 0
   },
   "limits": [
-    "The two passes use the same accepted rootfs SHA and current source-backed local MOVUPS profile; the machine CPL3 candidate matcher is unchanged.",
     "Guest ELF binaries were extracted from the accepted rootfs and statically disassembled; none were executed.",
     "The profile registry is finite and marked incomplete. Rows outside exact documented profiles remain unclassified, not implementation-wide missing.",
     "Candidate labels are non-exclusive and do not upgrade support; 40 rows have both a conditional candidate label and a supported local-profile classification.",
-    "Scenario E JIT/SMC machine-code output is runtime-generated and is not inferred from these static executables."
+    "Scenario E JIT/SMC machine-code output is runtime-generated and is not inferred from these static executables.",
+    "S2-35.1 matches only the exact local interpreter PXOR XMM register-register profile: 3,305 rows across two normalized forms; five observed PXOR XMM-memory rows remain unclassified. This does not establish machine CPL3/native/JIT support.",
+    "The two raw and compact outputs were produced from the same accepted rootfs and frozen analyzer/registry; only output paths differ. No target ELF was executed."
   ]
 }

@@ -205,6 +205,58 @@ class ParseObjdumpTests(unittest.TestCase):
             ["S2-34.4", "S2-34.5", "S2-34.6a", "S2-34.6b", "S2-34.6c"],
         )
 
+    def test_s2_35_1_pxor_matches_only_exact_local_xmm_register_forms(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | ((destination >> 3) << 2) | (source >> 3)
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                prefixes = "66" if rex == 0x40 else f"66 {rex:02x}"
+                encoding = f"{prefixes} 0f ef {modrm:02x}"
+                operands = f"pxor xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  401200: {encoding} {operands}")
+                self.assertEqual(row["signature"], "pxor xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), "S2-35.1-PXOR-XMM-register-register", encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+        # The contract permits an explicit neutral REX byte as the optional REX form.
+        row = analyzer.parse_row("  401300: 66 40 0f ef c1 pxor xmm0,xmm1")
+        self.assertEqual(analyzer.local_profile_candidate(row), "S2-35.1-PXOR-XMM-register-register")
+
+        rejected = (
+            ("0f ef c1", "pxor mm0,mm1"),  # MMX encoding lacks mandatory 66.
+            ("66 0f ef 01", "pxor QWORD PTR [rcx],mm0"),  # memory ModR/M.
+            ("66 48 0f ef c1", "pxor xmm0,xmm1"),  # REX.W.
+            ("66 42 0f ef c1", "pxor xmm0,xmm1"),  # REX.X.
+            ("66 f2 0f ef c1", "pxor xmm0,xmm1"),
+            ("66 f3 0f ef c1", "pxor xmm0,xmm1"),
+            ("67 66 0f ef c1", "pxor xmm0,xmm1"),
+            ("f0 66 0f ef c1", "lock pxor xmm0,xmm1"),
+            ("64 66 0f ef c1", "pxor xmm0,xmm1"),
+            ("66 66 0f ef c1", "pxor xmm0,xmm1"),
+            ("66 41 44 0f ef c1", "pxor xmm0,xmm1"),
+            ("41 66 0f ef c1", "pxor xmm0,xmm1"),  # REX must follow 66.
+            ("66 0f ef c1 90", "pxor xmm0,xmm1"),  # no extra trailing byte.
+            ("66 0f ef", "pxor xmm0,xmm1"),  # truncated ModR/M.
+            ("c5 f9 ef c1", "vpxor xmm0,xmm0,xmm1"),
+            ("62 f1 7d 08 ef c1", "vpxor xmm0,xmm0,xmm1"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  401400: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_1_registry_is_local_interpreter_only(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.1 PXOR XMM register-only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("no native/JIT/physical or machine-CPL evidence", profile["gate"])
+        self.assertEqual(len(profile["families"]), 1)
+        self.assertTrue(profile["families"][0]["encoding"].startswith("66 [one optional REX.R/B] 0F EF /r; ModR/M.mod=3"))
+
     def test_l7x_as_candidates_are_cpl0_only_and_index_safe(self) -> None:
         cases = (
             ("f0 0f b1 0b", "lock cmpxchg DWORD PTR [rbx],ecx", "S4-38L7y-LOCK-CMPXCHG-dword"),

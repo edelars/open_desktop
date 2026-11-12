@@ -297,6 +297,28 @@ def _widths_allowed(task: str, row: dict) -> bool:
     return True
 
 
+def pxor_local_profile_candidate(row: dict) -> str | None:
+    """Match accepted S2-35.1 XMM register-only PXOR, never MMX or memory."""
+    if row["mnemonic"] != "pxor" or row["signature"] != "pxor xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0xEF):
+        return None
+    prefixes = view["prefixes"]
+    if not prefixes or prefixes[0] != 0x66 or len(prefixes) > 2:
+        return None
+    if len(prefixes) == 2:
+        rex = prefixes[1]
+        if not 0x40 <= rex <= 0x4F or rex & 0x0A:
+            return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-35.1-PXOR-XMM-register-register"
+
+
 def movups_local_profile_candidate(row: dict) -> str | None:
     """Match only accepted S2-34.4/.5/.6a-c local MOVUPS memory forms."""
     if row["mnemonic"] != "movups" or row["signature"] not in {"movups xmm,mem128", "movups mem128,xmm"}:
@@ -361,6 +383,9 @@ def movups_local_profile_candidate(row: dict) -> str | None:
 
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    pxor_candidate = pxor_local_profile_candidate(row)
+    if pxor_candidate is not None:
+        return pxor_candidate
     movups_candidate = movups_local_profile_candidate(row)
     if movups_candidate is not None:
         return movups_candidate
