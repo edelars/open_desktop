@@ -23083,3 +23083,67 @@ RSP = RBP = `0xffffffff83a03d90`, прочие регистры (RBX, RCX, RDX, 
 Следующий срез — `LOCK ADD m64, r64` (`F0 [REX.W] 01 /r`, memory-назначение RIP-relative) в наборе CPL0 (по аналогии с `LOCK ADD m, imm` S4-38L7z и `LOCK CMPXCHG m64, r64` S4-38L7k; решение, расширять ли
 существующие пути или завести отдельную форму, — по этой границе); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `LOCK ADD r/m32, r32` и `LOCK ADD r/m64, r64` (`F0 [REX] 01 /r`, memory-операнд, регистр-источник) в наборе CPL0 (S4-38L7ai)
+
+Граница S4-38L7ah: `f0 48 01 3d 8f 02 dc 02` = `lock add %rdi, 0x2dc028f(%rip)` (LOCK + REX.W + `01 /r`; ModRM `0x3d`: mod 00, reg 111 = RDI, rm 101 = RIP-relative; disp32 `0x02dc028f`, непосредственного
+операнда нет; длина 8), RIP `0xffffffff817caaa9`, `Unsupported { opcode: 0x01 }`, retired 1205772058. Срез повторяет схему `LOCK ADD m, imm` (S4-38L7z) с регистром-источником вместо непосредственного
+операнда и схему `LOCK CMPXCHG m, r` (S4-38L7k, S4-38L7y) по разбору регистра-источника. Семантика дана **по памяти SDM** (Vol. 2 «ADD»: назначение + источник, флаги CF/PF/AF/ZF/SF/OF по сумме на ширине
+операнда; LOCK на одном vCPU не требует шинной блокировки), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: новая операция `Operation::LockAddMemReg { destination: MemoryOperand, source: RegisterView }` (не расширение `LockAddMem`, у которой источник — непосредственный `u64`), в
+существующей ветке декодирования прямых арифметических опкодов (`ADD/ADC/SBB/SUB/CMP` и логика `00..3D`). Ветка срабатывает при `опкод == 0x01`, префиксе LOCK (`F0`) и memory-операнде; источник — регистр
+из поля reg ModRM с REX.R (`view(reg | REX.R << 3, size, rex_present)`). С REX.W — qword (`LOCK ADD r/m64, r64`), **без REX.W — dword** (`LOCK ADD r/m32, r32`; допустим пустой REX `0x40` и REX.R/B/X без W). Принимается
+любая адресация (RIP-relative, SIB, disp8/disp32, REX.B, REX.X). Длина — префиксы, опкод, ModRM, SIB, смещение; непосредственного операнда нет, поэтому RIP-relative считается от RIP **после** disp32
+(следующий RIP = адрес + 8 для граничных байтов). В проверку «LOCK допустим только для особых форм» добавлен кандидат `locked_memory_add_reg_candidate` (`опкод == 0x01` и `F0`); остальные прямые
+арифметические опкоды с LOCK (`00`, `02`, `03`, `05`, `09`, `11`, `19`, `21`, `29`, `31`, `39`, …) отказывают на этой проверке с собственным опкодом, как и раньше. `flag_effects`: все шесть флагов определены
+(как у `Operation::Arithmetic` и `LockAddMem`). Без LOCK `01 /r` по-прежнему даёт `Operation::Arithmetic { kind: Add, .. }` (не менялось).
+
+**Отказы без мутации (`Unsupported { opcode }`, опкод самой инструкции).** Регистровое назначение с LOCK (mod = 11, с REX и без) — `0x01`; байтовая форма `F0 00 /r` — `0x00`; обратные направления `F0 02 /r`,
+`F0 03 /r` (с REX.W и без) — `0x02`, `0x03`; `F0 05 id` / `F0 REX.W 05 id` (аккумулятор, непосредственный операнд) — `0x05`; остальные ALU-опкоды с регистром-источником и LOCK (`09`, `11`, `19`, `21`, `29`,
+`31`, `39`) — собственный опкод; `66` (word, в любом порядке с LOCK) и `67` — `0x01`; `F3`/`F2` вместо LOCK или вместе с ним (в обоих порядках) и повторный LOCK — `0x01`; сегментные префиксы с LOCK (FS/GS и
+CS/SS, в обоих порядках, с REX и без) — `0x01`: аналога с FS/GS у LOCK-форм нет; REX до LOCK или не непосредственно перед опкодом (`48 F0 01 …`, `41 F0 01 …`, `F0 48 66 01 …`, `F0 48 2E 01 …`) — `0x01`
+(правило устаревшего REX из S4-38L7s/S4-38L7y). Усечённые ModRM/SIB/disp — разбор отказывает (ошибка выборки), ничего не исполняется, память и регистры не меняются. Не расширялись `LOCK ADC/SBB/SUB/AND/OR/XOR/CMP r/m, r`
+и `LOCK ADD r, r/m`.
+
+**Адрес.** Как у `LockAddMem`: `MemoryOperand::access_address_48` — эффективный адрес до любого обращения к памяти (RIP-relative от RIP следующей инструкции; адрес только 64-бит). Каноничность проверяется для
+начального адреса и последнего байта операнда (адрес + 7 для qword, адрес + 3 для dword): иначе `#GP(0)` до чтения, без записи. Для баз RSP/RBP с неканоническим результатом — `#SS(0)` (правило аналога,
+без изменений).
+
+**Исполнение.** Источник читается из регистра (`state.read(source)`, для dword маскируется по ширине вида), затем один `memory.read_integer(address, context, size)` (4 или 8 байт), общая
+`arithmetic_result(size, Add, прочитанное, источник, RFLAGS)` — та же функция, что у `LockAddMem` и обычного `ADD`, никакой новой арифметики, и один `memory.write_integer(address, context, size, сумма)`.
+Запись выполняется всегда (в том числе при нулевом слагаемом), как у остальных LOCK-форм; `state.rflags = flags` только после успешной записи (прочие биты RFLAGS сохраняются), поэтому при ошибке записи
+память, флаги и RIP не меняются; регистры не меняются (источник остаётся прежним). RIP += длина инструкции (с префиксом), retired + 1 только при успехе. При `#GP(0)`/`#SS(0)`/`#PF` состояние и память не
+меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у `LockAddMem`. Вне набора — `Unsupported { opcode: 0x01 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step`,
+`mov_cr3_profile`, paged-cr3-probe, `step_paged_mov` и paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (19): `lock_add_reg_boundary_form_*` (граничные байты `f0 48 01 3d 8f 02 dc 02`: адрес = RIP + 8 + disp32, читается и пишется 8 байт, qword меняется на значение RDI, меняются
+только RIP и флаги, RDI не меняется), `lock_add_reg_flags_follow_the_qword_and_dword_sums` (qword и dword × 12 × 12 значений на границах ширины × два начальных RFLAGS, по независимому расчёту `add_oracle`
+на 128-битной арифметике), `lock_add_reg_flags_on_named_boundary_values` (`0x7fff…` + 1, `0xffff…` + 1, перенос через границу dword, маскирование источника у dword),
+`lock_add_reg_dword_form_*` (читается и пишется 4 байта, верхние биты источника и ячейки не участвуют), `lock_add_reg_writes_back_an_unchanged_value_*`,
+`lock_add_reg_with_every_legacy_and_extended_source_register` (RAX–RDI и R8–R15 через REX.R, qword; dword с R9), `lock_add_reg_with_rsp_sib_and_rip_relative_addresses`,
+`lock_add_reg_with_every_extended_base_register_r8_to_r15` (R12 через SIB), `lock_add_reg_with_every_extended_index_register_r8_to_r15`, `lock_add_reg_non_canonical_address_is_gp0_*` (qword и dword на
+границе дыры, принятие последнего канонического байта), `lock_add_reg_through_a_non_canonical_rsp_or_rbp_base_is_ss0`, `lock_add_reg_write_fault_*` и `lock_add_reg_read_fault_*`,
+`lock_add_reg_forms_outside_the_slice_are_refused_*` (38 отказов с точным опкодом), `plain_add_memory_register_without_lock_*` (обычные `48 01 43 3d` и `48 01 c3` без изменений),
+`lock_add_reg_with_a_truncated_modrm_or_displacement_*`, `lock_add_reg_stays_unsupported_outside_the_set`, `lock_add_reg_is_refused_by_the_bare_step_entry_point`,
+`lock_add_reg_is_not_reachable_from_cpl3`; `paged_probe_profile::lock_add_register_source_stays_unsupported_in_the_paged_probe_profile`; `execute::tests`: граничные байты и dword-форма добавлены в
+`lock_add_stays_unsupported_in_bare_run_and_step`, `mov_cr3_profile_keeps_lock_add_unsupported`, `paged_cr3_probe_keeps_lock_add_unsupported`, `paged_mov_profile_keeps_lock_add_unsupported`; декодер:
+`long_decode::tests::lock_add_register_source_decodes_the_memory_destination_forms_only` (в существующем `arithmetic_groups_and_prefixes_have_explicit_supported_boundaries` форма `F0 48 01 03` больше не
+отказ и заменена на `F0 48 29 03` и регистровую `F0 48 01 C8`); фасад: `linux_direct::tests::lock_add_qword_register_source_rip_relative_adds_to_guest_memory` (граничная форма с исходным
+отрицательным disp32, `0x7fff_ffff_ffff_fff0 + 0x20`, чтение обратно из памяти, OF/SF, retired 6). Проверка `native_v2::admission` в `tools/x86-runner` (`f0 48 01 0b` отказ) собирается только на
+Linux x86_64 и на этой машине (macOS) не запускалась.
+
+**Не делалось.** `LOCK` с остальными ALU-опкодами (`ADC`/`SBB`/`SUB`/`AND`/`OR`/`XOR`/`CMP` с регистром-источником, `ADD r, r/m`, `ADD AL/EAX/RAX, imm`), байтовая и word-формы, регистровое назначение,
+LOCK с сегментными префиксами, `PagedCpl0ProbeV1`, `interrupt.rs`, `docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7ai-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`lock add %rdi, 0x2dc028f(%rip)` по `0xffffffff817caaa9` проходит (retired 1205772058 → 1207604143, +1832085 инструкций; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff83f52b4b` (GPA `0x3f52b4b`), байты `65 c7 05 ca f3 4c 00 ec 00 00 00 65 c7 05 c3 f3` — `movl $0xec, %gs:0x4cf3ca(%rip)` (префикс GS + `C7 /0 id`, MOV r/m32, imm32 с
+memory-назначением, ModRM `0x05`: RIP-relative, disp32 `0x004cf3ca`, imm32 `0x000000ec`; длина 11; далее такая же `movl … %gs:…(%rip)`); `Unsupported { opcode: 0xc7 }` (199), `set_exit_detail` =
+`Run(Unsupported { opcode: 199 })`, `exit_kind` = `unsupported`, retired = 1207604143.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x46`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` —
+прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOV r/m32, imm32` (`GS C7 /0 id`, memory-операнд RIP-relative; с REX.W — `MOV r/m64, imm32`) с префиксом FS/GS в наборе CPL0 (по аналогии с `MOV r/m8, imm8` с FS/GS, S4-38L7ae); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
