@@ -9520,7 +9520,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             _ => unreachable!("known forms handled above"),
         };
         // FS/GS bases are modeled by the exact S2-22a/22b MOV loads and by the
-        // S4-38L7g qword store forms (MovFsStore/MovGsStore) decoded above.
+        // S4-38L7g qword and S4-38L7an dword store forms (MovFsStore/MovGsStore) decoded above.
         // LEA ignores segment bases and evaluates only its effective offset.
         if matches!(prefixes.segment, Some(0x64 | 0x65))
             && match operation {

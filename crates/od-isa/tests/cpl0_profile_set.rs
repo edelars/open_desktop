@@ -23868,9 +23868,10 @@ fn movl_store_write_fault_leaves_flags_rip_registers_and_memory_unchanged() {
     let gs_base = 0xffff_8880_0000_0000u64;
     for code in [
         &GS_MOVL_STORE_BOUNDARY[..],
+        &seg_store_rip(0x64, None, 0)[..],
         &seg_store_rip(0x64, Some(0x48), 0)[..],
     ] {
-        let disp = if code.len() == 7 {
+        let disp = if code[3] == 0xe0 {
             GS_MOVL_STORE_DISP
         } else {
             0x1234
@@ -24114,19 +24115,39 @@ fn segment_store_is_not_reachable_from_cpl3() {
 #[test]
 fn segment_qword_store_keeps_accepting_a_valid_rex_w_after_a_stale_rex() {
     // Unchanged S4-38L7g behaviour (as the S4-38L7i qword load): the REX.W directly before the
-    // opcode decides, an earlier REX is ignored (SDM Vol.2 2.2.1). Only the dword form refuses a
-    // stale REX conservatively.
-    let mut state = board_state();
-    state.gs_base = 0xffff_8880_0000_0000;
-    state.gpr[Register::Rbx as usize] = 0x20_0000;
-    let mut memory = BitsMemory::new(&[0x48, 0x65, 0x48, 0x89, 0x03]);
-    let result = run_movb_set(&mut state, &mut memory).unwrap();
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(
-        memory.writes,
-        vec![(
-            0xffff_8880_0020_0000,
-            0x1111_2222_3333_4444u64.to_le_bytes().to_vec()
-        )]
-    );
+    // opcode decides, an earlier REX is ignored (SDM Vol.2 2.2.1), so it must not influence the
+    // base, the index or the source register. Only the dword form refuses a stale REX
+    // conservatively.
+    let gs_base = 0xffff_8880_0000_0000u64;
+    // (last REX, ModRM, expected source register, expected base register):
+    // `65 48 89 03` = movq %rax, %gs:(%rbx); `65 4d 89 0b` = movq %r9, %gs:(%r11).
+    for (last, modrm, source, base_register) in [
+        (0x48u8, 0x03u8, Register::Rax, Register::Rbx),
+        (0x4d, 0x0b, Register::R9, Register::R11),
+    ] {
+        // An early REX with every combination of W/R/X/B, none of which may take effect.
+        for early in [0x40u8, 0x41, 0x42, 0x43, 0x44, 0x48, 0x4c, 0x4f] {
+            let code = [early, 0x65, last, 0x89, modrm];
+            let mut state = board_state();
+            state.gs_base = gs_base;
+            // The expected operands, and decoys that the early REX bits would select instead.
+            state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+            state.gpr[Register::Rbx as usize] = 0x20_0000;
+            state.gpr[Register::R8 as usize] = 0x8888_8888_8888_8888; // decoy source (REX.R)
+            state.gpr[Register::R9 as usize] = 0x9999_aaaa_bbbb_cccc;
+            state.gpr[Register::R10 as usize] = 0x50_0000; // another decoy base
+            state.gpr[Register::R11 as usize] = 0x30_0000;
+            state.gpr[Register::Rcx as usize] = 0x7777_7777_7777_7777; // decoy source
+            let mut expected = state.clone();
+            let mut memory = BitsMemory::new(&code);
+            let result = run_movb_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            let address = gs_base + state.gpr[base_register as usize];
+            let value = state.gpr[source as usize].to_le_bytes().to_vec();
+            assert_eq!(memory.writes, vec![(address, value)], "{code:02x?}");
+            assert!(memory.reads.is_empty(), "{code:02x?}");
+            expected.rip += 5;
+            assert_eq!(state, expected, "{code:02x?}");
+        }
+    }
 }
