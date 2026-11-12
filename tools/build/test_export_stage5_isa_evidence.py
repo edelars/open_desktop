@@ -70,13 +70,20 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1042)
-                self.assertEqual(fields["unclassified_normalized_forms"], 227)
+                self.assertEqual(fields["classified_normalized_forms"], 1043)
+                self.assertEqual(fields["unclassified_normalized_forms"], 226)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_unclassified_rows = 214872 if full_key else 214933
+                expected_supported_rows = 6295530 if full_key else 6295814
+                expected_unclassified_rows = 214870 if full_key else 214931
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
+                self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
+                for classification in ("proven_supported", "unclassified"):
+                    self.assertEqual(
+                        sum(binary["classification_frequencies"].get(classification, 0) for binary in compact["binaries"].values()),
+                        compact["classification_frequencies"][classification],
+                    )
                 if "local_interpreter_profile_rows" in fields:
                     self.assertEqual(
                         fields["local_interpreter_profile_rows"],
@@ -85,6 +92,30 @@ class NormalizedFormTests(unittest.TestCase):
                     self.assertEqual(
                         fields["machine_cpl3_profile_rows"],
                         fields["evidence_scope_frequencies"]["machine_cpl3_profile"],
+                    )
+                scenario_totals = {}
+                for scenario in ("C", "D"):
+                    totals = {"proven_supported": 0, "unclassified": 0}
+                    for binary in compact["scenarios"][scenario]["binaries"]:
+                        frequencies = compact["binaries"][binary]["classification_frequencies"]
+                        for classification in totals:
+                            totals[classification] += frequencies.get(classification, 0)
+                    scenario_totals[scenario] = totals
+                self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
+                report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
+                report_binary_rows = {}
+                for line in report_lines:
+                    cells = [cell.strip() for cell in line.split("|")]
+                    if len(cells) >= 6 and cells[1].startswith("`") and "`" in cells[1][1:]:
+                        name = cells[1][1:].split("`", 1)[0]
+                        if name == "gcc-ld.bfd":
+                            name = "gcc-ld-bfd"
+                        if name in compact["binaries"]:
+                            report_binary_rows[name] = int(cells[5].replace(" ", ""))
+                for name, binary in compact["binaries"].items():
+                    self.assertEqual(
+                        report_binary_rows[name],
+                        binary["classification_frequencies"].get("unclassified", 0),
                     )
                 pshufd_forms = [
                     row for row in compact["normalized_instruction_forms"]
@@ -214,6 +245,21 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in psubw_forms),
                     1,
+                )
+                paddb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FC"]
+                    and row["instruction_form"]["operand_signature"] == "paddb xmm,xmm"
+                ]
+                self.assertEqual(len(paddb_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddb_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.2-PADDB-XMM-register-register", 0) for row in paddb_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in paddb_forms),
+                    2,
                 )
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
