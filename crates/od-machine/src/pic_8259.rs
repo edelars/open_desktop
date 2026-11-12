@@ -15,8 +15,9 @@
 //! accepts ICW4 `0x03` (AEOI, S4-29a2; Linux `check_timer`): the flag is stored
 //! and has no effect, the slave refuses it. Single mode, level
 //! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
-//! refused. ELCR (`0x4D0/0x4D1`), ExtINT/LINT0 delivery, IRQ
-//! lines and the poll command are not part of this model.
+//! refused. ExtINT/LINT0 delivery, IRQ lines and the poll command are not part
+//! of this model. ELCR (`0x4D0/0x4D1`, S4-38L7bs) is a separate two-port device
+//! ([`Pic8259Elcr`]) whose two bytes are only stored and read back.
 //!
 //! The chips are separate [`BusDevice`]s (each bound to its own two-port
 //! `PortRegionBinding`, because a device sees offsets relative to its binding);
@@ -70,6 +71,19 @@ const OCW3_POLL: u8 = 1 << 2;
 const OCW3_SMM: u8 = 1 << 5;
 const OCW3_ESMM: u8 = 1 << 6;
 const OCW3_BIT7: u8 = 1 << 7;
+
+/// First port of the ELCR pair: `0x4D0` master (IRQ0..7), `0x4D1` slave (IRQ8..15).
+pub const PIC_ELCR_BASE_PORT: u16 = 0x4D0;
+/// Ports of the ELCR pair.
+pub const PIC_ELCR_PORT_BYTES: u32 = 2;
+/// Master ELCR bits that are stored: IRQ3 and IRQ4. Bits 0..2 and 5..7 are
+/// reserved (read 0, writes dropped). From the datasheet by memory, not checked
+/// against the primary source.
+pub const PIC_ELCR_MASTER_MASK: u8 = 0b0001_1000;
+/// Slave ELCR bits that are stored: IRQ9..12 and IRQ14, IRQ15 (bits 1, 2, 3, 4,
+/// 6; the issue's expected value is `0x5E`). Bits 0, 5, 7 are reserved. From the
+/// datasheet by memory, not checked against the primary source.
+pub const PIC_ELCR_SLAVE_MASK: u8 = 0b0101_1110;
 
 /// Which chip of the pair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,23 +177,85 @@ pub struct Pic8259 {
     state: Arc<Mutex<Pic8259Snapshot>>,
 }
 
-/// Both chips of the pair with their observers.
+/// Cloneable observer of the ELCR bytes (`[master, slave]`).
+#[derive(Clone, Debug)]
+pub struct Pic8259ElcrHandle {
+    state: Arc<Mutex<[u8; 2]>>,
+}
+
+impl Pic8259ElcrHandle {
+    /// `(master, slave)` ELCR bytes.
+    pub fn snapshot(&self) -> (u8, u8) {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (s[0], s[1])
+    }
+}
+
+/// Edge/Level Control Registers of the pair (S4-38L7bs): offset 0 (`0x4D0`) is
+/// the master, offset 1 (`0x4D1`) the slave. Byte, PIO only. The bytes are
+/// stored under [`PIC_ELCR_MASTER_MASK`] / [`PIC_ELCR_SLAVE_MASK`] and read
+/// back; they do not change the behaviour of the chips (edge/level is not
+/// modelled). ICW1 of a chip does not touch them; they are zero from
+/// construction (the model has no other reset). No access is refused except by
+/// space, width and offset.
+pub struct Pic8259Elcr {
+    state: Arc<Mutex<[u8; 2]>>,
+}
+
+impl Pic8259Elcr {
+    pub fn new_with_handle() -> (Self, Pic8259ElcrHandle) {
+        let state = Arc::new(Mutex::new([0; 2]));
+        (
+            Self {
+                state: Arc::clone(&state),
+            },
+            Pic8259ElcrHandle { state },
+        )
+    }
+}
+
+impl BusDevice for Pic8259Elcr {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        let index = Pic8259::locate(access)? as usize;
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(u64::from(state[index]))
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        let index = Pic8259::locate(access)? as usize;
+        let mask = if index == 0 {
+            PIC_ELCR_MASTER_MASK
+        } else {
+            PIC_ELCR_SLAVE_MASK
+        };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state[index] = (value as u8) & mask;
+        Ok(())
+    }
+}
+
+/// Both chips of the pair with their observers, and the ELCR device.
 pub struct Pic8259Pair {
     pub master: Pic8259,
     pub slave: Pic8259,
     pub master_handle: Pic8259Handle,
     pub slave_handle: Pic8259Handle,
+    pub elcr: Pic8259Elcr,
+    pub elcr_handle: Pic8259ElcrHandle,
 }
 
 impl Pic8259Pair {
     pub fn new() -> Self {
         let (master, master_handle) = Pic8259::new_with_handle(Pic8259Role::Master);
         let (slave, slave_handle) = Pic8259::new_with_handle(Pic8259Role::Slave);
+        let (elcr, elcr_handle) = Pic8259Elcr::new_with_handle();
         Self {
             master,
             slave,
             master_handle,
             slave_handle,
+            elcr,
+            elcr_handle,
         }
     }
 }
@@ -950,5 +1026,127 @@ mod tests {
         )
         .unwrap();
         MachineBus::new(map, RamLimits::new(1 << 20), devices, Vec::new(), ports).unwrap();
+    }
+
+    fn elcr_out(dev: &mut Pic8259Elcr, offset: u64, value: u8) -> Result<(), DeviceError> {
+        dev.write(acc(offset, BYTE), u64::from(value))
+    }
+
+    fn elcr_in(dev: &mut Pic8259Elcr, offset: u64) -> u64 {
+        dev.read(acc(offset, BYTE)).unwrap()
+    }
+
+    #[test]
+    fn elcr_reads_zero_from_construction() {
+        let (mut elcr, handle) = Pic8259Elcr::new_with_handle();
+        assert_eq!(elcr_in(&mut elcr, 0), 0);
+        assert_eq!(elcr_in(&mut elcr, 1), 0);
+        assert_eq!(handle.snapshot(), (0, 0));
+    }
+
+    #[test]
+    fn master_elcr_keeps_irq3_and_irq4_only() {
+        let (mut elcr, handle) = Pic8259Elcr::new_with_handle();
+        elcr_out(&mut elcr, 0, 0x08).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 0), 0x08);
+        elcr_out(&mut elcr, 0, 0x10).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 0), 0x10);
+        elcr_out(&mut elcr, 0, 0xFF).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 0), 0x18);
+        // The slave register is independent.
+        assert_eq!(elcr_in(&mut elcr, 1), 0);
+        elcr_out(&mut elcr, 0, 0x00).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 0), 0);
+        // Reserved bits alone store nothing.
+        elcr_out(&mut elcr, 0, 0xE7).unwrap();
+        assert_eq!(handle.snapshot(), (0, 0));
+    }
+
+    #[test]
+    fn slave_elcr_keeps_bits_1_2_3_4_6_only() {
+        let (mut elcr, handle) = Pic8259Elcr::new_with_handle();
+        elcr_out(&mut elcr, 1, 0xFF).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 1), 0x5E);
+        assert_eq!(elcr_in(&mut elcr, 0), 0);
+        elcr_out(&mut elcr, 1, 0xA1).unwrap();
+        assert_eq!(elcr_in(&mut elcr, 1), 0);
+        elcr_out(&mut elcr, 1, 0x02).unwrap();
+        assert_eq!(handle.snapshot(), (0, 0x02));
+    }
+
+    #[test]
+    fn elcr_accepts_every_byte_and_refuses_only_wrong_space_width_offset() {
+        let (mut elcr, _) = Pic8259Elcr::new_with_handle();
+        for offset in 0..2 {
+            for value in 0..=255u8 {
+                elcr_out(&mut elcr, offset, value).unwrap();
+            }
+        }
+        let wide = acc(0, AccessWidth::Word);
+        assert_eq!(elcr.read(wide), Err(DeviceError::UnsupportedWidth));
+        assert_eq!(elcr.write(wide, 0), Err(DeviceError::UnsupportedWidth));
+        assert_eq!(elcr.read(acc(2, BYTE)), Err(DeviceError::UnknownOffset));
+        let mmio = DeviceAccess {
+            space: IoSpace::Mmio,
+            offset: 0,
+            width: BYTE,
+        };
+        assert_eq!(elcr.read(mmio), Err(DeviceError::UnsupportedSpace));
+    }
+
+    #[test]
+    fn elcr_does_not_change_pic_state_and_icw1_does_not_clear_elcr() {
+        let pair = Pic8259Pair::new();
+        let Pic8259Pair {
+            mut master,
+            mut slave,
+            master_handle,
+            slave_handle,
+            mut elcr,
+            elcr_handle,
+        } = pair;
+        init_chip(&mut master, 0xFB);
+        init_chip(&mut slave, 0xFF);
+        let (m0, s0) = (master_handle.snapshot(), slave_handle.snapshot());
+        elcr_out(&mut elcr, 0, 0xFF).unwrap();
+        elcr_out(&mut elcr, 1, 0xFF).unwrap();
+        assert_eq!(elcr_handle.snapshot(), (0x18, 0x5E));
+        assert_eq!(master_handle.snapshot(), m0);
+        assert_eq!(slave_handle.snapshot(), s0);
+        assert_eq!(inb(&mut master, 1), 0xFB);
+        assert_eq!(inb(&mut master, 0), 0);
+        // A new ICW1 resets IMR but leaves ELCR as it was.
+        out(&mut master, 0, PIC_ICW1_ACCEPTED).unwrap();
+        assert_eq!(master_handle.snapshot().imr, 0);
+        assert_eq!(elcr_handle.snapshot(), (0x18, 0x5E));
+    }
+
+    #[test]
+    fn elcr_is_visible_through_the_machine_bus_ports() {
+        let pair = Pic8259Pair::new();
+        let devices: Vec<Box<dyn BusDevice>> = vec![Box::new(pair.elcr)];
+        let ports = vec![PortRegionBinding {
+            range: PortRange::new(PortAddress::new(PIC_ELCR_BASE_PORT), PIC_ELCR_PORT_BYTES)
+                .unwrap(),
+            device_index: 0,
+        }];
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 1 << 20).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(1 << 20), devices, Vec::new(), ports).unwrap();
+        let port = |p: u16| PortAddress::new(p);
+        assert_eq!(bus.read_port(port(0x4D0), BYTE).unwrap(), 0);
+        assert_eq!(bus.read_port(port(0x4D1), BYTE).unwrap(), 0);
+        bus.write_port(port(0x4D0), BYTE, 0xFF).unwrap();
+        bus.write_port(port(0x4D1), BYTE, 0xFF).unwrap();
+        assert_eq!(bus.read_port(port(0x4D0), BYTE).unwrap(), 0x18);
+        assert_eq!(bus.read_port(port(0x4D1), BYTE).unwrap(), 0x5E);
+        assert_eq!(pair.elcr_handle.snapshot(), (0x18, 0x5E));
     }
 }
