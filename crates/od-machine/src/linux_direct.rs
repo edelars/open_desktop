@@ -4958,6 +4958,117 @@ mod tests {
         assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0xFFFF_FFFF);
     }
 
+    // ---- S4-38L7bf: FS/GS-based MOVZX r32/r64, m8 through the board facade ----
+
+    #[test]
+    fn gs_movzx_byte_after_wrmsr_gs_base_zero_extends_into_eax_r8_and_ebx_ignoring_the_fs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE;
+        // plain byte stores: [BASE+0x10] = 0x80, [BASE+0x11] = 0xFF, [FS_DISTRACTOR+0x10] = 0x11;
+        // SUB DL,1 (0 - 1 borrows: CF = 1); markers in RAX, R8 and RBX;
+        // MOV EDI,0x10; MOVZX EAX,%gs:(%rdi) (`65 0f b6 07`, the S4-38L7be boundary form);
+        // MOV EDX,5; MOVZX R8,%gs:0xc(%rdx) (`65 4c 0f b6 42 0c`, effective address 0x11);
+        // MOVZX EBX,%gs:0x10 (`65 0f b6 1c 25 disp32`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x80]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xFF]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x11]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB8]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x48, 0xBB]);
+        code.extend(0x7777_7777_7777_7777u64.to_le_bytes());
+        code.extend([0xBF, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB6, 0x07]);
+        code.extend([0xBA, 0x05, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x4C, 0x0F, 0xB6, 0x42, 0x0C]);
+        code.extend([0x65, 0x0F, 0xB6, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 22, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // The neighbouring guest bytes are unchanged (nothing is written by the loads).
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10) & 0xFFFF, 0xFF80);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        // The FS distractor holds 0x11: a result of 0x11 would mean the wrong base was used; the
+        // upper halves of the RAX/RBX markers are zeroed, R8 is a full 64-bit zero-extension.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x80);
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::Rbx as usize], 0x80);
+        // Nothing else changed: CF set by SUB DL,1 survives and the index registers keep their values.
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], 0x10);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 5);
+    }
+
+    #[test]
+    fn fs_movzx_byte_after_wrmsr_fs_base_loads_r9_and_eax_ignoring_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const GS_DISTRACTOR: u64 = 0x0300_0000;
+        // As above with the roles swapped: IA32_FS_BASE = BASE (MSR 0xC0000100) and the GS base
+        // as the distractor; `64 4d 0f b6 4b 03` = MOVZX R9,%fs:3(%r11) (REX.W, REX.R, REX.B) and
+        // `64 41 0f b6 02` = MOVZX EAX,%fs:(%r10) (REX.B, no REX.W).
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(GS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x00, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0xFF]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x22]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB9]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x41, 0xBB, 0x0D, 0x00, 0x00, 0x00]);
+        code.extend([0x41, 0xBA, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x64, 0x4D, 0x0F, 0xB6, 0x4B, 0x03]);
+        code.extend([0x64, 0x41, 0x0F, 0xB6, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 18, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!((state.fs_base, state.gs_base), (BASE, GS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::R9 as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::R10 as usize], 0x10);
+        assert_eq!(state.gpr[od_isa::Register::R11 as usize], 0x0D);
+    }
+
     // ---- S4-38L7bb: FS/GS-based MOV r/m8, r8 through the board facade ----
 
     #[test]
