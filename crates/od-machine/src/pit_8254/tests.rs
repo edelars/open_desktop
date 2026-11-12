@@ -704,17 +704,61 @@ fn read_back_refusals_change_nothing() {
 }
 
 #[test]
-fn read_back_of_an_unprogrammed_channel_is_refused_and_a_control_word_clears_it() {
-    let (mut dev, clock) = setup_mode2_1000();
-    let mut fresh = setup().0;
+fn read_back_of_an_unprogrammed_channel_0_reads_null_count_and_zero() {
+    let (mut fresh, _clock) = setup();
+    // 0xC2: status 0b0100_0000 (OUT low, null count 1, every other bit 0) and a
+    // count latch of the assumed value 0.
+    out(&mut fresh.pit, 3, 0xC2).unwrap();
+    let ch = fresh.handle.snapshot().channel0;
+    assert_eq!(ch.status_latch, Some(0x40));
+    assert_eq!(
+        ch.latch,
+        Some(PitLatch {
+            value: 0,
+            hi_pending: false
+        })
+    );
+    // Status, then the two latched count bytes (0x0000), nothing was programmed.
+    assert_eq!(inb(&mut fresh.pit, 0), 0x40);
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00);
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00);
+    let drained = fresh.handle.snapshot();
+    assert_eq!(drained.channel0, PitChannelSnapshot::default());
+    // Latches are gone: the live counter has no value, the read is refused
+    // without changing anything.
+    assert_eq!(
+        fresh.pit.read(acc(0, BYTE)),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(fresh.handle.snapshot(), drained);
+    // 0xE2 and 0xD2 pick one latch each.
+    out(&mut fresh.pit, 3, 0xE2).unwrap();
+    let ch = fresh.handle.snapshot().channel0;
+    assert_eq!((ch.status_latch, ch.latch), (Some(0x40), None));
+    out(&mut fresh.pit, 3, 0xD2).unwrap();
+    let ch = fresh.handle.snapshot().channel0;
+    assert_eq!(ch.latch.map(|l| l.value), Some(0));
+    // A second read-back keeps both latches as they are.
     let before = fresh.handle.snapshot();
-    for word in [0xC2u8, 0xD2, 0xE2] {
+    out(&mut fresh.pit, 3, 0xC2).unwrap();
+    assert_eq!(fresh.handle.snapshot(), before);
+    // The ordinary counter latch of an unprogrammed channel and the other
+    // read-back selections stay refused; the snapshot does not change.
+    let (mut other, _clock) = setup();
+    let before = other.handle.snapshot();
+    for word in [0x00u8, 0xC4, 0xC8, 0xCE, 0xC0, 0xC3] {
         assert_eq!(
-            out(&mut fresh.pit, 3, word),
-            Err(DeviceError::UnsupportedConfiguration)
+            out(&mut other.pit, 3, word),
+            Err(DeviceError::UnsupportedConfiguration),
+            "{word:#04x}"
         );
-        assert_eq!(fresh.handle.snapshot(), before);
+        assert_eq!(other.handle.snapshot(), before, "{word:#04x}");
     }
+}
+
+#[test]
+fn a_control_word_clears_the_read_back_latches() {
+    let (mut dev, clock) = setup_mode2_1000();
     goto_tick(&clock, 10);
     out(&mut dev.pit, 3, 0xC2).unwrap();
     out(&mut dev.pit, 3, 0x34).unwrap();

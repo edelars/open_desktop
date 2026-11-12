@@ -40,8 +40,11 @@
 //! `COUNT#` nor `STATUS#` low) latches nothing.
 //!
 //! * The count latch is the ordinary counter latch above: a second latch
-//!   before the first is read is ignored, and a channel without a count is
-//!   refused.
+//!   before the first is read is ignored, and a programmed channel without a
+//!   count is refused. A channel that no control word programmed (the board
+//!   has no firmware that programs channel 0) is not refused: its count is
+//!   undefined on the chip and the model latches 0 (an explicit assumption),
+//!   delivered as two bytes (LSB, MSB), as LSB+MSB.
 //! * The status latch holds one byte taken at the command: `D7` = `OUT` (from
 //!   the model's `OUT` computation), `D6` = null count, `D5:D4` = the
 //!   access mode (`01` LSB, `10` MSB, `11` LSB+MSB), `D3:D1` = the mode (`000`
@@ -50,7 +53,8 @@
 //!   first byte) and, in mode 2, while a reload waits for the next period
 //!   boundary; the model loads a count at the tick of its write, so a mode 0
 //!   count is never reported null. A second status latch before the first is
-//!   read is ignored; a channel that no control word programmed is refused.
+//!   read is ignored. A channel that no control word programmed reads status
+//!   `0x40`: `OUT` low, null count 1, access, mode and BCD bits 0.
 //! * The next read of `0x40` returns the status byte (and clears the status
 //!   latch); further reads return the latched count by the access mode, then
 //!   the live counter. A control word for the channel clears both latches.
@@ -262,10 +266,13 @@ impl PitChannelSnapshot {
         }
     }
 
-    /// The read-back status byte at `tick`; `None` until a control word
-    /// programmed the channel.
-    fn status(&self, tick: u64) -> Option<u8> {
-        let (mode, access) = self.mode.zip(self.access)?;
+    /// The read-back status byte at `tick`. A channel no control word
+    /// programmed reads `OUT` (low), null count 1 and zero access, mode and BCD
+    /// bits (S4-38L7bl: the board has no firmware that programs channel 0).
+    fn status(&self, tick: u64) -> u8 {
+        let Some((mode, access)) = self.mode.zip(self.access) else {
+            return u8::from(self.out(tick)) << 7 | 1 << 6;
+        };
         let access_bits = match access {
             PitAccess::Lsb => 0b01,
             PitAccess::Msb => 0b10,
@@ -275,12 +282,10 @@ impl PitChannelSnapshot {
             PitMode::TerminalCount => 0b000,
             PitMode::RateGenerator => 0b010,
         };
-        Some(
-            u8::from(self.out(tick)) << 7
-                | u8::from(self.null_count(tick)) << 6
-                | access_bits << 4
-                | mode_bits << 1,
-        )
+        u8::from(self.out(tick)) << 7
+            | u8::from(self.null_count(tick)) << 6
+            | access_bits << 4
+            | mode_bits << 1
     }
 
     /// One byte written to the channel's data port at `tick`.
@@ -357,18 +362,20 @@ impl PitChannelSnapshot {
                     self.latch = None;
                     (latch.value >> 8) as u8
                 }
-                Some(PitAccess::LsbMsb) if !latch.hi_pending => {
+                // An unprogrammed channel (read-back latch of value 0) delivers
+                // two bytes, as LSB+MSB.
+                Some(PitAccess::LsbMsb) | None if !latch.hi_pending => {
                     self.latch = Some(PitLatch {
                         hi_pending: true,
                         ..latch
                     });
                     latch.value as u8
                 }
-                Some(PitAccess::LsbMsb) => {
+                Some(PitAccess::LsbMsb) | None => {
                     self.latch = None;
                     (latch.value >> 8) as u8
                 }
-                _ => {
+                Some(PitAccess::Lsb) => {
                     self.latch = None;
                     latch.value as u8
                 }
@@ -465,18 +472,18 @@ impl PitSnapshot {
         }
         let ch = &mut self.channel0;
         let status = if word & READ_BACK_NOT_STATUS == 0 && ch.status_latch.is_none() {
-            Some(
-                ch.status(tick)
-                    .ok_or(DeviceError::UnsupportedConfiguration)?,
-            )
+            Some(ch.status(tick))
         } else {
             None
         };
         let count = if word & READ_BACK_NOT_COUNT == 0 && ch.latch.is_none() {
-            Some(
+            Some(if ch.mode.is_none() {
+                // Undefined on the chip; the model reads 0.
+                0
+            } else {
                 ch.count(tick)
-                    .ok_or(DeviceError::UnsupportedConfiguration)?,
-            )
+                    .ok_or(DeviceError::UnsupportedConfiguration)?
+            })
         } else {
             None
         };
