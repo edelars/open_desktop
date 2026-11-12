@@ -1424,6 +1424,32 @@
         "docs/specs/CPU_CONTRACT.md:11916-11930",
         "docs/reports/STAGE_2_REPORT.md:15529-15560"
       ]
+    },
+    {
+      "task": "S2-35.7 PSUBW XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode, plus reviewed word-lane semantics. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.7",
+          "encoding": "66 [one optional REX.R/B] 0F F9 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PSUBW XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, REX.W/X, extra/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter eight independent little-endian u16 lanes compute (DEST-SRC) mod 65536; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13464-13484",
+            "docs/specs/CPU_CONTRACT.md:11976-11993",
+            "docs/reports/STAGE_2_REPORT.md:14597-14626"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13464-13484",
+        "docs/specs/CPU_CONTRACT.md:11976-11993",
+        "docs/reports/STAGE_2_REPORT.md:14597-14626"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
