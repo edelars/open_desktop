@@ -7673,6 +7673,291 @@ fn wrmsr_efer_at_cpl3_never_reaches_the_member() {
     assert_eq!(cell.get(), 0xd00);
 }
 
+// ---- S4-38L7ao: WRMSR IA32_STAR in the CPL0 set (write-only, stored in the caller's cell) ----
+
+const STAR_MSR: u64 = 0xc000_0081;
+/// The Linux boundary value: EDX = __USER32_CS << 16 | __KERNEL_CS, EAX = 0.
+const STAR_EDX: u64 = 0x0023_0010;
+
+/// Runs `code` once in `set` at Ring0 with RCX, RAX, RDX given.
+fn run_star(
+    set: &Cpl0ProfileSet<'_>,
+    code: &[u8],
+    (rcx, rax, rdx): (u64, u64, u64),
+    budget: u64,
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let mut state = board_state();
+    state.gpr[1] = rcx;
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_set(&mut state, &mut memory, set, budget).unwrap();
+    (state, before, result)
+}
+
+#[test]
+fn wrmsr_star_stores_exactly_edx_eax_and_changes_only_rip() {
+    // The boundary of the Linux run: `0F 30`, ECX = IA32_STAR, EDX:EAX = 0x230010:0.
+    let cell = Cell::new(0);
+    let set = base().with_msr_star_write(&cell);
+    let (state, before, result) = run_star(&set, &WRMSR, (STAR_MSR, 0, STAR_EDX), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x0023_0010_0000_0000);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    assert_eq!(state, expected, "only RIP changes");
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+
+    // The value is exactly EDX << 32 | EAX: the upper halves of RAX and RDX are ignored, and a
+    // non-canonical value is stored as is (STAR has no canonical or reserved-bit check).
+    let cell = Cell::new(0x1234);
+    let set = base().with_msr_star_write(&cell);
+    let (_, _, result) = run_star(
+        &set,
+        &WRMSR,
+        (
+            STAR_MSR | (1 << 32),
+            0xffff_ffff_dead_beef,
+            0xffff_ffff_8000_0001,
+        ),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0x8000_0001_dead_beef);
+    // A second write replaces the first; zero is a value too.
+    let (_, _, result) = run_star(&set, &WRMSR, (STAR_MSR, 0, 0), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.get(), 0);
+}
+
+#[test]
+fn wrmsr_star_does_not_touch_the_other_msr_members_and_composes_with_them() {
+    // mov ecx,0xc0000101; mov eax,0x1000; mov edx,0xffff8880; wrmsr (GS_BASE);
+    // mov ecx,0xc0000081; xor eax,eax; mov edx,0x230010; wrmsr (STAR).
+    let code = [
+        0xb9, 0x01, 0x01, 0x00, 0xc0, 0xb8, 0x00, 0x10, 0x00, 0x00, 0xba, 0x80, 0x88, 0xff, 0xff,
+        0x0f, 0x30, 0xb9, 0x81, 0x00, 0x00, 0xc0, 0x31, 0xc0, 0xba, 0x10, 0x00, 0x23, 0x00, 0x0f,
+        0x30,
+    ];
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star_cell = Cell::new(0);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_efer_write(&efer_cell)
+        .with_msr_fs_gs_base()
+        .with_msr_star_write(&star_cell);
+    let (state, before, result) = run_star(&set, &code, (0, 0, 0), 8);
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(state.gs_base, 0xffff_8880_0000_1000);
+    assert_eq!(state.fs_base, before.fs_base);
+    assert_eq!(efer_cell.get(), 0xd00);
+    assert_eq!(star_cell.get(), 0x0023_0010_0000_0000);
+}
+
+#[test]
+fn wrmsr_other_msrs_stay_unsupported_with_the_star_member() {
+    // EFER (no profile in this set), LSTAR, CSTAR, SYSCALL_MASK, KERNEL_GS_BASE, FS/GS base
+    // (no base member), APIC_BASE, SYSENTER_CS and an unknown index: refused with 0x30, the cell
+    // untouched.
+    let cell = Cell::new(0xabcd);
+    let set = base().with_msr_star_write(&cell);
+    for index in [
+        0xc000_0080u64,
+        0xc000_0082,
+        0xc000_0083,
+        0xc000_0084,
+        0xc000_0102,
+        0xc000_0100,
+        0xc000_0101,
+        0x1b,
+        0x174,
+        0x1234_5678,
+    ] {
+        let (state, before, result) = run_star(&set, &WRMSR, (index, 0, STAR_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0xabcd);
+    }
+}
+
+#[test]
+fn rdmsr_star_stays_unsupported_even_after_a_write() {
+    // No RDMSR of STAR in the set: the written value is observable only through the cell.
+    let cell = Cell::new(0);
+    let set = base().with_msr_star_write(&cell);
+    let (state, before, result) = run_star(&set, &RDMSR, (STAR_MSR, 0, 0), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_fs_gs_base()
+        .with_msr_star_write(&cell);
+    // mov ecx,0xc0000081; xor eax,eax; mov edx,0x230010; wrmsr; rdmsr
+    let mut code = vec![
+        0xb9, 0x81, 0x00, 0x00, 0xc0, 0x31, 0xc0, 0xba, 0x10, 0x00, 0x23, 0x00,
+    ];
+    code.extend_from_slice(&WRMSR);
+    code.extend_from_slice(&RDMSR);
+    let (state, _, result) = run_star(&set, &code, (0, 0, 0), 6);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(result.instructions_executed, 4, "the RDMSR is not retired");
+    assert_eq!(cell.get(), 0x0023_0010_0000_0000);
+    assert_eq!(state.rip, RIP + 14, "stopped at the RDMSR");
+}
+
+#[test]
+fn wrmsr_star_without_the_member_is_unsupported_in_every_other_set() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    for set in [
+        base(),
+        base().with_msr(&efer),
+        base().with_msr(&efer).with_msr_efer_write(&efer_cell),
+        base().with_msr_fs_gs_base(),
+        gs_set().with_msr(&efer).with_msr_efer_write(&efer_cell),
+    ] {
+        let (state, before, result) = run_star(&set, &WRMSR, (STAR_MSR, 0, STAR_EDX), 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(efer_cell.get(), 0xd00);
+    }
+}
+
+#[test]
+fn wrmsr_star_outside_the_set_stays_unsupported_in_bare_run_and_msr_profiles() {
+    // Outside the set the refusal is the existing one: the exit of STAR equals the exit of an
+    // unmodelled MSR (a control index), nothing retires and the state is unchanged.
+    let check = |profile: Option<&MsrProfile>, index: u64| {
+        let mut state = board_state();
+        state.gpr[1] = index;
+        state.gpr[2] = STAR_EDX;
+        let before = state.clone();
+        let mut memory = Memory::code(&WRMSR);
+        let result = match profile {
+            None => run(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                || false,
+            ),
+            Some(profile) => run_with_msr_profile(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring0, 1),
+                profile,
+                || false,
+            ),
+        };
+        assert!(
+            matches!(result.exit, RunExit::Unsupported { .. }),
+            "{:?}",
+            result.exit
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        result.exit
+    };
+    assert_eq!(check(None, STAR_MSR), check(None, 0x1234_5678));
+    for profile in [
+        MsrProfile::EferReadOnlyV1(0xd00),
+        MsrProfile::GsBaseV1,
+        MsrProfile::FsBaseV1,
+        MsrProfile::KernelGsBaseV1,
+        MsrProfile::SysenterProbeV1,
+    ] {
+        assert_eq!(
+            check(Some(&profile), STAR_MSR),
+            check(Some(&profile), 0x1234_5678),
+            "{profile:?}"
+        );
+    }
+}
+
+#[test]
+fn wrmsr_star_with_prefixes_is_unsupported_without_mutation() {
+    for code in [
+        &[0x66u8, 0x0f, 0x30][..],
+        &[0xf3, 0x0f, 0x30],
+        &[0xf2, 0x0f, 0x30],
+        &[0x48, 0x0f, 0x30],
+        &[0x40, 0x0f, 0x30],
+    ] {
+        let cell = Cell::new(0x77);
+        let set = base().with_msr_star_write(&cell);
+        let (state, before, result) = run_star(&set, code, (STAR_MSR, 0, STAR_EDX), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x77);
+    }
+}
+
+#[test]
+fn syscall_and_sysret_stay_unsupported_in_the_set_with_the_star_member() {
+    // The stored STAR is never consumed: SYSCALL (0F 05) and SYSRET (0F 07, REX.W 0F 07) are
+    // refused without mutation, also after a STAR write.
+    let cell = Cell::new(0x0023_0010_0000_0000);
+    let set = base().with_msr_star_write(&cell);
+    for code in [
+        &[0x0f, 0x05][..],
+        &[0x0f, 0x07],
+        &[0x48, 0x0f, 0x07],
+        &[0x48, 0x0f, 0x05],
+    ] {
+        let (state, before, result) = run_star(&set, code, (STAR_MSR, 0, STAR_EDX), 1);
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), 0x0023_0010_0000_0000);
+    }
+}
+
+#[test]
+fn wrmsr_star_at_cpl3_never_reaches_the_member() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch or write.
+    let cell = Cell::new(0x77);
+    let set = base().with_msr_star_write(&cell);
+    let mut state = board_state();
+    state.gpr[1] = STAR_MSR;
+    state.gpr[2] = STAR_EDX;
+    let before = state.clone();
+    let mut memory = Memory::code(&WRMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(cell.get(), 0x77);
+}
+
 #[test]
 fn cr0_am_is_accepted_by_the_set_policy() {
     let set = cr_set();

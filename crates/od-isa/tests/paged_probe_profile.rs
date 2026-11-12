@@ -1823,3 +1823,74 @@ fn fs_gs_movsxd_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
+
+#[test]
+fn paged_probe_profiles_keep_wrmsr_ia32_star_unsupported_and_pure() {
+    // S4-38L7ao: the IA32_STAR write belongs to the CPL0 set only. Every paged probe profile
+    // keeps `WRMSR` (ECX = 0xC000_0081, EDX:EAX = 0x0023_0010:0) refused with the opcode 0x30.
+    fn star_state(cr3: Option<u64>) -> LongModeState {
+        let mut cpu = state();
+        cpu.cr3 = cr3;
+        cpu.gpr[Register::Rcx as usize] = 0xc000_0081;
+        cpu.gpr[Register::Rax as usize] = 0;
+        cpu.gpr[Register::Rdx as usize] = 0x0023_0010;
+        cpu
+    }
+    let wrmsr = [0x0f, 0x30];
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = star_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, rdtsc_ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = star_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_stack_probe(
+        PagedCpl0StackProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = star_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr3_probe(
+        PagedCpl0Cr3ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = star_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr0_wp_probe(
+        PagedCpl0Cr0WpProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+}
