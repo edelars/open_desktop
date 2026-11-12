@@ -9161,7 +9161,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // `dst.size`/`src.size`). S4-38L7av: `[64|65] 66 [REX] 89 /r` (MOV r/m16,
                     // r16, REX.W absent) takes them too with a Word destination and source.
                     // LOCK/REP and 0x67 stay refused, 0x66 is accepted only for the word form
-                    // (REX.W with 0x66 stays refused), and for the dword and word forms a stale
+                    // (REX.W with 0x66 stays refused conservatively: architecturally REX.W
+                    // takes precedence and `66` is ignored, so `65 66 48 89 /r` is a valid qword
+                    // store that a real CPU executes; executing it is a separate decision), and
+                    // for the dword and word forms a stale
                     // REX (not immediately before the opcode, SDM Vol.2 2.2.1) is refused
                     // conservatively as in S4-38L7m.
                     let stale_rex = prefix_bytes[..prefix_count]
@@ -9528,7 +9531,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
             _ => unreachable!("known forms handled above"),
         };
         // FS/GS bases are modeled by the exact S2-22a/22b MOV loads and by the
-        // S4-38L7g qword and S4-38L7an dword store forms (MovFsStore/MovGsStore) decoded above.
+        // S4-38L7g qword, S4-38L7an dword and S4-38L7av word store forms (MovFsStore/MovGsStore)
+        // decoded above.
         // LEA ignores segment bases and evaluates only its effective offset.
         if matches!(prefixes.segment, Some(0x64 | 0x65))
             && match operation {
@@ -25013,7 +25017,7 @@ mod tests {
             &[0xf0, 0x65, 0x48, 0x89, 0x00][..],
             &[0xf0, 0x65, 0x89, 0x00][..],
             &[0x66, 0x65, 0x48, 0x89, 0x00][..],
-            &[0x66, 0x65, 0x48, 0x89, 0x00][..],
+            &[0x66, 0x64, 0x48, 0x89, 0x00][..],
             &[0x65, 0x66, 0x48, 0x89, 0x00][..],
             &[0x66, 0x65, 0x66, 0x89, 0x00][..],
             &[0x65, 0x66, 0x66, 0x89, 0x00][..],

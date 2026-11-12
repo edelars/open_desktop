@@ -26517,7 +26517,21 @@ fn fs_and_gs_movw_store_use_their_own_base_or_the_effective_address_for_a_zero_b
         assert_eq!(memory.writes[0].0, RIP + code.len() as u64 + disp);
     }
 
-    // The order of the 0x66 and the segment prefix does not matter (`66 65` = `65 66`).
+    // The order of the 0x66 and the segment prefix does not matter (`66 64` = `64 66`, FS base).
+    let mut state = board_state();
+    state.fs_base = 0xffff_8880_4321_0000;
+    state.gs_base = 0xffff_8880_9999_0000;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&[0x66, 0x64, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00]);
+    let result = run_movb_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        memory.writes,
+        vec![(0xffff_8880_4321_0000 + RIP + 8 + 0x1234, vec![0x44, 0x44])]
+    );
+    expected.rip += 8;
+    assert_eq!(state, expected);
+    // The same for `66 65` (GS base).
     let mut state = board_state();
     state.gs_base = 0xffff_8880_0000_0000;
     let mut memory = BitsMemory::new(&[0x66, 0x65, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00]);
