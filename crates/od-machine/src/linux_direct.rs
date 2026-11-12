@@ -4557,6 +4557,79 @@ mod tests {
         assert!(boot.board.state().tr.is_none());
     }
 
+    // ---- S4-38L7aw: LLDT r/m16 (register form, null selector) through the board facade ----
+
+    #[test]
+    fn lldt_si_with_a_null_selector_marks_ldtr_unusable_through_the_board() {
+        // XOR ESI,ESI; LLDT SI (`0f 00 d6`, the S4-38L7av boundary bytes); INC EAX (`ff c0`) to
+        // show that execution continues after the LLDT; HLT.
+        let code = [0x31, 0xF6, 0x0F, 0x00, 0xD6, 0xFF, 0xC0, 0xF4];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(
+            boot.board.state().ldtr_null_selector,
+            None,
+            "the board entry state has no LDTR value"
+        );
+        let rax_before = boot.board.state().gpr[od_isa::Register::Rax as usize];
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "XOR, LLDT, INC, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.ldtr_null_selector, Some(0));
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            rax_before.wrapping_add(1) & 0xffff_ffff
+        );
+        // The GDTR is the board entry GDTR; TR is still not modeled. The stop record carries no
+        // LDTR field: the state is read through the board.
+        let gdtr = state.gdtr.expect("the board models a GDTR");
+        assert_eq!((gdtr.base, gdtr.limit), (0x12_0000, 31));
+        assert!(state.tr.is_none());
+    }
+
+    #[test]
+    fn lldt_si_with_a_non_null_selector_is_refused_with_opcode_0x00_through_the_board() {
+        // MOV ESI,8; LLDT SI; HLT: the non-null load (GDT read, LDT descriptor checks) is not in
+        // the slice, so the facade stops on the LLDT with `Unsupported { opcode: 0x00 }`.
+        let mut code = vec![0xBE];
+        code.extend(8u32.to_le_bytes());
+        code.extend([0x0F, 0x00, 0xD6, 0xF4]);
+        let lldt_offset = code.len() as u64 - 4;
+        let (mut boot, file) = boot_with_entry(&code);
+        let lldt_rip = boot.board.state().rip + lldt_offset;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x00 },
+            "{record:?}"
+        );
+        assert_eq!(record.exit_kind, "unsupported");
+        assert_eq!(record.retired, 1, "only the MOV ESI retired: {record:?}");
+        assert_eq!(record.rip, lldt_rip, "{record:?}");
+        assert_eq!(record.rip_bytes[..3], [0x0F, 0x00, 0xD6], "{record:?}");
+        assert_eq!(boot.board.state().ldtr_null_selector, None);
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]

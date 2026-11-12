@@ -251,12 +251,15 @@ pub struct LongModeState {
     pub ds_cache: Option<DsDescriptorCache>,
     /// Hidden ES descriptor cache only in the bounded MOV-ES-load profile.
     pub es_cache: Option<DataSegmentDescriptorCache>,
-    /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support or LDTR is modeled.
+    /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support; LDTR is modeled only as the null-selector mark `ldtr_null_selector`.
     pub gdtr: Option<Gdtr>,
     /// IDTR state populated only by the bounded local LIDT profile.
     pub idtr: Option<Idtr>,
     /// Task register state populated only by the bounded paged LTR profile.
     pub tr: Option<TaskRegisterCache>,
+    /// S4-38L7aw: LDTR made unusable by `LLDT` with a null selector (0..=3). Holds the visible
+    /// selector; no descriptor cache exists in this state. `None` means no LDTR value is modeled.
+    pub ldtr_null_selector: Option<u16>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,
     /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
@@ -438,6 +441,7 @@ impl Default for LongModeState {
             gdtr: None,
             idtr: None,
             tr: None,
+            ldtr_null_selector: None,
             fs_cache: None,
             gs_cache: None,
             x87: None,
@@ -482,6 +486,7 @@ pub enum FragmentAdapterError {
     UnsupportedGdtr(Gdtr),
     UnsupportedIdtr(Idtr),
     UnsupportedTaskRegister(TaskRegisterCache),
+    UnsupportedLdtr(u16),
     UnsupportedDsCache(DsDescriptorCache),
     UnsupportedEsCache(DataSegmentDescriptorCache),
     UnsupportedCsSelector(u16),
@@ -579,6 +584,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(tr) = state.tr {
             return Err(FragmentAdapterError::UnsupportedTaskRegister(tr));
+        }
+        if let Some(selector) = state.ldtr_null_selector {
+            return Err(FragmentAdapterError::UnsupportedLdtr(selector));
         }
         if let Some(fs_cache) = state.fs_cache {
             return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
@@ -844,6 +852,7 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -1171,6 +1180,18 @@ mod task_register_tests {
         assert_eq!(
             FragmentState::try_from(&state),
             Err(FragmentAdapterError::UnsupportedTaskRegister(cache))
+        );
+    }
+
+    #[test]
+    fn fragment_adapter_rejects_ldtr_state() {
+        let state = LongModeState {
+            ldtr_null_selector: Some(0),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedLdtr(0))
         );
     }
 }

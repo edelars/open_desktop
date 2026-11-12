@@ -1345,6 +1345,7 @@ impl IntegerState {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
             cr3: None,
             sti_shadow: self.sti_shadow.map(|shadow| match shadow {
                 StiShadowSnapshot::Clear => od_isa::StiShadow::Clear,
