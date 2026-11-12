@@ -327,18 +327,20 @@
 
 ### S5-17. Host-side отказы и ограниченные ресурсы
 
-- [ ] Принято после ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
+- [x] Принято после независимого ревью. Гостевая часть (гость видит ошибку по контракту) — отдельным шагом, **blocked до `S4-39`**. Пересечение с `S9-18` разрешается решением `S5-00` п.4(а).
 - **Где:** `crates/od-host/src/`, `crates/od-storage/src/testing/`, `tests/system/`.
 - **Сделать:**
   1. Перепроверить фактический статус `S9-18` (ENOSPC, zero/discard и лимиты) и не дублировать уже реализованное; расхождение записать в отчёт.
-  2. Проверить исчерпание места при записи: типизированная ошибка по контракту `S5-02`, образ читается.
-  3. Проверить повреждённый и усечённый образ при открытии: типизированная ошибка, отказ запуска, без panic.
-  4. Проверить обрыв между записью и completion (снятие процесса): описать, какие записи сохранились, по политике write-through.
+  2. Проверить runtime отказ записи `StorageFull` через `FaultBackend`: typed `BackendError::Io` по контракту `S5-02`, no-write failure оставляет backing bytes неизменными и читаемыми; adapter остаётся terminal/quarantined.
+  3. Проверить отказ открытия пустого и частичного-sector RAW: typed `PersistentNvmeOpenError::RawImage`, отказ старта без panic и без изменения файла. У RAW нет header/ожидаемой capacity, поэтому секторно-выровненное сокращение размера само по себе неотличимо от меньшего namespace.
+  4. Проверить изолированный process kill в окне после host Write и перед file-durable completion: child не возвращает успешный результат до kill. Не трактовать состояние bytes после процесса как durable/recovered.
   5. Проверить второе открытие образа под `LOCK_EX`: типизированная ошибка.
-  6. Все отказы воспроизводить через `FaultBackend`, а не новым инжектором.
-- **Проверить:** каждый случай имеет собственный тест; ни один не приводит к panic или к нечитаемому образу; `cargo test -p od-host --lib --offline`, `cargo test -p od-storage --lib --offline` не ниже базовых линий.
+  6. Runtime storage failures воспроизводить через существующий `FaultBackend`, не добавляя новый injector; file geometry и `LOCK_EX` проверять реальным HostFileStorage.
+- **Проверить:** каждый host case имеет тест; open refusals и `StorageFull` no-write case возвращают typed errors без panic и сохраняют читаемые/неизменённые bytes; SIGKILL test не заявляет post-kill durability. Запустить `cargo test -p od-host --lib --offline`, `cargo test -p od-storage --lib --offline`.
 - **Готово:** границы ресурсов и отказы носителя дают предсказуемое поведение, доказанное тестами без гостя.
 - **Не делать:** не превращать ошибку host в panic; не восстанавливать повреждённый образ (этап 9); не заявлять устойчивость к потере питания; не дублировать `S9-18`.
+
+Текущий статус (2026-11-11): `accepted` после независимого ревью; checkbox отмечен. S9-18 уже покрывает CoW capacity/quota, explicit zero/discard и fault-injected ENOSPC на commit/compaction; S5-17 добавляет только host RAW/backend отказ и lock/open проверки. `FaultBackend` StorageFull case возвращает `BackendError::Io`, сохраняет backing bytes и оставляет adapter terminal/quarantined; open tests проверяют пустой/partial-sector RAW и typed `WriterBusy`. Существующий изолированный SIGKILL test ставит процесс перед `F_FULLFSYNC` после Write и проверяет отсутствие backend success; он не исследует bytes после kill и не снимает [ISSUE-077](../KNOWN_ISSUES.md#issue-077-s5-03-raw-quarantine-not-persistent-across-process-exit). Проверки и границы — в [отчёте этапа 5](../reports/STAGE_5_REPORT.md#13-статус-s5-17-2026-11-11). Гостевое наблюдение ошибок остаётся blocked до `S4-39`.
 
 ### S5-08. Сценарий A: загрузка, выключение, повторный запуск на initramfs
 

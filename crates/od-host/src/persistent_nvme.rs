@@ -522,8 +522,13 @@ mod tests {
     }
 
     #[test]
-    fn storage_full_write_error_is_terminal_and_quarantines_raw_lifecycle() {
+    fn s5_17_storage_full_write_is_typed_and_preserves_readable_image() {
         let (handle, mut backend) = fault_adapter();
+        let original = vec![0x31; SECTOR_BYTES * 2];
+        // Keep a storage-level observer open before the failed attempt. It is
+        // only an oracle for this no-mutation fault; it does not reopen or
+        // recover the terminal persistent adapter.
+        let observer = handle.open();
         handle.script_next(Fault::Write(WriteFault::Fail(
             std::io::ErrorKind::StorageFull,
         )));
@@ -533,7 +538,24 @@ mod tests {
         );
         assert!(backend.is_terminal_failed());
         assert!(backend.is_quarantined());
-        assert_eq!(handle.volatile_bytes(), handle.durable_bytes());
+        assert_eq!(handle.volatile_bytes(), original);
+        assert_eq!(handle.durable_bytes(), original);
+        assert!(
+            handle
+                .trace()
+                .iter()
+                .any(|event| event.contains("StorageFull"))
+        );
+        let mut observed = vec![0; SECTOR_BYTES * 2];
+        let bytes_read = StorageBackend::read_at(&observer, 0, &mut observed)
+            .expect("unchanged backing remains readable through the test observer");
+        assert_eq!(bytes_read, original.len());
+        assert_eq!(observed, original);
+        assert_eq!(
+            backend.read_sectors(0, &mut [0; SECTOR_BYTES]),
+            Err(BackendError::Io),
+            "a failed VM adapter stays terminal even though the fault oracle can read the unchanged bytes"
+        );
     }
 
     #[test]
@@ -590,6 +612,49 @@ mod tests {
         assert_eq!(bytes, [0x92; SECTOR_BYTES]);
         drop(reopened);
         HostFileStorage::open_read_write_exclusive(&file.path).expect("lock released on drop");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn s5_17_second_lock_ex_open_returns_typed_busy_and_keeps_image_readable() {
+        let file = TempFile::new(&[0x19; SECTOR_BYTES * 2]);
+        let mut backend = PersistentNvmeBackend::open(&file.path).expect("first writer");
+        assert!(matches!(
+            PersistentNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::WriterOpen(
+                WriterOpenError::WriterBusy
+            ))
+        ));
+        let mut readback = [0; SECTOR_BYTES];
+        backend
+            .read_sectors(0, &mut readback)
+            .expect("first writer remains usable after refused second open");
+        assert_eq!(readback, [0x19; SECTOR_BYTES]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn s5_17_empty_raw_open_returns_typed_error_without_mutation_or_panic() {
+        let file = TempFile::new(&[]);
+        assert!(matches!(
+            PersistentNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::RawImage(RawError::ZeroSize))
+        ));
+        assert!(fs::read(&file.path).expect("read refused image").is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn s5_17_partial_sector_raw_open_returns_typed_error_without_mutation_or_panic() {
+        let original = [0xA9; SECTOR_BYTES + 1];
+        let file = TempFile::new(&original);
+        assert!(matches!(
+            PersistentNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::RawImage(
+                RawError::SizeNotBlockMultiple { size, block_size }
+            )) if size == SECTOR_BYTES_U64 + 1 && block_size == SECTOR_BYTES_U64
+        ));
+        assert_eq!(fs::read(&file.path).expect("read refused image"), original);
     }
 
     #[cfg(target_os = "macos")]
