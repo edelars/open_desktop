@@ -1146,6 +1146,102 @@
         "docs/plans/STAGE_2.md:13933-14152",
         "docs/reports/STAGE_2_REPORT.md:15062-15345"
       ]
+    },
+    {
+      "task": "S2-34.7a–.7d legacy XMM register logic",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 raw x87/SSE snapshots; SSE availability and CR0/CR4 prerequisites are assumed only. Exact no-mandatory-prefix legacy forms with ModR/M.mod=3 and at most one effective REX.R/B byte; no memory callback. No native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-34.7a",
+          "encoding": "NP 0F 57 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter XORPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5640-5658",
+            "docs/specs/CPU_CONTRACT.md:2596-2616",
+            "docs/reports/STAGE_2_REPORT.md:14101-14129"
+          ]
+        },
+        {
+          "task": "S2-34.7b",
+          "encoding": "NP 0F 54 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ANDPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5659-5678",
+            "docs/specs/CPU_CONTRACT.md:2618-2638",
+            "docs/reports/STAGE_2_REPORT.md:14130-14163"
+          ]
+        },
+        {
+          "task": "S2-34.7c",
+          "encoding": "NP 0F 56 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ORPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5679-5697",
+            "docs/specs/CPU_CONTRACT.md:2639-2657",
+            "docs/reports/STAGE_2_REPORT.md:14164-14203"
+          ]
+        },
+        {
+          "task": "S2-34.7d",
+          "encoding": "NP 0F 55 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ANDNPS as (~old DEST) & SRC over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5698-5718",
+            "docs/specs/CPU_CONTRACT.md:2658-2678",
+            "docs/reports/STAGE_2_REPORT.md:14204-14243"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:5640-5718",
+        "docs/specs/CPU_CONTRACT.md:2596-2678",
+        "docs/reports/STAGE_2_REPORT.md:14101-14243"
+      ]
+    },
+    {
+      "task": "S2-35.50/.51 XMM register PANDN/POR",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 raw x87/SSE snapshots and mandatory-66 XMM/SSE2 decode; SSE2 and CR0/CR4 prerequisites are assumptions only. Exact ModR/M.mod=3 register form; no memory callback. No native/JIT/physical or machine-CPL evidence. S2-35.49 PAND is explicitly omitted while independent review is pending.",
+      "families": [
+        {
+          "task": "S2-35.50",
+          "encoding": "66 [one optional REX.R/B] 0F DF /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Mandatory 66; optional single REX from 40/41/44/45 immediately after 66. Reject bare MMX, other/duplicate/reordered prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter PANDN over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14640-14674",
+            "docs/specs/CPU_CONTRACT.md:12196-12213",
+            "docs/reports/STAGE_2_REPORT.md:15806-15832"
+          ]
+        },
+        {
+          "task": "S2-35.51",
+          "encoding": "66 [one optional REX.R/B] 0F EB /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Mandatory 66; optional single REX from 40/41/44/45 immediately after 66. Reject bare MMX, other/duplicate/reordered prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter POR over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14675-14701",
+            "docs/specs/CPU_CONTRACT.md:12214-12231",
+            "docs/reports/STAGE_2_REPORT.md:15833-15868"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14640-14701",
+        "docs/specs/CPU_CONTRACT.md:12196-12231",
+        "docs/reports/STAGE_2_REPORT.md:15806-15868"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import gzip
+import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -37,6 +40,48 @@ def exact_form(prefix, modrm, address, count, binary, classification):
 
 
 class NormalizedFormTests(unittest.TestCase):
+    def test_saved_inventory_manifests_distinguish_coarse_and_normalized_forms(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        data_root = repo_root / "docs/reports/data/stage5"
+        pairs = (
+            (
+                "s5-21-repeatability.json",
+                "s5-21-isa-inventory.json.gz",
+                "full_inventory",
+                "compact_evidence",
+            ),
+            (
+                "s5-21-e-static-build-pair.json",
+                "s5-21-isa-inventory-e-static.json.gz",
+                None,
+                "static_analysis",
+            ),
+        )
+        for manifest_name, compact_name, full_key, compact_key in pairs:
+            with self.subTest(manifest=manifest_name):
+                manifest_path = data_root / manifest_name
+                compact_path = data_root / compact_name
+                manifest = json.loads(manifest_path.read_text())
+                compact = json.loads(gzip.decompress(compact_path.read_bytes()))
+                fields = manifest[full_key] if full_key else manifest[compact_key]
+                compact_fields = manifest[compact_key] if full_key else fields
+
+                self.assertEqual(compact["normalized_instruction_form_count"], 1269)
+                self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
+                self.assertEqual(fields["normalized_instruction_forms"], 1269)
+                self.assertEqual(fields["coarse_operand_signatures"], 560)
+                self.assertEqual(fields["classified_normalized_forms"], 1031)
+                self.assertEqual(fields["unclassified_normalized_forms"], 238)
+                self.assertEqual(
+                    compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
+                    hashlib.sha256(compact_path.read_bytes()).hexdigest(),
+                )
+                raw_sha = fields["raw_inventory_sha256"]
+                self.assertEqual(len(raw_sha), 64)
+                self.assertTrue(all(character in "0123456789abcdef" for character in raw_sha))
+                if full_key:
+                    self.assertEqual(raw_sha, manifest["runs"][0]["sha256"])
+
     def test_normalizes_register_encoding_but_preserves_semantic_prefix_and_address(self) -> None:
         plain_a = exporter.normalized_instruction_form({
             "prefix_bytes": ["48"], "opcode_bytes": ["8B"],

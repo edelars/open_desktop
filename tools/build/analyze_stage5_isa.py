@@ -320,6 +320,54 @@ PUNPCK_ALLOWED_PREFIXES = {
 }
 
 
+SIMD_LOGIC_NO_PREFIX_PROFILES = {
+    0x57: ("xorps", "S2-34.7a-XORPS-register-register"),
+    0x54: ("andps", "S2-34.7b-ANDPS-register-register"),
+    0x56: ("orps", "S2-34.7c-ORPS-register-register"),
+    0x55: ("andnps", "S2-34.7d-ANDNPS-register-register"),
+}
+SIMD_LOGIC_NO_PREFIX_BY_MNEMONIC = {
+    mnemonic: (opcode, profile)
+    for opcode, (mnemonic, profile) in SIMD_LOGIC_NO_PREFIX_PROFILES.items()
+}
+SIMD_LOGIC_66_PROFILES = {
+    0xDF: ("pandn", "S2-35.50-PANDN-register-register"),
+    0xEB: ("por", "S2-35.51-POR-register-register"),
+}
+SIMD_LOGIC_66_BY_MNEMONIC = {
+    mnemonic: (opcode, profile)
+    for opcode, (mnemonic, profile) in SIMD_LOGIC_66_PROFILES.items()
+}
+SIMD_LOGIC_NO_PREFIX_ALLOWED = {(), (0x40,), (0x41,), (0x44,), (0x45,)}
+SIMD_LOGIC_66_ALLOWED = {(0x66,)} | {
+    (0x66, rex) for rex in (0x40, 0x41, 0x44, 0x45)
+}
+
+
+def simd_logic_local_profile_candidate(row: dict) -> str | None:
+    """Match reviewed local register logic profiles, excluding pending PAND."""
+    no_prefix_entry = SIMD_LOGIC_NO_PREFIX_BY_MNEMONIC.get(row["mnemonic"])
+    mandatory_66_entry = SIMD_LOGIC_66_BY_MNEMONIC.get(row["mnemonic"])
+    if no_prefix_entry is None and mandatory_66_entry is None:
+        return None
+    if row["signature"] != f"{row['mnemonic']} xmm,xmm":
+        return None
+    opcode, profile = no_prefix_entry or mandatory_66_entry
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, opcode):
+        return None
+    prefixes = tuple(view["prefixes"])
+    allowed_prefixes = SIMD_LOGIC_NO_PREFIX_ALLOWED if no_prefix_entry else SIMD_LOGIC_66_ALLOWED
+    if prefixes not in allowed_prefixes:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return profile
+
+
 def punpck_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted local XMM register-register PUNPCK slices."""
     entry = PUNPCK_LOCAL_PROFILES_BY_MNEMONIC.get(row["mnemonic"])
@@ -428,6 +476,9 @@ def movups_local_profile_candidate(row: dict) -> str | None:
 
 def local_profile_candidate(row: dict) -> str | None:
     """Match broad, source-backed local core families; never implies machine CPL."""
+    simd_logic_candidate = simd_logic_local_profile_candidate(row)
+    if simd_logic_candidate is not None:
+        return simd_logic_candidate
     punpck_candidate = punpck_local_profile_candidate(row)
     if punpck_candidate is not None:
         return punpck_candidate

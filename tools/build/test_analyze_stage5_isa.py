@@ -257,6 +257,114 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertEqual(len(profile["families"]), 1)
         self.assertTrue(profile["families"][0]["encoding"].startswith("66 [one optional REX.R/B] 0F EF /r; ModR/M.mod=3"))
 
+    def test_reviewed_register_logic_profiles_match_exact_prefix_and_opcode_split(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        profiles = (
+            (0x57, "xorps", "S2-34.7a-XORPS-register-register", False),
+            (0x54, "andps", "S2-34.7b-ANDPS-register-register", False),
+            (0x56, "orps", "S2-34.7c-ORPS-register-register", False),
+            (0x55, "andnps", "S2-34.7d-ANDNPS-register-register", False),
+            (0xDF, "pandn", "S2-35.50-PANDN-register-register", True),
+            (0xEB, "por", "S2-35.51-POR-register-register", True),
+        )
+        allowed_rex = {0x40, 0x41, 0x44, 0x45}
+
+        for opcode, mnemonic, task, mandatory_66 in profiles:
+            for destination in range(16):
+                for source in range(16):
+                    rex = 0x40 | ((destination >> 3) << 2) | (source >> 3)
+                    self.assertIn(rex, allowed_rex)
+                    base_prefix = (0x66,) if mandatory_66 else ()
+                    prefix_forms = [base_prefix + (rex,)]
+                    if rex == 0x40:
+                        prefix_forms.insert(0, base_prefix)
+                    for prefixes in prefix_forms:
+                        modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                        encoding = " ".join(f"{value:02x}" for value in (*prefixes, 0x0F, opcode, modrm))
+                        row = analyzer.parse_row(f"  401A00: {encoding} {mnemonic} xmm{destination},xmm{source}")
+                        self.assertEqual(row["signature"], f"{mnemonic} xmm,xmm", encoding)
+                        self.assertEqual(analyzer.local_profile_candidate(row), task, encoding)
+                        self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+
+            prefix_forms = ((), (0x40,), (0x41,), (0x44,), (0x45,))
+            if mandatory_66:
+                prefix_forms = tuple((0x66, *prefix) for prefix in prefix_forms)
+            # Every memory ModR/M encoding is excluded under each legal prefix shape.
+            for modrm in range(0xC0):
+                for prefixes in prefix_forms:
+                    encoding = " ".join(f"{value:02x}" for value in (*prefixes, 0x0F, opcode, modrm))
+                    row = analyzer.parse_row(f"  401B00: {encoding} {mnemonic} xmm0,XMMWORD PTR [rax]")
+                    self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+        rejected = (
+            # The reviewed SSE profiles are NP: mandatory 66 is outside their form.
+            ("66 0f 57 c1", "xorps", "xmm0,xmm1"),
+            ("66 0f 54 c1", "andps", "xmm0,xmm1"),
+            ("66 0f 56 c1", "orps", "xmm0,xmm1"),
+            ("66 0f 55 c1", "andnps", "xmm0,xmm1"),
+            # PAND is implemented, but independent review is pending.
+            ("66 0f db c1", "pand", "xmm0,xmm1"),
+            ("0f db c1", "pand", "mm0,mm1"),
+            # PANDN/POR require mandatory 66; bare encodings are MMX.
+            ("0f df c1", "pandn", "mm0,mm1"),
+            ("0f eb c1", "por", "mm0,mm1"),
+        )
+        for encoding, mnemonic, operands in rejected:
+            row = analyzer.parse_row(f"  401C00: {encoding} {mnemonic} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+        for opcode, mnemonic, _, mandatory_66 in profiles:
+            bad_prefixes = (
+                ((0x66,) if not mandatory_66 else ()),
+                (0xF0,), (0xF2,), (0xF3,), (0x67,), (0x26,), (0x2E,),
+                (0x36,), (0x3E,), (0x64,), (0x65,), (0x40, 0x41), (0x41, 0x66),
+                (0x66, 0x66) if mandatory_66 else (0x66, 0x40),
+            )
+            for prefixes in bad_prefixes:
+                encoding = " ".join(f"{value:02x}" for value in (*prefixes, 0x0F, opcode, 0xC1))
+                row = analyzer.parse_row(f"  401D00: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+            for rex in range(0x40, 0x50):
+                if rex in allowed_rex:
+                    continue
+                prefixes = (0x66, rex) if mandatory_66 else (rex,)
+                encoding = " ".join(f"{value:02x}" for value in (*prefixes, 0x0F, opcode, 0xC1))
+                row = analyzer.parse_row(f"  401E00: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+            for other_opcode, _, _, other_mandatory_66 in profiles:
+                if other_opcode == opcode:
+                    continue
+                prefixes = (0x66,) if other_mandatory_66 else ()
+                encoding = " ".join(f"{value:02x}" for value in (*prefixes, 0x0F, other_opcode, 0xC1))
+                row = analyzer.parse_row(f"  401F00: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+            for encoding in (
+                f"0f {opcode:02x}", f"66 0f {opcode:02x}",
+                f"66 0f {opcode:02x} c1 90", "c5 f8 57 c1", "62 f1 7c 08 57 c1",
+            ):
+                row = analyzer.parse_row(f"  402000: {encoding} {mnemonic} xmm0,xmm1")
+                self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_reviewed_logic_registry_is_local_only_and_excludes_pending_pand(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        expected_groups = {
+            "S2-34.7a–.7d legacy XMM register logic",
+            "S2-35.50/.51 XMM register PANDN/POR",
+        }
+        expected_families = {
+            "S2-34.7a", "S2-34.7b", "S2-34.7c", "S2-34.7d", "S2-35.50", "S2-35.51",
+        }
+        profiles = [profile for profile in registry["profiles"] if profile["task"] in expected_groups]
+        self.assertEqual({profile["task"] for profile in profiles}, expected_groups)
+        self.assertEqual({family["task"] for profile in profiles for family in profile["families"]}, expected_families)
+        self.assertFalse(any("S2-35.49" in profile["task"] for profile in registry["profiles"]))
+        for profile in profiles:
+            self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+            self.assertIsNone(profile["cpl"])
+            self.assertIn("machine-CPL evidence", profile["gate"])
+
     def test_s2_35_24_to_31_punpck_matches_only_all_exact_xmm_register_forms(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)
