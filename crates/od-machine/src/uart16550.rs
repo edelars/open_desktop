@@ -908,17 +908,18 @@ mod tests {
         write(&mut device, 1, 0x01);
         device.inject_received_byte(0x5a).unwrap();
         assert!(!handle.interrupt_line());
-        let before = device.snapshot();
-        // Without OUT2 the line stays low; the other registers are unchanged.
+        // Without OUT2 the line stays low; the whole state changes only in
+        // the mcr field.
         for value in [0x01_u8, 0x02, 0x04, 0x07] {
+            let before = device.snapshot();
             write(&mut device, 4, value);
+            let mut expected = before.clone();
+            expected.mcr = value;
+            assert_eq!(device.snapshot(), expected);
             assert!(!handle.interrupt_line());
             assert_eq!(handle.peek_iir(), 0x04);
-            assert_eq!(read(&mut device, 3), 0x03);
-            assert_eq!(read(&mut device, 1), 0x01);
-            assert_eq!(read(&mut device, 5), 0x61);
+            assert_eq!(read(&mut device, 4), value);
         }
-        assert_ne!(device.snapshot(), before);
         // OUT2 together with DTR/RTS/OUT1 raises the line as OUT2 alone did.
         write(&mut device, 4, 0x0f);
         assert!(handle.interrupt_line());
@@ -932,5 +933,52 @@ mod tests {
         write(&mut device, 0, 0x41);
         assert!(device.transfer_holding_to_shift());
         assert_eq!(device.complete_transmission(), Some(0x41));
+    }
+
+    #[test]
+    fn mcr_bits_0_to_2_do_not_gate_a_pending_thre_but_out2_does() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        setup_8n1_divisor(&mut device);
+        // Enabling THRE with an empty holding register raises the condition.
+        write(&mut device, 1, 0x02);
+        assert!(device.snapshot().thre_pending);
+        assert_eq!(handle.peek_iir(), 0x02);
+        for value in [0x01_u8, 0x02, 0x04, 0x07] {
+            write(&mut device, 4, value);
+            assert!(!handle.interrupt_line());
+            assert!(device.snapshot().thre_pending);
+        }
+        // OUT2 raises the line as before, alone or with the stored bits.
+        for value in [0x08_u8, 0x09, 0x0f] {
+            write(&mut device, 4, 0x00);
+            assert!(!handle.interrupt_line());
+            write(&mut device, 4, value);
+            assert!(handle.interrupt_line());
+        }
+        write(&mut device, 4, 0x07);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn mcr_is_the_same_register_with_dlab_set() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x93);
+        for value in 0x01_u8..=0x07 {
+            let before = device.snapshot();
+            write(&mut device, 4, value);
+            let mut expected = before.clone();
+            expected.mcr = value;
+            assert_eq!(device.snapshot(), expected);
+            assert_eq!(read(&mut device, 4), value);
+        }
+        let before = device.snapshot();
+        assert_eq!(
+            device.write(access(4), 0x10),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(device.snapshot(), before);
+        assert_eq!(read(&mut device, 4), 0x07);
+        assert_eq!(read(&mut device, 3), 0x93);
     }
 }
