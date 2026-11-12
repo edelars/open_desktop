@@ -35201,6 +35201,8 @@ fn step_configured(
         | Operation::MovsxdGsLoad { .. }
         | Operation::MovsxFsLoadB { .. }
         | Operation::MovsxGsLoadB { .. }
+        | Operation::MovzxFsLoadB { .. }
+        | Operation::MovzxGsLoadB { .. }
         // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
@@ -49063,6 +49065,8 @@ fn step_configured(
         | Operation::MovsxdGsLoad { .. }
         | Operation::MovsxFsLoadB { .. }
         | Operation::MovsxGsLoadB { .. }
+        | Operation::MovzxFsLoadB { .. }
+        | Operation::MovzxGsLoadB { .. }
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
         | Operation::MovFsMemImm { .. }
@@ -54381,6 +54385,22 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, sign_extend_byte_load(dst, value));
+        }
+        Operation::MovzxFsLoadB { dst, src } => {
+            // S4-38L7bf: base + effective address; a non-canonical address (one byte: first and
+            // last byte coincide) is #GP(0) before the read. `read_integer` of a byte is already
+            // zero-extended; `state.write` of the dword (upper 32 bits zeroed) or qword view
+            // keeps it so. Flags are untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovzxGsLoadB { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
         }
         Operation::MovFsMemByteImm { dst, immediate } => {
             // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
