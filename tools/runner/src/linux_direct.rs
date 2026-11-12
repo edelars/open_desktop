@@ -581,6 +581,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["guest_lstar"] = json!(hex64(record.guest_lstar));
     // S4-38L7aq: the guest IA32_CSTAR (write-only for the guest).
     stop["guest_cstar"] = json!(hex64(record.guest_cstar));
+    // S4-38L7ar: the guest IA32_SYSENTER_CS (write-only for the guest; the full 64-bit value).
+    stop["guest_sysenter_cs"] = json!(hex64(record.guest_sysenter_cs));
     stop
 }
 
@@ -1436,6 +1438,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1546,6 +1549,33 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_guest_sysenter_cs_after_a_wrmsr_of_ia32_sysenter_cs() {
+        // MOV ECX,0x174; MOV EAX,0x10; XOR EDX,EDX; WRMSR (S4-38L7ar).
+        let code = [
+            0xB9, 0x74, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-sysenter-cs",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_sysenter_cs"], "0x10");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes SYSENTER_CS.
+        let value = run_case("sysenter-cs-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_sysenter_cs"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
         // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
         let code = [
@@ -1634,6 +1664,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1924,6 +1955,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"

@@ -480,6 +480,10 @@ pub struct LinuxStopRecord {
     /// The guest `IA32_CSTAR` (S4-38L7aq) after the run; `0` when never written. Write-only for
     /// the guest (`RDMSR` of CSTAR is refused).
     pub guest_cstar: u64,
+    /// The guest `IA32_SYSENTER_CS` (S4-38L7ar) after the run; `0` when never written. The full
+    /// 64-bit value written (the real register is a 16-bit selector, not modelled as such).
+    /// Write-only for the guest (`RDMSR` of SYSENTER_CS is refused).
+    pub guest_sysenter_cs: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -626,6 +630,7 @@ fn stop_record(
         guest_star: boot.board.guest_star(),
         guest_lstar: boot.board.guest_lstar(),
         guest_cstar: boot.board.guest_cstar(),
+        guest_sysenter_cs: boot.board.guest_sysenter_cs(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -703,6 +708,13 @@ pub struct LinuxCpl0SetMembers {
     /// (SYSCALL_MASK included) stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled.
     /// Independent of [`Self::msr`], [`Self::msr_star`] and [`Self::msr_lstar`].
     pub msr_cstar: bool,
+    /// `with_msr_sysenter_cs_write` (S4-38L7ar): `WRMSR` of IA32_SYSENTER_CS (`0x174`) at CPL0 stores
+    /// `EDX:EAX` (the full 64-bit value) in the board (`guest_sysenter_cs` of the stop record).
+    /// Write-only: `RDMSR` of it, SYSENTER_ESP/EIP and every other MSR stay `Unsupported`;
+    /// `SYSENTER`/`SYSEXIT` are not modelled. Independent of [`Self::msr`] and the SYSCALL members.
+    /// With `MsrProfile::SysenterProbeV1` as the MSR profile the member would have no effect (the
+    /// profile's `#GP(0)` wins); the board set uses `EferReadOnlyV1`.
+    pub msr_sysenter_cs: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
@@ -746,6 +758,7 @@ impl LinuxCpl0SetMembers {
             msr_star: false,
             msr_lstar: false,
             msr_cstar: false,
+            msr_sysenter_cs: false,
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
@@ -774,6 +787,7 @@ impl LinuxCpl0SetMembers {
             msr_star: true,
             msr_lstar: true,
             msr_cstar: true,
+            msr_sysenter_cs: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
             ..Self::minimal()
@@ -821,6 +835,8 @@ pub fn run_linux_direct_board_set(
     let lstar_cell = Cell::new(boot.board.guest_lstar());
     // S4-38L7aq: the guest IA32_CSTAR, kept by the board between runs.
     let cstar_cell = Cell::new(boot.board.guest_cstar());
+    // S4-38L7ar: the guest IA32_SYSENTER_CS, kept by the board between runs.
+    let sysenter_cs_cell = Cell::new(boot.board.guest_sysenter_cs());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -856,6 +872,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_cstar_write(&cstar_cell);
         names.push("msr:cstar_write".into());
     }
+    if members.msr_sysenter_cs {
+        set = set.with_msr_sysenter_cs_write(&sysenter_cs_cell);
+        names.push("msr:sysenter_cs_write".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -884,6 +904,7 @@ pub fn run_linux_direct_board_set(
     boot.board.set_guest_star(star_cell.get());
     boot.board.set_guest_lstar(lstar_cell.get());
     boot.board.set_guest_cstar(cstar_cell.get());
+    boot.board.set_guest_sysenter_cs(sysenter_cs_cell.get());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -5699,6 +5720,159 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7ar: WRMSR IA32_SYSENTER_CS through the board facade (write-only) ----
+
+    #[test]
+    fn wrmsr_sysenter_cs_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // MOV ECX,0x174; MOV EAX,0x10; XOR EDX,EDX; WRMSR; HLT: the boundary bytes `0F 30` of the
+        // diagnostic run (EDX:EAX = 0:0x10, the kernel CS selector).
+        let code = [
+            0xB9, 0x74, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0xF4,
+        ];
+        let value = 0x10u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_sysenter_cs(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "MOV, MOV, XOR, WRMSR, HLT");
+        assert_eq!(record.gpr[Register::Rcx as usize], 0x174);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x10);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; the
+        // SYSCALL cells and the EFER did not move.
+        assert_eq!(record.guest_sysenter_cs, value);
+        assert_eq!(boot.board.guest_sysenter_cs(), value);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(
+            record
+                .set_members
+                .contains(&"msr:sysenter_cs_write".to_string())
+        );
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_sysenter_cs(value);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_sysenter_cs, value);
+
+        // A real chain on one board: run 1 (guest WRMSR) stops by budget right after the write,
+        // run 2 on the same `boot` retires the rest and still reports the stored value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let first = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(first.retired, 4, "{first:?}");
+        assert_eq!(first.guest_sysenter_cs, value);
+        assert_eq!(boot.board.guest_sysenter_cs(), value);
+        let second = run_set_facade(&mut boot, &file, 1, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 1, "HLT");
+        assert_eq!(second.guest_sysenter_cs, value);
+        assert_eq!(boot.board.guest_sysenter_cs(), value);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, XOR) and the cell stays 0; the
+        // SYSCALL members do not admit SYSENTER_CS.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_star: true,
+                msr_lstar: true,
+                msr_cstar: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_sysenter_cs: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_sysenter_cs, 0);
+            assert_eq!(boot.board.guest_sysenter_cs(), 0);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:sysenter_cs_write".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn wrmsr_sysenter_cs_keeps_the_full_64_bit_value_and_never_touches_the_other_cells() {
+        // MOV ECX,0x174; MOV EAX,0x8100_1AB0; MOV EDX,0xFFFF_FFFF; WRMSR: not a 16-bit selector;
+        // the cell holds all 64 bits written and no canonical check is made.
+        let code = [
+            0xB9, 0x74, 0x01, 0x00, 0x00, 0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_sysenter_cs, 0xFFFF_FFFF_8100_1AB0);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn rdmsr_sysenter_cs_esp_eip_and_sysenter_stay_the_stop_through_the_board_set() {
+        // MOV ECX,0x174; MOV EAX,0x10; XOR EDX,EDX; WRMSR; then RDMSR, SYSENTER or SYSEXIT: the
+        // write is retired, the next instruction is the stop (not readable, SYSENTER/SYSEXIT are
+        // not modelled).
+        let prefix = [
+            0xB9, 0x74, 0x01, 0x00, 0x00, 0xB8, 0x10, 0x00, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x34], 0x34),
+            (&[0x0F, 0x35], 0x35),
+        ] {
+            let mut code = prefix.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_sysenter_cs, 0x10);
+        }
+
+        // WRMSR of SYSENTER_ESP (0x175) and SYSENTER_EIP (0x176) stays the stop; nothing moved.
+        for index in [0x75u8, 0x76] {
+            let code = [
+                0xB9, index, 0x01, 0x00, 0x00, 0xB8, 0x00, 0x77, 0x04, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            ];
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_sysenter_cs, 0);
+        }
+    }
+
     #[test]
     fn guest_efer_chains_between_two_runs_on_one_board_and_the_member_name_is_stable() {
         // MOV ECX,0xC0000080; MOV EAX,0xD01; XOR EDX,EDX; WRMSR | XOR EAX,EAX; RDMSR; HLT.
@@ -5889,6 +6063,7 @@ mod tests {
                 msr_star: true,
                 msr_lstar: true,
                 msr_cstar: true,
+                msr_sysenter_cs: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
@@ -5909,6 +6084,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -5999,6 +6175,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
@@ -6173,6 +6350,7 @@ mod tests {
                 "msr:star_write",
                 "msr:lstar_write",
                 "msr:cstar_write",
+                "msr:sysenter_cs_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
