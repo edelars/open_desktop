@@ -20330,9 +20330,10 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
 /// integer flags, CR0/CR4 modeled inside the policy, x87/SSE unmodeled, CR3
 /// unmodeled unless the set owns it (`with_cpu_owned_cr3`, then modeled within
 /// 36 bits), RFLAGS.VM=0 and RFLAGS bit 1 set (always 1 in IA-32e mode),
-/// `Running` activity and an STI shadow that is `Clear`, or `Blocking` only with
-/// IF=0 (the shadow a MOV SS leaves; STI stays outside, ISSUE-069), and, with
-/// CLI, CR0.PE=1 and CR4.PVI=0. Null segment loads over loaded hidden caches
+/// `Running` activity and an STI shadow that is `Clear`, or `Blocking` with
+/// IF=0 (the shadow a MOV SS leaves), or `Blocking` with IF=1 only when the set
+/// was built with `with_sti` (S4-38L7bp: the shadow of a retired STI carried
+/// across a run boundary), and, with CLI or STI, CR0.PE=1 and CR4.PVI=0. Null segment loads over loaded hidden caches
 /// are handled by the set (S2-46). `rdtsc_source` feeds RDTSC only when the set
 /// was built with `with_rdtsc`; otherwise it is never called. `IN`/`OUT` stay
 /// `Unsupported` here even for a set built with `with_pio_u8`.
@@ -20491,9 +20492,10 @@ fn run_cpl0_profile_set_inner(
         None => return Err(Error::StiShadowMissing),
         Some(crate::StiShadow::Clear) => {}
         // A MOV SS shadow can outlive a one-instruction run only with IF = 0, where it is
-        // not observable through maskable interrupts; with IF = 1 it could come from STI
-        // (ISSUE-069), which stays outside the set. S4-38L7bp: under `with_sti` a run may end
-        // right after a retired `STI`, so `Blocking` with IF = 1 is carried into the next run.
+        // not observable through maskable interrupts. With IF = 1 the shadow can only come
+        // from STI, which exists in the set only under `with_sti` (S4-38L7bp; ISSUE-069 is
+        // about delivery, which the set does not model): such a run may end right after a
+        // retired `STI`, so `Blocking` with IF = 1 is carried into the next run.
         Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 || set.sti.is_some() => {}
         Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
     }
@@ -20886,8 +20888,9 @@ fn run_configured(
             rflags_defined,
         };
     }
-    // Under the CPL0 set a MOV SS shadow may be carried across run boundaries, but only
-    // with IF = 0 (see the matching entry admission).
+    // Under the CPL0 set a shadow may be carried across run boundaries: a MOV SS shadow
+    // with IF = 0, and, under `with_sti` (`sti_cpl0`), the shadow of a retired STI with
+    // IF = 1 (see the matching entry admission).
     if sti_profile.is_none()
         && state.sti_shadow == Some(crate::StiShadow::Blocking)
         && !(control_policy.is_some() && (state.rflags & (1 << 9) == 0 || profiles.sti_cpl0))
@@ -20946,7 +20949,8 @@ fn run_configured(
             };
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
-                    // The CPL0 profile set has no STI; its only shadow source is MOV SS.
+                    // The CPL0 profile set's shadow sources are MOV SS and, under
+                    // `with_sti` (S4-38L7bp), STI; the shadow lasts one retired instruction.
                     if (sti_profile.is_some() || control_policy.is_some())
                         && old_shadow == Some(crate::StiShadow::Blocking)
                     {
@@ -27444,7 +27448,7 @@ fn step_configured(
     if state.activity == Some(crate::CpuActivity::Halted) {
         return Ok(StepOutcome::Halted);
     }
-    // S2-46: the CPL0 profile set carries a MOV SS shadow only with IF = 0.
+    // S2-46: the CPL0 profile set carries a MOV SS shadow with IF = 0.
     // S4-38L7bp: under `with_sti` the shadow of a retired `STI` (IF = 1) is carried as well.
     let mov_ss_shadow = control_policy.is_some() && (state.rflags & (1 << 9) == 0 || sti_cpl0);
     if state.sti_shadow == Some(crate::StiShadow::Blocking)
