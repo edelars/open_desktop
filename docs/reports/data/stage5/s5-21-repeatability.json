@@ -1,0 +1,72 @@
+{
+  "date_utc": "2026-11-12",
+  "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "source_rootfs_size_bytes": 2147483648,
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/isa-tool-cache --output <fresh output path>",
+  "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
+  "tool": {
+    "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
+    "objdump": "x86_64-linux-gnu-objdump 2.46-3ubuntu2",
+    "package_lock": "tools/build/stage5_isa_packages.json",
+    "profile_registry": "tools/build/stage5_isa_profile_forms.json",
+    "registry_complete": false
+  },
+  "runs": [
+    {
+      "output": "work/stage5/s5-21/analysis-final-review2.json",
+      "sha256": "5a964f8f9323181799e3737ba2017a66847e55c21181f2581e58e1a39388bdba",
+      "exit_code": 0
+    },
+    {
+      "output": "work/stage5/s5-21/analysis-final-review2b.json",
+      "sha256": "5a964f8f9323181799e3737ba2017a66847e55c21181f2581e58e1a39388bdba",
+      "exit_code": 0
+    }
+  ],
+  "bytewise_cmp_exit_code": 0,
+  "full_inventory": {
+    "instructions": 6510400,
+    "unique_mnemonics": 192,
+    "coarse_operand_signatures": 560,
+    "exact_encoding_shape_keys": 43577,
+    "normalized_instruction_forms": 1269,
+    "nondecoded_continuation_rows": 0,
+    "classification_frequencies": {
+      "proven_supported": 6236790,
+      "unclassified": 273610
+    },
+    "evidence_scope_frequencies": {
+      "local_interpreter_profile": 6234439,
+      "machine_cpl3_profile": 2351
+    },
+    "proven_missing": 0,
+    "conditional_cpl0_candidate_hits": 113190,
+    "unique_instruction_rows_with_any_conditional_candidate": 113113,
+    "conditional_candidate_supported_overlap_rows": 40,
+    "per_binary_normalized_forms": {
+      "bash": 612,
+      "dash": 392,
+      "tar": 543,
+      "gcc-driver": 653,
+      "gcc-cc1": 1181,
+      "gcc-collect2": 571,
+      "gcc-as": 628,
+      "gcc-ld.bfd": 553
+    }
+  },
+  "compact_evidence": {
+    "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
+    "sha256": "b808c3c335c134805b720019bbadddbcd51399e7ced765911a4e6a608973cd39",
+    "size_bytes": 990917,
+    "normalized_instruction_forms": 1269,
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/analysis-final-review2.json <fresh gzip output path>",
+    "repeat_sha256": "b808c3c335c134805b720019bbadddbcd51399e7ced765911a4e6a608973cd39",
+    "repeat_cmp_exit_code": 0
+  },
+  "limits": [
+    "Guest ELF binaries were extracted from the accepted rootfs and statically disassembled; none were executed.",
+    "The profile registry is finite and marked incomplete. Rows outside exact documented profiles remain unclassified, not implementation-wide missing.",
+    "Candidate labels are non-exclusive and do not upgrade support; 40 rows have both a conditional candidate label and a supported local-profile classification.",
+    "Scenario E JIT/SMC machine-code output is runtime-generated and is not inferred from these static executables."
+  ]
+}

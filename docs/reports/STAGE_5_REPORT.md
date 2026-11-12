@@ -1,10 +1,10 @@
 # Этап 5. Отчёт: Linux как рабочий системный стенд
 
-Статус отчёта: **промежуточный. Этап 5 НЕ принят.** Документ фиксирует фактическую область и блокеры на 2026-11-11. Ни один сценарий этапа 5 не заявлен пройденным. Сверка выполнена с [планом этапа 5](../plans/STAGE_5.md), планами этапов 3, 4, 7, 9 и 11 и [архитектурой](../ARCHITECTURE.md).
+Статус отчёта: **промежуточный. Этап 5 НЕ принят.** Документ фиксирует фактическую область и блокеры по состоянию на 2026-11-12. Ни один гостевой сценарий этапа 5 не заявлен пройденным. Сверка выполнена с [планом этапа 5](../plans/STAGE_5.md), планами этапов 3, 4, 7, 9 и 11 и [архитектурой](../ARCHITECTURE.md).
 
 ## 1. Сводка задач
 
-S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). S5-01 остаётся заблокированным до получения недостающих измерений для числовых повторов и soak duration (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`. Host-side backend и тесты S5-03 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d63595d1b7df241e83288eb43a79703fde8`. Process-exit quarantine gap остаётся открытым (ISSUE-077). Предварительный host-side headless профиль и no-guest runner S5-04 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`. S5-05 принят после независимого ревью сборочных рецептов и артефактов: paired tests подтвердили идентичные rootfs, initramfs и kernel hashes, `e2fsck -fn`, C compile/link/run, точную package-lock selection и initramfs mount/console handoff. Linux guest boot и disk scenario не выполнялись. S5-17 host-side failure tests приняты после независимого ревью; они не закрывают ISSUE-077 и не включают guest-visible error проверки. [Fixture README](../../tests/fixtures/guest/stage5/README.md) содержит S5-05 команды и provenance; [S5-05 evidence](data/stage5/s5-05-rootfs-pair-review.log), [initramfs evidence](data/stage5/s5-05-initramfs-pair-review.log) и решённая [ISSUE-078](../KNOWN_ISSUES.md#issue-078-s5-05-rootfs-extraction-toolchain-blocked) содержат доказательства сборки. S5-06…S5-16 и S5-18…S5-21 остаются `not_started`. Ни один сценарий A–G не принят, этап 5 не принят.
+S5-00 принят после независимого архитектурного ревью; проверенный исходный коммит S5-00 — [6b61316](https://github.com/edelars/open_desktop/commit/6b613166adb8f4db3c81696c31d72bf9350c0608). S5-01 остаётся заблокированным до получения недостающих измерений для числовых повторов и soak duration (ISSUE-076). Контракт S5-02 принят после независимого архитектурного ревью; проверенный исходный коммит S5-02 — `a14d08a`. Host-side backend и тесты S5-03 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d63595d1b7df241e83288eb43a79703fde8`. Process-exit quarantine gap остаётся открытым (ISSUE-077). Предварительный host-side headless профиль и no-guest runner S5-04 приняты после независимого ревью кода и контрактов; проверенный исходный коммит S5-04 — `aa4422bb3247e4aa24e2ec1add03e79c063ed053`. S5-05 принят после независимого ревью сборочных рецептов и артефактов: paired tests подтвердили идентичные rootfs, initramfs и kernel hashes, `e2fsck -fn`, C compile/link/run, точную package-lock selection и initramfs mount/console handoff. Linux guest boot и disk scenario не выполнялись. S5-17 host-side failure tests приняты после независимого ревью; они не закрывают ISSUE-077 и не включают guest-visible error проверки. S5-21 имеет **blocked** статус: подготовлен воспроизводимый промежуточный static inventory, но конечный profile registry не позволяет назвать точное missing-form число; E guest JIT/SMC input ещё не определён. Гостевые binaries не запускались. [Fixture README](../../tests/fixtures/guest/stage5/README.md) содержит S5-05 команды и provenance; [S5-05 evidence](data/stage5/s5-05-rootfs-pair-review.log), [initramfs evidence](data/stage5/s5-05-initramfs-pair-review.log) и решённая [ISSUE-078](../KNOWN_ISSUES.md#issue-078-s5-05-rootfs-extraction-toolchain-blocked) содержат доказательства сборки. S5-06…S5-16 и S5-18…S5-20 остаются `not_started`. Ни один сценарий A–G не принят, этап 5 не принят.
 
 | Задача | Статус | Задача | Статус |
 |---|---|---|---|
@@ -18,7 +18,7 @@ S5-00 принят после независимого архитектурно�
 | S5-14 | `not_started` | S5-15 | `not_started` |
 | S5-16 | `not_started` | S5-17 | `accepted` |
 | S5-18 | `not_started` | S5-19 | `not_started` |
-| S5-20 | `not_started` | S5-21 | `not_started` |
+| S5-20 | `not_started` | S5-21 | `blocked` |
 
 ## 2. Границы ответственности и handoff
 
@@ -143,3 +143,48 @@ Process-kill evidence переиспользует существующий из
 Текущий controller contract в [NVME_DEVICE.md §13.2](../specs/NVME_DEVICE.md) отображает `BackendError::Io` на generic `Internal Error` (`SCT=0, SC=0x06, DNR=0`); status value сверено с Linux `nvme.h`, но status conditions и DNR не проверены против NVMe Base 2.4. Гостевой CQE данного host-only среза не исполнялся.
 
 Проверки: повторно выполнены `cargo test -p od-host --lib --offline` — 379 passed, 0 failed, 0 ignored (17.60s); `cargo test -p od-storage --lib --offline` — 208 passed, 0 failed, 1 ignored (9.47s). `git diff --check` — clean; `python3 tools/check_layout.py` — exit 1, 45 baseline errors, без новых S5 ссылок. `rustfmt --edition 2024 --check crates/od-host/src/persistent_nvme.rs` проходит; `cargo fmt --all -- --check` находит только ранее существующие formatting diffs в `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`, которые не менялись в S5-17. Нет evidence на реальном ENOSPC/полном томе, power loss, bytes после SIGKILL, namespace durability, гостевой ошибке или восстановлении после process exit. S5-17 принят в host-side границах; S9-18 и ISSUE-077 сохраняют свои владельцев и статусы.
+
+## 14. Статус S5-21 (2026-11-12)
+
+S5-21 сейчас **blocked**; checkbox остаётся `[ ]`. Воспроизводимый static inventory является промежуточным evidence slice, но не удовлетворяет полному acceptance criterion: registry неполон, 273 610 rows не получили точного disposition against accepted profiles, а guest JIT/SMC binary для E ещё не определён. Зависимость `S5-05` принята и указана в таблице плана. Проверялся только принятый S5-05 RAW rootfs SHA-256 `c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895` (2 GiB, ext4, root `/dev/nvme0n1`). Ни один ELF не запускался. Из образа через `debugfs` извлечены оболочки `bash`, `dash` (`/bin/sh`), `tar`, GCC driver, `cc1`, `collect2`, `as` и `ld.bfd`; guest paths, ELF machine, build ID и SHA-256 сохранены в [машиночитаемом inventory](data/stage5/s5-21-isa-inventory.json.gz).
+
+Дизассемблирование выполнено GNU `x86_64-linux-gnu-objdump 2.46-3ubuntu2`, `-d --insn-width=16 -M intel`, внутри digest-pinned Linux/ARM64 builder `ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85`. Версия и SHA-256 четырёх `.deb` зафиксированы в [`stage5_isa_packages.json`](../../tools/build/stage5_isa_packages.json), проверены против подписанного `Packages.xz`; конечный profile registry — [`stage5_isa_profile_forms.json`](../../tools/build/stage5_isa_profile_forms.json), `registry_complete=false`. Команда и repeatability evidence: [s5-21-repeatability.json](data/stage5/s5-21-repeatability.json). Два полных прогона после последних parser/normalizer исправлений дали побайтно одинаковый JSON, SHA-256 `5a964f8f9323181799e3737ba2017a66847e55c21181f2581e58e1a39388bdba` для обоих выходов. Они содержат 6 510 400 instruction rows, 192 mnemonics, 560 coarse operand signatures и 43 577 encoding-shape keys; `--insn-width=16` позволил сохранить все байты длинных инструкций, continuation rows — 0. `py_compile` и `python3 tools/build/test_analyze_stage5_isa.py` — 19 passed. Нормализованный evidence exporter `py_compile` и `python3 tools/build/test_export_stage5_isa_evidence.py` — 4 passed; два сжатых выхода совпали побайтно.
+
+| Исполняемый ELF | Инструкции | Точные encoding keys | Нормализованные формы | Unclassified rows |
+|---|---:|---:|---:|---:|
+| `bash` | 251 204 | 8 008 | 612 | 17 834 |
+| `dash` | 20 759 | 2 307 | 392 | 1 802 |
+| `tar` | 74 186 | 4 994 | 543 | 5 648 |
+| `gcc-driver` | 126 633 | 8 170 | 653 | 7 473 |
+| `gcc-cc1` | 5 787 291 | 39 112 | 1 181 | 228 196 |
+| `gcc-collect2` | 85 743 | 6 644 | 571 | 5 800 |
+| `gcc-as` | 91 696 | 5 654 | 628 | 3 569 |
+| `gcc-ld.bfd` | 72 888 | 4 892 | 553 | 3 288 |
+
+Точный encoding-shape слой сохраняет ordered prefix bytes, opcode, ModRM/SIB, operand signature, address form/size/segment и длину; byte values непосредственного и displacement поля не делят одну shape на разные forms. Отдельная нормализация сводит 43 577 shapes к 1 269 semantic instruction forms: она сохраняет semantic prefix order (`FS`/`GS`/`LOCK`/`REP`/operand-size/address-size/REX), normalizes opcode-embedded GPR numbers, сохраняет opcode/group extension, operand classes/widths, ModRM register-vs-memory и address form. Номера GPR и literal displacement/immediate bytes сами по себе не создают новые формы. Сжатый файл содержит per-binary frequencies, ELF hashes/build IDs, classification scopes, candidate frequencies и top unclassified forms.
+
+| Сопоставление с конечным реестром | Статические строки | Толкование |
+|---|---:|---|
+| `local_interpreter_profile` | 6 234 439 | Bounded local interpreter evidence; не доказывает machine CPL3/Linux userspace execution. |
+| `machine_cpl3_profile` | 2 351 | Точные S4-20b/d load/store row encodings; runtime page/state/entry gates неизвестны из ELF. |
+| Conditional CPL0/profile candidates | 113 190 hits across 113 113 unique rows | Labels are non-exclusive; 40 candidate rows also match a supported local profile. C has 20 016 unique candidate rows, D has 108 875; C/D overlap. Candidate presence does not upgrade support. |
+| `unclassified` | 273 610 | Не покрыто evidence текущего конечного registry; ISA gap candidate, не доказательство отсутствия реализации. |
+| `proven_missing` | 0 | Нет exact совпадений с явными exclusions; это не утверждение полной поддержки. |
+
+Registry помечен `registry_complete=false`: он включает документированные bounded core/local families и выбранные exact CPL0/CPL3 profiles этапов 2/4, но не задаёт disposition для каждой observed semantic form. Максимальные unclassified frequencies C (`bash`, `dash`, `tar`) — 25 284 rows; среди top individual normalized forms memory NOP `0F 1F /0` — 5 470, `ENDBR64` — 3 806, memory NOP 16-bit forms — 3 058. D (`bash`, `dash`, compiler/linker/assembler) — 267 962 rows; top individual normalized forms: `ENDBR64` — 54 400, `MOVAPS mem128,xmm` — 23 789, `MOVUPS mem128,xmm` — 17 973, `MOVQ xmm,r64` — 14 526, `MOVQ xmm,mem64` — 10 728. Здесь есть forms без CPL3 evidence, XMM/SSE формы без принятого общего профиля и формы с runtime gates, не наблюдаемыми в ELF; это не guest pass/fail и не exact missing count. Таблица приоритетов ниже отдельно суммирует variants, имеющие один mnemonic+operand signature.
+
+C содержит 346 149 статических rows (320 865 профильно-классифицированы и 25 284 unclassified); D — 6 436 214 rows (6 168 252 профильно-классифицированы и 267 962 unclassified). Наборы не аддитивны: C использует `bash`, `dash`, `tar`; D включает те же `bash`/`dash` плюс toolchain. Это workload relevance фактических ELF, не доказательство исполнения внутри гостя.
+
+Частотный приоритет для Stage 2/4: сначала определить применимый CPL3 disposition для `ENDBR64` и часто встречающихся XMM/SSE forms; далее зафиксировать CPL0/CPL3 границу memory NOP, для которых найдено 54 671 статическое candidate row (C 14 705, D 51 681). По точным opcode/prefix/operand-shape кандидатам линии `S4-38L7`: FS/GS qword load — 1 213 rows всего (C 689, D 1 030); FS/GS qword SUB — 1 861 (C 813, D 1 640); LOCK CMPXCHG qword — 36 (C 0, D 36); других L7 candidate форм в наборе не найдено. C/D числа пересекаются по `bash`/`dash`, их нельзя складывать. Это эвристика приоритета, не подтверждение прохождения сценария или удовлетворения runtime gates.
+
+| Следующий вопрос/работа | Наблюдаемые частоты C / D | Приоритет и владелец |
+|---|---:|---|
+| Определить CPL3 disposition для `ENDBR64` (текущий S2-48 evidence условен CPL0) | 3 806 / 54 400 candidate rows | Высокий; Stage 2 определяет конечное применимое profile, Stage 4 проверяет machine integration. |
+| Определить bounded CPL3 XMM/SSE subset (`MOVAPS mem128,xmm`, `MOVUPS mem128,xmm`, `MOVQ xmm,r64`, `MOVQ xmm,mem64`) | 785 / 25 005; 495 / 20 829; 112 / 14 526; 130 / 12 288 | Высокий для D compiler workload; Stage 2 ISA profile, Stage 4 machine profile. Частоты объединяют отдельные нормализованные prefix/address variants по mnemonic+operand signature. |
+| Уточнить CPL0-vs-CPL3 status memory multi-byte NOP (`S4-38L4d`) | 14 705 / 51 681 candidate rows | Средний; Stage 4. Candidate rows не равны user-mode acceptance. |
+| Проверить observed `S4-38L7i` FS/GS qword load candidates | 689 / 1 030 | Средний; Stage 4, после определения state/paging gates. |
+| Проверить observed `S4-38L7j` FS/GS qword SUB candidates | 813 / 1 640 | Средний; Stage 4, после определения prefix/state/paging gates. |
+| Проверить observed `S4-38L7k` LOCK CMPXCHG qword candidates | 0 / 36 | Следующий после qword-load gate; Stage 4. |
+| Сценарий E JIT/SMC guest executable | Не измеримо / не измеримо | Не назначать нулевую частоту; S5-06 определяет guest program, S3-23/S3-24 остаются JIT gates. |
+
+E имеет статус `not_yet_defined/unmeasurable`: в принятых статических входах нет guest JIT/SMC программы или её runtime-generated code. Не присваиваем E нулевую частоту; S5-06 ещё должен определить guest binary, а JIT-профиль зависит от S3-23/S3-24. Гостевая система и исследованные ELF не boot/run-tested. Registry limitation и следующий шаг Stage 2/4 указаны в [ISSUE-079](../KNOWN_ISSUES.md#issue-079-s5-21-accepted-profile-registry-is-incomplete).

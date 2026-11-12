@@ -1,0 +1,307 @@
+{
+  "schema_version": 2,
+  "registry_complete": false,
+  "scope": "Candidate registry for S5-21. It separates local interpreter profiles from composed CPL0 and exact machine CPL3 evidence. No guest-userland support is inferred from local fixture results. The registry is incomplete; unmatched rows remain unclassified.",
+  "classification_policy": {
+    "categories": ["proven_supported", "proven_missing", "unclassified"],
+    "supported_requires": "an exact accepted form and its mode/CPL, prefix, width, operand, addressing, state, and feature gates to match the observed instruction row; the evidence_scope is retained and never merged across scopes",
+    "missing_requires": "an explicit plan or contract statement that the exact observed form is unsupported or remains open; absence from this candidate registry is not missing evidence",
+    "default": "unclassified"
+  },
+  "profiles": [
+    {
+      "task": "S2-08..14",
+      "evidence_scope": "local_interpreter_profile",
+      "execution_mode": "Long64 interpreter fixture; no machine CPL is asserted",
+      "status": "accepted_local_core_families",
+      "common_gates": "bounded synchronous GuestMemory; canonical48 memory accesses; documented 66/67/REX normalization; FS/GS data overrides, LOCK, and REP are excluded except where a separate exact profile says otherwise",
+      "families": [
+        {"task": "S2-08", "encoding": "B0-BF; 88-8B /r", "operands": "immediate/register and register/r/m MOV; widths 8/16/32/64; 16 GPR; high-byte aliases only without effective REX", "address_bits": [32, 64], "outcome": "successful forms and bounded faults", "source": ["docs/specs/CPU_CONTRACT.md:1320-1346", "docs/reports/STAGE_2_REPORT.md:2556-2636"]},
+        {"task": "S2-10", "encoding": "C6/C7 /0; A0-A3; 0F BE/BF; 0F B6/B7; 63 /r; 8D /r; 86/87 /r; 90+r", "operands": "moffs, immediate MOV, MOVSX/MOVSXD/MOVZX, LEA, register XCHG and NOP; exact widths and address forms are bounded by CPU contract", "address_bits": [32, 64], "outcome": "successful forms; LEA register-source #UD is fault-only", "source": ["docs/specs/CPU_CONTRACT.md:1347-1371", "docs/reports/STAGE_2_REPORT.md:2637-2690"]},
+        {"task": "S2-11", "encoding": "00-03,10-13,18-1B,28-2B,38-3B; 04/05,14/15,1C/1D,2C/2D,3C/3D; 80/81/83 /0,/2,/3,/5,/7; FE/FF /0,/1; F6/F7 /3", "operands": "ADD/ADC/SBB/SUB/CMP and INC/DEC/NEG; register/rm, accumulator/immediate and group/immediate forms; imm8/imm32 sign extension as specified", "operand_bits": [8, 16, 32, 64], "address_bits": [32, 64], "outcome": "successful forms and bounded faults", "source": ["docs/specs/CPU_CONTRACT.md:2177-2227", "docs/reports/STAGE_2_REPORT.md:2691-2737"]},
+        {"task": "S2-12", "encoding": "20-23,08-0B,30-33; 24/25,0C/0D,34/35; 80/81/83 /1,/4,/6; 84/85; A8/A9; F6/F7 /0,/2", "operands": "AND/OR/XOR, TEST, NOT; register/rm, accumulator/immediate, group/immediate; TEST has no destination write", "operand_bits": [8, 16, 32, 64], "address_bits": [32, 64], "outcome": "successful forms and bounded faults", "source": ["docs/specs/CPU_CONTRACT.md:2228-2267", "docs/reports/STAGE_2_REPORT.md:2738-2781"]},
+        {"task": "S2-13", "encoding": "D0-D3,C0/C1 /0,/1,/2,/3,/4,/5,/7; 0F A4/A5/AC/AD", "operands": "single shifts/rotates and SHLD/SHRD; register/memory; immediate, 1, or CL count", "operand_bits": [8, 16, 32, 64], "address_bits": [32, 64], "outcome": "successful forms; undefined count/flag outputs excluded from exact comparison", "source": ["docs/specs/CPU_CONTRACT.md:2268-2305", "docs/reports/STAGE_2_REPORT.md:2782-2835"]},
+        {"task": "S2-14", "encoding": "F6/F7 /4,/5,/6,/7; 0F AF; 69/6B", "operands": "MUL/IMUL/DIV/IDIV r/m and bounded IMUL register/immediate forms", "operand_bits": [8, 16, 32, 64], "address_bits": [32, 64], "outcome": "successful forms physically verified; #DE behavior local-only", "source": ["docs/specs/CPU_CONTRACT.md:2306-2335", "docs/reports/STAGE_2_REPORT.md:2836-2907"]}
+      ]
+    },
+    {
+      "task": "S2-22a/b",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64", "cpl": null,
+      "accepted_bytes": ["64 48 8B 00", "65 48 8B 00"],
+      "gate": "exact MOV RAX,[RAX] with FS or GS base; canonical48 qword range; local fixture memory; native fail-closed",
+      "outcome": "success and bounded local faults",
+      "source": ["docs/plans/STAGE_2.md:172-173", "docs/reports/STAGE_2_REPORT.md:4389-4421"]
+    },
+    {
+      "task": "S2-22c/d",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64", "cpl": null,
+      "accepted_bytes": ["48 8C E0", "48 8C E8"],
+      "gate": "exact FS/GS selector read into RAX; selector state only; descriptor lookup/privilege semantics excluded",
+      "outcome": "success",
+      "source": ["docs/plans/STAGE_2.md:174-175", "docs/reports/STAGE_2_REPORT.md:4422-4490"]
+    },
+    {
+      "task": "S2-22e",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["0F 00 E8"],
+      "gate": "GDT-only selector; canonical48 base/range; explicit GDTR; TI=0",
+      "outcome": "VERW computes ZF; no segment load",
+      "source": ["docs/plans/STAGE_2.md:176", "docs/reports/STAGE_2_REPORT.md:2066", "docs/specs/CPU_CONTRACT.md:1617-1664"]
+    },
+    {
+      "task": "S2-22f/g",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only_partial",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["8E E0"],
+      "gate": "GDT-only; explicit FS selector/base/cache/GDTR; AX source; no prefixes; accessed-bit update bounded by private synchronous RAM",
+      "outcome": "success and bounded selector #GP/#NP; other forms unsupported",
+      "source": ["docs/plans/STAGE_2.md:177-178", "docs/reports/STAGE_2_REPORT.md:2111", "docs/specs/CPU_CONTRACT.md:1665-1745"]
+    },
+    {
+      "task": "S2-22h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["8E E8"],
+      "gate": "GDT-only; non-null TI=0 selector; explicit GS cache/base/GDTR; no prefixes",
+      "outcome": "success and bounded selector #GP/#NP",
+      "source": ["docs/plans/STAGE_2.md:179", "docs/reports/STAGE_2_REPORT.md:2228", "docs/specs/CPU_CONTRACT.md:1746-1778"]
+    },
+    {
+      "task": "S2-22i/j exact composition",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_one_program_composition",
+      "mode": "Long64", "cpl": null,
+      "accepted_bytes": ["8E E8 65 48 8B 00", "8E E0 64 48 8B 00"],
+      "gate": "literal two-instruction selector load + matching single GS/FS qword load; exact program only",
+      "outcome": "success composition; does not generalize prefix or address forms",
+      "source": ["docs/plans/STAGE_2.md:180-181", "docs/reports/STAGE_2_REPORT.md:2265-2313"]
+    },
+    {
+      "task": "S4-20b/d exact load",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["48 8B 03"],
+      "gate": "CPU-owned CR3/CS context; canonical48; physical36; four-level 4KiB paging; exact RAX,[RBX]; fetch/data each within one page; S4-20d entry TF/RF/AC=0",
+      "outcome": "success and bounded #PF gates",
+      "source": ["docs/plans/STAGE_4.md:1074-1093", "docs/plans/STAGE_4.md:1150-1175"]
+    },
+    {
+      "task": "S4-20d exact store",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["48 89 0B"],
+      "gate": "Same bounded S4-20d paged profile; exact [RBX],RCX; reject other stores before operand",
+      "outcome": "success and RO/supervisor #PF",
+      "source": ["docs/plans/STAGE_4.md:1150-1175"]
+    },
+    {
+      "task": "S4-20c syscall",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["0F 05"],
+      "gate": "Exact EFER/STAR/LSTAR/FMASK bundle; canonical48/physical36/4KiB; CR0=80010033, CR4=20; TF/RF=0; no async events",
+      "outcome": "successful transition; SCE=0 is #UD",
+      "source": ["docs/plans/STAGE_4.md:1099-1138"]
+    },
+    {
+      "task": "S4-20c kernel tail",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_machine_sequence",
+      "mode": "Long64", "cpl": 0,
+      "accepted_bytes": ["4C 89 17", "48 0F 07"],
+      "gate": "Same S4-20c sequence; SYSRETQ requires R11.TF=0 and canonical RCX",
+      "outcome": "kernel store and SYSRETQ success; not ordinary CPL3 support",
+      "source": ["docs/plans/STAGE_4.md:1107-1128"]
+    },
+    {
+      "task": "S2-48 ENDBR64 no-op",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64", "cpl": 0,
+      "accepted_bytes": ["F3 0F 1E FA"],
+      "gate": "ENDBR64 behaves as NOP only when CET_IBT is not enabled",
+      "outcome": "success bounded no-op",
+      "source": ["docs/specs/CPU_CONTRACT.md:20952-20973"]
+    },
+    {
+      "task": "S2-50 CPL0 POPFQ",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64", "cpl": 0,
+      "accepted_bytes": ["9D", "48 9D"],
+      "gate": "selected CPL0 POPF flags policy and checked stack memory",
+      "outcome": "success only within selected mask",
+      "source": ["docs/specs/CPU_CONTRACT.md:20429"]
+    },
+    {
+      "task": "S2-22k null DS/ES selector",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64", "cpl": 0,
+      "accepted_bytes": ["8E D8", "8E C0"],
+      "gate": "AX=0; selector/unusable-state update only; no descriptor lookup",
+      "outcome": "success narrow profile",
+      "source": ["docs/plans/STAGE_2.md:182"]
+    },
+    {
+      "task": "S4-20e CR0 denial",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_negative_machine_profile",
+      "mode": "Long64", "cpl": 3,
+      "accepted_bytes": ["0F 22 C0"],
+      "gate": "Exact CPL3 MOV CR0,RAX candidate",
+      "outcome": "fault-only #GP(0); LOCK prefix #UD",
+      "source": ["docs/plans/STAGE_4.md:1196-1208"]
+    },
+    {
+      "task": "S2-15a..h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_checked_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-15a", "encoding": "98,99", "gate": "66=16, default=32, effective REX.W=64; implicit accumulator/pair; no memory", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:2908"},
+        {"task": "S2-15b", "encoding": "0F C8+rd", "gate": "register32/64 only; REX register extension; 16-bit not claimed", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:2936"},
+        {"task": "S2-15c/f", "encoding": "0F A3/AB/B3/BB register; 0F BA /4..7 ib register", "gate": "bits16/32/64; no LOCK; index wraps modulo operand width", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:2965"},
+        {"task": "S2-15d/e", "encoding": "0F BC/BD /r", "gate": "ordinary register/memory16/32/64; no F3 LZCNT/TZCNT; FS/GS memory unsupported; inert register segment prefixes allowed", "outcome": "success; zero source leaves destination undefined", "source": "docs/reports/STAGE_2_REPORT.md:2999"},
+        {"task": "S2-15g", "encoding": "0F BA /4..7 ib memory", "gate": "16/32/64; non-LOCK; immediate bit selection; bounded ordinary addressing", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3099"},
+        {"task": "S2-15h", "encoding": "0F A3/AB/B3/BB memory", "gate": "16/32/64; non-LOCK; signed bit index adjusts memory word floor(i/width), in-word Euclidean modulo", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3127"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:164", "docs/specs/CPU_CONTRACT.md:2383-2402"]
+    },
+    {
+      "task": "S2-16a..e",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_reviewed_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-16a", "encoding": "70-7F; 0F 80-8F; EB/E9", "gate": "all 16 conditions; short/near relative target canonicality", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3163"},
+        {"task": "S2-16b", "encoding": "0F 90-9F /r", "gate": "SETcc r/m8; exact REX/high-byte aliases", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3188"},
+        {"task": "S2-16c", "encoding": "0F 40-4F /r", "gate": "CMOVcc register destination, r/m16/32/64 source; memory source read even when condition false", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3213"},
+        {"task": "S2-16d/e", "encoding": "FF /4", "gate": "near JMP register64 or ordinary memory qword target; canonical target; far forms excluded", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3228-3261"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:165", "docs/reports/STAGE_2_REPORT.md:3163-3261"]
+    },
+    {
+      "task": "S2-17a..t",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_reviewed_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-17a/b", "encoding": "50-5F; 6A ib; 68 id", "gate": "qword GPR push/pop; REX.B; sign-extended immediate; canonical transactional stack", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3262-3293"},
+        {"task": "S2-17c/d/e", "encoding": "E8 rel32; FF /2 register64 or ordinary memory64", "gate": "near CALL; push next RIP; canonical target/stack; RSP addressing order as documented", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3294-3352"},
+        {"task": "S2-17f", "encoding": "C2 iw", "gate": "near RET64 plus unsigned imm16 stack adjustment", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3353-3367"},
+        {"task": "S2-17g/h", "encoding": "66 50-5F; 66 6A ib; 66 68 iw", "gate": "word stack width; REX.B; effective REX.W precedence only in separate n/m slices", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3368-3399"},
+        {"task": "S2-17i/j", "encoding": "FF /6 mem64; 8F /0 mem64", "gate": "ordinary qword memory; POP destination effective address uses updated RSP; 66 excluded", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3400-3431"},
+        {"task": "S2-17k/l", "encoding": "66 FF /6 mem16; 66 8F /0 mem16", "gate": "address32/64; REX.B; word stack effects; effective REX.W separate", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3432-3456"},
+        {"task": "S2-17m/n", "encoding": "66 + effective REX.W FF /6, 8F /0, 50-5F", "gate": "qword width; prefix order and effective final REX required", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3457-3519"},
+        {"task": "S2-17o/r", "encoding": "9D; 66 9D", "gate": "explicit local CPL3/IOPL0; masks privileged flags; other CPL/IOPL unsupported", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3520-3643"},
+        {"task": "S2-17p/q", "encoding": "9C; 66 9C", "gate": "PUSHFQ/PUSHFW; exact 64/16 source flag masks", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3547-3603"},
+        {"task": "S2-17s/t", "encoding": "66 + effective REX.W 9C/9D; 66 C3; 48 66 C3; 66 48 C3", "gate": "exact prefix order; POPF remains local CPL3/IOPL0", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3644-3659"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:166", "docs/reports/STAGE_2_REPORT.md:3262-3659"]
+    },
+    {
+      "task": "S2-18a..o",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-18a..i", "encoding": "A4/A5 MOVS; AA/AB STOS; AC/AD LODS; AE/AF SCAS; A6/A7 CMPS", "gate": "one non-REP iteration; addr64; B/W/D/Q encodings; implicit flat DS/ES, DF delta; no LOCK/REP/FS/GS", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:3660-3967"},
+        {"task": "S2-18j", "encoding": "FC; FD", "gate": "bare CLD/STD only", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:13206"},
+        {"task": "S2-18k..o", "encoding": "67 + LODS/STOS/SCAS/CMPS/MOVS", "gate": "non-REP addr32; ESI/EDI updates zero-extend; exact prefix order per subtask", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:13226-13360"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:167", "docs/reports/STAGE_2_REPORT.md:3660-3967", "docs/reports/STAGE_2_REPORT.md:13206-13360"]
+    },
+    {
+      "task": "S2-19a..t",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-19a..d", "encoding": "F3 AA/AB; F3 AC/AD; F3 A4/A5", "gate": "bounded REP STOS/LODS/MOVS addr64; RCX count; work limit/continuation; B/W/D/Q by encoding", "outcome": "success and partial continuation", "source": "docs/reports/STAGE_2_REPORT.md:3968-4014; 12917-13008"},
+        {"task": "S2-19e..h", "encoding": "F3 AE/AF; F3 A6/A7", "gate": "bounded REPE SCAS/CMPS addr64; B/W/D/Q; RCX/ZF continuation; no blanket F2", "outcome": "success and partial continuation", "source": "docs/reports/STAGE_2_REPORT.md:13051-13205"},
+        {"task": "S2-19j..p", "encoding": "F3 + 67 LODS/STOS/MOVS/REPE SCAS/CMPS", "gate": "addr32 ECX count; ESI/EDI zero-extend; effective prefix order", "outcome": "success and partial continuation", "source": "docs/reports/STAGE_2_REPORT.md:13394-13648"},
+        {"task": "S2-19q..t", "encoding": "F2 + 67 AE/AF,A6/A7", "gate": "REPNE SCAS/CMPS addr32 only; ECX/ZF and effective prefixes", "outcome": "success and partial continuation", "source": "docs/reports/STAGE_2_REPORT.md:13649-13772"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:168", "docs/reports/STAGE_2_REPORT.md:3968-4014", "docs/reports/STAGE_2_REPORT.md:12917-13772"]
+    },
+    {
+      "task": "S2-20a..d",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "fault_only_local_slices_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-20b/d", "encoding": "0F 0B", "gate": "complete UD2, fetch truncation precedence", "outcome": "fault-only #UD; not successful instruction support", "source": "docs/reports/STAGE_2_REPORT.md:4040-4118"},
+        {"task": "S2-20a/c", "encoding": "DIV/IDIV exact exception vectors; S2-20c exact 48 F7 F9", "gate": "zero divisor or quotient overflow", "outcome": "fault-only local #DE; no hardware delivery claim", "source": "docs/reports/STAGE_2_REPORT.md:4015-4039; 4059-4118"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:169", "docs/reports/STAGE_2_REPORT.md:4015-4118"]
+    },
+    {
+      "task": "S2-21a..h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64", "cpl": null,
+      "families": [
+        {"task": "S2-21a", "encoding": "effective REX.W 87 /r memory", "gate": "bare qword XCHG; single atomic_exchange_integer callback; no LOCK", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:4155"},
+        {"task": "S2-21b/c", "encoding": "effective REX.W 0F C1/0F B1 /r register", "gate": "bare qword register XADD/CMPXCHG", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:4185-4240"},
+        {"task": "S2-21d/e", "encoding": "effective REX.W 0F C1/0F B1 /r memory", "gate": "bare qword; single atomic backend operation; no LOCK", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:4241-4298"},
+        {"task": "S2-21f/h", "encoding": "F0 + effective REX.W 0F C1/87 /r memory", "gate": "qword; explicit private serial synchronous RAM opt-in; no broader prefixes/addressing implied", "outcome": "success", "source": "docs/reports/STAGE_2_REPORT.md:4299-4388"},
+        {"task": "S2-21g", "encoding": "0F AE F0", "gate": "bare MFENCE; explicit private synchronous RAM opt-in", "outcome": "success bounded no-op barrier", "source": "docs/reports/STAGE_2_REPORT.md:4320-4347"}
+      ],
+      "source": ["docs/plans/STAGE_2.md:170", "docs/reports/STAGE_2_REPORT.md:4155-4388"]
+    },
+    {
+      "task": "S2-45 / Stage 2 CPL0 composed profile",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_extensions",
+      "mode": "Long64", "cpl": 0,
+      "families": [
+        {"task": "S2-45", "encoding": "FA; 0F 20/22 C0/E0; 0F A2; 0F 31; 0F 30/32; F4; 0F 22 D8; EC/EE", "gate": "Cpl0ProfileSet member, selected CR0/CR4/MSR/CPUID/RDTSC/PIO policy, Running/activity and STI-shadow conditions", "outcome": "success; only configured forms", "source": "docs/specs/CPU_CONTRACT.md:20178-20220; docs/plans/STAGE_2.md:20707-20712"},
+        {"task": "S2-46", "encoding": "null MOV DS/ES/SS/FS/GS selector forms", "gate": "null selector and SS shadow rules", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20327"},
+        {"task": "S2-47a/49", "encoding": "0F 01 /2 memory LGDT; 0F 01 /3 memory LIDT", "gate": "memory descriptor operand and CPL0", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20362; 20394"},
+        {"task": "S2-50", "encoding": "9D; 48 9D", "gate": "selected CPL0 POPF policy", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20429"},
+        {"task": "S2-22k", "encoding": "8E D8; 8E C0", "gate": "Long64 CPL0; AX=0; selector/unusable state only; no descriptor lookup", "outcome": "success", "source": "docs/plans/STAGE_2.md:182"},
+        {"task": "S4-38L4c/d/f/g", "encoding": "0F 20 D8 CR3 read; 0F 1F /0 memory NOP; 0F B7 memory MOVZX; F3 0F BC /r BSF", "gate": "CPL0; source registers, width and memory gates per individual reports", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20511-20655"},
+        {"task": "S4-38L5a/b", "encoding": "0F 20 /2 CR2 read; 48 CF IRETQ", "gate": "CPL0, selected GPR and bounded same-CPL frame", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20695-20787"},
+        {"task": "S2-47b/48", "encoding": "48 CB LRETQ; F3 0F 1E FA ENDBR64", "gate": "GDT CS validation; ENDBR64 NOP only without CET_IBT", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:20911-20973"},
+        {"task": "S4-38L6a-d", "encoding": "0F 18 /0..7; RDMSR/WRMSR FS_BASE/GS_BASE; MOV Sreg,AX; C9", "gate": "CPL0, supported MSR indexes and GDT/cache policy", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:21066-21218"},
+        {"task": "S4-38L7b-h", "encoding": "0F 20/22 /4 CR4; RDMSR/WRMSR EFER; 64/65+REX.W 89 /r; 0F 22 /3 CR3 write", "gate": "CPL0 state and policy; exact prefix and operand restrictions per report", "outcome": "success", "source": "docs/specs/CPU_CONTRACT.md:21219-21492"},
+        {"task": "S4-38L7i-w", "encoding": "64/65+REX.W 8B; 64/65+REX.W 2B; F0 REX.W 0F B1; F0 FF /0; F0 0F AB; F6 /0; FF /0,/1; F7 /0; F0/80/81/83 /1; F0 0F B3; 8C /r; ED/EF and optional 66", "gate": "CPL0 state and exact width/address/prefix/PIO-config gates per S4-38L7 review sections; no merge with CPL3", "outcome": "success only for specifically admitted forms", "source": "docs/specs/CPU_CONTRACT.md:21493-22451; docs/plans/STAGE_4.md:2074"}
+      ],
+      "qualifications_without_new_instruction_encoding": [
+        {"task": "S4-38L4b", "qualification": "REP continuation semantics; no new generic encoding", "source": "docs/specs/CPU_CONTRACT.md:20471"},
+        {"task": "S4-38L4e", "qualification": "cross-page fetch gate extension", "source": "docs/specs/CPU_CONTRACT.md:20572"},
+        {"task": "S4-38L4h", "qualification": "cross-page store gate extension", "source": "docs/specs/CPU_CONTRACT.md:20655"},
+        {"task": "S4-38L5c", "qualification": "#PF delivery event path; event behavior, not successful ordinary opcode", "source": "docs/specs/CPU_CONTRACT.md:20788"},
+        {"task": "S4-38L5e", "qualification": "cross-page dword/qword read gate extension", "source": "docs/specs/CPU_CONTRACT.md:20974"},
+        {"task": "S4-38L7d", "qualification": "CR4.PGE policy extension; no new encoding", "source": "docs/specs/CPU_CONTRACT.md:21289"}
+      ],
+      "source": ["docs/specs/CPU_CONTRACT.md:20178-22451", "docs/plans/STAGE_2.md:20707-20748", "docs/plans/STAGE_4.md:2074"]
+    }
+  ],
+  "explicit_profile_exclusions": [
+    {
+      "task": "S4-38L7w",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "diagnostic_only_not_accepted",
+      "mode": "Long64", "cpl": 0,
+      "accepted_bytes": [],
+      "excluded_bytes": ["EC"],
+      "signature": "in r8,r16",
+      "reason": "S4-38L7w diagnostic run stops at IN AL,DX; byte PIO was not accepted into the default set",
+      "source": ["docs/plans/STAGE_4.md:2074"]
+    }
+  ],
+  "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."
+}
