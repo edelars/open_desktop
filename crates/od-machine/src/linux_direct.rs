@@ -3894,6 +3894,104 @@ mod tests {
         assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
     }
 
+    // ---- S4-38L7be: FS/GS-based CMP r32, m32 and r64, m64 through the board facade ----
+    // Reuses `run_segment_add` (the same code layout, `3B` instead of `03`): RAX is the register
+    // operand, the memory qword is only read, nothing is written and RAX does not change.
+
+    #[test]
+    fn gs_cmp_load_qword_after_wrmsr_gs_base_sets_flags_and_changes_nothing_else() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 3b 05 disp32` = `cmp %gs:disp(%rip), %rax`, GS base = BASE and a distractor FS
+        // base. RAX 0x7fff_ffff_ffff_ffff - 0xffff_ffff_ffff_fff0 (a borrow, and a signed
+        // overflow: positive minus negative gives a negative) = 0x8000_0000_0000_000f: CF, OF,
+        // SF and PF (four bits in the low byte); no AF, ZF.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x3b, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xffff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x7fff_ffff_ffff_ffff,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xffff_ffff_ffff_fff0,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x7fff_ffff_ffff_ffff,
+            "CMP does not write the register"
+        );
+        assert_eq!(
+            state.rflags & 0x8d5,
+            1 | (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_cmp_load_dword_after_wrmsr_fs_base_compares_the_low_dwords_only() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 3b 05 disp32` = `cmp %fs:disp(%rip), %eax`, FS base = BASE and a distractor GS
+        // base. The low dwords are 5 and 0x20 (the upper halves differ and are ignored):
+        // 5 - 0x20 = 0xffff_ffe5 with a borrow: CF and SF only (five bits in the low byte, so no
+        // PF; no AF, ZF, OF). RAX is not modified, upper half included.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x3b, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_0000_0020,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0005,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_0000_0020,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xdead_beef_0000_0005
+        );
+        assert_eq!(state.rflags & 0x8d5, 1 | (1 << 7), "{:#x}", state.rflags);
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
