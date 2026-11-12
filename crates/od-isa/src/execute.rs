@@ -35253,7 +35253,9 @@ fn step_configured(
         // S4-38L7ag: and for LOCK AND m8, imm8.
         | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
-        | Operation::LockBitMem { .. } => {
+        | Operation::LockBitMem { .. }
+        // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
+        | Operation::LockBtsMemImm { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
@@ -49107,6 +49109,7 @@ fn step_configured(
         | Operation::LockXaddMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
+        | Operation::LockBtsMemImm { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
@@ -54993,6 +54996,24 @@ fn transfer(
                 }
             };
             memory.write_integer(address, context, element.size, new)?;
+            state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
+        }
+        Operation::LockBtsMemImm { destination, bit } => {
+            // S4-38L7bi: one vCPU, so read -> write needs no bus lock. The immediate is a bit
+            // index inside the operand, not a bit-string offset: it is taken modulo the operand
+            // width (Intel SDM Vol.2A, BTS: an imm8 offset on a memory operand addresses a bit
+            // inside the operand itself, the register form of the offset alone reaches adjacent
+            // elements; the same rule as the plain `Operation::Bit` immediate). The address (non-canonical start or last byte is #GP(0),
+            // RSP/RBP bases #SS(0)) is resolved before any access; a RIP-relative operand is
+            // relative to the end of the instruction, immediate included. The destination is
+            // written back even when the bit was already set (a read-only page faults), and CF
+            // commits only after that write succeeded; OF/SF/AF/PF are undefined and ZF is not
+            // affected, so the flags other than CF stay as they are.
+            let address = destination.access_address_48(state, next_rip)?;
+            let width = destination.size.bytes() * 8;
+            let mask = 1u64 << (u64::from(bit) % width as u64);
+            let old = memory.read_integer(address, context, destination.size)?;
+            memory.write_integer(address, context, destination.size, old | mask)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {
