@@ -4055,6 +4055,161 @@ mod tests {
         assert_eq!(state.rflags & 0x8d5, 1 | (1 << 7), "{:#x}", state.rflags);
     }
 
+    // ---- S4-38L7bj: FS/GS-based CMOVcc r32, m32 and r64, m64 through the board facade ----
+    // Reuses `run_segment_add`: RAX is the destination, the memory qword is only read. The helper's
+    // `XOR EDX,EDX` leaves ZF = 1 (and PF = 1) for the CMOVE; the not-taken cases put a
+    // `TEST RAX,RAX` (`48 85 c0`, one more retired instruction) in front, which clears ZF.
+
+    #[test]
+    fn gs_cmove_qword_with_zf_set_after_wrmsr_gs_base_loads_rax_and_leaves_memory_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 0f 44 05 disp32` = `cmove %gs:disp(%rip), %rax`, GS base = BASE and a distractor
+        // FS base; ZF = 1 from the helper's XOR, so the qword is moved.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x8765_4321_0fed_cba9,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8765_4321_0fed_cba9,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8765_4321_0fed_cba9
+        );
+        // CMOVE keeps the flags of the XOR: ZF and PF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 6) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn gs_cmove_dword_with_zf_set_zero_extends_the_loaded_dword_into_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 0f 44 05 disp32` = `cmove %gs:disp(%rip), %eax` (the boundary form with EAX).
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_1122_3344,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0010,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_1122_3344,
+            "memory unchanged"
+        );
+        let state = boot.board.state();
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x0000_0000_1122_3344
+        );
+        assert_eq!(state.rflags & 0x8d5, (1 << 6) | (1 << 2));
+    }
+
+    #[test]
+    fn fs_cmove_dword_with_zf_clear_still_zeroes_the_upper_half_of_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `48 85 c0` = `test %rax,%rax` (RAX non-zero: ZF = 0, PF = 0 for the low byte 0x10,
+        // SF = 1 from bit 63 of 0xdead_beef_0000_0010, CF = OF = 0), then `64 0f 44 05 disp32` = `cmove %fs:disp(%rip), %eax` with FS
+        // base = BASE and a distractor GS base. The move is not taken: EAX keeps 0x10, bits 63:32
+        // are zeroed; the memory is read (not written) and nothing else changes.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x48, 0x85, 0xc0, 0x64, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_1122_3344,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0010,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired + 1, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_1122_3344,
+            "memory unchanged"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x10);
+        assert_eq!(state.rflags & 0x8d5, 1 << 7, "{:#x}", state.rflags);
+    }
+
+    #[test]
+    fn fs_cmovne_qword_with_zf_clear_after_wrmsr_fs_base_loads_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `48 85 c0` clears ZF; `64 48 0f 45 05 disp32` = `cmovne %fs:disp(%rip), %rax` moves.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x48, 0x85, 0xc0, 0x64, 0x48, 0x0f, 0x45, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x8765_4321_0fed_cba9,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired + 1, "{record:?}");
+        let state = boot.board.state();
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8765_4321_0fed_cba9
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8765_4321_0fed_cba9,
+            "memory unchanged"
+        );
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
