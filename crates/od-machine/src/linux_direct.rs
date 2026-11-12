@@ -812,7 +812,8 @@ impl LinuxCpl0SetMembers {
     }
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
-    /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
+    /// (DiagnosticV1 with the divergence boundary, S4-38L4), RDTSC from the board clock (S4-38L7bh),
+    /// the qword `POPFQ` (S2-50), the FS/GS
     /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e), the PCI configuration ports
     /// (S4-38L7w) and the byte PIO (S4-38L7x: `pio_u8`, all ports bound on the board bus; a default
     /// decision that may be revisited: without COM1 and the timer the kernel does not go further).
@@ -822,6 +823,7 @@ impl LinuxCpl0SetMembers {
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
+            rdtsc: true,
             popf_cpl0: true,
             pio_u8: true,
             pci_config: true,
@@ -3149,6 +3151,67 @@ mod tests {
             PagedProbeExit::Unsupported { opcode: 0x31 },
             "{record:?}"
         );
+    }
+
+    // ---- S4-38L7bh: RDTSC in the Linux board set ----
+
+    #[test]
+    fn rdtsc_runs_through_the_linux_board_set_and_ticks_the_virtual_clock() {
+        // RDTSC; MOV RBX, RAX; RDTSC; MOV RCX, RAX; RDTSC; HLT, through the board set of the
+        // runner (`linux_default`, plus `halt` for the stop). Each RDTSC ends its quantum after
+        // one instruction; the clock moves 1 ns per retired instruction and 1000 ns per RDTSC
+        // (the tick is applied after the quantum, the read is at its start). tsc_hz is 1 GHz,
+        // so the TSC value is the clock in ns:
+        //   q1: RDTSC reads 0                         -> clock 1 + 1000 = 1001
+        //   q2: MOV, RDTSC reads 1001                 -> clock 1001 + 2 + 1000 = 2003
+        //   q3: MOV, RDTSC reads 2003                 -> clock 2003 + 2 + 1000 = 3005
+        //   q4: HLT                                   -> clock 3006
+        let code = [
+            0x0F, 0x31, 0x48, 0x89, 0xC3, 0x0F, 0x31, 0x48, 0x89, 0xC1, 0x0F, 0x31, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert!(record.set_members.contains(&"rdtsc".to_string()));
+        assert_eq!((record.retired, record.quanta), (6, 4));
+        assert_eq!(record.virtual_ns, 3_006);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 1_001);
+        assert_eq!(record.gpr[Register::Rax as usize], 2_003);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.tsc_hz, 1_000_000_000);
+    }
+
+    #[test]
+    fn rdtsc_stays_refused_with_0x31_when_the_member_is_off() {
+        // The board set without the member: the bare RDTSC is the stop, nothing retired, the
+        // clock does not tick for it.
+        let (mut boot, file) = boot_with_entry(&[0x0F, 0x31, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            rdtsc: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{record:?}"
+        );
+        assert_eq!((record.retired, record.virtual_ns), (0, 0));
+        assert!(!record.set_members.contains(&"rdtsc".to_string()));
+        // The minimal set refuses it as well.
+        let (mut boot, file) = boot_with_entry(&[0x0F, 0x31, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0);
     }
 
     // ---- S4-38L6b: WRMSR/RDMSR IA32_GS_BASE through the board facade ----
@@ -7812,6 +7875,7 @@ mod tests {
             LinuxCpl0SetMembers::linux_default(),
             LinuxCpl0SetMembers {
                 cpuid: true,
+                rdtsc: true,
                 popf_cpl0: true,
                 pio_u8: true,
                 pci_config: true,
@@ -7839,6 +7903,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -7933,6 +7998,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -8111,6 +8177,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
