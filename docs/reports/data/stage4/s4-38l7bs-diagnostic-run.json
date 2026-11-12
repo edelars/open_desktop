@@ -145,7 +145,7 @@
     "acpi_blob": {
       "bytes": 1072,
       "expected_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
-      "path": "/Users/senya/projects/open_desktop/.claude/worktrees/agent-a9d3c5da5e0651fe3/tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin",
+      "path": "tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin",
       "sha256": "b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf"
     },
     "initramfs": {
