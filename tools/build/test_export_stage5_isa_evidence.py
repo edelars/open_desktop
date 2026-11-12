@@ -70,11 +70,11 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1040)
-                self.assertEqual(fields["unclassified_normalized_forms"], 229)
+                self.assertEqual(fields["classified_normalized_forms"], 1041)
+                self.assertEqual(fields["unclassified_normalized_forms"], 228)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_unclassified_rows = 214885 if full_key else 214946
+                expected_unclassified_rows = 214873 if full_key else 214934
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
                 if "local_interpreter_profile_rows" in fields:
@@ -184,6 +184,21 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrld_forms),
                     11,
+                )
+                psrad_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "72"]
+                    and row["instruction_form"]["operand_signature"] == "psrad xmm,imm"
+                ]
+                self.assertEqual(len(psrad_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psrad_forms), 12)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.43-PSRAD-XMM-immediate-register", 0) for row in psrad_forms),
+                    12,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrad_forms),
+                    12,
                 )
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
