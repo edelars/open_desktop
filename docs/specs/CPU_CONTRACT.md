@@ -23200,7 +23200,7 @@ retired 15). Результаты: `cpl0_profile_set` 706, `paged_probe_profile`
 **Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
 `native_v2::admission` для новых операций на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
 
-**Не делалось.** `C6` и `88`/`89` с FS/GS (кроме уже сделанного S4-38L7ae), `C7` с 66 (word) и `C7 /n` для n ≠ 0 с FS/GS, регистровая форма с проверкой префикса, LOCK с `C7`, `PagedCpl0ProbeV1`, `interrupt.rs`,
+**Не делалось.** `88`/`89` с FS/GS (`C6` с FS/GS сделан целиком в S4-38L7ae), `C7` с 66 (word) и `C7 /n` для n ≠ 0 с FS/GS, регистровая форма с проверкой префикса, LOCK с `C7`, `PagedCpl0ProbeV1`, `interrupt.rs`,
 `docs/plans/STAGE_4.md`.
 
 **Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7aj-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
