@@ -445,7 +445,8 @@ fn machine_reset_of_the_pit_cancels_the_pending_event() {
     probe.reset_pit().unwrap();
     assert!(probe.is_stale(token));
     assert_eq!(probe.pending_events(), 0);
-    assert_eq!(probe.pit().count(PitChannel::Channel0), None);
+    // After reset channel 0 is loaded with the fixed count, not counting (S4-38L7bm).
+    assert_eq!(probe.pit().count(PitChannel::Channel0), Some(0));
     // Nothing can wake the guest: idle halt at time 0 with no interrupt.
     assert_eq!(probe.run(100, || false).exit, PumpExit::IdleHalt);
     assert_eq!(

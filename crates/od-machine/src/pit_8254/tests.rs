@@ -96,25 +96,30 @@ fn reset_matrix() {
     let (mut dev, _clock) = setup_ungated();
     assert_eq!(dev.handle.snapshot(), PitSnapshot::default());
     let s = dev.handle.snapshot();
+    // Channel 0 is loaded by reset (S4-38L7bm), channel 2 is unprogrammed.
     assert_eq!(s.channel0.mode, None);
+    assert!(s.channel0.loaded_by_reset);
+    assert!(!s.channel2.loaded_by_reset);
+    assert_eq!(s.channel0.run, None);
     assert_eq!(s.channel2.run, None);
     assert!(!s.gate2 && !s.speaker_data);
     assert!(!dev.handle.out(PitChannel::Channel0));
     assert!(!dev.handle.out(PitChannel::Channel2));
-    assert_eq!(dev.handle.count(PitChannel::Channel0), None);
+    assert_eq!(dev.handle.count(PitChannel::Channel0), Some(0));
     assert_eq!(dev.handle.count(PitChannel::Channel2), None);
     assert_eq!(port_b(&mut dev), 0);
-    // Counters are not initialised: neither a read nor a data write is accepted.
-    assert_eq!(
-        dev.pit.read(acc(0, BYTE)),
-        Err(DeviceError::UnsupportedConfiguration)
-    );
+    // Channel 2 is not initialised: neither a read nor a data write is accepted;
+    // a data write to channel 0 before a control word is refused as well.
     assert_eq!(
         dev.pit.read(acc(2, BYTE)),
         Err(DeviceError::UnsupportedConfiguration)
     );
     assert_eq!(
         out(&mut dev.pit, 2, 1),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(
+        out(&mut dev.pit, 0, 1),
         Err(DeviceError::UnsupportedConfiguration)
     );
     assert_eq!(dev.handle.snapshot(), PitSnapshot::default());
@@ -158,8 +163,15 @@ fn accepted_control_words_program_the_channel() {
         );
         assert_eq!(c.run, None);
         // The other channel is untouched.
-        let other = if ch == 0 { s.channel2 } else { s.channel0 };
-        assert_eq!(other, PitChannelSnapshot::default());
+        let reset = PitSnapshot::default();
+        let (other, other_reset) = if ch == 0 {
+            (s.channel2, reset.channel2)
+        } else {
+            (s.channel0, reset.channel0)
+        };
+        assert_eq!(other, other_reset);
+        // The programmed channel no longer reads as loaded by reset.
+        assert!(!c.loaded_by_reset);
     }
 }
 
@@ -337,7 +349,7 @@ fn mode0_out_is_low_until_terminal_count_then_high() {
     // No IRQ, no event: nothing else changed.
     assert_eq!(
         dev.handle.snapshot().channel0,
-        PitChannelSnapshot::default()
+        PitSnapshot::default().channel0
     );
 }
 
@@ -532,6 +544,7 @@ fn counter_latch_follows_the_access_mode_and_a_control_word_clears_it() {
 fn latch_without_a_count_is_refused_without_state_change() {
     let (mut dev, _clock) = setup();
     out(&mut dev.pit, 3, 0xB0).unwrap(); // programmed, but no reload yet
+    out(&mut dev.pit, 3, 0x30).unwrap(); // channel 0 too: no longer loaded by reset
     for word in [0x00u8, 0x80] {
         let before = dev.handle.snapshot();
         assert_eq!(
@@ -704,13 +717,14 @@ fn read_back_refusals_change_nothing() {
 }
 
 #[test]
-fn read_back_of_an_unprogrammed_channel_0_reads_null_count_and_zero() {
-    let (mut fresh, _clock) = setup();
-    // 0xC2: status 0b0100_0000 (OUT low, null count 1, every other bit 0) and a
-    // count latch of the assumed value 0.
+fn channel_0_reads_as_loaded_after_reset_without_ticking() {
+    let (mut fresh, clock) = setup();
+    // 0xC2 at reset: status 0x30 (OUT low, null count 0, access 11, mode 000,
+    // BCD 0) and a count latch of the fixed value 0x0000.
     out(&mut fresh.pit, 3, 0xC2).unwrap();
     let ch = fresh.handle.snapshot().channel0;
-    assert_eq!(ch.status_latch, Some(0x40));
+    assert!(ch.loaded_by_reset);
+    assert_eq!(ch.status_latch, Some(0x30));
     assert_eq!(
         ch.latch,
         Some(PitLatch {
@@ -718,23 +732,32 @@ fn read_back_of_an_unprogrammed_channel_0_reads_null_count_and_zero() {
             hi_pending: false
         })
     );
-    // Status, then the two latched count bytes (0x0000), nothing was programmed.
-    assert_eq!(inb(&mut fresh.pit, 0), 0x40);
+    // Status, then the two latched count bytes (0x0000).
+    assert_eq!(inb(&mut fresh.pit, 0), 0x30);
     assert_eq!(inb(&mut fresh.pit, 0), 0x00);
     assert_eq!(inb(&mut fresh.pit, 0), 0x00);
-    let drained = fresh.handle.snapshot();
-    assert_eq!(drained.channel0, PitChannelSnapshot::default());
-    // Latches are gone: the live counter has no value, the read is refused
-    // without changing anything.
     assert_eq!(
-        fresh.pit.read(acc(0, BYTE)),
-        Err(DeviceError::UnsupportedConfiguration)
+        fresh.handle.snapshot().channel0.status_latch,
+        None,
+        "status delivered once"
     );
-    assert_eq!(fresh.handle.snapshot(), drained);
+    assert_eq!(fresh.handle.snapshot().channel0.latch, None);
+    // The count does not tick: after a whole second (1 193 182 input ticks) the
+    // status and the count are the same, through the live read and the latch.
+    goto_tick(&clock, 1_193_182);
+    assert_eq!(fresh.handle.count(PitChannel::Channel0), Some(0));
+    assert!(!fresh.handle.out(PitChannel::Channel0));
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00, "live LSB");
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00, "live MSB");
+    assert!(!fresh.handle.snapshot().channel0.read_hi);
+    out(&mut fresh.pit, 3, 0xC2).unwrap();
+    assert_eq!(inb(&mut fresh.pit, 0), 0x30);
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00);
+    assert_eq!(inb(&mut fresh.pit, 0), 0x00);
     // 0xE2 and 0xD2 pick one latch each.
     out(&mut fresh.pit, 3, 0xE2).unwrap();
     let ch = fresh.handle.snapshot().channel0;
-    assert_eq!((ch.status_latch, ch.latch), (Some(0x40), None));
+    assert_eq!((ch.status_latch, ch.latch), (Some(0x30), None));
     out(&mut fresh.pit, 3, 0xD2).unwrap();
     let ch = fresh.handle.snapshot().channel0;
     assert_eq!(ch.latch.map(|l| l.value), Some(0));
@@ -742,18 +765,78 @@ fn read_back_of_an_unprogrammed_channel_0_reads_null_count_and_zero() {
     let before = fresh.handle.snapshot();
     out(&mut fresh.pit, 3, 0xC2).unwrap();
     assert_eq!(fresh.handle.snapshot(), before);
-    // The ordinary counter latch of an unprogrammed channel and the other
-    // read-back selections stay refused; the snapshot does not change.
+    // The ordinary counter latch of the loaded channel gives the same count.
     let (mut other, _clock) = setup();
-    let before = other.handle.snapshot();
-    for word in [0x00u8, 0xC4, 0xC8, 0xCE, 0xC0, 0xC3] {
+    out(&mut other.pit, 3, 0x00).unwrap();
+    assert_eq!(
+        other.handle.snapshot().channel0.latch.map(|l| l.value),
+        Some(0)
+    );
+    assert_eq!(inb(&mut other.pit, 0), 0x00);
+    assert_eq!(inb(&mut other.pit, 0), 0x00);
+}
+
+#[test]
+fn refusals_around_channel_0_loaded_by_reset_change_nothing() {
+    let (mut dev, _clock) = setup();
+    let before = dev.handle.snapshot();
+    // Channels 1 and 2, an empty selection and D0 = 1 are refused as before;
+    // so is the ordinary latch of channel 2 (unprogrammed, no count).
+    for word in [0xC4u8, 0xC8, 0xCE, 0xC0, 0xC3, 0xC6, 0xFF, 0x80] {
         assert_eq!(
-            out(&mut other.pit, 3, word),
+            out(&mut dev.pit, 3, word),
             Err(DeviceError::UnsupportedConfiguration),
             "{word:#04x}"
         );
-        assert_eq!(other.handle.snapshot(), before, "{word:#04x}");
+        assert_eq!(dev.handle.snapshot(), before, "{word:#04x}");
     }
+    // A data port write before any control word is refused, as before.
+    assert_eq!(
+        out(&mut dev.pit, 0, 0x10),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.snapshot(), before);
+}
+
+#[test]
+fn a_control_word_replaces_the_channel_0_loaded_by_reset() {
+    let (mut dev, clock) = setup();
+    out(&mut dev.pit, 3, 0xC2).unwrap();
+    // Mode 2, LSB+MSB: latches cleared, no count, null count 1 again.
+    out(&mut dev.pit, 3, 0x34).unwrap();
+    let ch = dev.handle.snapshot().channel0;
+    assert!(!ch.loaded_by_reset);
+    assert_eq!(
+        (ch.mode, ch.access, ch.run, ch.status_latch, ch.latch),
+        (
+            Some(PitMode::RateGenerator),
+            Some(PitAccess::LsbMsb),
+            None,
+            None,
+            None
+        )
+    );
+    assert_eq!(dev.handle.count(PitChannel::Channel0), None);
+    // Mode 2 without a count: OUT high, null count 1, access 11, mode 010.
+    out(&mut dev.pit, 3, 0xE2).unwrap();
+    assert_eq!(inb(&mut dev.pit, 0), 0b1111_0100);
+    // The count latch of the programmed channel without a count is refused.
+    let before = dev.handle.snapshot();
+    assert_eq!(
+        out(&mut dev.pit, 3, 0xC2),
+        Err(DeviceError::UnsupportedConfiguration)
+    );
+    assert_eq!(dev.handle.snapshot(), before);
+    // The first complete write overrides the fixed value: reload 1000 = 0x03E8
+    // loaded at tick 10; at tick 110 the count is 900 = 0x0384, OUT high.
+    goto_tick(&clock, 10);
+    out(&mut dev.pit, 0, 0xE8).unwrap();
+    out(&mut dev.pit, 0, 0x03).unwrap();
+    goto_tick(&clock, 110);
+    out(&mut dev.pit, 3, 0xC2).unwrap();
+    assert_eq!(inb(&mut dev.pit, 0), 0b1011_0100);
+    assert_eq!(inb(&mut dev.pit, 0), 0x84);
+    assert_eq!(inb(&mut dev.pit, 0), 0x03);
 }
 
 #[test]
