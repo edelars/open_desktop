@@ -35215,6 +35215,9 @@ fn step_configured(
         // S4-38L7bd: and for the FS/GS-based ADD r32/r64, m.
         | Operation::AddFsLoad { .. }
         | Operation::AddGsLoad { .. }
+        // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        | Operation::CmpFsLoad { .. }
+        | Operation::CmpGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -49070,6 +49073,9 @@ fn step_configured(
         | Operation::AddGsMem { .. }
         | Operation::AddFsLoad { .. }
         | Operation::AddGsLoad { .. }
+        // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        | Operation::CmpFsLoad { .. }
+        | Operation::CmpGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
@@ -54592,6 +54598,37 @@ fn transfer(
                 state.rflags,
             );
             state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::CmpFsLoad { dst, src } => {
+            // S4-38L7be: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before the read, so
+            // before any flag write. The dword/qword is read once and compared with the register
+            // (`reg - mem`) through the shared `arithmetic_result` of the non-prefixed CMP at the
+            // register width. Only the flags change: no register and no memory write.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Cmp,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+        }
+        Operation::CmpGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Cmp,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
             state.rflags = flags;
         }
         Operation::TestFsMemByte { src, immediate } => {
