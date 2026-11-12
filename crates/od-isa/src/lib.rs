@@ -43,11 +43,13 @@ pub use execute::{
 };
 pub use hlt::HaltProfile;
 pub use interrupt::{
+    Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     PageFaultDeliveryOutsideProfile, PageFaultDeliveryPhase, PageFaultDeliveryResult,
-    PageFaultFrameSlot, deliver_double_fault, deliver_maskable_interrupt, deliver_page_fault,
-    deliver_page_fault_cpl0_set, deliver_paged_maskable_interrupt,
+    PageFaultFrameSlot, deliver_double_fault, deliver_external_interrupt_cpl0_set,
+    deliver_maskable_interrupt, deliver_page_fault, deliver_page_fault_cpl0_set,
+    deliver_paged_maskable_interrupt,
 };
 pub use iretq::{
     IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,

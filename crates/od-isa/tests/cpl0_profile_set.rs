@@ -7088,6 +7088,536 @@ fn pf_delivery_idt_and_gdt_read_failures_write_nothing() {
     }
 }
 
+// ---- S4-38L8a: external hardware interrupt through the IDT in the CPL0 set ----
+
+const EXT_VECTOR: u8 = 0x20;
+/// The gate of vector 0x20 needs IDT bytes 512..=527.
+const EXT_IDT_LIMIT: u16 = 0x2ff;
+const EXT_GATE: u64 = PF_IDT + EXT_VECTOR as u64 * 16;
+const EXT_HANDLER: u64 = RIP + 0x100;
+
+fn ext_put_gate(memory: &mut LretqMemory, vector: u8, gate: [u8; 16]) {
+    let offset = (PF_IDT - RAM_BASE) as usize + vector as usize * 16;
+    memory.ram[offset..offset + 16].copy_from_slice(&gate);
+}
+
+/// A CPL0 state with IF = 1 and the next instruction (`NOP`) at `RIP`; IDT gate 0x20 is an
+/// interrupt gate to `EXT_HANDLER`, the handler is `IRETQ`; GDT slot 2 is `CODE64`.
+fn ext_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = pf_state();
+    let mut code = vec![0x90];
+    code.resize((EXT_HANDLER - RIP) as usize, 0x90);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e),
+    );
+    state.idtr.as_mut().unwrap().limit = EXT_IDT_LIMIT;
+    (state, memory)
+}
+
+fn ext_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0ExternalInterruptDelivery {
+    od_isa::deliver_external_interrupt_cpl0_set(
+        state,
+        memory,
+        EXT_VECTOR,
+        context(PrivilegeLevel::Ring0),
+    )
+}
+
+#[test]
+fn ext_delivery_writes_the_five_word_frame_and_enters_the_handler() {
+    let (mut state, mut memory) = ext_state();
+    // Live IF, TF, RF, AC, ZF, CF in the image: 0x2 | 0x1 | 0x40 | IF 0x200 | TF 0x100 |
+    // RF 0x10000 | AC 0x40000 = 0x50343.
+    state.rflags = 0x5_0343;
+    state.cr2 = Some(0xdead_0000);
+    let before = state.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: EXT_HANDLER,
+            new_rsp: 0x1_1800 - 40,
+        }
+    );
+    // Hand-computed: RSP 0x11800 is aligned; the frame occupies 0x117d8..0x11800.
+    // Highest first: SS 0x18, old RSP 0x11800, RFLAGS without RF = 0x40343 (IF kept), CS 0x10,
+    // RIP = the next instruction 0x1000.
+    assert_eq!(PF_RSP, 0x1_1800);
+    assert_eq!(pf_qword(&memory, 0x1_17f8), 0x18);
+    assert_eq!(pf_qword(&memory, 0x1_17f0), 0x1_1800);
+    assert_eq!(pf_qword(&memory, 0x1_17e8), 0x4_0343);
+    assert_eq!(pf_qword(&memory, 0x1_17e0), 0x10);
+    assert_eq!(pf_qword(&memory, 0x1_17d8), 0x1000);
+    // Nothing below the frame is written: five qword stores, no error code, no Accessed write.
+    assert_eq!(memory.writes, 5);
+    assert_eq!(pf_qword(&memory, 0x1_17d0), 0);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(_, bytes, origin)| bytes.len() == 8 && *origin == AccessOrigin::ImplicitStack)
+    );
+    assert_eq!(
+        memory.reads,
+        vec![
+            (EXT_GATE, 8, AccessOrigin::DescriptorTable),
+            (EXT_GATE + 8, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    // CPU: handler 0x1100, RSP 0x117d8, IF/TF/RF cleared, AC/ZF/CF kept, CR2 untouched.
+    let mut expected = before.clone();
+    expected.rip = 0x1100;
+    expected.gpr[Register::Rsp as usize] = 0x1_17d8;
+    expected.rflags = 0x4_0043;
+    assert_eq!(state, expected);
+    assert_eq!(state.cr2, Some(0xdead_0000));
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.ss_selector, Some(0x18));
+}
+
+#[test]
+fn ext_delivery_saves_the_real_rsp_and_aligns_the_frame_down_to_sixteen() {
+    for rsp in [PF_RSP + 8, PF_RSP + 15, PF_RSP + 1] {
+        let (mut state, mut memory) = ext_state();
+        state.gpr[Register::Rsp as usize] = rsp;
+        let delivered = ext_deliver(&mut state, &mut memory);
+        assert_eq!(
+            delivered,
+            od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+                target_rip: EXT_HANDLER,
+                new_rsp: PF_RSP - 40,
+            },
+            "{rsp:#x}"
+        );
+        assert_eq!(pf_qword(&memory, PF_RSP - 16), rsp, "{rsp:#x}");
+        assert_eq!(state.gpr[Register::Rsp as usize], 0x1_17d8, "{rsp:#x}");
+    }
+}
+
+#[test]
+fn ext_delivery_uses_the_gate_of_the_given_vector() {
+    let (mut state, mut memory) = ext_state();
+    ext_put_gate(&mut memory, 0x21, pf_gate_bytes(RIP + 0x180, 0x10, 0, 0x8e));
+    let delivered = od_isa::deliver_external_interrupt_cpl0_set(
+        &mut state,
+        &mut memory,
+        0x21,
+        context(PrivilegeLevel::Ring0),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip: RIP + 0x180,
+            new_rsp: PF_RSP - 40,
+        }
+    );
+    assert_eq!(state.rip, RIP + 0x180);
+}
+
+#[test]
+fn ext_delivery_ignores_the_gate_dpl_and_sets_the_accessed_bit() {
+    // A gate with DPL 3 (0xee) is delivered: the gate DPL applies to software INT n only.
+    let (mut state, mut memory) = ext_state();
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0xee),
+    );
+    // CODE64 with A = 0: the Accessed write comes after the five frame stores.
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0ExternalInterruptDelivery::Delivered { .. }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!(pf_qword(&memory, LRETQ_GDT + 0x10), CODE64);
+    assert_eq!(memory.writes, 6);
+    let last = memory.write_log.last().unwrap();
+    assert_eq!(
+        (last.0, last.1.len(), last.2),
+        (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable)
+    );
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+}
+
+#[test]
+fn ext_delivery_then_handler_iretq_returns_to_the_same_instruction() {
+    let (mut state, mut memory) = ext_state();
+    // RF = 0 in the live flags, so the round trip restores them exactly.
+    state.rflags = 0x4_0243;
+    let start = state.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert!(matches!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Delivered { .. }
+    ));
+    assert_eq!(state.rflags & IF, 0);
+    // The handler is `IRETQ`: one instruction, back at the interrupted instruction.
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state, start);
+    assert_eq!(state.rip, RIP);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP);
+    assert_eq!(state.rflags & IF, IF);
+    // The interrupted `NOP` now runs once: the instruction was neither skipped nor repeated.
+    let result = run_lretq(&mut state, &mut memory);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 1);
+}
+
+/// Deliver after `tweak` and expect exactly `expected` with no write and no CPU change.
+fn assert_ext_refused(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: od_isa::Cpl0ExternalInterruptRefusal,
+    label: &str,
+) {
+    let (mut state, mut memory) = ext_state();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(expected),
+        "{label}"
+    );
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+#[test]
+fn ext_delivery_refuses_masked_blocked_and_not_running_states() {
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    assert_ext_refused(
+        |state, _| state.rflags &= !IF,
+        R::InterruptsMasked,
+        "IF = 0",
+    );
+    assert_ext_refused(
+        |state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        R::StiShadowActive,
+        "STI shadow",
+    );
+    assert_ext_refused(
+        |state, _| state.sti_shadow = None,
+        R::StiShadowActive,
+        "unknown STI shadow",
+    );
+    assert_ext_refused(
+        |state, _| state.activity = Some(CpuActivity::Halted),
+        R::ActivityOutsideProfile,
+        "halted",
+    );
+    assert_ext_refused(
+        |state, _| state.activity = Some(CpuActivity::Shutdown),
+        R::ActivityOutsideProfile,
+        "shutdown",
+    );
+    assert_ext_refused(
+        |state, _| state.activity = None,
+        R::ActivityOutsideProfile,
+        "unknown activity",
+    );
+}
+
+/// Refuse before the IDT and GDT are read: no write, no read, no CPU change.
+fn assert_ext_refused_before_any_access(
+    tweak: impl FnOnce(&mut LongModeState),
+    expected: od_isa::Cpl0ExternalInterruptRefusal,
+    label: &str,
+) {
+    let (mut state, mut memory) = ext_state();
+    tweak(&mut state);
+    let before = state.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(expected),
+        "{label}"
+    );
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+    assert!(memory.reads.is_empty(), "{label}");
+}
+
+#[test]
+fn ext_delivery_checks_if_before_the_sti_shadow() {
+    // IF = 0 with a blocking shadow: the IF check comes first.
+    assert_ext_refused_before_any_access(
+        |state| {
+            state.rflags &= !IF;
+            state.sti_shadow = Some(StiShadow::Blocking);
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::InterruptsMasked,
+        "IF = 0 and Blocking",
+    );
+}
+
+#[test]
+fn ext_delivery_checks_the_activity_before_if() {
+    // Halted with IF = 0: the activity check comes first.
+    assert_ext_refused_before_any_access(
+        |state| {
+            state.rflags &= !IF;
+            state.activity = Some(CpuActivity::Halted);
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::ActivityOutsideProfile,
+        "Halted and IF = 0",
+    );
+}
+
+#[test]
+fn ext_delivery_trap_gate_with_ist_reports_the_ist() {
+    // The trap-gate refusal comes after the gate checks: IST 1 wins over the gate type.
+    assert_ext_refused(
+        |_, memory| {
+            ext_put_gate(
+                memory,
+                EXT_VECTOR,
+                pf_gate_bytes(EXT_HANDLER, 0x10, 1, 0x8f),
+            )
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::UnsupportedIst(1),
+        "trap gate with IST 1",
+    );
+    // A trap gate to a bad descriptor reports the descriptor, not the gate type.
+    assert_ext_refused(
+        |_, memory| {
+            ext_put_gate(
+                memory,
+                EXT_VECTOR,
+                pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8f),
+            );
+            memory.put(LRETQ_GDT + 0x10, CODE64 | (3 << 45));
+        },
+        od_isa::Cpl0ExternalInterruptRefusal::InvalidTargetCodeDescriptor,
+        "trap gate with a DPL 3 descriptor",
+    );
+}
+
+#[test]
+fn ext_delivery_refuses_a_cpl3_context() {
+    let (mut state, mut memory) = ext_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_external_interrupt_cpl0_set(
+        &mut state,
+        &mut memory,
+        EXT_VECTOR,
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::NotRing0Long64
+        )
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn ext_delivery_refuses_a_bad_gate_without_any_write() {
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    let put = |memory: &mut LretqMemory, gate| ext_put_gate(memory, EXT_VECTOR, gate);
+    assert_ext_refused(|state, _| state.idtr = None, R::MissingIdtr, "no IDTR");
+    assert_ext_refused(
+        |state, _| state.idtr.as_mut().unwrap().limit = EXT_VECTOR as u16 * 16 + 14,
+        R::GateBeyondIdtLimit,
+        "limit one byte short of the gate",
+    );
+    assert_ext_refused(
+        |state, _| state.idtr.as_mut().unwrap().base = u64::MAX - 100,
+        R::NonCanonicalIdtSpan,
+        "IDT base overflows",
+    );
+    assert_ext_refused(
+        |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x0e)),
+        R::GateNotPresent,
+        "P = 0",
+    );
+    assert_ext_refused(
+        |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8f)),
+        R::TrapGateNotSupported,
+        "trap gate",
+    );
+    assert_ext_refused(
+        |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0xef)),
+        R::TrapGateNotSupported,
+        "trap gate with DPL 3",
+    );
+    for attributes in [0x8c, 0x85, 0x8d, 0x9e, 0x80] {
+        assert_ext_refused(
+            |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x10, 0, attributes)),
+            R::InvalidGateType(attributes),
+            &format!("type/attributes {attributes:#x}"),
+        );
+    }
+    for ist in 1..=7u8 {
+        assert_ext_refused(
+            |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x10, ist, 0x8e)),
+            R::UnsupportedIst(ist),
+            &format!("IST {ist}"),
+        );
+    }
+    assert_ext_refused(
+        |_, memory| {
+            let mut gate = pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0x8e);
+            gate[12] = 1;
+            put(memory, gate);
+        },
+        R::GateReservedBitsSet,
+        "reserved dword",
+    );
+    for selector in [0u16, 3, 0x14, 0x12, 0x13] {
+        assert_ext_refused(
+            |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, selector, 0, 0x8e)),
+            R::InvalidTargetSelector,
+            &format!("selector {selector:#x}"),
+        );
+    }
+    assert_ext_refused(
+        |_, memory| put(memory, pf_gate_bytes(EXT_HANDLER, 0x20, 0, 0x8e)),
+        R::TargetBeyondGdtLimit,
+        "selector beyond the GDT",
+    );
+    assert_ext_refused(
+        |_, memory| put(memory, pf_gate_bytes(0x0000_8000_0000_0000, 0x10, 0, 0x8e)),
+        R::NonCanonicalTargetRip,
+        "non-canonical handler",
+    );
+}
+
+#[test]
+fn ext_delivery_refuses_a_bad_target_descriptor_and_stack_without_any_write() {
+    use od_isa::Cpl0ExternalInterruptRefusal as R;
+    for (label, descriptor) in [
+        ("data segment", DATA_DESCRIPTOR),
+        ("DPL 3", CODE64 | (3 << 45)),
+        ("not present", CODE64 & !(1 << 47)),
+        ("L = 0", CODE64 & !(1 << 53)),
+        ("L = 1 and D = 1", CODE64 | (1 << 54)),
+        ("conforming", CODE64 | (1 << 42)),
+        ("system descriptor", CODE64 & !(1 << 44)),
+    ] {
+        assert_ext_refused(
+            |_, memory| memory.put(LRETQ_GDT + 0x10, descriptor),
+            R::InvalidTargetCodeDescriptor,
+            label,
+        );
+    }
+    assert_ext_refused(|state, _| state.gdtr = None, R::MissingGdtr, "no GDTR");
+    assert_ext_refused(
+        |state, _| state.gdtr.as_mut().unwrap().base = u64::MAX - 4,
+        R::NonCanonicalGdtSpan,
+        "GDT base overflows",
+    );
+    assert_ext_refused(
+        |state, _| state.cs_cache = None,
+        R::MissingCurrentSelectors,
+        "no CS cache",
+    );
+    assert_ext_refused(
+        |state, _| state.cs_cache.as_mut().unwrap().flags = 0xc,
+        R::InvalidCurrentCodeSegment,
+        "current CS is not 64-bit code",
+    );
+    assert_ext_refused(
+        |state, _| state.gpr[Register::Rsp as usize] = 0x27,
+        R::StackAddressOverflow,
+        "RSP below the frame size",
+    );
+    assert_ext_refused(
+        |state, _| state.gpr[Register::Rsp as usize] = 0xffff_8000_0000_0010,
+        R::NonCanonicalStackSpan,
+        "non-canonical stack",
+    );
+}
+
+#[test]
+fn ext_delivery_memory_failures_leave_the_cpu_unchanged() {
+    use od_isa::Cpl0ExternalInterruptPhase as Phase;
+    use od_isa::InterruptFrameSlot as Slot;
+    for (failing, slot) in [
+        (1usize, Slot::OldSs),
+        (2, Slot::OldRsp),
+        (3, Slot::OldRflags),
+        (4, Slot::OldCs),
+        (5, Slot::OldRip),
+    ] {
+        let (mut state, mut memory) = ext_state();
+        memory.fail_write_number = Some(failing);
+        let before = state.clone();
+        let delivered = ext_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                &delivered,
+                od_isa::Cpl0ExternalInterruptDelivery::Aborted {
+                    phase: Phase::StackWrite { slot: got },
+                    ..
+                } if *got == slot
+            ),
+            "{failing}: {delivered:?}"
+        );
+        assert_eq!(state, before, "{failing}");
+        assert_eq!(memory.write_log.len(), failing - 1, "{failing}");
+        assert!(
+            memory
+                .write_log
+                .iter()
+                .all(|(address, _, _)| *address < PF_RSP),
+            "{failing}"
+        );
+    }
+    let (mut state, mut memory) = ext_state();
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    memory.fail_write_number = Some(6);
+    let before = state.clone();
+    let delivered = ext_deliver(&mut state, &mut memory);
+    assert!(
+        matches!(
+            delivered,
+            od_isa::Cpl0ExternalInterruptDelivery::Aborted {
+                phase: Phase::TargetCodeDescriptorAccessedWrite,
+                ..
+            }
+        ),
+        "{delivered:?}"
+    );
+    assert_eq!(state, before);
+    for (page, phase) in [
+        (PF_IDT, Phase::IdtGateRead),
+        (LRETQ_GDT, Phase::TargetCodeDescriptorRead),
+    ] {
+        let (mut state, mut memory) = ext_state();
+        memory.fault_pages = vec![page];
+        let before = state.clone();
+        let delivered = ext_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                &delivered,
+                od_isa::Cpl0ExternalInterruptDelivery::Aborted { phase: got, .. } if *got == phase
+            ),
+            "{delivered:?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
 // ---- S4-38L6b: WRMSR/RDMSR IA32_GS_BASE / IA32_FS_BASE in the CPL0 set ----
 
 const GS_BASE_MSR: u64 = 0xc000_0101;

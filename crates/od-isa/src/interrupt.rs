@@ -511,6 +511,288 @@ pub enum Cpl0PageFaultDelivery {
 /// executes CLAC in its entry code, which would be redundant if the entry cleared AC).
 const GATE_CLEARED_FLAGS: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 17);
 
+/// Refusal reasons shared by the IDT gate delivery of the CPL0 set (a `#PF` and an external
+/// interrupt). A refusal happens before any memory write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GateRefusal {
+    MissingCurrentSelectors,
+    InvalidCurrentCodeSegment,
+    MissingIdtr,
+    MissingGdtr,
+    GateBeyondIdtLimit,
+    NonCanonicalIdtSpan,
+    GateNotPresent,
+    InvalidGateType(u8),
+    UnsupportedIst(u8),
+    GateReservedBitsSet,
+    InvalidTargetSelector,
+    TargetBeyondGdtLimit,
+    NonCanonicalGdtSpan,
+    InvalidTargetCodeDescriptor,
+    NonCanonicalTargetRip,
+    StackAddressOverflow,
+    NonCanonicalStackSpan,
+}
+
+/// Where a gate delivery failed on a memory access; `StackWrite` carries the zero-based
+/// index of the frame word in store order (0 = SS, 1 = RSP, 2 = RFLAGS, 3 = CS, 4 = RIP,
+/// 5 = error code). The tests count the stores from one (store 1 = SS = index 0, store 5 = RIP,
+/// store 6 = the error code or, without one, the Accessed-bit write).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GateAbortPhase {
+    IdtGateRead,
+    TargetCodeDescriptorRead,
+    StackWrite(usize),
+    TargetCodeDescriptorAccessedWrite,
+}
+
+enum GateFailure {
+    Refused(GateRefusal),
+    Aborted {
+        phase: GateAbortPhase,
+        cause: MemoryError,
+    },
+}
+
+use GateFailure::{Aborted as GateAborted, Refused as GateRefused};
+
+/// A gate and target code descriptor that passed every read-only check.
+struct ResolvedGate {
+    old_cs: u16,
+    old_ss: u16,
+    target_selector: u16,
+    target_rip: u64,
+    descriptor: [u8; 8],
+    descriptor_address: u64,
+    trap_gate: bool,
+}
+
+/// Read and check the gate of `vector` and its target code descriptor: no write, no change of
+/// the CPU state. The wrapper has already checked the entry conditions of its own event.
+fn resolve_cpl0_gate(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    vector: u8,
+) -> Result<ResolvedGate, GateFailure> {
+    use GateRefusal as Refusal;
+    let refuse = GateRefused;
+    let (Some(old_cs), Some(old_cs_cache), Some(old_ss)) =
+        (state.cs_selector, state.cs_cache, state.ss_selector)
+    else {
+        return Err(refuse(Refusal::MissingCurrentSelectors));
+    };
+    if !valid_ring0_long_code(old_cs, old_cs_cache.access, old_cs_cache.flags) {
+        return Err(refuse(Refusal::InvalidCurrentCodeSegment));
+    }
+    let Some(idtr) = state.idtr else {
+        return Err(refuse(Refusal::MissingIdtr));
+    };
+    let Some(gdtr) = state.gdtr else {
+        return Err(refuse(Refusal::MissingGdtr));
+    };
+
+    // The gate: 16 bytes at idt_base + 16 * vector, read as two qwords.
+    let gate_offset = u64::from(vector) * 16;
+    if gate_offset + 15 > u64::from(idtr.limit) {
+        return Err(refuse(Refusal::GateBeyondIdtLimit));
+    }
+    let (Some(gate_address), Some(gate_last)) = (
+        idtr.base.checked_add(gate_offset),
+        idtr.base.checked_add(gate_offset + 15),
+    ) else {
+        return Err(refuse(Refusal::NonCanonicalIdtSpan));
+    };
+    if !canonical(gate_address) || !canonical(gate_last) {
+        return Err(refuse(Refusal::NonCanonicalIdtSpan));
+    }
+    let table = context.descriptor_table();
+    let mut gate = [0_u8; 16];
+    for half in 0..2_u64 {
+        match memory.read_integer(gate_address + 8 * half, table, crate::OperandSize::Qword) {
+            Ok(value) => {
+                gate[8 * half as usize..8 * half as usize + 8].copy_from_slice(&value.to_le_bytes())
+            }
+            Err(cause) => {
+                return Err(GateAborted {
+                    phase: GateAbortPhase::IdtGateRead,
+                    cause,
+                });
+            }
+        }
+    }
+    let attributes = gate[5];
+    if attributes & 0x80 == 0 {
+        return Err(refuse(Refusal::GateNotPresent));
+    }
+    let gate_type = attributes & 0x0f;
+    if attributes & 0x10 != 0 || (gate_type != 0x0e && gate_type != 0x0f) {
+        return Err(refuse(Refusal::InvalidGateType(attributes)));
+    }
+    if gate[4] & 7 != 0 {
+        return Err(refuse(Refusal::UnsupportedIst(gate[4] & 7)));
+    }
+    if gate[4] & 0xf8 != 0 || gate[12..16] != [0, 0, 0, 0] {
+        return Err(refuse(Refusal::GateReservedBitsSet));
+    }
+    let trap_gate = gate_type == 0x0f;
+    let target_selector = u16::from_le_bytes([gate[2], gate[3]]);
+    if target_selector & 0xfffc == 0 || target_selector & 4 != 0 || target_selector & 3 != 0 {
+        return Err(refuse(Refusal::InvalidTargetSelector));
+    }
+    let target_rip = u64::from(u16::from_le_bytes([gate[0], gate[1]]))
+        | (u64::from(u16::from_le_bytes([gate[6], gate[7]])) << 16)
+        | (u64::from(u32::from_le_bytes([gate[8], gate[9], gate[10], gate[11]])) << 32);
+    if !canonical(target_rip) {
+        return Err(refuse(Refusal::NonCanonicalTargetRip));
+    }
+
+    // The target code segment, from the GDT (never from the cache).
+    let descriptor_offset = u64::from(target_selector & !7);
+    if descriptor_offset + 7 > u64::from(gdtr.limit) {
+        return Err(refuse(Refusal::TargetBeyondGdtLimit));
+    }
+    let (Some(descriptor_address), Some(descriptor_last)) = (
+        gdtr.base.checked_add(descriptor_offset),
+        gdtr.base.checked_add(descriptor_offset + 7),
+    ) else {
+        return Err(refuse(Refusal::NonCanonicalGdtSpan));
+    };
+    if !canonical(descriptor_address) || !canonical(descriptor_last) {
+        return Err(refuse(Refusal::NonCanonicalGdtSpan));
+    }
+    let descriptor = match memory.read_integer(descriptor_address, table, crate::OperandSize::Qword)
+    {
+        Ok(value) => value.to_le_bytes(),
+        Err(cause) => {
+            return Err(GateAborted {
+                phase: GateAbortPhase::TargetCodeDescriptorRead,
+                cause,
+            });
+        }
+    };
+    let access = descriptor[5];
+    let flags = descriptor[6] >> 4;
+    // The accessed bit is set at the commit if clear, so it is not a validity condition.
+    if !valid_ring0_long_code(target_selector, access | 1, flags) {
+        return Err(refuse(Refusal::InvalidTargetCodeDescriptor));
+    }
+    Ok(ResolvedGate {
+        old_cs,
+        old_ss,
+        target_selector,
+        target_rip,
+        descriptor,
+        descriptor_address,
+        trap_gate,
+    })
+}
+
+/// Store the frame, set the target descriptor Accessed bit if clear, and commit CS, RIP, RSP
+/// and the live flags. The frame is SS, old RSP, `saved_rflags`, old CS, `saved_rip` and, if
+/// present, `error_code` (stored in this order downwards from the 16-byte aligned RSP). A
+/// failure leaves the CPU state unchanged. Returns `(target_rip, new_rsp)`.
+fn commit_cpl0_gate(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    gate: &ResolvedGate,
+    saved_rflags: u64,
+    saved_rip: u64,
+    error_code: Option<u64>,
+) -> Result<(u64, u64), GateFailure> {
+    let table = context.descriptor_table();
+    let old_rsp = state.gpr[crate::Register::Rsp as usize];
+    let aligned_rsp = old_rsp & !15;
+    let words = 5 + u64::from(error_code.is_some());
+    let Some(new_rsp) = aligned_rsp.checked_sub(8 * words) else {
+        return Err(GateRefused(GateRefusal::StackAddressOverflow));
+    };
+    if !canonical(new_rsp) || !canonical(aligned_rsp - 1) {
+        return Err(GateRefused(GateRefusal::NonCanonicalStackSpan));
+    }
+    let frame = [
+        u64::from(gate.old_ss),
+        old_rsp,
+        saved_rflags,
+        u64::from(gate.old_cs),
+        saved_rip,
+        error_code.unwrap_or(0),
+    ];
+    let stack_context = AccessContext {
+        origin: AccessOrigin::ImplicitStack,
+        ..context
+    };
+    for (index, value) in frame.iter().take(words as usize).enumerate() {
+        let address = aligned_rsp - 8 * (index as u64 + 1);
+        if let Err(cause) = memory.write(address, stack_context, &value.to_le_bytes()) {
+            return Err(GateAborted {
+                phase: GateAbortPhase::StackWrite(index),
+                cause,
+            });
+        }
+    }
+    let access = gate.descriptor[5];
+    let flags = gate.descriptor[6] >> 4;
+    if access & 1 == 0 {
+        let mut accessed = gate.descriptor;
+        accessed[5] |= 1;
+        if let Err(cause) = memory.write(gate.descriptor_address, table, &accessed) {
+            return Err(GateAborted {
+                phase: GateAbortPhase::TargetCodeDescriptorAccessedWrite,
+                cause,
+            });
+        }
+    }
+
+    // Commit. SS (selector, cache, unusable mark) stays as it was.
+    state.cs_selector = Some(gate.target_selector);
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: access | 1,
+        flags,
+    });
+    state.gpr[crate::Register::Rsp as usize] = new_rsp;
+    state.rip = gate.target_rip;
+    let mut cleared = GATE_CLEARED_FLAGS;
+    if !gate.trap_gate {
+        cleared |= 1 << 9;
+    }
+    state.rflags = (state.rflags & !cleared) | (1 << 1);
+    Ok((gate.target_rip, new_rsp))
+}
+
+macro_rules! impl_from_gate_refusal {
+    ($target:ident) => {
+        impl From<GateRefusal> for $target {
+            fn from(refusal: GateRefusal) -> Self {
+                match refusal {
+                    GateRefusal::MissingCurrentSelectors => Self::MissingCurrentSelectors,
+                    GateRefusal::InvalidCurrentCodeSegment => Self::InvalidCurrentCodeSegment,
+                    GateRefusal::MissingIdtr => Self::MissingIdtr,
+                    GateRefusal::MissingGdtr => Self::MissingGdtr,
+                    GateRefusal::GateBeyondIdtLimit => Self::GateBeyondIdtLimit,
+                    GateRefusal::NonCanonicalIdtSpan => Self::NonCanonicalIdtSpan,
+                    GateRefusal::GateNotPresent => Self::GateNotPresent,
+                    GateRefusal::InvalidGateType(attributes) => Self::InvalidGateType(attributes),
+                    GateRefusal::UnsupportedIst(ist) => Self::UnsupportedIst(ist),
+                    GateRefusal::GateReservedBitsSet => Self::GateReservedBitsSet,
+                    GateRefusal::InvalidTargetSelector => Self::InvalidTargetSelector,
+                    GateRefusal::TargetBeyondGdtLimit => Self::TargetBeyondGdtLimit,
+                    GateRefusal::NonCanonicalGdtSpan => Self::NonCanonicalGdtSpan,
+                    GateRefusal::InvalidTargetCodeDescriptor => Self::InvalidTargetCodeDescriptor,
+                    GateRefusal::NonCanonicalTargetRip => Self::NonCanonicalTargetRip,
+                    GateRefusal::StackAddressOverflow => Self::StackAddressOverflow,
+                    GateRefusal::NonCanonicalStackSpan => Self::NonCanonicalStackSpan,
+                }
+            }
+        }
+    };
+}
+impl_from_gate_refusal!(Cpl0PageFaultRefusal);
+impl_from_gate_refusal!(Cpl0ExternalInterruptRefusal);
+
 /// Deliver a synchronous page fault of the Long64 CPL0 profile set through the IDT gate of
 /// vector 14 (S4-38L5c): CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0.
 ///
@@ -540,7 +822,7 @@ pub fn deliver_page_fault_cpl0_set(
     record: &crate::memory::PageFaultRecord,
     context: AccessContext,
 ) -> Cpl0PageFaultDelivery {
-    use Cpl0PageFaultDelivery::{Aborted, Refused};
+    use Cpl0PageFaultDelivery::Refused;
     use Cpl0PageFaultRefusal as Refusal;
     let refuse = Refused;
     let fault = record.fault();
@@ -562,188 +844,213 @@ pub fn deliver_page_fault_cpl0_set(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return refuse(Refusal::StiShadowActive);
     }
-    let (Some(old_cs), Some(old_cs_cache), Some(old_ss)) =
-        (state.cs_selector, state.cs_cache, state.ss_selector)
-    else {
-        return refuse(Refusal::MissingCurrentSelectors);
+    let gate = match resolve_cpl0_gate(state, memory, context, 14) {
+        Ok(gate) => gate,
+        Err(failure) => return pf_gate_failure(failure),
     };
-    if !valid_ring0_long_code(old_cs, old_cs_cache.access, old_cs_cache.flags) {
-        return refuse(Refusal::InvalidCurrentCodeSegment);
-    }
-    let Some(idtr) = state.idtr else {
-        return refuse(Refusal::MissingIdtr);
-    };
-    let Some(gdtr) = state.gdtr else {
-        return refuse(Refusal::MissingGdtr);
-    };
-
-    // The gate: 16 bytes at idt_base + 16 * 14, read as two qwords.
-    const GATE_OFFSET: u64 = 14 * 16;
-    if GATE_OFFSET + 15 > u64::from(idtr.limit) {
-        return refuse(Refusal::GateBeyondIdtLimit);
-    }
-    let (Some(gate_address), Some(gate_last)) = (
-        idtr.base.checked_add(GATE_OFFSET),
-        idtr.base.checked_add(GATE_OFFSET + 15),
-    ) else {
-        return refuse(Refusal::NonCanonicalIdtSpan);
-    };
-    if !canonical(gate_address) || !canonical(gate_last) {
-        return refuse(Refusal::NonCanonicalIdtSpan);
-    }
-    let table = context.descriptor_table();
-    let mut gate = [0_u8; 16];
-    for half in 0..2_u64 {
-        match memory.read_integer(gate_address + 8 * half, table, crate::OperandSize::Qword) {
-            Ok(value) => {
-                gate[8 * half as usize..8 * half as usize + 8].copy_from_slice(&value.to_le_bytes())
-            }
-            Err(cause) => {
-                return Aborted {
-                    phase: Cpl0PageFaultDeliveryPhase::IdtGateRead,
-                    cause,
-                };
-            }
-        }
-    }
-    let attributes = gate[5];
-    if attributes & 0x80 == 0 {
-        return refuse(Refusal::GateNotPresent);
-    }
-    let gate_type = attributes & 0x0f;
-    if attributes & 0x10 != 0 || (gate_type != 0x0e && gate_type != 0x0f) {
-        return refuse(Refusal::InvalidGateType(attributes));
-    }
-    if gate[4] & 7 != 0 {
-        return refuse(Refusal::UnsupportedIst(gate[4] & 7));
-    }
-    if gate[4] & 0xf8 != 0 || gate[12..16] != [0, 0, 0, 0] {
-        return refuse(Refusal::GateReservedBitsSet);
-    }
-    let trap_gate = gate_type == 0x0f;
-    let target_selector = u16::from_le_bytes([gate[2], gate[3]]);
-    if target_selector & 0xfffc == 0 || target_selector & 4 != 0 || target_selector & 3 != 0 {
-        return refuse(Refusal::InvalidTargetSelector);
-    }
-    let target_rip = u64::from(u16::from_le_bytes([gate[0], gate[1]]))
-        | (u64::from(u16::from_le_bytes([gate[6], gate[7]])) << 16)
-        | (u64::from(u32::from_le_bytes([gate[8], gate[9], gate[10], gate[11]])) << 32);
-    if !canonical(target_rip) {
-        return refuse(Refusal::NonCanonicalTargetRip);
-    }
-
-    // The target code segment, from the GDT (never from the cache).
-    let descriptor_offset = u64::from(target_selector & !7);
-    if descriptor_offset + 7 > u64::from(gdtr.limit) {
-        return refuse(Refusal::TargetBeyondGdtLimit);
-    }
-    let (Some(descriptor_address), Some(descriptor_last)) = (
-        gdtr.base.checked_add(descriptor_offset),
-        gdtr.base.checked_add(descriptor_offset + 7),
-    ) else {
-        return refuse(Refusal::NonCanonicalGdtSpan);
-    };
-    if !canonical(descriptor_address) || !canonical(descriptor_last) {
-        return refuse(Refusal::NonCanonicalGdtSpan);
-    }
-    let descriptor = match memory.read_integer(descriptor_address, table, crate::OperandSize::Qword)
-    {
-        Ok(value) => value.to_le_bytes(),
-        Err(cause) => {
-            return Aborted {
-                phase: Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorRead,
-                cause,
-            };
-        }
-    };
-    let access = descriptor[5];
-    let flags = descriptor[6] >> 4;
-    // The accessed bit is set below if clear, so it is not a validity condition.
-    if !valid_ring0_long_code(target_selector, access | 1, flags) {
-        return refuse(Refusal::InvalidTargetCodeDescriptor);
-    }
-
-    // The frame.
-    let old_rsp = state.gpr[crate::Register::Rsp as usize];
-    let aligned_rsp = old_rsp & !15;
-    let Some(new_rsp) = aligned_rsp.checked_sub(48) else {
-        return refuse(Refusal::StackAddressOverflow);
-    };
-    if !canonical(new_rsp) || !canonical(aligned_rsp - 1) {
-        return refuse(Refusal::NonCanonicalStackSpan);
-    }
     let saved_rflags = state.rflags | (1 << 16) | (1 << 1);
-    let slots = [
-        (
-            aligned_rsp - 8,
-            u64::from(old_ss),
-            PageFaultFrameSlot::OldSs,
-        ),
-        (aligned_rsp - 16, old_rsp, PageFaultFrameSlot::OldRsp),
-        (
-            aligned_rsp - 24,
-            saved_rflags,
-            PageFaultFrameSlot::OldRflags,
-        ),
-        (
-            aligned_rsp - 32,
-            u64::from(old_cs),
-            PageFaultFrameSlot::OldCs,
-        ),
-        (
-            aligned_rsp - 40,
-            record.saved_rip(),
-            PageFaultFrameSlot::SavedRip,
-        ),
-        (
-            aligned_rsp - 48,
-            u64::from(error_code),
-            PageFaultFrameSlot::ErrorCode,
-        ),
-    ];
-    let stack_context = AccessContext {
-        origin: AccessOrigin::ImplicitStack,
-        ..context
-    };
-    for (address, value, slot) in slots {
-        if let Err(cause) = memory.write(address, stack_context, &value.to_le_bytes()) {
-            return Aborted {
-                phase: Cpl0PageFaultDeliveryPhase::StackWrite { slot },
-                cause,
-            };
+    match commit_cpl0_gate(
+        state,
+        memory,
+        context,
+        &gate,
+        saved_rflags,
+        record.saved_rip(),
+        Some(u64::from(error_code)),
+    ) {
+        Ok((target_rip, new_rsp)) => {
+            state.cr2 = Some(linear_address);
+            Cpl0PageFaultDelivery::Delivered {
+                target_rip,
+                new_rsp,
+                trap_gate: gate.trap_gate,
+            }
         }
+        Err(failure) => pf_gate_failure(failure),
     }
-    if access & 1 == 0 {
-        let mut accessed = descriptor;
-        accessed[5] |= 1;
-        if let Err(cause) = memory.write(descriptor_address, table, &accessed) {
-            return Aborted {
-                phase: Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
-                cause,
-            };
-        }
-    }
+}
 
-    // Commit. SS (selector, cache, unusable mark) stays as it was.
-    state.cs_selector = Some(target_selector);
-    state.cs_cache = Some(CodeSegmentDescriptorCache {
-        base: 0,
-        limit: u32::MAX,
-        access: access | 1,
-        flags,
-    });
-    state.gpr[crate::Register::Rsp as usize] = new_rsp;
-    state.rip = target_rip;
-    let mut cleared = GATE_CLEARED_FLAGS;
-    if !trap_gate {
-        cleared |= 1 << 9;
+fn pf_gate_failure(failure: GateFailure) -> Cpl0PageFaultDelivery {
+    match failure {
+        GateRefused(refusal) => Cpl0PageFaultDelivery::Refused(refusal.into()),
+        GateAborted { phase, cause } => {
+            const SLOTS: [PageFaultFrameSlot; 6] = [
+                PageFaultFrameSlot::OldSs,
+                PageFaultFrameSlot::OldRsp,
+                PageFaultFrameSlot::OldRflags,
+                PageFaultFrameSlot::OldCs,
+                PageFaultFrameSlot::SavedRip,
+                PageFaultFrameSlot::ErrorCode,
+            ];
+            let phase = match phase {
+                GateAbortPhase::IdtGateRead => Cpl0PageFaultDeliveryPhase::IdtGateRead,
+                GateAbortPhase::TargetCodeDescriptorRead => {
+                    Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorRead
+                }
+                GateAbortPhase::StackWrite(index) => {
+                    Cpl0PageFaultDeliveryPhase::StackWrite { slot: SLOTS[index] }
+                }
+                GateAbortPhase::TargetCodeDescriptorAccessedWrite => {
+                    Cpl0PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite
+                }
+            };
+            Cpl0PageFaultDelivery::Aborted { phase, cause }
+        }
     }
-    state.rflags = (state.rflags & !cleared) | (1 << 1);
-    state.cr2 = Some(linear_address);
-    Cpl0PageFaultDelivery::Delivered {
-        target_rip,
-        new_rsp,
-        trap_gate,
+}
+
+/// Why [`deliver_external_interrupt_cpl0_set`] refused to deliver. A refusal happens before
+/// any memory write: the CPU state and the guest memory are as they were (only the IDT and GDT
+/// reads preceded it). It is the caller's refusal to call the function now (for example
+/// `InterruptsMasked`), not an architectural fault, and never a substitute delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0ExternalInterruptRefusal {
+    NotRing0Long64,
+    /// The CPU is not `Running` (halted, shut down, or unknown).
+    ActivityOutsideProfile,
+    /// RFLAGS.IF = 0: a maskable external interrupt is not accepted.
+    InterruptsMasked,
+    /// The one-instruction interrupt shadow after `STI` is active (or unknown).
+    StiShadowActive,
+    MissingCurrentSelectors,
+    InvalidCurrentCodeSegment,
+    MissingIdtr,
+    MissingGdtr,
+    /// The gate of the vector (offset `16 * vector ..= 16 * vector + 15`) lies beyond the IDT
+    /// limit.
+    GateBeyondIdtLimit,
+    NonCanonicalIdtSpan,
+    /// Gate P = 0.
+    GateNotPresent,
+    /// The gate is not an interrupt gate (0xE) or a trap gate (0xF), or its S bit is set.
+    /// Carries the raw type/attribute byte.
+    InvalidGateType(u8),
+    /// A trap gate (0xF): it would leave IF set, which an external interrupt does not use;
+    /// not modeled.
+    TrapGateNotSupported,
+    /// The gate asks for an interrupt stack table entry (IST 1..=7); not modeled.
+    UnsupportedIst(u8),
+    GateReservedBitsSet,
+    InvalidTargetSelector,
+    TargetBeyondGdtLimit,
+    NonCanonicalGdtSpan,
+    InvalidTargetCodeDescriptor,
+    NonCanonicalTargetRip,
+    StackAddressOverflow,
+    NonCanonicalStackSpan,
+}
+
+/// Where [`deliver_external_interrupt_cpl0_set`] failed on a memory access.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0ExternalInterruptPhase {
+    IdtGateRead,
+    TargetCodeDescriptorRead,
+    StackWrite { slot: InterruptFrameSlot },
+    TargetCodeDescriptorAccessedWrite,
+}
+
+/// Result of [`deliver_external_interrupt_cpl0_set`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Cpl0ExternalInterruptDelivery {
+    /// The frame is on the stack and CS, RIP, RSP and RFLAGS are committed (IF cleared). Nothing
+    /// was retired.
+    Delivered { target_rip: u64, new_rsp: u64 },
+    /// Nothing was written and the CPU state is unchanged.
+    Refused(Cpl0ExternalInterruptRefusal),
+    /// A memory access of the delivery failed (a `#PF` here would be a double fault, which is
+    /// not modeled; the caller stops). The CPU state is unchanged, but frame words already
+    /// stored stay in memory: they lie below the old RSP (dead stack). With the frame inside
+    /// one page the first store decides, so nothing is stored then.
+    Aborted {
+        phase: Cpl0ExternalInterruptPhase,
+        cause: MemoryError,
+    },
+}
+
+/// Deliver an external hardware interrupt `vector` of the Long64 CPL0 profile set through its
+/// IDT gate (S4-38L8a): CPL0 to CPL0, interrupt gate (type 0xE) only, IST 0. The caller calls
+/// it on an instruction boundary (nothing is being executed); `state.rip` is the address of the
+/// next instruction to run and is saved in the frame.
+///
+/// Refused before any write when RFLAGS.IF = 0 (`InterruptsMasked`), the STI shadow is not
+/// `Clear`, the CPU is not `Running`, the context is not Long64 CPL0, a trap gate (0xF), a
+/// not-present gate or another gate type, IST != 0, and the same descriptor, selector and
+/// stack conditions as [`deliver_page_fault_cpl0_set`] (the gate DPL is not checked: it
+/// applies to software `INT n` only).
+///
+/// Frame, the same IA-32e layout as the `#PF` one but without an error code: RSP is aligned
+/// down to 16, then eight-byte words are stored downwards: SS, old RSP, RFLAGS, CS, RIP. RFLAGS
+/// in the frame is the live RFLAGS with RF cleared and bit 1 set (IF stays 1: IF = 1 is a
+/// delivery condition, and `IRETQ` restores it). After the entry: CS = the gate selector, RIP =
+/// the gate offset, RSP = the frame (old RSP aligned down minus 40), SS unchanged, live RFLAGS
+/// with IF, TF, NT, RF and VM cleared (AC kept). CR2 and the retire counters are not touched.
+///
+/// SDM, from memory, not checked against the text: the RF = 0 in the saved image of an
+/// external interrupt (a fault saves RF = 1, an interrupt does not set it); the frame order and
+/// the alignment; that a hardware interrupt does not check the gate DPL.
+pub fn deliver_external_interrupt_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    context: AccessContext,
+) -> Cpl0ExternalInterruptDelivery {
+    use Cpl0ExternalInterruptRefusal as Refusal;
+    let refuse = Cpl0ExternalInterruptDelivery::Refused;
+    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+        return refuse(Refusal::NotRing0Long64);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return refuse(Refusal::ActivityOutsideProfile);
+    }
+    if state.rflags & (1 << 9) == 0 {
+        return refuse(Refusal::InterruptsMasked);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return refuse(Refusal::StiShadowActive);
+    }
+    let gate = match resolve_cpl0_gate(state, memory, context, vector) {
+        Ok(gate) => gate,
+        Err(failure) => return external_gate_failure(failure),
+    };
+    if gate.trap_gate {
+        return refuse(Refusal::TrapGateNotSupported);
+    }
+    let saved_rflags = (state.rflags & !(1 << 16)) | (1 << 1);
+    let saved_rip = state.rip;
+    match commit_cpl0_gate(state, memory, context, &gate, saved_rflags, saved_rip, None) {
+        Ok((target_rip, new_rsp)) => Cpl0ExternalInterruptDelivery::Delivered {
+            target_rip,
+            new_rsp,
+        },
+        Err(failure) => external_gate_failure(failure),
+    }
+}
+
+fn external_gate_failure(failure: GateFailure) -> Cpl0ExternalInterruptDelivery {
+    match failure {
+        GateRefused(refusal) => Cpl0ExternalInterruptDelivery::Refused(refusal.into()),
+        GateAborted { phase, cause } => {
+            const SLOTS: [InterruptFrameSlot; 5] = [
+                InterruptFrameSlot::OldSs,
+                InterruptFrameSlot::OldRsp,
+                InterruptFrameSlot::OldRflags,
+                InterruptFrameSlot::OldCs,
+                InterruptFrameSlot::OldRip,
+            ];
+            let phase = match phase {
+                GateAbortPhase::IdtGateRead => Cpl0ExternalInterruptPhase::IdtGateRead,
+                GateAbortPhase::TargetCodeDescriptorRead => {
+                    Cpl0ExternalInterruptPhase::TargetCodeDescriptorRead
+                }
+                GateAbortPhase::StackWrite(index) => {
+                    Cpl0ExternalInterruptPhase::StackWrite { slot: SLOTS[index] }
+                }
+                GateAbortPhase::TargetCodeDescriptorAccessedWrite => {
+                    Cpl0ExternalInterruptPhase::TargetCodeDescriptorAccessedWrite
+                }
+            };
+            Cpl0ExternalInterruptDelivery::Aborted { phase, cause }
+        }
     }
 }
 
