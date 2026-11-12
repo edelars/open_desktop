@@ -477,6 +477,9 @@ pub struct LinuxStopRecord {
     /// The guest `IA32_LSTAR` (S4-38L7ap) after the run; `0` when never written. Write-only for
     /// the guest (`RDMSR` of LSTAR is refused).
     pub guest_lstar: u64,
+    /// The guest `IA32_CSTAR` (S4-38L7aq) after the run; `0` when never written. Write-only for
+    /// the guest (`RDMSR` of CSTAR is refused).
+    pub guest_cstar: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -622,6 +625,7 @@ fn stop_record(
         pci_config_address: boot.board.pci_config_address(),
         guest_star: boot.board.guest_star(),
         guest_lstar: boot.board.guest_lstar(),
+        guest_cstar: boot.board.guest_cstar(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -694,6 +698,11 @@ pub struct LinuxCpl0SetMembers {
     /// (CSTAR, SYSCALL_MASK included) stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled.
     /// Independent of [`Self::msr`] and [`Self::msr_star`].
     pub msr_lstar: bool,
+    /// `with_msr_cstar_write` (S4-38L7aq): `WRMSR` of IA32_CSTAR at CPL0 stores `EDX:EAX` in the
+    /// board (`guest_cstar` of the stop record). Write-only: `RDMSR` of CSTAR and every other MSR
+    /// (SYSCALL_MASK included) stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled.
+    /// Independent of [`Self::msr`], [`Self::msr_star`] and [`Self::msr_lstar`].
+    pub msr_cstar: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
@@ -736,6 +745,7 @@ impl LinuxCpl0SetMembers {
             msr_fs_gs_base: false,
             msr_star: false,
             msr_lstar: false,
+            msr_cstar: false,
             halt: false,
             pio_u8: false,
             popf_cpl0: false,
@@ -763,6 +773,7 @@ impl LinuxCpl0SetMembers {
             msr_fs_gs_base: true,
             msr_star: true,
             msr_lstar: true,
+            msr_cstar: true,
             fetch_cache: true,
             diagnostic_past_c7: false,
             ..Self::minimal()
@@ -808,6 +819,8 @@ pub fn run_linux_direct_board_set(
     let star_cell = Cell::new(boot.board.guest_star());
     // S4-38L7ap: the guest IA32_LSTAR, kept by the board between runs.
     let lstar_cell = Cell::new(boot.board.guest_lstar());
+    // S4-38L7aq: the guest IA32_CSTAR, kept by the board between runs.
+    let cstar_cell = Cell::new(boot.board.guest_cstar());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -839,6 +852,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_lstar_write(&lstar_cell);
         names.push("msr:lstar_write".into());
     }
+    if members.msr_cstar {
+        set = set.with_msr_cstar_write(&cstar_cell);
+        names.push("msr:cstar_write".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -866,6 +883,7 @@ pub fn run_linux_direct_board_set(
     boot.board.set_pci_config_address(pci_cell.get());
     boot.board.set_guest_star(star_cell.get());
     boot.board.set_guest_lstar(lstar_cell.get());
+    boot.board.set_guest_cstar(cstar_cell.get());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -5435,9 +5453,9 @@ mod tests {
         assert_eq!(record.retired, 4);
         assert_eq!(record.guest_star, 0x0023_0010_0000_0000);
 
-        // WRMSR of CSTAR (0xC0000083) with the same values stays the stop, STAR untouched
-        // (LSTAR is a member since S4-38L7ap; CSTAR and SYSCALL_MASK are not).
-        for index in [0x83u8, 0x84] {
+        // WRMSR of SYSCALL_MASK (0xC0000084) with the same values stays the stop, STAR untouched
+        // (LSTAR is a member since S4-38L7ap and CSTAR since S4-38L7aq; SYSCALL_MASK is not).
+        for index in [0x84u8] {
             let cstar = [
                 0xB9, index, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
             ];
@@ -5451,6 +5469,7 @@ mod tests {
             assert_eq!(record.retired, 3);
             assert_eq!(record.guest_star, 0);
             assert_eq!(record.guest_lstar, 0);
+            assert_eq!(record.guest_cstar, 0);
         }
     }
 
@@ -5554,6 +5573,132 @@ mod tests {
             assert_eq!(record.retired, 4);
             assert_eq!(record.guest_lstar, 0xFFFF_FFFF_8100_0080);
         }
+    }
+
+    // ---- S4-38L7aq: WRMSR IA32_CSTAR through the board facade (write-only) ----
+
+    #[test]
+    fn wrmsr_cstar_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // MOV ECX,0xC0000083; MOV EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR; HLT: the boundary
+        // bytes `0F 30` of the diagnostic run with EDX:EAX = 0xFFFFFFFF:0x81001AB0.
+        let code = [
+            0xB9, 0x83, 0x00, 0x00, 0xC0, 0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30, 0xF4,
+        ];
+        let value = 0xFFFF_FFFF_8100_1AB0u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_cstar(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "MOV, MOV, MOV, WRMSR, HLT");
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0083);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8100_1AB0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0xFFFF_FFFF);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; STAR,
+        // LSTAR and the EFER did not move.
+        assert_eq!(record.guest_cstar, value);
+        assert_eq!(boot.board.guest_cstar(), value);
+        assert_eq!(record.guest_star, 0);
+        assert_eq!(record.guest_lstar, 0);
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(record.set_members.contains(&"msr:cstar_write".to_string()));
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_cstar(value);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_cstar, value);
+
+        // A real chain on one board: run 1 (guest WRMSR) stops by budget right after the write,
+        // run 2 on the same `boot` retires the rest and still reports the stored value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let first = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(first.retired, 4, "{first:?}");
+        assert_eq!(first.guest_cstar, value);
+        assert_eq!(boot.board.guest_cstar(), value);
+        let second = run_set_facade(&mut boot, &file, 1, members);
+        assert_eq!(second.exit, PagedProbeExit::Halted, "{second:?}");
+        assert_eq!(second.retired, 1, "HLT");
+        assert_eq!(second.guest_cstar, value);
+        assert_eq!(boot.board.guest_cstar(), value);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, MOV) and CSTAR stays 0; the
+        // STAR and LSTAR members do not admit CSTAR.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_star: true,
+                msr_lstar: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_cstar: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_cstar, 0);
+            assert_eq!(boot.board.guest_cstar(), 0);
+            assert!(!record.set_members.contains(&"msr:cstar_write".to_string()));
+        }
+    }
+
+    #[test]
+    fn rdmsr_cstar_and_syscall_mask_stay_the_stop_through_the_board_set() {
+        // MOV ECX,0xC0000083; MOV EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR; then RDMSR, SYSCALL
+        // or SYSRET: the write is retired, the next instruction is the stop (the value is not
+        // readable by the guest and SYSCALL/SYSRET are not modelled).
+        let prefix = [
+            0xB9, 0x83, 0x00, 0x00, 0xC0, 0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x05], 0x05),
+            (&[0x0F, 0x07], 0x07),
+        ] {
+            let mut code = prefix.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_cstar, 0xFFFF_FFFF_8100_1AB0);
+        }
+
+        // WRMSR of SYSCALL_MASK (0xC0000084) stays the stop with all three members; nothing moved.
+        let mask = [
+            0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0x00, 0x77, 0x04, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let (mut boot, file) = boot_with_entry(&mask);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
     }
 
     #[test]
@@ -5745,6 +5890,7 @@ mod tests {
                 msr_fs_gs_base: true,
                 msr_star: true,
                 msr_lstar: true,
+                msr_cstar: true,
                 fetch_cache: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
@@ -5764,6 +5910,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -5853,6 +6000,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",
@@ -6026,6 +6174,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "halt",
                 "pio_u8",
                 "popf_cpl0",

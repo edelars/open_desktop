@@ -1903,6 +1903,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_efer: Option<&'a Cell<u64>>,
     msr_star: Option<&'a Cell<u64>>,
     msr_lstar: Option<&'a Cell<u64>>,
+    msr_cstar: Option<&'a Cell<u64>>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1922,6 +1923,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_efer: None,
             msr_star: None,
             msr_lstar: None,
+            msr_cstar: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2005,6 +2007,17 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// value. CSTAR (`0xC000_0083`) and SYSCALL_MASK (`0xC000_0084`) are not part of the member.
     pub const fn with_msr_lstar_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_lstar = Some(cell);
+        self
+    }
+
+    /// S4-38L7aq: admit `WRMSR` of IA32_CSTAR (`0xC000_0083`) at CPL0 under Long64, with exactly
+    /// the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the caller's guest
+    /// CSTAR and receives `EDX:EAX` exactly (no canonical check, no bit semantics, no other state
+    /// change), only the bare two-byte form `0F 30` is admitted, `RDMSR` of CSTAR stays
+    /// `Unsupported`, and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes the
+    /// value. SYSCALL_MASK (`0xC000_0084`) is not part of the member.
+    pub const fn with_msr_cstar_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_cstar = Some(cell);
         self
     }
 
@@ -2183,12 +2196,14 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
-/// S4-38L7ao/S4-38L7ap: the guest-owned SYSCALL MSR cells of a set (IA32_STAR, IA32_LSTAR). One
+/// S4-38L7ao/S4-38L7ap/S4-38L7aq: the guest-owned SYSCALL MSR cells of a set (IA32_STAR,
+/// IA32_LSTAR, IA32_CSTAR). One
 /// optional bundle, so that adding a SYSCALL MSR does not touch every `ExecutionProfiles` literal.
 #[derive(Clone, Copy)]
 struct SyscallMsrCells<'a> {
     star: Option<&'a Cell<u64>>,
     lstar: Option<&'a Cell<u64>>,
+    cstar: Option<&'a Cell<u64>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2197,7 +2212,7 @@ struct ExecutionProfiles<'a> {
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
-    /// The set's write-only SYSCALL MSR cells (IA32_STAR, IA32_LSTAR); `None` outside a set or
+    /// The set's write-only SYSCALL MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR); `None` outside a set or
     /// when the set has none.
     syscall_msrs: Option<SyscallMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
@@ -20292,10 +20307,14 @@ fn run_cpl0_profile_set_inner(
             msr: set.msr,
             msr_bases: set.msr_bases,
             msr_efer: set.msr_efer,
-            syscall_msrs: if set.msr_star.is_some() || set.msr_lstar.is_some() {
+            syscall_msrs: if set.msr_star.is_some()
+                || set.msr_lstar.is_some()
+                || set.msr_cstar.is_some()
+            {
                 Some(SyscallMsrCells {
                     star: set.msr_star,
                     lstar: set.msr_lstar,
+                    cstar: set.msr_cstar,
                 })
             } else {
                 None
@@ -33186,7 +33205,7 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap: `WRMSR` of IA32_STAR / IA32_LSTAR stores EDX:EAX in the set's cell.
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq: `WRMSR` of IA32_STAR / IA32_LSTAR / IA32_CSTAR stores EDX:EAX in the set's cell.
         // No MSR profile handles these indexes, so every other form (RDMSR, a prefix, CPL > 0, a
         // set without the member, any other index) falls through to the existing refusal below.
         if instruction.operation == Operation::WriteMsr
@@ -33194,6 +33213,7 @@ fn step_configured(
             && let Some(cell) = match msr_index {
                 0xc000_0081 => cells.star,
                 0xc000_0082 => cells.lstar,
+                0xc000_0083 => cells.cstar,
                 _ => None,
             }
             && control_policy.is_some()

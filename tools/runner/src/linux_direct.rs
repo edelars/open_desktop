@@ -579,6 +579,8 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     stop["guest_star"] = json!(hex64(record.guest_star));
     // S4-38L7ap: the guest IA32_LSTAR (write-only for the guest).
     stop["guest_lstar"] = json!(hex64(record.guest_lstar));
+    // S4-38L7aq: the guest IA32_CSTAR (write-only for the guest).
+    stop["guest_cstar"] = json!(hex64(record.guest_cstar));
     stop
 }
 
@@ -1433,6 +1435,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1518,6 +1521,28 @@ mod tests {
         // Without the set nothing writes LSTAR.
         let value = run_case("lstar-control", &[0xF4], 10);
         assert_eq!(value["stop"]["guest_lstar"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_cstar_after_a_wrmsr_of_ia32_cstar() {
+        // MOV ECX,0xC0000083; MOV EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR (S4-38L7aq).
+        let code = [
+            0xB9, 0x83, 0x00, 0x00, 0xC0, 0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new("set-cstar", &bzimage_with_entry(&code), &[0xAB; 4688], BLOB);
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_cstar"], "0xffffffff81001ab0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        // Without the set nothing writes CSTAR.
+        let value = run_case("cstar-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_cstar"], "0x0");
     }
 
     #[test]
@@ -1608,6 +1633,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
@@ -1897,6 +1923,7 @@ mod tests {
                 "msr:fs_gs_base",
                 "msr:star_write",
                 "msr:lstar_write",
+                "msr:cstar_write",
                 "pio_u8",
                 "popf_cpl0",
                 "pci_config"
