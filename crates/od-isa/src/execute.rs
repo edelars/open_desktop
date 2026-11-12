@@ -49027,28 +49027,11 @@ fn step_configured(
             destination,
             source,
         } if control_policy.is_none() => {
-            // Save the register input before resolving or mutating anything;
-            // it may also provide the memory base or index.
-            let addend = state.read(source);
-            let address = match destination.access_address_48(state, next_rip) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let old =
-                match memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)
-                {
-                    Ok(old) => old,
-                    Err(error) => return report_memory_error(error),
-                };
-            let (_, flags) = arithmetic_result(
-                OperandSize::Qword,
-                ArithmeticKind::Add,
-                old,
-                addend,
-                state.rflags,
-            );
-            state.write(source, old);
-            state.rflags = flags;
+            if let Err(error) =
+                xadd_memory_atomic(state, memory, context, next_rip, destination, source)
+            {
+                return report_memory_error(error);
+            }
         }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
@@ -50268,28 +50251,11 @@ fn step_configured(
             destination,
             source,
         } => {
-            // Save the register input before resolving or mutating anything;
-            // it may also provide the memory base or index.
-            let addend = state.read(source);
-            let address = match destination.access_address_48(state, next_rip) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let old =
-                match memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)
-                {
-                    Ok(old) => old,
-                    Err(error) => return report_memory_error(error),
-                };
-            let (_, flags) = arithmetic_result(
-                OperandSize::Qword,
-                ArithmeticKind::Add,
-                old,
-                addend,
-                state.rflags,
-            );
-            state.write(source, old);
-            state.rflags = flags;
+            if let Err(error) =
+                xadd_memory_atomic(state, memory, context, next_rip, destination, source)
+            {
+                return report_memory_error(error);
+            }
         }
         Operation::Cmpxchg {
             destination,
@@ -54026,6 +53992,33 @@ fn push_stack_value(
     let address = stack_access_address(state.gpr[Register::Rsp as usize], true, size)?;
     memory.write_integer(address, context, size, value)?;
     state.gpr[Register::Rsp as usize] = address;
+    Ok(())
+}
+
+/// S2-21d/S2-21f (and `LockXaddMem` outside the CPL0 set, S4-38L7ay): the qword memory XADD
+/// through one `GuestMemory::atomic_fetch_add_integer` call. The register input is saved before
+/// anything is resolved or mutated (it may also provide the memory base or index); the source
+/// register and the flags are committed only after the atomic call succeeded.
+fn xadd_memory_atomic(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: MemoryOperand,
+    source: RegisterView,
+) -> Result<(), MemoryError> {
+    let addend = state.read(source);
+    let address = destination.access_address_48(state, next_rip)?;
+    let old = memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)?;
+    let (_, flags) = arithmetic_result(
+        OperandSize::Qword,
+        ArithmeticKind::Add,
+        old,
+        addend,
+        state.rflags,
+    );
+    state.write(source, old);
+    state.rflags = flags;
     Ok(())
 }
 
