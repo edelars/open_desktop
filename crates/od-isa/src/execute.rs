@@ -1902,6 +1902,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
     msr_star: Option<&'a Cell<u64>>,
+    msr_lstar: Option<&'a Cell<u64>>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1920,6 +1921,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_bases: false,
             msr_efer: None,
             msr_star: None,
+            msr_lstar: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -1992,6 +1994,17 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// write keeps its refusal (`Unsupported`, opcode `0x30`).
     pub const fn with_msr_star_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_star = Some(cell);
+        self
+    }
+
+    /// S4-38L7ap: admit `WRMSR` of IA32_LSTAR (`0xC000_0082`) at CPL0 under Long64, with exactly
+    /// the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the caller's guest
+    /// LSTAR and receives `EDX:EAX` exactly (no canonical check, no bit semantics, no other state
+    /// change), only the bare two-byte form `0F 30` is admitted, `RDMSR` of LSTAR stays
+    /// `Unsupported`, and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes the
+    /// value. CSTAR (`0xC000_0083`) and SYSCALL_MASK (`0xC000_0084`) are not part of the member.
+    pub const fn with_msr_lstar_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_lstar = Some(cell);
         self
     }
 
@@ -2170,13 +2183,23 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
+/// S4-38L7ao/S4-38L7ap: the guest-owned SYSCALL MSR cells of a set (IA32_STAR, IA32_LSTAR). One
+/// optional bundle, so that adding a SYSCALL MSR does not touch every `ExecutionProfiles` literal.
+#[derive(Clone, Copy)]
+struct SyscallMsrCells<'a> {
+    star: Option<&'a Cell<u64>>,
+    lstar: Option<&'a Cell<u64>>,
+}
+
 #[derive(Clone, Copy)]
 struct ExecutionProfiles<'a> {
     cpuid: Option<&'a CpuidProfile>,
     msr: Option<&'a MsrProfile>,
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
-    msr_star: Option<&'a Cell<u64>>,
+    /// The set's write-only SYSCALL MSR cells (`None` outside a set or when the set has none);
+    /// the name is the S4-38L7ao one, kept so existing literals stay unchanged.
+    msr_star: Option<SyscallMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
     minss_invalid: Option<MinssInvalidControls>,
@@ -20269,7 +20292,14 @@ fn run_cpl0_profile_set_inner(
             msr: set.msr,
             msr_bases: set.msr_bases,
             msr_efer: set.msr_efer,
-            msr_star: set.msr_star,
+            msr_star: if set.msr_star.is_some() || set.msr_lstar.is_some() {
+                Some(SyscallMsrCells {
+                    star: set.msr_star,
+                    lstar: set.msr_lstar,
+                })
+            } else {
+                None
+            },
             sep: None,
             xorpd: None,
             minss_invalid: None,
@@ -26849,7 +26879,7 @@ fn step_configured(
         msr: msr_profile,
         msr_bases: msr_bases_enabled,
         msr_efer: msr_efer_cell,
-        msr_star: msr_star_cell,
+        msr_star: syscall_msr_cells,
         sep: sep_profile,
         xorpd: xorpd_prerequisites,
         minss_invalid: configured_minss_controls,
@@ -33156,12 +33186,16 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao: `WRMSR` of IA32_STAR stores EDX:EAX in the set's cell. No MSR profile
-        // handles the index, so every other form (RDMSR, a prefix, CPL > 0, a set without the
-        // member) falls through to the existing refusal below.
+        // S4-38L7ao/S4-38L7ap: `WRMSR` of IA32_STAR / IA32_LSTAR stores EDX:EAX in the set's cell.
+        // No MSR profile handles these indexes, so every other form (RDMSR, a prefix, CPL > 0, a
+        // set without the member, any other index) falls through to the existing refusal below.
         if instruction.operation == Operation::WriteMsr
-            && msr_index == 0xc000_0081
-            && let Some(cell) = msr_star_cell
+            && let Some(cells) = syscall_msr_cells
+            && let Some(cell) = match msr_index {
+                0xc000_0081 => cells.star,
+                0xc000_0082 => cells.lstar,
+                _ => None,
+            }
             && control_policy.is_some()
             && context.privilege == PrivilegeLevel::Ring0
             && context.mode.eq(&InstructionMode::Long64)

@@ -966,6 +966,9 @@ pub struct LoadedFirmwareBoard {
     /// The guest `IA32_STAR` (S4-38L7ao): `0` until a guest `WRMSR` of it through the CPL0 set.
     /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
     guest_star: u64,
+    /// The guest `IA32_LSTAR` (S4-38L7ap): `0` until a guest `WRMSR` of it through the CPL0 set.
+    /// Only stored; nothing consumes it (`SYSCALL`/`SYSRET` are not modelled).
+    guest_lstar: u64,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1071,6 +1074,17 @@ impl LoadedFirmwareBoard {
     /// Stores the STAR a CPL0-set run left (S4-38L7ao).
     pub(crate) fn set_guest_star(&mut self, value: u64) {
         self.guest_star = value;
+    }
+
+    /// The guest `IA32_LSTAR` (S4-38L7ap); `0` until a guest `WRMSR` of it. Not readable by the
+    /// guest: `RDMSR` of LSTAR stays refused.
+    pub const fn guest_lstar(&self) -> u64 {
+        self.guest_lstar
+    }
+
+    /// Stores the LSTAR a CPL0-set run left (S4-38L7ap).
+    pub(crate) fn set_guest_lstar(&mut self, value: u64) {
+        self.guest_lstar = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1926,6 +1940,7 @@ impl AssembledBoard {
             guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
             guest_star: 0,
+            guest_lstar: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
@@ -1982,6 +1997,7 @@ impl AssembledBoard {
             guest_efer: FIRMWARE_EFER,
             pci_config_address: 0,
             guest_star: 0,
+            guest_lstar: 0,
             com1_log: Vec::new(),
             rdtsc_tick,
             #[cfg(test)]
