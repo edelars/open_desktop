@@ -23147,3 +23147,69 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
 прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`, `msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
 Следующий срез — `MOV r/m32, imm32` (`GS C7 /0 id`, memory-операнд RIP-relative; с REX.W — `MOV r/m64, imm32`) с префиксом FS/GS в наборе CPL0 (по аналогии с `MOV r/m8, imm8` с FS/GS, S4-38L7ae); не реализован.
 Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
+
+### `MOV r/m32, imm32` и `MOV r/m64, imm32` (`[64|65] [REX.W] C7 /0 id`, memory-операнд) с префиксом FS/GS в наборе CPL0 (S4-38L7aj)
+
+Граница S4-38L7ai: `65 c7 05 ca f3 4c 00 ec 00 00 00` = `movl $0xec, %gs:0x4cf3ca(%rip)` (префикс GS + `C7 /0 id`; ModRM `0x05`: mod 00, reg 000 = /0, rm 101 = RIP-relative; disp32 `0x004cf3ca`, imm32
+`0x000000ec`; длина 11), RIP `0xffffffff83f52b4b`, `Unsupported { opcode: 0xc7 }`, retired 1207604143. Срез повторяет схему `MOV m8, imm8` с FS/GS (S4-38L7ae) для `C7`: операция «запись непосредственного
+операнда» с адресом `база FS/GS + эффективный адрес`. Семантика дана **по памяти SDM** (Vol. 2 «MOV»: непосредственный операнд записывается в назначение, флаги не меняются; с REX.W imm32 расширяется знаком до 64 бит;
+Vol. 3 3.4.4: база FS/GS прибавляется к эффективному адресу), по первоисточнику **не сверялась**.
+
+**Декодер.** Выбор зафиксирован: две новые операции `Operation::MovFsMemImm { dst: MemoryOperand, immediate: u64 }` и `Operation::MovGsMemImm { .. }` (форма `MovFsMemByteImm`/`MovGsMemByteImm` из S4-38L7ae
+с шириной назначения `dst.size` и значением нужной ширины, не расширение байтовых операций). В общей ветке `C6`/`C7` условие «сегментный префикс FS/GS и memory-операнд» теперь общее для обоих опкодов; для `C6`
+результат прежний (`MovFsMemByteImm`/`MovGsMemByteImm`), для `C7` — новые операции. `immediate` уже имеет итоговую ширину: без REX.W — нулевое расширение imm32 (назначение dword, пишется ровно 4 байта), с REX.W — imm32,
+расширенный знаком до 64 бит (назначение qword, пишется ровно 8 байт, младший байт первым). REX допустим непосредственно перед опкодом (пустой `0x40`, REX.R, REX.B, REX.X, REX.W; REX.B/REX.X достигают базы и
+индекса); REX.W выбирает qword. Принимается любая адресация (RIP-relative, база без смещения, disp8, disp32, SIB с индексом и масштабом, абсолютный SIB без базы и индекса). Длина — префиксы, опкод, ModRM, SIB, смещение, imm32;
+RIP-relative считается от конца **всей** инструкции с imm32 (для граничных байтов следующий RIP = адрес + 11; для `64 48 c7 05 … imm32` — адрес + 12). В пост-проверке «сегментный префикс с memory-операндом»
+операции добавлены как принимаемые; в списке `executable` и в списке операций, исполняемых в наборе, они стоят рядом с `MovFsMemByteImm`/`MovGsMemByteImm`. `flag_effects`: нет определённых и неопределённых флагов
+(MOV не меняет флаги). Без FS/GS `C7 /0` по-прежнему даёт `Operation::MovImmediate` (не менялось).
+
+**Регистровая форма (mod = 11) с FS/GS — политика не менялась.** Префикс FS/GS перед регистровой формой `C7 /0` игнорируется, и она декодируется как обычный `Operation::MovImmediate` (так же, как регистровые формы
+`C6` в S4-38L7ae и другие регистровые формы с FS/GS); отдельного отказа нет, память не затрагивается. Это проверено тестом `segment_prefixed_register_mov_imm32_is_unchanged_*`.
+
+**Отказы без мутации (`Unsupported { opcode: 0xc7 }`).** `C7 /n` при n ≠ 0 с FS/GS (`/1`, `/2`, `/7`, в том числе с REX.W); LOCK, REP, REPNE (до и после сегментного префикса, с REX.W); `66` (word, в любом
+порядке с сегментным префиксом, с REX.W) — форма с word-непосредственным операндом не входит в срез; `67` (в обоих порядках); второй сегментный префикс (`64 65`, `65 65`, `65 64`); REX не непосредственно перед
+опкодом (`44 65 C7 …`, `48 64 C7 …`, `41 65 40 C7 …`, `65 48 66 C7 …`; правило устаревшего REX из S4-38L7o). `88`/`89` с FS/GS отказывают с собственными опкодами (`0x88`/`0x89`), `C6` — срез S4-38L7ae, не менялся.
+Усечённый imm32, disp32, ModRM — разбор отказывает (ошибка выборки), ничего не исполняется, память и регистры не меняются.
+
+**Адрес.** `MemoryOperand::access_address_48_with_segment_base(state, next_rip, state.fs_base | state.gs_base)`, как у `MovFsStore`/`MovGsStore` и `MovFsMemByteImm`: база + эффективный адрес до любого обращения
+к памяти; каноничность проверяется для начального адреса и последнего байта операнда (адрес + 3 для dword, адрес + 7 для qword): иначе `#GP(0)` до записи, без записи. Для баз RSP/RBP с неканоническим результатом —
+`#GP(0)`, не `#SS(0)` (правило аналога, не менялось).
+
+**Исполнение.** Один `memory.write_integer(address, context, dst.size, immediate)` (4 или 8 байт, little-endian); назначение не читается, цикла чтение-изменение-запись нет; регистры и флаги не меняются. RIP += длина
+инструкции (с префиксом и imm32), retired + 1 только при успехе. При `#GP(0)` и при ошибке записи (`#PF` и т. п.) состояние (RIP, регистры, флаги) и память не меняются.
+
+**Гейт.** Только набор CPL0 (`control_policy` задан, CPL0), как у остальных FS/GS-форм. Вне набора — `Unsupported { opcode: 0xc7 }` без мутации; в набор CPL3 не допускается (`WrongPrivilege`). Голые `run`/`step` и
+paged-probe форму не принимают (тесты отказа).
+
+**Тесты.** `cpl0_profile_set` (17 новых): `gs_movl_boundary_form_stores_one_dword_*` (граничные байты: адрес = база GS + RIP + 11 + disp32, пишется ровно 4 байта `ec 00 00 00`, соседние 4 + 4 байта не меняются,
+меняется только RIP на 11, флаги не меняются), `fs_movl_rip_relative_and_a_zero_base_*` (FS и нулевая база), `segment_movq_sign_extends_the_immediate_to_eight_bytes` (FS и GS; imm32 `0xfffffffe`, `0x80000000`,
+`0x7fffffff`, `1`, `0`; 8 записанных байт равны расширенному знаком значению по независимой проверке, соседние байты не меняются), `gs_movl_and_movq_with_base_register_disp8_disp32_and_sib` (база без смещения,
+disp8, disp32, база+индекс×масштаб+disp, абсолютный SIB, FS), `movl_and_movq_with_rex_b_and_rex_x_reach_r8_to_r15` (REX.B: R8, R9, R15, R13, R12 через SIB, dword и qword; REX.X: R9), `movl_accepts_a_rex_directly_before_the_opcode_*`
+(`40`, `44` — dword; `48`, `4C` — qword), `movl_read_back_through_the_same_segment_base_*` (чтение `mov %gs:…, %eax` читает записанный dword), `segment_mov_imm32_non_canonical_first_or_last_byte_is_gp0_*`
+(dword и qword, FS и GS, начало и последний байт на границе дыры, принятие последнего канонического dword/qword), `gs_mov_imm32_through_rsp_or_rbp_base_is_gp0_*`, `mov_imm32_write_fault_leaves_flags_rip_registers_and_memory_unchanged`,
+`segment_mov_imm32_forms_outside_the_slice_are_refused_*` (25 отказов с точным опкодом), `segment_mov_imm32_with_a_truncated_immediate_*`, `segment_prefixed_register_mov_imm32_*`,
+`plain_unprefixed_and_cs_ds_es_ss_mov_imm32_memory_keep_ignoring_the_segment_bases`, `segment_mov_imm32_stays_unsupported_outside_the_set`, `segment_mov_imm32_is_refused_by_the_bare_step_entry_point`,
+`segment_mov_imm32_is_not_reachable_from_cpl3`; в существующем `segment_movb_forms_outside_the_slice_are_refused_*` убраны три записи `C7` (теперь принимаются), оставлена `66 C7`. Покрытие REX: REX.B и REX.X проверены
+(как у аналога), REX.R и пустой REX — принятие; REX.W — qword. `paged_probe_profile::fs_gs_mov_imm32_stays_unsupported_in_the_paged_probe_profile`; декодер:
+`long_decode::tests::segment_mov_imm32_decodes_fs_gs_memory_forms_only` (в `segment_mov_byte_immediate_decodes_*` и `transfer_neighbors_stay_unsupported_*` записи `C7` с FS/GS, которые теперь принимаются,
+заменены отказами `66 C7` и устаревший REX); фасад: `linux_direct::tests::gs_mov_imm32_after_wrmsr_gs_base_stores_a_dword_and_a_qword_and_reads_back_through_gs` (`WRMSR IA32_GS_BASE`, граничная форма
+`65 c7 05 disp32 ec 00 00 00` меняет только младший dword qword-ячейки, `65 48 c7 04 25 … fe ff ff ff` пишет `0xfffffffffffffffe`, чтение обратно через ту же базу и обычным `mov`, CF от `SUB DL,1` сохранён,
+retired 15). Результаты: `cpl0_profile_set` 706, `paged_probe_profile` 41, `od-isa --lib` 2267, `od-machine --lib` 891 (6 ignored), `od-x86-runner` 8 + 6, `cargo fmt --all -- --check` чисто.
+
+**Открытый пункт (не от этого среза).** `tools/x86-runner/src/native_v2.rs` на Linux сейчас не компилируется (ранее существовавшая ошибка `E0063`, не вызвана этой веткой); файл не менялся, проверки
+`native_v2::admission` для новых операций на Linux не запускались. На macOS `cargo test -p od-x86-runner --offline` проходит.
+
+**Не делалось.** `88`/`89` с FS/GS (`C6` с FS/GS сделан целиком в S4-38L7ae), `C7` с 66 (word) и `C7 /n` для n ≠ 0 с FS/GS, регистровая форма с проверкой префикса, LOCK с `C7`, `PagedCpl0ProbeV1`, `interrupt.rs`,
+`docs/plans/STAGE_4.md`.
+
+**Диагностический прогон (не засчитывается).** `--diagnostic-past-c7`, бюджет 3e9, JSON: `docs/reports/data/stage4/s4-38l7aj-diagnostic-run.json` (`acceptance` = `diagnostic_not_counted`).
+`movl $0xec, %gs:0x4cf3ca(%rip)` по `0xffffffff83f52b4b` проходит (retired 1207604143 → 1208148606, +544463 инструкции; `cr3_changes` = 5, `last_cr3_change`: `0x3a44000` → `0x3a44000`).
+Новая граница: RIP `0xffffffff813c2007` (GPA `0x13c2007`), байты `65 4c 63 3d 25 b0 05 03 65 4c 8b 25 11 b0 05 03` — `movslq %gs:0x305b025(%rip), %r15` (префикс GS + REX.W + REX.R + `63 /r`, MOVSXD r64, r/m32 с
+memory-источником, ModRM `0x3d`: RIP-relative, reg 111 + REX.R = R15, disp32 `0x0305b025`; длина 8; далее `mov %gs:0x305b011(%rip), %r12` — `65 4c 8b 25 …`); `Unsupported { opcode: 0x63 }` (99),
+`set_exit_detail` = `Run(Unsupported { opcode: 99 })`, `exit_kind` = `unsupported`, retired = 1208148606.
+CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, гостевой EFER `0xd01`; RFLAGS = `0x82`; RAX = RBX = RCX = RDX = RSI = 0, RDI = 1, R13 = `0x27`, R14 = 1, RSP = `0xffffffff83a03e68`,
+RBP = `0xffffffff83a03eb0`; `memory_error`/`page_fault` отсутствуют; `exceptions_delivered` = 30; `set_members` — прежние (`cli`, `cpu_owned_cr3`, `cpuid:DiagnosticV1`, `msr:EferReadOnlyV1(3328)`,
+`msr:fs_gs_base`, `pio_u8`, `popf_cpl0`, `pci_config`).
+Следующий срез — `MOVSXD r64, r/m32` (`GS REX.W 63 /r`, memory-источник RIP-relative) с префиксом FS/GS в наборе CPL0 (по аналогии с FS/GS-загрузками `MOVZX r, m16` S4-38L7ad и `MOV r32, m32` S4-38L7m); не реализован.
+Расшифровка байтов — по таблицам опкодов по памяти, не по SDM.
