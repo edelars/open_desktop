@@ -21,12 +21,12 @@ use crate::{
     MachineBus, MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind,
     MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
     NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
-    PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
-    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
-    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Pair, Pit8254Devices,
-    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
-    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
-    run_paged_probe, run_paged_probe_with_rdtsc,
+    PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
+    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
+    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
+    PciEcam, Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding,
+    RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
+    VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
 use od_isa::execute::{Cpl0ProfileSet, RunExit, TranslationContextChange};
 use od_isa::memory::{
@@ -1897,6 +1897,7 @@ pub(crate) fn assemble_board(
         let pair = Pic8259Pair::new();
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
+        bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
         for region in [
             AbsentPortRegion::Cmos,
             AbsentPortRegion::IoDelay,
@@ -3900,8 +3901,9 @@ mod tests {
     }
 
     /// Ports the profile binds (or, without the flag, leaves as a trap).
-    const LINUX_PROFILE_PORTS: [u16; 15] = [
+    const LINUX_PROFILE_PORTS: [u16; 17] = [
         0x40, 0x41, 0x42, 0x43, 0x61, 0x20, 0x21, 0xA0, 0xA1, 0x70, 0x71, 0xED, 0x80, 0x60, 0x64,
+        0x4D0, 0x4D1,
     ];
 
     #[test]
@@ -3919,6 +3921,11 @@ mod tests {
                 Err(BusAccessError::UnmappedPort(io_port(port))),
                 "write {port:#x}"
             );
+        }
+        // With the profile the PIC ELCR ports (S4-38L7bs) are mapped and read 0.
+        let mut linux = linux_board();
+        for port in [0x4D0u16, 0x4D1] {
+            assert_eq!(inb(&mut linux, port), Ok(0), "linux read {port:#x}");
         }
         // The default board is unchanged byte for byte.
         let mut default = load(&hlt_image());
