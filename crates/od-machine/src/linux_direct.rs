@@ -3862,6 +3862,110 @@ mod tests {
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
     }
 
+    // ---- S4-38L7ay: LOCK XADD m64, r64 and m32, r32 through the board facade ----
+
+    #[test]
+    fn lock_xadd_qword_adds_to_guest_memory_and_returns_the_old_value_at_the_boundary_form() {
+        // MOV RDI,0x0200_0040; MOV RAX,5; MOV [RDI],RAX; MOV RAX,-1;
+        // LOCK XADD [RDI],RAX (f0 48 0f c1 07: the S4-38L7ax boundary bytes; the board adapter
+        // has no atomic fetch-add, so this path used to end in a backend error);
+        // MOV RCX,[RDI]; HLT.
+        let mut code = vec![0x48, 0xBF];
+        code.extend(0x0200_0040u64.to_le_bytes());
+        code.extend(mov_rax_imm64(5));
+        code.extend([0x48, 0x89, 0x07]);
+        code.extend(mov_rax_imm64(u64::MAX));
+        code.extend([0xF0, 0x48, 0x0F, 0xC1, 0x07]);
+        code.extend([0x48, 0x8B, 0x0F]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // [m] = 5 + (-1) = 4; RAX receives the old value 5; the sum 5 + (-1) carries (CF) and has
+        // the low nibble carry (AF).
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 4);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 5);
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.rflags & (1 << 4), 1 << 4, "AF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+    }
+
+    #[test]
+    fn lock_xadd_dword_adds_to_guest_memory_and_zero_extends_the_old_value() {
+        // MOV RBX,0x0200_0000; MOV RAX,0x7fffffff; MOV [RBX+0x58],EAX; MOV RAX,0x1_0000_0001;
+        // LOCK XADD [RBX+0x58],EAX (f0 0f c1 43 58); MOV ECX,[RBX+0x58]; HLT.
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0000u64.to_le_bytes());
+        code.extend(mov_rax_imm64(0x7fff_ffff));
+        code.extend([0x89, 0x43, 0x58]);
+        code.extend(mov_rax_imm64(0x1_0000_0001));
+        code.extend([0xF0, 0x0F, 0xC1, 0x43, 0x58]);
+        code.extend([0x8B, 0x4B, 0x58]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // 0x7fff_ffff + 1 = 0x8000_0000 (OF, SF, AF, PF); EAX = old value, zero-extended.
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x8000_0000);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x7fff_ffff);
+        assert_eq!(state.rflags & (1 << 11), 1 << 11, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+    }
+
+    #[test]
+    fn plain_xadd_memory_form_without_lock_is_refused_in_the_cpl0_set() {
+        // The set models only the LOCK form; the plain `48 0F C1 /r` memory form is refused
+        // through the facade with opcode 0xC1 after the one preceding MOV retired.
+        let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x0F, 0xC1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xC1 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
+    }
+
     // ---- S4-38L7z: LOCK ADD m32, imm8 on an RSP base through the board facade ----
 
     #[test]
