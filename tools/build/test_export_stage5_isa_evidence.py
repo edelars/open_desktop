@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1047)
-                self.assertEqual(fields["unclassified_normalized_forms"], 222)
+                self.assertEqual(fields["classified_normalized_forms"], 1048)
+                self.assertEqual(fields["unclassified_normalized_forms"], 221)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295537 if full_key else 6295821
-                expected_unclassified_rows = 214863 if full_key else 214924
+                expected_supported_rows = 6295543 if full_key else 6295827
+                expected_unclassified_rows = 214857 if full_key else 214918
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -306,6 +306,28 @@ class NormalizedFormTests(unittest.TestCase):
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpgtb_forms),
                     3,
                 )
+                pcmpeqb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "74"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpeqb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqb_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pcmpeqb_forms), 6)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.18-PCMPEQB-XMM-register-register", 0) for row in pcmpeqb_forms),
+                    6,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpeqb_forms),
+                    6,
+                )
+                pcmpeqb_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "74"]
+                    and row["dimensions"]["operand_signature"] == "pcmpeqb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqb_encodings), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpeqb_encodings), 6)
                 self.assertEqual(
                     compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
                     hashlib.sha256(compact_path.read_bytes()).hexdigest(),
