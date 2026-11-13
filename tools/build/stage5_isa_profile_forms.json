@@ -1880,6 +1880,32 @@
         "docs/specs/CPU_CONTRACT.md:12085-12095",
         "docs/plans/STAGE_2.md:13611-13639"
       ]
+    },
+    {
+      "task": "S2-35.49 XMM register PAND",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. A fresh PAND-only independent review passed three ISA checks, two testkit tests and one fixture; this is new bounded-review evidence, not a historical clean-review claim. The Stage 2 plan had recorded review as pending. No machine-CPL evidence, CPL3/native/JIT/physical support is inferred.",
+      "families": [
+        {
+          "task": "S2-35.49",
+          "encoding": "66 [one optional REX.R/B] 0F DB /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PAND XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject bare MMX, memory, REX.W/X, extra prefixes, VEX and EVEX.",
+          "outcome": "snapshot original source and compute raw 128-bit DEST = original_DEST & original_SRC; updates destination XMM and RIP on success, preserves all other state; no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12179-12194",
+            "docs/plans/STAGE_2.md:14606-14625",
+            "docs/reports/STAGE_2_REPORT.md:15780-15789"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12179-12194",
+        "docs/plans/STAGE_2.md:14606-14625",
+        "docs/reports/STAGE_2_REPORT.md:15780-15789"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

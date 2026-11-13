@@ -606,6 +606,25 @@ def paddd_local_profile_candidate(row: dict) -> str | None:
     return "S2-35.14-PADDD-XMM-register-register"
 
 
+def pand_local_profile_candidate(row: dict) -> str | None:
+    """Match only the reviewed S2-35.49 XMM register-register form."""
+    if row["mnemonic"] != "pand" or row["signature"] != "pand xmm,xmm":
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0xDB):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in PADDD_ALLOWED_PREFIXES:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return None
+    # Mandatory 66 + optional REX.R/B + 0F DB + register ModR/M.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-35.49-PAND-XMM-register-register"
+
+
 def paddb_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.2 XMM register-register form."""
     if row["mnemonic"] != "paddb" or row["signature"] != "paddb xmm,xmm":
@@ -1040,6 +1059,9 @@ def local_profile_candidate(row: dict) -> str | None:
     paddd_candidate = paddd_local_profile_candidate(row)
     if paddd_candidate is not None:
         return paddd_candidate
+    pand_candidate = pand_local_profile_candidate(row)
+    if pand_candidate is not None:
+        return pand_candidate
     psrlq_candidate = psrlq_local_profile_candidate(row)
     if psrlq_candidate is not None:
         return psrlq_candidate

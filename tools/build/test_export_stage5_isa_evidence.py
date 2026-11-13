@@ -73,15 +73,24 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1062)
-                self.assertEqual(fields["unclassified_normalized_forms"], 207)
+                self.assertEqual(fields["classified_normalized_forms"], 1064)
+                self.assertEqual(fields["unclassified_normalized_forms"], 205)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6296112 if full_key else 6296396
-                expected_unclassified_rows = 214288 if full_key else 214349
+                expected_supported_rows = 6296416 if full_key else 6296700
+                expected_unclassified_rows = 213984 if full_key else 214045
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
+                self.assertEqual(fields["local_simd_logic_rows"], 2162)
+                self.assertEqual(fields["local_simd_logic_normalized_forms"], 10)
+                self.assertEqual(sum(fields["local_simd_logic_rows_by_profile"].values()), 2162)
+                self.assertEqual(fields["local_simd_logic_rows_by_profile"]["S2-35.49-PAND-XMM-register-register"], 304)
+                self.assertEqual(fields["pand_unreviewed_unclassified_rows"], 0)
+                self.assertEqual(fields["pand_unreviewed_unclassified_forms"], 0)
+                self.assertEqual(fields["memory_logic_unclassified_rows"], 179)
+                self.assertEqual(fields["memory_logic_unclassified_by_signature"]["pand xmm,mem128"], 52)
+                self.assertIn("179 SIMD logic memory rows remain unclassified, including 52 PAND memory rows", fields["local_simd_logic_scope"])
                 for classification in ("proven_supported", "unclassified"):
                     self.assertEqual(
                         sum(binary["classification_frequencies"].get(classification, 0) for binary in compact["binaries"].values()),
@@ -120,9 +129,13 @@ class NormalizedFormTests(unittest.TestCase):
                     e_compact_snapshot["classification_frequencies"]["unclassified"],
                 )
                 report_status = next(line for line in report_lines if line.startswith("S5-21 сейчас **blocked**"))
-                self.assertIn("207 из 1 269 normalized forms (214 288 rootfs-only rows; 214 349 rows с E ELF)", report_status)
-                self.assertIn("6 294 045", local_scope_line)
-                self.assertIn("6 293 761", local_scope_line)
+                self.assertIn("205 из 1 269 normalized forms (213 984 rootfs-only rows; 214 045 rows с E ELF)", report_status)
+                self.assertIn("6 294 349", local_scope_line)
+                self.assertIn("6 294 065", local_scope_line)
+                self.assertIn("six-profile accepted local SIMD logic group of 1 858 rows plus PAND 304 rows (2 162 / 10 forms total)", local_scope_line)
+                historical_logic = next(line for line in report_lines if line.startswith("Historical snapshot before the 2026-11-12 fresh PAND review:"))
+                self.assertIn("At that earlier snapshot, PAND S2-35.49 was pending independent review", historical_logic)
+                self.assertIn("179 SIMD logic memory rows remain unclassified in the current inventory, including 52 PAND memory rows", historical_logic)
                 scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
                 c_totals = fields["scenario_classification_frequencies"]["C"]
                 d_totals = fields["scenario_classification_frequencies"]["D"]
@@ -141,7 +154,7 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "207 normalized forms / 214 288 rootfs-only rows (214 349 с E ELF)",
+                    "205 normalized forms / 213 984 rootfs-only rows (214 045 с E ELF)",
                     issue_section,
                 )
                 self.assertIn("7 PMOVMSKB rows", issue_section)
@@ -151,22 +164,30 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("PSUBD S2-35.15 adds 24 gcc-cc1 rows", issue_section)
                 self.assertIn("S2-35.16 PADDQ adds 77 rows", issue_section)
                 self.assertIn("PADDD S2-35.14 adds 132 register-register rows", issue_section)
+                self.assertIn("PAND S2-35.49 now has fresh bounded local-only evidence", issue_section)
+                self.assertIn("PAND S2-35.49 now has fresh bounded local-only evidence", issue_section)
+                self.assertNotIn("PAND S2-35.49 ожидает независимое ревью и не засчитан", issue_section)
+                self.assertIn("2 162 register-register rows / 10 forms", issue_section)
+                self.assertIn("179 SIMD memory-logic rows остаются unclassified из-за отсутствия подходящего принятого профиля, включая 52 PAND memory rows", issue_section)
+                stage2_plan = (repo_root / "docs/plans/STAGE_2.md").read_text()
+                self.assertIn("Independent review was pending at this implementation check", stage2_plan)
+                self.assertIn("fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture", stage2_plan)
                 self.assertIn("gcc-cc1 (63), gcc-collect2 (5), gcc-driver (5), gcc-ld.bfd (1), and tar (3)", issue_section)
                 self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
                 self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
                 for digest in (
-                    "684f504a1eaf232cc2b343769878c8e6de093416347dd35e7deca48c9ce68365",
-                    "7121232e0495e3bcfa5485ea22143db369f176e81e632dc4f55b7db8a0379242",
-                    "060a838e14862b75c5be8c818739fd27466bd713e5072aa620a82d38066d0d2f",
-                    "51db43e9338ed2b803bc60882c4d4f7cd96e80216c5b73d641b958bc5c7c4beb",
+                    "84903aa034aa5f7cd8c746577ace98b6f2c802787a777fe4045d01ef9920a2a9",
+                    "b26eb23cfddd54c401a82eb8de4d5b52cb537a61de563d6e82ee75fa107faf04",
+                    "d0f405f906c757774c578c8bd5412cc86f5ac7db0a3160f1035a3cfbd97119cc",
+                    "94bbfaa62d609513e3a4db50d695ce46ccea75bb435a7c360d3201c75c83b588",
                 ):
                     self.assertIn(digest, issue_section)
-                self.assertIn("6 296 112 bounded-profile evidence, 214 288 unclassified", issue_section)
-                self.assertIn("6 296 396 evidence, 214 349 unclassified", issue_section)
-                self.assertIn("1 062 из 1 269 normalized forms имеют bounded evidence, 207 остаётся unclassified", issue_section)
+                self.assertIn("6 296 416 bounded-profile evidence, 213 984 unclassified", issue_section)
+                self.assertIn("6 296 700 evidence, 214 045 unclassified", issue_section)
+                self.assertIn("1 064 из 1 269 normalized forms имеют bounded evidence, 205 остаётся unclassified", issue_section)
                 aggregate_summary = next(line for line in report_lines if line.startswith("The paired rootfs inventory contains 6,510,400 instruction rows:"))
-                self.assertIn("6,296,112 `proven_supported` and 214,288 `unclassified`", aggregate_summary)
-                self.assertIn("6,296,396 supported and 214,349 unclassified", aggregate_summary)
+                self.assertIn("6,296,416 `proven_supported` and 213,984 `unclassified`", aggregate_summary)
+                self.assertIn("6,296,700 supported and 214,045 unclassified", aggregate_summary)
                 report_binary_rows = {}
                 for line in report_lines:
                     cells = [cell.strip() for cell in line.split("|")]
@@ -560,6 +581,31 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["paddd_register_normalized_forms"], 1)
                 self.assertEqual(fields["paddd_register_encoding_forms"], 21)
                 self.assertIn("Stage 2 report has no PADDD-specific entry", fields["paddd_scope"])
+                pand_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "DB"]
+                    and row["instruction_form"]["operand_signature"] == "pand xmm,xmm"
+                ]
+                self.assertEqual(len(pand_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pand_forms), 304)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.49-PAND-XMM-register-register", 0) for row in pand_forms), 304)
+                pand_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "DB"]
+                    and row["dimensions"]["operand_signature"] == "pand xmm,xmm"
+                ]
+                self.assertEqual(len(pand_encodings), 38)
+                self.assertEqual(sum(row["count"] for row in pand_encodings), 304)
+                prefix_counts = {}
+                for row in pand_encodings:
+                    prefix = tuple(row["dimensions"]["prefix_bytes"])
+                    prefix_counts[prefix] = prefix_counts.get(prefix, 0) + row["count"]
+                self.assertEqual(prefix_counts, {("66",): 271, ("66", "41"): 1, ("66", "44"): 30, ("66", "45"): 2})
+                self.assertEqual(fields["pand_register_rows"], 304)
+                self.assertEqual(fields["pand_register_normalized_forms"], 2)
+                self.assertEqual(fields["pand_register_encoding_forms"], 38)
+                self.assertIn("Fresh PAND-only", fields["pand_scope"])
+                self.assertIn("does not imply historical acceptance", fields["pand_scope"])
                 pcmpgtd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]

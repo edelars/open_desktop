@@ -14632,7 +14632,7 @@ semantics, schema-v2 fixture and fail-closed JIT/native boundaries are in place.
 Workspace format/check, Linux-target x86-runner test compilation, Graphify
 update and `git diff --check` passed. The Linux-only native-denial test was
 compile-checked but not executed on this Darwin host; physical SSE2 remains
-`not_run`. Independent review is pending. Parent S2-35/S2-34 remain open.
+`not_run`. Independent review was pending at this implementation check. A fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture. This follow-up review covers the bounded PAND profile only and does not claim a historical review result. Parent S2-35/S2-34 remain open.
 See the [report](../reports/STAGE_2_REPORT.md#s2-3549--local-pand-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).

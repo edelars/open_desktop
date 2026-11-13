@@ -1739,6 +1739,7 @@ class ParseObjdumpTests(unittest.TestCase):
             (0x54, "andps", "S2-34.7b-ANDPS-register-register", False),
             (0x56, "orps", "S2-34.7c-ORPS-register-register", False),
             (0x55, "andnps", "S2-34.7d-ANDNPS-register-register", False),
+            (0xDB, "pand", "S2-35.49-PAND-XMM-register-register", True),
             (0xDF, "pandn", "S2-35.50-PANDN-register-register", True),
             (0xEB, "por", "S2-35.51-POR-register-register", True),
         )
@@ -1777,8 +1778,6 @@ class ParseObjdumpTests(unittest.TestCase):
             ("66 0f 54 c1", "andps", "xmm0,xmm1"),
             ("66 0f 56 c1", "orps", "xmm0,xmm1"),
             ("66 0f 55 c1", "andnps", "xmm0,xmm1"),
-            # PAND is implemented, but independent review is pending.
-            ("66 0f db c1", "pand", "xmm0,xmm1"),
             ("0f db c1", "pand", "mm0,mm1"),
             # PANDN/POR require mandatory 66; bare encodings are MMX.
             ("0f df c1", "pandn", "mm0,mm1"),
@@ -1820,24 +1819,27 @@ class ParseObjdumpTests(unittest.TestCase):
                 row = analyzer.parse_row(f"  402000: {encoding} {mnemonic} xmm0,xmm1")
                 self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
 
-    def test_reviewed_logic_registry_is_local_only_and_excludes_pending_pand(self) -> None:
+    def test_reviewed_logic_registry_is_local_only_and_records_fresh_pand_review(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         self.assertFalse(registry["registry_complete"])
         expected_groups = {
             "S2-34.7a–.7d legacy XMM register logic",
+            "S2-35.49 XMM register PAND",
             "S2-35.50/.51 XMM register PANDN/POR",
         }
         expected_families = {
-            "S2-34.7a", "S2-34.7b", "S2-34.7c", "S2-34.7d", "S2-35.50", "S2-35.51",
+            "S2-34.7a", "S2-34.7b", "S2-34.7c", "S2-34.7d", "S2-35.49", "S2-35.50", "S2-35.51",
         }
         profiles = [profile for profile in registry["profiles"] if profile["task"] in expected_groups]
         self.assertEqual({profile["task"] for profile in profiles}, expected_groups)
         self.assertEqual({family["task"] for profile in profiles for family in profile["families"]}, expected_families)
-        self.assertFalse(any("S2-35.49" in profile["task"] for profile in registry["profiles"]))
         for profile in profiles:
             self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
             self.assertIsNone(profile["cpl"])
             self.assertIn("machine-CPL evidence", profile["gate"])
+        pand = next(profile for profile in profiles if profile["task"] == "S2-35.49 XMM register PAND")
+        self.assertIn("fresh PAND-only independent review", pand["gate"])
+        self.assertIn("not a historical", pand["gate"])
 
     def test_s2_35_24_to_31_punpck_matches_only_all_exact_xmm_register_forms(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
