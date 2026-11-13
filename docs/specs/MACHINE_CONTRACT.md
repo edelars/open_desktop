@@ -328,6 +328,8 @@ The builder verifies the assembled bytes/layout and artifact hashes. See the
 
 ## Stage 4 UART IRQ4 probe (S4-24e)
 
+> Уточнено в S4-38L9y: IER хранит биты 0..3 (RDA, THRE, RLS, MS), биты 4..7 читаются как 0 и отбрасываются при записи; отказ `UnsupportedConfiguration` остался только для битов MCR, кроме OUT2 (см. [CPU_CONTRACT](CPU_CONTRACT.md), раздел S4-38L9y).
+
 **UART interrupt model.** `Uart16550PollingTx` gains IER bit 0 (received data
 available, RDA) and bit 1 (transmitter holding register empty, THRE); any other
 IER bit (line status, modem status) and any MCR bit except OUT2 are rejected with
