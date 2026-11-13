@@ -1023,6 +1023,25 @@ fn fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn pause_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9b belongs to the CPL0 set only; this profile refuses `F3 90` without mutation.
+    let mut memory = Memory::new(&[0xf3, 0x90]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x90 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn invlpg_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7ab belongs to the CPL0 set only; this profile refuses it without mutation.
     for bytes in [

@@ -36525,6 +36525,9 @@ fn step_configured(
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
+        // S4-38L9b: `F3 90` (PAUSE) is a NOP hint; admitted only inside the CPL0 profile set
+        // (outside it the previous `Unsupported { opcode: 0x90 }` is kept).
+        Operation::Pause => control_policy.is_some(),
         // S4-38L4d: `0F 1F /0` is a NOP that never touches its operand; admitted only inside
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
@@ -50771,7 +50774,7 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop | Operation::NopModrm | Operation::Invlpg => {}
+        Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
