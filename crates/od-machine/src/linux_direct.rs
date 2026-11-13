@@ -783,6 +783,13 @@ pub struct LinuxCpl0SetMembers {
     /// members and the FS/GS base member (which covers `0xC000_0100`/`0xC000_0101` only). The board
     /// set's MSR profile is `EferReadOnlyV1`, which does not handle the index.
     pub msr_kernel_gs_base: bool,
+    /// `with_msr_tdx_keyid_partitioning_read` (S4-38L9c): `RDMSR` of IA32_MKTME_KEYID_PARTITIONING
+    /// (`0x87`) at CPL0 returns `EDX:EAX = 0:0` (no MKTME and no TDX private KeyIDs; the kernel's
+    /// `tdx_init` then leaves TDX off, as it does on a CPU where the MSR gives `#GP`). No cell, no
+    /// `WRMSR`; every other MSR keeps its refusal. `false` in [`Self::minimal`] and in
+    /// [`Self::linux_default`] (so a default run is unchanged); the runner turns it on only with
+    /// `--cpuid-profile stage4a`. Independent of [`Self::msr`] and the other MSR members.
+    pub msr_tdx_keyid_partitioning_read: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_sti` (S4-38L7bp): the bare `STI` (`FB`): IF := 1 and the one-instruction shadow. The
@@ -847,6 +854,7 @@ impl LinuxCpl0SetMembers {
             msr_sysenter_stack: false,
             msr_syscall_mask: false,
             msr_kernel_gs_base: false,
+            msr_tdx_keyid_partitioning_read: false,
             halt: false,
             sti: false,
             pio_u8: false,
@@ -884,6 +892,7 @@ impl LinuxCpl0SetMembers {
             msr_sysenter_stack: true,
             msr_syscall_mask: true,
             msr_kernel_gs_base: true,
+            msr_tdx_keyid_partitioning_read: false,
             fetch_cache: true,
             diagnostic_past_c7: false,
             irq: true,
@@ -997,6 +1006,10 @@ pub fn run_linux_direct_board_set(
     if members.msr_kernel_gs_base {
         set = set.with_msr_kernel_gs_base_write(&kernel_gs_base_cell);
         names.push("msr:kernel_gs_base_write".into());
+    }
+    if members.msr_tdx_keyid_partitioning_read {
+        set = set.with_msr_tdx_keyid_partitioning_read();
+        names.push("msr:tdx_keyid_partitioning_read".into());
     }
     if members.halt {
         set = set.with_halt(&halt);
@@ -8757,6 +8770,95 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(record.exit_kind, "cpuid_divergence", "{record:?}");
         assert_eq!(record.cpuid_divergence_leaf, Some(1));
+    }
+
+    // ---- S4-38L9c: RDMSR 0x87 (IA32_MKTME_KEYID_PARTITIONING) on the board ----
+
+    /// MOV ECX,0x87; MOV EAX,0x55; MOV EDX,0x66; RDMSR; HLT: the boundary of the stage4a run
+    /// (ECX = 0x87, `0F 32`) with garbage in EAX/EDX.
+    const RDMSR_0X87_CODE: [u8; 17] = [
+        0xB9, 0x87, 0x00, 0x00, 0x00, 0xB8, 0x55, 0x00, 0x00, 0x00, 0xBA, 0x66, 0x00, 0x00, 0x00,
+        0x0F, 0x32,
+    ];
+
+    fn tdx_read_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            msr_tdx_keyid_partitioning_read: true,
+            ..stage4a_default()
+        }
+    }
+
+    #[test]
+    fn rdmsr_0x87_is_off_in_the_default_members_and_the_default_set_names_do_not_change() {
+        assert!(!LinuxCpl0SetMembers::minimal().msr_tdx_keyid_partitioning_read);
+        assert!(!LinuxCpl0SetMembers::linux_default().msr_tdx_keyid_partitioning_read);
+        // Without the member the read is the stop it was (0x32), RAX/RDX as written by the MOVs.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = boot_with_entry(&RDMSR_0X87_CODE);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x32 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3, "MOV, MOV, MOV; the RDMSR is the stop");
+            assert_eq!(record.gpr[Register::Rcx as usize], 0x87);
+            assert_eq!(record.gpr[Register::Rax as usize], 0x55);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:tdx_keyid_partitioning_read".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn rdmsr_0x87_returns_zero_through_the_board_set() {
+        let mut code = vec![0xFA];
+        code.extend(RDMSR_0X87_CODE);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "CLI, MOV, MOV, MOV, RDMSR, HLT");
+        // Oracle: EDX:EAX = 0:0 (kernel tdx_init treats no TDX KeyIDs as TDX off); RCX kept.
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0x87);
+        // The member is named, last of the MSR members, and no cell or EFER moved.
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "msr:tdx_keyid_partitioning_read")
+            .expect("member named");
+        assert_eq!(names[position - 1], "msr:kernel_gs_base_write");
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn rdmsr_other_indexes_and_wrmsr_0x87_stay_the_stop_with_the_member() {
+        // MOV ECX,0x88; RDMSR: the neighbour is refused.
+        let (mut boot, file) = boot_with_entry(&[0xB9, 0x88, 0x00, 0x00, 0x00, 0x0F, 0x32]);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        // MOV ECX,0x87; WRMSR: the write of 0x87 is refused.
+        let (mut boot, file) = boot_with_entry(&[0xB9, 0x87, 0x00, 0x00, 0x00, 0x0F, 0x30]);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----
