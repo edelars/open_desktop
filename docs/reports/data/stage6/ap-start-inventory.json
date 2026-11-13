@@ -207,6 +207,26 @@
         "path": "arch/x86/kernel/cpu/topology_common.c",
         "sha256": "6fe9cc811e421377ca24362aa5f9acb371992682e6205c10a688af5d7863d96b",
         "areas": "leaf 1 APIC ID/logical processor count; legacy leaf 4 core count; Intel legacy topology fallback and leaf 0x1a CPU type"
+      },
+      {
+        "path": "arch/x86/kernel/verify_cpu.S",
+        "sha256": "22320d8173ea69334d3f7ed75e2c6c9d67e06709785a64786a2fcc6f68060dd6",
+        "areas": "verify_cpu CPUID/vendor/SSE checks and conditional MSR side effects"
+      },
+      {
+        "path": "arch/x86/realmode/init.c",
+        "sha256": "7ae65fe7307e6eef115e772ceb6b379009ed385031abb2834fc25417d9cd238e",
+        "areas": "real-mode blob copy, 16-bit and 32-bit relocations, trampoline header target selection, CR4/EFER/PGD setup"
+      },
+      {
+        "path": "arch/x86/kernel/head_64.S",
+        "sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10",
+        "areas": "secondary_startup_64 and secondary_startup_64_no_verify common 64-bit entry targets"
+      },
+      {
+        "path": "arch/x86/include/asm/cpufeatures.h",
+        "sha256": "c582c182aefadee0dcb49edfb6a70f38534774f1e0bebeb09652096e617fc683",
+        "areas": "XMM/SSE and XMM2/SSE2 feature-bit definitions referenced by verify_cpu.S"
       }
     ]
   },
@@ -273,21 +293,1386 @@
       "pa_wakeup_header": "0x3010"
     },
     "path_for_project_INIT_SIPI": [
-      "SIPI vector enters pa_trampoline_start at offset 0x1000 in real mode.",
-      "The real-mode path loads descriptor tables, verifies long-mode capability and enters protected-mode startup_32 at offset 0x2000.",
-      "startup_32 enables PAE, loads CR3, configures EFER.LME and CR0 paging, then far-jumps to long-mode startup_64 at offset 0x20f0.",
-      "startup_64 jumps indirectly through tr_start at offset 0x5000 to the kernel's common secondary startup path."
+      "SIPI vector enters pa_trampoline_start at blob offset 0x1000 in real mode.",
+      "Generic entry initializes segments and a serialized low-memory stack, runs verify_cpu, loads IDT/GDT, enables protected mode through CR0, and far-jumps to startup_32 at offset 0x2000.",
+      "startup_32 loads CR4/CR3, programs EFER from the trampoline header, enables paging/long mode in CR0, and far-jumps to startup_64 at offset 0x20f0.",
+      "startup_64 indirect-jumps through tr_start at offset 0x5000 to secondary_startup_64; SEV-ES configures secondary_startup_64_no_verify and bypasses verify_cpu.",
+      "The transfer into the kernel is established by static source and bytes; runtime callback selection remains unverified."
     ],
-    "disassembly_status": "partial",
+    "disassembly_status": "complete_for_native_init_sipi_trampoline_entry_through_indirect_secondary_startup_64_handoff",
     "disassembly_tools": {
       "host": "macOS arm64",
-      "tool": "Apple LLVM llvm-objdump 21.0.0",
-      "confirmed": "The actual image's 32-bit startup_32 range and 64-bit startup_64 entry were decoded from vmlinux-debug using --arch-name=x86 and --arch-name=x86-64.",
+      "container_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
+      "tool": "GNU Binutils for Ubuntu 2.46 (binutils 2.46-3ubuntu2; x86_64-linux-gnu-objdump)",
+      "input_provenance": {
+        "boot_image": "work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+        "compressed_payload": "Zstandard frame at zero-based file offset 0x52cc (decimal 21196); host zstd output SHA-256 equals staged vmlinux exactly.",
+        "decompressed_vmlinux_sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f",
+        "decompressed_vmlinux_size": 71005544,
+        "init_data_section": {
+          "file_offset": "0x31d2000",
+          "size": 2131144,
+          "sha256": "c800d40be3077334a658cddf19fb31762aa62d159eb55f58e9a998f446ae3f77",
+          "matches_vmlinux_debug_section_byte_for_byte": true
+        },
+        "real_mode_blob": {
+          "source_elf": "ELF extracted from the staged vmlinuz payload",
+          "file_offset": "0x31f6000",
+          "size_bytes": 25188,
+          "sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f"
+        },
+        "source_to_binary_authentication": "S4-35 content hashes and byte comparisons establish identity of staged artifacts; signed upstream source-to-binary provenance is not present.",
+        "text_section": {
+          "size": 24408304,
+          "sha256": "5dec4d30f388386c69c39474841b80ceef957d7a0a3aa2eb2561cb64703e9961",
+          "matches_vmlinux_debug_section_byte_for_byte": true
+        }
+      },
+      "decode_modes": {
+        "decode_16": "i386 decoder in 16-bit address/data mode (`-m i386 -M intel,addr16,data16`); records decode width, not by itself the current architectural mode.",
+        "decode_32": "i386 decoder in 32-bit address/data mode (`-m i386 -M intel,addr32,data32`).",
+        "decode_64": "x86-64 decoder (`-m i386:x86-64 -M intel`)."
+      },
       "reproduction_commands": [
-        "xcrun llvm-objdump --arch-name=x86 -D --section=.init.data --start-address=0xffffffff83ff8000 --stop-address=0xffffffff83ff80f0 work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic",
-        "xcrun llvm-objdump --arch-name=x86-64 -D --section=.init.data --start-address=0xffffffff83ff80f0 --stop-address=0xffffffff83ff8100 work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic"
+        "tail -c +21197 work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic | zstd -dc > /private/tmp/s6-02-vmlinux",
+        "python3 -c 'from pathlib import Path; p=Path(\"/private/tmp/s6-02-vmlinux\").read_bytes(); Path(\"real_mode_blob.bin\").write_bytes(p[0x31f6000:0x31f6000+0x6264])'",
+        "shasum -a 256 real_mode_blob.bin  # d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f",
+        "Extract .init.data real_mode_blob at file offset 0x31f6000, size 0x6264, from that ELF; verify SHA-256 d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f.",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr16,data16 --insn-width=16 --start-address=0x1000 --stop-address=0x11a9 real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr32,data32 --insn-width=16 --start-address=0x2000 --stop-address=0x206c real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --start-address=0x20f0 --stop-address=0x20f6 real_mode_blob.bin",
+        "x86_64-linux-gnu-objdump -d --disassemble=secondary_startup_64 vmlinux-debug",
+        "x86_64-linux-gnu-objdump -d --disassemble=secondary_startup_64_no_verify vmlinux-debug"
       ],
-      "pending": "The available tool has no x86 16-bit decode mode. Run the full real-mode instruction and byte inventory using the prescribed x86 bench toolchain before S6-02 acceptance."
+      "instruction_counts": {
+        "total": 149,
+        "common_64_target_entry_instructions": 2,
+        "total_including_common_64_target_entry": 151,
+        "real_16_unreachable_padding_or_trap_rows": 2,
+        "real_16_non_padding_code_rows": 117,
+        "trampoline_non_padding_code_rows": 147,
+        "decode_16_rows": 119,
+        "decode_32_rows": 29,
+        "decode_64_trampoline_rows": 1
+      },
+      "instruction_bytes": {
+        "real_16": [
+          {
+            "offset": "0x1000",
+            "bytes": "fa",
+            "assembly": "cli",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1001",
+            "bytes": "0f 09",
+            "assembly": "wbinvd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1003",
+            "bytes": "ea 08 10 00 00",
+            "assembly": "jmp    0x0:0x1008",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1008",
+            "bytes": "8c c8",
+            "assembly": "mov    ax,cs",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100a",
+            "bytes": "8e d8",
+            "assembly": "mov    ds,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100c",
+            "bytes": "8e c0",
+            "assembly": "mov    es,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x100e",
+            "bytes": "8e d0",
+            "assembly": "mov    ss,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1010",
+            "bytes": "66 f0 0f ba 2e 18 50 00",
+            "assembly": "lock bts DWORD PTR ds:0x5018,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1018",
+            "bytes": "73 04",
+            "assembly": "jae    0x101e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101a",
+            "bytes": "f3 90",
+            "assembly": "pause",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101c",
+            "bytes": "eb f2",
+            "assembly": "jmp    0x1010",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x101e",
+            "bytes": "66 bc 20 60 00 00",
+            "assembly": "mov    esp,0x6020",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1024",
+            "bytes": "e8 59 00",
+            "assembly": "call   0x1080",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1027",
+            "bytes": "66 85 c0",
+            "assembly": "test   eax,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x102a",
+            "bytes": "75 20",
+            "assembly": "jne    0x104c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x102c",
+            "bytes": "66 0f 01 1e 60 00",
+            "assembly": "lidtd  ds:0x60",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "IDTR <- descriptor at DS:0x60 (LIDT)."
+            ]
+          },
+          {
+            "offset": "0x1032",
+            "bytes": "66 0f 01 16 30 00",
+            "assembly": "lgdtd  ds:0x30",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "GDTR <- descriptor at DS:0x30 (LGDT)."
+            ]
+          },
+          {
+            "offset": "0x1038",
+            "bytes": "ba 18 00",
+            "assembly": "mov    dx,0x18",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x103b",
+            "bytes": "66 b8 33 00 05 00",
+            "assembly": "mov    eax,0x50033",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1041",
+            "bytes": "0f 22 c0",
+            "assembly": "mov    cr0,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "CR0 <- EAX=0x00050033; sets PE while PG remains clear, entering protected mode."
+            ],
+            "mode_transition": "real_16 -> protected_mode"
+          },
+          {
+            "offset": "0x1044",
+            "bytes": "66 ea 00 20 00 00 08 00",
+            "assembly": "jmp    0x8:0x2000",
+            "decode_mode": "real_16",
+            "execution_mode": "protected_16_transition",
+            "control_state_effects": [
+              "Far control transfer to selector 0x0008 and linked offset 0x2000; the far-pointer offset fixup at blob offset 0x1046 adds phys_base, so the runtime target is selector 0x0008:phys_base+0x2000."
+            ],
+            "mode_transition": "protected_mode with 16-bit CS default -> startup_32 protected code segment"
+          },
+          {
+            "offset": "0x104c",
+            "bytes": "f4",
+            "assembly": "hlt",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x104d",
+            "bytes": "eb fd",
+            "assembly": "jmp    0x104c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x104f",
+            "bytes": "90",
+            "assembly": "nop",
+            "reachability": "unreachable padding: follows the HLT self-loop at 0x104c–0x104d",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1050",
+            "bytes": "fa",
+            "assembly": "cli",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1051",
+            "bytes": "ea 56 10 00 00",
+            "assembly": "jmp    0x0:0x1056",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1056",
+            "bytes": "8c c8",
+            "assembly": "mov    ax,cs",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1058",
+            "bytes": "8e d8",
+            "assembly": "mov    ds,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105a",
+            "bytes": "8e c0",
+            "assembly": "mov    es,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105c",
+            "bytes": "8e d0",
+            "assembly": "mov    ss,ax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x105e",
+            "bytes": "66 f0 0f ba 2e 18 50 00",
+            "assembly": "lock bts DWORD PTR ds:0x5018,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1066",
+            "bytes": "73 04",
+            "assembly": "jae    0x106c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1068",
+            "bytes": "f3 90",
+            "assembly": "pause",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x106a",
+            "bytes": "eb f2",
+            "assembly": "jmp    0x105e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x106c",
+            "bytes": "66 bc 20 60 00 00",
+            "assembly": "mov    esp,0x6020",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1072",
+            "bytes": "eb b8",
+            "assembly": "jmp    0x102c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1080",
+            "bytes": "9c",
+            "assembly": "pushf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1081",
+            "bytes": "6a 00",
+            "assembly": "push   0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1083",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1084",
+            "bytes": "66 9c",
+            "assembly": "pushfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1086",
+            "bytes": "66 58",
+            "assembly": "pop    eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1088",
+            "bytes": "66 89 c3",
+            "assembly": "mov    ebx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x108b",
+            "bytes": "66 35 00 00 20 00",
+            "assembly": "xor    eax,0x200000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1091",
+            "bytes": "66 50",
+            "assembly": "push   eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1093",
+            "bytes": "66 9d",
+            "assembly": "popfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1095",
+            "bytes": "66 9c",
+            "assembly": "pushfd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1097",
+            "bytes": "66 58",
+            "assembly": "pop    eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1099",
+            "bytes": "66 39 c3",
+            "assembly": "cmp    ebx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x109c",
+            "bytes": "0f 84 fb 00",
+            "assembly": "je     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a0",
+            "bytes": "66 b8 00 00 00 00",
+            "assembly": "mov    eax,0x0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a6",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10a8",
+            "bytes": "66 83 f8 01",
+            "assembly": "cmp    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10ac",
+            "bytes": "0f 82 eb 00",
+            "assembly": "jb     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b0",
+            "bytes": "31 ff",
+            "assembly": "xor    di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b2",
+            "bytes": "66 81 fb 41 75 74 68",
+            "assembly": "cmp    ebx,0x68747541",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10b9",
+            "bytes": "75 17",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10bb",
+            "bytes": "66 81 fa 65 6e 74 69",
+            "assembly": "cmp    edx,0x69746e65",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10c2",
+            "bytes": "75 0e",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10c4",
+            "bytes": "66 81 f9 63 41 4d 44",
+            "assembly": "cmp    ecx,0x444d4163",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10cb",
+            "bytes": "75 05",
+            "assembly": "jne    0x10d2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10cd",
+            "bytes": "bf 01 00",
+            "assembly": "mov    di,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d0",
+            "bytes": "eb 5a",
+            "assembly": "jmp    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d2",
+            "bytes": "66 81 fb 47 65 6e 75",
+            "assembly": "cmp    ebx,0x756e6547",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10d9",
+            "bytes": "75 51",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10db",
+            "bytes": "66 81 fa 69 6e 65 49",
+            "assembly": "cmp    edx,0x49656e69",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10e2",
+            "bytes": "75 48",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10e4",
+            "bytes": "66 81 f9 6e 74 65 6c",
+            "assembly": "cmp    ecx,0x6c65746e",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10eb",
+            "bytes": "75 3f",
+            "assembly": "jne    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10ed",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f3",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f5",
+            "bytes": "66 89 c1",
+            "assembly": "mov    ecx,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10f8",
+            "bytes": "66 25 00 0f f0 0f",
+            "assembly": "and    eax,0xff00f00",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x10fe",
+            "bytes": "66 c1 e8 08",
+            "assembly": "shr    eax,0x8",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1102",
+            "bytes": "66 83 f8 06",
+            "assembly": "cmp    eax,0x6",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1106",
+            "bytes": "77 13",
+            "assembly": "ja     0x111b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1108",
+            "bytes": "72 22",
+            "assembly": "jb     0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x110a",
+            "bytes": "66 81 e1 f0 00 0f 00",
+            "assembly": "and    ecx,0xf00f0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1111",
+            "bytes": "66 c1 e9 04",
+            "assembly": "shr    ecx,0x4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1115",
+            "bytes": "66 83 f9 0d",
+            "assembly": "cmp    ecx,0xd",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1119",
+            "bytes": "72 11",
+            "assembly": "jb     0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x111b",
+            "bytes": "66 b9 a0 01 00 00",
+            "assembly": "mov    ecx,0x1a0",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1121",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "RDMSR reads MSR 0x000001a0 (IA32_MISC_ENABLE) into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x1123",
+            "bytes": "66 0f ba f2 02",
+            "assembly": "btr    edx,0x2",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1128",
+            "bytes": "73 02",
+            "assembly": "jae    0x112c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x112a",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0x000001a0 after conditionally clearing EDX bit 2 (XD_DISABLE)."
+            ]
+          },
+          {
+            "offset": "0x112c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1132",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1134",
+            "bytes": "66 81 e2 61 81 00 07",
+            "assembly": "and    edx,0x7008161",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x113b",
+            "bytes": "66 81 f2 61 81 00 07",
+            "assembly": "xor    edx,0x7008161",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1142",
+            "bytes": "75 57",
+            "assembly": "jne    0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1144",
+            "bytes": "66 b8 00 00 00 80",
+            "assembly": "mov    eax,0x80000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x114a",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x114c",
+            "bytes": "66 3d 01 00 00 80",
+            "assembly": "cmp    eax,0x80000001",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1152",
+            "bytes": "72 47",
+            "assembly": "jb     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1154",
+            "bytes": "66 b8 01 00 00 80",
+            "assembly": "mov    eax,0x80000001",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x115a",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x115c",
+            "bytes": "66 81 e2 00 00 00 20",
+            "assembly": "and    edx,0x20000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1163",
+            "bytes": "66 81 f2 00 00 00 20",
+            "assembly": "xor    edx,0x20000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x116a",
+            "bytes": "75 2f",
+            "assembly": "jne    0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x116c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1172",
+            "bytes": "0f a2",
+            "assembly": "cpuid",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1174",
+            "bytes": "66 81 e2 00 00 00 06",
+            "assembly": "and    edx,0x6000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x117b",
+            "bytes": "66 81 fa 00 00 00 06",
+            "assembly": "cmp    edx,0x6000000",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1182",
+            "bytes": "74 20",
+            "assembly": "je     0x11a4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1184",
+            "bytes": "85 ff",
+            "assembly": "test   di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1186",
+            "bytes": "74 13",
+            "assembly": "je     0x119b",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1188",
+            "bytes": "66 b9 15 00 01 c0",
+            "assembly": "mov    ecx,0xc0010015",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x118e",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "RDMSR reads MSR 0xc0010015 (MSR_K7_HWCR) into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x1190",
+            "bytes": "66 0f ba f0 0f",
+            "assembly": "btr    eax,0xf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1195",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0xc0010015 after conditionally clearing EAX bit 15 (SSE disable)."
+            ]
+          },
+          {
+            "offset": "0x1197",
+            "bytes": "31 ff",
+            "assembly": "xor    di,di",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x1199",
+            "bytes": "eb d1",
+            "assembly": "jmp    0x116c",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x119b",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x119c",
+            "bytes": "66 b8 01 00 00 00",
+            "assembly": "mov    eax,0x1",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a2",
+            "bytes": "c3",
+            "assembly": "ret",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a3",
+            "bytes": "cc",
+            "assembly": "int3",
+            "reachability": "unreachable trap/padding: failure path returns at 0x11a2 and success branch targets 0x11a4",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a4",
+            "bytes": "9d",
+            "assembly": "popf",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a5",
+            "bytes": "66 31 c0",
+            "assembly": "xor    eax,eax",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x11a8",
+            "bytes": "c3",
+            "assembly": "ret",
+            "decode_mode": "real_16",
+            "execution_mode": "real_16",
+            "control_state_effects": []
+          }
+        ],
+        "protected_32": [
+          {
+            "offset": "0x2000",
+            "bytes": "8e d2",
+            "assembly": "mov    ss,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2002",
+            "bytes": "81 c4 00 00 00 00",
+            "assembly": "add    esp,0x0",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2008",
+            "bytes": "8e da",
+            "assembly": "mov    ds,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200a",
+            "bytes": "8e c2",
+            "assembly": "mov    es,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200c",
+            "bytes": "8e e2",
+            "assembly": "mov    fs,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x200e",
+            "bytes": "8e ea",
+            "assembly": "mov    gs,edx",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2010",
+            "bytes": "0f ba 25 14 50 00 00 00",
+            "assembly": "bt     DWORD PTR ds:0x5014,0x0",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2018",
+            "bytes": "73 0f",
+            "assembly": "jae    0x2029",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x201a",
+            "bytes": "b9 10 00 01 c0",
+            "assembly": "mov    ecx,0xc0010010",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x201f",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "RDMSR reads MSR 0xc0010010 (MSR_AMD64_SYSCFG) into EDX:EAX on the conditional SME path."
+            ]
+          },
+          {
+            "offset": "0x2021",
+            "bytes": "0f ba e8 17",
+            "assembly": "bts    eax,0x17",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2025",
+            "bytes": "72 02",
+            "assembly": "jb     0x2029",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2027",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "WRMSR writes EDX:EAX to MSR 0xc0010010 after conditionally setting EAX bit 23 (SME enable)."
+            ]
+          },
+          {
+            "offset": "0x2029",
+            "bytes": "a1 10 50 00 00",
+            "assembly": "mov    eax,ds:0x5010",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x202e",
+            "bytes": "0f 22 e0",
+            "assembly": "mov    cr4,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR4 <- value from relocated trampoline header field pa_tr_cr4."
+            ]
+          },
+          {
+            "offset": "0x2031",
+            "bytes": "b8 00 40 00 00",
+            "assembly": "mov    eax,0x4000",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2036",
+            "bytes": "0f 22 d8",
+            "assembly": "mov    cr3,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR3 <- phys_base + 0x4000; linked immediate is 0x4000 and the 32-bit linear relocation at blob offset 0x2032 adds phys_base."
+            ]
+          },
+          {
+            "offset": "0x2039",
+            "bytes": "b9 80 00 00 c0",
+            "assembly": "mov    ecx,0xc0000080",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x203e",
+            "bytes": "0f 32",
+            "assembly": "rdmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "RDMSR reads EFER MSR 0xc0000080 into EDX:EAX."
+            ]
+          },
+          {
+            "offset": "0x2040",
+            "bytes": "3b 05 08 50 00 00",
+            "assembly": "cmp    eax,DWORD PTR ds:0x5008",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2046",
+            "bytes": "75 08",
+            "assembly": "jne    0x2050",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2048",
+            "bytes": "3b 15 0c 50 00 00",
+            "assembly": "cmp    edx,DWORD PTR ds:0x500c",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x204e",
+            "bytes": "74 0d",
+            "assembly": "je     0x205d",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2050",
+            "bytes": "a1 08 50 00 00",
+            "assembly": "mov    eax,ds:0x5008",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2055",
+            "bytes": "8b 15 0c 50 00 00",
+            "assembly": "mov    edx,DWORD PTR ds:0x500c",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x205b",
+            "bytes": "0f 30",
+            "assembly": "wrmsr",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "WRMSR writes the EFER value loaded from the trampoline header (BSP EFER with LMA masked off during setup)."
+            ]
+          },
+          {
+            "offset": "0x205d",
+            "bytes": "b8 33 00 05 80",
+            "assembly": "mov    eax,0x80050033",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": []
+          },
+          {
+            "offset": "0x2062",
+            "bytes": "0f 22 c0",
+            "assembly": "mov    cr0,eax",
+            "decode_mode": "protected_32",
+            "execution_mode": "protected_32",
+            "control_state_effects": [
+              "CR0 <- EAX=0x80050033; enables paging with EFER.LME set and enters IA-32e compatibility mode."
+            ],
+            "mode_transition": "protected_32 -> IA-32e compatibility mode (EFER.LME already set)"
+          },
+          {
+            "offset": "0x2065",
+            "bytes": "ea f0 20 00 00 10 00",
+            "assembly": "jmp    0x10:0x20f0",
+            "decode_mode": "protected_32",
+            "execution_mode": "ia32e_compat_32",
+            "control_state_effects": [
+              "Far control transfer to selector 0x0010 and linked offset 0x20f0; the far-pointer offset fixup at blob offset 0x2066 adds phys_base, so the runtime target is selector 0x0010:phys_base+0x20f0."
+            ],
+            "mode_transition": "IA-32e compatibility_32 -> long_64"
+          }
+        ],
+        "long_64": [
+          {
+            "offset": "0x20f0",
+            "bytes": "ff 25 0a 2f 00 00",
+            "assembly": "jmp    QWORD PTR [rip+0x2f0a]        # 0x5000",
+            "decode_mode": "long_64",
+            "execution_mode": "long_64",
+            "control_state_effects": [
+              "Indirect near jump through the 64-bit pointer slot at blob offset 0x5000 (runtime address phys_base+0x5000)."
+            ]
+          }
+        ]
+      },
+      "control_effects": [
+        {
+          "path": "native INIT/SIPI real-mode entry at 0x1000",
+          "effects": "CLI; WBINVD; load CS into DS/ES/SS; lock BTS serializes the shared low-memory trampoline stack slot at blob offset 0x5018 (runtime phys_base+0x5018); set ESP to linked stack offset 0x6020, relocated by phys_base at runtime; call verify_cpu; load IDTR from 0x60 and GDTR from 0x30; load DX=0x18; write EAX=0x00050033 to CR0; far jump to selector 0x8:offset 0x2000. Failed verify_cpu returns to HLT loop at 0x104c.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/rm/header.S"
+          ]
+        },
+        {
+          "path": "verify_cpu at 0x1080",
+          "effects": "Uses CPUID leaves 0, 1, 0x80000000 and 0x80000001; checks CPUID support and detects the vendor for conditional AMD/Intel MSR workarounds (other vendors are not rejected solely for their vendor string), REQUIRED_MASK0 (observed immediate mask 0x07008161), REQUIRED_MASK1 (0x20000000), and SSE/SSE2 mask (0x06000000). On qualifying Intel family/model reads MSR 0x1a0 and clears EDX bit 2 (XD_DISABLE), writing only when changed. If AMD lacks SSE/SSE2, reads MSR 0xc0010015, clears EAX bit 15, writes it, then retries once. Returns EAX=0 on success, EAX=1 on failure; restores saved flags.",
+          "source_files": [
+            "arch/x86/kernel/verify_cpu.S",
+            "arch/x86/include/asm/cpufeatures.h"
+          ]
+        },
+        {
+          "path": "SEV-ES alternate 16-bit entry at 0x1050",
+          "effects": "CLI; loads CS into DS/ES/SS; serializes and sets the shared stack with lock BTS and ESP=0x6020; skips verify_cpu and jumps into the shared protected-mode setup at 0x102c. Linux source sets the trampoline header target to secondary_startup_64_no_verify for guest-state encryption and installs the AP jump table.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c"
+          ]
+        },
+        {
+          "path": "protected-mode startup_32 at 0x2000",
+          "effects": "Loads SS/DS/ES/FS/GS from EDX and adds the real-mode base to ESP. Conditional SME path reads MSR 0xc0010010 and may set EAX bit 23 before WRMSR. Loads CR4 from the trampoline header field at 0x5010; loads the linked pa_trampoline_pgd immediate 0x4000 into CR3; the 32-bit relocation at blob offset 0x2032 adds the runtime low-memory base, so runtime CR3 is phys_base + 0x4000; reads EFER MSR 0xc0000080, compares against the saved header value at 0x5008/0x500c, and conditionally WRMSR; writes CR0=0x80050033 (paging and long-mode activation); far jumps to selector 0x10:offset 0x20f0.",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c"
+          ]
+        },
+        {
+          "path": "long-mode startup_64 at 0x20f0",
+          "effects": "Indirect near jump through the 64-bit pointer at trampoline header address 0x5000 (RIP-relative displacement 0x2f0a). setup_real_mode initializes this pointer to secondary_startup_64; SEV-ES changes it to secondary_startup_64_no_verify. The first target instruction is CALL verify_cpu (bytes e8 6b 01 00 00); the SEV-ES no-verify target begins XOR R15D,R15D (bytes 45 31 ff).",
+          "source_files": [
+            "arch/x86/realmode/rm/trampoline_64.S",
+            "arch/x86/realmode/init.c",
+            "arch/x86/kernel/head_64.S"
+          ]
+        }
+      ],
+      "execution_scope": "The decoded path is the native INIT/SIPI trampoline path selected by do_boot_cpu when no wakeup_secondary_cpu_64 or wakeup_secondary_cpu callback is installed. The static inventory does not prove which callback the staged guest selects at runtime. The direct 64-bit startup trampoline is a distinct callback path and is not the selected D2 recommendation.",
+      "runtime_relocation_caveat": "instruction_bytes records the bytes linked into real_mode_blob in the staged ELF. setup_real_mode() copies the blob into a low-memory allocation and applies 16-bit segment relocations and 32-bit linear relocations before AP execution. Therefore relocation-bearing operands can differ in the runtime copy; the selected low-memory base is not pinned by S4-35 and no guest runtime trace is available. The 32-bit linear relocation at blob offset 0x2032 patches the immediate operand of the MOV at 0x2031 for pa_trampoline_pgd: linked value 0x4000 becomes runtime CR3 = phys_base + 0x4000. Other transition targets are also runtime-relocated: far-jump operand fixups at 0x1046 and 0x2066 add phys_base to the linked offsets 0x2000 and 0x20f0, respectively.",
+      "pending": "The static image-byte inventory is complete for the native INIT/SIPI trampoline through the indirect handoff to secondary_startup_64. Remaining S6-02 acceptance evidence: independent review and architecture decision; actual runtime callback/APIC selection is not pinned; Windows CPU-06 remains an unverified hypothesis for stage-8 trace. The Stage 6 task explicitly asks for disassembly on the x86 bench; this inventory was produced with x86-target GNU Binutils in a pinned linux/arm64 container and that physical-host criterion remains pending until repeated or verified on the project x86 bench. The required x86 bench execution remains pending; current actual-image byte rows were cross-disassembled on linux/arm64.",
+      "common_64_entry_instructions": [
+        {
+          "path": "tr_start -> secondary_startup_64",
+          "address": "0xffffffff8139c090",
+          "mode": "long_64",
+          "bytes": "e8 6b 01 00 00",
+          "assembly": "call ffffffff8139c200 <verify_cpu>",
+          "source_elf": "vmlinux-debug .text; byte-identical to staged vmlinuz extracted ELF .text",
+          "decode_mode_bits": 64,
+          "execution_mode": "long_64",
+          "control_state_effects": []
+        },
+        {
+          "path": "SEV-ES tr_start -> secondary_startup_64_no_verify",
+          "address": "0xffffffff8139c095",
+          "mode": "long_64",
+          "bytes": "45 31 ff",
+          "assembly": "xor r15d,r15d",
+          "source_elf": "vmlinux-debug .text; byte-identical to staged vmlinuz extracted ELF .text",
+          "decode_mode_bits": 64,
+          "execution_mode": "long_64",
+          "control_state_effects": []
+        }
+      ],
+      "execution_modes": {
+        "real_16": "Before CR0.PE is set; includes verify_cpu and the native real-mode entry.",
+        "protected_16_transition": "The far jump at 0x1044 executes after CR0.PE is set while CS still has a 16-bit default; the target descriptor enters startup_32.",
+        "protected_32": "startup_32 instructions before CR0.PG is set.",
+        "ia32e_compat_32": "The far jump at 0x2065 executes after CR0.PG and EFER.LME activate IA-32e, while the current CS is still 32-bit compatibility.",
+        "long_64": "startup_64 at 0x20f0 and the common secondary startup targets."
+      },
+      "instruction_inventory_note": "Each row records decode_mode, execution_mode, exact linked-image bytes, Intel-syntax mnemonic and control_state_effects (empty where the instruction does not touch control state or MSRs). The linked 16/32-bit decode width and active architectural mode differ at the mode-switch far jumps."
     },
     "source_unpack_command": "tar -xjf work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2 -C /private/tmp/s6-02-src",
     "extraction_command": "dd if=work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic of=/private/tmp/s6-02-real_mode_blob.bin bs=1 skip=$((0x31f6000)) count=$((0x6264)) 2>/dev/null",
