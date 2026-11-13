@@ -53,7 +53,7 @@ use od_isa::execute::{
 };
 use od_isa::msr::MsrProfile;
 use od_isa::{CliProfile, HaltProfile, Register, StiProfile};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -724,7 +724,7 @@ pub struct LinuxCpl0SetMembers {
     pub cpuid: bool,
     /// The CPUID profile of the `cpuid` member (S4-38L9a). [`CpuidProfile::DiagnosticV1`] (the
     /// default of [`Self::minimal`] and [`Self::linux_default`]) keeps the C7 boundary above.
-    /// [`CpuidProfile::X8664V1Stage4A`] is the declared subset L9a of the target (TSC only): it
+    /// [`CpuidProfile::X8664V1Stage4A`] is the declared subset of the target (TSC, since S4-38L9d also FPU and FXSR): it
     /// answers leaf 1 and 0x8000_0001 honestly for that subset, so the C7 boundary is OFF for it
     /// (nothing made-up to stop on) and the result is still not counted as the target CPU. Has no
     /// effect without `cpuid`. Not a separate set member: it names the `cpuid:<profile>` member.
@@ -790,6 +790,13 @@ pub struct LinuxCpl0SetMembers {
     /// [`Self::linux_default`] (so a default run is unchanged); the runner turns it on only with
     /// `--cpuid-profile stage4a`. Independent of [`Self::msr`] and the other MSR members.
     pub msr_tdx_keyid_partitioning_read: bool,
+    /// `with_fp_state` (S4-38L9d): the FP member of the set: `FNINIT`, the plain RIP-relative
+    /// `FXSAVE` and `MOV CR0, RDI` (the `fpu__init_system` path of the kernel), with the guest FP
+    /// state kept in the board between runs (`guest_fp`). It needs a CPUID profile that declares
+    /// FPU and FXSR (`X8664V1Stage4A`; with `DiagnosticV1` the set refuses the run). `false` in
+    /// [`Self::minimal`] and in [`Self::linux_default`] (so a default run is unchanged); the
+    /// runner turns it on only with `--cpuid-profile stage4a`.
+    pub fp_state: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_sti` (S4-38L7bp): the bare `STI` (`FB`): IF := 1 and the one-instruction shadow. The
@@ -855,6 +862,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: false,
             msr_kernel_gs_base: false,
             msr_tdx_keyid_partitioning_read: false,
+            fp_state: false,
             halt: false,
             sti: false,
             pio_u8: false,
@@ -893,6 +901,7 @@ impl LinuxCpl0SetMembers {
             msr_syscall_mask: true,
             msr_kernel_gs_base: true,
             msr_tdx_keyid_partitioning_read: false,
+            fp_state: false,
             fetch_cache: true,
             diagnostic_past_c7: false,
             irq: true,
@@ -923,7 +932,7 @@ impl LinuxCpl0SetMembers {
 /// carries `diagnostic_past_c7: true` and the result is NOT counted.
 ///
 /// CPUID profile (S4-38L9a, `members.cpuid_profile`): the boundary above belongs to
-/// `DiagnosticV1`. With `X8664V1Stage4A` (the declared subset: TSC only) the boundary is off even
+/// `DiagnosticV1`. With `X8664V1Stage4A` (the declared subset: TSC, FPU, FXSR) the boundary is off even
 /// without `diagnostic_past_c7`: leaf 1 and 0x8000_0001 are answered for what the subset declares
 /// and the member is named `cpuid:X8664V1Stage4A`.
 pub fn run_linux_direct_board_set(
@@ -956,6 +965,8 @@ pub fn run_linux_direct_board_set(
     let syscall_mask_cell = Cell::new(boot.board.guest_syscall_mask());
     // S4-38L7au: the guest IA32_KERNEL_GS_BASE, kept by the board between runs.
     let kernel_gs_base_cell = Cell::new(boot.board.guest_kernel_gs_base());
+    // S4-38L9d: the guest FP state, kept by the board between runs.
+    let fp_cell = RefCell::new(boot.board.guest_fp().clone());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -1011,6 +1022,10 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_tdx_keyid_partitioning_read();
         names.push("msr:tdx_keyid_partitioning_read".into());
     }
+    if members.fp_state {
+        set = set.with_fp_state(&fp_cell);
+        names.push("fp_state".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -1056,6 +1071,7 @@ pub fn run_linux_direct_board_set(
     boot.board.set_guest_syscall_mask(syscall_mask_cell.get());
     boot.board
         .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
+    boot.board.set_guest_fp(fp_cell.into_inner());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -8654,7 +8670,7 @@ mod tests {
     }
 
     #[test]
-    fn stage4a_leaf_1_runs_without_the_c7_stop_and_gives_only_tsc() {
+    fn stage4a_leaf_1_runs_without_the_c7_stop_and_gives_fpu_tsc_fxsr() {
         // CLI; MOV EBX, 0x1234; MOV EAX, 1; CPUID; HLT, with no `diagnostic_past_c7`: the C7
         // boundary does not fire for the subset profile.
         let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
@@ -8664,11 +8680,12 @@ mod tests {
         assert_eq!(record.cpuid_divergence_leaf, None);
         assert!(!record.diagnostic_past_c7);
         assert_eq!(record.retired, 5, "CLI, MOV, MOV, CPUID, HLT");
-        // Oracle from the contract table: EAX 0x600, EBX 0x100, ECX 0, EDX only bit 4 (TSC).
+        // Oracle from the contract table: EAX 0x600, EBX 0x100, ECX 0, EDX bits 0 (FPU), 4 (TSC)
+        // and 24 (FXSR) since S4-38L9d.
         assert_eq!(record.gpr[Register::Rax as usize], 0x600);
         assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
         assert_eq!(record.gpr[Register::Rcx as usize], 0);
-        assert_eq!(record.gpr[Register::Rdx as usize], 0x10);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x0100_0011);
         assert!(
             record
                 .set_members
@@ -8708,7 +8725,7 @@ mod tests {
         assert_eq!(record.gpr[Register::Rax as usize], 0x600);
         assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
         assert_eq!(record.gpr[Register::Rcx as usize], 0);
-        assert_eq!(record.gpr[Register::Rdx as usize], 0x10);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x0100_0011);
     }
 
     #[test]
@@ -8859,6 +8876,155 @@ mod tests {
             "{record:?}"
         );
         assert_eq!(record.retired, 1);
+    }
+
+    // ---- S4-38L9d: FP state (FNINIT, FXSAVE, MOV CR0, RDI) on the board ----
+
+    /// The members of the stage4a run: the CPUID subset that declares FPU and FXSR, the FP member
+    /// and HLT (so that a test can end on a retired HLT).
+    fn fp_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            fp_state: true,
+            ..stage4a_default()
+        }
+    }
+
+    /// GPA of the entry (`startup_64`): the kernel at 16 MiB plus 0x200.
+    const FP_ENTRY_GPA: u64 = 0x0100_0200;
+    /// The FXSAVE target inside the kernel zone of the board RAM, 16-byte aligned.
+    const FP_AREA_GPA: u64 = 0x0100_0600;
+
+    /// `CLI; MOV RAX,CR0; AND RAX,-13; MOV RDI,RAX; MOV CR0,RDI; MOV EDI,0x620; MOV CR4,RDI; FNINIT;
+    /// FXSAVE [RIP+disp] -> FP_AREA_GPA; HLT`: the `fpu__init_system` sequence of the kernel.
+    fn fp_kernel_sequence() -> Vec<u8> {
+        let mut code = vec![
+            0xFA, 0x0F, 0x20, 0xC0, 0x48, 0x83, 0xE0, 0xF3, 0x48, 0x89, 0xC7, 0x0F, 0x22, 0xC7,
+            0xBF, 0x20, 0x06, 0x00, 0x00, 0x0F, 0x22, 0xE7, 0xDB, 0xE3,
+        ];
+        let next = FP_ENTRY_GPA + code.len() as u64 + 7;
+        let disp = (FP_AREA_GPA as i64 - next as i64) as i32;
+        code.extend([0x0F, 0xAE, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        code
+    }
+
+    fn read_area(boot: &mut LinuxDirectBoot) -> [u8; 512] {
+        let mut area = [0u8; 512];
+        read(&mut boot.board, FP_AREA_GPA, &mut area).expect("reads");
+        area
+    }
+
+    #[test]
+    fn fp_state_is_off_in_the_default_members_and_the_default_runs_stay_as_they_were() {
+        assert!(!LinuxCpl0SetMembers::minimal().fp_state);
+        assert!(!LinuxCpl0SetMembers::linux_default().fp_state);
+        // Without the member `FNINIT` is the stop it was (0xdb) and nothing is named.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = boot_with_entry(&[0xFA, 0xDB, 0xE3, 0xF4]);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xdb },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 1, "CLI; FNINIT is the stop");
+            assert!(!record.set_members.contains(&"fp_state".to_string()));
+        }
+    }
+
+    #[test]
+    fn the_kernel_fpu_init_sequence_runs_through_the_board_set_and_writes_the_image() {
+        let (mut boot, file) = boot_with_entry(&fp_kernel_sequence());
+        let before = read_area(&mut boot);
+        let record = run_set_facade(&mut boot, &file, 64, fp_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, six CR/ALU/MOV, FNINIT, FXSAVE, HLT: {record:?}"
+        );
+        // CR0 lost TS/EM only (the entry value has neither: it stays), CR4 holds the two FP bits.
+        assert_eq!(record.cr0.expect("cr0") & 0xc, 0);
+        assert_eq!(record.cr4.expect("cr4") & 0x600, 0x600);
+        // Oracle (SDM FXSAVE layout): FCW 0x037F, FSW 0, abridged FTW 0, FOP/FIP/FCS/FDP/FDS 0,
+        // MXCSR 0x1F80, MXCSR_MASK 0xFFBF, registers and XMM zero; the holes are untouched.
+        let after = read_area(&mut boot);
+        let mut expected = before;
+        expected[0..2].copy_from_slice(&[0x7F, 0x03]);
+        expected[2..4].copy_from_slice(&[0, 0]);
+        expected[4] = 0;
+        expected[6..8].copy_from_slice(&[0, 0]);
+        expected[8..14].copy_from_slice(&[0; 6]);
+        expected[16..22].copy_from_slice(&[0; 6]);
+        expected[24..28].copy_from_slice(&[0x80, 0x1F, 0, 0]);
+        expected[28..32].copy_from_slice(&[0xBF, 0xFF, 0, 0]);
+        for slot in 0..8 {
+            expected[32 + 16 * slot..42 + 16 * slot].copy_from_slice(&[0; 10]);
+        }
+        expected[160..416].copy_from_slice(&[0; 256]);
+        assert_eq!(after, expected);
+        // The member is named after the MSR members (the tdx read is off in this member set).
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "fp_state")
+            .expect("member named");
+        assert_eq!(names[position - 1], "msr:kernel_gs_base_write");
+        assert_eq!(names[position + 1], "halt");
+        assert_eq!(boot.board.guest_fp(), &od_isa::GuestFpState::initial());
+    }
+
+    #[test]
+    fn the_board_keeps_the_guest_fp_state_between_runs_and_fninit_resets_the_environment() {
+        let (mut boot, file) = boot_with_entry(&fp_kernel_sequence());
+        let mut dirty = od_isa::GuestFpState::initial();
+        dirty.x87.control_word = 0x027F;
+        dirty.x87.status_word = 0x3805;
+        dirty.x87.tag_word = 0x1BE4;
+        dirty.x87.instruction_pointer = 0x1234;
+        dirty.x87.registers[3] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        dirty.x87.instruction_selector = Some(0x2B);
+        dirty.sse.mxcsr = 0x1FA0;
+        dirty.sse.xmm[15] = [0xEE; 16];
+        boot.board.set_guest_fp(dirty.clone());
+        let record = run_set_facade(&mut boot, &file, 64, fp_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        let left = boot.board.guest_fp().clone();
+        assert_eq!(left.x87.control_word, 0x037F);
+        assert_eq!(left.x87.status_word, 0);
+        assert_eq!(left.x87.tag_word, 0xFFFF);
+        assert_eq!(left.x87.instruction_pointer, 0);
+        assert_eq!(left.x87.instruction_selector, Some(0));
+        // Payloads, XMM and MXCSR survive FNINIT.
+        assert_eq!(left.x87.registers, dirty.x87.registers);
+        assert_eq!(left.sse, dirty.sse);
+        // The image carries MXCSR and XMM15 of the carried state.
+        let area = read_area(&mut boot);
+        assert_eq!(&area[24..28], &[0xA0, 0x1F, 0, 0]);
+        assert_eq!(&area[160 + 15 * 16..160 + 16 * 16], &[0xEE; 16]);
+        assert_eq!(
+            &area[32 + 3 * 16..32 + 3 * 16 + 10],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
+    }
+
+    #[test]
+    fn the_fp_member_needs_a_cpuid_profile_that_declares_fpu_and_fxsr() {
+        // The DiagnosticV1 profile declares nothing: the set refuses the run before any fetch.
+        let members = LinuxCpl0SetMembers {
+            fp_state: true,
+            ..halting_default()
+        };
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xDB, 0xE3, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Rejected(crate::PagedProbeRejection::Cpl0Set(
+                od_isa::Cpl0ProfileSetInputError::FpFeaturesNotDeclared
+            )),
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0);
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----

@@ -1825,6 +1825,10 @@ pub enum Operation {
     ReadCr0,
     /// Exact `0F 22 C0` MOV CR0, RAX for the bounded S2-25a profile.
     WriteCr0,
+    /// S4-38L9d: exact `0F 22 C7` MOV CR0, RDI (no prefix, no REX), the form of the kernel's
+    /// `native_write_cr0`. Executed only by the CPL0 set (`with_fp_state`); every other register
+    /// source and every prefixed form of `MOV CR0, r64` stays unsupported.
+    WriteCr0Rdi,
     /// Exact `0F 20 E0` MOV RAX, CR4 for the bounded S2-25b profile.
     ReadCr4,
     /// Exact `0F 22 E0` MOV CR4, RAX for the bounded S2-25b profile.
@@ -2908,10 +2912,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
             let cr3_write = opcode.byte == 0x22 && modrm & 0xf8 == 0xd8 && rex & 0x04 == 0;
             let old_cr_form = matches!(modrm, 0xc0 | 0xd8 | 0xe0)
                 && (prefixes == Prefixes::default() || rex_w_read_cr3);
-            if !(old_cr_form || cr2_read || cr4_read || cr4_write || cr3_write)
+            // S4-38L9d: `0F 22 C7` (MOV CR0, RDI) only, without any prefix.
+            let cr0_write_rdi =
+                opcode.byte == 0x22 && modrm == 0xc7 && prefixes == Prefixes::default();
+            if !(old_cr_form || cr2_read || cr4_read || cr4_write || cr3_write || cr0_write_rdi)
                 || (rex_w_read_cr3 && modrm != 0xd8 && !cr2_read && !cr4_read)
             {
                 return Err(self.unsupported(opcode));
+            }
+            if cr0_write_rdi {
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::WriteCr0Rdi,
+                });
             }
             if cr4_read && !(prefixes.rex.is_none() && modrm == 0xe0) {
                 let dest = Register::from_encoding((modrm & 7) | ((rex & 1) << 3)).unwrap();
@@ -29857,6 +29874,46 @@ mod tests {
             Memory::new(&[0xf0, 0x0f, 0x22, 0xd8]).decode(),
             Err(DecodeError::InvalidMovCr3Lock { .. })
         ));
+    }
+
+    /// S4-38L9d: `0F 22 C7` (the `native_write_cr0` encoding, `MOV CR0, RDI`) decodes to
+    /// `WriteCr0Rdi`; every other register source and every prefixed form stays unsupported.
+    #[test]
+    fn mov_cr0_rdi_decodes_only_as_the_exact_prefix_free_form() {
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc7]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::WriteCr0Rdi);
+        assert_eq!(instruction.length, 3);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(instruction.opcode.byte, 0x22);
+        assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
+        for bytes in [
+            &[0x0f, 0x22, 0xc1][..],
+            &[0x0f, 0x22, 0xc6][..],
+            &[0x0f, 0x22, 0xc2][..],
+            &[0x48, 0x0f, 0x22, 0xc7][..],
+            &[0x40, 0x0f, 0x22, 0xc7][..],
+            &[0x41, 0x0f, 0x22, 0xc7][..],
+            &[0x44, 0x0f, 0x22, 0xc7][..],
+            &[0x66, 0x0f, 0x22, 0xc7][..],
+            &[0x67, 0x0f, 0x22, 0xc7][..],
+            &[0xf3, 0x0f, 0x22, 0xc7][..],
+            &[0x2e, 0x0f, 0x22, 0xc7][..],
+            &[0xf0, 0x0f, 0x22, 0xc7][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // The existing RAX form is unchanged.
+        assert_eq!(
+            Memory::new(&[0x0f, 0x22, 0xc0]).decode().unwrap().operation,
+            Operation::WriteCr0
+        );
     }
 
     #[test]

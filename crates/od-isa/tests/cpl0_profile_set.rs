@@ -39436,3 +39436,718 @@ fn rdmsr_tdx_keyid_partitioning_at_cpl3_is_not_answered() {
     );
     assert_eq!(state, before);
 }
+
+// ---- S4-38L9d: FP state (FNINIT, plain FXSAVE) and MOV CR0, RDI in the set ----
+//
+// Oracles (written by hand from the Intel SDM, from memory, and from the kernel source, not from
+// this implementation): FNINIT leaves FCW = 0x037F, FSW = 0, FTW = 0xFFFF, FIP/FDP/FOP = 0 and the
+// register payloads; the FXSAVE image has FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per
+// nonempty physical register), FOP at 6, FIP/FCS at 8/12, FDP/FDS at 16/20, MXCSR at 24,
+// MXCSR_MASK at 28 (0xFFBF for this target), ST0-7 in 16-byte slots from 32, XMM0-15 from 160;
+// the bytes in between and 416..512 are not written. The kernel sequence is `fpu__init_cpu_generic`
+// (`mov %cr0,%rax; and $-13,%rax; mov %cr0 <- %rdi` through `native_write_cr0`, CR4 |= 0x600, `fninit`)
+// followed by `fpu__init_system_mxcsr` (`fxsave fxregs(%rip)`), arch/x86/kernel/fpu/init.c.
+
+use od_isa::execute::GuestFpState;
+use od_isa::state::{SseState, X87State};
+use std::cell::RefCell;
+
+const FP_AREA: u64 = 0x1800;
+const FP_BUFFER_END: u64 = 0x2000;
+const FP_SENTINEL: u8 = 0xa5;
+const CR0_TS: u64 = 1 << 3;
+const CR0_EM: u64 = 1 << 2;
+const CR4_FP: u64 = CR4_BASE | (1 << 9) | (1 << 10);
+
+/// A flat 0x1000-byte memory at `RIP`: code at the start, the FXSAVE area at `FP_AREA`
+/// (pre-filled with the sentinel), writes recorded in order.
+struct FpMemory {
+    bytes: Vec<u8>,
+    writes: Vec<(u64, usize)>,
+}
+
+impl FpMemory {
+    fn new(code: &[u8]) -> Self {
+        let mut bytes = vec![FP_SENTINEL; (FP_BUFFER_END - RIP) as usize];
+        bytes[..code.len()].copy_from_slice(code);
+        Self {
+            bytes,
+            writes: Vec::new(),
+        }
+    }
+
+    fn area(&self, address: u64) -> &[u8] {
+        let offset = (address - RIP) as usize;
+        &self.bytes[offset..offset + 512]
+    }
+}
+
+impl GuestMemory for FpMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        self.bytes
+            .get(offset)
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        let source = self
+            .bytes
+            .get(offset..offset.saturating_add(output.len()))
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })?;
+        output.copy_from_slice(source);
+        Ok(())
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, input: &[u8]) -> Result<(), MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        let target = self
+            .bytes
+            .get_mut(offset..offset.saturating_add(input.len()))
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })?;
+        target.copy_from_slice(input);
+        self.writes.push((address, input.len()));
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
+fn run_fp(
+    state: &mut LongModeState,
+    memory: &mut FpMemory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+}
+
+/// `0F AE 05 disp32` at `at` (the address of the instruction) storing to `target`.
+fn fxsave_rip_at(at: u64, target: u64) -> [u8; 7] {
+    let next = at + 7;
+    let disp = (target as i64 - next as i64) as i32;
+    let mut bytes = [0x0f, 0xae, 0x05, 0, 0, 0, 0];
+    bytes[3..].copy_from_slice(&disp.to_le_bytes());
+    bytes
+}
+
+fn fp_state(cr0: u64, cr4: u64) -> LongModeState {
+    let mut state = board_state();
+    state.cr0 = Some(cr0);
+    state.cr4 = Some(cr4);
+    state
+}
+
+/// A set with the Stage4A CPUID profile (FPU + FXSR declared) and the FP member over `cell`.
+fn fp_set(cell: &RefCell<GuestFpState>) -> Cpl0ProfileSet<'_> {
+    base()
+        .with_cpuid(&CpuidProfile::X8664V1Stage4A)
+        .with_fp_state(cell)
+}
+
+/// FP state with everything away from the initial values and both selectors known and nonzero.
+fn dirty_fp_state() -> GuestFpState {
+    let mut x87 = X87State::fixture_seed();
+    x87.instruction_selector = Some(0x2b);
+    x87.data_selector = Some(0x53);
+    let mut xmm = [[0u8; 16]; 16];
+    for (register, lane) in xmm.iter_mut().enumerate() {
+        for (byte, value) in lane.iter_mut().enumerate() {
+            *value = (register * 16 + byte) as u8 ^ 0x5a;
+        }
+    }
+    GuestFpState {
+        x87,
+        sse: SseState {
+            xmm,
+            mxcsr: 0x0000_1fa0,
+        },
+    }
+}
+
+/// The image of the dirty state after FNINIT, built by hand (see the oracles above).
+fn expected_image_after_fninit(fp: &GuestFpState) -> [u8; 512] {
+    let mut image = [FP_SENTINEL; 512];
+    image[0..2].copy_from_slice(&[0x7f, 0x03]); // FCW 0x037F
+    image[2..4].copy_from_slice(&[0, 0]); // FSW 0
+    image[4] = 0; // abridged FTW: all eight registers empty
+    image[6..8].copy_from_slice(&[0, 0]); // FOP
+    image[8..12].copy_from_slice(&[0; 4]); // FIP
+    image[12..14].copy_from_slice(&[0; 2]); // FCS
+    image[16..20].copy_from_slice(&[0; 4]); // FDP
+    image[20..22].copy_from_slice(&[0; 2]); // FDS
+    image[24..28].copy_from_slice(&[0xa0, 0x1f, 0, 0]); // MXCSR 0x1FA0, untouched by FNINIT
+    image[28..32].copy_from_slice(&[0xbf, 0xff, 0, 0]); // MXCSR_MASK 0xFFBF
+    // TOP = 0 after FNINIT: ST(i) is physical register i.
+    for (slot, register) in fp.x87.registers.iter().enumerate() {
+        image[32 + 16 * slot..42 + 16 * slot].copy_from_slice(register);
+    }
+    for (register, lane) in fp.sse.xmm.iter().enumerate() {
+        image[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    image
+}
+
+/// The write calls of one FXSAVE: ascending, each of 1, 2, 4 or 8 bytes (the widths the board's
+/// paged adapter stores), covering exactly the 13 defined fields of the image
+/// (5 + 8 + 6 + 8 + 8 * 10 + 256 = 363 bytes).
+fn assert_narrow_ascending_field_stores(writes: &[(u64, usize)], base: u64, complete: bool) {
+    let mut last_end = base;
+    let mut total = 0;
+    for &(address, len) in writes {
+        assert!([1, 2, 4, 8].contains(&len), "{address:#x}+{len}");
+        assert!(address >= last_end, "ascending, no overlap: {address:#x}");
+        last_end = address + len as u64;
+        total += len;
+    }
+    if complete {
+        assert_eq!(total, 363);
+        // The last byte stored is the end of XMM15 (base + 416).
+        assert_eq!(last_end, base + 416);
+    }
+}
+
+#[test]
+fn the_kernel_fpu_init_sequence_clears_cr0_sets_cr4_inits_and_saves_the_image() {
+    // mov rax,cr0; and rax,-13; mov rdi,rax; mov cr0,rdi  (fpu__init_cpu_generic via native_*_cr0)
+    // mov edi,0x620; mov cr4,rdi                          (cr4_set_bits(OSFXSR|OSXMMEXCPT))
+    // fninit; fxsave [rip+disp]                           (fpu__init_cpu_generic, fpu__init_system)
+    let mut code = vec![
+        0x0f, 0x20, 0xc0, 0x48, 0x83, 0xe0, 0xf3, 0x48, 0x89, 0xc7, 0x0f, 0x22, 0xc7, 0xbf, 0x20,
+        0x06, 0x00, 0x00, 0x0f, 0x22, 0xe7, 0xdb, 0xe3,
+    ];
+    let fxsave_at = RIP + code.len() as u64;
+    code.extend(fxsave_rip_at(fxsave_at, FP_AREA));
+    let cell = RefCell::new(dirty_fp_state());
+    let before = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE | CR0_TS | CR0_EM, CR4_BASE);
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(state.cr0, Some(CR0_BASE), "TS and EM cleared, nothing else");
+    assert_eq!(state.cr4, Some(0x620));
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert!(
+        state.x87.is_none() && state.sse.is_none(),
+        "the FP state is the cell's"
+    );
+    // The cell: the environment is initialised, registers/XMM/MXCSR survive.
+    let after = cell.borrow().clone();
+    assert_eq!(after.x87.control_word, 0x037f);
+    assert_eq!(after.x87.status_word, 0);
+    assert_eq!(after.x87.tag_word, 0xffff);
+    assert_eq!(
+        (after.x87.instruction_pointer, after.x87.data_pointer),
+        (0, 0)
+    );
+    assert_eq!(after.x87.last_opcode, 0);
+    assert_eq!(
+        (after.x87.instruction_selector, after.x87.data_selector),
+        (Some(0), Some(0))
+    );
+    assert_eq!(after.x87.registers, before.x87.registers);
+    assert_eq!(after.sse, before.sse);
+    // The image: whole 512 bytes against the hand-built one; the 13 writes in order.
+    assert_eq!(
+        memory.area(FP_AREA),
+        &expected_image_after_fninit(&before)[..]
+    );
+    assert_narrow_ascending_field_stores(&memory.writes, FP_AREA, true);
+    // Only the FXSAVE area changed in memory (code and the rest are as built).
+    let mut untouched = FpMemory::new(&code);
+    untouched.bytes[(FP_AREA - RIP) as usize..(FP_AREA - RIP) as usize + 512]
+        .copy_from_slice(memory.area(FP_AREA));
+    assert_eq!(memory.bytes, untouched.bytes);
+}
+
+#[test]
+fn fxsave_of_the_initial_state_writes_the_architectural_defaults() {
+    // The uninitialised board state: FCW 0x037F, MXCSR 0x1F80, empty tags, zero registers.
+    let mut code = vec![0xdb, 0xe3];
+    code.extend(fxsave_rip_at(RIP + 2, FP_AREA));
+    let cell = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = [FP_SENTINEL; 512];
+    expected[0..2].copy_from_slice(&[0x7f, 0x03]);
+    expected[2..4].copy_from_slice(&[0, 0]);
+    expected[4] = 0;
+    expected[6..8].copy_from_slice(&[0, 0]);
+    expected[8..14].copy_from_slice(&[0; 6]);
+    expected[16..22].copy_from_slice(&[0; 6]);
+    expected[24..28].copy_from_slice(&[0x80, 0x1f, 0, 0]); // MXCSR 0x1F80
+    expected[28..32].copy_from_slice(&[0xbf, 0xff, 0, 0]);
+    for slot in 0..8 {
+        expected[32 + 16 * slot..42 + 16 * slot].copy_from_slice(&[0; 10]);
+    }
+    expected[160..416].copy_from_slice(&[0; 256]);
+    assert_eq!(memory.area(FP_AREA), &expected[..]);
+    assert_eq!(
+        &*cell.borrow(),
+        &GuestFpState::initial(),
+        "FXSAVE changes no FP state"
+    );
+}
+
+#[test]
+fn fxsave_reflects_the_abridged_tag_and_top_of_a_non_initial_state() {
+    // Not reachable by the member's own instructions (only FNINIT changes the x87 state), but the
+    // image of a state the caller carried in must follow the layout: TOP = 5, tags: physical
+    // 0 valid, 2 zero, 4 special, rest empty -> abridged FTW bit i set for every nonempty register.
+    let mut fp = dirty_fp_state();
+    fp.x87.status_word = 5 << 11;
+    fp.x87.tag_word = (0b11 << 2)
+        | (0b01 << 4)
+        | (0b11 << 6)
+        | (0b10 << 8)
+        | (0b11 << 10)
+        | (0b11 << 12)
+        | (0b11 << 14);
+    fp.x87.control_word = 0x027f;
+    fp.x87.last_opcode = 0x07ff | 0xf800;
+    fp.x87.instruction_pointer = 0x1111_2222_3333_4444;
+    fp.x87.data_pointer = 0x5555_6666_7777_8888;
+    fp.x87.instruction_selector = Some(0xabcd);
+    fp.x87.data_selector = Some(0x1234);
+    let code = fxsave_rip_at(RIP, FP_AREA);
+    let cell = RefCell::new(fp.clone());
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    let image = memory.area(FP_AREA);
+    assert_eq!(&image[0..2], &[0x7f, 0x02], "FCW");
+    assert_eq!(&image[2..4], &[0x00, 0x28], "FSW: TOP 5 << 11");
+    assert_eq!(
+        image[4], 0b0001_0101,
+        "abridged FTW: physical 0, 2, 4 nonempty"
+    );
+    assert_eq!(&image[6..8], &[0xff, 0x07], "FOP keeps 11 bits");
+    assert_eq!(&image[8..12], &[0x44, 0x44, 0x33, 0x33], "FIP low 32 bits");
+    assert_eq!(&image[12..14], &[0xcd, 0xab], "FCS");
+    assert_eq!(&image[16..20], &[0x88, 0x88, 0x77, 0x77], "FDP low 32 bits");
+    assert_eq!(&image[20..22], &[0x34, 0x12], "FDS");
+    // ST(i) is physical (TOP + i) & 7: ST0 = register 5, ST3 = register 0.
+    assert_eq!(&image[32..42], &fp.x87.registers[5]);
+    assert_eq!(&image[80..90], &fp.x87.registers[0]);
+    assert_eq!(&*cell.borrow(), &fp);
+}
+
+#[test]
+fn fxsave_misaligned_is_gp0_with_no_write_and_no_state_change() {
+    for target in [FP_AREA + 1, FP_AREA + 8, FP_AREA + 15] {
+        let code = fxsave_rip_at(RIP, target);
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let set = fp_set(&cell);
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let before = state.clone();
+        let mut memory = FpMemory::new(&code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{target:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty(), "{target:#x}");
+        assert_eq!(state, before, "{target:#x}");
+        assert_eq!(*cell.borrow(), before_cell, "{target:#x}");
+    }
+    // 16-byte alignment is enough: the next aligned address stores.
+    let code = fxsave_rip_at(RIP, FP_AREA + 16);
+    let cell = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&code);
+    // FP_AREA + 16 + 512 = 0x1a10 is inside the buffer.
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_narrow_ascending_field_stores(&memory.writes, FP_AREA + 16, true);
+}
+
+#[test]
+fn fxsave_that_runs_past_the_memory_does_not_retire_and_keeps_the_cell() {
+    // 0x1f00 is aligned; the XMM field (256 bytes from 0x1fa0) ends at 0x20a0, beyond the buffer:
+    // its first 12 eight-byte pieces (0x1fa0..0x2000) are stored and the 13th fails. The earlier
+    // stores stay (not a transaction, the S2-39c policy); the instruction does not retire.
+    let code = fxsave_rip_at(RIP, 0x1f00);
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert!(
+        matches!(
+            exit(&result),
+            RunExit::MemoryError(MemoryError::Unmapped { .. })
+        ),
+        "{:?}",
+        result.exit
+    );
+    assert_eq!(result.instructions_executed, 0);
+    // 4 + 1 (FCW..FTW group), 1 (FOP/FIP/FCS), 2 (FDP/FDS), 1 (MXCSR), 16 (ST0-7: 8 + 2 each)
+    // and the 12 XMM pieces that fit.
+    assert_eq!(memory.writes.len(), 2 + 1 + 2 + 1 + 16 + 12);
+    assert_narrow_ascending_field_stores(&memory.writes, 0x1f00, false);
+    assert_eq!(memory.writes.last(), Some(&(0x1ff8, 8)));
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn ts_or_em_makes_fninit_and_fxsave_device_not_available_without_a_change() {
+    let fxsave = fxsave_rip_at(RIP, FP_AREA);
+    for cr0 in [
+        CR0_BASE | CR0_TS,
+        CR0_BASE | CR0_EM,
+        CR0_BASE | CR0_TS | CR0_EM,
+    ] {
+        for code in [&[0xdb, 0xe3][..], &fxsave[..]] {
+            let cell = RefCell::new(dirty_fp_state());
+            let before_cell = cell.borrow().clone();
+            let set = fp_set(&cell);
+            let mut state = fp_state(cr0, CR4_FP);
+            let before = state.clone();
+            let mut memory = FpMemory::new(code);
+            let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 7,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                "cr0 {cr0:#x} {code:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.writes.is_empty());
+            assert_eq!(state, before);
+            assert_eq!(*cell.borrow(), before_cell);
+        }
+    }
+}
+
+#[test]
+fn fxsave_needs_cr4_osfxsr_but_fninit_does_not() {
+    // OSFXSR clear: the architecture leaves the SSE part implementation-dependent; the set keeps the
+    // S2-39 convention (Unsupported, opcode 0xAE) and writes nothing.
+    let code = fxsave_rip_at(RIP, FP_AREA);
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    for cr4 in [CR4_BASE, CR4_BASE | (1 << 10)] {
+        let mut state = fp_state(CR0_BASE, cr4);
+        let before = state.clone();
+        let mut memory = FpMemory::new(&code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    let mut state = fp_state(CR0_BASE, CR4_BASE);
+    let mut memory = FpMemory::new(&[0xdb, 0xe3]);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.borrow().x87.control_word, 0x037f);
+}
+
+#[test]
+fn without_the_member_fninit_fxsave_and_mov_cr0_rdi_keep_their_refusals() {
+    let fxsave = fxsave_rip_at(RIP, FP_AREA);
+    let set = base().with_cpuid(&CpuidProfile::X8664V1Stage4A);
+    for (code, opcode) in [
+        (&[0xdb, 0xe3][..], 0xdb),
+        (&fxsave[..], 0xae),
+        (&[0x0f, 0x22, 0xc7][..], 0x22),
+    ] {
+        let mut state = fp_state(CR0_BASE | CR0_TS, CR4_FP);
+        state.gpr[Register::Rdi as usize] = CR0_BASE;
+        let before = state.clone();
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn the_fp_member_admission_requires_declared_fpu_and_fxsr_and_known_selectors() {
+    let cell = RefCell::new(GuestFpState::initial());
+    fn run_admission(
+        set: &Cpl0ProfileSet<'_>,
+        state: &mut LongModeState,
+    ) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+        let mut memory = FpMemory::new(&[0x90]);
+        run_fp(state, &mut memory, set, 1)
+    }
+    // No CPUID member, and the DiagnosticV1 profile (declares nothing): refused before any fetch.
+    let no_cpuid = base().with_fp_state(&cell);
+    let diagnostic = base()
+        .with_cpuid(&CpuidProfile::DiagnosticV1)
+        .with_fp_state(&cell);
+    for set in [no_cpuid, diagnostic] {
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let before = state.clone();
+        assert_eq!(
+            run_admission(&set, &mut state).unwrap_err(),
+            Cpl0ProfileSetInputError::FpFeaturesNotDeclared
+        );
+        assert_eq!(state, before);
+    }
+    // Stage4A declares both.
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    assert!(run_admission(&fp_set(&cell), &mut state).is_ok());
+    // Unknown selectors: the plain image cannot be written.
+    let clears: [fn(&mut GuestFpState); 2] = [
+        |fp| fp.x87.instruction_selector = None,
+        |fp| fp.x87.data_selector = None,
+    ];
+    for clear in clears {
+        let mut fp = GuestFpState::initial();
+        clear(&mut fp);
+        let cell = RefCell::new(fp);
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        assert_eq!(
+            run_admission(&fp_set(&cell), &mut state).unwrap_err(),
+            Cpl0ProfileSetInputError::FpStateNotAdmitted
+        );
+    }
+    // The CPU state itself still must not carry x87/SSE state, member or not.
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.x87 = Some(X87State::fixture_seed());
+    assert_eq!(
+        run_admission(&fp_set(&cell), &mut state).unwrap_err(),
+        Cpl0ProfileSetInputError::FpStateNotAdmitted
+    );
+    // CPL3 never enters the set.
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&[0xdb, 0xe3]);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &fp_set(&cell),
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+}
+
+#[test]
+fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member() {
+    let rip_forms: [(&str, &[u8], u8); 18] = [
+        ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
+        ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
+        ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
+        ("fnclex", &[0xdb, 0xe2], 0xdb),
+        ("fld1", &[0xd9, 0xe8], 0xd9),
+        ("fwait", &[0x9b], 0x9b),
+        ("finit (wait form)", &[0x9b, 0xdb, 0xe3], 0x9b),
+        ("fxsave [rax]", &[0x0f, 0xae, 0x00], 0xae),
+        ("fxrstor [rip+0]", &[0x0f, 0xae, 0x0d, 0, 0, 0, 0], 0xae),
+        ("ldmxcsr [rip+0]", &[0x0f, 0xae, 0x15, 0, 0, 0, 0], 0xae),
+        ("stmxcsr [rip+0]", &[0x0f, 0xae, 0x1d, 0, 0, 0, 0], 0xae),
+        (
+            "fxsave64 [rip+0]",
+            &[0x48, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
+            0xae,
+        ),
+        (
+            "66 fxsave [rip+0]",
+            &[0x66, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
+            0xae,
+        ),
+        ("xorps xmm0,xmm0", &[0x0f, 0x57, 0xc0], 0x57),
+        ("movups xmm0,[rax]", &[0x0f, 0x10, 0x00], 0x10),
+        ("mov cr0,rsi", &[0x0f, 0x22, 0xc6], 0x22),
+        ("rex mov cr0,rdi", &[0x48, 0x0f, 0x22, 0xc7], 0x22),
+        ("lock mov cr0,rdi", &[0xf0, 0x0f, 0x22, 0xc7], 0x22),
+    ];
+    for (name, code, opcode) in rip_forms {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let set = fp_set(&cell);
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        state.gpr[Register::Rsi as usize] = CR0_BASE;
+        state.gpr[Register::Rdi as usize] = CR0_BASE;
+        let before = state.clone();
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{name}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(*cell.borrow(), before_cell, "{name}");
+    }
+    // LOCK FNINIT is #UD (the existing decoder classification), no change.
+    for code in [&[0xf0, 0xdb, 0xe3][..]] {
+        let cell = RefCell::new(dirty_fp_state());
+        let set = fp_set(&cell);
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedness() {
+    let cell = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&cell);
+    // In policy: BASE, BASE | TS | EM (the kernel writes the value with TS/EM cleared, but a
+    // write that sets them is the policy's too), BASE | AM.
+    for value in [
+        CR0_BASE,
+        CR0_BASE | CR0_TS | CR0_EM,
+        CR0_BASE | (1 << 18),
+        CR0_BASE | (1 << 18) | CR0_EM,
+    ] {
+        let mut state = fp_state(CR0_BASE | CR0_TS, CR4_FP);
+        state.gpr[Register::Rdi as usize] = value;
+        let mut before = state.clone();
+        let mut memory = FpMemory::new(&[0x0f, 0x22, 0xc7]);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+        before.cr0 = Some(value);
+        before.rip += 3;
+        assert_eq!(state, before, "{value:#x}");
+        assert_eq!(
+            result.rflags_defined,
+            od_isa::INTEGER_FLAGS & !0x8d5, // the six arithmetic flags become undefined
+        );
+    }
+    // Out of policy: PG cleared, WP cleared, CD set, a high bit: Unsupported 0x22, no change.
+    for value in [
+        CR0_BASE & !(1 << 31),
+        CR0_BASE & !(1 << 16),
+        CR0_BASE | (1 << 30),
+        CR0_BASE | (1 << 29),
+        CR0_BASE | (1 << 32),
+        CR0_BASE & !1,
+    ] {
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        state.gpr[Register::Rdi as usize] = value;
+        let before = state.clone();
+        let mut memory = FpMemory::new(&[0x0f, 0x22, 0xc7]);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x22 },
+            "{value:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{value:#x}");
+    }
+}
+
+#[test]
+fn cpuid_leaf_1_under_the_member_answers_fpu_tsc_fxsr_and_the_fp_state_is_untouched() {
+    // mov eax,1; cpuid
+    let code = [0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0xa2];
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    // Oracle: bits 0 (FPU), 4 (TSC), 24 (FXSR); no SSE (25), no SSE2 (26).
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0100_0011);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x600);
+    assert_eq!(*cell.borrow(), before_cell);
+}

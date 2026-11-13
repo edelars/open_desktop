@@ -30,7 +30,7 @@ use crate::{
     RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
     VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
-use od_isa::execute::{Cpl0ProfileSet, RunExit, TranslationContextChange};
+use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
@@ -1029,6 +1029,10 @@ pub struct LoadedFirmwareBoard {
     /// CPL0 set. The full 64-bit value written (no canonical check; `SWAPGS` is not modelled).
     /// Only stored; nothing consumes it.
     guest_kernel_gs_base: u64,
+    /// The guest FP state of the CPL0 set's FP member (S4-38L9d): x87 environment and registers,
+    /// MXCSR and XMM. `GuestFpState::initial()` (FCW `0x037F`, MXCSR `0x1F80`, everything else
+    /// zero) until a run with the member changes it; carried between runs like the MSR cells.
+    guest_fp: GuestFpState,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
@@ -1243,6 +1247,17 @@ impl LoadedFirmwareBoard {
     /// Stores the KERNEL_GS_BASE a CPL0-set run left (S4-38L7au).
     pub(crate) fn set_guest_kernel_gs_base(&mut self, value: u64) {
         self.guest_kernel_gs_base = value;
+    }
+
+    /// The guest FP state of the CPL0 set's FP member (S4-38L9d); the initial state until a run
+    /// with the member changed it.
+    pub const fn guest_fp(&self) -> &GuestFpState {
+        &self.guest_fp
+    }
+
+    /// Stores the FP state a CPL0-set run left (S4-38L9d).
+    pub(crate) fn set_guest_fp(&mut self, value: GuestFpState) {
+        self.guest_fp = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -2148,6 +2163,7 @@ impl AssembledBoard {
             guest_sysenter_eip: 0,
             guest_syscall_mask: 0,
             guest_kernel_gs_base: 0,
+            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
@@ -2212,6 +2228,7 @@ impl AssembledBoard {
             guest_sysenter_eip: 0,
             guest_syscall_mask: 0,
             guest_kernel_gs_base: 0,
+            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
             irq_source: Box::new(NoIrqSource),
