@@ -49773,6 +49773,32 @@ fn step_configured(
                 return report_memory_error(error);
             }
         }
+        // S4-38L9q: XCHG r/m64, r64 with memory (`REX.W 87 /r`, bare or LOCK) in the CPL0 set
+        // (Ring0) runs as read -> write on the single vCPU with synchronous memory, like the
+        // dword form of S4-38L9p (`transfer`); the address is resolved first, a failing read or
+        // write leaves memory and the register untouched, flags are not affected. Outside the
+        // set (and at Ring3) the qword form keeps the atomic-exchange call in `transfer`.
+        Operation::XchgMemory {
+            register,
+            memory: operand,
+        } if control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && operand.size == OperandSize::Qword =>
+        {
+            let result = (|| -> Result<(), MemoryError> {
+                let address = operand.access_address_48(state, next_rip)?;
+                let replacement = state.read(register);
+                let old = memory.read_integer(address, context, operand.size)?;
+                memory.write_integer(address, context, operand.size, replacement)?;
+                state.write(register, old);
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {}
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+                Err(error) => return Err(error),
+            }
+        }
         // S4-38L9k: in the CPL0 set the bare XADD/CMPXCHG memory forms (dword and qword) share the
         // LOCK-form arms of `transfer` (one vCPU: LOCK changes nothing); outside the set they
         // keep the atomic-call arms below.

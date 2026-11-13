@@ -47940,3 +47940,406 @@ fn xchg_dword_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L9q: XCHG r/m64, r64 with a memory operand (`REX.W 87 /r`, optional LOCK) in the CPL0
+// set. SDM Vol.2 (from memory, not re-checked against the primary source): TEMP = DEST;
+// DEST = SRC; SRC = TEMP; no flag changes; the memory form is implicitly locked. The set runs it
+// as read -> write on one vCPU with synchronous memory (BitsMemory hits `unreachable!()` on any
+// backend atomic call, so these tests also prove that no atomic call is made). Outside the set the
+// qword form keeps the atomic-exchange call (the `execute.rs` unit tests cover that path). ----
+
+/// The `stage4a` boundary bytes: `xchg %r13, 0x28(%rbx)`.
+const XCHGQ_R13_RBX_28: [u8; 4] = [0x4c, 0x87, 0x6b, 0x28];
+
+#[test]
+fn xchg_qword_boundary_swaps_r13_with_the_qword_at_rbx_plus_0x28() {
+    let mut state = board_state();
+    state.gpr[Register::R13 as usize] = 0x1111_2222_3333_4444;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.rflags |= XCHG_MARK_FLAGS;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&XCHGQ_R13_RBX_28);
+    memory.set_qword(0x20_0028, 0xdead_beef_0bad_f00d);
+    // The neighbouring qwords prove that exactly eight bytes are written.
+    memory.set_qword(0x20_0020, 0xa5a5_a5a5_a5a5_a5a5);
+    memory.set_qword(0x20_0030, 0x5a5a_5a5a_5a5a_5a5a);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0028, 8)]);
+    assert_eq!(
+        memory.writes,
+        vec![(
+            0x20_0028,
+            vec![0x44, 0x44, 0x33, 0x33, 0x22, 0x22, 0x11, 0x11]
+        )]
+    );
+    assert_eq!(memory.qword(0x20_0028), 0x1111_2222_3333_4444);
+    assert_eq!(memory.qword(0x20_0020), 0xa5a5_a5a5_a5a5_a5a5);
+    assert_eq!(memory.qword(0x20_0030), 0x5a5a_5a5a_5a5a_5a5a);
+    expected.gpr[Register::R13 as usize] = 0xdead_beef_0bad_f00d;
+    expected.rip += 4;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn xchg_qword_boundary_then_the_following_load_test_and_branch_execute_at_rip_plus_four() {
+    // `xchgq %r13, 0x28(%rbx)`, `mov (%rbx), %rdi` (48 8b 3b), `test %r13, %r13` (4d 85 ed),
+    // `je +0` (0f 84 00 00 00 00): the old memory value is non-zero, so ZF = 0.
+    let code = [
+        0x4c, 0x87, 0x6b, 0x28, 0x48, 0x8b, 0x3b, 0x4d, 0x85, 0xed, 0x0f, 0x84, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    let mut state = board_state();
+    state.gpr[Register::R13 as usize] = 0x77;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&code);
+    memory.set_qword(0x20_0028, 0x0123_4567_89ab_cdef);
+    memory.set_qword(0x20_0000, 0xfeed_face_cafe_beef);
+    let result = run_xchg_set(&mut state, &mut memory, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(
+        memory.writes,
+        vec![(0x20_0028, vec![0x77, 0, 0, 0, 0, 0, 0, 0])]
+    );
+    assert_eq!(state.gpr[Register::R13 as usize], 0x0123_4567_89ab_cdef);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0xfeed_face_cafe_beef);
+    assert_eq!(
+        state.rflags & 0x40,
+        0,
+        "ZF is clear: the branch is not taken"
+    );
+    assert_eq!(state.rip, RIP + 16);
+}
+
+#[test]
+fn xchg_qword_lock_form_is_the_same_exchange_one_byte_longer() {
+    let code = [0xf0, 0x4c, 0x87, 0x6b, 0x28];
+    let mut state = board_state();
+    state.gpr[Register::R13 as usize] = 0xffff_ffff_0000_0005;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&code);
+    memory.set_qword(0x20_0028, 0x8000_0000_0000_0001);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(memory.qword(0x20_0028), 0xffff_ffff_0000_0005);
+    expected.gpr[Register::R13 as usize] = 0x8000_0000_0000_0001;
+    expected.rip += 5;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn xchg_qword_leaves_every_flag_untouched_for_equal_and_different_values() {
+    for (register, cell) in [
+        (0u64, 0u64),
+        (5, 5),
+        (u64::MAX, 1),
+        (0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffff),
+    ] {
+        for flags in [0u64, XCHG_MARK_FLAGS] {
+            let mut state = board_state();
+            state.rflags = (state.rflags & !XCHG_MARK_FLAGS) | flags;
+            state.gpr[Register::R13 as usize] = register;
+            state.gpr[Register::Rbx as usize] = 0x20_0000;
+            let rflags = state.rflags;
+            let mut memory = BitsMemory::new(&XCHGQ_R13_RBX_28);
+            memory.set_qword(0x20_0028, cell);
+            let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rflags, rflags, "{register:#x} {cell:#x} {flags:#x}");
+            assert_eq!(state.gpr[Register::R13 as usize], cell);
+            assert_eq!(memory.qword(0x20_0028), register);
+        }
+    }
+}
+
+#[test]
+fn xchg_qword_with_every_legacy_and_extended_register_field() {
+    // `xchg %rN, (%rbx)`: REX.W (+ REX.R for r8..r15); reg = N & 7; modrm = 0x03 | (reg << 3).
+    for number in 0u8..16 {
+        if number == 3 {
+            continue; // the base register itself is checked separately
+        }
+        let code = [
+            if number >= 8 { 0x4c } else { 0x48 },
+            0x87,
+            0x03 | ((number & 7) << 3),
+        ];
+        let mut state = board_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0xf0f0_f0f0_0000_0000 | (index as u64 * 0x1111_1111 + 0x1234_0000);
+        }
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rip = RIP;
+        let register = number as usize;
+        let source = state.gpr[register];
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        memory.set_qword(0x20_0000, 0x0abc_def0_1234_5678);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            result.instructions_executed,
+            1,
+            "{number}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(memory.qword(0x20_0000), source, "{number}");
+        assert_eq!(memory.writes.len(), 1, "{number}");
+        assert_eq!(memory.writes[0].1.len(), 8, "{number}");
+        // The whole 64-bit register is replaced; no other register changes.
+        expected.gpr[register] = 0x0abc_def0_1234_5678;
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{number}");
+    }
+}
+
+#[test]
+fn xchg_qword_with_every_extended_base_register_r8_to_r15() {
+    // `xchg %rax, 0x0(%rN)` via REX.W + REX.B (0x49): mod = 01 with disp8 0; R12 needs a SIB byte.
+    for number in 8u8..16 {
+        let code: Vec<u8> = if number & 7 == 4 {
+            vec![0x49, 0x87, 0x44, 0x24, 0x00]
+        } else {
+            vec![0x49, 0x87, 0x40 | (number & 7), 0x00]
+        };
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 0x9999_9999_1357_9bdf;
+        state.gpr[number as usize] = 0x30_0000 + u64::from(number) * 0x1000;
+        let at = state.gpr[number as usize];
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        memory.set_qword(at, 0x2468_ace0_1111_2222);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            result.instructions_executed,
+            1,
+            "{number}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(memory.qword(at), 0x9999_9999_1357_9bdf, "{number}");
+        expected.gpr[Register::Rax as usize] = 0x2468_ace0_1111_2222;
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{number}");
+    }
+}
+
+#[test]
+fn xchg_qword_with_base_index_scale_displacement_and_rip_relative_addresses() {
+    // `xchg %rdx, 0x10(%rbx,%rcx,4)` = 48 87 54 8b 10.
+    let mut state = board_state();
+    state.gpr[Register::Rdx as usize] = 0xaaaa_bbbb_cccc_dddd;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gpr[Register::Rcx as usize] = 0x100;
+    let mut memory = BitsMemory::new(&[0x48, 0x87, 0x54, 0x8b, 0x10]);
+    memory.set_qword(0x20_0410, 0x0000_0001_0000_0042);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(memory.qword(0x20_0410), 0xaaaa_bbbb_cccc_dddd);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0000_0001_0000_0042);
+    // `xchg %r9, 0x1234(%rip)` = 4c 87 0d 34 12 00 00: relative to the end of the instruction.
+    let mut state = board_state();
+    state.gpr[Register::R9 as usize] = 0x1_0000_0009;
+    let at = RIP + 7 + 0x1234;
+    let mut memory = BitsMemory::new(&[0x4c, 0x87, 0x0d, 0x34, 0x12, 0x00, 0x00]);
+    memory.set_qword(at, 0x7700_0000_0000_0077);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(memory.qword(at), 0x1_0000_0009);
+    assert_eq!(state.gpr[Register::R9 as usize], 0x7700_0000_0000_0077);
+    assert_eq!(state.rip, RIP + 7);
+}
+
+#[test]
+fn xchg_qword_with_the_base_register_as_the_source_uses_the_pre_state_address() {
+    // `xchg %rbx, (%rbx)` = 48 87 1b.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&[0x48, 0x87, 0x1b]);
+    memory.set_qword(0x20_0000, 0x1234_5678_9abc_def0);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(memory.qword(0x20_0000), 0x20_0000);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x1234_5678_9abc_def0);
+}
+
+#[test]
+fn xchg_qword_non_canonical_address_is_gp0_and_non_canonical_rsp_is_ss0() {
+    for rbx in [
+        0x0000_8000_0000_0000u64,
+        0xffff_7fff_ffff_ffffu64,
+        // The last byte (address + 7) is in the hole.
+        0x0000_8000_0000_0000 - 7,
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.gpr[Register::Rax as usize] = 1;
+        state.rflags |= XCHG_MARK_FLAGS;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&[0x48, 0x87, 0x03]);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{rbx:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{rbx:#x}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{rbx:#x}"
+        );
+    }
+    // The last canonical qword (address + 7 = 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000 - 8;
+    let mut memory = BitsMemory::new(&[0x48, 0x87, 0x03]);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    for (register, value, code) in [
+        (
+            Register::Rsp,
+            0x0000_8000_0000_0008u64,
+            &[0x48, 0x87, 0x44, 0x24, 0xf8][..],
+        ),
+        (
+            Register::Rbp,
+            0x0000_8000_0000_0000,
+            &[0x48, 0x87, 0x45, 0x00][..],
+        ),
+    ] {
+        let mut state = board_state();
+        state.gpr[register as usize] = value;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{register:?}"
+        );
+        assert_eq!(state, before, "{register:?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn xchg_qword_read_or_write_fault_leaves_register_flags_rip_and_memory_unchanged() {
+    for (read, write) in [(true, false), (false, true)] {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(if read { 0x2 } else { 0x3 }),
+            linear_address: Some(0x20_0028),
+        };
+        let mut state = board_state();
+        state.gpr[Register::R13 as usize] = 0x1111_2222_3333_4444;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rflags |= XCHG_MARK_FLAGS;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&XCHGQ_R13_RBX_28);
+        memory.set_qword(0x20_0028, 0xdead_beef_0bad_f00d);
+        if read {
+            memory.read_fault = Some(fault.clone());
+        }
+        if write {
+            memory.write_fault = Some(fault.clone());
+        }
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault), "read {read}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "read {read}");
+        assert_eq!(memory.qword(0x20_0028), 0xdead_beef_0bad_f00d);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn xchg_qword_forms_outside_the_slice_are_refused_with_opcode_0x87_without_mutation() {
+    let refused: [&[u8]; 17] = [
+        &[0x66, 0x48, 0x87, 0x00],
+        &[0x67, 0x48, 0x87, 0x00],
+        &[0xf2, 0x48, 0x87, 0x00],
+        &[0xf3, 0x48, 0x87, 0x00],
+        &[0xf0, 0xf3, 0x48, 0x87, 0x00],
+        &[0xf0, 0xf0, 0x48, 0x87, 0x00],
+        &[0xf0, 0x66, 0x48, 0x87, 0x00],
+        &[0xf0, 0x67, 0x48, 0x87, 0x00],
+        // Segment overrides.
+        &[0x26, 0x48, 0x87, 0x00],
+        &[0x2e, 0x48, 0x87, 0x00],
+        &[0x36, 0x48, 0x87, 0x00],
+        &[0x3e, 0x48, 0x87, 0x00],
+        &[0x64, 0x48, 0x87, 0x00],
+        &[0x65, 0x48, 0x87, 0x00],
+        // REX before a legacy prefix is dropped, so the prefix still refuses the form.
+        &[0x48, 0x66, 0x87, 0x00],
+        &[0x4c, 0x2e, 0x87, 0x00],
+        // LOCK with a register destination.
+        &[0xf0, 0x48, 0x87, 0xc0],
+    ];
+    for code in refused {
+        let mut state = board_state();
+        state.gpr[Register::R12 as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(0x20_0000, 0x1234_5678);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x87 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn xchg_qword_with_a_truncated_modrm_sib_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &XCHGQ_R13_RBX_28[..],
+        &[0x48, 0x87, 0x0d, 0x34, 0x12, 0x00, 0x00][..],
+        &[0xf0, 0x48, 0x87, 0x54, 0x8b, 0x10][..],
+    ] {
+        for cut in 0..code.len() {
+            let mut state = board_state();
+            state.gpr[Register::R12 as usize] = 0x20_0000;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&code[..cut]);
+            let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(result.instructions_executed, 0, "{code:02x?} cut {cut}");
+            assert!(
+                !matches!(exit(&result), RunExit::InstructionBudgetExhausted),
+                "{code:02x?} cut {cut}"
+            );
+            assert_eq!(state, before, "{code:02x?} cut {cut}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn xchg_qword_is_not_reachable_from_cpl3_in_the_set() {
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&XCHGQ_R13_RBX_28);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
