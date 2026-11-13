@@ -38521,9 +38521,9 @@ fn segment_cmpxchg_wide_forms_outside_the_slice_are_refused_with_opcode_b1_witho
         // No segment prefix: the plain dword form (memory or register) stays outside the set.
         &[0x0f, 0xb1, 0x0f],
         &[0x0f, 0xb1, 0xc1],
-        // CS/DS/ES/SS overrides are not FS/GS.
+        // CS/ES/SS overrides are not FS/GS (S4-38L9h: the DS form `3E [REX] 0F B1 /r` with a
+        // memory destination is now the LOCK operation; its tests are `ds_cmpxchg_*`).
         &[0x2e, 0x0f, 0xb1, 0x0f],
-        &[0x3e, 0x48, 0x0f, 0xb1, 0x0f],
         &[0x26, 0x0f, 0xb1, 0x0f],
         &[0x36, 0x48, 0x0f, 0xb1, 0x0f],
         // The register destination (mod = 11) with FS/GS, dword and qword.
@@ -41957,7 +41957,7 @@ fn ds_xadd_write_or_read_fault_leaves_register_flags_rip_and_memory_unchanged() 
 
 #[test]
 fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation() {
-    let cases: [&[u8]; 33] = [
+    let cases: [&[u8]; 31] = [
         // No DS and no LOCK: the plain memory form stays outside the CPL0 set (pre-existing).
         &[0x48, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x0f, 0xc1, 0x43, 0x3d],
@@ -41997,9 +41997,6 @@ fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation
         &[0x3e, 0x48, 0x40, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x3e, 0x48, 0x66, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x3e, 0x48, 0x2e, 0x0f, 0xc1, 0x43, 0x3d],
-        // The neighbouring CMPXCHG keeps refusing a DS override (with its own opcode byte).
-        &[0x3e, 0x0f, 0xb1, 0x43, 0x3d],
-        &[0x3e, 0x48, 0x0f, 0xb1, 0x43, 0x3d],
     ];
     for code in cases {
         let mut state = board_state();
@@ -42010,10 +42007,9 @@ fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
-        let opcode = if code.contains(&0xb1) { 0xb1 } else { 0xc1 };
         assert_eq!(
             exit(&result),
-            &RunExit::Unsupported { opcode },
+            &RunExit::Unsupported { opcode: 0xc1 },
             "{code:02x?}: {result:?}"
         );
         assert_eq!(result.instructions_executed, 0, "{code:02x?}");
@@ -42098,6 +42094,734 @@ fn ds_xadd_is_not_reachable_from_cpl3() {
     let mut state = board_state();
     let before = state.clone();
     let mut memory = CasMemory::new(&DS_XADDQ_RAX_RDI_548, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L9h: the DS prefix (`3E`) as the LOCK substitute for the memory read-modify-write forms
+// of the set. `alternatives_smp_unlock` (`arch/x86/kernel/alternative.c`) replaces the LOCK byte of
+// every `.smp_locks` entry by `3E` on a single-CPU board; in 64-bit mode DS has no effect on the
+// address and on one vCPU LOCK changes no result, so the DS form executes as the LOCK form. XADD
+// is S4-38L9g; this slice adds CMPXCHG (`3E [REX] 0F B1 /r`, which decodes to `LockCmpxchgMem`) and
+// pins that every other LOCK memory form of the set (ADD m, r; ADD/OR/AND m, imm; INC/DEC; BTS/BTR
+// with a register or an immediate bit; XADD; CMPXCHG) gives the identical architectural result,
+// memory traffic and fault with `3E` as with `F0` (semantics from memory of the SDM, not re-checked
+// against the SDM text). ----
+
+/// How the ModRM memory operand of a generated form addresses memory.
+#[derive(Clone, Copy, Debug)]
+enum DsBase {
+    /// `[rbx]`.
+    Rbx,
+    /// `[rbp + 0]` (mod = 01, disp8 0).
+    Rbp,
+    /// `[rsp]` (SIB 0x24).
+    Rsp,
+}
+
+/// One locked form: its mnemonic, the opcode bytes after the LOCK byte (REX included), the ModRM
+/// reg field and the immediate tail.
+struct DsForm {
+    name: &'static str,
+    opcode: &'static [u8],
+    reg: u8,
+    tail: &'static [u8],
+}
+
+/// `f0` (LOCK) or `3e` (DS) + the form with the given base register.
+fn ds_form_code(form: &DsForm, prefix: u8, base: DsBase) -> Vec<u8> {
+    let mut code = vec![prefix];
+    code.extend_from_slice(form.opcode);
+    match base {
+        DsBase::Rbx => code.push((form.reg << 3) | 0x03),
+        DsBase::Rbp => code.extend_from_slice(&[0x40 | (form.reg << 3) | 0x05, 0x00]),
+        DsBase::Rsp => code.extend_from_slice(&[(form.reg << 3) | 0x04, 0x24]),
+    }
+    code.extend_from_slice(form.tail);
+    code
+}
+
+/// Every LOCK memory form of the set that the kernel's `.smp_locks` table holds (the DS variant of
+/// the XADD is S4-38L9g, repeated here for the equality check).
+const DS_FORMS: &[DsForm] = &[
+    DsForm {
+        name: "add m32, edx",
+        opcode: &[0x01],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "add m64, rdx",
+        opcode: &[0x48, 0x01],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "add m8, 0x7f",
+        opcode: &[0x80],
+        reg: 0,
+        tail: &[0x7f],
+    },
+    DsForm {
+        name: "add m8, 0x81",
+        opcode: &[0x80],
+        reg: 0,
+        tail: &[0x81],
+    },
+    DsForm {
+        name: "add m32, imm32",
+        opcode: &[0x81],
+        reg: 0,
+        tail: &[0, 0, 0, 0x80],
+    },
+    DsForm {
+        name: "add m32, imm8",
+        opcode: &[0x83],
+        reg: 0,
+        tail: &[0xff],
+    },
+    DsForm {
+        name: "add m64, imm32",
+        opcode: &[0x48, 0x81],
+        reg: 0,
+        tail: &[0, 0, 0, 0x80],
+    },
+    DsForm {
+        name: "add m64, imm8",
+        opcode: &[0x48, 0x83],
+        reg: 0,
+        tail: &[0xff],
+    },
+    DsForm {
+        name: "or m8, 0x81",
+        opcode: &[0x80],
+        reg: 1,
+        tail: &[0x81],
+    },
+    DsForm {
+        name: "or m32, imm32",
+        opcode: &[0x81],
+        reg: 1,
+        tail: &[0, 0, 0, 0x80],
+    },
+    DsForm {
+        name: "or m32, imm8",
+        opcode: &[0x83],
+        reg: 1,
+        tail: &[0x80],
+    },
+    DsForm {
+        name: "or m64, imm32",
+        opcode: &[0x48, 0x81],
+        reg: 1,
+        tail: &[0, 0, 0, 0x80],
+    },
+    DsForm {
+        name: "or m64, imm8",
+        opcode: &[0x48, 0x83],
+        reg: 1,
+        tail: &[0x01],
+    },
+    DsForm {
+        name: "and m8, 0xfe",
+        opcode: &[0x80],
+        reg: 4,
+        tail: &[0xfe],
+    },
+    DsForm {
+        name: "inc m32",
+        opcode: &[0xff],
+        reg: 0,
+        tail: &[],
+    },
+    DsForm {
+        name: "inc m64",
+        opcode: &[0x48, 0xff],
+        reg: 0,
+        tail: &[],
+    },
+    DsForm {
+        name: "dec m32",
+        opcode: &[0xff],
+        reg: 1,
+        tail: &[],
+    },
+    DsForm {
+        name: "dec m64",
+        opcode: &[0x48, 0xff],
+        reg: 1,
+        tail: &[],
+    },
+    DsForm {
+        name: "bts m64, rdx",
+        opcode: &[0x48, 0x0f, 0xab],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "btr m64, rdx",
+        opcode: &[0x48, 0x0f, 0xb3],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "bts m32, 5",
+        opcode: &[0x0f, 0xba],
+        reg: 5,
+        tail: &[0x05],
+    },
+    DsForm {
+        name: "bts m32, 0xff",
+        opcode: &[0x0f, 0xba],
+        reg: 5,
+        tail: &[0xff],
+    },
+    DsForm {
+        name: "bts m64, 0x45",
+        opcode: &[0x48, 0x0f, 0xba],
+        reg: 5,
+        tail: &[0x45],
+    },
+    DsForm {
+        name: "cmpxchg m32, edx",
+        opcode: &[0x0f, 0xb1],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "cmpxchg m64, rdx",
+        opcode: &[0x48, 0x0f, 0xb1],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "xadd m32, edx",
+        opcode: &[0x0f, 0xc1],
+        reg: 2,
+        tail: &[],
+    },
+    DsForm {
+        name: "xadd m64, rdx",
+        opcode: &[0x48, 0x0f, 0xc1],
+        reg: 2,
+        tail: &[],
+    },
+];
+
+#[derive(Clone, Copy, Debug)]
+enum DsFault {
+    None,
+    Read,
+    Write,
+}
+
+/// Everything observable after one instruction.
+#[derive(Debug, PartialEq)]
+struct DsOutcome {
+    state: LongModeState,
+    exit: String,
+    executed: u64,
+    data: std::collections::BTreeMap<u64, u8>,
+    reads: Vec<(u64, usize)>,
+    writes: Vec<(u64, Vec<u8>)>,
+}
+
+fn ds_run(code: &[u8], seed: &dyn Fn(&mut LongModeState), cell: u64, fault: DsFault) -> DsOutcome {
+    let mut state = board_state();
+    seed(&mut state);
+    let mut memory = BitsMemory::new(code);
+    memory.set_qword(0x20_0000, cell);
+    memory.set_qword(0x1f_fff8, 0xa5a5_a5a5_a5a5_a5a5);
+    memory.set_qword(0x20_0008, 0x5a5a_5a5a_5a5a_5a5a);
+    match fault {
+        DsFault::None => {}
+        DsFault::Read => {
+            memory.read_fault = Some(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x2),
+                linear_address: Some(0x20_0000),
+            });
+        }
+        DsFault::Write => {
+            memory.write_fault = Some(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x3),
+                linear_address: Some(0x20_0000),
+            });
+        }
+    }
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    DsOutcome {
+        state,
+        exit: format!("{:?}", exit(&result)),
+        executed: result.instructions_executed,
+        data: memory.data,
+        reads: memory.reads,
+        writes: memory.writes,
+    }
+}
+
+const DS_VALUES: [u64; 16] = [
+    0,
+    1,
+    2,
+    0x7f,
+    0x80,
+    0xffff_ffff,
+    0x8000_0000,
+    u64::MAX,
+    63,
+    64,
+    65,
+    (-64i64) as u64,
+    (-65i64) as u64,
+    0x1234_5678_9abc_def0,
+    0x1_0000_0000,
+    0x8000_0000_0000_0000,
+];
+
+#[test]
+fn ds_forms_equal_the_lock_forms_on_values_flags_memory_traffic_and_registers() {
+    for form in DS_FORMS {
+        let lock = ds_form_code(form, 0xf0, DsBase::Rbx);
+        let ds = ds_form_code(form, 0x3e, DsBase::Rbx);
+        assert_eq!(lock.len(), ds.len(), "{}", form.name);
+        assert_eq!(&lock[1..], &ds[1..], "{}", form.name);
+        // A huge bit offset of BTS/BTR leaves the canonical range (#GP, 0 retired in both forms).
+        let mut executed = 0;
+        for cell in DS_VALUES {
+            for source in DS_VALUES {
+                for accumulator in [source, cell, cell ^ 0x1_0000_0000, 0xdead_beef_0000_0000] {
+                    for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                        let seed = |state: &mut LongModeState| {
+                            state.gpr[Register::Rbx as usize] = 0x20_0000;
+                            state.gpr[Register::Rdx as usize] = source;
+                            state.gpr[Register::Rax as usize] = accumulator;
+                            state.rflags = initial;
+                        };
+                        let from_lock = ds_run(&lock, &seed, cell, DsFault::None);
+                        let from_ds = ds_run(&ds, &seed, cell, DsFault::None);
+                        executed += from_lock.executed;
+                        assert_eq!(
+                            from_ds, from_lock,
+                            "{}: cell {cell:#x} source {source:#x} rax {accumulator:#x} flags {initial:#x}",
+                            form.name
+                        );
+                    }
+                }
+            }
+        }
+        assert!(executed > 1000, "{}: {executed}", form.name);
+    }
+}
+
+#[test]
+fn ds_forms_equal_the_lock_forms_on_faults_in_every_base_register() {
+    for form in DS_FORMS {
+        for base in [DsBase::Rbx, DsBase::Rbp, DsBase::Rsp] {
+            let lock = ds_form_code(form, 0xf0, base);
+            let ds = ds_form_code(form, 0x3e, base);
+            let register = match base {
+                DsBase::Rbx => Register::Rbx,
+                DsBase::Rbp => Register::Rbp,
+                DsBase::Rsp => Register::Rsp,
+            };
+            // A mapped base with a read fault, with a write fault, and a non-canonical base (the
+            // first byte, and a canonical start whose last byte is beyond the canonical range).
+            let cases = [
+                (0x20_0000u64, DsFault::Read),
+                (0x20_0000, DsFault::Write),
+                (0x0000_8000_0000_0000, DsFault::None),
+                (0xffff_7fff_ffff_ffff, DsFault::None),
+                (0x0000_7fff_ffff_fffc, DsFault::None),
+                (0x0000_7fff_ffff_ffff, DsFault::None),
+            ];
+            for (address, fault) in cases {
+                for source in [0u64, 1, 0x7fff_ffff, 0xffff_ffff_ffff_ffff] {
+                    let seed = |state: &mut LongModeState| {
+                        state.gpr[Register::Rbx as usize] = 0x20_0000;
+                        state.gpr[Register::Rdx as usize] = source;
+                        state.gpr[Register::Rax as usize] = 5;
+                        state.gpr[register as usize] = address;
+                        state.rflags = 2 | IF | FLAG_CF | FLAG_OF;
+                    };
+                    let from_lock = ds_run(&lock, &seed, 5, fault);
+                    let from_ds = ds_run(&ds, &seed, 5, fault);
+                    assert_eq!(
+                        from_ds, from_lock,
+                        "{} {base:?} {address:#x} {fault:?} source {source:#x}",
+                        form.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ds_forms_equal_the_lock_forms_with_a_rip_relative_operand_and_ignore_the_fs_gs_bases() {
+    // `ds bts %rdx, 0x1234(%rip)`-style addressing: the operand is relative to the end of the whole
+    // instruction (immediate included), identically for both prefixes.
+    for form in DS_FORMS {
+        let mut lock = vec![0xf0];
+        lock.extend_from_slice(form.opcode);
+        lock.extend_from_slice(&[(form.reg << 3) | 0x05, 0x34, 0x12, 0x00, 0x00]);
+        lock.extend_from_slice(form.tail);
+        let mut ds = lock.clone();
+        ds[0] = 0x3e;
+        let target = RIP + lock.len() as u64 + 0x1234;
+        for cell in [0u64, 0x1234_5678_9abc_def0, u64::MAX] {
+            let seed = |state: &mut LongModeState| {
+                state.gpr[Register::Rdx as usize] = 3;
+                state.gpr[Register::Rax as usize] = cell;
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8881_0000_0000;
+            };
+            let run_at = |code: &[u8]| {
+                let mut state = board_state();
+                seed(&mut state);
+                let mut memory = BitsMemory::new(code);
+                memory.set_qword(target, cell);
+                let result = run_bts_set(&mut state, &mut memory).unwrap();
+                (
+                    state,
+                    exit(&result).clone(),
+                    result.instructions_executed,
+                    memory.data,
+                    memory.reads,
+                    memory.writes,
+                )
+            };
+            let from_lock = run_at(&lock);
+            let from_ds = run_at(&ds);
+            assert_eq!(from_lock.2, 1, "{}", form.name);
+            assert_eq!(from_ds, from_lock, "{} {cell:#x}", form.name);
+            assert!(
+                from_ds
+                    .4
+                    .iter()
+                    .all(|(address, _)| *address < target + 8
+                        && *address + 0x1_0000_0000_0000 > target),
+                "{}: no segment base applied: {:?}",
+                form.name,
+                from_ds.4
+            );
+        }
+    }
+}
+
+/// `ds cmpxchg %edx, (%rdi)` (the S4-38L9g diagnostic boundary bytes, `_raw_spin_lock`).
+const DS_CMPXCHGL_EDX_RDI: [u8; 4] = [0x3e, 0x0f, 0xb1, 0x17];
+/// `ds cmpxchg %rdx, (%rdi)`.
+const DS_CMPXCHGQ_RDX_RDI: [u8; 5] = [0x3e, 0x48, 0x0f, 0xb1, 0x17];
+
+#[test]
+fn ds_cmpxchg_diagnostic_boundary_equal_case_stores_the_source_and_keeps_rax() {
+    // The boundary register state: RAX = 0, RDX = 1, the lock word is 0 (unlocked).
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0;
+    state.gpr[Register::Rdx as usize] = 1;
+    state.gpr[Register::Rdi as usize] = 0xffff_ea00_0013_2de8;
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    state.rflags = 2 | IF | FLAG_CF | FLAG_OF | FLAG_SF | FLAG_AF;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&DS_CMPXCHGL_EDX_RDI, 0);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let address = 0xffff_ea00_0013_2de8u64;
+    assert_eq!(memory.reads, vec![(address, 4)]);
+    assert_eq!(memory.writes, vec![(address, 1u32.to_le_bytes().to_vec())]);
+    assert_eq!(memory.cell, 1);
+    expected.rip += 4;
+    // CMP EAX, [rdi]: 0 - 0 = 0, so ZF and PF only (CF, OF, SF, AF cleared); RAX is untouched.
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_ZF | FLAG_PF;
+    assert_eq!(state, expected, "only RIP and the flags change");
+}
+
+#[test]
+fn ds_cmpxchg_dword_not_equal_loads_eax_zero_extended_and_writes_the_old_value_back() {
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0xdead_beef_0000_0003;
+    state.gpr[Register::Rdx as usize] = 0x77;
+    state.gpr[Register::Rdi as usize] = 0x20_0000;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&DS_CMPXCHGL_EDX_RDI, 0xffff_ffff_0000_0005);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0000, 4)]);
+    // The destination is written even on inequality (the old dword, unchanged).
+    assert_eq!(
+        memory.writes,
+        vec![(0x20_0000, 5u32.to_le_bytes().to_vec())]
+    );
+    expected.rip += 4;
+    // EAX = 5 (zero-extended into RAX); CMP 3 - 5 = 0xfffffffe: CF, AF (3 < 5 in the low nibble) and
+    // SF; PF = 0 (0xfe has seven set bits), ZF = OF = 0.
+    expected.gpr[Register::Rax as usize] = 5;
+    expected.rflags = (expected.rflags & !ARITH) | FLAG_CF | FLAG_AF | FLAG_SF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn ds_cmpxchg_qword_hand_computed_cases() {
+    // (RAX, memory, RDX) -> (new memory, new RAX, flags of CMP RAX, memory).
+    let cases: [(u64, u64, u64, u64, u64, u64); 4] = [
+        // Equal: ZF | PF (the difference 0 has even parity); memory = RDX, RAX kept.
+        (7, 7, 0x1234, 0x1234, 7, FLAG_ZF | FLAG_PF),
+        // 1 - 0x8000000000000000 = 0x8000000000000001: CF (borrow), SF, OF (signed overflow); AF 0
+        // and PF 0 (the low byte 0x01 has one set bit). RAX takes the old memory value.
+        (
+            1,
+            0x8000_0000_0000_0000,
+            9,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            FLAG_CF | FLAG_SF | FLAG_OF,
+        ),
+        // 0 - 1 = u64::MAX: CF, AF, SF, PF (0xff has eight set bits); OF 0.
+        (0, 1, 3, 1, 1, FLAG_CF | FLAG_AF | FLAG_SF | FLAG_PF),
+        // 0x8000000000000000 - 1 = 0x7fffffffffffffff: OF (signed overflow), AF (borrow out of
+        // bit 3), PF (0xff); CF 0, SF 0.
+        (
+            0x8000_0000_0000_0000,
+            1,
+            4,
+            1,
+            1,
+            FLAG_OF | FLAG_AF | FLAG_PF,
+        ),
+    ];
+    for (rax, old, rdx, new_memory, new_rax, flags) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = rax;
+        state.gpr[Register::Rdx as usize] = rdx;
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(&DS_CMPXCHGQ_RDX_RDI, old);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{rax:#x} {old:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, 8)], "{rax:#x} {old:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_0000, new_memory.to_le_bytes().to_vec())],
+            "{rax:#x} {old:#x}"
+        );
+        expected.rip += 5;
+        expected.gpr[Register::Rax as usize] = new_rax;
+        expected.rflags = (expected.rflags & !ARITH) | flags;
+        assert_eq!(state, expected, "{rax:#x} {old:#x}");
+    }
+}
+
+#[test]
+fn ds_cmpxchg_ignores_the_fs_and_gs_bases() {
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8881_0000_0000;
+    state.gpr[Register::Rdi as usize] = 0x20_0000;
+    let mut memory = CasMemory::new(&DS_CMPXCHGQ_RDX_RDI, 1);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0x20_0000, 8)]);
+}
+
+#[test]
+fn ds_cmpxchg_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mutation() {
+    let cases: [&[u8]; 22] = [
+        // The unprefixed forms stay refused (the dword form; the qword memory form is refused in
+        // the set, as before).
+        &[0x0f, 0xb1, 0x17],
+        &[0x48, 0x0f, 0xb1, 0x17],
+        // DS with a register destination (mod = 11).
+        &[0x3e, 0x0f, 0xb1, 0xd1],
+        &[0x3e, 0x48, 0x0f, 0xb1, 0xd1],
+        &[0x3e, 0x4d, 0x0f, 0xb1, 0xc8],
+        // 0x66 and 0x67, in both orders, with and without REX.W.
+        &[0x3e, 0x66, 0x0f, 0xb1, 0x17],
+        &[0x66, 0x3e, 0x48, 0x0f, 0xb1, 0x17],
+        &[0x3e, 0x67, 0x0f, 0xb1, 0x17],
+        &[0x67, 0x3e, 0x48, 0x0f, 0xb1, 0x17],
+        // REP/REPNE with DS.
+        &[0x3e, 0xf3, 0x0f, 0xb1, 0x17],
+        &[0xf2, 0x3e, 0x48, 0x0f, 0xb1, 0x17],
+        // LOCK together with DS, in both orders.
+        &[0x3e, 0xf0, 0x0f, 0xb1, 0x17],
+        &[0xf0, 0x3e, 0x48, 0x0f, 0xb1, 0x17],
+        // CS/ES/SS overrides without DS.
+        &[0x2e, 0x0f, 0xb1, 0x17],
+        &[0x26, 0x48, 0x0f, 0xb1, 0x17],
+        &[0x36, 0x0f, 0xb1, 0x17],
+        // DS together with another segment override, or repeated.
+        &[0x3e, 0x64, 0x48, 0x0f, 0xb1, 0x17],
+        &[0x65, 0x3e, 0x0f, 0xb1, 0x17],
+        &[0x3e, 0x3e, 0x48, 0x0f, 0xb1, 0x17],
+        // REX before DS, or not directly before the opcode.
+        &[0x48, 0x3e, 0x0f, 0xb1, 0x17],
+        &[0x3e, 0x48, 0x40, 0x0f, 0xb1, 0x17],
+        &[0x3e, 0x48, 0x66, 0x0f, 0xb1, 0x17],
+    ];
+    for code in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rdx as usize] = 6;
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xb1 },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(memory.cell, 5, "{code:02x?}");
+    }
+}
+
+#[test]
+fn ds_byte_cmpxchg_and_the_ds_xchg_keep_their_own_refusal() {
+    // The byte CMPXCHG has no LOCK form in the set, so its DS form is refused with 0xb0; XCHG
+    // is implicitly locked and carries no LOCK byte for the patch to replace (`3E 87` stays 0x87).
+    for (code, opcode) in [
+        (&[0x3eu8, 0x0f, 0xb0, 0x17][..], 0xb0u8),
+        (&[0x3e, 0x48, 0x0f, 0xb0, 0x17][..], 0xb0),
+        (&[0x3e, 0x48, 0x87, 0x17][..], 0x87),
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn ds_forms_with_a_lock_byte_stay_equal_to_the_refused_lock_prefixed_pairs() {
+    // LOCK + DS is refused for every form that has a DS form of its own (CMPXCHG/XADD: the shared
+    // refusal; the immediate/arithmetic forms never reach `LOCK` + a segment override).
+    for form in DS_FORMS {
+        for code in [
+            [&[0x3e, 0xf0][..], form.opcode].concat(),
+            [&[0xf0, 0x3e][..], form.opcode].concat(),
+        ] {
+            let mut code = code;
+            code.push((form.reg << 3) | 0x03);
+            code.extend_from_slice(form.tail);
+            let mut state = board_state();
+            state.gpr[Register::Rbx as usize] = 0x20_0000;
+            let before = state.clone();
+            let mut memory = CasMemory::new(&code, 5);
+            let result = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(result.instructions_executed, 0, "{} {code:02x?}", form.name);
+            assert!(
+                matches!(exit(&result), RunExit::Unsupported { .. }),
+                "{} {code:02x?}: {result:?}",
+                form.name
+            );
+            assert_eq!(state, before, "{} {code:02x?}", form.name);
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn ds_cmpxchg_with_a_truncated_modrm_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x3eu8, 0x0f, 0xb1][..],
+        &[0x3e, 0x48, 0x0f, 0xb1][..],
+        &[0x3e, 0x0f, 0xb1, 0x87, 0x48, 0x05][..],
+        &[0x3e, 0x0f, 0xb1, 0x05, 0x34, 0x12][..],
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(memory.cell, 5);
+    }
+}
+
+#[test]
+fn ds_cmpxchg_is_refused_outside_the_set_by_run_and_by_the_bare_step_entry_point() {
+    for code in [&DS_CMPXCHGL_EDX_RDI[..], &DS_CMPXCHGQ_RDX_RDI[..]] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0xb1 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let outcome = od_isa::execute::step(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        );
+        assert_eq!(
+            outcome,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xb1 })
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn ds_cmpxchg_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&DS_CMPXCHGL_EDX_RDI, 1);
     let error = run_with_cpl0_profile_set(
         &mut state,
         &mut memory,
