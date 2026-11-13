@@ -851,6 +851,17 @@ pub enum Operation {
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
     LoadGsSelector,
+    /// S4-38L9B: `8E /r` with mod = 11, reg = 4 (FS) and a source register other than the bare
+    /// `8E E0` form, e.g. `8E E7` = `mov %edi, %fs`. The source is r/m16 (low 16 bits of the
+    /// register); no prefix of any kind is decoded. Executed only in the CPL0 profile set and only
+    /// for the null selectors 0..=3.
+    LoadFsSelectorReg {
+        source: Register,
+    },
+    /// S4-38L9B: the GS twin of [`Operation::LoadFsSelectorReg`] (`8E EF` = `mov %edi, %gs`).
+    LoadGsSelectorReg {
+        source: Register,
+    },
     /// S2-22k null selector loads: bare `8E D8` / `8E C0` at CPL0.
     LoadNullDsSelector,
     LoadNullEsSelector,
@@ -10134,19 +10145,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, 0x8e) => {
                 let modrm = self.byte()?;
-                if self.length != 2
-                    || prefixes != Prefixes::default()
-                    || !matches!(modrm, 0xe0 | 0xe8 | 0xd8 | 0xc0 | 0xd0)
-                {
+                if self.length != 2 || prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
+                // S4-38L9B: a register source other than AX for FS/GS (`8E /r`, mod = 11,
+                // reg = 4 or 5). ES/CS/SS/DS with another source and every memory form stay
+                // unsupported.
+                let register_form = modrm >> 6 == 3;
                 match modrm {
                     0xe0 => Operation::LoadFsSelector,
                     0xe8 => Operation::LoadGsSelector,
                     0xd8 => Operation::LoadNullDsSelector,
                     0xc0 => Operation::LoadNullEsSelector,
                     0xd0 => Operation::LoadNullSsSelector,
-                    _ => unreachable!("ModR/M was checked above"),
+                    _ if register_form && (modrm >> 3) & 7 == 4 => Operation::LoadFsSelectorReg {
+                        source: Register::from_encoding(modrm & 7)
+                            .expect("a three-bit register encoding"),
+                    },
+                    _ if register_form && (modrm >> 3) & 7 == 5 => Operation::LoadGsSelectorReg {
+                        source: Register::from_encoding(modrm & 7)
+                            .expect("a three-bit register encoding"),
+                    },
+                    _ => return Err(self.unsupported(opcode)),
                 }
             }
             (OpcodeMap::Primary, byte @ 0x70..=0x7f) => {
@@ -10463,6 +10483,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
                 Operation::LoadGsSelector => false,
+                Operation::LoadFsSelectorReg { .. } => false,
+                Operation::LoadGsSelectorReg { .. } => false,
                 Operation::LoadNullDsSelector => false,
                 Operation::LoadNullEsSelector => false,
                 Operation::LoadNullSsSelector => false,
@@ -28478,7 +28500,6 @@ mod tests {
         for bytes in [
             &[0x8e, 0xc8][..], // CS is not a MOV destination
             &[0x8e, 0x20][..], // memory source
-            &[0x8e, 0xe1][..], // another GPR
             &[0x48, 0x8e, 0xe0][..],
             &[0x66, 0x8e, 0xe0][..],
             &[0x64, 0x8e, 0xe0][..],
@@ -28510,7 +28531,6 @@ mod tests {
         for bytes in [
             &[0x8e, 0xc8][..],
             &[0x8e, 0x28][..],
-            &[0x8e, 0xe9][..],
             &[0x48, 0x8e, 0xe8][..],
             &[0x66, 0x8e, 0xe8][..],
             &[0x65, 0x8e, 0xe8][..],
@@ -28526,6 +28546,56 @@ mod tests {
         let mut truncated = Memory::new(&[0x8e]);
         assert!(matches!(truncated.decode(), Err(DecodeError::Memory(_))));
         assert_eq!(truncated.fetched, vec![0x0fff, 0x1000]);
+    }
+
+    #[test]
+    fn fs_gs_selector_loads_from_other_registers_decode_without_any_prefix() {
+        // S4-38L9B: `8E /r`, mod = 11, reg = 4 (FS) or 5 (GS), a source register other than AX.
+        for rm in 1u8..=7 {
+            let source = Register::from_encoding(rm).unwrap();
+            let mut memory = Memory::new(&[0x8e, 0xe0 | rm]);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.length, 2);
+            assert_eq!(decoded.operation, Operation::LoadFsSelectorReg { source });
+            let mut memory = Memory::new(&[0x8e, 0xe8 | rm]);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.length, 2);
+            assert_eq!(decoded.operation, Operation::LoadGsSelectorReg { source });
+        }
+        // `8e ef` is `mov %edi, %gs`.
+        let mut memory = Memory::new(&[0x8e, 0xef]);
+        assert_eq!(
+            memory.decode().unwrap().operation,
+            Operation::LoadGsSelectorReg {
+                source: Register::Rdi
+            }
+        );
+        for bytes in [
+            &[0x66, 0x8e, 0xef][..],
+            &[0x67, 0x8e, 0xef][..],
+            &[0x48, 0x8e, 0xef][..],
+            &[0x40, 0x8e, 0xef][..],
+            &[0x41, 0x8e, 0xef][..],
+            &[0x64, 0x8e, 0xef][..],
+            &[0x65, 0x8e, 0xef][..],
+            &[0xf0, 0x8e, 0xef][..],
+            &[0xf2, 0x8e, 0xef][..],
+            &[0xf3, 0x8e, 0xef][..],
+            &[0x8e, 0xc7][..], // ES
+            &[0x8e, 0xcf][..], // CS
+            &[0x8e, 0xd7][..], // SS
+            &[0x8e, 0xdf][..], // DS
+            &[0x8e, 0xf7][..], // reg 6
+            &[0x8e, 0xff][..], // reg 7
+            &[0x8e, 0x2f][..], // memory source
+            &[0x8e, 0x6f, 0x08][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
     }
 
     #[test]
