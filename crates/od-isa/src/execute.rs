@@ -20659,8 +20659,11 @@ fn run_cpl0_profile_set_inner(
         if !declared {
             return Err(Error::FpFeaturesNotDeclared);
         }
-        // The plain FXSAVE image carries FCS/FDS: both selectors must be represented.
-        let selectors_known = cell.try_borrow().is_ok_and(|fp| {
+        // The plain FXSAVE image carries FCS/FDS: both selectors must be represented. The step
+        // takes `borrow_mut()` (FNINIT) and `borrow()` (FXSAVE): a cell the caller still holds
+        // borrowed would panic mid-run, so the entry refuses it (`try_borrow_mut` succeeds only
+        // when there is no outstanding borrow at all).
+        let selectors_known = cell.try_borrow_mut().is_ok_and(|fp| {
             fp.x87.instruction_selector.is_some() && fp.x87.data_selector.is_some()
         });
         if !selectors_known {

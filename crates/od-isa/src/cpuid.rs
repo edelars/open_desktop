@@ -6,9 +6,10 @@
 //!
 //! `X8664V1Stage4A` (S4-38L9a) is the first named subset of the Linux board target
 //! `od-x86-64-v1-neutral-v0.1` (`docs/specs/CPU_CONTRACT.md`): it declares only the features whose
-//! behaviour the board's CPU set already implements (TSC, through `RDTSC`; since S4-38L9d FPU and
-//! FXSR, through `FNINIT` and the plain `FXSAVE` of the set's FP member). It is not the full
-//! target table and not an Ubuntu boot contract.
+//! behaviour the board's CPU set already implements (TSC, through `RDTSC`; since S4-38L9d the FPU
+//! and FXSR bits are declared, but only `FNINIT` and the plain `FXSAVE` of the set's FP member are
+//! implemented: every other x87/FXSR form, e.g. `FXRSTOR`, stays `Unsupported`). It is not the
+//! full target table and not an Ubuntu boot contract.
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

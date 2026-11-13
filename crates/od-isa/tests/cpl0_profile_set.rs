@@ -40151,3 +40151,98 @@ fn cpuid_leaf_1_under_the_member_answers_fpu_tsc_fxsr_and_the_fp_state_is_untouc
     assert_eq!(state.gpr[Register::Rax as usize], 0x600);
     assert_eq!(*cell.borrow(), before_cell);
 }
+
+#[test]
+fn fxsave_whose_area_wraps_the_address_space_is_gp0_with_no_write_and_no_state_change() {
+    // `disp32` cannot reach a non-canonical start from the small test RIP, but the effective
+    // address wraps: 0x1007 + (-0x1017) = 0xFFFF_FFFF_FFFF_FFF0 is 16-byte aligned and canonical,
+    // yet its 512-byte area overflows the address space (the last byte is not a canonical
+    // address): #GP(0) before any write.
+    let code = fxsave_rip_at(RIP, 0xffff_ffff_ffff_fff0);
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn fninit_with_a_prefix_is_unsupported_with_its_opcode_and_changes_nothing() {
+    for code in [
+        &[0x66, 0xdb, 0xe3][..],
+        &[0x40, 0xdb, 0xe3][..],
+        &[0xf3, 0xdb, 0xe3][..],
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let set = fp_set(&cell);
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let before = state.clone();
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xdb },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(*cell.borrow(), before_cell, "{code:02x?}");
+    }
+}
+
+#[test]
+fn a_cell_the_caller_still_holds_borrowed_is_refused_at_entry_without_a_panic() {
+    let cell = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&cell);
+    let code = [0xdb, 0xe3];
+    // A shared borrow held by the caller: FNINIT would need `borrow_mut` mid-run.
+    {
+        let _held = cell.borrow();
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let before = state.clone();
+        let mut memory = FpMemory::new(&code);
+        let result = run_fp(&mut state, &mut memory, &set, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            Cpl0ProfileSetInputError::FpStateNotAdmitted
+        );
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+    }
+    // An exclusive borrow held by the caller is refused too.
+    {
+        let _held = cell.borrow_mut();
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        let mut memory = FpMemory::new(&code);
+        let result = run_fp(&mut state, &mut memory, &set, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            Cpl0ProfileSetInputError::FpStateNotAdmitted
+        );
+    }
+    // Released: the same call runs.
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut memory = FpMemory::new(&code);
+    assert_eq!(
+        run_fp(&mut state, &mut memory, &set, 1)
+            .unwrap()
+            .instructions_executed,
+        1
+    );
+}

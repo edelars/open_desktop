@@ -2155,7 +2155,8 @@ mod tests {
         )
         .expect("hex");
         assert_eq!(cr4 & 0x600, 0x600, "{on:#}");
-        // DiagnosticV1: no FP member, the FNINIT is the stop (the run never reaches HLT).
+        // DiagnosticV1: no FP member, so the run stops earlier, at `MOV CR0, RDI` (opcode 0x22), after
+        // CLI, MOV RAX,CR0, AND and MOV RDI,RAX; it never reaches FNINIT or HLT.
         let (off, exit) = run(CpuidProfile::DiagnosticV1);
         assert_eq!(exit, 0, "{off:#}");
         let stop = &off["stop"];
