@@ -40599,6 +40599,7 @@ const CR4_FP: u64 = CR4_BASE | (1 << 9) | (1 << 10);
 struct FpMemory {
     bytes: Vec<u8>,
     writes: Vec<(u64, usize)>,
+    reads: Vec<(u64, usize)>,
 }
 
 impl FpMemory {
@@ -40608,6 +40609,7 @@ impl FpMemory {
         Self {
             bytes,
             writes: Vec::new(),
+            reads: Vec::new(),
         }
     }
 
@@ -40644,6 +40646,7 @@ impl GuestMemory for FpMemory {
                 access: AccessKind::Read,
             })?;
         output.copy_from_slice(source);
+        self.reads.push((address, output.len()));
         Ok(())
     }
 
@@ -51503,4 +51506,434 @@ fn mov_es_ss_ds_register_form_at_cpl3_is_rejected_at_entry_without_mutation() {
     );
     assert_eq!(state, before);
     assert_eq!(memory.fetches, 0);
+}
+
+// ---- S4-38L9E: FXRSTOR64 (`48 0F AE 4B 40`, `fxrstor64 0x40(%rbx)`) in the FP member ----
+//
+// Oracles (by hand, Intel SDM from memory, and the kernel's `restore_fpregs_from_fpstate`): the
+// Long64 image has FCW at 0, FSW at 2, the abridged FTW at 4, FOP at 6, FIP (8 bytes) at 8, FDP
+// (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (ignored on load), ST0-7 (logical order from TOP)
+// in 16-byte slots from 32 and XMM0-15 from 160. FXRSTOR faults with #GP(0) on an area that is not
+// 16-byte aligned and on MXCSR bits outside MXCSR_MASK (0xFFBF here).
+
+const FXRSTOR64_RBX_DISP8: [u8; 5] = [0x48, 0x0f, 0xae, 0x4b, 0x40];
+
+/// RBX such that `0x40(%rbx)` is `area`.
+fn fp_rbx_for(area: u64) -> u64 {
+    area.wrapping_sub(0x40)
+}
+
+/// An FP state whose FXSAVE image restores to itself: all registers valid numbers (tag word 0),
+/// selectors known and 0, FIP/FDP below 2^32 (the plain FXSAVE stores only 32 bits and FCS/FDS).
+fn round_trip_fp_state() -> GuestFpState {
+    let mut fp = dirty_fp_state();
+    for (index, register) in fp.x87.registers.iter_mut().enumerate() {
+        *register = [
+            index as u8,
+            0x11,
+            0x22,
+            0x33,
+            0x44,
+            0x55,
+            0x66,
+            0xe7,
+            index as u8,
+            0x40,
+        ];
+    }
+    fp.x87.tag_word = 0;
+    fp.x87.status_word = 0x1800 | 0x0021; // TOP = 3
+    fp.x87.control_word = 0x027f;
+    fp.x87.instruction_pointer = 0x1234_5678;
+    fp.x87.data_pointer = 0x0abc_def0;
+    fp.x87.instruction_selector = Some(0);
+    fp.x87.data_selector = Some(0);
+    fp.x87.last_opcode = 0x05aa;
+    fp.sse.mxcsr = 0x0000_9fa0;
+    fp
+}
+
+fn run_fxrstor_at(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+    code: &[u8],
+    area: u64,
+    patch: impl FnOnce(&mut FpMemory),
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = fp_state(cr0, cr4);
+    state.gpr[Register::Rbx as usize] = fp_rbx_for(area);
+    let before = state.clone();
+    let mut memory = FpMemory::new(code);
+    patch(&mut memory);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    (before, state, memory, result)
+}
+
+fn write_image(memory: &mut FpMemory, area: u64, image: &[u8; 512]) {
+    let offset = (area - RIP) as usize;
+    memory.bytes[offset..offset + 512].copy_from_slice(image);
+}
+
+fn image_with_mxcsr(mxcsr: u32) -> [u8; 512] {
+    let mut image = [0u8; 512];
+    image[0..2].copy_from_slice(&0x037fu16.to_le_bytes());
+    image[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+    image
+}
+
+#[test]
+fn fxrstor64_loads_the_hand_built_image_into_x87_xmm_and_mxcsr() {
+    let mut image = [0xeeu8; 512]; // reserved and software-available bytes carry junk
+    image[0..2].copy_from_slice(&0x037au16.to_le_bytes()); // FCW
+    image[2..4].copy_from_slice(&0x1800u16.to_le_bytes()); // FSW, TOP = 3
+    image[4] = 0b0000_0101; // abridged FTW: physical 0 and 2 nonempty
+    image[6..8].copy_from_slice(&0xffffu16.to_le_bytes()); // FOP, only 11 bits are kept
+    image[8..16].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes()); // FIP
+    image[16..24].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()); // FDP
+    image[24..28].copy_from_slice(&0x0000_9fa0u32.to_le_bytes()); // MXCSR (FZ is allowed)
+    image[28..32].copy_from_slice(&0u32.to_le_bytes()); // MXCSR_MASK is ignored
+    let mut expected_st = [[0u8; 10]; 8]; // by logical index
+    for (logical, expected) in expected_st.iter_mut().enumerate() {
+        let mut slot = [0xabu8; 16];
+        for (byte, value) in slot.iter_mut().enumerate() {
+            *value = (logical * 16 + byte) as u8;
+        }
+        image[32 + 16 * logical..48 + 16 * logical].copy_from_slice(&slot);
+        expected.copy_from_slice(&slot[..10]);
+    }
+    // Physical 0 (logical 5) a valid number, physical 2 (logical 7) a zero.
+    expected_st[5] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+    expected_st[7] = [0; 10];
+    image[32 + 16 * 5..42 + 16 * 5].copy_from_slice(&expected_st[5]);
+    image[32 + 16 * 7..42 + 16 * 7].copy_from_slice(&expected_st[7]);
+    let mut xmm = [[0u8; 16]; 16];
+    for (register, lane) in xmm.iter_mut().enumerate() {
+        for (byte, value) in lane.iter_mut().enumerate() {
+            *value = (register * 16 + byte) as u8 ^ 0xc3;
+        }
+        image[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    let cell = RefCell::new(dirty_fp_state());
+    let (before, state, memory, result) = run_fxrstor_at(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA,
+        |m| write_image(m, FP_AREA, &image),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert!(memory.writes.is_empty());
+    // The whole 512-byte image is read: 64 ascending, 8-byte aligned qword reads.
+    assert_eq!(memory.reads.len(), 64);
+    for (index, &(address, len)) in memory.reads.iter().enumerate() {
+        assert_eq!((address, len), (FP_AREA + 8 * index as u64, 8));
+    }
+    let fp = cell.borrow();
+    assert_eq!(fp.x87.control_word, 0x037a);
+    assert_eq!(fp.x87.status_word, 0x1800);
+    assert_eq!(fp.x87.last_opcode, 0x07ff);
+    assert_eq!(fp.x87.instruction_pointer, 0x1122_3344_5566_7788);
+    assert_eq!(fp.x87.data_pointer, 0x8877_6655_4433_2211);
+    // Selectors are not part of the Long64 image and stay as they were (dirty: 0x2b/0x53).
+    assert_eq!(fp.x87.instruction_selector, Some(0x2b));
+    assert_eq!(fp.x87.data_selector, Some(0x53));
+    for (logical, expected) in expected_st.iter().enumerate() {
+        assert_eq!(
+            &fp.x87.registers[(3 + logical) & 7],
+            expected,
+            "ST({logical})"
+        );
+    }
+    // Physical 0 valid (00), 2 zero (01), the other six empty (11).
+    assert_eq!(fp.x87.tag_word, 0xffdc);
+    assert_eq!(fp.sse.xmm, xmm);
+    assert_eq!(fp.sse.mxcsr, 0x9fa0);
+    // Nothing but RIP (+5: REX.W, 0F, AE, ModRM, disp8) changed in the CPU state.
+    let mut expected_state = before.clone();
+    expected_state.rip += 5;
+    assert_eq!(state, expected_state);
+}
+
+#[test]
+fn fxsave_then_fxrstor64_round_trips_the_fp_state() {
+    let saved = round_trip_fp_state();
+    // Run 1: plain FXSAVE of `saved` into the area.
+    let cell = RefCell::new(saved.clone());
+    let code = fxsave_rip_at(RIP, FP_AREA);
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let mut first = FpMemory::new(&code);
+    assert_eq!(
+        run_fp(&mut state, &mut first, &set, 1)
+            .unwrap()
+            .instructions_executed,
+        1
+    );
+    let mut image: [u8; 512] = first.area(FP_AREA).try_into().unwrap();
+    // The plain FXSAVE leaves bytes 14..16 and 22..24 (the upper halves of the 64-bit FIP/FDP that
+    // FXRSTOR64 reads) untouched; here they hold the sentinel, so zero them as the "previous"
+    // content of the area. FCS/FDS (12..14, 20..22) were stored as 0 and are read back as part of
+    // the 64-bit pointers (zero), not as selectors.
+    image[14..16].fill(0);
+    image[22..24].fill(0);
+    // Run 2: FXRSTOR64 of that image into a cell that starts from the initial state.
+    let restored = RefCell::new(GuestFpState::initial());
+    let (_, state, memory, result) = run_fxrstor_at(
+        &restored,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA,
+        |m| write_image(m, FP_AREA, &image),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    assert!(memory.writes.is_empty());
+    assert_eq!(*restored.borrow(), saved);
+}
+
+#[test]
+fn fxrstor64_misaligned_area_is_gp0_with_no_state_change() {
+    for area in [FP_AREA + 1, FP_AREA + 8, FP_AREA + 15] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxrstor_at(&cell, CR0_BASE, CR4_FP, &FXRSTOR64_RBX_DISP8, area, |_| {});
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{area:#x}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    // 16-byte alignment is enough.
+    let cell = RefCell::new(dirty_fp_state());
+    let (_, _, memory, result) = run_fxrstor_at(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA + 16,
+        |m| write_image(m, FP_AREA + 16, &image_with_mxcsr(0x1f80)),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads.len(), 64);
+}
+
+#[test]
+fn fxrstor64_wrapping_area_is_gp0_with_no_read() {
+    // 0xFFFF_FFFF_FFFF_FFF0 is aligned and canonical but its 512-byte area overflows.
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) = run_fxrstor_at(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        0xffff_ffff_ffff_fff0,
+        |_| {},
+    );
+    assert_eq!(exit(&result), &gp0());
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn fxrstor64_non_canonical_area_is_gp0_with_no_read() {
+    // Start non-canonical; start canonical but the last byte (start + 511) is not: both #GP(0).
+    for area in [0x0001_0000_0000_0000u64, 0x0000_7fff_ffff_ff00] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxrstor_at(&cell, CR0_BASE, CR4_FP, &FXRSTOR64_RBX_DISP8, area, |_| {});
+        assert_eq!(exit(&result), &gp0(), "{area:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.reads.is_empty(), "{area:#x}");
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxrstor64_reserved_mxcsr_bits_are_gp0_with_no_state_change() {
+    for mxcsr in [0x0000_1fc0u32, 0x0001_1f80, 0x8000_1f80, 0xffff_ffff] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) = run_fxrstor_at(
+            &cell,
+            CR0_BASE,
+            CR4_FP,
+            &FXRSTOR64_RBX_DISP8,
+            FP_AREA,
+            |m| write_image(m, FP_AREA, &image_with_mxcsr(mxcsr)),
+        );
+        assert_eq!(exit(&result), &gp0(), "{mxcsr:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.reads.len(), 64, "the image is read before the check");
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before, "{mxcsr:#x}");
+        assert_eq!(*cell.borrow(), before_cell, "{mxcsr:#x}");
+    }
+    // Every bit of MXCSR_MASK (0xFFBF) is accepted.
+    let cell = RefCell::new(dirty_fp_state());
+    let (_, _, _, result) = run_fxrstor_at(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        FP_AREA,
+        |m| write_image(m, FP_AREA, &image_with_mxcsr(0xffbf)),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cell.borrow().sse.mxcsr, 0xffbf);
+}
+
+#[test]
+fn fxrstor64_read_failure_keeps_the_state_and_does_not_retire() {
+    // The area 0x1f00..0x2100 runs past the buffer (end 0x2000): 32 qword reads succeed, the 33rd
+    // fails. Nothing is committed, not even the successfully read prefix.
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) = run_fxrstor_at(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &FXRSTOR64_RBX_DISP8,
+        0x1f00,
+        |_| {},
+    );
+    assert!(
+        matches!(
+            exit(&result),
+            RunExit::MemoryError(MemoryError::Unmapped { .. })
+        ),
+        "{:?}",
+        result.exit
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(memory.reads.len(), 32);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn fxrstor64_follows_the_fxsave_gates_ts_em_and_osfxsr() {
+    for cr0 in [
+        CR0_BASE | CR0_TS,
+        CR0_BASE | CR0_EM,
+        CR0_BASE | CR0_TS | CR0_EM,
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxrstor_at(&cell, cr0, CR4_FP, &FXRSTOR64_RBX_DISP8, FP_AREA, |_| {});
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+            "cr0 {cr0:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.reads.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    for cr4 in [CR4_BASE, CR4_BASE | (1 << 10)] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxrstor_at(&cell, CR0_BASE, cr4, &FXRSTOR64_RBX_DISP8, FP_AREA, |_| {});
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.reads.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxrstor64_outside_the_member_is_unsupported_with_its_opcode() {
+    let image = image_with_mxcsr(0x1f80);
+    // Without the FP member (CPUID declared, no `with_fp_state`).
+    let set = base().with_cpuid(&CpuidProfile::X8664V1Stage4A);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rbx as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXRSTOR64_RBX_DISP8);
+    write_image(&mut memory, FP_AREA, &image);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    // With the member, every other encoding of the group stays refused and changes nothing.
+    for code in [
+        &[0x0f, 0xae, 0x4b, 0x40][..],             // FXRSTOR32 (no REX.W)
+        &[0x48, 0x0f, 0xae, 0x4b, 0x41][..],       // another displacement
+        &[0x48, 0x0f, 0xae, 0x4a, 0x40][..],       // another ModRM (RDX base)
+        &[0x48, 0x0f, 0xae, 0x0b][..],             // no displacement
+        &[0x64, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // FS segment prefix
+        &[0x66, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // operand-size prefix
+        &[0x48, 0x0f, 0xae, 0xcb][..],             // mod = 11
+        &[0x49, 0x0f, 0xae, 0x4b, 0x40][..],       // REX.W + REX.B
+        &[0x4c, 0x0f, 0xae, 0x4b, 0x40][..],       // REX.W + REX.R
+        &[0x67, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // address-size prefix
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxrstor_at(&cell, CR0_BASE, CR4_FP, code, FP_AREA, |m| {
+                write_image(m, FP_AREA, &image)
+            });
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rbx as usize] = fp_rbx_for(FP_AREA);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXRSTOR64_RBX_DISP8);
+    write_image(&mut memory, FP_AREA, &image_with_mxcsr(0x1f80));
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert!(
+        matches!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege)),
+        "{result:?}"
+    );
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
 }

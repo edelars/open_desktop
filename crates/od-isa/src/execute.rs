@@ -2150,8 +2150,12 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// the set's memory with the S2-39c layout (16-byte alignment else `#GP(0)`; MXCSR_MASK
     /// `TARGET_FXSAVE_MXCSR_MASK`; reserved bytes untouched), the 13 defined fields in ascending
     /// order, each stored as 8/4/2/1-byte `write` calls (the widths of the board's paged adapter;
-    /// not a transaction: a fault in a later piece leaves the earlier ones written). Both fault with `#NM` when
-    /// CR0.EM or CR0.TS is set; `FXSAVE` is `Unsupported` (`0xAE`) with CR4.OSFXSR clear. The
+    /// not a transaction: a fault in a later piece leaves the earlier ones written). S4-38L9E adds
+    /// `FXRSTOR64` (`48 0F AE 4B 40`, `fxrstor64 0x40(%rbx)`, nothing else of the group): the whole
+    /// 512-byte Long64 image is read (16-byte alignment else `#GP(0)`; reserved MXCSR bits `#GP(0)`)
+    /// and the cell is replaced only after every check; a failing read leaves it unchanged. Both
+    /// fault with `#NM` when
+    /// CR0.EM or CR0.TS is set; `FXSAVE` and `FXRSTOR64` are `Unsupported` (`0xAE`) with CR4.OSFXSR clear. The
     /// member requires a CPUID profile with the FPU (EDX bit 0) and FXSR (EDX bit 24) bits
     /// declared (`Cpl0ProfileSetInputError::FpFeaturesNotDeclared` otherwise) and a cell whose FCS/FDS
     /// selectors are known (`FpStateNotAdmitted`). Without this call all of the above stay
@@ -33497,13 +33501,13 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    // S4-38L9d: the FP member of the CPL0 set owns `FNINIT` and the plain `FXSAVE`; its state lives
-    // in the member's cell, so these two never reach the `state.x87`/`state.sse` paths below.
+    // S4-38L9d/E: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE` and `FXRSTOR64`; its
+    // state lives in the member's cell, so these three never reach the `state.x87`/`state.sse` paths below.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
         && matches!(
             instruction.operation,
-            Operation::Fninit | Operation::FxsaveRipRelative(_)
+            Operation::Fninit | Operation::FxsaveRipRelative(_) | Operation::Fxrstor64RbxDisp8(_)
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -55180,7 +55184,8 @@ enum FxsaveLayout {
 /// the architecture leaves it implementation-dependent), then CR0.EM or CR0.TS (`#NM`, the S2-39
 /// convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
 /// `#GP(0)`, a page fault is the memory's own fault) before anything commits. The FP cell is
-/// changed only by `FNINIT`; the CPU state changes only by the RIP.
+/// changed only by `FNINIT` and (S4-38L9E, same gates, the image read as the last step before the
+/// commit) `FXRSTOR64`; the CPU state changes only by the RIP.
 fn step_cpl0_fp(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -55256,6 +55261,37 @@ fn step_cpl0_fp(
                 // The paged adapter of the board stores 1/2/4/8 bytes per call.
                 true,
             ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::Fxrstor64RbxDisp8(area) => {
+            // S4-38L9E: `48 0F AE 4B 40` (`fxrstor64 0x40(%rbx)`, the kernel's
+            // `restore_fpregs_from_fpstate`). The same encoding checks and CR4/CR0 gates as the
+            // FXSAVE above; only the REX.W form with the fixed base and displacement exists.
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 5
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::Register(Register::Rbx)
+                || area.index.is_some()
+                || area.displacement != 0x40
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
                 return report_memory_error(error);
             }
             state.rip = next_rip;
@@ -55463,33 +55499,105 @@ fn fxrstor64(
         .as_ref()
         .expect("FXRSTOR64 SSE state was prevalidated")
         .clone();
+    apply_fxrstor64_fields(
+        &mut restored_x87,
+        &mut restored_sse,
+        &environment_0,
+        &environment_1,
+        &environment_2,
+        loaded_mxcsr,
+        &stack,
+        &xmm_image,
+    );
 
-    restored_x87.control_word = u16::from_le_bytes([environment_0[0], environment_0[1]]);
-    restored_x87.status_word = u16::from_le_bytes([environment_0[2], environment_0[3]]);
-    let top = usize::from((restored_x87.status_word >> 11) & 7);
+    state.x87 = Some(restored_x87);
+    state.sse = Some(restored_sse);
+    Ok(())
+}
+
+/// The field decode shared by the S2-39 FXRSTOR64 profile and the CPL0 set member of S4-38L9E: the
+/// defined fields of the 512-byte Long64 image are copied into the staged x87 and SSE state
+/// (image bytes 0..5, 6..16, 16..24, 32..160 and 160..416; MXCSR is checked by the caller).
+#[allow(clippy::too_many_arguments)]
+fn apply_fxrstor64_fields(
+    x87: &mut crate::state::X87State,
+    sse: &mut crate::state::SseState,
+    environment_0: &[u8; 5],
+    environment_1: &[u8; 10],
+    environment_2: &[u8; 8],
+    loaded_mxcsr: u32,
+    stack: &[[u8; 10]; 8],
+    xmm_image: &[u8; 256],
+) {
+    x87.control_word = u16::from_le_bytes([environment_0[0], environment_0[1]]);
+    x87.status_word = u16::from_le_bytes([environment_0[2], environment_0[3]]);
+    let top = usize::from((x87.status_word >> 11) & 7);
     let abridged_tag = environment_0[4];
     for logical in 0..8 {
         let physical = (top + logical) & 7;
         let raw = stack[logical];
-        restored_x87.registers[physical] = raw;
+        x87.registers[physical] = raw;
         let tag = if abridged_tag & (1 << physical) == 0 {
             X87Tag::Empty
         } else {
             classify_fxsave_x87_value(&raw)
         };
-        restored_x87.set_tag(physical as u8, tag);
+        x87.set_tag(physical as u8, tag);
     }
-    restored_x87.last_opcode = u16::from_le_bytes([environment_1[0], environment_1[1]]) & 0x07ff;
-    restored_x87.instruction_pointer =
+    x87.last_opcode = u16::from_le_bytes([environment_1[0], environment_1[1]]) & 0x07ff;
+    x87.instruction_pointer =
         u64::from_le_bytes(environment_1[2..10].try_into().expect("fixed FIP field"));
-    restored_x87.data_pointer = u64::from_le_bytes(environment_2);
-    restored_sse.mxcsr = loaded_mxcsr;
+    x87.data_pointer = u64::from_le_bytes(*environment_2);
+    sse.mxcsr = loaded_mxcsr;
     for register in 0..16 {
-        restored_sse.xmm[register].copy_from_slice(&xmm_image[register * 16..(register + 1) * 16]);
+        sse.xmm[register].copy_from_slice(&xmm_image[register * 16..(register + 1) * 16]);
     }
+}
 
-    state.x87 = Some(restored_x87);
-    state.sse = Some(restored_sse);
+/// S4-38L9E: `FXRSTOR64` of the CPL0 set member (state in its `GuestFpState` cell). Order: the
+/// 16-byte alignment and the canonical range of the whole image (`#GP(0)`, Intel SDM Vol. 2
+/// FXRSTOR, from memory), then the whole 512-byte image is read as 64 ascending qword
+/// `GuestMemory::read` calls (the address is 16-byte aligned, so no qword crosses a page and the
+/// paged adapter needs no narrower read width), then reserved MXCSR bits (`MXCSR & !MXCSR_MASK`,
+/// `#GP(0)`, from memory). Only then the cell is replaced; a failing read or a check leaves it
+/// unchanged. The x87 selectors (FCS/FDS) are not part of the Long64 image and stay as they are.
+fn fxrstor64_cpl0(
+    cell: &RefCell<GuestFpState>,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+) -> Result<(), MemoryError> {
+    const IMAGE_BYTES: u64 = 512;
+    let last = address.checked_add(IMAGE_BYTES - 1);
+    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        return Err(general_protection().into());
+    }
+    let mut image = [0u8; 512];
+    for (index, chunk) in image.chunks_exact_mut(8).enumerate() {
+        memory.read(address + (index as u64) * 8, context, chunk)?;
+    }
+    let loaded_mxcsr = u32::from_le_bytes(image[24..28].try_into().expect("fixed MXCSR field"));
+    if loaded_mxcsr & !crate::TARGET_FXSAVE_MXCSR_MASK != 0 {
+        return Err(general_protection().into());
+    }
+    // The cell is borrowed only after every memory callback has returned.
+    let mut fp = cell.borrow_mut();
+    let mut restored = fp.clone();
+    let mut stack = [[0u8; 10]; 8];
+    for (logical, slot) in stack.iter_mut().enumerate() {
+        slot.copy_from_slice(&image[32 + logical * 16..32 + logical * 16 + 10]);
+    }
+    apply_fxrstor64_fields(
+        &mut restored.x87,
+        &mut restored.sse,
+        image[0..5].try_into().expect("fixed environment field"),
+        image[6..16].try_into().expect("fixed environment field"),
+        image[16..24].try_into().expect("fixed environment field"),
+        loaded_mxcsr,
+        &stack,
+        image[160..416].try_into().expect("fixed XMM field"),
+    );
+    *fp = restored;
     Ok(())
 }
 
