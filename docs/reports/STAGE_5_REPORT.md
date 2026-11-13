@@ -50,6 +50,18 @@ S5-00 принят после независимого архитектурно�
 | Сеть: `S11-32`, `S11-31e` | `[ ]`, не приняты ([план этапа 11](../plans/STAGE_11.md)) | Сценарий F не может быть принят до готовности NIC и NAT измерения. |
 | JIT/SMC профиль: `S3-23`, `S3-24` | Открыты; имеющиеся проверки ограничены fixtures ([план этапа 3](../plans/STAGE_3.md)) | Сценарий E не может расширять доказательство за пределы принятых CPU/JIT контрактов. |
 
+### Evidence consumers and missing gates (S5-20 preparatory handoff)
+
+This is a reciprocal documentation handoff only. It does not accept S5-20, S5-19, Stage 5, Linux support, or any guest scenario.
+
+| Evidence available | Consumer | Missing gate / limit |
+|---|---|---|
+| S5-02/03/04/17 accepted: storage contract, host backend/failure tests and preliminary no-guest profile; S5-05 accepted build recipe and fixtures | S7-31, S11-28, S11-33 | Host/build evidence only. It does not establish Linux boot, /init, userspace, a guest-visible disk, guest agent, NIC or guest network. |
+| S5-06 prepared suite (blocked/unaccepted); S5-07 live C7 probe (failed) | Linux boot/userspace consumers S7-31 and S11-28; network guest path S11-33 | Probe stopped at leaf-1 cpuid_divergence (retired=1,137,476,410); nonce marker missing, COM1 empty, /init unconfirmed. S4-39 remains unaccepted. Evidence and hashes are in [Support Matrix](../specs/SUPPORT_MATRIX.md) and the [probe record](#s5-07-live-stage-4-c7-nonce-probe-2026-11-12). |
+| S7-16 remains in_progress/unaccepted; PCI binding and NVMe IRQ route are absent; S4-31 is unaccepted; S4-30 acceptance is narrow and does not include PCI binding | S7-31 and disk scenario S5-09 | Need accepted controller integration, PCI/ECAM binding, IRQ routing and ACPI discovery (MCFG, _PRT/_CRS) before claiming Linux NVMe discovery. |
+| S11-31e and S11-32 are not accepted; S11-32 remains blocked to S4-30 and interrupts | S11-33 and Stage 5 scenario F (S5-13) | Host loopback NAT evidence is not guest NAT evidence; a NIC model and accepted Linux guest path are still required. S11-33 DHCP/DNS/ICMP/HTTP counters must come from a real guest run. |
+| No accepted Linux guest agent or guest-side network run exists | S11-28 and S11-33 | Wait for accepted Linux boot/userspace evidence; keep the independent S11-31e, S11-32, S4-30, S4-31 blockers explicit. |
+
 ### Перенесённые ограничения
 
 - `S4-35`: зафиксированные хеши Linux artifacts не подтверждают provenance ядра.
