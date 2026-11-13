@@ -716,9 +716,11 @@ pub struct LinuxCpl0SetMembers {
     /// handed to the CPU either way; without this member the set refuses the state
     /// (`Cr3NotAdmitted`, a negative control).
     pub cpu_owned_cr3: bool,
-    /// `with_cpuid(DiagnosticV1)`: only what that profile declares, nothing more. With this
-    /// member the run also stops before a `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`,
-    /// S4-38L4): the profile does not answer the feature leaves of the target.
+    /// `with_cpuid(<profile>)` (the profile is [`Self::cpuid_profile`]): only what that profile
+    /// declares, nothing more. With the default profile `DiagnosticV1` the run also stops before a
+    /// `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`, S4-38L4): that profile does not answer
+    /// the feature leaves of the target. With `X8664V1Stage4A` there is no such stop (see
+    /// [`Self::cpuid_profile`]).
     pub cpuid: bool,
     /// The CPUID profile of the `cpuid` member (S4-38L9a). [`CpuidProfile::DiagnosticV1`] (the
     /// default of [`Self::minimal`] and [`Self::linux_default`]) keeps the C7 boundary above.
@@ -899,9 +901,10 @@ impl LinuxCpl0SetMembers {
 /// Nothing is executed that the set does not admit: the first inadmissible instruction is the
 /// stop (`Unsupported`), and the segment caches the loader left are not touched.
 ///
-/// CPUID boundary (S4-38L4, checkpoint C7): with `members.cpuid` the run stops BEFORE retiring a
-/// `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`, `cpuid_divergence_leaf`
-/// set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
+/// CPUID boundary (S4-38L4, checkpoint C7), for the `DiagnosticV1` profile only (the default; for
+/// `X8664V1Stage4A` see the profile paragraph below): with `members.cpuid` the run stops BEFORE
+/// retiring a `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`,
+/// `cpuid_divergence_leaf` set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
 /// word would steer the kernel) and does not patch the kernel: the run ends at the honest edge.
 /// Other leaves (0, 0x8000_0000, ...) are answered by DiagnosticV1 as the set does. Results past
 /// the edge are diagnostic only. Without the member `CPUID` stays `Unsupported` (0xa2).

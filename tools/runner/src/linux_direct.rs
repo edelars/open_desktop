@@ -319,15 +319,27 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
     });
     if subset {
         evidence["cpuid_profile"] = json!(format!("{cpuid_profile:?}"));
-        evidence["diagnostic_note"] = json!(
+    }
+    // With both flags the note carries both explanations (subset and C7).
+    let mut parts = Vec::new();
+    if subset {
+        parts.push(
             "CPUID profile X8664V1Stage4A declares a subset of the target (TSC only; checkpoint \
-             C7 boundary off by the profile); not the full target CPU, the result is NOT counted"
+             C7 boundary off by the profile)",
         );
-    } else if diagnostic_past_c7 {
-        evidence["diagnostic_note"] = json!(
-            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); \
-             not a profile of the target CPU, the result is NOT counted"
-        );
+    }
+    if diagnostic_past_c7 {
+        parts.push(if subset {
+            "--diagnostic-past-c7 also turns the checkpoint C7 boundary off by itself, so this run \
+             does not show that the profile alone avoids it"
+        } else {
+            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a \
+             profile of the target CPU"
+        });
+    }
+    if !parts.is_empty() {
+        evidence["diagnostic_note"] =
+            json!(format!("{}; the result is NOT counted", parts.join("; ")));
     }
 }
 
@@ -2088,6 +2100,27 @@ mod tests {
                 "irq"
             ])
         );
+    }
+
+    #[test]
+    fn diagnostic_note_has_both_explanations_with_both_flags() {
+        let note = |past_c7: bool, profile: CpuidProfile| {
+            let mut evidence = json!({});
+            mark_acceptance(&mut evidence, past_c7, profile);
+            evidence
+                .get("diagnostic_note")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let both = note(true, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(both.contains("X8664V1Stage4A declares a subset"), "{both}");
+        assert!(both.contains("--diagnostic-past-c7"), "{both}");
+        assert!(both.contains("NOT counted"), "{both}");
+        let subset = note(false, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
+        let diag = note(true, CpuidProfile::DiagnosticV1).expect("note");
+        assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
+        assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
     }
 
     #[test]

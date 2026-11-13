@@ -158,7 +158,9 @@ mod tests {
         assert_eq!(leaf1.ebx, 0x0000_0100);
         assert_eq!(leaf1.ecx, 0);
         assert_eq!(leaf1.edx, 0x0000_0010, "only EDX bit 4 (TSC)");
-        // Feature bits of the target table (0x0781A379) that this subset must not declare.
+        // Feature bits of the target table that this subset must not declare. SEP (bit 11) is
+        // not in the target table either (SEP=0 by the contract) and stays clear; the table's
+        // 0x0781A379 is not asserted bit by bit here.
         for (bit, name) in [
             (0, "FPU"),
             (3, "PSE"),
