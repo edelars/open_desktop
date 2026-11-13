@@ -160,9 +160,10 @@ separate bounded AP startup path. Independent architecture review
 `gpt-6.1-sol/high` passed without remaining findings. The reviewer checked the
 tracked byte-decode evidence, selected branch paths, SIPI state, transition
 modes, real-mode addressing rules, and profile exclusions. This is a
-document-only result: it does not implement instruction execution, claim AP
-runtime, or settle the physical relocation base. The pinned staged image has
-no signed source-to-binary chain; Windows CPU-06 remains unverified.
+document-only result, committed as [`67a201b`](https://github.com/edelars/open_desktop/commit/67a201b):
+it does not implement instruction execution, claim AP runtime, or settle the
+physical relocation base. The pinned staged image has no signed source-to-binary
+chain; Windows CPU-06 remains unverified.
 
 ### S6-07 — inventory однопроцессорных допущений (in progress)
 
