@@ -2252,3 +2252,14 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** [CPU_CONTRACT.md:21069–21071](specs/CPU_CONTRACT.md#L21069) attributes the PREFETCH semantics to the Intel SDM from memory without an independently checked source. S5-21 added candidate metadata only and does not verify source provenance or establish architecture-wide semantics.
 - **Основание:** [S4-38L6a plan entry](plans/STAGE_4.md#L2152) and the [S5-21 PREFETCH report](reports/STAGE_5_REPORT.md#s5-21-cpl0-candidate-follow-up-prefetchnta--prefetcht0-2026-11-13).
 - **Следующий шаг:** verify the applicable Intel SDM edition and record its exact citation in the CPU contract and Stage 4 result; preserve the current provenance boundary until verified.
+
+<a id="issue-086-s9-26-wrong-uefi-stage-reference"></a>
+
+### ISSUE-086 — S9-26 names the wrong UEFI stage
+
+- **Дата обнаружения:** 2026-11-13, при подготовке S6-00.
+- **Компонент:** `docs/reports/STAGE_9_REPORT.md`, запись S9-26.
+- **Статус:** открыта; подтверждённая документальная ошибка, не дефект реализации.
+- **Суть и последствия:** запись S9-26 указывает, что UEFI firmware отсутствует на этапах 6/8. UEFI принадлежит этапу 7. Текущая формулировка ошибочно распределяет владельца и может привести к неправильному планированию блокеров.
+- **Основание:** строка S9-26 в отчёте этапа 9 сопоставлена с планом этапа 7 и картой этапов; та же находка описана в [отчёте этапа 6](reports/STAGE_6_REPORT.md#4-документные-расхождения-и-передача).
+- **Следующий шаг:** владелец этапа 9 исправляет ссылку на этап 7 в `STAGE_9_REPORT.md`; до исправления сохранять эту запись открытой.
