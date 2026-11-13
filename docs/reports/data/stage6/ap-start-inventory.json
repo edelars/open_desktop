@@ -301,7 +301,7 @@
     ],
     "disassembly_status": "complete_for_native_init_sipi_trampoline_entry_through_indirect_secondary_startup_64_handoff",
     "disassembly_tools": {
-      "host": "macOS arm64",
+      "host": "macOS arm64 (initial extraction and cross-disassembly; physical x86 repeat recorded below)",
       "container_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
       "tool": "GNU Binutils for Ubuntu 2.46 (binutils 2.46-3ubuntu2; x86_64-linux-gnu-objdump)",
       "input_provenance": {
@@ -1640,7 +1640,7 @@
       ],
       "execution_scope": "The decoded path is the native INIT/SIPI trampoline path selected by do_boot_cpu when no wakeup_secondary_cpu_64 or wakeup_secondary_cpu callback is installed. The static inventory does not prove which callback the staged guest selects at runtime. The direct 64-bit startup trampoline is a distinct callback path and is not the selected D2 recommendation.",
       "runtime_relocation_caveat": "instruction_bytes records the bytes linked into real_mode_blob in the staged ELF. setup_real_mode() copies the blob into a low-memory allocation and applies 16-bit segment relocations and 32-bit linear relocations before AP execution. Therefore relocation-bearing operands can differ in the runtime copy; the selected low-memory base is not pinned by S4-35 and no guest runtime trace is available. The 32-bit linear relocation at blob offset 0x2032 patches the immediate operand of the MOV at 0x2031 for pa_trampoline_pgd: linked value 0x4000 becomes runtime CR3 = phys_base + 0x4000. Other transition targets are also runtime-relocated: far-jump operand fixups at 0x1046 and 0x2066 add phys_base to the linked offsets 0x2000 and 0x20f0, respectively.",
-      "pending": "The static image-byte inventory is complete for the native INIT/SIPI trampoline through the indirect handoff to secondary_startup_64. Remaining S6-02 acceptance evidence: independent review and architecture decision; actual runtime callback/APIC selection is not pinned; Windows CPU-06 remains an unverified hypothesis for stage-8 trace. The Stage 6 task explicitly asks for disassembly on the x86 bench; this inventory was produced with x86-target GNU Binutils in a pinned linux/arm64 container and that physical-host criterion remains pending until repeated or verified on the project x86 bench. The required x86 bench execution remains pending; current actual-image byte rows were cross-disassembled on linux/arm64.",
+      "pending": "The linked-image instruction inventory and physical x86 repeat are complete. The physical repeat passed independent evidence review; architecture acceptance and resolving the Linux runtime callback/APIC path remain pending. The Windows CPU-06 source was not found; keep it explicitly as an unverified hypothesis for the Stage 8 trace, as permitted by the S6-02 plan. This Windows trace is not an S6-02 acceptance gate.",
       "common_64_entry_instructions": [
         {
           "path": "tr_start -> secondary_startup_64",
@@ -1672,7 +1672,119 @@
         "ia32e_compat_32": "The far jump at 0x2065 executes after CR0.PG and EFER.LME activate IA-32e, while the current CS is still 32-bit compatibility.",
         "long_64": "startup_64 at 0x20f0 and the common secondary startup targets."
       },
-      "instruction_inventory_note": "Each row records decode_mode, execution_mode, exact linked-image bytes, Intel-syntax mnemonic and control_state_effects (empty where the instruction does not touch control state or MSRs). The linked 16/32-bit decode width and active architectural mode differ at the mode-switch far jumps."
+      "instruction_inventory_note": "Each row records decode_mode, execution_mode, exact linked-image bytes, Intel-syntax mnemonic and control_state_effects (empty where the instruction does not touch control state or MSRs). The linked 16/32-bit decode width and active architectural mode differ at the mode-switch far jumps.",
+      "physical_x86_verification": {
+        "date": "2026-11-13",
+        "host": {
+          "architecture": "x86_64",
+          "os": "Linux 7.0.0-42-generic",
+          "cpu": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "tool": "GNU objdump (GNU Binutils for Ubuntu) 2.46",
+          "metadata_file": {
+            "path": "docs/reports/data/stage6/s6-02-x86/host-info.txt",
+            "bytes": 297,
+            "sha256": "ad48d05b522e12944f7031d0c8962327133bd58b71059b4591249504a7112bff"
+          }
+        },
+        "isolated_remote_directory": "~/projects/open_desktop-s6-08-fa74b1c/work/stage6/s6-02-x86-repeat",
+        "transferred_bytes": 25196,
+        "inputs": [
+          {
+            "path": "work/stage6/s6-02-disassembly/real_mode_blob-from-vmlinuz.bin",
+            "size_bytes": 25188,
+            "sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f"
+          },
+          {
+            "path": "work/stage6/s6-02-disassembly/common64-entry.bin",
+            "size_bytes": 8,
+            "sha256": "8b2bf191b2ccd5e35785621387dd8354b3158cbdc2d0d04aded99f34c2a461e7",
+            "source": "First eight bytes of secondary_startup_64 at 0xffffffff8139c090 in staged vmlinux-debug; its SHA-256 is 7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f."
+          }
+        ],
+        "commands": [
+          "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr16,data16 --insn-width=16 --start-address=0x1000 --stop-address=0x11a9 real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386 -M intel,addr32,data32 --insn-width=16 --start-address=0x2000 --stop-address=0x206c real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --start-address=0x20f0 --stop-address=0x20f6 real_mode_blob.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --adjust-vma=0xffffffff8139c090 --start-address=0xffffffff8139c090 --stop-address=0xffffffff8139c095 common64-entry.bin",
+          "tail -c +6 common64-entry.bin > common64-no-verify.bin",
+          "x86_64-linux-gnu-objdump -D -b binary -m i386:x86-64 -M intel --insn-width=16 --adjust-vma=0xffffffff8139c095 common64-no-verify.bin"
+        ],
+        "comparison": {
+          "real_16": {
+            "json_rows": 119,
+            "raw_objdump_rows": 122,
+            "matched_rows": 119,
+            "excluded_alignment_decode_rows": 3,
+            "excluded_byte_range": "[0x1074,0x1080)",
+            "missing": 0,
+            "mismatched": 0,
+            "unexplained_extra": 0
+          },
+          "protected_32": {
+            "json_rows": 29,
+            "raw_objdump_rows": 29,
+            "matched_rows": 29,
+            "missing": 0,
+            "mismatched": 0,
+            "extra": 0
+          },
+          "long_64": {
+            "json_rows": 1,
+            "raw_objdump_rows": 1,
+            "matched_rows": 1,
+            "missing": 0,
+            "mismatched": 0,
+            "extra": 0
+          },
+          "common_64_entries": [
+            {
+              "path": "tr_start -> secondary_startup_64",
+              "address": "0xffffffff8139c090",
+              "bytes": "e8 6b 01 00 00",
+              "matched": true
+            },
+            {
+              "path": "SEV-ES tr_start -> secondary_startup_64_no_verify",
+              "address": "0xffffffff8139c095",
+              "bytes": "45 31 ff",
+              "matched": true
+            }
+          ]
+        },
+        "stdout_files": [
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/16bit-objdump.txt",
+            "bytes": 9000,
+            "sha256": "ecf7df9ee7f039ba8a4dace1517520a62135aacbc1e573cd6b039c3e86355ba1"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/32bit-objdump.txt",
+            "bytes": 2308,
+            "sha256": "ed4fbac2eadeed6fbca3f04190995a516b2050db9c2d271afafc28d22cc617b4"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/64bit-objdump.txt",
+            "bytes": 215,
+            "sha256": "018dacb8587c74ab00d5f79f3d58c272b7bbd5f914d373c18c5227de3228d0c3"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/common-verify-objdump.txt",
+            "bytes": 196,
+            "sha256": "820e67b4eeb9854596af5b35a4b15dd91b26227d2f97843159a4970a5f2270f8"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/common-no-verify-objdump.txt",
+            "bytes": 191,
+            "sha256": "d9821e72ad14cf29d54cefaa5ab2809562f701f7a118e462c851f3b77c4c8861"
+          },
+          {
+            "path": "docs/reports/data/stage6/s6-02-x86/host-info.txt",
+            "bytes": 297,
+            "sha256": "ad48d05b522e12944f7031d0c8962327133bd58b71059b4591249504a7112bff"
+          }
+        ],
+        "scope_limit": "Physical x86 disassembly confirms byte decoding only; it does not establish runtime AP callback/APIC selection or guest AP execution."
+      }
     },
     "source_unpack_command": "tar -xjf work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2 -C /private/tmp/s6-02-src",
     "extraction_command": "dd if=work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic of=/private/tmp/s6-02-real_mode_blob.bin bs=1 skip=$((0x31f6000)) count=$((0x6264)) 2>/dev/null",
@@ -1794,7 +1906,6 @@
     "runtime_gates": "NMI execution depends on panic/reboot/kdump/debug paths, CPU PMU capabilities, and nonmi_ipi/runtime configuration; source inventory does not prove these paths ran in the VM."
   },
   "not_yet_inventoried": [
-    "Complete per-instruction bytes and control-register/MSR effects from SIPI through common 64-bit code, including a correct 16-bit decode.",
     "Two- and four-vCPU runtime xAPIC/x2APIC selection under the project's final CPUID and IRQ-remapping exposure.",
     "Runtime confirmation of the documented conditional IOAPIC/MSI modes, topology leaves and NMI paths under the final guest profile.",
     "The calibrated runtime udelay provider selected for the final guest CPU profile and boot command line.",

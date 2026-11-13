@@ -1,0 +1,36 @@
+
+real_mode_blob.bin:     file format binary
+
+
+Disassembly of section .data:
+
+00002000 <.data+0x2000>:
+    2000:	8e d2                                           	mov    ss,edx
+    2002:	81 c4 00 00 00 00                               	add    esp,0x0
+    2008:	8e da                                           	mov    ds,edx
+    200a:	8e c2                                           	mov    es,edx
+    200c:	8e e2                                           	mov    fs,edx
+    200e:	8e ea                                           	mov    gs,edx
+    2010:	0f ba 25 14 50 00 00 00                         	bt     DWORD PTR ds:0x5014,0x0
+    2018:	73 0f                                           	jae    0x2029
+    201a:	b9 10 00 01 c0                                  	mov    ecx,0xc0010010
+    201f:	0f 32                                           	rdmsr
+    2021:	0f ba e8 17                                     	bts    eax,0x17
+    2025:	72 02                                           	jb     0x2029
+    2027:	0f 30                                           	wrmsr
+    2029:	a1 10 50 00 00                                  	mov    eax,ds:0x5010
+    202e:	0f 22 e0                                        	mov    cr4,eax
+    2031:	b8 00 40 00 00                                  	mov    eax,0x4000
+    2036:	0f 22 d8                                        	mov    cr3,eax
+    2039:	b9 80 00 00 c0                                  	mov    ecx,0xc0000080
+    203e:	0f 32                                           	rdmsr
+    2040:	3b 05 08 50 00 00                               	cmp    eax,DWORD PTR ds:0x5008
+    2046:	75 08                                           	jne    0x2050
+    2048:	3b 15 0c 50 00 00                               	cmp    edx,DWORD PTR ds:0x500c
+    204e:	74 0d                                           	je     0x205d
+    2050:	a1 08 50 00 00                                  	mov    eax,ds:0x5008
+    2055:	8b 15 0c 50 00 00                               	mov    edx,DWORD PTR ds:0x500c
+    205b:	0f 30                                           	wrmsr
+    205d:	b8 33 00 05 80                                  	mov    eax,0x80050033
+    2062:	0f 22 c0                                        	mov    cr0,eax
+    2065:	ea f0 20 00 00 10 00                            	jmp    0x10:0x20f0

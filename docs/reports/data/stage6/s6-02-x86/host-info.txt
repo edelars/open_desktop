@@ -1,0 +1,6 @@
+Linux 7.0.0-42-generic
+x86_64
+model name	: Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz
+GNU objdump (GNU Binutils for Ubuntu) 2.46
+d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f  real_mode_blob.bin
+8b2bf191b2ccd5e35785621387dd8354b3158cbdc2d0d04aded99f34c2a461e7  common64-entry.bin

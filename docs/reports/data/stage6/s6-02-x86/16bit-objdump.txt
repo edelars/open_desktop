@@ -1,0 +1,129 @@
+
+real_mode_blob.bin:     file format binary
+
+
+Disassembly of section .data:
+
+00001000 <.data+0x1000>:
+    1000:	fa                                              	cli
+    1001:	0f 09                                           	wbinvd
+    1003:	ea 08 10 00 00                                  	jmp    0x0:0x1008
+    1008:	8c c8                                           	mov    ax,cs
+    100a:	8e d8                                           	mov    ds,ax
+    100c:	8e c0                                           	mov    es,ax
+    100e:	8e d0                                           	mov    ss,ax
+    1010:	66 f0 0f ba 2e 18 50 00                         	lock bts DWORD PTR ds:0x5018,0x0
+    1018:	73 04                                           	jae    0x101e
+    101a:	f3 90                                           	pause
+    101c:	eb f2                                           	jmp    0x1010
+    101e:	66 bc 20 60 00 00                               	mov    esp,0x6020
+    1024:	e8 59 00                                        	call   0x1080
+    1027:	66 85 c0                                        	test   eax,eax
+    102a:	75 20                                           	jne    0x104c
+    102c:	66 0f 01 1e 60 00                               	lidtd  ds:0x60
+    1032:	66 0f 01 16 30 00                               	lgdtd  ds:0x30
+    1038:	ba 18 00                                        	mov    dx,0x18
+    103b:	66 b8 33 00 05 00                               	mov    eax,0x50033
+    1041:	0f 22 c0                                        	mov    cr0,eax
+    1044:	66 ea 00 20 00 00 08 00                         	jmp    0x8:0x2000
+    104c:	f4                                              	hlt
+    104d:	eb fd                                           	jmp    0x104c
+    104f:	90                                              	nop
+    1050:	fa                                              	cli
+    1051:	ea 56 10 00 00                                  	jmp    0x0:0x1056
+    1056:	8c c8                                           	mov    ax,cs
+    1058:	8e d8                                           	mov    ds,ax
+    105a:	8e c0                                           	mov    es,ax
+    105c:	8e d0                                           	mov    ss,ax
+    105e:	66 f0 0f ba 2e 18 50 00                         	lock bts DWORD PTR ds:0x5018,0x0
+    1066:	73 04                                           	jae    0x106c
+    1068:	f3 90                                           	pause
+    106a:	eb f2                                           	jmp    0x105e
+    106c:	66 bc 20 60 00 00                               	mov    esp,0x6020
+    1072:	eb b8                                           	jmp    0x102c
+    1074:	89 f6                                           	mov    si,si
+    1076:	2e 8d b4 00 00                                  	lea    si,cs:[si+0x0]
+    107b:	2e 8d b4 00 00                                  	lea    si,cs:[si+0x0]
+    1080:	9c                                              	pushf
+    1081:	6a 00                                           	push   0x0
+    1083:	9d                                              	popf
+    1084:	66 9c                                           	pushfd
+    1086:	66 58                                           	pop    eax
+    1088:	66 89 c3                                        	mov    ebx,eax
+    108b:	66 35 00 00 20 00                               	xor    eax,0x200000
+    1091:	66 50                                           	push   eax
+    1093:	66 9d                                           	popfd
+    1095:	66 9c                                           	pushfd
+    1097:	66 58                                           	pop    eax
+    1099:	66 39 c3                                        	cmp    ebx,eax
+    109c:	0f 84 fb 00                                     	je     0x119b
+    10a0:	66 b8 00 00 00 00                               	mov    eax,0x0
+    10a6:	0f a2                                           	cpuid
+    10a8:	66 83 f8 01                                     	cmp    eax,0x1
+    10ac:	0f 82 eb 00                                     	jb     0x119b
+    10b0:	31 ff                                           	xor    di,di
+    10b2:	66 81 fb 41 75 74 68                            	cmp    ebx,0x68747541
+    10b9:	75 17                                           	jne    0x10d2
+    10bb:	66 81 fa 65 6e 74 69                            	cmp    edx,0x69746e65
+    10c2:	75 0e                                           	jne    0x10d2
+    10c4:	66 81 f9 63 41 4d 44                            	cmp    ecx,0x444d4163
+    10cb:	75 05                                           	jne    0x10d2
+    10cd:	bf 01 00                                        	mov    di,0x1
+    10d0:	eb 5a                                           	jmp    0x112c
+    10d2:	66 81 fb 47 65 6e 75                            	cmp    ebx,0x756e6547
+    10d9:	75 51                                           	jne    0x112c
+    10db:	66 81 fa 69 6e 65 49                            	cmp    edx,0x49656e69
+    10e2:	75 48                                           	jne    0x112c
+    10e4:	66 81 f9 6e 74 65 6c                            	cmp    ecx,0x6c65746e
+    10eb:	75 3f                                           	jne    0x112c
+    10ed:	66 b8 01 00 00 00                               	mov    eax,0x1
+    10f3:	0f a2                                           	cpuid
+    10f5:	66 89 c1                                        	mov    ecx,eax
+    10f8:	66 25 00 0f f0 0f                               	and    eax,0xff00f00
+    10fe:	66 c1 e8 08                                     	shr    eax,0x8
+    1102:	66 83 f8 06                                     	cmp    eax,0x6
+    1106:	77 13                                           	ja     0x111b
+    1108:	72 22                                           	jb     0x112c
+    110a:	66 81 e1 f0 00 0f 00                            	and    ecx,0xf00f0
+    1111:	66 c1 e9 04                                     	shr    ecx,0x4
+    1115:	66 83 f9 0d                                     	cmp    ecx,0xd
+    1119:	72 11                                           	jb     0x112c
+    111b:	66 b9 a0 01 00 00                               	mov    ecx,0x1a0
+    1121:	0f 32                                           	rdmsr
+    1123:	66 0f ba f2 02                                  	btr    edx,0x2
+    1128:	73 02                                           	jae    0x112c
+    112a:	0f 30                                           	wrmsr
+    112c:	66 b8 01 00 00 00                               	mov    eax,0x1
+    1132:	0f a2                                           	cpuid
+    1134:	66 81 e2 61 81 00 07                            	and    edx,0x7008161
+    113b:	66 81 f2 61 81 00 07                            	xor    edx,0x7008161
+    1142:	75 57                                           	jne    0x119b
+    1144:	66 b8 00 00 00 80                               	mov    eax,0x80000000
+    114a:	0f a2                                           	cpuid
+    114c:	66 3d 01 00 00 80                               	cmp    eax,0x80000001
+    1152:	72 47                                           	jb     0x119b
+    1154:	66 b8 01 00 00 80                               	mov    eax,0x80000001
+    115a:	0f a2                                           	cpuid
+    115c:	66 81 e2 00 00 00 20                            	and    edx,0x20000000
+    1163:	66 81 f2 00 00 00 20                            	xor    edx,0x20000000
+    116a:	75 2f                                           	jne    0x119b
+    116c:	66 b8 01 00 00 00                               	mov    eax,0x1
+    1172:	0f a2                                           	cpuid
+    1174:	66 81 e2 00 00 00 06                            	and    edx,0x6000000
+    117b:	66 81 fa 00 00 00 06                            	cmp    edx,0x6000000
+    1182:	74 20                                           	je     0x11a4
+    1184:	85 ff                                           	test   di,di
+    1186:	74 13                                           	je     0x119b
+    1188:	66 b9 15 00 01 c0                               	mov    ecx,0xc0010015
+    118e:	0f 32                                           	rdmsr
+    1190:	66 0f ba f0 0f                                  	btr    eax,0xf
+    1195:	0f 30                                           	wrmsr
+    1197:	31 ff                                           	xor    di,di
+    1199:	eb d1                                           	jmp    0x116c
+    119b:	9d                                              	popf
+    119c:	66 b8 01 00 00 00                               	mov    eax,0x1
+    11a2:	c3                                              	ret
+    11a3:	cc                                              	int3
+    11a4:	9d                                              	popf
+    11a5:	66 31 c0                                        	xor    eax,eax
+    11a8:	c3                                              	ret
