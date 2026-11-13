@@ -1313,8 +1313,68 @@ def local_state_gated_conditional_candidate(row: dict) -> str | None:
     return None
 
 
+def cvt_register_state_gated_candidate(row: dict) -> str | None:
+    """Recognize bounded S2-37t/ad/ae register bytes without changing disposition."""
+    mnemonic = row["mnemonic"]
+    signature = row["signature"]
+    if mnemonic == "cvtss2sd" and signature == "cvtss2sd xmm,xmm":
+        mandatory = 0xF3
+        opcode = (0x0F, 0x5A)
+        candidate = "S2-37t-CVTSS2SD-register-state-gated"
+        width = "xmm"
+    elif mnemonic in {"cvttss2si", "cvttsd2si"} and signature in {
+        f"{mnemonic} r32,xmm", f"{mnemonic} r64,xmm"
+    }:
+        mandatory = 0xF3 if mnemonic == "cvttss2si" else 0xF2
+        opcode = (0x0F, 0x2C)
+        candidate = "S2-37ad-CVTTSS2SI-register-state-gated" if mnemonic == "cvttss2si" else "S2-37ae-CVTTSD2SI-register-state-gated"
+        width = signature.rsplit(",", 1)[0].rsplit(" ", 1)[1]
+    else:
+        return None
+
+    view = opcode_view(row)
+    prefixes = tuple(view["prefixes"])
+    modrm = view["modrm"]
+    raw = row["byte_values"]
+    if view["opcode"] != opcode or modrm is None or modrm >> 6 != 3:
+        return None
+    if len(raw) != len(prefixes) + 3 or not prefixes or prefixes[0] != mandatory or len(prefixes) not in {1, 2}:
+        return None
+
+    operands = [part.strip().lower() for part in row["operands"].split(",")]
+    if len(operands) != 2:
+        return None
+    dest = re.fullmatch(r"xmm(\d+)", operands[0]) if width == "xmm" else None
+    src = re.fullmatch(r"xmm(\d+)", operands[1])
+    if width == "xmm":
+        if dest is None or src is None:
+            return None
+        dest_num, src_num = int(dest.group(1)), int(src.group(1))
+        rex_bits = (0x04 if dest_num >= 8 else 0) | (0x01 if src_num >= 8 else 0)
+    else:
+        dest_num = _x86_gpr_number(operands[0])
+        if dest_num is None or src is None:
+            return None
+        src_num = int(src.group(1))
+        rex_bits = (0x08 if width == "r64" else 0) | (0x04 if dest_num >= 8 else 0) | (0x01 if src_num >= 8 else 0)
+    if dest_num > 15 or src_num > 15:
+        return None
+    if ((modrm >> 3) & 7) != dest_num % 8 or (modrm & 7) != src_num % 8:
+        return None
+    expected_rex = 0x40 | rex_bits
+    needs_rex = bool(rex_bits)
+    if width == "r64":
+        needs_rex = True
+    rex = prefixes[1] if len(prefixes) == 2 else None
+    if (rex is None) != (not needs_rex) or (rex is not None and rex != expected_rex):
+        return None
+    return candidate
+
+
 def conditional_local_candidate(row: dict) -> str | None:
-    return minsd_masked_register_local_candidate(row) or local_state_gated_conditional_candidate(row)
+    return (minsd_masked_register_local_candidate(row)
+            or local_state_gated_conditional_candidate(row)
+            or cvt_register_state_gated_candidate(row))
 
 
 def cpl0_l7_candidates(row: dict) -> list[str]:

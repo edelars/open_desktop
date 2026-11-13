@@ -1,15 +1,15 @@
 {
   "bytewise_cmp_exit_code": 0,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-cvt37-root-pass1.json",
   "compact_evidence": {
     "coarse_operand_signatures": 560,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-cvt37-root-pass1.json docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "normalized_instruction_forms": 1269,
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "repeat_cmp_exit_code": 0,
-    "repeat_sha256": "7d873bbeffb15326f8063a8d4a05796c62aabd0544f184406f4d247b0d321cc5",
-    "sha256": "7d873bbeffb15326f8063a8d4a05796c62aabd0544f184406f4d247b0d321cc5",
-    "size_bytes": 1024526
+    "repeat_sha256": "3d505bb7a20e15ef04607dc834850d749510819c8c17f386749fd791cdab6b76",
+    "sha256": "3d505bb7a20e15ef04607dc834850d749510819c8c17f386749fd791cdab6b76",
+    "size_bytes": 1025005
   },
   "date_utc": "2026-11-13",
   "full_inventory": {
@@ -19,25 +19,28 @@
     },
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
-    "conditional_candidate_hit_count": 113498,
+    "conditional_candidate_hit_count": 113553,
     "conditional_candidate_supported_overlap_rows": 40,
     "conditional_cpl0_candidate_hits": 113232,
     "conditional_local_state_gated_candidate_frequencies": {
+      "S2-37ad-CVTTSS2SI-register-state-gated": 8,
+      "S2-37ae-CVTTSD2SI-register-state-gated": 28,
       "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
       "S2-37q-CVTSI2SD-register-state-gated": 168,
       "S2-37r-CVTSI2SS-register-state-gated": 50,
+      "S2-37t-CVTSS2SD-register-state-gated": 19,
       "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
       "S2-37w-COMISD-UCOMISD-register-state-gated": 34
     },
-    "conditional_local_state_gated_candidate_rows": 266,
+    "conditional_local_state_gated_candidate_rows": 321,
     "conditional_local_state_gated_candidate_rows_by_binary": {
       "bash": 1,
-      "dash": 6,
-      "gcc-cc1": 190,
+      "dash": 10,
+      "gcc-cc1": 229,
       "gcc-collect2": 1,
       "gcc-driver": 19,
       "gcc-ld-bfd": 4,
-      "tar": 45
+      "tar": 57
     },
     "evidence_scope_frequencies": {
       "local_interpreter_profile": 6294071,
@@ -288,7 +291,7 @@
     "psubw_scope": "Accepted local-only PSUBW register-register profile: mandatory 66, optional single REX.R/B byte, ModR/M.mod=3, ModR/M.reg destination and ModR/M.r/m source; eight u16 lanes subtract modulo 65536; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
     "punpck_register_rows": 11723,
     "pxor_xmm_xmm_rows": 3305,
-    "raw_inventory_sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1",
+    "raw_inventory_sha256": "ab665dea45afba6ce7f46f8e69da48597945456e577fb746482ef86ed95f3ae3",
     "scenario_classification_frequencies": {
       "C": {
         "proven_supported": 322742,
@@ -300,7 +303,7 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 113421,
+    "unique_instruction_rows_with_any_conditional_candidate": 113476,
     "unique_mnemonics": 192
   },
   "limits": [
@@ -310,20 +313,20 @@
     "Scenario E JIT/SMC machine-code output is runtime-generated and is not inferred from these static executables.",
     "S2-35.1 matches only the exact local interpreter PXOR XMM register-register profile: 3,305 rows across two normalized forms; five observed PXOR XMM-memory rows remain unclassified. This does not establish machine CPL3/native/JIT support.",
     "The two raw and compact outputs were produced from the same accepted rootfs and frozen analyzer/registry; only output paths differ. No target ELF was executed.",
-    "S2-35.24–.31 matches only eight exact local interpreter XMM register-register profiles: 11,723 rows in 14 normalized forms. Fifty-three observed XMM-memory PUNPCK rows in seven forms remain unclassified. No machine CPL3/native/physical support is inferred.",
-    "S2-34.7a–.7d and S2-35.50/.51 add 1,858 rows across eight normalized forms in accepted bounded local-interpreter register-register profiles only; PAND S2-35.49 remains pending independent review (304 rows/two forms unclassified), and 179 memory-form SIMD logic rows remain unclassified."
+    "S2-35.24\u2013.31 matches only eight exact local interpreter XMM register-register profiles: 11,723 rows in 14 normalized forms. Fifty-three observed XMM-memory PUNPCK rows in seven forms remain unclassified. No machine CPL3/native/physical support is inferred.",
+    "S2-34.7a\u2013.7d and S2-35.50/.51 add 1,858 rows across eight normalized forms in accepted bounded local-interpreter register-register profiles only; PAND S2-35.49 remains pending independent review (304 rows/two forms unclassified), and 179 memory-form SIMD logic rows remain unclassified."
   ],
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "runs": [
     {
       "exit_code": 0,
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json",
-      "sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1"
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-cvt37-root-pass1.json",
+      "sha256": "ab665dea45afba6ce7f46f8e69da48597945456e577fb746482ef86ed95f3ae3"
     },
     {
       "exit_code": 0,
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass2.json",
-      "sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1"
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-cvt37-root-pass2.json",
+      "sha256": "ab665dea45afba6ce7f46f8e69da48597945456e577fb746482ef86ed95f3ae3"
     }
   ],
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",

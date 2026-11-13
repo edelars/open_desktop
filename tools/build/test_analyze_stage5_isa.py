@@ -19,6 +19,79 @@ SPEC.loader.exec_module(analyzer)
 
 
 class ParseObjdumpTests(unittest.TestCase):
+    def test_s2_37t_ad_ae_candidates_match_only_canonical_register_bytes(self) -> None:
+        gpr32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"] + [f"r{i}d" for i in range(8, 16)]
+        gpr64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"] + [f"r{i}" for i in range(8, 16)]
+
+        for dest in range(16):
+            for src in range(16):
+                ext = (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                data = [0xF3] + ([0x40 | ext] if ext else []) + [0x0F, 0x5A, 0xC0 | ((dest & 7) << 3) | (src & 7)]
+                encoded = " ".join(f"{byte:02x}" for byte in data)
+                row = analyzer.parse_row(f"  401000: {encoded} cvtss2sd xmm{dest},xmm{src}")
+                self.assertIsNotNone(row, encoded)
+                self.assertEqual(analyzer.cvt_register_state_gated_candidate(row), "S2-37t-CVTSS2SD-register-state-gated", encoded)
+
+        for mnemonic, mandatory, candidate in (
+            ("cvttss2si", 0xF3, "S2-37ad-CVTTSS2SI-register-state-gated"),
+            ("cvttsd2si", 0xF2, "S2-37ae-CVTTSD2SI-register-state-gated"),
+        ):
+            for width, gprs in (("r32", gpr32), ("r64", gpr64)):
+                for dest in range(16):
+                    for src in range(16):
+                        ext = (0x08 if width == "r64" else 0) | (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                        rex = 0x40 | ext
+                        data = [mandatory] + ([rex] if ext else []) + [0x0F, 0x2C, 0xC0 | ((dest & 7) << 3) | (src & 7)]
+                        encoded = " ".join(f"{byte:02x}" for byte in data)
+                        row = analyzer.parse_row(f"  401000: {encoded} {mnemonic} {gprs[dest]},xmm{src}")
+                        self.assertIsNotNone(row, encoded)
+                        self.assertEqual(analyzer.cvt_register_state_gated_candidate(row), candidate, encoded)
+
+        rejected = (
+            "f3 40 0f 5a c8 cvtss2sd xmm1,xmm0",  # neutral REX
+            "f3 48 0f 5a c8 cvtss2sd xmm1,xmm0",  # W
+            "f3 42 0f 5a c8 cvtss2sd xmm1,xmm0",  # X
+            "f3 0f 5a 08 cvtss2sd xmm1,DWORD PTR [rax]",  # memory
+            "f3 0f 5a c8 90 cvtss2sd xmm1,xmm0",  # trailing byte
+            "f3 f3 0f 5a c8 cvtss2sd xmm1,xmm0",  # duplicate prefix
+            "f3 0f 5a c8 cvttss2si eax,xmm0",  # mnemonic/opcode mismatch
+            "f3 40 0f 2c c8 cvttss2si eax,xmm0",  # neutral REX
+            "f3 48 0f 2c c8 cvttss2si eax,xmm0",  # W on r32
+            "f3 41 0f 2c c8 cvttss2si eax,xmm0",  # unnecessary REX.B
+            "f3 0f 2c 08 cvttss2si eax,DWORD PTR [rax]",  # memory
+            "f2 0f 2c c8 cvttss2si eax,xmm0",  # wrong mandatory prefix
+            "f2 40 0f 2c c8 cvttsd2si eax,xmm0",  # neutral REX
+            "f2 49 0f 2c c8 cvttsd2si eax,xmm0",  # W plus extended source only mismatch
+            "f2 0f 2c c8 90 cvttsd2si eax,xmm0",  # trailing byte
+        )
+        for sample in rejected:
+            # The final mnemonic and operands are separated from bytes by the first mnemonic token.
+            parts = sample.split()
+            index = next(i for i, part in enumerate(parts) if part in {"cvtss2sd", "cvttss2si", "cvttsd2si"})
+            raw = " ".join(parts[:index])
+            operands = " ".join(parts[index:])
+            row = analyzer.parse_row(f"  401000: {raw} {operands}")
+            if row is not None:
+                self.assertIsNone(analyzer.cvt_register_state_gated_candidate(row), sample)
+
+        registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
+        candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
+        self.assertEqual(len(candidates), 8)
+        for candidate, sse2 in (
+            ("S2-37t-CVTSS2SD-register-state-gated", True),
+            ("S2-37ad-CVTTSS2SI-register-state-gated", False),
+            ("S2-37ae-CVTTSD2SI-register-state-gated", True),
+        ):
+            item = candidates[candidate]
+            self.assertEqual(item["status"], "conditional_candidate_only_unclassified")
+            self.assertTrue(item["sse_payload_required"])
+            self.assertEqual(item["sse2_isa_required"], sse2)
+            self.assertIn("~0x0000ffbf", item["gate"])
+            self.assertIn("unclassified", item["outcome"])
+            self.assertNotIn(candidate, {profile["task"] for profile in registry["profiles"]})
+        self.assertIn("discrepancy remains unresolved", candidates["S2-37t-CVTSS2SD-register-state-gated"]["review_status"])
+        self.assertFalse(registry["registry_complete"])
+
     def test_s2_37_q_r_v_w_conditional_candidates_are_exact_and_unclassified(self) -> None:
         gpr64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"] + [f"r{i}" for i in range(8, 16)]
         gpr32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"] + [f"r{i}d" for i in range(8, 16)]
@@ -101,7 +174,7 @@ class ParseObjdumpTests(unittest.TestCase):
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = registry["conditional_local_state_gated_candidates"]
         by_id = {item["candidate_id"]: item for item in candidates}
-        self.assertEqual(len(by_id), 5)
+        self.assertEqual(len(by_id), 8)
         for candidate in ("S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
                           "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated"):
             gate = by_id[candidate]["gate"]

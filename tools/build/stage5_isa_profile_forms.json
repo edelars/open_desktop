@@ -2055,6 +2055,64 @@
         "docs/plans/STAGE_2.md:15374-15403",
         "docs/reports/STAGE_2_REPORT.md:18941-18980"
       ]
+    },
+    {
+      "task": "S2-37t CVTSS2SD register state-gated candidate",
+      "candidate_id": "S2-37t-CVTSS2SD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked IE/DE event. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F3 0F 5A /r ModR/M.mod=3 XMM register pairs. Low selectors use F3 0F 5A /r; extended selectors permit exactly one canonical 41/44/45 REX.R/B byte after F3. Reject bare 40, REX.W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime payload/control state is not inferred.",
+      "review_status": "2026-11-13 read-only independent semantic review at HEAD 9d5fb75 confirms conditional-candidate eligibility only; Stage 2 plan/report historical code-review status discrepancy remains unresolved",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. This static match does not infer runtime state or guest success and makes no CPL3/native/JIT/physical claim.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14552-14588",
+        "docs/plans/STAGE_2.md:15290-15330",
+        "docs/reports/STAGE_2_REPORT.md:18802-18834"
+      ]
+    },
+    {
+      "task": "S2-37ad CVTTSS2SI register state-gated candidate",
+      "candidate_id": "S2-37ad-CVTTSS2SI-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for newly unmasked IE/PE. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F3 0F 2C /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when destination GPR or source XMM selectors are extended; r64 requires exactly one canonical W REX (48/49/4C/4D). Reject REX.X, redundant 40, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. Static matches do not imply CPL3/native/JIT/physical execution or guest success.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14930-14951",
+        "docs/plans/STAGE_2.md:15590-15620",
+        "docs/reports/STAGE_2_REPORT.md:19265-19295"
+      ]
+    },
+    {
+      "task": "S2-37ae CVTTSD2SI register state-gated candidate",
+      "candidate_id": "S2-37ae-CVTTSD2SI-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for newly unmasked IE/PE. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F2 0F 2C /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when destination GPR or source XMM selectors are extended; r64 requires exactly one canonical W REX (48/49/4C/4D). Reject REX.X, redundant 40, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. Static matches do not imply CPL3/native/JIT/physical execution or guest success.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14953-14976",
+        "docs/plans/STAGE_2.md:15621-15655",
+        "docs/reports/STAGE_2_REPORT.md:19297-19325"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
