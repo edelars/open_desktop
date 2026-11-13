@@ -1,0 +1,320 @@
+{
+  "slice": "S6-02",
+  "status": "in_progress",
+  "acceptance": "not_accepted",
+  "evidence_date": "2026-11-13",
+  "artifact": {
+    "manifest": "docs/reports/data/stage4/s4-35-linux-artifact.json",
+    "distribution": "Ubuntu",
+    "package_version": "7.0.0-38.38",
+    "kernel_release": "7.0.0-38-generic",
+    "architecture": "amd64 generic",
+    "manifest_status": "staged (content hash verified; provenance not authenticated)",
+    "source_to_binary_authenticated": false,
+    "artifact_root": "/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38",
+    "artifact_root_note": "The complete ignored input was already present in the main checkout. It was copied into the codex worktree, and all 10 manifest entries in both locations were re-hashed without modifying main.",
+    "worktree_search": {
+      "registered_worktrees_checked": 127,
+      "worktrees_with_complete_s4_35_directory": 11,
+      "preexisting_stage6_inventory_found_before_this_slice": false
+    },
+    "codex_copy_root": "work/stage4/linux-7.0.0-38.38",
+    "copy_verification": "All 10 S4-35 manifest entries matched their expected SHA-256 in both main and codex (20/20 file checks; zero mismatches).",
+    "files": [
+      {
+        "role": "boot_image",
+        "path": "vmlinuz-7.0.0-38-generic",
+        "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+      },
+      {
+        "role": "vmlinux",
+        "path": "vmlinux-7.0.0-38-generic",
+        "sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f"
+      },
+      {
+        "role": "debug_vmlinux",
+        "path": "vmlinux-debug-7.0.0-38-generic",
+        "sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f",
+        "build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997"
+      },
+      {
+        "role": "config",
+        "path": "source/extracted/config",
+        "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d"
+      },
+      {
+        "role": "source_package",
+        "path": "source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+        "sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+        "retrieval_url": "https://repo.huaweicloud.com/ubuntu/ubuntu/pool/main/l/linux/linux-source-7.0.0_7.0.0-38.38_all.deb",
+        "signed_repository_provenance": false
+      },
+      {
+        "role": "source_tree_archive_from_ubuntu_package",
+        "path": "source/linux-source-7.0.0.tar.bz2",
+        "sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222"
+      }
+    ],
+    "provenance_limits": [
+      "S4-35 confirms content hashes but not signatures or source-to-binary mapping.",
+      "The extracted config comes from the staged Ubuntu buildinfo data; the signed APT source chain is not present."
+    ]
+  },
+  "config_facts": {
+    "CONFIG_X86_64": "y",
+    "CONFIG_SMP": "y",
+    "CONFIG_X86_X2APIC": "y",
+    "CONFIG_ACPI_MADT_WAKEUP": "y",
+    "CONFIG_AMD_MEM_ENCRYPT": "y",
+    "CONFIG_ACPI_SLEEP": "y",
+    "CONFIG_HOTPLUG_CPU": "y",
+    "interpretation": "These options show compiled support; they do not prove which runtime APIC or wakeup path a guest selects."
+  },
+  "linux_source": {
+    "version_label": "Ubuntu linux-source package 7.0.0-38.38; archive linux-source-7.0.0.tar.bz2 shipped inside that package. Upstream provenance is not authenticated.",
+    "files": [
+      {
+        "path": "arch/x86/kernel/smpboot.c",
+        "sha256": "3043525f974c18a291da3add96ed05266fa9cb2371288982041d5437b84bd547",
+        "areas": "cpu_init_udelay, send_init_sequence, wakeup_secondary_cpu_via_init, do_boot_cpu, announce_cpu"
+      },
+      {
+        "path": "arch/x86/kernel/acpi/boot.c",
+        "sha256": "27a4abcf333626a1acd4c79da79a153fe6857a5662c1813d7ad3aaa034d271d5",
+        "areas": "MADT type ACPI_MADT_TYPE_MULTIPROC_WAKEUP parser registration"
+      },
+      {
+        "path": "arch/x86/kernel/acpi/madt_wakeup.c",
+        "sha256": "7e2fd5ce26da48ea1fcde21a8c71224c5170760358a816b9804be89b15f9d4af",
+        "areas": "ACPI mailbox wakeup callback and apic_update_callback"
+      },
+      {
+        "path": "arch/x86/realmode/rm/trampoline_64.S",
+        "sha256": "73d487d3ac2169c5261be0aca88c6c22fc589ddf579672035f8c5b07b314e5b7",
+        "areas": "real-mode trampoline, protected-mode startup_32, 64-bit startup_64 and direct 64-bit trampoline"
+      },
+      {
+        "path": "arch/x86/realmode/rm/header.S",
+        "sha256": "0291d4d6fe7a6bab6f60ccb00c234d2f7e57d7abdea985b7e2f26d532d41d5c9",
+        "areas": "real_mode_header entry offsets"
+      },
+      {
+        "path": "kernel/smp.c",
+        "sha256": "5aeeff9ad5744a14d5acd213282e457ea2b73ec80ed1e3295ef5b56ef720dbc4",
+        "areas": "Brought up log string"
+      },
+      {
+        "path": "arch/x86/lib/delay.c",
+        "sha256": "add079434c31c66ad2e1e72cf87d06c9333d10fde740f122de38e41710872a32",
+        "areas": "udelay implementation; loop delay versus TSC delay selection"
+      },
+      {
+        "path": "arch/x86/kernel/tsc.c",
+        "sha256": "3d981edd334db41c7ed2ba46764d60ada55dae67b92ea9ba72d77b3b4381fa01",
+        "areas": "TSC delay selection"
+      },
+      {
+        "path": "Documentation/ABI/testing/sysfs-devices-system-cpu",
+        "sha256": "832331404b4ff9b89378ccb3bad73b115484bd4a8c0e245ed87ddc354eedf89e",
+        "areas": "online, possible and present CPU sysfs paths"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/proc.c",
+        "sha256": "632af015bc00dac562b8ce5f9f4fdf425b737b1e9b34590d1875aa7b5892b0fc",
+        "areas": "/proc/cpuinfo processor enumeration"
+      }
+    ]
+  },
+  "wakeup_selection": {
+    "firmware_alternative": {
+      "name": "ACPI MADT Multiprocessor Wakeup",
+      "madt_type": "0x10",
+      "linux_support_compiled": true,
+      "selection_condition": "A valid MADT type 0x10 entry is one path that installs acpi_wakeup_cpu as wakeup_secondary_cpu_64 callback. Other APIC/platform code can also install wakeup_secondary_cpu_64 or wakeup_secondary_cpu callbacks.",
+      "entry_mode": "The ACPI 6.6 Intel mailbox WakeupVector contract enters with long mode and paging enabled, identity mapped page, and IF=0."
+    },
+    "selected_project_path": {
+      "name": "INIT/SIPI",
+      "basis": [
+      "The current project board MADT has one enabled Processor Local APIC entry for UID/APIC ID 0 and has no Multiprocessor Wakeup entry; no alternate wakeup callback is part of the current board contract.",
+        "The Stage 6 first vertical slice explicitly requires BSP INIT/SIPI and an AP real-mode trampoline.",
+      "smpboot.c dispatches in order: wakeup_secondary_cpu_64 callback, wakeup_secondary_cpu callback, then wakeup_secondary_cpu_via_init fallback. A board MADT without type 0x10 does not rule out another callback override. The selected callback for the final VM CPU/APIC configuration is pending runtime/source-path verification."
+      ],
+      "status": "recommendation_for_architecture_review",
+      "apic_mode_limit": "The project board candidate records BSP xAPIC as selected-but-unverified (S4-00c). Linux configuration alone does not establish guest xAPIC/x2APIC runtime selection.",
+      "avoid_publishing_madt_type_0x10": "Publishing the entry would install the firmware mailbox callback, a different AP handoff contract that the current VM board does not implement; other overrides must also be checked."
+    }
+  },
+  "init_sipi_sequence": {
+    "source_function": "arch/x86/kernel/smpboot.c:send_init_sequence and wakeup_secondary_cpu_via_init",
+    "destination": "phys_apicid target argument; with the project xAPIC candidate this is physical destination mode, but guest runtime mode remains unverified.",
+    "init_assert": "ICR = LEVEL_TRIGGER | ASSERT | DELIVERY_INIT; wait for ICR idle.",
+    "init_delay": {
+      "default_modern_cpu": "0 microseconds for Intel family/model >= Pentium Pro, AMD family >= 0x0f, or Hygon family >= 0x18.",
+      "legacy_cpu": "10 milliseconds.",
+      "override": "cpu_init_udelay= kernel command-line option."
+    },
+    "delay_provider": {
+      "mechanism": "The source calls udelay(); arch/x86/lib/delay.c converts this using loops_per_jiffy and the configured delay_fn. The kernel can select TSC-based delay (use_tsc_delay) or other delay providers.",
+      "runtime_provider": "Pending: S4-35 pins no guest CPU feature set/boot log showing which provider the final VM uses."
+    },
+    "init_deassert": "ICR = LEVEL_TRIGGER | DELIVERY_INIT with ASSERT clear; wait for ICR idle.",
+    "sipi": {
+      "count": "Two attempts when the boot APIC is integrated; zero if it is not integrated.",
+      "icr": "DELIVERY_STARTUP | (start_ip >> 12), destination physical APIC ID.",
+      "delay_when_init_delay_zero": "10 microseconds after send, wait for ICR idle, then 10 microseconds before reading ESR.",
+      "delay_when_init_delay_nonzero": "300 microseconds after send, wait for ICR idle, then 200 microseconds before reading ESR.",
+      "retry": "The loop stops on send or APIC delivery error; otherwise it may issue the second SIPI."
+    },
+    "caveat": "Actual default delay depends on the guest CPU vendor/family/model and kernel command line, neither of which is pinned by S4-35."
+  },
+  "trampoline_image_evidence": {
+    "source_image": "vmlinux-debug-7.0.0-38-generic",
+    "elf_section": ".init.data",
+    "embedded_blob_symbol": "real_mode_blob",
+    "embedded_blob_vma": "0xffffffff83ff6000",
+    "embedded_blob_size": 25188,
+    "extracted_blob_sha256": "d48c472d9051f65d62efdb34bdabdb3fb261aefbb7873a3637860ecc4c80573f",
+    "extraction": "Read the ELF64 section table and symbol table; extracted symbol bytes from .init.data to /private/tmp/s6-02-real_mode_blob.bin. Extraction was read-only against the staged artifact.",
+    "header_offsets": {
+      "pa_text_start": "0x1000",
+      "pa_ro_end": "0x215e",
+      "pa_trampoline_start": "0x1000",
+      "pa_trampoline_header": "0x5000",
+      "pa_sev_es_trampoline_start": "0x1050",
+      "pa_trampoline_start64": "0x2100",
+      "pa_trampoline_pgd": "0x4000",
+      "pa_wakeup_start": "0x1200",
+      "pa_wakeup_header": "0x3010"
+    },
+    "path_for_project_INIT_SIPI": [
+      "SIPI vector enters pa_trampoline_start at offset 0x1000 in real mode.",
+      "The real-mode path loads descriptor tables, verifies long-mode capability and enters protected-mode startup_32 at offset 0x2000.",
+      "startup_32 enables PAE, loads CR3, configures EFER.LME and CR0 paging, then far-jumps to long-mode startup_64 at offset 0x20f0.",
+      "startup_64 jumps indirectly through tr_start at offset 0x5000 to the kernel's common secondary startup path."
+    ],
+    "disassembly_status": "partial",
+    "disassembly_tools": {
+      "host": "macOS arm64",
+      "tool": "Apple LLVM llvm-objdump 21.0.0",
+      "confirmed": "The actual image's 32-bit startup_32 range and 64-bit startup_64 entry were decoded from vmlinux-debug using --arch-name=x86 and --arch-name=x86-64.",
+      "reproduction_commands": [
+        "xcrun llvm-objdump --arch-name=x86 -D --section=.init.data --start-address=0xffffffff83ff8000 --stop-address=0xffffffff83ff80f0 work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic",
+        "xcrun llvm-objdump --arch-name=x86-64 -D --section=.init.data --start-address=0xffffffff83ff80f0 --stop-address=0xffffffff83ff8100 work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic"
+      ],
+      "pending": "The available tool has no x86 16-bit decode mode. Run the full real-mode instruction and byte inventory using the prescribed x86 bench toolchain before S6-02 acceptance."
+    },
+    "source_unpack_command": "tar -xjf work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2 -C /private/tmp/s6-02-src",
+    "extraction_command": "dd if=work/stage4/linux-7.0.0-38.38/vmlinux-debug-7.0.0-38-generic of=/private/tmp/s6-02-real_mode_blob.bin bs=1 skip=$((0x31f6000)) count=$((0x6264)) 2>/dev/null",
+    "extraction_command_basis": "ELF .init.data file offset 0x31d2000 + (real_mode_blob VMA 0xffffffff83ff6000 - section VMA 0xffffffff83fd2000) = 0x31f6000; symbol size 0x6264. dd output was byte-compared with the ELF64 parser extraction."
+  },
+  "board_firmware": {
+    "current_madt": "One enabled Processor Local APIC record: Processor UID 0, APIC ID 0. No MADT type 0x10 Multiprocessor Wakeup record.",
+      "smp_requirement": "For an n-vCPU APIC board, ACPI 6.6 requires one enabled Local APIC record per vCPU, stable APIC IDs, and matching processor Device objects in the ACPI namespace under \\_SB with _HID=ACPI0007 and matching _UID. The project currently emits its namespace in DSDT; ACPI does not require that a Device be in DSDT rather than SSDT."
+  },
+  "windows": {
+    "CPU_06": "hypothesis_unverified",
+    "INIT_SIPI_real_mode_trampoline": "No Microsoft source found that establishes this as the generic Windows x64 AP startup path; retain the planned stage 8 trace check.",
+    "processor_objects": {
+      "ACPI_6_6": "For the APIC interrupt model, each processor has a Processor Local APIC MADT entry and corresponding processor Device in the ACPI namespace; ACPI 6.6 §8.4 specifies Device under \\_SB with _HID ACPI0007 and _UID matching MADT. DSDT versus SSDT is not prescribed.",
+      "Microsoft_scope": "The Microsoft processor-identification page found here is scoped to SoC-based platforms; it does not establish a generic client Windows x64 requirement or absence behavior.",
+      "result": "Keep generic Windows-specific absence behavior open for stage 8 trace; emit conforming ACPI 6.6 processor namespace objects in the project's current DSDT."
+    }
+  },
+  "linux_runtime_visibility": {
+    "boot_log_format_strings": [
+      {
+        "format": "x86: Booting SMP configuration:\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu"
+      },
+      {
+        "format": "\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu when changing node"
+      },
+      {
+        "format": ".... node %*s#%d, CPUs:  ",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu"
+      },
+      {
+        "format": "%*s#%d",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu (per-CPU list continuation)"
+      },
+      {
+        "format": "Booting Node %d Processor %d APIC 0x%x\n",
+        "source": "arch/x86/kernel/smpboot.c:announce_cpu when system_state >= SYSTEM_RUNNING"
+      },
+      {
+        "format": "Bringing up secondary CPUs ...\n",
+        "source": "kernel/smp.c"
+      },
+      {
+        "format": "Brought up %d node%s, %d CPU%s\n",
+        "source": "kernel/smp.c"
+      }
+    ],
+    "online_cpu_count_paths": [
+      {
+        "path": "/sys/devices/system/cpu/online",
+        "meaning": "Online CPUs; documented in Documentation/ABI/testing/sysfs-devices-system-cpu. Requires sysfs mounted."
+      },
+      {
+        "path": "/sys/devices/system/cpu/present",
+        "meaning": "CPUs present in the system; same ABI document."
+      },
+      {
+        "path": "/sys/devices/system/cpu/possible",
+        "meaning": "CPUs allocated as possible/hotpluggable; same ABI document."
+      },
+      {
+        "path": "/proc/cpuinfo",
+        "meaning": "Per-processor records from arch/x86/kernel/cpu/proc.c; requires procfs mounted."
+      }
+    ]
+  },
+  "not_yet_inventoried": [
+    "Complete per-instruction bytes and control-register/MSR effects from SIPI through common 64-bit code, including a correct 16-bit decode.",
+    "Two- and four-vCPU runtime xAPIC/x2APIC selection under the project's final CPUID and IRQ-remapping exposure.",
+    "IOAPIC and MSI destination modes, IPI shorthand use, and all x2APIC register access paths.",
+    "Exact topology CPUID leaves read by this build and expected MADT/DSDT records after the vCPU count is finalized.",
+    "NMI usage on boot, reboot, shutdown, panic stop-other-CPUs and hung-CPU diagnostics.",
+    "The calibrated runtime udelay provider selected for the final guest CPU profile and boot command line.",
+    "Windows-specific CPU-06 confirmation and Windows DSDT-object absence behavior."
+  ],
+  "sources": [
+    {
+      "id": "linux-s4-35",
+      "description": "S4-35 artifact manifest and its hash/provenance limits",
+      "path": "docs/reports/data/stage4/s4-35-linux-artifact.json"
+    },
+    {
+      "id": "linux-source",
+      "description": "Ubuntu source package 7.0.0-38.38; packaged source tree archive SHA-256 1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222; upstream provenance unauthenticated",
+      "path": "work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2"
+    },
+    {
+      "id": "acpi-6.6-madt",
+      "description": "ACPI 6.6 §5.2.12.2 Processor Local APIC structure",
+      "url": "https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#processor-local-apic-structure"
+    },
+    {
+      "id": "acpi-6.6-multiprocessor-wakeup",
+      "description": "ACPI 6.6 §5.2.12.19 Multiprocessor Wakeup structure and mailbox; Tables 5.45–5.46",
+      "url": "https://uefi.org/specs/ACPI/6.6/05_ACPI_Software_Programming_Model.html#multiprocessor-wakeup-structure"
+    },
+    {
+      "id": "acpi-6.6-processor-namespace",
+      "description": "ACPI 6.6 §8.4 processor Device, _HID ACPI0007 and _UID declarations",
+      "url": "https://uefi.org/specs/ACPI/6.6/08_Processor_Configuration_and_Control.html#declaring-processors"
+    },
+    {
+      "id": "microsoft-namespace",
+      "description": "Other ACPI namespace objects: processor identification objects (SoC platform scope)",
+      "url": "https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/other-acpi-namespace-objects#processor-identification-objects"
+    },
+    {
+      "id": "microsoft-tlfs-vsm",
+      "description": "VTL interrupt management documents INIT/startup IPIs only in the Hyper-V/VSM scope",
+      "url": "https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm#vtl-interrupt-management"
+    }
+  ]
+}
