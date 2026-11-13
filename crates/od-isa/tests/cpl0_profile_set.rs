@@ -42190,11 +42190,11 @@ fn segment_add_imm32_forms_outside_the_slice_are_refused_without_mutation() {
         (mk(&[0x65, 0x48, 0x66], 0x81, 0x05, 2), 0x81),
         // The other `81 /n` selectors, `80 /0`, `83 /0` and `83 /1` with a FS/GS memory operand
         // stay refused with their own opcode.
-        (mk(&[0x65], 0x81, 0x0d, 4), 0x81),
+        // S4-38L9n: `81 /1` (OR) with FS/GS is executed now and removed from this list.
         (mk(&[0x65], 0x81, 0x15, 4), 0x81),
         (mk(&[0x65], 0x81, 0x1d, 4), 0x81),
         // S4-38L9l: `81 /4`, `/5`, `/6` and `/7` with FS/GS were listed here as refused and are
-        // executed now; `/1`, `/2` and `/3` stay refused.
+        // executed now; `/1` is executed since S4-38L9n; `/2` and `/3` stay refused.
         // S4-38L9m: `80 /0 ib` with FS/GS was listed here as refused and is executed now (the
         // refusals of `80 /1|/2|/3` are in the S4-38L9m tests).
         (mk(&[0x65], 0x83, 0x05, 1), 0x83),
@@ -45257,12 +45257,20 @@ fn plain_xadd_and_cmpxchg_are_not_reachable_from_cpl3() {
 // write. The base is added to the effective address; RIP-relative addressing is relative to the end
 // of the whole instruction (the imm32 included). AND/SUB/XOR: one read, one write (always
 // performed); CMP: one read, no write. The flags commit after the write. /2 (ADC) and /3 (SBB)
-// need the incoming CF and stay refused. ----
+// need the incoming CF and stay refused. S4-38L9n adds /1 (OR m32/m64, imm32) in the same shape
+// (CF = OF = 0, SF/ZF/PF from the result, AF kept; the imm32 zero-extended for a dword,
+// sign-extended for a qword), through the same `LogicFsMemImm`/`LogicGsMemImm`. ----
 
 /// `andl $0x7fffffff, %gs:0x2f803b9(%rip)` (the S4-38L9k diagnostic boundary bytes, 11 bytes,
 /// `__resched_curr`).
 const GS_ANDL_IMM32_BOUNDARY: [u8; 11] = [
     0x65, 0x81, 0x25, 0xb9, 0x03, 0xf8, 0x02, 0xff, 0xff, 0xff, 0x7f,
+];
+
+/// `orl $0x80000000, %gs:0x1cec789(%rip)` (the S4-38L9n diagnostic boundary bytes, 11 bytes,
+/// `__schedule`).
+const GS_ORL_IMM32_BOUNDARY: [u8; 11] = [
+    0x65, 0x81, 0x0d, 0x89, 0xc7, 0xce, 0x01, 0x00, 0x00, 0x00, 0x80,
 ];
 
 const FS_BASE_81: u64 = 0xffff_8880_2000_0000;
@@ -45306,12 +45314,13 @@ fn alu81_oracle(group: u8, bits: u32, lhs: u64, imm: u32, initial: u64) -> (Opti
     };
     let mut flags = initial & !ARITH;
     let result = match group {
+        1 => l | r,
         4 => l & r,
         6 => l ^ r,
         5 | 7 => l.wrapping_sub(r),
         _ => unreachable!(),
     } & mask;
-    if group == 4 || group == 6 {
+    if group == 1 || group == 4 || group == 6 {
         flags |= initial & FLAG_AF;
     } else {
         let wide = signed(l) - signed(r);
@@ -45397,9 +45406,55 @@ fn gs_andl_imm32_boundary_form_ands_the_dword_at_gs_base_plus_effective_address(
 }
 
 #[test]
+fn gs_orl_imm32_boundary_form_ors_the_dword_at_gs_base_plus_effective_address() {
+    let gs_base = 0xffff_8880_1234_0000u64;
+    // (cell, hand-computed new dword and flags of cell | 0x80000000 at 32 bits): the result always
+    // has bit 31 set (SF); PF is the parity of the low byte of the result; the upper dword of the
+    // cell is not part of the operation; ZF never; CF and OF are cleared.
+    for (cell, result, flags) in [
+        (0x7fff_ffffu64, 0xffff_ffffu64, FLAG_SF | FLAG_PF),
+        (0, 0x8000_0000, FLAG_SF | FLAG_PF),
+        (1, 0x8000_0001, FLAG_SF),
+        (0xffff_ffff, 0xffff_ffff, FLAG_SF | FLAG_PF),
+        (0xdead_beef_0000_0003, 0x8000_0003, FLAG_SF | FLAG_PF),
+        (0x8000_0000, 0x8000_0000, FLAG_SF | FLAG_PF),
+    ] {
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        state.fs_base = 0xffff_8880_9999_0000;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF;
+        let initial = state.rflags;
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(&GS_ORL_IMM32_BOUNDARY, cell);
+        let run = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&run), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(run.instructions_executed, 1);
+        // next RIP (after all 11 bytes, the prefix and the imm32 included) + disp32, plus the base.
+        let address = gs_base + RIP + 11 + 0x01ce_c789;
+        assert_eq!(memory.reads, vec![(address, 4)], "{cell:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(address, (result as u32).to_le_bytes().to_vec())],
+            "{cell:#x}"
+        );
+        assert_eq!(memory.cell, result, "{cell:#x}");
+        let (oracle, oracle_flags) = alu81_oracle(1, 32, cell, 0x8000_0000, initial);
+        assert_eq!(oracle, Some(result));
+        // CF, OF and ZF were set and are cleared/recomputed; AF is kept (clear here).
+        assert_eq!(
+            oracle_flags,
+            (initial & !ARITH) | (initial & FLAG_AF) | flags
+        );
+        expected.rip += 11;
+        expected.rflags = oracle_flags;
+        assert_eq!(state, expected, "only RIP and the flags change");
+    }
+}
+
+#[test]
 fn segment_81_family_hand_computed_corners_for_both_segments_and_widths() {
-    // (group, qword, cell, imm32, result, flags without the kept AF). AND/XOR keep AF.
-    let logic_cases: [(u8, bool, u64, u32, u64, u64); 13] = [
+    // (group, qword, cell, imm32, result, flags without the kept AF). AND/OR/XOR keep AF.
+    let logic_cases: [(u8, bool, u64, u32, u64, u64); 21] = [
         (4, false, 0xdead_beef_8000_0001, 0x7fff_ffff, 0x1, 0),
         (4, false, 0xffff_ffff, 0x7fff_ffff, 0x7fff_ffff, FLAG_PF),
         (4, false, 0x8000_0000, 0x7fff_ffff, 0, FLAG_ZF | FLAG_PF),
@@ -45442,6 +45497,39 @@ fn segment_81_family_hand_computed_corners_for_both_segments_and_widths() {
             0x8000_0000_0000_0001,
             FLAG_SF,
         ),
+        // S4-38L9n, OR (/1), worked by hand: CF = OF = 0, SF/ZF/PF from the result.
+        // 0x7fff_ffff | 0x8000_0000 = 0xffff_ffff: SF, PF (eight bits in the low byte).
+        (
+            1,
+            false,
+            0x7fff_ffff,
+            0x8000_0000,
+            0xffff_ffff,
+            FLAG_SF | FLAG_PF,
+        ),
+        // 0 | 0 = 0: ZF, PF.
+        (1, false, 0, 0, 0, FLAG_ZF | FLAG_PF),
+        // the upper dword of the cell is not part of the dword operation.
+        (1, false, 0xdead_beef_0000_0000, 0, 0, FLAG_ZF | FLAG_PF),
+        // 1 | 2 = 3: two bits: PF; no SF.
+        (1, false, 1, 2, 3, FLAG_PF),
+        // 0 | 0x8000_0000 = 0x8000_0000: SF, PF (the low byte is zero).
+        (1, false, 0, 0x8000_0000, 0x8000_0000, FLAG_SF | FLAG_PF),
+        // qword: the imm32 0x8000_0000 is sign-extended to 0xffff_ffff_8000_0000; the low byte of
+        // 0x9abc_def0 has four bits: PF; the top bit is set: SF.
+        (
+            1,
+            true,
+            0x1234_5678_9abc_def0,
+            0x8000_0000,
+            0xffff_ffff_9abc_def0,
+            FLAG_SF | FLAG_PF,
+        ),
+        // qword: 0 | sign-extended 0xffff_ffff = all ones: SF, PF.
+        (1, true, 0, 0xffff_ffff, u64::MAX, FLAG_SF | FLAG_PF),
+        // qword: the positive imm32 0x7fff_ffff is not extended: 0x1_0000_0000 | 0x7fff_ffff
+        // = 0x1_7fff_ffff, low byte 0xff: PF.
+        (1, true, 0x1_0000_0000, 0x7fff_ffff, 0x1_7fff_ffff, FLAG_PF),
     ];
     // (qword, cell, imm32, SUB result, flags): worked by hand from the SUB definition; CMP has the
     // same flags and leaves the cell.
@@ -45545,7 +45633,7 @@ fn segment_81_family_hand_computed_corners_for_both_segments_and_widths() {
                     "{context}"
                 );
                 // AND/XOR keep AF; every other arithmetic flag comes from the table.
-                let kept_af = if group == 4 || group == 6 {
+                let kept_af = if group == 1 || group == 4 || group == 6 {
                     initial & FLAG_AF
                 } else {
                     0
@@ -45600,7 +45688,7 @@ fn segment_81_family_matches_the_oracle_for_both_segments_and_widths() {
         0xffff_ffff,
     ];
     for segment in [0x65u8, 0x64] {
-        for group in [4u8, 5, 6, 7] {
+        for group in [1u8, 4, 5, 6, 7] {
             for qword in [false, true] {
                 for imm in imms {
                     for cell in cells {
@@ -45638,7 +45726,7 @@ fn segment_81_family_equals_the_non_prefixed_register_form() {
     // The prefixed memory form shares the logic and arithmetic functions with `81 /n` through a
     // register: compare the result and flags of `and/sub/xor/cmp $imm, %eax|%rax` with the memory
     // form, for a flag state that has CF, OF, SF and AF set.
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         for qword in [false, true] {
             for imm in [1u32, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x110000] {
                 for cell in [
@@ -45686,15 +45774,16 @@ fn segment_81_family_equals_the_non_prefixed_register_form() {
 
 #[test]
 fn fs_and_gs_81_family_use_their_own_base_and_ignore_the_other() {
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         for (segment, used) in [(0x65u8, GS_BASE_81), (0x64, FS_BASE_81)] {
             let code = seg_81_rip(segment, true, group, 7);
             let (_, memory, _) = run_81(&code, 0x13, 2 | IF);
             let address = used + RIP + code.len() as u64 + 0x1234;
             assert_eq!(memory.reads, vec![(address, 8)], "{segment:#x} {group}");
-            // 0x13 & 7 = 3, 0x13 - 7 = 0xc, 0x13 ^ 7 = 0x14; CMP does not write.
+            // 0x13 | 7 = 0x17, 0x13 & 7 = 3, 0x13 - 7 = 0xc, 0x13 ^ 7 = 0x14; CMP does not write.
             let written = match group {
-                4 => Some(3u64),
+                1 => Some(0x17u64),
+                4 => Some(3),
                 5 => Some(0xc),
                 6 => Some(0x14),
                 _ => None,
@@ -45739,7 +45828,7 @@ fn segment_81_family_with_every_extended_base_register_r8_to_r15_uses_rex_b() {
         Register::R14,
         Register::R15,
     ];
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         for (n, register) in regs.into_iter().enumerate() {
             for (qword, rex) in [(false, 0x41u8), (true, 0x49)] {
                 for segment in [0x65u8, 0x64] {
@@ -45819,7 +45908,7 @@ fn segment_81_family_with_disp8_sib_index_scale_and_displacement() {
 #[test]
 fn segment_81_family_non_canonical_address_is_gp0_without_mutation_or_access() {
     // The start or the last byte (qword: + 7, dword: + 3) lies in the non-canonical hole.
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         for (qword, start) in [
             (false, 0x0000_8000_0000_0000u64),
             (true, 0x0000_8000_0000_0000),
@@ -45874,6 +45963,12 @@ fn gs_81_family_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
             &[0x65u8, 0x48, 0x81, 0x7d, 0x00, 1, 0, 0, 0][..],
             Register::Rbp,
         ),
+        // S4-38L9n: `orl $1, %gs:(%rsp)` and `orq $1, %gs:0x0(%rbp)`.
+        (&[0x65u8, 0x81, 0x0c, 0x24, 1, 0, 0, 0][..], Register::Rsp),
+        (
+            &[0x65u8, 0x48, 0x81, 0x4d, 0x00, 1, 0, 0, 0][..],
+            Register::Rbp,
+        ),
     ] {
         let mut state = board_state();
         state.gs_base = 0x0000_8000_0000_0000;
@@ -45891,7 +45986,7 @@ fn gs_81_family_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
 #[test]
 fn segment_81_family_does_not_modify_its_base_register() {
     // `andl $0xff, %gs:(%rbx)`, ...: the register that forms the address keeps its value.
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         let mut code = vec![0x65u8, 0x81, 0x03 | (group << 3)];
         code.extend(0xffu32.to_le_bytes());
         let mut state = board_state();
@@ -45916,7 +46011,9 @@ fn segment_81_family_write_fault_leaves_memory_registers_flags_and_rip_unchanged
     for segment in [0x65u8, 0x64] {
         for qword in [false, true] {
             for (group, imm) in [
-                (4u8, 0xffff_ffffu32),
+                (1u8, 0u32),
+                (1, 0x8000_0000),
+                (4, 0xffff_ffff),
                 (4, 0x7fff_ffff),
                 (5, 0),
                 (5, 1),
@@ -45955,7 +46052,7 @@ fn segment_81_family_read_fault_changes_nothing() {
         error_code: Some(0x0),
         linear_address: Some(0xffff_8880_0000_1234),
     };
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         for segment in [0x65u8, 0x64] {
             for qword in [false, true] {
                 let code = seg_81_rip(segment, qword, group, 0x110000);
@@ -45992,10 +46089,9 @@ fn segment_81_family_forms_outside_the_slice_are_refused_without_mutation() {
         cases.push(mk(&[0x65, 0x48], group, 4));
         cases.push(mk(&[0x64, 0x48], group, 4));
     }
-    // OR (/1) with FS/GS also stays refused.
-    cases.push(mk(&[0x65], 1, 4));
-    cases.push(mk(&[0x64, 0x48], 1, 4));
-    for group in [4u8, 5, 6, 7] {
+    // S4-38L9n: OR (/1) with FS/GS is executed now (removed from the refusals; its refusals are
+    // covered through the `1` in the loops below).
+    for group in [1u8, 4, 5, 6, 7] {
         // LOCK with FS/GS, in both orders.
         cases.push(mk(&[0xf0, 0x65], group, 4));
         cases.push(mk(&[0x65, 0xf0], group, 4));
@@ -46021,9 +46117,9 @@ fn segment_81_family_forms_outside_the_slice_are_refused_without_mutation() {
         cases.push(mk(&[0x65, 0x66, 0x48], group, 4));
         cases.push(mk(&[0x66, 0x64, 0x48], group, 4));
     }
-    // The word forms with 0x66 and no REX.W: only CMP (/7, S4-38L9j) is executed; AND/SUB/XOR are
-    // refused.
-    for group in [4u8, 5, 6] {
+    // The word forms with 0x66 and no REX.W: only CMP (/7, S4-38L9j) is executed; OR/AND/SUB/XOR
+    // are refused.
+    for group in [1u8, 4, 5, 6] {
         cases.push(mk(&[0x66, 0x65], group, 2));
         cases.push(mk(&[0x65, 0x66], group, 2));
         cases.push(mk(&[0x64, 0x66], group, 2));
@@ -46057,6 +46153,9 @@ fn segment_81_family_with_a_truncated_immediate_or_displacement_is_refused_witho
         &[0x65, 0x81, 0x25, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff][..],
         &[0x64, 0x48, 0x81, 0x2d, 0x34, 0x12, 0x00, 0x00, 0x01][..],
         &[0x65, 0x81, 0x35, 0x34, 0x12, 0x00, 0x00, 0x01, 0x00][..],
+        // S4-38L9n: truncated `81 /1` and `80 /1` (OR).
+        &[0x65, 0x81, 0x0d, 0x34, 0x12, 0x00, 0x00, 0x01, 0x00][..],
+        &[0x64, 0x48, 0x81, 0x0d, 0x34, 0x12, 0x00, 0x00, 0x01][..],
         &[
             0x64, 0x48, 0x81, 0x3d, 0x34, 0x12, 0x00, 0x00, 0x01, 0x00, 0x00,
         ][..],
@@ -46087,7 +46186,7 @@ fn segment_prefixed_register_81_family_is_unchanged_and_ignores_the_prefix() {
     // the instruction is the plain `and/sub/xor/cmp $imm32, %reg`: same result and flags as the
     // unprefixed form, no memory access, RIP advances by the full length.
     let imm = 0x0011_0000u32.to_le_bytes();
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         let modrm = |register: u8| 0xc0 | (group << 3) | register;
         for (prefixed, plain) in [
             (vec![0x65u8, 0x81, modrm(0)], vec![0x81u8, modrm(0)]),
@@ -46131,7 +46230,7 @@ fn segment_prefixed_register_81_family_is_unchanged_and_ignores_the_prefix() {
 fn plain_unprefixed_81_family_memory_still_uses_the_effective_address_ignoring_other_bases() {
     // Regression: `andl $imm, 0x1234(%rip)`, `subq`, `xorl`, `cmpl` and a CS/DS/ES/SS override
     // ignore the FS/GS bases and read the effective address (the path S4-38L9l did not touch).
-    for group in [4u8, 5, 6, 7] {
+    for group in [1u8, 4, 5, 6, 7] {
         let modrm = 0x05 | (group << 3);
         for (code, width) in [
             (vec![0x81u8, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 4usize),
@@ -46155,8 +46254,9 @@ fn plain_unprefixed_81_family_memory_still_uses_the_effective_address_ignoring_o
                 vec![(RIP + code.len() as u64 + 0x1234, width)],
                 "{code:02x?}"
             );
-            // 0xf3 & 0xf = 3, 0xf3 - 0xf = 0xe4, 0xf3 ^ 0xf = 0xfc, cmp: unchanged.
+            // 0xf3 | 0xf = 0xff, 0xf3 & 0xf = 3, 0xf3 - 0xf = 0xe4, 0xf3 ^ 0xf = 0xfc, cmp: unchanged.
             let expected = match group {
+                1 => 0xff,
                 4 => 3,
                 5 => 0xe4,
                 6 => 0xfc,
@@ -46176,6 +46276,8 @@ fn segment_81_family_stays_unsupported_outside_the_set() {
         &seg_81_rip(0x65, false, 6, 0xffff_ffff)[..],
         &seg_81_rip(0x65, false, 7, 0x7fff_ffff)[..],
         &seg_81_rip(0x64, true, 7, 0xffff_ffff)[..],
+        &GS_ORL_IMM32_BOUNDARY[..],
+        &seg_81_rip(0x64, true, 1, 0x8000_0000)[..],
     ] {
         let mut state = legacy_state();
         state.gs_base = 0xffff_8880_0000_0000;
@@ -46249,8 +46351,8 @@ fn segment_81_family_is_not_reachable_from_cpl3() {
 // byte (AF undefined; the model keeps its old bit). The base is added to the effective address;
 // RIP-relative addressing is relative to the end of the whole instruction (the imm8 included).
 // ADD/AND/SUB/XOR: one 1-byte read, one 1-byte write (always performed); CMP: one read, no write.
-// The flags commit after the write. /1 (OR, no dword FS/GS form either), /2 (ADC) and /3 (SBB, both
-// need the incoming CF) stay refused. ----
+// The flags commit after the write. /2 (ADC) and /3 (SBB, both need the incoming CF) stay
+// refused. S4-38L9n adds /1 (OR m8, imm8, imm8 as is) through the same `LogicFsMemImm`/`LogicGsMemImm`. ----
 
 /// `cmpb $0x0, %gs:0x2ef8fce(%rip)` followed by `je` (the S4-38L9m diagnostic boundary bytes: the
 /// first 8 bytes are the instruction, `rcu_note_context_switch`).
@@ -46277,13 +46379,14 @@ fn alu80_oracle(group: u8, lhs: u8, imm: u8, initial: u64) -> (Option<u8>, u64) 
     let mut flags = initial & !ARITH;
     let result = match group {
         0 => lhs.wrapping_add(imm),
+        1 => lhs | imm,
         4 => lhs & imm,
         6 => lhs ^ imm,
         5 | 7 => lhs.wrapping_sub(imm),
         _ => unreachable!(),
     };
     match group {
-        4 | 6 => flags |= initial & FLAG_AF,
+        1 | 4 | 6 => flags |= initial & FLAG_AF,
         0 => {
             if u16::from(lhs) + u16::from(imm) > 0xff {
                 flags |= FLAG_CF;
@@ -46411,7 +46514,7 @@ fn gs_cmpb_imm8_boundary_followed_by_je_branches_on_the_zero_byte() {
 fn segment_80_family_hand_computed_corners_for_both_segments() {
     // (group, cell byte, imm8, result byte, flags without the kept AF). All worked by hand.
     // AND/XOR keep AF and clear CF/OF; ADD/SUB/CMP define all six flags.
-    let table: [(u8, u8, u8, u8, u64); 21] = [
+    let table: [(u8, u8, u8, u8, u64); 25] = [
         // ADD: 0x7f + 1 = 0x80: signed overflow, AF (0xf + 1), SF; 0x80 has one bit: no PF.
         (0, 0x7f, 0x01, 0x80, FLAG_OF | FLAG_AF | FLAG_SF),
         // 0xff + 1 = 0: carry, AF, ZF, PF.
@@ -46446,6 +46549,12 @@ fn segment_80_family_hand_computed_corners_for_both_segments() {
         (6, 0xff, 0xff, 0x00, FLAG_ZF | FLAG_PF),
         (6, 0x00, 0x80, 0x80, FLAG_SF),
         (6, 0x0f, 0x01, 0x0e, 0),
+        // S4-38L9n, OR (`80 /1 ib`): 0x7f | 0x80 = 0xff: SF, PF; 0 | 0 = 0: ZF, PF;
+        // 0x00 | 0x80 = 0x80: SF; 0x01 | 0x02 = 0x03: PF (two bits).
+        (1, 0x7f, 0x80, 0xff, FLAG_SF | FLAG_PF),
+        (1, 0x00, 0x00, 0x00, FLAG_ZF | FLAG_PF),
+        (1, 0x00, 0x80, 0x80, FLAG_SF),
+        (1, 0x01, 0x02, 0x03, FLAG_PF),
     ];
     for segment in [0x65u8, 0x64] {
         for &(group, cell, imm, result, flags) in &table {
@@ -46478,7 +46587,7 @@ fn segment_80_family_hand_computed_corners_for_both_segments() {
                     if group == 7 { None } else { Some(result) },
                     "{context}"
                 );
-                let kept_af = if group == 4 || group == 6 {
+                let kept_af = if group == 1 || group == 4 || group == 6 {
                     initial & FLAG_AF
                 } else {
                     0
@@ -46505,7 +46614,7 @@ fn segment_80_family_matches_the_oracle_for_every_cell_byte_and_imm8_sample() {
         0x00u8, 0x01, 0x0f, 0x10, 0x11, 0x3f, 0x40, 0x7e, 0x7f, 0x80, 0x81, 0xaa, 0xf0, 0xfe, 0xff,
     ];
     for segment in [0x65u8, 0x64] {
-        for group in [0u8, 4, 5, 6, 7] {
+        for group in [0u8, 1, 4, 5, 6, 7] {
             // REX.W and REX.R must not change the byte width.
             for rex in [None, Some(0x48u8), Some(0x44)] {
                 for imm in bytes {
@@ -46543,7 +46652,7 @@ fn segment_80_family_equals_the_non_prefixed_register_byte_form() {
     // The prefixed memory form shares the arithmetic and logic functions with `80 /n` through `%al`:
     // compare the result and flags of `{add,and,sub,xor,cmp}b $imm, %al` with the memory form, for
     // a flag state that has CF, OF, SF and AF set.
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         for imm in [0x01u8, 0x7f, 0x80, 0xff, 0x0f] {
             for cell in [0x00u8, 0x01, 0x7f, 0x80, 0xff, 0x55] {
                 let plain_code = [0x80, 0xc0 | (group << 3), imm];
@@ -46576,15 +46685,16 @@ fn segment_80_family_equals_the_non_prefixed_register_byte_form() {
 
 #[test]
 fn fs_and_gs_80_family_use_their_own_base_and_ignore_the_other() {
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         for (segment, used) in [(0x65u8, GS_BASE_80), (0x64, FS_BASE_80)] {
             let code = seg_80_rip(segment, None, group, 7);
             let (_, memory, _) = run_80(&code, 0x13, 2 | IF);
             let address = used + RIP + code.len() as u64 + 0x1234;
             assert_eq!(memory.reads, vec![(address, 1)], "{segment:#x} {group}");
-            // 0x13 + 7 = 0x1a, 0x13 & 7 = 3, 0x13 - 7 = 0xc, 0x13 ^ 7 = 0x14; CMP does not write.
+            // 0x13 + 7 = 0x1a, 0x13 | 7 = 0x17, 0x13 & 7 = 3, 0x13 - 7 = 0xc, 0x13 ^ 7 = 0x14; CMP does not write.
             let written = match group {
                 0 => Some(0x1au8),
+                1 => Some(0x17),
                 4 => Some(3),
                 5 => Some(0xc),
                 6 => Some(0x14),
@@ -46630,7 +46740,7 @@ fn segment_80_family_with_every_extended_base_register_r8_to_r15_uses_rex_b() {
         Register::R14,
         Register::R15,
     ];
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         for (n, register) in regs.into_iter().enumerate() {
             for rex in [0x41u8, 0x49] {
                 for segment in [0x65u8, 0x64] {
@@ -46706,7 +46816,7 @@ fn segment_80_family_with_disp8_sib_index_scale_and_displacement() {
 #[test]
 fn segment_80_family_non_canonical_address_is_gp0_without_mutation_or_access() {
     // The byte at the start lies in the non-canonical hole (a byte has no separate last byte).
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         for segment in [0x65u8, 0x64] {
             let code = seg_80_rip(segment, None, group, 1);
             let base = 0x0000_8000_0000_0000u64 - 0x1234 - RIP - code.len() as u64;
@@ -46743,6 +46853,8 @@ fn gs_80_family_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
         (&[0x65u8, 0x80, 0x34, 0x24, 1][..], Register::Rsp),
         (&[0x65u8, 0x80, 0x7d, 0x00, 1][..], Register::Rbp),
         (&[0x65u8, 0x80, 0x04, 0x24, 1][..], Register::Rsp),
+        // S4-38L9n: `orb $1, %gs:(%rsp)`.
+        (&[0x65u8, 0x80, 0x0c, 0x24, 1][..], Register::Rsp),
     ] {
         let mut state = board_state();
         state.gs_base = 0x0000_8000_0000_0000;
@@ -46760,7 +46872,7 @@ fn gs_80_family_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
 #[test]
 fn segment_80_family_does_not_modify_its_base_register() {
     // `addb $0xff, %gs:(%rbx)`, ...: the register that forms the address keeps its value.
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         let code = [0x65u8, 0x80, 0x03 | (group << 3), 0xff];
         let mut state = board_state();
         state.gs_base = 0xffff_8880_0000_0000;
@@ -46785,6 +46897,8 @@ fn segment_80_family_write_fault_leaves_memory_registers_flags_and_rip_unchanged
         for (group, imm) in [
             (0u8, 0u8),
             (0, 1),
+            (1, 0),
+            (1, 0x80),
             (4, 0xff),
             (4, 0x7f),
             (5, 0),
@@ -46823,7 +46937,7 @@ fn segment_80_family_read_fault_changes_nothing() {
         error_code: Some(0x0),
         linear_address: Some(0xffff_8880_0000_1234),
     };
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         for segment in [0x65u8, 0x64] {
             let code = seg_80_rip(segment, None, group, 0x11);
             let mut state = board_state();
@@ -46851,15 +46965,15 @@ fn segment_80_family_forms_outside_the_slice_are_refused_without_mutation() {
         code
     };
     let mut cases: Vec<Vec<u8>> = Vec::new();
-    // OR (/1), ADC (/2) and SBB (/3) are refused with FS/GS (OR has no dword form with FS/GS and
-    // ADC/SBB need the incoming CF).
-    for group in [1u8, 2, 3] {
+    // ADC (/2) and SBB (/3) are refused with FS/GS (they need the incoming CF). S4-38L9n: OR (/1)
+    // is executed now and is covered by the `1` in the loops below.
+    for group in [2u8, 3] {
         cases.push(mk(&[0x65], group, 1));
         cases.push(mk(&[0x64], group, 1));
         cases.push(mk(&[0x65, 0x48], group, 1));
         cases.push(mk(&[0x64, 0x41], group, 1));
     }
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         // LOCK with FS/GS, in both orders.
         cases.push(mk(&[0xf0, 0x65], group, 1));
         cases.push(mk(&[0x65, 0xf0], group, 1));
@@ -46916,6 +47030,7 @@ fn segment_80_family_with_a_truncated_immediate_or_displacement_is_refused_witho
         &[0x65, 0x80, 0x3d, 0xce, 0x8f, 0xef, 0x02][..],
         &[0x64, 0x41, 0x80, 0x3d, 0x34, 0x12, 0x00, 0x00][..],
         &[0x65, 0x80, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x80, 0x0d, 0x34, 0x12, 0x00, 0x00][..],
         &[0x65, 0x80, 0x63][..],
         &[0x65, 0x80, 0x64, 0xcb, 0x10][..],
     ] {
@@ -46942,7 +47057,7 @@ fn segment_prefixed_register_80_family_is_unchanged_and_ignores_the_prefix() {
     // The register form (mod = 11) with FS/GS keeps the existing policy: the prefix is ignored and
     // the instruction is the plain `{add,and,sub,xor,cmp}b $imm8, %reg8`: same result and flags as
     // the unprefixed form, no memory access, RIP advances by the full length.
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         let modrm = |register: u8| 0xc0 | (group << 3) | register;
         for (prefixed, plain) in [
             (
@@ -46989,7 +47104,7 @@ fn plain_unprefixed_80_family_memory_still_uses_the_effective_address_ignoring_o
     // Regression: `addb $imm, 0x1234(%rip)`, `andb`, `subb`, `xorb`, `cmpb` and a CS/DS/ES/SS
     // override ignore the FS/GS bases and read the effective address (the path S4-38L9m did not
     // touch).
-    for group in [0u8, 4, 5, 6, 7] {
+    for group in [0u8, 1, 4, 5, 6, 7] {
         let modrm = 0x05 | (group << 3);
         for code in [
             vec![0x80u8, modrm, 0x34, 0x12, 0, 0, 0x0f],
@@ -47010,10 +47125,11 @@ fn plain_unprefixed_80_family_memory_still_uses_the_effective_address_ignoring_o
                 vec![(RIP + code.len() as u64 + 0x1234, 1)],
                 "{code:02x?}"
             );
-            // 0xf3 + 0xf = 0x102 -> 0x02, 0xf3 & 0xf = 3, 0xf3 - 0xf = 0xe4, 0xf3 ^ 0xf = 0xfc,
+            // 0xf3 + 0xf = 0x102 -> 0x02, 0xf3 | 0xf = 0xff, 0xf3 & 0xf = 3, 0xf3 - 0xf = 0xe4, 0xf3 ^ 0xf = 0xfc,
             // cmp: unchanged.
             let expected = match group {
                 0 => 0x02,
+                1 => 0xff,
                 4 => 3,
                 5 => 0xe4,
                 6 => 0xfc,
@@ -47034,6 +47150,7 @@ fn segment_80_family_stays_unsupported_outside_the_set() {
         &seg_80_rip(0x65, None, 7, 0x7f)[..],
         &seg_80_rip(0x64, None, 0, 0xff)[..],
         &seg_80_rip(0x65, None, 4, 0xf0)[..],
+        &seg_80_rip(0x64, None, 1, 0x80)[..],
     ] {
         let mut state = legacy_state();
         state.gs_base = 0xffff_8880_0000_0000;
