@@ -1028,6 +1028,26 @@ impl PortIo for MachineBusPortIo<'_> {
             u32::from(value),
         )
     }
+
+    fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
+        read_port_from(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Word,
+        )
+        .map(|value| value as u16)
+    }
+
+    fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
+        write_port_to(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Word,
+            u32::from(value),
+        )
+    }
 }
 
 fn read_port_from(
