@@ -682,6 +682,29 @@ def movsd_register_local_profile_candidate(row: dict) -> str | None:
     return "S2-34.9a-MOVSD-XMM-register-register"
 
 
+def movsd_memory_rax_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-34.9c legacy MOVSD m64 [RAX] load."""
+    if row["mnemonic"] != "movsd" or row["signature"] != "movsd xmm,mem64":
+        return None
+    # Keep the effective address exact: this bounded profile is only [RAX].
+    if not re.fullmatch(r"xmm\d+\s*,\s*qword ptr\s*\[rax\]", row["operands"], re.IGNORECASE):
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x10):
+        return None
+    prefixes = tuple(view["prefixes"])
+    # F2 is mandatory; optional REX is limited to neutral 40 or REX.R 44.
+    if prefixes not in {(0xF2,), (0xF2, 0x40), (0xF2, 0x44)}:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 0 or modrm & 7 != 0:
+        return None
+    # F2 + optional REX + 0F 10 + ModR/M; no SIB or displacement bytes.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-34.9c-MOVSD-XMM-memory-RAX-load"
+
+
 def movapd_register_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-34.13 forward MOVAPD register form."""
     if row["mnemonic"] != "movapd" or row["signature"] != "movapd xmm,xmm":
@@ -1017,6 +1040,9 @@ def local_profile_candidate(row: dict) -> str | None:
     movsd_register_candidate = movsd_register_local_profile_candidate(row)
     if movsd_register_candidate is not None:
         return movsd_register_candidate
+    movsd_memory_rax_candidate = movsd_memory_rax_local_profile_candidate(row)
+    if movsd_memory_rax_candidate is not None:
+        return movsd_memory_rax_candidate
     movapd_register_candidate = movapd_register_local_profile_candidate(row)
     if movapd_register_candidate is not None:
         return movapd_register_candidate

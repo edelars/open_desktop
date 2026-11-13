@@ -1906,6 +1906,32 @@
         "docs/plans/STAGE_2.md:14606-14625",
         "docs/reports/STAGE_2_REPORT.md:15780-15789"
       ]
+    },
+    {
+      "task": "S2-34.9c MOVSD XMM m64 load from RAX only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing either state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are architectural assumptions only. The static inventory credits only the exact base-only [RAX] m64 load candidate and assumes a successful canonical48 [RAX..RAX+7] range check plus one 8-byte read; it does not infer runtime RAX values, mapped/readable data, or guest success. Local semantic evidence covers temporary buffering, low-qword copy, high-qword clear and RIP update only after successful read; failed fetch/read/range does not commit CPU state. It makes no guest fault-priority/delivery, CPL3/native/JIT/physical claim.",
+      "families": [
+        {
+          "task": "S2-34.9c",
+          "encoding": "F2 [optional one REX.R byte, 40 or 44] 0F 10 /r; ModR/M.mod=00 and r/m=000 ([RAX]); ModR/M.reg selects XMM destination (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSD m64 load from base-only [RAX]: mandatory F2; optional single immediate REX byte only 40 or 44; ModR/M.mod=00, r/m=000, any reg. Reject other bases, SIB, any displacement, REX.B/X/W, other/duplicate/reordered prefixes, reverse 0F 11, VEX/EVEX and string A5.",
+          "outcome": "Local execution checks the full canonical48 [RAX..RAX+7] span, reads exactly eight bytes into a temporary, then copies low64, clears destination high64 and advances RIP. A static match is only bounded profile evidence; it does not claim the observed process actually used RAX or successfully read mapped bytes.",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11646-11670",
+            "docs/plans/STAGE_2.md:13299-13333",
+            "docs/reports/STAGE_2_REPORT.md:14438-14484"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11646-11670",
+        "docs/plans/STAGE_2.md:13299-13333",
+        "docs/reports/STAGE_2_REPORT.md:14438-14484"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

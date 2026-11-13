@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pand-e-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-pand-e-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-pand-e-pass1.json",
-    "compact_inventory_sha256": "94bbfaa62d609513e3a4db50d695ce46ccea75bb435a7c360d3201c75c83b588",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass1.json",
+    "compact_inventory_sha256": "57179c72d3b5a51790fc1fb6d094ede641c966475ddd1dbd08be16a3afa5d6c5",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "d0f405f906c757774c578c8bd5412cc86f5ac7db0a3160f1035a3cfbd97119cc",
+    "raw_inventory_sha256": "7f27df4c745df124d1ab3f88653cf8373a0876a361fc03d2af43a8a15dbc4aa6",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -59,20 +59,20 @@
     "classified_normalized_forms": 1064,
     "unclassified_normalized_forms": 205,
     "classification_frequencies": {
-      "proven_supported": 6296700,
-      "unclassified": 214045
+      "proven_supported": 6296703,
+      "unclassified": 214042
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6294349,
+      "local_interpreter_profile": 6294352,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "94bbfaa62d609513e3a4db50d695ce46ccea75bb435a7c360d3201c75c83b588",
+    "compact_repeat_sha256": "57179c72d3b5a51790fc1fb6d094ede641c966475ddd1dbd08be16a3afa5d6c5",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-pand-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-pand-e-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movsd9c-e-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -94,7 +94,7 @@
       "punpckhqdq xmm,mem128": 1
     },
     "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence",
-    "local_interpreter_profile_rows": 6294349,
+    "local_interpreter_profile_rows": 6294352,
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
@@ -102,8 +102,8 @@
         "unclassified": 23410
       },
       "D": {
-        "proven_supported": 6227347,
-        "unclassified": 208867
+        "proven_supported": 6227350,
+        "unclassified": 208864
       }
     },
     "local_simd_logic_rows": 2162,
@@ -331,7 +331,15 @@
     "pand_register_rows_by_profile": {
       "S2-35.49-PAND-XMM-register-register": 304
     },
-    "pand_scope": "Accepted local-only S2-35.49 PAND XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; raw 128-bit result is original_DEST AND original_SRC. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh PAND-only review passed three ISA checks, two testkit tests and one fixture; this new bounded review does not imply historical acceptance. No memory callback; no MMX/memory or CPL3/native/JIT/physical evidence."
+    "pand_scope": "Accepted local-only S2-35.49 PAND XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; raw 128-bit result is original_DEST AND original_SRC. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh PAND-only review passed three ISA checks, two testkit tests and one fixture; this new bounded review does not imply historical acceptance. No memory callback; no MMX/memory or CPL3/native/JIT/physical evidence.",
+    "movsd_rax_memory_load_rows": 3,
+    "movsd_rax_memory_load_encoding_forms": 1,
+    "movsd_rax_memory_load_rows_by_binary": {
+      "gcc-cc1": 1,
+      "gcc-collect2": 1,
+      "gcc-driver": 1
+    },
+    "movsd_rax_memory_load_scope": "Accepted S2-34.9c local-only MOVSD m64 load candidate: exact F2, optional one REX 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE2/CR0/CR4 are assumptions. Assumes successful canonical48 [RAX..RAX+7] validation and one eight-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior."
   },
   "unchanged_rootfs_binary_inputs": true
 }

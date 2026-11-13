@@ -68,6 +68,12 @@ class NormalizedFormTests(unittest.TestCase):
                 compact = json.loads(gzip.decompress(compact_path.read_bytes()))
                 fields = manifest[full_key] if full_key else manifest[compact_key]
                 compact_fields = manifest[compact_key] if full_key else fields
+                compact_sha = compact_fields.get("sha256", fields.get("compact_inventory_sha256"))
+                repeat_sha = compact_fields.get("repeat_sha256", compact_fields.get("compact_repeat_sha256"))
+                self.assertEqual(repeat_sha, compact_sha)
+                raw_source = fields.get("preserved_raw_path") or manifest["runs"][0]["output"]
+                generation_command = compact_fields.get("generation_command", compact_fields.get("compact_generation_command"))
+                self.assertIn(raw_source, generation_command)
 
                 self.assertEqual(compact["normalized_instruction_form_count"], 1269)
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
@@ -75,10 +81,14 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
                 self.assertEqual(fields["classified_normalized_forms"], 1064)
                 self.assertEqual(fields["unclassified_normalized_forms"], 205)
+                self.assertEqual(fields["movsd_rax_memory_load_rows"], 3)
+                self.assertEqual(fields["movsd_rax_memory_load_encoding_forms"], 1)
+                self.assertEqual(fields["movsd_rax_memory_load_rows_by_binary"], {"gcc-cc1": 1, "gcc-collect2": 1, "gcc-driver": 1})
+                self.assertIn("static evidence does not infer runtime RAX/data/read success", fields["movsd_rax_memory_load_scope"])
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6296416 if full_key else 6296700
-                expected_unclassified_rows = 213984 if full_key else 214045
+                expected_supported_rows = 6296419 if full_key else 6296703
+                expected_unclassified_rows = 213981 if full_key else 214042
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -129,9 +139,11 @@ class NormalizedFormTests(unittest.TestCase):
                     e_compact_snapshot["classification_frequencies"]["unclassified"],
                 )
                 report_status = next(line for line in report_lines if line.startswith("S5-21 сейчас **blocked**"))
-                self.assertIn("205 из 1 269 normalized forms (213 984 rootfs-only rows; 214 045 rows с E ELF)", report_status)
-                self.assertIn("6 294 349", local_scope_line)
-                self.assertIn("6 294 065", local_scope_line)
+                self.assertIn("205 из 1 269 normalized forms (213 981 rootfs-only rows; 214 042 rows с E ELF)", report_status)
+                self.assertIn("6 294 352", local_scope_line)
+                self.assertIn("6 294 068", local_scope_line)
+                movsd_memory_report = next(line for line in report_lines if line.startswith("The accepted local-only S2-34.9c"))
+                self.assertIn("three bounded local-profile matches and 85 rows remain unclassified", movsd_memory_report)
                 self.assertIn("six-profile accepted local SIMD logic group of 1 858 rows plus PAND 304 rows (2 162 / 10 forms total)", local_scope_line)
                 historical_logic = next(line for line in report_lines if line.startswith("Historical snapshot before the 2026-11-12 fresh PAND review:"))
                 self.assertIn("At that earlier snapshot, PAND S2-35.49 was pending independent review", historical_logic)
@@ -154,7 +166,7 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "205 normalized forms / 213 984 rootfs-only rows (214 045 с E ELF)",
+                    "205 normalized forms / 213 981 rootfs-only rows (214 042 с E ELF)",
                     issue_section,
                 )
                 self.assertIn("7 PMOVMSKB rows", issue_section)
@@ -169,6 +181,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertNotIn("PAND S2-35.49 ожидает независимое ревью и не засчитан", issue_section)
                 self.assertIn("2 162 register-register rows / 10 forms", issue_section)
                 self.assertIn("179 SIMD memory-logic rows остаются unclassified из-за отсутствия подходящего принятого профиля, включая 52 PAND memory rows", issue_section)
+                self.assertIn("MOVSD S2-34.9c adds three exact `F2 0F 10 00` `[RAX]` m64 load rows", issue_section)
+                self.assertIn("3 supported and 85 unclassified", issue_section)
+                self.assertIn("four ISA checks (three load_rax plus decoder), one schema test and one fixture", issue_section)
+                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass1.json", issue_section)
+                if not full_key:
+                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-movsd9c-e-pass1.json")
                 stage2_plan = (repo_root / "docs/plans/STAGE_2.md").read_text()
                 self.assertIn("Independent review was pending at this implementation check", stage2_plan)
                 self.assertIn("fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture", stage2_plan)
@@ -176,18 +194,18 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
                 self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
                 for digest in (
-                    "84903aa034aa5f7cd8c746577ace98b6f2c802787a777fe4045d01ef9920a2a9",
-                    "b26eb23cfddd54c401a82eb8de4d5b52cb537a61de563d6e82ee75fa107faf04",
-                    "d0f405f906c757774c578c8bd5412cc86f5ac7db0a3160f1035a3cfbd97119cc",
-                    "94bbfaa62d609513e3a4db50d695ce46ccea75bb435a7c360d3201c75c83b588",
+                    "5b166a9a2fe85459b48344530e10df7995cc26781241b5426117c6eb8f1d01c8",
+                    "6e8e3e5c0c53a47ff131bd1efe24f698cfafe4554951472c0cf5b2ad5d82edc3",
+                    "7f27df4c745df124d1ab3f88653cf8373a0876a361fc03d2af43a8a15dbc4aa6",
+                    "57179c72d3b5a51790fc1fb6d094ede641c966475ddd1dbd08be16a3afa5d6c5",
                 ):
                     self.assertIn(digest, issue_section)
-                self.assertIn("6 296 416 bounded-profile evidence, 213 984 unclassified", issue_section)
-                self.assertIn("6 296 700 evidence, 214 045 unclassified", issue_section)
+                self.assertIn("6 296 419 bounded-profile evidence, 213 981 unclassified", issue_section)
+                self.assertIn("6 296 703 evidence, 214 042 unclassified", issue_section)
                 self.assertIn("1 064 из 1 269 normalized forms имеют bounded evidence, 205 остаётся unclassified", issue_section)
                 aggregate_summary = next(line for line in report_lines if line.startswith("The paired rootfs inventory contains 6,510,400 instruction rows:"))
-                self.assertIn("6,296,416 `proven_supported` and 213,984 `unclassified`", aggregate_summary)
-                self.assertIn("6,296,700 supported and 214,045 unclassified", aggregate_summary)
+                self.assertIn("6,296,419 `proven_supported` and 213,981 `unclassified`", aggregate_summary)
+                self.assertIn("6,296,703 supported and 214,042 unclassified", aggregate_summary)
                 report_binary_rows = {}
                 for line in report_lines:
                     cells = [cell.strip() for cell in line.split("|")]
@@ -673,6 +691,33 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(
                     sum(row["classification_frequencies"].get("proven_supported", 0) for row in movsd_register_forms),
                     2,
+                )
+                movsd_rax_base_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movsd xmm,mem64"
+                    and row["instruction_form"]["semantic_prefixes"] == ["repne"]
+                    and row["instruction_form"]["modrm_mode"] == "memory"
+                    and row["instruction_form"]["address"]["form"] == "base_only"
+                ]
+                self.assertEqual(len(movsd_rax_base_forms), 1)
+                movsd_rax_base = movsd_rax_base_forms[0]
+                self.assertEqual(movsd_rax_base["count"], 88)
+                self.assertEqual(movsd_rax_base["classification_frequencies"], {"proven_supported": 3, "unclassified": 85})
+                self.assertEqual(
+                    movsd_rax_base["profile_match_frequencies"],
+                    {"S2-34.9c-MOVSD-XMM-memory-RAX-load": 3},
+                )
+                self.assertEqual(
+                    movsd_rax_base["binary_classification_frequencies"],
+                    {
+                        "bash": {"unclassified": 4},
+                        "dash": {"unclassified": 1},
+                        "gcc-cc1": {"proven_supported": 1, "unclassified": 71},
+                        "gcc-collect2": {"proven_supported": 1},
+                        "gcc-driver": {"proven_supported": 1, "unclassified": 2},
+                        "tar": {"unclassified": 7},
+                    },
                 )
                 pcmpgtb_forms = [
                     row for row in compact["normalized_instruction_forms"]

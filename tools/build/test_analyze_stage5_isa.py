@@ -892,6 +892,59 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertIn("F2 is mandatory and is not REPNE", family["gate"])
         self.assertIn("no CPL3/native/JIT/physical claim", profile["gate"])
 
+    def test_s2_34_9c_movsd_memory_load_is_exact_f2_rax_base_only(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.9c MOVSD XMM m64 load from RAX only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("both raw x87 and SSE state", profile["gate"])
+        self.assertIn("SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1", profile["gate"])
+        self.assertIn("successful canonical48 [RAX..RAX+7] range check plus one 8-byte read", profile["gate"])
+        self.assertIn("does not infer runtime RAX values", profile["gate"])
+        self.assertIn("does not claim the observed process actually used RAX", profile["families"][0]["outcome"])
+        expected = "S2-34.9c-MOVSD-XMM-memory-RAX-load"
+        for destination in range(16):
+            rex = "" if destination < 8 else "44 "
+            encoding = f"f2 {rex}0f 10 {((destination & 7) << 3):02x}"
+            row = analyzer.parse_row(
+                f"  405900: {encoding} movsd xmm{destination},QWORD PTR [rax]"
+            )
+            self.assertEqual(row["signature"], "movsd xmm,mem64", encoding)
+            self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+            self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+        neutral_rex = analyzer.parse_row(
+            "  405a00: f2 40 0f 10 00 movsd xmm0,QWORD PTR [rax]"
+        )
+        self.assertEqual(analyzer.local_profile_candidate(neutral_rex), expected)
+
+        rejected = (
+            ("0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # F2 mandatory.
+            ("f2 41 0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # REX.B changes base.
+            ("f2 42 0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # REX.X.
+            ("f2 48 0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # REX.W.
+            ("f2 4c 0f 10 00", "movsd xmm8,QWORD PTR [rax]"),  # REX.R/W.
+            ("f2 0f 10 01", "movsd xmm0,QWORD PTR [rcx]"),  # Other base.
+            ("f2 0f 10 05 00 00 00 00", "movsd xmm0,QWORD PTR [rip+0x0]"),  # RIP-relative.
+            ("f2 0f 10 04 20", "movsd xmm0,QWORD PTR [rax+riz]"),  # SIB.
+            ("f2 0f 10 40 00", "movsd xmm0,QWORD PTR [rax+0x0]"),  # disp8.
+            ("f2 0f 10 80 00 00 00 00", "movsd xmm0,QWORD PTR [rax+0x0]"),  # disp32.
+            ("f2 66 0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # Other prefix.
+            ("44 f2 0f 10 00", "movsd xmm8,QWORD PTR [rax]"),  # Prefix order.
+            ("f2 f2 0f 10 00", "movsd xmm0,QWORD PTR [rax]"),  # Duplicate F2.
+            ("f2 44 44 0f 10 00", "movsd xmm8,QWORD PTR [rax]"),  # Duplicate REX.
+            ("f2 0f 11 00", "movsd QWORD PTR [rax],xmm0"),  # Reverse direction.
+            ("f2 0f 10", "movsd xmm0,QWORD PTR [rax]"),  # Truncated.
+            ("f2 0f 10 00 90", "movsd xmm0,QWORD PTR [rax]"),  # Trailing byte.
+            ("c5 fb 10 00", "vmovsd xmm0,QWORD PTR [rax]"),
+            ("62 f1 ff 08 10 00", "vmovsd xmm0,QWORD PTR [rax]"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  405b00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
     def test_s2_35_21_pcmpgtb_matches_all_register_pairs_and_rex_extensions(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)
