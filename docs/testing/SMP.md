@@ -1,6 +1,6 @@
 # Методика проверок SMP и модели памяти
 
-Статус: **методика S6-01; S6-05 принята; реализация отдельного нативного runner S6-08 проходит локальную проверку и ещё не получила Linux/Intel execution evidence**. Реализация SMP в VM и результаты VM-прогонов отсутствуют. Этот документ задаёт входные данные, оракулы, стартовые бюджеты и правила фиксации результата. Числовая калибровка native/physical остаётся открытой до S6-08/S6-09; сами плановые числа не подтверждают поддержку SMP.
+Статус: **S6-05 и S6-08 приняты; Linux x86_64 corpus calibration выполнена на физическом Intel; полный calibrated S6-09 budget ещё не запущен**. Реализация SMP в VM и результаты VM-прогонов отсутствуют. Этот документ задаёт входные данные, оракулы, бюджеты и правила фиксации результата; native runner не доказывает SMP в VM.
 
 ## 1. Источники и границы утверждений
 
@@ -141,19 +141,21 @@ The seed range was measured separately in three fresh workers, each executing on
 
 `od-x86-runner --litmus-corpus` is a separate, Linux x86_64-only mode for the S6-05 corpus. It validates every instruction with the `od-isa` long-mode decoder and a corpus-specific exact operation/operand policy before mapping code. It requires the complete finite and formula corpus, pins each OS thread to an allowed logical CPU (preferring distinct physical cores and reporting SMT-sibling fallback), synchronizes round starts with a barrier, resets shared cells on every round, and emits per-process plus combined JSON histograms. The mandatory output path is initialized before child work and retains progress or failure details. Build revision, source fingerprint, dirty state, compiler, target/profile, and extra Rust flags are included in the result.
 
-The mode does not widen `--fixture` or the existing native supervisor admission. Its current child limits are 30 seconds CPU, 30 seconds wall time, and 256 MiB address space for each fixture process. The standard mode uses three fresh child processes per fixture. These limits and the iteration count must be rechecked against measured throughput before choosing the accepted run budget. `MFENCE` and the supported `LOCK` forms are admitted only by this exact litmus policy after decoded-operation checks; unsupported forms, malformed corpus entries, and out-of-range branches fail before execution. The narrowly decoded bare `LOOP rel8` is allowed only for the formula counter group and remains unsupported by ordinary fixture admission and the interpreter/JIT.
+The mode does not widen `--fixture` or the existing native supervisor admission. Its child limits are 30 seconds CPU, 30 seconds wall time, and 256 MiB address space for each fixture process. It uses three fresh child processes per fixture. `MFENCE` and the supported `LOCK` forms are admitted only by this exact litmus policy after decoded-operation checks; unsupported forms, malformed corpus entries, and out-of-range branches fail before execution. The narrowly decoded bare `LOOP rel8` is allowed only for the formula counter group and remains unsupported by ordinary fixture admission and the interpreter/JIT.
 
-On Linux x86_64, build the runner in release mode, then run the entire corpus with the iteration count selected by S6-08 calibration. `N` and `K` are formula-counter parameters (`2 <= N <= 4`, `1 <= K <= 4096`):
+On Linux x86_64, build the runner in release mode, then run the entire corpus with the calibrated S6-09 count. `N` and `K` are formula-counter parameters (`2 <= N <= 4`, `1 <= K <= 4096`):
 
 ```sh
-cargo build --release -p od-x86-runner --offline
-target/release/od-x86-runner --litmus-corpus tests/fixtures/guest/stage6/litmus --iterations "$S6_LITMUS_ITERATIONS" --counter-n 2 --counter-k 2 --json --output work/stage6/s6-08-native.json
+cargo build --release -p od-x86-runner --locked
+target/release/od-x86-runner --litmus-corpus tests/fixtures/guest/stage6/litmus --iterations 500000 --counter-n 2 --counter-k 2 --json --output work/stage6/s6-09-native-physical.json
 ```
 
-The command currently exercises 15 finite cases from 16 JSON files (the sixteenth file defines the formula group) and three formula identities, with three fresh processes per case. The host-side macOS checks and Linux cross-target typecheck do not exercise the threaded native path. No accepted iteration count or throughput is recorded yet; Linux execution, histogram conservation under load, and the physical Intel SB `00` observation remain pending. Keep failed output under ignored `work/stage6/`; accepted raw runs and summaries belong in `docs/reports/data/stage6/`.
+The command exercises 15 finite cases from 16 JSON files (the sixteenth file defines the formula group) plus three formula identities, with three fresh processes per case. The physical Intel calibration ran all 18 cases at 10,000 rounds/process: all 54 histograms conserved their round counts, no observed outcome was outside the corresponding TSO set, and SB observed `00` once in 30,000 rounds. See [S6-08 calibration evidence](../reports/data/stage6/s6-08-native-calibration.md). The ordinary `--fixture` mode also completed its S0-09 regression fixture; Linux `cargo test` passed 9 library tests and 258 runner tests.
 
-- Candidate standard run: `10,000,000` rounds/test/process in three fresh processes, hence `30,000,000` rounds/test. This is a starting budget, not a probability guarantee. S6-08/S6-09 must record throughput and duration; the accepted iteration count is the value that fits the documented run budget while preserving the SB minimum-observation criterion. If the corpus has `M` tests, the candidate base work is `30,000,000 × M` rounds; report `M`, actual rounds, and elapsed time.
-- For SB, an interesting `00` outcome must be observed at least once on the physical Intel x86 stand. If it has not appeared after the base budget, continue that test to a cumulative `3,200,000,000` rounds and retain both the initial and extended histograms. If it still does not appear, report the physical-x86 gate as not passed; do not weaken the model or change the expected set. The 3.2-billion ceiling is a bounded search budget informed by the scale of a rare event reported for a *different* test in the paper; it is not a probability estimate for SB.
+Calibration measured 54 process-throughput samples from 47,160 to 98,115 rounds/s (median 83,592; pooled 79,023). The original 10,000,000 rounds/process candidate would take at least 212 seconds at the slowest observed rate and exceed the 30-second child CPU/wall cap. The calibrated S6-09 budget is therefore **500,000 rounds/test/process × 3 fresh processes = 1,500,000 rounds/test**. That takes about 10.6 seconds of child runtime for the slowest observed process; the projected full 18-case corpus is 341.7 seconds of summed child runtime from the per-process samples, excluding build/startup overhead, with a conservative 572.5-second estimate if every process runs at the slowest sample rate. The accepted S6-09 run remains pending. Keep failed output under ignored `work/stage6/`; accepted raw runs and summaries belong in `docs/reports/data/stage6/`.
+
+- Calibrated S6-09 base work is `1,500,000 × 18 = 27,000,000` rounds. This count is based on measured per-process rates and the existing 30-second CPU/wall child limits; it is not a probability guarantee. Report actual rounds and elapsed time for every case.
+- For SB, an interesting `00` outcome must be observed at least once on the physical Intel x86 stand. The 10,000-round calibration already observed it once; retain that histogram with the full-run histogram. If no `00` is present in cumulative evidence, continue SB to a cumulative `3,200,000,000` rounds and retain both base and extended histograms. If it still does not appear, report the physical-x86 gate as not passed; do not weaken the model or change the expected set. The 3.2-billion ceiling is a bounded search budget informed by the scale of a rare event reported for a *different* test in the paper; it is not a probability estimate for SB.
 
 ### Parallel mode on the VM implementation
 
@@ -161,7 +163,7 @@ Run each fixture on the smallest configurations that can host all concurrent tes
 
 ### Runtime estimate and calibration
 
-No SMP harness or timing result exists yet, so these are **planning estimates**, not measured performance claims. A provisional throughput assumption of 500,000 rounds/s gives `30,000,000 / 500,000 = 60 s/test/configuration`; a 10-test native/physical corpus would take about 10 minutes, excluding build and startup. Parallel mode's upper budget if all 10 tests apply to both configurations is `30,000,000 × 10 × 2 = 600,000,000` rounds, about 20 minutes at that assumption; actual work is `30,000,000 × Σ(applicable configurations per fixture)`. SB's extended cumulative candidate is `3,200,000,000 / 500,000 = 6,400 s` (about 1 h 47 min) on the physical stand. The 500,000 rounds/s assumption and all repetition counts are uncalibrated: S6-08/S6-09 must record actual per-test rates before these time estimates become gates. If observed throughput differs, update the numerical budget and report before acceptance; do not silently reduce a required count.
+Native physical timing is now calibrated as recorded above. Parallel-mode timing remains **planning-only**: using the earlier 500,000 rounds/s assumption, the candidate `30,000,000 × Σ(applicable configurations per fixture)` can be estimated only after S6-36 defines its applicable corpus/configuration matrix. The 500,000 rounds/s assumption does not apply to the Intel S6-08 runner and is not a performance claim.
 
 ### Numeric gates still pending
 
@@ -169,7 +171,7 @@ The following test budgets are deliberately not invented before their harnesses 
 
 | Task | Quantity still to calibrate | Task cannot pass until |
 |---|---|---|
-| S6-08/S6-09 | Native and physical x86 rounds/test, process repetitions, actual throughput, total runtime, and the SB extended-run outcome | Each task records actual rates and accepted iteration counts; the x86 gate cannot pass before the SB interesting outcome is observed. |
+| S6-09 | Full physical x86 corpus at the calibrated 500,000 rounds/test/process, actual per-case rates/runtime, and final SB histogram | The 27,000,000-round base run is captured with all case hashes/configuration; SB `00` remains present in retained physical evidence. |
 | S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | S6-34 records repetitions, timeout, and race-window coverage from its test harness. |
 | S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | S6-35 records an exact matrix and expected runtime before parallel save/load acceptance. |
@@ -181,4 +183,4 @@ Every run records: fixture and corpus SHA-256; test ID; source revision; runner 
 
 On a forbidden outcome, set/status mismatch, crash, or timeout: stop the gate, retain the raw output and exact input, and report the smallest reproducible fixture. Do not turn a forbidden result into noise, average it away, update expected outcomes from the run, or claim a pass after a later clean retry. A retry is additional evidence and must keep the first result.
 
-The expected litmus corpus and its own TSO/SC enumerator are S6-05. The S6-08 runner implementation is under review-complete local development; native Linux execution and calibration are pending. The physical x86 run is S6-09, and parallel-mode sensitivity is S6-36.
+The expected litmus corpus and its own TSO/SC enumerator are S6-05. S6-08's runner implementation, Linux regression tests, and full-corpus calibration are complete. The calibrated full physical run is S6-09; parallel-mode sensitivity is S6-36.
