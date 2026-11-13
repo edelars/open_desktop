@@ -68,6 +68,11 @@
     "CONFIG_AMD_MEM_ENCRYPT": "y",
     "CONFIG_ACPI_SLEEP": "y",
     "CONFIG_HOTPLUG_CPU": "y",
+    "CONFIG_IRQ_REMAP": "y",
+    "CONFIG_KGDB": "y",
+    "CONFIG_HARDLOCKUP_DETECTOR": "y",
+    "CONFIG_HARDLOCKUP_DETECTOR_PERF": "y",
+    "CONFIG_NMI_CHECK_CPU": "y",
     "interpretation": "These options show compiled support; they do not prove which runtime APIC or wakeup path a guest selects."
   },
   "linux_source": {
@@ -122,6 +127,86 @@
         "path": "arch/x86/kernel/cpu/proc.c",
         "sha256": "632af015bc00dac562b8ce5f9f4fdf425b737b1e9b34590d1875aa7b5892b0fc",
         "areas": "/proc/cpuinfo processor enumeration"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_ext.c",
+        "sha256": "e7e53991d07a4186e5d9d5dfc71ec148e7e124a5994f8dcdae87f1b52bef5ae6",
+        "areas": "Intel CPUID leaf 0x1f; AMD extended 0x80000026; fallback leaf 0x0b"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_amd.c",
+        "sha256": "e2f46fa8705fd70f35cf3fb3dccf972a8f90ecf928ba10d0f838a263369457bb",
+        "areas": "AMD topology leaf selection and fallbacks 0x80000008 / 0x8000001e"
+      },
+      {
+        "path": "arch/x86/kernel/apic/apic.c",
+        "sha256": "2093f0e0e7bd056a54e68959d33fd4a6a54481523ec1ea3f8530e0649ae62c9b",
+        "areas": "x2APIC enablement conditions and local APIC mode"
+      },
+      {
+        "path": "arch/x86/kernel/apic/apic_flat_64.c",
+        "sha256": "212001086303d6e631fd0903b8727dde49b6ee57007b8f9ff6e97919ee6192ee",
+        "areas": "default x86_64 physical-flat APIC operations and destination mode"
+      },
+      {
+        "path": "arch/x86/kernel/apic/io_apic.c",
+        "sha256": "2a13e108c2d7f185d25379cf8440efc2d39a7cddd8486a79a7edd03d795d685d",
+        "areas": "IOAPIC route destination mode fields"
+      },
+      {
+        "path": "arch/x86/kernel/apic/ipi.c",
+        "sha256": "d141c9df0c0c3da87aeee11b940077ed83c842e52184cbd7058889f3be346bc7",
+        "areas": "IPI shorthand helpers and targeted physical IPI delivery"
+      },
+      {
+        "path": "arch/x86/kernel/apic/x2apic_phys.c",
+        "sha256": "7df23116c8d29fab3030281355b55bc223ccdeb288fe891b4e94f8e755afc921",
+        "areas": "x2APIC physical mode, MSR ICR writes and shorthand"
+      },
+      {
+        "path": "arch/x86/kernel/apic/x2apic_cluster.c",
+        "sha256": "43b1e4dd3b6c7e2f72a489886624256359b5b70ee1e618855b05ef8bc1024d3c",
+        "areas": "conditional x2APIC cluster/logical destination mode"
+      },
+      {
+        "path": "arch/x86/include/asm/apic.h",
+        "sha256": "8576b135f0fd1642318b8c3b0765acb2f6f0c9c3eb7c81ecac864762e8ec0c5c",
+        "areas": "xAPIC MMIO versus x2APIC MSR register access interfaces"
+      },
+      {
+        "path": "arch/x86/kernel/smp.c",
+        "sha256": "cea24fd83e26f2336f70bdf6448d1af2ca7b49c8035be9d5af18d70e5a4537fe",
+        "areas": "stop_other_cpus NMI fallback"
+      },
+      {
+        "path": "arch/x86/kernel/reboot.c",
+        "sha256": "61c417b7a5afcde09b28a3b91305fc1a5a3812ad440152a97502dc4dc6ec7b15",
+        "areas": "restart-time NMI CPU shootdown"
+      },
+      {
+        "path": "arch/x86/kernel/crash.c",
+        "sha256": "555fcf07823735b815a38f0f9c53f9dcd2b91952f0e69632e54e95570e943509",
+        "areas": "crash/kdump NMI stop-other-CPUs path"
+      },
+      {
+        "path": "arch/x86/kernel/kgdb.c",
+        "sha256": "5662aa591b9ac1691c207f4317e931cb348235f6519c5cd365181a1fb36835ef",
+        "areas": "KGDB NMI roundup on SMP"
+      },
+      {
+        "path": "arch/x86/kernel/apic/hw_nmi.c",
+        "sha256": "2c336b4d133c8fd8f96869323c1770d45073ea13ae6d1a8242b514f742b7efee",
+        "areas": "hardware NMI watchdog IPIs"
+      },
+      {
+        "path": "kernel/panic.c",
+        "sha256": "b38b7a5c044a2fe8d58810e0827163c0142b146b08c1db4a26529f565a6e586a",
+        "areas": "panic crash-stop invocation"
+      },
+      {
+        "path": "arch/x86/kernel/cpu/topology_common.c",
+        "sha256": "6fe9cc811e421377ca24362aa5f9acb371992682e6205c10a688af5d7863d96b",
+        "areas": "leaf 1 APIC ID/logical processor count; legacy leaf 4 core count; Intel legacy topology fallback and leaf 0x1a CPU type"
       }
     ]
   },
@@ -136,9 +221,9 @@
     "selected_project_path": {
       "name": "INIT/SIPI",
       "basis": [
-      "The current project board MADT has one enabled Processor Local APIC entry for UID/APIC ID 0 and has no Multiprocessor Wakeup entry; no alternate wakeup callback is part of the current board contract.",
+        "The current project board MADT has one enabled Processor Local APIC entry for UID/APIC ID 0 and has no Multiprocessor Wakeup entry; no alternate wakeup callback is part of the current board contract.",
         "The Stage 6 first vertical slice explicitly requires BSP INIT/SIPI and an AP real-mode trampoline.",
-      "smpboot.c dispatches in order: wakeup_secondary_cpu_64 callback, wakeup_secondary_cpu callback, then wakeup_secondary_cpu_via_init fallback. A board MADT without type 0x10 does not rule out another callback override. The selected callback for the final VM CPU/APIC configuration is pending runtime/source-path verification."
+        "smpboot.c dispatches in order: wakeup_secondary_cpu_64 callback, wakeup_secondary_cpu callback, then wakeup_secondary_cpu_via_init fallback. A board MADT without type 0x10 does not rule out another callback override. The selected callback for the final VM CPU/APIC configuration is pending runtime/source-path verification."
       ],
       "status": "recommendation_for_architecture_review",
       "apic_mode_limit": "The project board candidate records BSP xAPIC as selected-but-unverified (S4-00c). Linux configuration alone does not establish guest xAPIC/x2APIC runtime selection.",
@@ -210,13 +295,13 @@
   },
   "board_firmware": {
     "current_madt": "One enabled Processor Local APIC record: Processor UID 0, APIC ID 0. No MADT type 0x10 Multiprocessor Wakeup record.",
-      "smp_requirement": "For an n-vCPU APIC board, ACPI 6.6 requires one enabled Local APIC record per vCPU, stable APIC IDs, and matching processor Device objects in the ACPI namespace under \\_SB with _HID=ACPI0007 and matching _UID. The project currently emits its namespace in DSDT; ACPI does not require that a Device be in DSDT rather than SSDT."
+    "smp_requirement": "For an n-vCPU APIC board, ACPI 6.6 requires one enabled Local APIC record per vCPU and a matching processor device object in the DSDT (§5.2.12.2; x2APIC: §5.2.12.12). Device objects use the \\_SB namespace, _HID=ACPI0007 and matching _UID (§8.4)."
   },
   "windows": {
     "CPU_06": "hypothesis_unverified",
     "INIT_SIPI_real_mode_trampoline": "No Microsoft source found that establishes this as the generic Windows x64 AP startup path; retain the planned stage 8 trace check.",
     "processor_objects": {
-      "ACPI_6_6": "For the APIC interrupt model, each processor has a Processor Local APIC MADT entry and corresponding processor Device in the ACPI namespace; ACPI 6.6 §8.4 specifies Device under \\_SB with _HID ACPI0007 and _UID matching MADT. DSDT versus SSDT is not prescribed.",
+      "ACPI_6_6": "For the APIC interrupt model, each processor has a Processor Local APIC MADT entry and corresponding processor device object in the DSDT (§5.2.12.2); the x2APIC model also requires its processor device object in DSDT (§5.2.12.12). ACPI 6.6 §8.4 specifies the processor Device under \\_SB with _HID ACPI0007 and _UID matching MADT.",
       "Microsoft_scope": "The Microsoft processor-identification page found here is scoped to SoC-based platforms; it does not establish a generic client Windows x64 requirement or absence behavior.",
       "result": "Keep generic Windows-specific absence behavior open for stage 8 trace; emit conforming ACPI 6.6 processor namespace objects in the project's current DSDT."
     }
@@ -271,12 +356,62 @@
       }
     ]
   },
+  "apic_and_cpu_topology": {
+    "runtime_mode_selection": {
+      "two_or_four_vcpus_with_apic_ids_0_to_n_minus_1": "xAPIC physical addressing supports these IDs and remains sufficient; vCPU count alone does not require x2APIC.",
+      "xapic_candidate": "The default x86_64 APIC driver in this build is physical-flat: APIC IDs are physical, dest_mode_logical=false, and normal APIC register access uses xAPIC MMIO.",
+      "x2apic_conditions": "CONFIG_X86_X2APIC=y is only build support. Runtime requires CPUID.X2APIC and x2APIC enabled in APIC_BASE or enabled by Linux. Without interrupt remapping, Linux also requires hypervisor x2APIC availability; it then uses physical destination mode and limits APIC ID to 255, or 32767 if virtual extended MSI destinations are available. With interrupt remapping, x2APIC selection/physical-vs-cluster driver depends on the remapper and platform ops.",
+      "actual_two_four_cpu_choice": "Not established from S4-35: the staged artifact pins neither the VM CPUID/APIC_BASE presentation nor IRQ-remapping capability/boot log."
+    },
+    "destination_modes": {
+      "xapic_physical_flat": {
+        "ioapic": "Physical destination (dest_mode_logical=false). IOAPIC route construction propagates the selected APIC mode.",
+        "msi": "Physical destination (dest_mode_logical=false); destination APIC ID comes from irq_cfg.",
+        "apic_ids_0_to_3": "Directly addressable."
+      },
+      "x2apic_physical": "Physical destination mode; same 0..3 addresses for a two/four-vCPU guest.",
+      "x2apic_cluster": "Logical cluster destination mode is a conditional alternative with interrupt-remapping/APIC driver selection; not selected by the project's current xAPIC candidate."
+    },
+    "register_access": {
+      "xapic": "MMIO local APIC page; ICR low/high are offsets 0x300/0x310, as implemented by the project LAPIC.",
+      "x2apic": "APIC register operations become x2APIC MSR accesses, including the 64-bit ICR; the x2APIC physical driver uses MSR writes with the required WRMSR fence.",
+      "runtime_use": "No x2APIC MSR access is expected if the final guest exposes only xAPIC; actual Linux mode remains unverified."
+    },
+    "ipi_shorthand": {
+      "all_including_self": "APIC_DEST_ALLINC",
+      "all_but_self": "APIC_DEST_ALLBUT",
+      "self": "APIC_DEST_SELF on xAPIC; x2APIC physical mode uses the self-IPI register.",
+      "targeted_ipi": "Per-CPU destinations carry the APIC ID in ICR destination fields and use physical destination mode on the physical-flat/x2APIC-physical drivers.",
+      "ap_start": "Startup INIT/SIPI sequence is targeted to phys_apicid; it does not use shorthand."
+    },
+    "topology_cpuid_leaves": {
+      "common_selection": "The shared cpu_parse_topology_ext() tries available leaf 0x1f, then 0x80000026, then 0x0b; it is not vendor-gated in this helper. Runtime selection depends on guest maximum basic/extended CPUID leaves.",
+      "intel": "The Intel path uses the shared extended-leaf order; if none parses, it falls back to legacy topology. Leaf 1 EBX supplies the initial APIC ID and logical-processor count used by the legacy parser; leaf 4 subleaf 0 supplies the legacy core count when available. If CPUID level is at least 0x1a, Linux also reads leaf 0x1a for CPU type.",
+      "amd_hygon": "AMD/Hygon path tries the shared extended-leaf order; if unavailable, AMD falls back to leaf 0x80000008. When the extended topology path or legacy 0x80000008 path succeeds, Linux also tries leaf 0x8000001e for additional SMT/APIC/node information, then falls back to the Fam10h node-ID MSR when that leaf is unavailable. AMD HTR cores may also read leaf 0x80000026 EBX for CPU type.",
+      "other_legacy": "Centaur/Zhaoxin use the legacy parser. Its core/thread topology uses leaf 1 EBX logical-processor count and leaf 4 subleaf 0 core count when supported.",
+      "runtime_leaf_values": "Pending: S4-35 does not pin the guest CPU vendor/model or exposed CPUID maximum leaves."
+    },
+    "expected_madt_and_namespace": {
+      "xapic_2_vcpus": "Processor Local APIC (MADT type 0) entries for UID/APIC ID 0 and 1, both enabled.",
+      "xapic_4_vcpus": "Processor Local APIC (MADT type 0) entries for UID/APIC IDs 0 through 3, all enabled.",
+      "x2apic": "Use x2APIC processor structures (MADT type 9) if the final board enables x2APIC; APIC IDs remain 0..n-1.",
+      "mp_wakeup": "Do not add MADT type 0x10 while selecting INIT/SIPI; it changes Linux's wakeup callback to a firmware mailbox contract.",
+      "processor_namespace": "For each APIC processor entry, ACPI 6.6 requires the matching processor device object in DSDT (§5.2.12.2 for Local APIC; §5.2.12.12 for x2APIC). The processor device is declared under \\_SB with _HID=ACPI0007 and matching _UID (§8.4). The project currently emits these objects in DSDT."
+    }
+  },
+  "nmi_paths": {
+    "ap_start": "The Linux INIT/SIPI AP startup functions inspected do not send NMI.",
+    "reboot_shutdown_stop": "native_stop_other_cpus first broadcasts REBOOT_VECTOR to all-but-self and waits; it sends targeted NMI IPIs only to CPUs still outstanding after timeout. Kernel option nonmi_ipi disables this NMI fallback.",
+    "panic_kdump": "panic invokes panic_other_cpus_shutdown(crash_kexec_post_notifiers): with crash_kexec_post_notifiers=false it uses smp_send_stop(); with true it uses crash_smp_send_stop(), whose x86 crash-stop callback kdump_nmi_shootdown_cpus sends NMI IPIs. The ordinary smp_send_stop path can also reach the conditional NMI fallback after timeout; actual execution depends on panic configuration and runtime.",
+    "restart": "The x86 restart path has nmi_shootdown_cpus_on_restart for stopping other CPUs with NMI.",
+    "hung_cpu_diagnostics": "CONFIG_HARDLOCKUP_DETECTOR=y and CONFIG_HARDLOCKUP_DETECTOR_PERF=y compile perf hard-lockup detection using local PMU NMI; actual activation still depends on guest PMU support and runtime settings.",
+    "debug_roundup": "CONFIG_KGDB=y; kgdb_roundup_cpus sends all-but-self NMI IPIs when that debug path is used.",
+    "runtime_gates": "NMI execution depends on panic/reboot/kdump/debug paths, CPU PMU capabilities, and nonmi_ipi/runtime configuration; source inventory does not prove these paths ran in the VM."
+  },
   "not_yet_inventoried": [
     "Complete per-instruction bytes and control-register/MSR effects from SIPI through common 64-bit code, including a correct 16-bit decode.",
     "Two- and four-vCPU runtime xAPIC/x2APIC selection under the project's final CPUID and IRQ-remapping exposure.",
-    "IOAPIC and MSI destination modes, IPI shorthand use, and all x2APIC register access paths.",
-    "Exact topology CPUID leaves read by this build and expected MADT/DSDT records after the vCPU count is finalized.",
-    "NMI usage on boot, reboot, shutdown, panic stop-other-CPUs and hung-CPU diagnostics.",
+    "Runtime confirmation of the documented conditional IOAPIC/MSI modes, topology leaves and NMI paths under the final guest profile.",
     "The calibrated runtime udelay provider selected for the final guest CPU profile and boot command line.",
     "Windows-specific CPU-06 confirmation and Windows DSDT-object absence behavior."
   ],

@@ -314,7 +314,7 @@
 ### S6-02. Установить факты о старте дополнительных процессоров
 
 - [ ] Принято после архитектурного ревью.
-- Текущий статус: частичный evidence-срез по Linux 7.0.0-38.38, provenance, MADT wakeup selection и INIT/SIPI последовательности записан в [`STAGE_6_REPORT.md`](../reports/STAGE_6_REPORT.md) и [`ap-start-inventory.json`](../reports/data/stage6/ap-start-inventory.json). Полный инвентарь и архитектурная приёмка открыты.
+- Текущий статус: частичный evidence-срез по Linux 7.0.0-38.38 записывает provenance, MADT wakeup selection, INIT/SIPI, APIC destination/shorthand, topology CPUID и статические NMI paths в [`STAGE_6_REPORT.md`](../reports/STAGE_6_REPORT.md) и [`ap-start-inventory.json`](../reports/data/stage6/ap-start-inventory.json). Открыты полный побайтный trampoline inventory с корректным 16-bit decode, runtime выбор APIC/CPUID/NMI, Windows CPU-06 и архитектурная приёмка.
 - **Где:** раздел в `docs/reports/STAGE_6_REPORT.md`, данные `docs/reports/data/stage6/ap-start-inventory.json`.
 - **Сделать:**
   1. Взять ядро Linux, зафиксированное артефактом `S4-35` (точная версия и хеш — из манифеста артефакта). Исходников в артефакте нет: записать, откуда взяты исходники и конфигурация **именно этой** версии пакета, и их хеши; если точную версию получить нельзя — так и записать и опираться только на образ. По исходникам и конфигурации установить: включён ли `CONFIG_SMP`; какими способами это ядро умеет запускать AP (INIT/SIPI; структура Multiprocessor Wakeup в MADT по ACPI 6.6); какой способ оно выберет на нашей плате.
