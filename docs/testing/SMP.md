@@ -119,7 +119,7 @@ The check fails if either feature leaks into the normal profile, if the normal h
 
 ### Gate ownership
 
-The numeric ceilings and run budgets below are candidate planning values, not calibration results and not acceptance gates for this methodology document (S6-01). S6-01 is complete when the evidence levels, fixture format, outcome derivations, concrete initial numeric candidates with their arithmetic derivations and runtime estimates, schedule/seed rules, and task-owned calibration points are documented and reviewed. Each owning task must measure and record its own numeric gate before that task is accepted.
+The numeric ceilings and run budgets below are candidate planning values except the S6-05 exhaustive schedule threshold and seed range, which are measured and recorded below. They are not acceptance gates for this methodology document (S6-01). S6-01 is complete when the evidence levels, fixture format, outcome derivations, concrete initial numeric candidates with their arithmetic derivations and runtime estimates, schedule/seed rules, and task-owned calibration points are documented and reviewed. Each owning task must measure and record its own numeric gate before that task is accepted.
 
 In particular, S6-05 may start after S6-01 and S6-04 are accepted. It must measure the enumerator at the candidate 1,000,000-schedule ceiling and lock the exhaustive threshold and seed range before accepting its corpus. That measurement is an S6-05 gate; it does not retroactively block S6-01. S6-19 consumes the accepted threshold and seed range for exhaustive interleaving runs. The parallel-mode run budget belongs to S6-36. The same ownership rule applies to the native/physical, STOP, save/restore, and Linux soak gates listed below.
 
@@ -129,7 +129,11 @@ If there are `n_i` shared-memory instructions in thread `i`, the number of order
 
 `N = (Σ n_i)! / Π(n_i!)`.
 
-For two threads with three such instructions each, `N = 6!/(3!·3!) = 20`. Candidate ceiling: enumerate all schedules when `N ≤ 1,000,000`; count only memory-touching instructions while preserving per-thread order. Above that ceiling, candidate seed range is `0…9,999` inclusive (10,000 deterministic seeds). These ceilings are an initial work budget, not a statistical confidence claim: S6-05 must measure enumerator state/time cost and record whether both are practical before corpus acceptance. If they are not, revise the limits and expected work in the report before running the corpus. Never replace a finite enumeration below the accepted threshold with random samples.
+For two threads with three such instructions each, `N = 6!/(3!·3!) = 20`. The calibrated S6-05 ceiling is to enumerate every complete schedule when `N ≤ 1,000,000`; count only memory-touching instructions while preserving per-thread order. Above that ceiling, use deterministic seeds `0…9,999` inclusive (10,000 seeds), with available instruction-step successors shuffled by `random.Random(seed)`. This is a reproducibility budget, not a statistical confidence claim. Never replace a finite enumeration below the accepted threshold with random samples.
+
+S6-05 measured the actual `interleaving_instruction_atomic` enumerator on two threads with 12 shared loads each (`N = C(24,12) = 2,704,156` possible complete schedules). The enumerator disabled state deduplication for path counting, executed every state transition, retained its unique-state set and DFS frontier, and stopped at exactly 1,000,000 completed schedule paths. Three fresh-worker runs took 10.279–10.564 seconds, expanded 3,851,199 states each, retained 149 unique states with 12 pending, and used 27,607,040–27,705,344 bytes peak RSS. The time relative range was 2.72%. The candidate passed the 120-second and 2-GiB bounds, so no lower complete-schedule threshold was needed.
+
+The seed range was measured separately in three fresh workers, each executing one seeded complete path for every seed from 0 through 9,999. Each run completed 10,000 paths / 250,000 expanded states, used 27,607,040–27,770,880 bytes peak RSS, and took 1.097–1.116 seconds (1.77% relative range). A 0–99 seed warm-up was excluded. These measured values lock the threshold and seed range for S6-19; they do not imply that any finite fixture was sampled. All finite S6-05 fixture schedule counts are at or below 1,000,000 and their model outcome sets are exhaustively enumerated. Raw runs, host configuration, and workload hashes: [`s6-05-enumerator-calibration.json`](../reports/data/stage6/s6-05-enumerator-calibration.json).
 
 ### Native x86 and physical x86
 
@@ -150,7 +154,6 @@ The following test budgets are deliberately not invented before their harnesses 
 
 | Task | Quantity still to calibrate | Task cannot pass until |
 |---|---|---|
-| S6-05 | Enumerator cost at the candidate 1,000,000-schedule ceiling; accepted exhaustive threshold and seed range | S6-05 measures state/time cost and records the accepted threshold and seed range before corpus acceptance. |
 | S6-08/S6-09 | Native and physical x86 rounds/test, process repetitions, actual throughput, total runtime, and the SB extended-run outcome | Each task records actual rates and accepted iteration counts; the x86 gate cannot pass before the SB interesting outcome is observed. |
 | S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | S6-34 records repetitions, timeout, and race-window coverage from its test harness. |
