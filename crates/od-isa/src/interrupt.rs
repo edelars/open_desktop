@@ -796,6 +796,7 @@ macro_rules! impl_from_gate_refusal {
 impl_from_gate_refusal!(Cpl0PageFaultRefusal);
 impl_from_gate_refusal!(Cpl0ExternalInterruptRefusal);
 impl_from_gate_refusal!(Cpl0Int3Refusal);
+impl_from_gate_refusal!(Cpl0GeneralProtectionRefusal);
 
 /// Deliver a synchronous page fault of the Long64 CPL0 profile set through the IDT gate of
 /// vector 14 (S4-38L5c): CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0.
@@ -899,6 +900,172 @@ fn pf_gate_failure(failure: GateFailure) -> Cpl0PageFaultDelivery {
                 }
             };
             Cpl0PageFaultDelivery::Aborted { phase, cause }
+        }
+    }
+}
+
+/// Why [`deliver_general_protection_cpl0_set`] refused to deliver. A refusal happens before any
+/// memory write: the CPU state and the guest memory are as they were (only the IDT and GDT
+/// reads preceded it). Every refusal is a stop of the caller, never a substitute delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0GeneralProtectionRefusal {
+    NotGeneralProtection,
+    /// The fault carries no error code (a `#GP` always has one).
+    MissingFaultMetadata,
+    NotRing0Long64,
+    ActivityOutsideProfile,
+    StiShadowActive,
+    MissingIdtr,
+    MissingGdtr,
+    MissingCurrentSelectors,
+    InvalidCurrentCodeSegment,
+    /// The gate of vector 13 (offset 208..=223) lies beyond the IDT limit. The CPU would raise
+    /// `#GP` with the IDT selector error code (13 * 8 + 2), which would be a double fault when
+    /// raised while delivering a `#GP`; this is not delivered.
+    GateBeyondIdtLimit,
+    NonCanonicalIdtSpan,
+    /// Gate P = 0 (the CPU would raise `#NP`); not delivered.
+    GateNotPresent,
+    /// The gate is not an interrupt gate (0xE) or a trap gate (0xF), or its S bit is set.
+    /// Carries the raw type/attribute byte.
+    InvalidGateType(u8),
+    /// The gate asks for an interrupt stack table entry (IST 1..=7); not modeled.
+    UnsupportedIst(u8),
+    GateReservedBitsSet,
+    InvalidTargetSelector,
+    TargetBeyondGdtLimit,
+    NonCanonicalGdtSpan,
+    InvalidTargetCodeDescriptor,
+    NonCanonicalTargetRip,
+    StackAddressOverflow,
+    NonCanonicalStackSpan,
+}
+
+/// Where [`deliver_general_protection_cpl0_set`] failed on a memory access.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0GeneralProtectionPhase {
+    IdtGateRead,
+    TargetCodeDescriptorRead,
+    StackWrite { slot: PageFaultFrameSlot },
+    TargetCodeDescriptorAccessedWrite,
+}
+
+/// Result of [`deliver_general_protection_cpl0_set`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Cpl0GeneralProtectionDelivery {
+    /// The frame is on the stack and CS, RIP, RSP and RFLAGS are committed. Nothing was
+    /// retired. `trap_gate` is true for gate type 0xF (IF is left as it was).
+    Delivered {
+        target_rip: u64,
+        new_rsp: u64,
+        trap_gate: bool,
+    },
+    /// Nothing was written and the CPU state is unchanged.
+    Refused(Cpl0GeneralProtectionRefusal),
+    /// A memory access of the delivery failed (a fault here would be a double fault, which is
+    /// not modeled; the caller stops). The CPU state is unchanged, but frame words already
+    /// stored stay in memory: they lie below the old RSP (dead stack). With the frame inside
+    /// one page the first store decides, so nothing is stored then.
+    Aborted {
+        phase: Cpl0GeneralProtectionPhase,
+        cause: MemoryError,
+    },
+}
+
+/// Deliver a synchronous general-protection fault `#GP` (vector 13, `fault.error_code` =
+/// `Some(code)`) of the Long64 CPL0 profile set through the IDT gate of vector 13 (S4-38L9v):
+/// CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0. The frame, the entry and
+/// the refusals are those of [`deliver_page_fault_cpl0_set`], with two differences: CR2 is not
+/// touched, and the metadata is the fault alone (there is no page-fault record).
+///
+/// The caller runs the faulting instruction first; it did not retire and RIP is still on it:
+/// `state.rip` is the saved RIP of the frame (the instruction is restarted by a handler that
+/// returns without a fixup). Everything is checked before the first write; the frame is then
+/// stored, the target code descriptor Accessed bit is set if clear, and the CPU state is
+/// committed last (so a failed delivery leaves it unchanged).
+///
+/// Frame (IA-32e, SS and RSP always): RSP aligned down to 16, then eight-byte words downwards:
+/// SS, old RSP, RFLAGS (live, RF = 1 for a fault, bit 1 set), CS, RIP, error code. After the
+/// entry: CS = the gate selector, RIP = the gate offset, RSP = the frame, SS unchanged, live
+/// RFLAGS with TF, NT, RF and VM cleared (AC kept) and IF cleared for an interrupt gate.
+///
+/// SDM (Vol. 3, 6.12 and 6.15), from memory, the text is not in the repository: the layout and
+/// the error code of `#GP` (the segment selector error code, 0 when not segment related); RF = 1
+/// in the frame of a fault; the entry flag rules; the gate DPL is not checked (a hardware
+/// exception).
+pub fn deliver_general_protection_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    fault: &crate::memory::ArchitecturalFault,
+    context: AccessContext,
+) -> Cpl0GeneralProtectionDelivery {
+    use Cpl0GeneralProtectionDelivery::Refused;
+    use Cpl0GeneralProtectionRefusal as Refusal;
+    let refuse = Refused;
+    if fault.vector != 13 {
+        return refuse(Refusal::NotGeneralProtection);
+    }
+    let Some(error_code) = fault.error_code else {
+        return refuse(Refusal::MissingFaultMetadata);
+    };
+    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+        return refuse(Refusal::NotRing0Long64);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return refuse(Refusal::ActivityOutsideProfile);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return refuse(Refusal::StiShadowActive);
+    }
+    let gate = match resolve_cpl0_gate(state, memory, context, 13) {
+        Ok(gate) => gate,
+        Err(failure) => return gp_gate_failure(failure),
+    };
+    let saved_rflags = state.rflags | (1 << 16) | (1 << 1);
+    let saved_rip = state.rip;
+    match commit_cpl0_gate(
+        state,
+        memory,
+        context,
+        &gate,
+        saved_rflags,
+        saved_rip,
+        Some(u64::from(error_code)),
+    ) {
+        Ok((target_rip, new_rsp)) => Cpl0GeneralProtectionDelivery::Delivered {
+            target_rip,
+            new_rsp,
+            trap_gate: gate.trap_gate,
+        },
+        Err(failure) => gp_gate_failure(failure),
+    }
+}
+
+fn gp_gate_failure(failure: GateFailure) -> Cpl0GeneralProtectionDelivery {
+    match failure {
+        GateRefused(refusal) => Cpl0GeneralProtectionDelivery::Refused(refusal.into()),
+        GateAborted { phase, cause } => {
+            const SLOTS: [PageFaultFrameSlot; 6] = [
+                PageFaultFrameSlot::OldSs,
+                PageFaultFrameSlot::OldRsp,
+                PageFaultFrameSlot::OldRflags,
+                PageFaultFrameSlot::OldCs,
+                PageFaultFrameSlot::SavedRip,
+                PageFaultFrameSlot::ErrorCode,
+            ];
+            let phase = match phase {
+                GateAbortPhase::IdtGateRead => Cpl0GeneralProtectionPhase::IdtGateRead,
+                GateAbortPhase::TargetCodeDescriptorRead => {
+                    Cpl0GeneralProtectionPhase::TargetCodeDescriptorRead
+                }
+                GateAbortPhase::StackWrite(index) => {
+                    Cpl0GeneralProtectionPhase::StackWrite { slot: SLOTS[index] }
+                }
+                GateAbortPhase::TargetCodeDescriptorAccessedWrite => {
+                    Cpl0GeneralProtectionPhase::TargetCodeDescriptorAccessedWrite
+                }
+            };
+            Cpl0GeneralProtectionDelivery::Aborted { phase, cause }
         }
     }
 }

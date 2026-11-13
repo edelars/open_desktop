@@ -26,8 +26,10 @@ use od_isa::memory::{
 };
 use od_isa::{
     Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
+    Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_external_interrupt_cpl0_set, deliver_page_fault_cpl0_set,
+    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set,
+    deliver_page_fault_cpl0_set,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -456,10 +458,10 @@ pub(crate) enum PagedCpl0SetExit {
     /// The set reported an exit variant this board does not know (the exit enum
     /// is `#[non_exhaustive]`).
     UnknownSetExit,
-    /// A guest `#PF` (vector 14) could not be delivered through the guest IDT (S4-38L5c, the
-    /// IDT is loaded): the original fault is the stop, `failure` says why delivery failed.
-    /// Without a loaded IDT, and for every other fault vector, the fault is a plain
-    /// `Run(Fault)` as before.
+    /// A guest `#PF` (vector 14, S4-38L5c) or `#GP(0)` (vector 13, error code 0, S4-38L9v) could
+    /// not be delivered through the guest IDT (the IDT is loaded): the original fault is the
+    /// stop, `failure` says why delivery failed. Without a loaded IDT, and for every other fault
+    /// vector, the fault is a plain `Run(Fault)` as before.
     ExceptionDeliveryFailed {
         fault: ArchitecturalFault,
         failure: PagedCpl0ExceptionFailure,
@@ -501,6 +503,13 @@ pub(crate) enum PagedCpl0ExceptionFailure {
     /// The CPU state is unchanged; frame words may have been stored below the old RSP.
     Aborted {
         phase: Cpl0PageFaultDeliveryPhase,
+        cause: MemoryError,
+    },
+    /// The `#GP(0)` delivery was refused before any write (S4-38L9v).
+    GeneralProtectionRefused(Cpl0GeneralProtectionRefusal),
+    /// A memory access of the `#GP(0)` delivery failed (S4-38L9v); the CPU state is unchanged.
+    GeneralProtectionAborted {
+        phase: Cpl0GeneralProtectionPhase,
         cause: MemoryError,
     },
     /// [`MAX_DELIVERIES_WITHOUT_RETIREMENT`] deliveries in a row retired nothing: a fault
@@ -882,6 +891,49 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                         // made by the DELIVERY (IDT/GDT read, frame store); the faulting
                         // instruction itself raised an architectural `#PF`, never a
                         // non-architectural one. `page_fault` is the original record.
+                        break (
+                            PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
+                            original_record,
+                            memory.memory_error,
+                        );
+                    }
+                }
+            }
+            // S4-38L9v: a guest `#GP(0)` (an instruction of the set refused with vector 13 and
+            // code 0, for example `RDMSR` of an MSR the set does not model) goes through the
+            // guest IDT gate of vector 13 when an IDT is loaded; the instruction did not retire.
+            // Without an IDT, and for any other code, the fault stays the stop it was.
+            if let Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) = &done.exit
+                && fault.vector == 13
+                && fault.error_code == Some(0)
+                && state.idtr.is_some()
+            {
+                let fault = fault.clone();
+                let original_record = memory.page_fault.clone();
+                let failure = if deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
+                {
+                    Some(PagedCpl0ExceptionFailure::RepeatLimit)
+                } else {
+                    match deliver_general_protection_cpl0_set(state, &mut memory, &fault, context) {
+                        Cpl0GeneralProtectionDelivery::Delivered { .. } => None,
+                        Cpl0GeneralProtectionDelivery::Refused(reason) => {
+                            Some(PagedCpl0ExceptionFailure::GeneralProtectionRefused(reason))
+                        }
+                        Cpl0GeneralProtectionDelivery::Aborted { phase, cause } => {
+                            Some(PagedCpl0ExceptionFailure::GeneralProtectionAborted {
+                                phase,
+                                cause,
+                            })
+                        }
+                    }
+                };
+                match failure {
+                    None => {
+                        delivered_exceptions += 1;
+                        deliveries_without_retirement += 1;
+                        continue;
+                    }
+                    Some(failure) => {
                         break (
                             PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
                             original_record,

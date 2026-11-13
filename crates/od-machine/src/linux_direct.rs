@@ -8893,12 +8893,18 @@ mod tests {
 
     #[test]
     fn rdmsr_other_indexes_and_wrmsr_0x87_stay_the_stop_with_the_member() {
-        // MOV ECX,0x88; RDMSR: the neighbour is refused.
+        // MOV ECX,0x88; RDMSR: the neighbour is no member index, so since S4-38L9v it is the
+        // `#GP(0)` of an MSR the set does not model (the Linux entry state has no IDT, so the
+        // fault is the stop; before S4-38L9v it was `Unsupported { opcode: 0x32 }`).
         let (mut boot, file) = boot_with_entry(&[0xB9, 0x88, 0x00, 0x00, 0x00, 0x0F, 0x32]);
         let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
         assert_eq!(
             record.exit,
-            PagedProbeExit::Unsupported { opcode: 0x32 },
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            }),
             "{record:?}"
         );
         assert_eq!(record.retired, 1);
@@ -10288,6 +10294,204 @@ mod tests {
         assert_eq!((fault.vector, fault.error_code), (6, None));
         assert_eq!(report.delivered_exceptions, 0);
         assert_eq!(state.rip, ENTRY);
+    }
+
+    // ---- S4-38L9v: a guest #GP(0) of RDMSR is delivered through the guest IDT ----
+
+    const GP_HANDLER_AT: u64 = ENTRY + 0x200;
+
+    /// A board whose entry is `RDMSR; NOP` with ECX = 0x201e (an MSR no member names, the uncore
+    /// discovery MSR). The IDT (gate 13: interrupt gate, CS 0x10, `GP_HANDLER_AT`) is loaded.
+    fn gp_board(handler: &[u8]) -> LinuxDirectBoot {
+        let (mut boot, _) = boot_with_entry(&[0x0F, 0x32, 0x90]);
+        write_phys(&mut boot, GP_HANDLER_AT, handler);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(GP_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((GP_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, PF_IDT_AT + 13 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.gpr[Register::Rcx as usize] = 0x201E;
+        state.gpr[Register::Rax as usize] = 0x1111;
+        state.gpr[Register::Rdx as usize] = 0x2222;
+        state.rflags = 2 | (1 << 9) | 1;
+        boot
+    }
+
+    fn gp_set(cli: &CliProfile) -> Cpl0ProfileSet<'_> {
+        minimal_set(cli).with_msr_tdx_keyid_partitioning_read()
+    }
+
+    #[test]
+    fn cpl0_set_board_delivers_the_gp0_of_an_unmodelled_rdmsr_and_the_fixup_handler_resumes() {
+        let cli = CliProfile::NonPviLong64V1;
+        // The handler is the shape of the kernel's `rdmsr_safe` fixup: drop the error code, move
+        // the saved RIP past the `RDMSR` (`ADD QWORD [RSP], 2`) and `IRETQ`.
+        let handler = [
+            0x48, 0x83, 0xC4, 0x08, // ADD RSP, 8
+            0x48, 0x83, 0x04, 0x24, 0x02, // ADD QWORD [RSP], 2
+            0x48, 0xCF, // IRETQ
+        ];
+        let mut boot = gp_board(&handler);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        // The fault retires nothing; the handler is three instructions; then the NOP after
+        // the RDMSR retires.
+        let (state, report) = run_set(&mut boot, true, 4, &gp_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 4);
+        assert_eq!(report.delivered_exceptions, 1);
+        assert_eq!(
+            state.rip,
+            ENTRY + 3,
+            "RDMSR skipped by the fixup, NOP retired"
+        );
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_eq!(
+            (
+                state.gpr[Register::Rax as usize],
+                state.gpr[Register::Rdx as usize]
+            ),
+            (0x1111, 0x2222),
+            "EAX and EDX are not set by the fault"
+        );
+        assert_eq!(state.cr2, None, "CR2 is not touched by a #GP");
+        assert_eq!(
+            state.rflags & (1 << 16),
+            0,
+            "RF cleared after the retired NOP"
+        );
+        assert_ne!(state.rflags & (1 << 9), 0, "IF back from the frame");
+        // The frame: error code 0, the saved RIP (the RDMSR's, `ENTRY`, until the handler's
+        // `ADD QWORD [RSP], 2` stored `ENTRY + 2` into it), CS, RFLAGS with RF, old RSP, SS.
+        let frame = rsp & !15;
+        assert_eq!(read_qword(&mut boot, frame - 48), 0);
+        assert_eq!(read_qword(&mut boot, frame - 40), ENTRY + 2);
+        assert_eq!(read_qword(&mut boot, frame - 32), 0x10);
+        assert_eq!(read_qword(&mut boot, frame - 24) & (1 << 16), 1 << 16);
+        assert_eq!(read_qword(&mut boot, frame - 16), rsp);
+        assert_eq!(read_qword(&mut boot, frame - 8), 0x18);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+    }
+
+    #[test]
+    fn cpl0_set_board_gp0_without_an_idt_stays_the_fault_stop() {
+        let cli = CliProfile::NonPviLong64V1;
+        let mut boot = gp_board(&[0xF4]);
+        boot.board.state_mut().idtr = None;
+        let before = boot.board.state().clone();
+        let (state, report) = run_set(&mut boot, true, 8, &gp_set(&cli));
+        let PagedCpl0SetExit::Run(RunExit::Fault(fault)) = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (13, Some(0), None)
+        );
+        assert_eq!(
+            (report.instructions_executed, report.delivered_exceptions),
+            (0, 0)
+        );
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr, before.gpr);
+    }
+
+    #[test]
+    fn cpl0_set_board_gp0_with_a_gate_beyond_the_idt_limit_is_a_fault_stop_with_the_reason() {
+        use od_isa::Cpl0GeneralProtectionRefusal as Refusal;
+        let cli = CliProfile::NonPviLong64V1;
+        let mut boot = gp_board(&[0xF4]);
+        boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 13 * 16 + 14,
+        });
+        let before = boot.board.state().clone();
+        let (state, report) = run_set(&mut boot, true, 8, &gp_set(&cli));
+        let PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure } = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!((fault.vector, fault.error_code), (13, Some(0)));
+        assert_eq!(
+            *failure,
+            PagedCpl0ExceptionFailure::GeneralProtectionRefused(Refusal::GateBeyondIdtLimit)
+        );
+        assert_eq!(
+            (report.instructions_executed, report.delivered_exceptions),
+            (0, 0)
+        );
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(state.cr2, None);
+    }
+
+    #[test]
+    fn cpl0_set_board_gp0_delivery_with_an_unmapped_stack_aborts_and_keeps_the_cpu() {
+        let cli = CliProfile::NonPviLong64V1;
+        let mut boot = gp_board(&[0xF4]);
+        boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
+        let before = boot.board.state().clone();
+        let (state, report) = run_set(&mut boot, true, 8, &gp_set(&cli));
+        let PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure } = &report.exit else {
+            panic!("{report:?}");
+        };
+        assert_eq!(fault.vector, 13);
+        assert!(
+            matches!(
+                failure,
+                PagedCpl0ExceptionFailure::GeneralProtectionAborted {
+                    phase: od_isa::Cpl0GeneralProtectionPhase::StackWrite {
+                        slot: od_isa::PageFaultFrameSlot::OldSs
+                    },
+                    cause: MemoryError::Architectural(ArchitecturalFault { vector: 14, .. }),
+                }
+            ),
+            "{failure:?}"
+        );
+        assert_eq!(report.delivered_exceptions, 0);
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.cr2, None);
+    }
+
+    #[test]
+    fn cpl0_set_board_rdmsr_of_a_member_index_or_without_a_msr_file_is_not_delivered() {
+        let cli = CliProfile::NonPviLong64V1;
+        // A set without any MSR member: Unsupported as before, no delivery.
+        let mut boot = gp_board(&[0xF4]);
+        let (state, report) = run_set(&mut boot, true, 8, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0x32 }),
+            "{report:?}"
+        );
+        assert_eq!(
+            (report.instructions_executed, report.delivered_exceptions),
+            (0, 0)
+        );
+        assert_eq!(state.rip, ENTRY);
+        // The 0x87 member: zeros, no fault.
+        let mut boot = gp_board(&[0xF4]);
+        boot.board.state_mut().gpr[Register::Rcx as usize] = 0x87;
+        let (state, report) = run_set(&mut boot, true, 2, &gp_set(&cli));
+        assert_eq!(report.instructions_executed, 2, "{report:?}");
+        assert_eq!(report.delivered_exceptions, 0);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(
+            (
+                state.gpr[Register::Rax as usize],
+                state.gpr[Register::Rdx as usize]
+            ),
+            (0, 0)
+        );
     }
 
     /// The delivery is refused or aborted: the stop is the original fault with the reason in the

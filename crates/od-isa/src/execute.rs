@@ -27621,6 +27621,17 @@ fn matching_paged_mov_profiles(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>)
     )
 }
 
+/// S4-38L9v: every MSR index some MSR member or profile of the set names (EFER, FS_BASE, GS_BASE,
+/// KERNEL_GS_BASE, STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP and the `0x87` read),
+/// whether or not the set configures that member. `RDMSR` of any other index raises `#GP(0)` in
+/// a set that models an MSR file.
+const fn is_set_member_msr_index(index: u32) -> bool {
+    matches!(
+        index,
+        0x87 | 0x174..=0x176 | 0xc000_0080..=0xc000_0084 | 0xc000_0100..=0xc000_0102
+    )
+}
+
 fn step_configured(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -34136,6 +34147,32 @@ fn step_configured(
             state.gpr[Register::Rdx as usize] = 0;
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
+        }
+        // S4-38L9v: `RDMSR` of an index no MSR member of the set names raises `#GP(0)`, the
+        // architectural answer for an MSR the CPU does not implement (the kernel's `rdmsr_safe`
+        // relies on it: its `__ex_table` fixup turns the fault into `-EIO`). Only inside a set
+        // that models an MSR file (a member is configured), at CPL0 under Long64, for the bare
+        // two-byte `0F 32`. The fault leaves RIP, EAX and EDX as they were; the caller delivers
+        // it through the guest IDT. Every index a member names (also the ones the set refuses
+        // today: a `RDMSR` of a write-only cell) keeps its previous answer; `WRMSR` of an
+        // unmodelled index, a prefix, CPL > 0 and a set without an MSR file stay `Unsupported`.
+        if instruction.operation == Operation::ReadMsr
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+            && (msr_profile.is_some()
+                || msr_bases_enabled
+                || msr_efer_cell.is_some()
+                || guest_msr_cells.is_some())
+            && !is_set_member_msr_index(msr_index)
+        {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
         }
         let msr_profile = match msr_profile {
             Some(profile) if profile.handles_index(msr_index) => Some(profile),
