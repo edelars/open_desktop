@@ -49,6 +49,16 @@
 //! change transmit and receive behaviour and is not modelled. Semantics
 //! follow the 16550 datasheet from memory and were not checked against a
 //! primary source.
+//!
+//! S4-38L9C: the modem status register (offset 6) reads 0 and is read-only.
+//! The board has no modem lines, so the CTS, DSR, RI and DCD levels
+//! (bits 7..4) and the delta bits (bits 3..0) are 0; the read changes no state
+//! (the real clear-on-read of the deltas is a no-op while they are 0). A write
+//! is refused with `ReadOnly` without mutation, like LSR. The IER MS bit stays
+//! stored only: with no line changes there is no modem-status interrupt
+//! source. No loopback is modelled, so the MSR does not follow MCR. Semantics
+//! follow the 16550 datasheet from memory and were not checked against a
+//! primary source.
 
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use std::sync::{Arc, Mutex};
@@ -77,6 +87,9 @@ const MCR_OUT2: u8 = 0x08;
 const MCR_ACCEPTED: u8 = MCR_STORED_ONLY | MCR_OUT2;
 /// FCR bits 2..1 (RX and TX FIFO reset) are self-clearing and not stored.
 const FCR_RESET_BITS: u8 = 0x06;
+/// MSR value of a board without modem lines: CTS, DSR, RI and DCD levels
+/// (bits 7..4) and their deltas (bits 3..0) are all 0.
+const MSR_NO_MODEM_LINES: u8 = 0x00;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
@@ -378,6 +391,11 @@ impl UartState {
             3 => self.line_control,
             4 => self.mcr,
             5 => self.line_status(),
+            // S4-38L9C: the modem status register has no input line behind
+            // it, so levels (bits 7..4) and deltas (bits 3..0) are all 0.
+            // The read has no side effect: reading MSR clears the deltas,
+            // which are always 0.
+            6 => MSR_NO_MODEM_LINES,
             7 => self.scratch,
             _ => return Err(DeviceError::UnknownOffset),
         };
@@ -432,7 +450,8 @@ impl UartState {
             4 if value & !MCR_ACCEPTED == 0 => self.mcr = value,
             // Loopback (bit 4) and reserved bits 5..7 are not modelled.
             4 => return Err(DeviceError::UnsupportedConfiguration),
-            5 => return Err(DeviceError::ReadOnly),
+            // LSR and MSR are read-only on a 16550; MSR follows the LSR rule.
+            5 | 6 => return Err(DeviceError::ReadOnly),
             7 => self.scratch = value,
             _ => return Err(DeviceError::UnknownOffset),
         }
@@ -608,7 +627,8 @@ mod tests {
         );
         assert_eq!(device.write(access(5), 0x20), Err(DeviceError::ReadOnly));
         assert_eq!(device.read(access(0)), Ok(0));
-        assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
+        // S4-38L9C: offset 6 is the modem status register and reads 0.
+        assert_eq!(device.read(access(6)), Ok(0));
         assert_eq!(device.read(access(5)), Ok(0x60));
     }
 
@@ -1006,9 +1026,10 @@ mod tests {
         write(&mut device, 0, 0x0c);
         write(&mut device, 1, 0x34);
         let before = device.snapshot();
-        assert_eq!(device.write(access(6), 1), Err(DeviceError::UnknownOffset));
+        // S4-38L9C: offset 6 is the read-only MSR; offset 8 stays unknown.
+        assert_eq!(device.write(access(6), 1), Err(DeviceError::ReadOnly));
         assert_eq!(device.write(access(8), 1), Err(DeviceError::UnknownOffset));
-        assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
+        assert_eq!(device.read(access(6)), Ok(0));
         assert_eq!(device.read(access(8)), Err(DeviceError::UnknownOffset));
         // The MCR refusal is unchanged by the DLAB bit (FCR = 0x07 is
         // accepted since S4-38L9z and moved to the FCR tests).
@@ -1255,5 +1276,137 @@ mod tests {
         device.reset();
         assert_eq!(read(&mut device, 0), 0);
         assert_eq!(handle.fcr(), 0);
+    }
+
+    // S4-38L9C. Oracles are hand-computed 16550 values (datasheet from
+    // memory): the board has no modem lines, so the MSR (offset 6) reads 0
+    // (levels CTS/DSR/RI/DCD in bits 7..4 and deltas in bits 3..0 all 0).
+
+    #[test]
+    fn msr_reads_zero_in_every_register_state_and_changes_nothing() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        assert_eq!(read(&mut device, 6), 0x00);
+        setup_8n1_divisor(&mut device);
+        write(&mut device, 7, 0xa5);
+        write(&mut device, 2, 0x01);
+        write(&mut device, 4, 0x0f);
+        write(&mut device, 1, 0x0f);
+        device.inject_received_byte(0x33).unwrap();
+        write(&mut device, 0, 0x41);
+        assert!(device.transfer_holding_to_shift());
+        let before = device.snapshot();
+        let iir = handle.peek_iir();
+        let line = handle.interrupt_line();
+        for _ in 0..3 {
+            assert_eq!(read(&mut device, 6), 0x00);
+            assert_eq!(device.snapshot(), before);
+            assert_eq!(handle.peek_iir(), iir);
+            assert_eq!(handle.interrupt_line(), line);
+        }
+        // The neighbours read as before: RBR byte is still there, LSR shows
+        // data ready and a busy shifter, SCR is intact.
+        assert_eq!(handle.received_byte(), Some(0x33));
+        assert_eq!(read(&mut device, 5), 0x21);
+        assert_eq!(read(&mut device, 7), 0xa5);
+        assert_eq!(read(&mut device, 0), 0x33);
+        // After RBR was read, MSR is still 0 and RBR repeats the last byte.
+        assert_eq!(read(&mut device, 6), 0x00);
+        assert_eq!(read(&mut device, 0), 0x33);
+    }
+
+    #[test]
+    fn msr_ignores_mcr_and_does_not_model_loopback() {
+        let mut device = Uart16550PollingTx::new();
+        for value in [0x00_u8, 0x01, 0x02, 0x03, 0x04, 0x08, 0x0f] {
+            write(&mut device, 4, value);
+            assert_eq!(read(&mut device, 6), 0x00);
+        }
+        // The autoconfig loopback value (MCR = 0x1a, MSR = 0x90) is not
+        // modelled: loopback stays refused and MSR stays 0.
+        assert_eq!(
+            device.write(access(4), 0x1a),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(read(&mut device, 6), 0x00);
+    }
+
+    #[test]
+    fn msr_write_is_read_only_and_does_not_mutate_in_any_dlab_state() {
+        for lcr in [0x03_u8, 0x83, 0x93] {
+            let mut device = Uart16550PollingTx::new();
+            write(&mut device, 3, lcr);
+            write(&mut device, 7, 0x5a);
+            let before = device.snapshot();
+            for value in [0x00_u64, 0x01, 0x90, 0xff, 0x1_0000] {
+                assert_eq!(device.write(access(6), value), Err(DeviceError::ReadOnly));
+                assert_eq!(device.snapshot(), before);
+            }
+            // DLAB does not redirect offset 6.
+            assert_eq!(read(&mut device, 6), 0x00);
+            assert_eq!(device.snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn msr_validates_space_and_width_like_other_registers() {
+        let mut device = Uart16550PollingTx::new();
+        let mut mmio = access(6);
+        mmio.space = IoSpace::Mmio;
+        assert_eq!(device.read(mmio), Err(DeviceError::UnsupportedSpace));
+        assert_eq!(device.write(mmio, 0), Err(DeviceError::UnsupportedSpace));
+        let mut word = access(6);
+        word.width = AccessWidth::Word;
+        assert_eq!(device.read(word), Err(DeviceError::UnsupportedWidth));
+        assert_eq!(device.write(word, 0), Err(DeviceError::UnsupportedWidth));
+    }
+
+    #[test]
+    fn ier_ms_bit_with_msr_reads_does_not_change_iir_or_the_line() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        setup_8n1_divisor(&mut device);
+        write(&mut device, 4, 0x08);
+        write(&mut device, 1, 0x08);
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert!(!handle.interrupt_line());
+        let before = device.snapshot();
+        // The kernel polls MSR on every UART interrupt and in clear_interrupts;
+        // with no line events nothing changes.
+        for _ in 0..4 {
+            assert_eq!(read(&mut device, 6), 0x00);
+            assert_eq!(read(&mut device, 2), 0x01);
+            assert_eq!(handle.peek_iir(), 0x01);
+            assert!(!handle.interrupt_line());
+        }
+        assert_eq!(device.snapshot(), before);
+        // RDA and THRE keep their own behaviour with MS enabled and MSR reads
+        // in between.
+        write(&mut device, 1, 0x0b);
+        assert_eq!(handle.peek_iir(), 0x02);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 6), 0x00);
+        assert_eq!(handle.peek_iir(), 0x02);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x02);
+        assert!(!handle.interrupt_line());
+        device.inject_received_byte(0x61).unwrap();
+        assert_eq!(read(&mut device, 6), 0x00);
+        assert_eq!(handle.peek_iir(), 0x04);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 0), 0x61);
+        assert_eq!(handle.peek_iir(), 0x01);
+    }
+
+    #[test]
+    fn kernel_clear_interrupts_sequence_reads_lsr_rbr_iir_msr() {
+        // serial8250_clear_interrupts (do_startup): LSR, RBR, IIR, MSR; the
+        // sequence that stopped the S4-38L9B diagnostic at COM1 + 6.
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert_eq!(read(&mut device, 0), 0x00);
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert_eq!(read(&mut device, 6), 0x00);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert!(!handle.interrupt_line());
     }
 }
