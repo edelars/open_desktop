@@ -47215,3 +47215,275 @@ fn segment_80_family_is_not_reachable_from_cpl3() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L9o: LFENCE (`0F AE E8`), MFENCE (`0F AE F0`) and SFENCE (`0F AE F8`) as no-op
+// fences. SDM Vol.2 (from memory, not re-checked against the primary source): the fences only
+// order memory operations; with one vCPU and no buffers visible to another processor they
+// change nothing but RIP and the retired count. Only the bare register encodings are admitted;
+// the memory forms of `0F AE` are other instructions (FXSAVE, LDMXCSR, ...). The test memories
+// fail on any data read/write and on any backend `mfence` call. ----
+
+const FENCE_FORMS: [(&str, [u8; 3]); 3] = [
+    ("lfence", [0x0f, 0xae, 0xe8]),
+    ("mfence", [0x0f, 0xae, 0xf0]),
+    ("sfence", [0x0f, 0xae, 0xf8]),
+];
+
+fn run_fence_set(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+    budget: u64,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+}
+
+#[test]
+fn fences_in_the_set_are_three_byte_noops_touching_nothing_but_rip() {
+    for (name, code) in FENCE_FORMS {
+        let mut state = endbr_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            if index != 4 {
+                *value = 0x0123_4567_89ab_cdef ^ ((index as u64) << 56);
+            }
+        }
+        let mut expected = state.clone();
+        expected.rip += 3;
+        let mut memory = BitsMemory::new(&code);
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+        assert_eq!(state.rip, RIP + 3, "{name}");
+        assert_eq!(state, expected, "{name}");
+        assert!(memory.reads.is_empty(), "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+        assert!(memory.data.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn lfence_then_the_next_instruction_executes_at_rip_plus_three() {
+    // The `__switch_to_asm` boundary bytes: LFENCE, then `mov qword gs:[rip+disp], -1`.
+    let code = [
+        0x0f, 0xae, 0xe8, 0x65, 0x48, 0xc7, 0x05, 0x8e, 0x65, 0x0d, 0x03, 0xff, 0xff, 0xff, 0xff,
+        0x41,
+    ];
+    let gs_base = 0xffff_8880_0000_0000u64;
+    let at = gs_base + RIP + 3 + 12 + 0x030d_658e;
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&code);
+    let result = run_fence_set(&mut state, &mut memory, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert!(memory.reads.is_empty());
+    assert_eq!(memory.writes, vec![(at, vec![0xff; 8])]);
+    expected.rip += 15;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn every_fence_then_nop_retires_both() {
+    for (name, code) in FENCE_FORMS {
+        let mut bytes = code.to_vec();
+        bytes.extend([0x90, 0x90]);
+        let mut state = endbr_state();
+        let mut expected = state.clone();
+        expected.rip += 4;
+        let mut memory = BitsMemory::new(&bytes);
+        let result = run_fence_set(&mut state, &mut memory, 2).unwrap();
+        assert_eq!(result.instructions_executed, 2, "{name}");
+        assert_eq!(state, expected, "{name}");
+    }
+}
+
+#[test]
+fn fence_lookalikes_stay_unsupported_with_opcode_0xae_and_no_mutation() {
+    let refused: [&[u8]; 40] = [
+        // Prefixes before the bare encoding.
+        &[0x66, 0x0f, 0xae, 0xe8],
+        &[0x66, 0x0f, 0xae, 0xf0],
+        &[0x66, 0x0f, 0xae, 0xf8],
+        &[0xf2, 0x0f, 0xae, 0xe8],
+        &[0xf2, 0x0f, 0xae, 0xf0],
+        &[0xf2, 0x0f, 0xae, 0xf8],
+        &[0xf3, 0x0f, 0xae, 0xe8],
+        &[0xf3, 0x0f, 0xae, 0xf0],
+        &[0xf3, 0x0f, 0xae, 0xf8],
+        &[0xf0, 0x0f, 0xae, 0xe8],
+        &[0xf0, 0x0f, 0xae, 0xf0],
+        &[0xf0, 0x0f, 0xae, 0xf8],
+        &[0x67, 0x0f, 0xae, 0xe8],
+        // REX before `0F AE`.
+        &[0x40, 0x0f, 0xae, 0xe8],
+        &[0x41, 0x0f, 0xae, 0xe8],
+        &[0x48, 0x0f, 0xae, 0xe8],
+        &[0x4f, 0x0f, 0xae, 0xe8],
+        &[0x40, 0x0f, 0xae, 0xf0],
+        &[0x48, 0x0f, 0xae, 0xf0],
+        &[0x40, 0x0f, 0xae, 0xf8],
+        &[0x48, 0x0f, 0xae, 0xf8],
+        // Segment overrides.
+        &[0x2e, 0x0f, 0xae, 0xe8],
+        &[0x3e, 0x0f, 0xae, 0xe8],
+        &[0x26, 0x0f, 0xae, 0xe8],
+        &[0x36, 0x0f, 0xae, 0xe8],
+        &[0x64, 0x0f, 0xae, 0xe8],
+        &[0x65, 0x0f, 0xae, 0xe8],
+        &[0x65, 0x0f, 0xae, 0xf8],
+        // Other register ModRM bytes.
+        &[0x0f, 0xae, 0xe0],
+        &[0x0f, 0xae, 0xe1],
+        &[0x0f, 0xae, 0xe7],
+        &[0x0f, 0xae, 0xe9],
+        &[0x0f, 0xae, 0xef],
+        &[0x0f, 0xae, 0xf1],
+        &[0x0f, 0xae, 0xf7],
+        &[0x0f, 0xae, 0xf9],
+        &[0x0f, 0xae, 0xff],
+        &[0x0f, 0xae, 0xc0],
+        &[0x0f, 0xae, 0xd0],
+        &[0x0f, 0xae, 0xd8],
+    ];
+    for code in refused {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn fence_memory_forms_of_0f_ae_stay_unsupported_in_the_set() {
+    // Memory ModRM bytes (FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/XRSTOR/CLFLUSH).
+    let refused: [&[u8]; 8] = [
+        &[0x0f, 0xae, 0x00],
+        &[0x0f, 0xae, 0x38],
+        &[0x0f, 0xae, 0x28],
+        &[0x0f, 0xae, 0x30],
+        &[0x0f, 0xae, 0x20],
+        &[0x0f, 0xae, 0x15, 0, 0, 0, 0],
+        &[0x0f, 0xae, 0x1d, 0, 0, 0, 0],
+        &[0x0f, 0xae, 0x3d, 0, 0, 0, 0],
+    ];
+    for code in refused {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn fence_truncated_encodings_report_the_fetch_error_without_mutation() {
+    for (name, code) in FENCE_FORMS {
+        for cut in 0..code.len() {
+            let mut state = endbr_state();
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&code[..cut]);
+            let result = run_fence_set(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(result.instructions_executed, 0, "{name} cut {cut}");
+            assert!(
+                !matches!(exit(&result), RunExit::InstructionBudgetExhausted),
+                "{name} cut {cut}: {:?}",
+                exit(&result)
+            );
+            assert_eq!(state, before, "{name} cut {cut}");
+        }
+    }
+}
+
+#[test]
+fn lfence_and_sfence_stay_unsupported_outside_the_set() {
+    for (name, code) in FENCE_FORMS {
+        if name == "mfence" {
+            continue; // MFENCE keeps its earlier outside-the-set behaviour (backend call).
+        }
+        let mut state = endbr_state();
+        state.cr0 = None;
+        state.cr4 = None;
+        state.activity = None;
+        state.sti_shadow = None;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xae }, "{name}");
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+
+        let mut memory = BitsMemory::new(&code);
+        let outcome =
+            od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
+        assert_eq!(
+            outcome,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xae }),
+            "{name}"
+        );
+        assert_eq!(state, before, "{name}");
+    }
+}
+
+#[test]
+fn fences_are_not_reachable_from_cpl3() {
+    for (name, code) in FENCE_FORMS {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{name}"
+        );
+    }
+}

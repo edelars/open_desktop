@@ -36681,6 +36681,15 @@ fn step_configured(
                 && instruction.length == 3
                 && instruction.prefixes == Prefixes::default()
         }
+        // S4-38L9o: LFENCE/SFENCE are no-ops (one vCPU, no buffers visible to other
+        // processors); admitted only inside the CPL0 profile set. Bare `0F AE E8/F8` only.
+        Operation::Lfence | Operation::Sfence => {
+            control_policy.is_some()
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xae
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default()
+        }
         Operation::FxsaveRipRelative(area) => {
             instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0xae
@@ -49766,6 +49775,9 @@ fn step_configured(
                 Err(error) => return Err(error),
             }
         }
+        // S4-38L9o: inside the CPL0 set MFENCE does not call the backend completion hook (no
+        // buffers to drain for a single vCPU); outside it the existing backend call is kept.
+        Operation::Mfence if control_policy.is_some() => {}
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -51289,6 +51301,9 @@ fn step_configured(
             return Ok(StepOutcome::Branched);
         }
         Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
+        // S4-38L9o: the fences change nothing but RIP and the retired count; inside the CPL0
+        // set MFENCE does not call the backend completion hook either (no buffers to drain).
+        Operation::Lfence | Operation::Sfence => {}
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
