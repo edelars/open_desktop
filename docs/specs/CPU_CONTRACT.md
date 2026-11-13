@@ -24881,3 +24881,29 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
    Вывод: чтение `pci_mmcfg_read` по ECAM отработало как «нет устройства»; следующая граница — снова набор инструкций: 16-битный `OR r/m16, r16` (`66 09`) с сегментным префиксом GS в `__raise_softirq_irqoff`. Ничего из этого в срезе не реализовывалось.
 
 **Повторный диагностический прогон после сужения до ECAM (S4-38L9s, исправление по ревью).** `--cpuid-profile stage4a`, release-сборка кода с окном ECAM: JSON побайтово совпал с `docs/reports/data/stage4/s4-38l9s-stage4a-run.json` (граница та же: `Unsupported { opcode: 9 }`, RIP `0xffffffff8144e5f2`, retired 1982933111). Сужение на этот прогон не влияет: единственное MMIO, которое он читает, — ECAM.
+
+
+## S6-26: descriptor side effects в bounded profiles
+
+Выполняемые наборы `LRETQ`, `IRETQ`, segment-register loads, `LTR`, bounded
+interrupt/trap delivery и bounded `#PF/#DF` delivery могут менять descriptor Accessed
+bit или TSS Busy state. Пути, проверки, логическая ширина `GuestMemory` write,
+точка commit CPU entry state и последствия позднего отказа перечислены в
+[контракте модели памяти](MEMORY_MODEL.md#побочные-записи-дескрипторов-s6-26).
+Этот список задаёт только доступные профили проекта.
+
+Сверка с Intel SDM revision 093: implicit Accessed-bit update имеет `LOCK`
+semantics (Vol. 3A §11.1.2.1); `LTR` выполняет locked RMW всего TSS descriptor
+и в 64-bit mode работает с 16-byte descriptor (Vol. 2A, `LTR`). Указанная в
+таблице ширина записи — наша эмуляционная transaction boundary, а не
+утверждение о физической ширине bus access. Page-walk A/D writes остаются
+отдельными commit effects по S6-25; они могут пережить более поздний fault.
+Текущий paged adapter может разбить cross-page logical qword write на
+последовательные byte backing writes после page preflight; это может породить
+несколько callbacks/generation bumps и позднюю partial descriptor mutation.
+При входе в `#PF` CR2 обновляется до проверок и записей frame; поздний entry
+failure не откатывает CR2. `#DF` сам его не меняет, хотя secondary `#PF` может.
+Descriptor effects не используют guest `LOCK` API и не объявляются SMP-safe,
+пока S6-30/S6-31 не реализуют shared transaction с сохранением
+instruction-specific checks, descriptor snapshot/translation, all-or-nothing
+grouped physical spans and post-commit callbacks.

@@ -36,7 +36,7 @@
 | S6-23 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для зависимого S6-20 |
 | S6-24 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для цепочки S6-13/S6-14c |
 | S6-25 | `blocked` | S4-09 (полный объём; принятый ограниченный срез не закрывает задачу), S4-21, S4-22, S4-23 (через S6-20) |
-| S6-26 | `not_started` | —; S6-07 inventory descriptor-writing paths accepted |
+| S6-26 | `accepted` | Документный контракт восьми descriptor-writing paths прошёл независимое архитектурное ревью `gpt-6.1-sol/high`; замечаний не осталось. `git diff --check` чист; `check_layout.py` сообщает 45 прежних broken links в work evidence, новых в изменённых docs нет. SMP реализация остаётся gate для S6-30/S6-31. |
 | S6-30 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-31 | `blocked` | S4-09, S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-32 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
@@ -388,3 +388,41 @@ S4-35 Linux artifact найден в корневом checkout `main` в ignored
 #### Допущения без владельца
 
 Production предположений без S6 owner в этом inventory не осталось. Все конкурентные RAM writes сопоставлены с S6-25/S6-30/S6-31; descriptor writes — с S6-26; device/bus state — с S6-33; LAPIC state — с S6-11/S6-12; scheduler/time ownership — с S6-15/S6-34; JIT arena — с S6-40/S6-42. Test/fixture-only записи не являются неустранёнными product assumptions. Поэтому `KNOWN_ISSUES.md` не изменялся. Архитектурное ревью таблицы остаётся необходимым; S6-07 status — `in_progress`, checkbox плана не менялся.
+
+
+### S6-26 — контракт побочных записей дескрипторов (accepted)
+
+Подготовлен документный контракт для восьми путей из S6-07: `LRETQ`, `IRETQ`,
+ограниченные segment-register loads, bounded `LTR`, bounded interrupt/trap
+delivery, bounded `#PF/#DF` delivery и paged `LTR`. Для каждого пути зафиксированы
+предшествующие проверки, логическая ширина `GuestMemory` write, точка CPU-state
+commit, эффект поздней ошибки и отдельно сохраняющиеся page-walk A/D commits.
+Обычные operand stores и A/D updates отделены от descriptor state.
+
+Граница shared RAM требует атомарной descriptor-update operation с сохранением
+нецелевых битов и связью с проверенным descriptor/translation snapshot.
+`PhysicalMemory::write_bytes` выдаёт generation/callback за одну успешную
+backing transaction; текущий `PagedMovMemoryAdapter` для разрешённого
+cross-page qword store сначала проверяет обе линейные страницы, затем пишет
+байты отдельно. Это может дать несколько callbacks/generation bumps и
+частичную mutation при позднем отказе. Cross-page 16-byte отказ отдельно
+помечен как ограничение bounded LTR profiles. Один commit инструкции не
+объединяет frame slots, несколько descriptor updates и page-walk writes в
+атомарный блок. Guest `LOCK` API не заменяет этот instruction-specific
+контракт. SMP-safe реализация остаётся gate для S6-30/S6-31.
+
+Источники: Intel SDM revision 093 (September 2026), Vol. 3A §§3.4.3, 3.4.5.1
+и 11.1.2.1; Vol. 2A `IRET` и `LTR`; Vol. 2B `RET`. SDM задаёт implicit
+`LOCK` semantics для Accessed update и locked RMW всего descriptor для `LTR`,
+но не общую аппаратную ширину bus transfer или универсальный fault-rollback
+протокол для всех перечисленных emulator paths. Сверка по [Vol. 3A
+(revision 093)](https://cdrdv2.intel.com/v1/dl/getContent/671190), [Vol. 2A
+(revision 093)](https://cdrdv2.intel.com/v1/dl/getContent/671199) и [Vol. 2B
+(revision 093)](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+
+S6-26 прошёл независимое архитектурное ревью `gpt-6.1-sol/high`; замечаний не
+осталось. `git diff --check` чист. `check_layout.py` сообщает 45 старых broken
+links на отсутствующие work evidence; ни одна ссылка не затрагивает изменённые
+S6-26 документы. SMP реализация descriptor transactions остаётся gate для
+S6-30/S6-31. Плановый checkbox оставлен без изменения согласно указанию
+пользователя.

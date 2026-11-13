@@ -28,7 +28,7 @@
 | Page walk и A/D bits | Каждая запись PTE читается одним 8-байтовым доступом. Обновление accessed/dirty — атомарный compare-and-replace; если значение таблицы изменилось между чтением и заменой, обход повторяется с этого уровня, чтобы не потерять бит другого vCPU (правило §4.2 плана). Intel SDM Vol. 3A §5.8 описывает установку A/D, а §11.1.2.1 — locked cycles. | Page walk выполняется в ходе одного события; A/D write — отдельная RAM commit transaction. | Через общий RAM atomic path, согласованный с CPU stores, DMA и TLB/page-walk rules. Одних DMB или Rust Ordering недостаточно без compare-and-replace/retry и sticky A/D semantics. |
 | Устройство пишет в RAM (DMA) | RAM-изменение от устройства участвует в когерентном наблюдении по порядку события, определённому моделью устройства и CPU; не может обходить контракт общей RAM. | Устройство доставляет запись как event на том же host-потоке между инструкциями. | Общий RAM ownership/commit protocol и определённый device ordering handoff; release/acquire или barriers — лишь возможные части протокола, не самостоятельная гарантия DMA. |
 | MMIO access | Это device access с порядком и side effects конкретного устройства; не обычная когерентная WB RAM операция и не подменяется RAM fence semantics. | Синхронная dispatch к модели устройства на границе события. | Device model задаёт сериализацию и порядок; отдельный lock/queue per device и архитектурный fence mapping — кандидаты. Не использовать обычный RAM atomic API как контракт MMIO. |
-| Дескрипторные side effects (отдельный класс) | Изменение descriptor Accessed byte, TSS busy state и аналогичные side effects подчиняются instruction-specific x86 fault/commit semantics. Не объединять их с обычной записью данных или page-table A/D update. Владение и полный контракт остаются за S6-26. | Текущая семантика инструкции выполняется единым событием; side effect фиксируется только в определённой инструкции точке commit. | Кандидат — единый memory transaction, связанный с проверками/commit инструкции; отдельная спецификация S6-26 должна определить атомарность, fault ordering и смешанные observers. Ни Rust Ordering, ни DMB отдельно этого не задают. |
+| Дескрипторные side effects (отдельный класс) | Изменение descriptor Accessed byte, TSS busy state и аналогичные side effects подчиняются instruction-specific x86 fault/commit semantics; не объединяются с ordinary operand store или page-table A/D update. Контракт bounded paths — S6-26 ниже. | Текущая семантика инструкции выполняется единым событием; side effect фиксируется только в определённой инструкции точке commit. | Для S6-30 нужна descriptor-update transaction с архитектурным atomicity scope, сохранением нецелевых битов и видимыми generation/callback semantics; это отдельный контракт от guest LOCK operations. Rust Ordering или DMB сами по себе его не задают. |
 
 ## Host-кандидаты и ограничения языковой модели
 
@@ -66,6 +66,125 @@ Rust atomic access model запрещает несинхронизированн
 Одна успешная `PhysicalMemory::write_bytes` physical RAM commit transaction увеличивает generation каждого затронутого физического RAM page, затем вызывает committed callback ровно один раз после этого commit. Ошибка валидации до commit сохраняет bytes/generations и не вызывает callback. Это свойство одной backing-memory transaction, а не всей гостевой инструкции: инструкция может породить несколько отдельных A/D и operand commits, каждый со своим generation/callback; более поздний fault не отменяет уже committed A/D side effects. Framebuffer backing вне RAM generation/callback: его записи не bump-ят generation и не уведомляют committed-write consumer. Эти правила нужно сохранить при общей transaction boundary.
 
 В interleaving mode все RAM writers (vCPU и устройства) должны идти через одного host-поточного владельца и переключаться на instruction/event boundaries. Параллельный режим потребует общего проверяемого ownership/synchronization protocol для всех RAM writers и readers; долгоживущие `&mut` aliases к concurrently mutable RAM недопустимы. Обычный RAM access не берёт глобальную блокировку как окончательное архитектурное требование, но S6-04 не выбирает primitive и не задаёт fast path. MMIO остаётся в модели устройства.
+
+## Побочные записи дескрипторов (S6-26)
+
+Descriptor side effects — отдельный класс instruction commits. Их нельзя
+отождествлять с operand store или page-table A/D updates. Intel SDM Vol. 3A
+§11.1.2.1 задаёт `LOCK` semantics для implicit Accessed-bit update, а Vol. 2A
+`LTR` задаёт locked RMW всего TSS descriptor; для 64-bit mode descriptor
+имеет 16 байт. Эти семантические границы не задают физическую ширину bus
+transaction. Они также не превращают descriptor update в guest `LOCK`
+instruction из S6-20/S6-31. Источники: [Vol. 3A §3.4.5.1 (revision 093,
+p. 3-13)](https://cdrdv2.intel.com/v1/dl/getContent/671190#page=101), [Vol. 3A
+§11.1.2.1 (revision 093, p. 11-3)](https://cdrdv2.intel.com/v1/dl/getContent/671190#page=317),
+[Vol. 2A `LTR` (revision 093, pp. 3-576–3-577)](https://cdrdv2.intel.com/v1/dl/getContent/671199#page=694),
+[Vol. 2A `IRET`](https://cdrdv2.intel.com/v1/dl/getContent/671199#page=608),
+[Vol. 2B `RET`](https://cdrdv2.intel.com/v1/dl/getContent/671241#page=583).
+
+Таблица ниже описывает видимые commit points и эффекты именно текущих
+ограниченных emulator profiles, а не все fault-ordering детали Intel CPU и не
+внутреннюю ширину его bus accesses. Сначала выполняются проверки, которые
+перечислены для конкретного пути; затем эмулируемый side-effect write; после
+его успеха меняется соответствующее CPU state. Intel SDM описывает проверки
+инструкций, но не задаёт здесь общий rollback протокол для A-bit writes при
+поздней ошибке; модель не делает такого утверждения. Любые page-walk A/D
+commits остаются отдельными эффектами своего пути.
+
+| Путь профиля | Проверки до descriptor write | Логический GuestMemory write и граница CPU commit | Поздняя ошибка |
+|---|---|---|---|
+| [`far_return_cpl0` (`LRETQ`)](CPU_CONTRACT.md#lretq-на-cpl0-в-наборе-s2-47b) | Два stack qword read; selector/GDT bounds; CS type, long-mode flags, DPL, present; target canonicality. | Если A=0, один логический qword write дескриптора с A=1; после его успеха коммитятся CS/RIP/RSP. Если A=1, descriptor write отсутствует. [Intel RET](https://cdrdv2.intel.com/v1/dl/getContent/671241#page=583). | До descriptor write CPU state не меняется. Уже произошедшие page-walk A/D commits сохраняются. Ошибка descriptor write не коммитит CS/RIP/RSP. |
+| [`iretq_cpl0` (`IRETQ`)](CPU_CONTRACT.md#iretq-на-cpl0-в-наборе-s4-38l5b) | Текущий bounded CPL0→CPL0 path читает пять frame qwords и проверяет CS вместе с non-null SS до side effects; это профильное поведение, не общий IRET privilege-transition contract. [Intel IRET](https://cdrdv2.intel.com/v1/dl/getContent/671199#page=608). | При A=0 CS, затем при A=0 SS записываются отдельными логическими qword writes; CPU state коммитится после обоих. | Если запись SS завершается ошибкой после успешной CS write, CS A-bit и предшествующие page-walk effects сохраняются, CPU state не коммитится. |
+| [`load_sreg_cpl0` (ограниченные segment loads)](CPU_CONTRACT.md#mov-sreg-ax-с-ненулевым-селектором-на-cpl0-в-наборе-s4-38l6c) | Selector и descriptor read/validation соответствующей формы завершаются до записи; [DS](CPU_CONTRACT.md#s2-27b--exact-long64-mov-ds-ax), [ES](CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax), [CPL3 FS](CPU_CONTRACT.md#s2-22f--cpl3-gdt-only-mov-fs-ax-descriptor-load), [CPL3 GS](CPU_CONTRACT.md#s2-22h--cpl3-gdt-only-mov-gs-ax). [Intel MOV Sreg](https://cdrdv2.intel.com/v1/dl/getContent/671199). | Если A=0, записывается логический qword descriptor image с A=1; segment state коммитится после успешной записи. | Ошибка write оставляет CPU state прежним; ранее committed page-walk A bits остаются. |
+| Bounded DS/ES/FS/GS GDT helper ([DS](CPU_CONTRACT.md#s2-27b--exact-long64-mov-ds-ax), [ES](CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax), [FS](CPU_CONTRACT.md#s2-22f--cpl3-gdt-only-mov-fs-ax-descriptor-load), [GS](CPU_CONTRACT.md#s2-22h--cpl3-gdt-only-mov-gs-ax)) | Descriptor lookup and selector checks precede the update. For CPL3 FS/GS, actual CPL governs selector checks; `DescriptorTable` accesses use Ring0 page-protection privilege while preserving CPL in the context. | Если A=0, один logical byte write по `descriptor + 5`; segment cache/selector commit следует за его успехом. [Intel Vol. 3A §11.1.2.1](https://cdrdv2.intel.com/v1/dl/getContent/671190#page=317). | Ошибка write не коммитит новый segment state; page-walk effects не откатываются. |
+| [`load_tr_cpl0` (`LTR r/m16`, register form)](CPU_CONTRACT.md#ltr-rm16-rexb-0f-00-3-регистровая-форма-в-наборе-cpl0-s4-38l7am) | Проверки selector/GDT limit и canonical range, затем два qword read и TSS descriptor validation. 16-byte descriptor, пересекающий страницу, отклоняется профилем до descriptor accesses. [Intel LTR](https://cdrdv2.intel.com/v1/dl/getContent/671199#page=694). | Один logical qword write low half с TSS busy bit; только затем коммитится TR. High qword не записывается. Реализованный write footprint не меняет Intel locked-RMW semantic scope «entire descriptor». | Ошибка write сохраняет прежний TR. Уже выполненные translation A updates остаются. Пересечение страницы — отказ ограниченного профиля, не обещание guest fault. |
+| [`commit_cpl0_gate` (bounded interrupt/trap delivery)](CPU_CONTRACT.md#внешнее-аппаратное-прерывание-через-idt-в-наборе-cpl0-s4-38l8a) | Gate/target checks выполняются до commit helper; helper пишет frame slots по очереди. Intel event/gate flow: [Vol. 3A §§7.12.1, 7.14.1](https://cdrdv2.intel.com/v1/dl/getContent/671190#page=215). | После frame writes, если A=0, один logical 8-byte target code descriptor write с A=1; затем коммитятся CPU entry state. | Descriptor-write error не откатывает уже записанные stack slots или page-walk effects; CPU entry state остаётся прежним. Ошибка frame write сохраняет предыдущие успешно записанные slots. |
+| Bounded page-fault/double-fault delivery ([`deliver_page_fault`](../../crates/od-isa/src/interrupt.rs#L93), [`deliver_double_fault`](../../crates/od-isa/src/interrupt.rs#L110)) | Target descriptor checks; preflight descriptor-byte write вместе со всеми stack slots; затем последовательные stack writes. Intel exception delivery: [Vol. 3A §§6.14, 7.14.1](https://cdrdv2.intel.com/v1/dl/getContent/671190#page=215). | Если A=0, один logical byte write по `descriptor + 5` после frame; затем коммитится CPU entry state. `#PF` обновляет CR2 до этих accesses; `#DF` сам CR2 не меняет, но secondary `#PF` может его обновить. | Preflight failure не пишет frame. Поздняя ошибка stack/descriptor write оставляет уже committed RAM effects и актуальное значение CR2, но не коммитит CPU entry state. Это профильная emulator-visible последовательность, не заявление о microarchitectural fault visibility. |
+| [`commit_paged_ltr_descriptor` (paged LTR)](CPU_CONTRACT.md#s4-18d--bounded-paged-ltr-ax-state) | Read translation, 16-byte descriptor read/validation, затем write-permission translation; 16-byte descriptor crossing 4 KiB page отвергается. Read/write translations должны совпасть. [Intel LTR](https://cdrdv2.intel.com/v1/dl/getContent/671199#page=694). | Page-walk A bits могут commit-иться во время проверок. После них leaf D bit commit-ится отдельной записью, затем одной 16-byte `PhysicalMemory::write_bytes` backing transaction записывается busy image; caller после успеха коммитит TR. | A bits, leaf D и callbacks, committed до ошибки descriptor image, сохраняются. Caller исключает DMA/vCPU/host writers на всю операцию; это не SMP-transaction. |
+
+**Память, наблюдатели и будущий shared backend.** В таблице указана ширина
+логического `GuestMemory` write; она не гарантирует один физический commit.
+Один успешный `PhysicalMemory::write_bytes` — backing-memory transaction:
+generation каждой затронутой RAM page увеличивается, затем один
+committed-write callback сообщает физический диапазон. Но текущий
+`PagedMovMemoryAdapter` для разрешённого cross-page store сначала проверяет
+обе линейные страницы, затем пишет каждый байт отдельно. Поэтому один
+логический qword descriptor write может дать несколько backing commits и
+generation/callback событий; поздняя ошибка может оставить частично изменённый
+descriptor. LTR paths отдельно отказывают для 16-byte descriptor через 4 KiB
+границу. В serial/interleaving режиме эти byte writes выполняются внутри одного
+синхронного instruction path без переключения vCPU или устройств; callbacks
+могут видеть несколько commits, а поздний отказ может оставить их prefix.
+Сохранить это как профильное поведение не означает объявить его пригодным для
+parallel observers. Более поздний guest fault не откатывает уже committed descriptor,
+frame, A/D или D effects; CPU entry state коммитится только в отмеченной
+строке таблицы точке. Исключение — `CR2`, обновляемый при входе в bounded `#PF`
+до попыток записи exception frame. Ошибка отдельного backing write не меняет
+байты/generation и не вызывает его callback. Page-walk A/D принадлежат S6-25 и
+проходят собственный update/commit path; descriptor A/Bits и busy image не
+являются A/D.
+
+**Общее правило descriptor access privilege.** Все descriptor-table memory
+accesses используют `AccessOrigin::DescriptorTable`: при page protection это
+Ring0, но `AccessContext.privilege` остаётся фактическим CPL и используется
+instruction semantics для selector checks. Поэтому Ring0 page privilege не
+снимает проверок CPL3 selector load. Это явно зафиксировано для bounded CPL3
+[FS](CPU_CONTRACT.md#s2-22f--cpl3-gdt-only-mov-fs-ax-descriptor-load) и
+[GS](CPU_CONTRACT.md#s2-22h--cpl3-gdt-only-mov-gs-ax) GDT paths.
+
+В текущем serial instruction model между обращениями нет конкурирующего
+наблюдателя. Для parallel shared RAM S6-30 должен предоставить descriptor-update
+операцию, которая атомарно устанавливает Accessed/Busy state относительно
+guest RAM readers/writers, DMA и других vCPU и сохраняет все нецелевые биты.
+Для Accessed bit операция следует Intel `LOCK` semantics; для `LTR` её
+семантический scope — весь descriptor. Обычная последовательность «прочитать
+qword, отпустить ownership, записать старый image с изменённым битом» не
+допускается: она может затереть конкурентное изменение. Cross-page logical
+descriptor write может переводиться в несколько несмежных guest-physical
+spans. Будущая atomic descriptor-update transaction должна сначала проверить
+всю группу, затем сделать все spans видимыми вместе; generation обновляется
+для всех затронутых RAM pages, а callback выдаёт один `GuestPhysicalRange` на
+каждый непрерывный physical span только после общего group commit. Если
+callback API не может представить группу, S6-30 должен расширить notification
+contract или до первого byte descriptor write отказать этот cross-page path по
+явной profile policy. Наблюдатель не должен увидеть span до commit остальных.
+Инструкционный commit не делает весь stack frame, две IRET descriptor updates
+или page-walk effects единой атомарной транзакцией.
+
+Проверенный snapshot descriptor и snapshot translation должны быть связаны с
+тем же atomic update, из которого берутся descriptor bytes для CPU cache/TR.
+S6-30 может обеспечить это эксклюзивным transaction от read/validation до
+update либо compare-and-retry: сравнить descriptor и translation с
+проверенными snapshots, а при изменении заново выполнить соответствующие
+instruction-specific checks и translations до commit. Нельзя применить
+Accessed/Busy bit к изменённой записи и закоммитить CS/SS/TR из прежнего
+snapshot. Это проектная политика shared backend; Intel SDM не задаёт общего
+retry protocol. Для конкурирующих `LTR` она требует, чтобы после первого
+успешного перехода Available→Busy второй `LTR` переоценил Busy descriptor и
+отказал, а не закоммитил второй stale TR. В paged paths translation identity,
+permissions и descriptor bytes должны быть подтверждены тем же update point;
+если page tables изменились, путь повторно делает translation и descriptor
+checks. Page-walk A/D effects предыдущей попытки остаются видимыми.
+
+Доступ, меняющий descriptor, обязан оставаться полным по ширине, объявленной
+его path (byte, qword или 16-byte image). Если его полный диапазон нельзя
+проверить и коммитить без частично видимого descriptor write, shared adapter
+должен отвергнуть его до первого байта; уже произошедшие page-walk A/D
+effects при этом остаются. Два LTR paths уже явно исключают descriptor через
+4 KiB boundary. Cross-page behavior других paths в текущем paged adapter может
+состоять из последовательных byte commits, как описано выше; это наблюдаемое
+bounded behavior, не контракт shared descriptor atomicity. В будущем shared
+режиме такие paths должны использовать grouped physical-span transaction либо
+отказ до первого descriptor byte по явной profile policy.
+
+Эти операции не направляются через guest `LOCK` API S6-20/S6-31. В bounded
+профилях гостевая инструкция не содержит LOCKed operand RMW: процессор сам
+обновляет часть descriptor при загрузке selector, возврате/доставке события
+или `LTR`. Переносимый низкоуровневый LOCK primitive сам по себе не сохраняет
+instruction-specific validation, fault order, staged CPU-state commit или
+описанную частичную видимость. S6-31 может предоставить primitive, который
+будет использован внутри descriptor transaction, только после определения
+этого отдельного контракта и без объявления guest LOCK semantics.
 
 ## Упрощения и исключённое поведение
 
