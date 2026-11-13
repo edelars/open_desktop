@@ -1023,6 +1023,40 @@ fn fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn fs_gs_add_imm32_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9f belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[
+            0x65, 0x81, 0x05, 0x84, 0x37, 0xcf, 0x01, 0x00, 0x00, 0x11, 0x00,
+        ][..],
+        &[
+            0x64, 0x48, 0x81, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+        ][..],
+        &[0x65, 0x81, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x81 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn pause_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L9b belongs to the CPL0 set only; this profile refuses `F3 90` without mutation.
     let mut memory = Memory::new(&[0xf3, 0x90]);
