@@ -812,6 +812,12 @@ pub enum Operation {
     },
     /// The sole S2-22e descriptor-rights check: bare `0F 00 E8` (VERW AX).
     VerwGdt,
+    /// S4-38L9G: `VERW m16` (`0F 00 /5`, memory operand only, no prefix or a lone REX without
+    /// W). The 16-bit selector is read from `source`; ZF reports whether it names a writable
+    /// data segment of the GDT. Executed only in the CPL0 profile set, at CPL0 in Long64.
+    VerwMem {
+        source: MemoryOperand,
+    },
     /// Exact bare Long64 `0F 01 F8`; execution requires an explicit profile.
     Swapgs,
     /// S2-27a bare `0F 01 55 ib` (LGDT [RBP + sign-extended disp8]).
@@ -2631,7 +2637,7 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::VerwGdt => FlagEffects {
+            Operation::VerwGdt | Operation::VerwMem { .. } => FlagEffects {
                 defined: crate::ZF,
                 undefined: 0,
             },
@@ -8144,6 +8150,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if prefixes == Prefixes::default() && modrm == 0xe8 {
                     Operation::VerwGdt
+                } else if ltr_prefixes && modrm >> 6 != 3 && (modrm >> 3) & 7 == 5 {
+                    // S4-38L9G: `VERW m16` (`0F 00 /5`, memory operand only) under the same prefix
+                    // rule as LTR/LLDT (none, or a lone REX without W; REX.B/X extend the
+                    // address). The register forms (`0F 00 E8` is `VerwGdt`, the rest stay
+                    // unsupported) are not touched.
+                    let Operand::Memory(source) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Word)?
+                    else {
+                        unreachable!("VERW m16 requires the memory form")
+                    };
+                    Operation::VerwMem { source }
                 } else if ltr_prefixes && modrm >> 6 == 3 && (modrm >> 3) & 7 == 3 {
                     let rex = prefixes.rex.unwrap_or(0);
                     Operation::LoadTr {
@@ -28541,7 +28558,7 @@ mod tests {
             &[0xf3, 0x0f, 0x00, 0xe8][..],
             &[0x66, 0x0f, 0x00, 0xe8][..],
             &[0x48, 0x0f, 0x00, 0xe8][..],
-            &[0x0f, 0x00, 0x68][..], // memory operand
+            &[0x0f, 0x00, 0x60][..], // VERR m16 (memory operand)
         ] {
             let mut memory = Memory::new(bytes);
             assert!(matches!(
@@ -28553,6 +28570,102 @@ mod tests {
             let mut memory = Memory::new(&[0x0f, 0x00, 0xe8][..length]);
             assert!(matches!(memory.decode(), Err(DecodeError::Memory(_))));
             assert_eq!(memory.fetched.len(), length + 1);
+        }
+    }
+
+    #[test]
+    fn verw_m16_decodes_memory_forms_and_refuses_prefixes_and_other_group_members() {
+        // S4-38L9G: `0F 00 /5` with a memory operand; the bare `0F 00 E8` is unchanged.
+        let rip = Memory::new(&[0x0f, 0x00, 0x2d, 0x87, 0xee, 0xff, 0xff])
+            .decode()
+            .unwrap();
+        assert_eq!(rip.length, 7);
+        let Operation::VerwMem { source } = rip.operation else {
+            panic!("expected VerwMem, got {:?}", rip.operation);
+        };
+        assert_eq!(source.base, AddressBase::NextRip);
+        assert_eq!(source.displacement, -0x1179);
+        assert_eq!(source.index, None);
+
+        let base = Memory::new(&[0x0f, 0x00, 0x28]).decode().unwrap();
+        assert_eq!(base.length, 3);
+        let Operation::VerwMem { source } = base.operation else {
+            panic!("expected VerwMem");
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::Rax));
+        assert_eq!(source.displacement, 0);
+
+        let disp8 = Memory::new(&[0x0f, 0x00, 0x68, 0xf8]).decode().unwrap();
+        assert_eq!(disp8.length, 4);
+        let Operation::VerwMem { source } = disp8.operation else {
+            panic!("expected VerwMem");
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::Rax));
+        assert_eq!(source.displacement, -8);
+
+        let sib = Memory::new(&[0x0f, 0x00, 0x6c, 0x91, 0x10])
+            .decode()
+            .unwrap();
+        assert_eq!(sib.length, 5);
+        let Operation::VerwMem { source } = sib.operation else {
+            panic!("expected VerwMem");
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::Rcx));
+        assert_eq!(source.index, Some(Register::Rdx));
+        assert_eq!((source.scale, source.displacement), (4, 0x10));
+
+        let disp32 = Memory::new(&[0x0f, 0x00, 0xab, 0x00, 0x01, 0x00, 0x00])
+            .decode()
+            .unwrap();
+        assert_eq!(disp32.length, 7);
+        assert!(matches!(disp32.operation, Operation::VerwMem { .. }));
+
+        // A lone REX without W extends the base (REX.B).
+        let rex = Memory::new(&[0x41, 0x0f, 0x00, 0x28]).decode().unwrap();
+        assert_eq!(rex.length, 4);
+        let Operation::VerwMem { source } = rex.operation else {
+            panic!("expected VerwMem");
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::R8));
+
+        // The bare register form is still `VerwGdt`.
+        let bare = Memory::new(&[0x0f, 0x00, 0xe8]).decode().unwrap();
+        assert!(matches!(bare.operation, Operation::VerwGdt));
+
+        for bytes in [
+            &[0x66, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0xf2, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0xf3, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0xf0, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0x2e, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0x64, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0x65, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0x67, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
+            &[0x48, 0x0f, 0x00, 0x28][..],
+            &[0x40, 0x48, 0x0f, 0x00, 0x28][..],
+            &[0x40, 0x66, 0x0f, 0x00, 0x28][..],
+            // the other memory members of the group stay unsupported
+            &[0x0f, 0x00, 0x00][..], // SLDT m16
+            &[0x0f, 0x00, 0x08][..], // STR m16
+            &[0x0f, 0x00, 0x10][..], // LLDT m16
+            &[0x0f, 0x00, 0x18][..], // LTR m16
+            &[0x0f, 0x00, 0x20][..], // VERR m16
+            &[0x0f, 0x00, 0x30][..], // reg = 6
+            &[0x0f, 0x00, 0x38][..], // reg = 7
+            // register forms other than the bare VERW AX
+            &[0x0f, 0x00, 0xe9][..],
+            &[0x0f, 0x00, 0xe0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        // Truncated forms fetch on demand and fail as memory errors, never as VerwMem.
+        for length in 1..7 {
+            let mut memory = Memory::new(&[0x0f, 0x00, 0x2d, 0x87, 0xee, 0xff, 0xff][..length]);
+            assert!(matches!(memory.decode(), Err(DecodeError::Memory(_))));
         }
     }
 

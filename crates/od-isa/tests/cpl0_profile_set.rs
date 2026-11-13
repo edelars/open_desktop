@@ -52201,3 +52201,420 @@ fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
     assert_eq!(state, before);
     assert_eq!(*cell.borrow(), before_cell);
 }
+
+// ---- S4-38L9G: `VERW m16` (`0F 00 /5`, memory operand, no prefix or a lone REX without W) in the CPL0
+// set. The 16-bit selector is read from the effective address (exactly two bytes, DS base 0 in
+// Long64); ZF is set when the selector (TI = 0, GDT) names a writable data segment reachable at CPL 0
+// and its RPL, the same check as the bare `VerwGdt`; only ZF changes. The buffer clearing of VERW is a
+// no-op in the model. TI = 1 (the LDT is not modeled) and a missing GDTR are refused with opcode 0x00.
+// Semantics from memory of SDM Vol.2 VERW, not re-checked against the primary source. ----
+
+/// `verw -0x1179(%rip)` (the S4-38L9F diagnostic boundary bytes; the operand is `x86_verw_sel`).
+const VERW_RIP: [u8; 7] = [0x0f, 0x00, 0x2d, 0x87, 0xee, 0xff, 0xff];
+const VERW_GDT_BASE: u64 = 0x5000;
+const VERW_SEL_ADDR: u64 = 0x6000;
+
+fn verw_state() -> LongModeState {
+    let mut state = board_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: VERW_GDT_BASE,
+        limit: 0x2f,
+    });
+    state.rflags |= FLAG_CF | FLAG_PF | FLAG_AF | FLAG_SF | FLAG_OF | (1 << 10);
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x0101_0101_0101_0101u64.wrapping_mul(index as u64 + 1);
+    }
+    state
+}
+
+/// GDT: entry 1 (0x08) execute/read code, entry 2 (0x10) writable data, entry 3 (0x18) read-only
+/// data, entry 4 (0x20) a system (TSS-like) descriptor, entry 5 (0x28) writable data with DPL 3.
+/// The selector is stored at `selector_at`, followed by a non-zero byte (exactly two are read).
+fn verw_memory_at(code: &[u8], selector: u16, selector_at: u64) -> BitsMemory {
+    let mut memory = BitsMemory::new(code);
+    for (entry, access) in [(1u64, 0x9au8), (2, 0x92), (3, 0x90), (4, 0x89), (5, 0xf2)] {
+        memory.data.insert(VERW_GDT_BASE + entry * 8 + 5, access);
+    }
+    for (index, byte) in selector.to_le_bytes().into_iter().enumerate() {
+        memory.data.insert(selector_at + index as u64, byte);
+    }
+    memory.data.insert(selector_at + 2, 0xff);
+    memory
+}
+
+fn verw_memory(code: &[u8], selector: u16) -> BitsMemory {
+    verw_memory_at(code, selector, VERW_SEL_ADDR)
+}
+
+fn run_verw(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_bts_set(state, memory)
+}
+
+/// The operand address of `VERW_RIP` at `RIP`: next RIP `0x1007` plus `-0x1179`, wrapped.
+fn verw_rip_operand() -> u64 {
+    (RIP + 7).wrapping_add(-0x1179i64 as u64)
+}
+
+#[test]
+fn verw_rip_relative_boundary_form_reads_the_selector_and_sets_zf_only() {
+    let selector_at = verw_rip_operand();
+    for (selector, zf) in [
+        (0x10u16, true), // writable data, DPL 0
+        (0x11, false),   // RPL 1 > DPL 0
+        (0x08, false),   // code
+        (0x18, false),   // read-only data
+        (0x20, false),   // system descriptor
+        (0x00, false),   // null
+        (0x03, false),   // null with RPL
+        (0x30, false),   // beyond the GDT limit
+        (0x28, true),    // DPL 3 data, CPL 0 <= 3
+        (0x2b, true),    // RPL 3 <= DPL 3
+        (0x2a, true),
+    ] {
+        for zf_before in [false, true] {
+            let mut state = verw_state();
+            if zf_before {
+                state.rflags |= FLAG_ZF;
+            }
+            let mut memory = verw_memory_at(&VERW_RIP, selector, selector_at);
+            let mut expected = state.clone();
+            let result = run_verw(&mut state, &mut memory).unwrap();
+            assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+            assert!(memory.writes.is_empty(), "VERW writes nothing");
+            assert_eq!(memory.reads[0], (selector_at, 2), "selector {selector:#x}");
+            expected.rip += 7;
+            expected.rflags = (expected.rflags & !FLAG_ZF) | if zf { FLAG_ZF } else { 0 };
+            assert_eq!(
+                state, expected,
+                "selector {selector:#x}, ZF before {zf_before}"
+            );
+        }
+    }
+}
+
+#[test]
+fn verw_reads_the_gdt_entry_only_when_the_selector_is_in_range_and_not_null() {
+    let selector_at = verw_rip_operand();
+    for (selector, descriptor_read) in [
+        (0x10u16, true),
+        (0x2b, true),
+        (0x00, false),
+        (0x03, false),
+        (0x30, false),
+        (0xfff8, false),
+    ] {
+        let mut state = verw_state();
+        let mut memory = verw_memory_at(&VERW_RIP, selector, selector_at);
+        run_verw(&mut state, &mut memory).unwrap();
+        let mut expected_reads = vec![(selector_at, 2)];
+        if descriptor_read {
+            expected_reads.push((VERW_GDT_BASE + u64::from(selector & !7), 8));
+        }
+        assert_eq!(memory.reads, expected_reads, "selector {selector:#x}");
+    }
+}
+
+#[test]
+fn verw_register_displacement_sib_and_rex_addressing_forms_read_the_selector() {
+    // (code, registers to set, expected operand address, instruction length)
+    let cases: [(&[u8], &[(Register, u64)], u64, u64); 6] = [
+        // verw (%rax)
+        (
+            &[0x0f, 0x00, 0x28],
+            &[(Register::Rax, VERW_SEL_ADDR)],
+            VERW_SEL_ADDR,
+            3,
+        ),
+        // verw -8(%rax)
+        (
+            &[0x0f, 0x00, 0x68, 0xf8],
+            &[(Register::Rax, VERW_SEL_ADDR + 8)],
+            VERW_SEL_ADDR,
+            4,
+        ),
+        // verw 0x100(%rbx)
+        (
+            &[0x0f, 0x00, 0xab, 0x00, 0x01, 0x00, 0x00],
+            &[(Register::Rbx, VERW_SEL_ADDR - 0x100)],
+            VERW_SEL_ADDR,
+            7,
+        ),
+        // verw 0x10(%rcx,%rdx,4)
+        (
+            &[0x0f, 0x00, 0x6c, 0x91, 0x10],
+            &[
+                (Register::Rcx, VERW_SEL_ADDR - 0x10 - 0x40),
+                (Register::Rdx, 0x10),
+            ],
+            VERW_SEL_ADDR,
+            5,
+        ),
+        // verw (%r8) (REX.B)
+        (
+            &[0x41, 0x0f, 0x00, 0x28],
+            &[(Register::R8, VERW_SEL_ADDR)],
+            VERW_SEL_ADDR,
+            4,
+        ),
+        // verw 0x6000 (SIB without base and index, disp32)
+        (
+            &[0x0f, 0x00, 0x2c, 0x25, 0x00, 0x60, 0x00, 0x00],
+            &[],
+            VERW_SEL_ADDR,
+            8,
+        ),
+    ];
+    for (code, registers, address, length) in cases {
+        for (selector, zf) in [(0x10u16, true), (0x08, false)] {
+            let mut state = verw_state();
+            for (register, value) in registers {
+                state.gpr[*register as usize] = *value;
+            }
+            let mut memory = verw_memory(code, selector);
+            let mut expected = state.clone();
+            let result = run_verw(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{code:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+            assert_eq!(memory.reads[0], (address, 2), "{code:02x?}");
+            assert!(memory.writes.is_empty());
+            expected.rip += length;
+            expected.rflags = (expected.rflags & !FLAG_ZF) | if zf { FLAG_ZF } else { 0 };
+            assert_eq!(state, expected, "{code:02x?} selector {selector:#x}");
+        }
+    }
+}
+
+#[test]
+fn verw_keeps_every_flag_but_zf_and_their_definedness() {
+    for flags in [0u64, ARITH, ARITH & !FLAG_ZF, FLAG_ZF | (1 << 10)] {
+        for selector in [0x10u16, 0x08] {
+            let mut state = verw_state();
+            state.rflags = 2 | IF | flags;
+            state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+            let before = state.clone();
+            let mut memory = verw_memory(&[0x0f, 0x00, 0x28], selector);
+            let result = run_verw(&mut state, &mut memory).unwrap();
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+            assert_eq!(
+                state.rflags & !FLAG_ZF,
+                before.rflags & !FLAG_ZF,
+                "flags {flags:#x}"
+            );
+            assert_eq!(state.rflags & FLAG_ZF != 0, selector == 0x10);
+        }
+    }
+}
+
+#[test]
+fn verw_selector_read_fault_leaves_the_state_and_memory_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(VERW_SEL_ADDR),
+    };
+    let mut state = verw_state();
+    state.rflags |= FLAG_ZF;
+    state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+    let before = state.clone();
+    let mut memory = verw_memory(&[0x0f, 0x00, 0x28], 0x10);
+    memory.read_fault = Some(fault.clone());
+    let data_before = memory.data.clone();
+    let result = run_verw(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.data, data_before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn verw_non_canonical_operand_is_gp0_or_ss0_without_a_read() {
+    for (code, register, vector) in [
+        (&[0x0f, 0x00, 0x28][..], Register::Rax, 13u8),
+        (&[0x0f, 0x00, 0x6d, 0x00][..], Register::Rbp, 12),
+        (&[0x0f, 0x00, 0x2c, 0x24][..], Register::Rsp, 12),
+    ] {
+        for value in [0x0000_8000_0000_0000u64, 0x7fff_ffff_ffff_ffff] {
+            let mut state = verw_state();
+            state.gpr[register as usize] = value;
+            let before = state.clone();
+            let mut memory = verw_memory(code, 0x10);
+            let result = run_verw(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                "{code:02x?} {value:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.reads.is_empty());
+        }
+    }
+}
+
+#[test]
+fn verw_descriptor_address_fault_leaves_the_state_unchanged() {
+    // The selector read succeeds, the descriptor address is not canonical: #GP(0), nothing is
+    // committed (neither RIP nor ZF).
+    let mut state = verw_state();
+    state.rflags |= FLAG_ZF;
+    state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: 0x0000_7fff_ffff_fffc,
+        limit: 0xffff,
+    });
+    let before = state.clone();
+    let mut memory = verw_memory(&[0x0f, 0x00, 0x28], 0x10);
+    let result = run_verw(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn verw_ldt_selector_and_missing_gdtr_are_refused_with_opcode_0_without_mutation() {
+    // TI = 1: the LDT is not modeled.
+    for selector in [0x04u16, 0x14, 0x0c, 0xffff] {
+        let mut state = verw_state();
+        state.rflags |= FLAG_ZF;
+        state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+        let before = state.clone();
+        let mut memory = verw_memory(&[0x0f, 0x00, 0x28], selector);
+        let result = run_verw(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x00 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+        assert_eq!(memory.reads, vec![(VERW_SEL_ADDR, 2)]);
+    }
+    let mut state = verw_state();
+    state.gdtr = None;
+    state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+    let before = state.clone();
+    let mut memory = verw_memory(&[0x0f, 0x00, 0x28], 0x10);
+    let result = run_verw(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x00 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn verw_with_prefixes_other_group_members_and_the_bare_form_are_refused_without_mutation() {
+    for code in [
+        &[0x66, 0x0f, 0x00, 0x28][..],
+        &[0xf2, 0x0f, 0x00, 0x28][..],
+        &[0xf3, 0x0f, 0x00, 0x28][..],
+        &[0xf0, 0x0f, 0x00, 0x28][..],
+        &[0x2e, 0x0f, 0x00, 0x28][..],
+        &[0x64, 0x0f, 0x00, 0x28][..],
+        &[0x65, 0x0f, 0x00, 0x28][..],
+        &[0x67, 0x0f, 0x00, 0x28][..],
+        &[0x48, 0x0f, 0x00, 0x28][..],
+        &[0x40, 0x48, 0x0f, 0x00, 0x28][..],
+        &[0x0f, 0x00, 0x20][..], // VERR m16
+        &[0x0f, 0x00, 0x00][..], // SLDT m16
+        &[0x0f, 0x00, 0x08][..], // STR m16
+        &[0x0f, 0x00, 0xe8][..], // bare VERW AX stays CPL3-only (`VerwGdt`)
+    ] {
+        let mut state = verw_state();
+        state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+        let before = state.clone();
+        let mut memory = verw_memory(code, 0x10);
+        let result = run_verw(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x00 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn verw_memory_form_stays_unsupported_outside_the_set_and_is_not_reachable_from_cpl3() {
+    for gdtr in [true, false] {
+        let mut state = legacy_state();
+        if gdtr {
+            state.gdtr = Some(od_isa::state::Gdtr {
+                base: VERW_GDT_BASE,
+                limit: 0x2f,
+            });
+        }
+        state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+        let before = state.clone();
+        let mut memory = verw_memory(&[0x0f, 0x00, 0x28], 0x10);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x00 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+    // The bare step entry point has no profile set either.
+    let mut state = legacy_state();
+    state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+    let before = state.clone();
+    let mut memory = verw_memory(&[0x0f, 0x00, 0x28], 0x10);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x00 })
+    );
+    assert_eq!(state, before);
+
+    // CPL3: the set rejects the entry before any fetch.
+    let mut state = verw_state();
+    let before = state.clone();
+    let mut memory = verw_memory(&VERW_RIP, 0x10);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

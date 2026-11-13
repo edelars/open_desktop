@@ -37323,6 +37323,14 @@ fn step_configured(
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
         }
+        // S4-38L9G: VERW m16 reads a 16-bit selector and checks its GDT descriptor (read-only);
+        // admitted only inside the CPL0 profile set at CPL0 in Long64 with a modeled GDTR.
+        Operation::VerwMem { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gdtr.is_some()
+        }
         // S4-38L7am: LTR r/m16 (register form) reads the TSS descriptor from the modeled GDT;
         // admitted only inside the CPL0 profile set at CPL0 in Long64 and only when a GDTR is
         // modeled (no TR value is invented).
@@ -50308,6 +50316,65 @@ fn step_configured(
         }
         Operation::VerwGdt => {
             let selector = state.gpr[Register::Rax as usize] as u16;
+            match verify_writable_gdt_selector(state, memory, context, selector) {
+                Ok(writable) => {
+                    const ZERO_FLAG: u64 = 1 << 6;
+                    state.rflags =
+                        (state.rflags & !ZERO_FLAG) | if writable { ZERO_FLAG } else { 0 };
+                }
+                Err(MemoryError::Architectural(fault)) => {
+                    return Ok(StepOutcome::Fault(fault));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Operation::VerwMem { source } => {
+            // S4-38L9G: `VERW m16`. Reads exactly two bytes at the effective address (DS, base 0
+            // in Long64; a non-canonical address or last byte is #GP(0), #SS(0) for an RSP/RBP
+            // base), then sets ZF from the GDT descriptor of the selector (writable data segment
+            // reachable at CPL 0 and RPL, as for `VerwGdt`). Only ZF changes (the other flags
+            // keep their value and definedness). The buffer-clearing side effect has no model
+            // and is a no-op. A selector the model cannot judge (TI = 1: the LDT is not
+            // modeled) is refused with the opcode before any mutation; so is a missing GDTR.
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x00
+                && instruction.prefixes.group1.is_none()
+                && instruction.prefixes.segment.is_none()
+                && !instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                && source.address_size == OperandSize::Qword;
+            if !exact_form || state.gdtr.is_none() {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let address = source.effective_address(state, next_rip);
+            let last = address.checked_add(1);
+            if !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+                let ss_based = matches!(
+                    source.base,
+                    long_decode::AddressBase::Register(Register::Rsp | Register::Rbp)
+                );
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if ss_based { 12 } else { 13 },
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let read_context = AccessContext {
+                origin: crate::memory::AccessOrigin::Explicit,
+                ..context
+            };
+            let selector = match memory.read_integer(address, read_context, OperandSize::Word) {
+                Ok(value) => value as u16,
+                Err(error) => return report_memory_error(error),
+            };
+            if selector & 4 != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             match verify_writable_gdt_selector(state, memory, context, selector) {
                 Ok(writable) => {
                     const ZERO_FLAG: u64 = 1 << 6;
