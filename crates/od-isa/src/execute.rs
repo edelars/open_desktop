@@ -37065,6 +37065,40 @@ fn step_configured(
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gpr[source as usize] as u16 & !3 == 0
         }
+        // S4-38L9D: `MOV ES/SS/DS, r16` (`[REX.B] 8E /r`, mod = 11) with any register but the bare
+        // AX forms: the null-selector load only, inside the CPL0 profile set at CPL0 in Long64.
+        // The decoder accepts REX.B only (length 3, no other prefix). ES/DS take 0..=3 (any RPL).
+        // SS takes exactly 0: a null SS selector with RPL != CPL is #GP on hardware (SDM, from
+        // memory), so RPL 1..=3 is refused, not modeled. SS keeps the S2-46 admission: a loaded SS
+        // cache, a clear interrupt shadow and IF = 0 (the one-instruction MOV SS shadow stays
+        // unobservable). A non-null selector (GDT read, descriptor checks) is refused with the
+        // opcode and nothing mutated.
+        Operation::LoadSegmentSelectorReg { sreg, source } => {
+            let rex_b = instruction.prefixes
+                == Prefixes {
+                    rex: Some(0x41),
+                    ..Prefixes::default()
+                };
+            let selector = state.gpr[source as usize] as u16;
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8e
+                && (instruction.length == 2 && instruction.prefixes == Prefixes::default()
+                    || instruction.length == 3 && rex_b)
+                && control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && match sreg {
+                    0 | 3 => selector & !3 == 0,
+                    2 => {
+                        selector == 0
+                            && state.ss_cache.is_some()
+                            && state.ss_selector.is_some()
+                            && state.sti_shadow == Some(crate::StiShadow::Clear)
+                            && state.rflags & (1 << 9) == 0
+                    }
+                    _ => false,
+                }
+        }
         Operation::LoadNullDsSelector
         | Operation::LoadNullEsSelector
         | Operation::LoadNullSsSelector => {
@@ -50355,6 +50389,26 @@ fn step_configured(
         Operation::LoadGsSelectorReg { source } => {
             state.gs_selector = state.gpr[source as usize] as u16;
             state.gs_unusable = true;
+        }
+        // S4-38L9D: the admission above leaves only the null selector; the base and any modeled
+        // cache stay untouched. MOV SS opens the one-instruction interrupt shadow.
+        Operation::LoadSegmentSelectorReg { sreg, source } => {
+            let selector = state.gpr[source as usize] as u16;
+            match sreg {
+                0 => {
+                    state.es_selector = selector;
+                    state.es_unusable = true;
+                }
+                2 => {
+                    state.ss_selector = Some(selector);
+                    state.ss_unusable = true;
+                    state.sti_shadow = Some(crate::StiShadow::Blocking);
+                }
+                _ => {
+                    state.ds_selector = selector;
+                    state.ds_unusable = true;
+                }
+            }
         }
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
