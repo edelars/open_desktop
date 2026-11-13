@@ -2202,7 +2202,9 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// the exact `66 ED` (`IN AX, DX`) and `66 EF` (`OUT DX, AX`) forms (port = DX[15:0], one
     /// width-2 access through [`crate::PortIo::read_u16`] / [`crate::PortIo::write_u16`]; the PCI
     /// configuration ports `0xCF8..=0xCFF` stay with `with_pci_config` and are refused without it).
-    /// The 32-bit forms `ED`/`EF` are not admitted by this member.
+    /// Since S4-38L9u the bare `ED` (`IN EAX, DX`) and `EF` (`OUT DX, EAX`) forms (no prefix, no
+    /// REX; one width-4 access through [`crate::PortIo::read_u32`] / [`crate::PortIo::write_u32`],
+    /// same PCI port exclusion) are admitted by this member too.
     /// They execute only through [`run_with_cpl0_profile_set_and_pio`]; any
     /// other entry point, and a set built without this call, leaves them
     /// `Unsupported` without touching a port.
@@ -20160,7 +20162,8 @@ fn commit_pio_u8<P: crate::PortIo + ?Sized>(
     PioU8Commit::Retired
 }
 
-/// S4-38L9r: whether the word `IN`/`OUT` DX forms go to the port callback. They need the byte PIO
+/// S4-38L9r (word) and S4-38L9u (dword): whether the word/dword `IN`/`OUT` DX forms go to the
+/// port callback. They need the byte PIO
 /// member (`bridge.byte`). The PCI configuration ports `0xCF8..=0xCFF` are never sent to the
 /// callback: they stay with the PCI configuration member (its own rules, unchanged) and are
 /// `Unsupported` without it, as before.
@@ -20203,6 +20206,44 @@ fn commit_pio_u16<P: crate::PortIo + ?Sized>(
             size: OperandSize::Word,
         } => {
             if let Err(error) = pio.write_u16(port, state.gpr[Register::Rax as usize] as u16) {
+                return PioU8Commit::PortIo { opcode, error };
+            }
+        }
+        _ => return PioU8Commit::Unsupported { opcode },
+    }
+    state.rip = state.rip.wrapping_add(u64::from(instruction.length));
+    PioU8Commit::Retired
+}
+
+/// S4-38L9u: commit of the exact bare `ED` (`IN EAX, DX`) / `EF` (`OUT DX, EAX`) forms (length 1,
+/// no prefix at all; the decoder refused every prefix and any REX, REX.W included: there is no
+/// 64-bit port I/O). The port is DX[15:0] and is called once with width 4. `IN` writes EAX and
+/// zero-extends into RAX[63:32] (a 32-bit register write; SDM, from memory). The port callback
+/// runs before any state change, so a failure leaves RIP and RAX untouched. Flags are not touched.
+fn commit_pio_u32<P: crate::PortIo + ?Sized>(
+    state: &mut LongModeState,
+    instruction: &long_decode::Instruction,
+    pio: &mut P,
+) -> PioU8Commit<P::Error> {
+    let opcode = instruction.opcode.byte;
+    if instruction.length != 1 || instruction.prefixes != Prefixes::default() {
+        return PioU8Commit::Unsupported { opcode };
+    }
+    let port = state.gpr[Register::Rdx as usize] as u16;
+    match instruction.operation {
+        Operation::InDx {
+            size: OperandSize::Dword,
+        } => match pio.read_u32(port) {
+            Ok(value) => state.write(
+                RegisterView::low(Register::Rax, OperandSize::Dword),
+                u64::from(value),
+            ),
+            Err(error) => return PioU8Commit::PortIo { opcode, error },
+        },
+        Operation::OutDx {
+            size: OperandSize::Dword,
+        } => {
+            if let Err(error) = pio.write_u32(port, state.gpr[Register::Rax as usize] as u32) {
                 return PioU8Commit::PortIo { opcode, error };
             }
         }
@@ -20767,6 +20808,18 @@ impl<P: crate::PortIo> crate::PortIo for PortErrorCapture<'_, P> {
 
     fn write_u16(&mut self, port: u16, value: u16) -> Result<(), ()> {
         self.port.write_u16(port, value).map_err(|error| {
+            self.error = Some(error);
+        })
+    }
+
+    fn read_u32(&mut self, port: u16) -> Result<u32, ()> {
+        self.port.read_u32(port).map_err(|error| {
+            self.error = Some(error);
+        })
+    }
+
+    fn write_u32(&mut self, port: u16, value: u32) -> Result<(), ()> {
+        self.port.write_u32(port, value).map_err(|error| {
             self.error = Some(error);
         })
     }
@@ -33756,6 +33809,26 @@ fn step_configured(
                 Err(fault) => return Ok(StepOutcome::Fault(fault)),
             }
             return Ok(StepOutcome::Advanced);
+        }
+        Operation::InDx {
+            size: OperandSize::Dword,
+        }
+        | Operation::OutDx {
+            size: OperandSize::Dword,
+        } if pio_u8.is_some_and(|bridge| {
+            word_port_io_admitted(bridge, state.gpr[Register::Rdx as usize] as u16)
+        }) =>
+        {
+            // S4-38L9u: the bare dword forms, same admission as the word forms.
+            let bridge = pio_u8.expect("guarded by the match arm").port;
+            return Ok(
+                match commit_pio_u32(state, &instruction, &mut **bridge.borrow_mut()) {
+                    PioU8Commit::Retired => StepOutcome::Advanced,
+                    PioU8Commit::Unsupported { opcode } | PioU8Commit::PortIo { opcode, .. } => {
+                        StepOutcome::Unsupported { opcode }
+                    }
+                },
+            );
         }
         Operation::InDx {
             size: OperandSize::Word,
