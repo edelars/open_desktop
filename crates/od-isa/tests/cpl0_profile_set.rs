@@ -40246,3 +40246,497 @@ fn a_cell_the_caller_still_holds_borrowed_is_refused_at_entry_without_a_panic() 
         1
     );
 }
+
+// ---- S4-38L9e: INT3 (#BP, vector 3) through the IDT in the CPL0 set ----
+
+const INT3_VECTOR: u8 = 3;
+const INT3_GATE: u64 = PF_IDT + INT3_VECTOR as u64 * 16;
+const INT3_HANDLER: u64 = RIP + 0x100;
+
+fn int3_set() -> Cpl0ProfileSet<'static> {
+    base().with_int3()
+}
+
+/// A CPL0 state with `INT3; NOP` at `RIP`; IDT gate 3 is the interrupt gate Linux installs
+/// (type 0xE, DPL 3, IST 0) to `INT3_HANDLER`, the handler is `IRETQ`; GDT slot 2 is `CODE64`.
+fn int3_state() -> (LongModeState, LretqMemory) {
+    let (state, mut memory) = pf_state();
+    let mut code = vec![0xcc, 0x90];
+    code.resize((INT3_HANDLER - RIP) as usize, 0x90);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    ext_put_gate(
+        &mut memory,
+        INT3_VECTOR,
+        pf_gate_bytes(INT3_HANDLER, 0x10, 0, 0xee),
+    );
+    (state, memory)
+}
+
+fn run_int3(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    set: &Cpl0ProfileSet<'_>,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+fn int3_deliver(state: &mut LongModeState, memory: &mut LretqMemory) -> od_isa::Cpl0Int3Delivery {
+    od_isa::deliver_int3_cpl0_set(state, memory, RIP + 1, context(PrivilegeLevel::Ring0))
+}
+
+#[test]
+fn int3_runs_through_the_gate_writes_the_frame_with_the_next_rip_and_retires() {
+    let (mut state, mut memory) = int3_state();
+    // Live IF, TF, RF, AC, ZF, CF: 0x2 | 0x1 | 0x40 | IF 0x200 | TF 0x100 | RF 0x10000 |
+    // AC 0x40000 = 0x50343.
+    state.rflags = 0x5_0343;
+    state.cr2 = Some(0xdead_0000);
+    let before = state.clone();
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1, "the INT3 retires");
+    // Hand-computed: RSP 0x11800 is aligned; the frame occupies 0x117d8..0x11800 (five qwords).
+    // Highest first: SS 0x18, old RSP 0x11800, RFLAGS without RF (IF kept) = 0x40343, CS 0x10,
+    // RIP = the address after the INT3 = 0x1001.
+    assert_eq!(pf_qword(&memory, 0x1_17f8), 0x18);
+    assert_eq!(pf_qword(&memory, 0x1_17f0), 0x1_1800);
+    assert_eq!(pf_qword(&memory, 0x1_17e8), 0x4_0343);
+    assert_eq!(pf_qword(&memory, 0x1_17e0), 0x10);
+    assert_eq!(pf_qword(&memory, 0x1_17d8), 0x1001);
+    assert_eq!(
+        memory.writes, 5,
+        "five stores, no error code, no Accessed write"
+    );
+    assert_eq!(pf_qword(&memory, 0x1_17d0), 0);
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(_, bytes, origin)| bytes.len() == 8 && *origin == AccessOrigin::ImplicitStack)
+    );
+    assert_eq!(
+        memory.reads,
+        vec![
+            (INT3_GATE, 8, AccessOrigin::DescriptorTable),
+            (INT3_GATE + 8, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    // CPU: handler, RSP below the frame, IF (interrupt gate), TF and RF cleared, AC/ZF/CF kept,
+    // CR2 untouched, shadow still clear.
+    let mut expected = before.clone();
+    expected.rip = INT3_HANDLER;
+    expected.gpr[Register::Rsp as usize] = 0x1_17d8;
+    expected.rflags = 0x4_0043;
+    assert_eq!(state, expected);
+    assert_eq!(state.cr2, Some(0xdead_0000));
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.ss_selector, Some(0x18));
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+}
+
+#[test]
+fn int3_through_an_interrupt_gate_clears_if_and_through_a_trap_gate_keeps_it() {
+    for (attributes, if_after) in [(0x8e, 0), (0xee, 0), (0x8f, IF), (0xef, IF)] {
+        let (mut state, mut memory) = int3_state();
+        ext_put_gate(
+            &mut memory,
+            INT3_VECTOR,
+            pf_gate_bytes(INT3_HANDLER, 0x10, 0, attributes),
+        );
+        state.rflags = 0x4_0243;
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+        assert_eq!(result.instructions_executed, 1, "{attributes:#x}");
+        assert_eq!(state.rip, INT3_HANDLER, "{attributes:#x}");
+        assert_eq!(state.rflags & IF, if_after, "{attributes:#x}");
+        // The saved image keeps IF = 1 whatever the gate does to the live flags.
+        assert_eq!(pf_qword(&memory, 0x1_17e8), 0x4_0243, "{attributes:#x}");
+    }
+}
+
+#[test]
+fn int3_software_check_admits_every_gate_dpl_at_cpl0() {
+    // CPL 0 <= DPL for 0..=3: no DPL makes the delivery fail.
+    for dpl in 0..=3u8 {
+        let (mut state, mut memory) = int3_state();
+        ext_put_gate(
+            &mut memory,
+            INT3_VECTOR,
+            pf_gate_bytes(INT3_HANDLER, 0x10, 0, 0x8e | (dpl << 5)),
+        );
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+        assert_eq!(result.instructions_executed, 1, "DPL {dpl}");
+        assert_eq!(state.rip, INT3_HANDLER, "DPL {dpl}");
+    }
+}
+
+#[test]
+fn int3_then_the_handler_iretq_resumes_after_the_instruction() {
+    let (mut state, mut memory) = int3_state();
+    // RF = 0 in the live flags, so the round trip restores them exactly.
+    state.rflags = 0x4_0243;
+    let start = state.clone();
+    // INT3, IRETQ, then the NOP after the INT3.
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 2);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = start.clone();
+    expected.rip = RIP + 1;
+    assert_eq!(state, expected);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP);
+    assert_eq!(state.rflags & IF, IF);
+    // The NOP after the INT3 runs once: the INT3 is neither repeated nor skipped over.
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 2);
+}
+
+#[test]
+fn int3_stays_unsupported_without_its_member_and_touches_nothing() {
+    for set in [base(), base().with_halt(&HaltProfile::Long64V1)] {
+        let (mut state, mut memory) = int3_state();
+        let before = state.clone();
+        let ram = memory.ram.clone();
+        let result = run_int3(&mut state, &mut memory, &set, 4);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xcc });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.ram, ram);
+        assert_eq!(memory.writes, 0);
+        assert!(memory.reads.is_empty(), "no gate is read");
+    }
+}
+
+#[test]
+fn int3_stays_unsupported_in_bare_run_and_step() {
+    // The bare entries model no control registers; `Memory` fails every read and write, so the
+    // test also shows that no gate is read and no frame is stored.
+    let mut state = board_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    let mut memory = Memory::code(&[0xcc, 0x90]);
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 4),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xcc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let outcome = od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
+    assert_eq!(
+        outcome,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0xcc })
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn int3_prefixed_forms_are_unsupported_without_mutation() {
+    for prefix in [0x66u8, 0xf3, 0xf2, 0x48, 0x40, 0x41, 0x2e, 0x64, 0x67, 0xf0] {
+        let (mut state, mut memory) = int3_state();
+        memory.code.insert(0, prefix);
+        let before = state.clone();
+        let ram = memory.ram.clone();
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 4);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xcc },
+            "{prefix:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{prefix:#x}");
+        assert_eq!(state, before, "{prefix:#x}");
+        assert_eq!(memory.ram, ram, "{prefix:#x}");
+        assert_eq!(memory.writes, 0, "{prefix:#x}");
+        assert!(memory.reads.is_empty(), "{prefix:#x}");
+    }
+}
+
+#[test]
+fn int3_at_cpl3_is_rejected_before_any_fetch() {
+    let (mut state, mut memory) = int3_state();
+    let before = state.clone();
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &int3_set(),
+        None,
+        || false,
+    );
+    assert_eq!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege));
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    assert!(memory.reads.is_empty());
+}
+
+/// Run the `INT3` after `tweak` and expect the stop `Unsupported { opcode: 0xcc }` with no write
+/// and no CPU change.
+fn assert_int3_stop(tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory), label: &str) {
+    let (mut state, mut memory) = int3_state();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 4);
+    assert_eq!(
+        exit(&result),
+        &RunExit::Unsupported { opcode: 0xcc },
+        "{label}"
+    );
+    assert_eq!(result.instructions_executed, 0, "{label}");
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+#[test]
+fn int3_stops_without_a_write_on_a_gate_it_does_not_model() {
+    let put = |memory: &mut LretqMemory, gate| ext_put_gate(memory, INT3_VECTOR, gate);
+    assert_int3_stop(|state, _| state.idtr = None, "no IDTR");
+    assert_int3_stop(
+        |state, _| state.idtr.as_mut().unwrap().limit = INT3_VECTOR as u16 * 16 + 14,
+        "limit one byte short of the gate",
+    );
+    assert_int3_stop(
+        |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x10, 0, 0x0e)),
+        "P = 0",
+    );
+    assert_int3_stop(
+        |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x10, 0, 0x00)),
+        "an all-zero gate",
+    );
+    for attributes in [0x8c, 0x85, 0x8d, 0x9e, 0x80] {
+        assert_int3_stop(
+            |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x10, 0, attributes)),
+            &format!("type/attributes {attributes:#x}"),
+        );
+    }
+    for ist in 1..=7u8 {
+        assert_int3_stop(
+            |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x10, ist, 0xee)),
+            &format!("IST {ist}"),
+        );
+    }
+    assert_int3_stop(
+        |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x14, 0, 0xee)),
+        "selector with the TI bit",
+    );
+    assert_int3_stop(
+        |_, memory| put(memory, pf_gate_bytes(INT3_HANDLER, 0x20, 0, 0xee)),
+        "selector beyond the GDT",
+    );
+    assert_int3_stop(
+        |_, memory| memory.put(LRETQ_GDT + 0x10, CODE64 | (3 << 45)),
+        "target descriptor with DPL 3",
+    );
+    assert_int3_stop(|state, _| state.gdtr = None, "no GDTR");
+    assert_int3_stop(|state, _| state.cs_cache = None, "no CS cache");
+    assert_int3_stop(
+        |state, _| state.gpr[Register::Rsp as usize] = 0x2f,
+        "RSP below the frame size",
+    );
+    assert_int3_stop(
+        |state, _| state.gpr[Register::Rsp as usize] = 0xffff_8000_0000_0010,
+        "non-canonical stack",
+    );
+}
+
+#[test]
+fn int3_stops_under_a_mov_ss_shadow_and_is_not_reached_by_a_halted_cpu() {
+    // Blocking with IF = 0 is the MOV SS shadow, which the set admits at entry.
+    assert_int3_stop(
+        |state, _| {
+            state.rflags &= !IF;
+            state.sti_shadow = Some(StiShadow::Blocking);
+        },
+        "MOV SS shadow",
+    );
+    // A halted CPU never reaches the instruction (the run is rejected at entry).
+    let (mut state, mut memory) = int3_state();
+    state.activity = Some(CpuActivity::Halted);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &int3_set(),
+        None,
+        || false,
+    );
+    assert_eq!(result, Err(Cpl0ProfileSetInputError::NotRunning));
+}
+
+#[test]
+fn int3_reports_a_failed_frame_store_as_the_fault_of_the_instruction_and_changes_nothing() {
+    // The first store (SS, the highest word) fails: nothing is stored. A later store failing
+    // leaves the words already stored below the old RSP (dead stack); the CPU never changes.
+    for failing in 1..=5usize {
+        let (mut state, mut memory) = int3_state();
+        memory.fail_write_number = Some(failing);
+        let before = state.clone();
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+        let address = PF_RSP - 8 * failing as u64;
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(address),
+            }),
+            "store {failing}"
+        );
+        assert_eq!(result.instructions_executed, 0, "store {failing}");
+        assert_eq!(state, before, "store {failing}");
+        assert_eq!(memory.write_log.len(), failing - 1, "store {failing}");
+        assert!(
+            memory.write_log.iter().all(|(a, _, _)| *a < PF_RSP),
+            "store {failing}"
+        );
+    }
+    // The Accessed-bit write of the target descriptor is the sixth store.
+    let (mut state, mut memory) = int3_state();
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    memory.fail_write_number = Some(6);
+    let before = state.clone();
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+    assert!(matches!(exit(&result), RunExit::Fault(_)), "{result:?}");
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn int3_reports_an_unreadable_gate_or_descriptor_as_a_fault_and_writes_nothing() {
+    for page in [PF_IDT, LRETQ_GDT] {
+        let (mut state, mut memory) = int3_state();
+        memory.fault_pages = vec![page];
+        let before = state.clone();
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+        assert!(matches!(exit(&result), RunExit::Fault(_)), "{page:#x}");
+        assert_eq!(result.instructions_executed, 0, "{page:#x}");
+        assert_eq!(state, before, "{page:#x}");
+        assert_eq!(memory.writes, 0, "{page:#x}");
+    }
+}
+
+#[test]
+fn int3_sets_the_target_descriptor_accessed_bit_after_the_frame() {
+    let (mut state, mut memory) = int3_state();
+    memory.put(LRETQ_GDT + 0x10, CODE64 & !(1 << 40));
+    let result = run_int3(&mut state, &mut memory, &int3_set(), 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pf_qword(&memory, LRETQ_GDT + 0x10), CODE64);
+    assert_eq!(memory.writes, 6);
+    let last = memory.write_log.last().unwrap();
+    assert_eq!(
+        (last.0, last.1.len(), last.2),
+        (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable)
+    );
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+}
+
+#[test]
+fn int3_delivery_function_reports_typed_refusals_without_any_write() {
+    use od_isa::Cpl0Int3Refusal as R;
+    let check = |tweak: &dyn Fn(&mut LongModeState, &mut LretqMemory), expected: R| {
+        let (mut state, mut memory) = int3_state();
+        tweak(&mut state, &mut memory);
+        let before = state.clone();
+        let delivered = int3_deliver(&mut state, &mut memory);
+        assert_eq!(delivered, od_isa::Cpl0Int3Delivery::Refused(expected));
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    };
+    let gate = |attributes: u8, ist: u8| pf_gate_bytes(INT3_HANDLER, 0x10, ist, attributes);
+    check(
+        &|state, _| state.activity = Some(CpuActivity::Halted),
+        R::ActivityOutsideProfile,
+    );
+    check(
+        &|state, _| state.sti_shadow = Some(StiShadow::Blocking),
+        R::StiShadowActive,
+    );
+    check(&|state, _| state.sti_shadow = None, R::StiShadowActive);
+    check(&|state, _| state.idtr = None, R::MissingIdtr);
+    check(
+        &|_, memory| ext_put_gate(memory, INT3_VECTOR, gate(0x0e, 0)),
+        R::GateNotPresent,
+    );
+    check(
+        &|_, memory| ext_put_gate(memory, INT3_VECTOR, gate(0xee, 2)),
+        R::UnsupportedIst(2),
+    );
+    check(
+        &|_, memory| ext_put_gate(memory, INT3_VECTOR, gate(0x8c, 0)),
+        R::InvalidGateType(0x8c),
+    );
+    // CPL3 context: refused before the IDT is read.
+    let (mut state, mut memory) = int3_state();
+    let before = state.clone();
+    let delivered = od_isa::deliver_int3_cpl0_set(
+        &mut state,
+        &mut memory,
+        RIP + 1,
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0Int3Delivery::Refused(R::NotRing0Long64)
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty());
+}
+
+#[test]
+fn int3_delivery_function_saves_the_given_return_rip_and_reports_the_trap_gate() {
+    let (mut state, mut memory) = int3_state();
+    ext_put_gate(
+        &mut memory,
+        INT3_VECTOR,
+        pf_gate_bytes(INT3_HANDLER, 0x10, 0, 0x8f),
+    );
+    let delivered = od_isa::deliver_int3_cpl0_set(
+        &mut state,
+        &mut memory,
+        0x1234_5678,
+        context(PrivilegeLevel::Ring0),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0Int3Delivery::Delivered {
+            target_rip: INT3_HANDLER,
+            new_rsp: PF_RSP - 40,
+            trap_gate: true,
+        }
+    );
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), 0x1234_5678);
+}
+
+#[test]
+fn the_external_interrupt_path_keeps_refusing_a_trap_gate_next_to_the_int3_member() {
+    let (mut state, mut memory) = ext_state();
+    ext_put_gate(
+        &mut memory,
+        EXT_VECTOR,
+        pf_gate_bytes(EXT_HANDLER, 0x10, 0, 0xef),
+    );
+    assert_eq!(
+        ext_deliver(&mut state, &mut memory),
+        od_isa::Cpl0ExternalInterruptDelivery::Refused(
+            od_isa::Cpl0ExternalInterruptRefusal::TrapGateNotSupported
+        )
+    );
+}

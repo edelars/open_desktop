@@ -565,6 +565,8 @@ struct ResolvedGate {
     descriptor: [u8; 8],
     descriptor_address: u64,
     trap_gate: bool,
+    /// The gate DPL (attribute byte bits 5..=6), checked only by the software `INT n` family.
+    dpl: u8,
 }
 
 /// Read and check the gate of `vector` and its target code descriptor: no write, no change of
@@ -685,6 +687,7 @@ fn resolve_cpl0_gate(
         descriptor,
         descriptor_address,
         trap_gate,
+        dpl: (attributes >> 5) & 3,
     })
 }
 
@@ -792,6 +795,7 @@ macro_rules! impl_from_gate_refusal {
 }
 impl_from_gate_refusal!(Cpl0PageFaultRefusal);
 impl_from_gate_refusal!(Cpl0ExternalInterruptRefusal);
+impl_from_gate_refusal!(Cpl0Int3Refusal);
 
 /// Deliver a synchronous page fault of the Long64 CPL0 profile set through the IDT gate of
 /// vector 14 (S4-38L5c): CPL0 to CPL0, interrupt gate (type 0xE) or trap gate (0xF), IST 0.
@@ -1050,6 +1054,178 @@ fn external_gate_failure(failure: GateFailure) -> Cpl0ExternalInterruptDelivery 
                 }
             };
             Cpl0ExternalInterruptDelivery::Aborted { phase, cause }
+        }
+    }
+}
+
+/// Why [`deliver_int3_cpl0_set`] refused to deliver. A refusal happens before any memory write:
+/// the CPU state and the guest memory are as they were (only the IDT and GDT reads preceded
+/// it). Every refusal is a stop of the caller, never a substitute delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0Int3Refusal {
+    NotRing0Long64,
+    /// The CPU is not `Running` (halted, shut down, or unknown).
+    ActivityOutsideProfile,
+    /// The one-instruction interrupt shadow (`STI` or `MOV SS`) is active (or unknown). The
+    /// model does not decide what a software trap does under it; it stops.
+    StiShadowActive,
+    MissingCurrentSelectors,
+    InvalidCurrentCodeSegment,
+    MissingIdtr,
+    MissingGdtr,
+    /// The gate of vector 3 (offset 48..=63) lies beyond the IDT limit. The CPU would raise
+    /// `#GP` with the IDT selector error code (3 * 8 + 2); this is not delivered.
+    GateBeyondIdtLimit,
+    NonCanonicalIdtSpan,
+    /// Gate P = 0 (the CPU would raise `#NP`); not delivered.
+    GateNotPresent,
+    /// The gate is not an interrupt gate (0xE) or a trap gate (0xF), or its S bit is set.
+    /// Carries the raw type/attribute byte.
+    InvalidGateType(u8),
+    /// The gate asks for an interrupt stack table entry (IST 1..=7); not modeled.
+    UnsupportedIst(u8),
+    GateReservedBitsSet,
+    InvalidTargetSelector,
+    TargetBeyondGdtLimit,
+    NonCanonicalGdtSpan,
+    InvalidTargetCodeDescriptor,
+    NonCanonicalTargetRip,
+    StackAddressOverflow,
+    NonCanonicalStackSpan,
+    /// The software-interrupt DPL check failed (CPL > gate DPL: the CPU would raise `#GP` with
+    /// the IDT selector error code 3 * 8 + 2). Unreachable at CPL0 (every DPL is >= 0); kept
+    /// so that the check exists and is tested where the model one day runs another CPL.
+    GateDplBelowCpl,
+}
+
+/// Where [`deliver_int3_cpl0_set`] failed on a memory access.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cpl0Int3Phase {
+    IdtGateRead,
+    TargetCodeDescriptorRead,
+    StackWrite { slot: InterruptFrameSlot },
+    TargetCodeDescriptorAccessedWrite,
+}
+
+/// Result of [`deliver_int3_cpl0_set`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Cpl0Int3Delivery {
+    /// The frame is on the stack and CS, RIP, RSP and RFLAGS are committed. `trap_gate` is true
+    /// for gate type 0xF (IF left as it was); for 0xE IF is cleared. The caller retires the
+    /// `INT3`.
+    Delivered {
+        target_rip: u64,
+        new_rsp: u64,
+        trap_gate: bool,
+    },
+    /// Nothing was written and the CPU state is unchanged.
+    Refused(Cpl0Int3Refusal),
+    /// A memory access of the delivery failed (the caller reports it as the failed access of the
+    /// `INT3`). The CPU state is unchanged, but frame words already stored stay in memory: they
+    /// lie below the old RSP (dead stack). With the frame inside one page the first store
+    /// decides, so nothing is stored then.
+    Aborted {
+        phase: Cpl0Int3Phase,
+        cause: MemoryError,
+    },
+}
+
+/// The software-interrupt gate check of `INT n` / `INT3`: the current privilege level must not
+/// be numerically greater than the gate DPL (Intel SDM Vol. 3, 6.12.1.1 and the `INT n`
+/// pseudocode, from memory: a hardware interrupt or exception does not make this check).
+const fn software_gate_dpl_ok(cpl: u8, gate_dpl: u8) -> bool {
+    cpl <= gate_dpl
+}
+
+/// Deliver the software breakpoint `#BP` (vector 3) of `INT3` (`CC`) in the Long64 CPL0 profile
+/// set through its IDT gate (S4-38L9e): CPL0 to CPL0, interrupt gate (type 0xE, what Linux
+/// installs: `SYSG(X86_TRAP_BP, asm_exc_int3)` = `GATE_INTERRUPT`, DPL 3, IST 0, in
+/// `arch/x86/kernel/idt.c`) or trap gate (0xF), IST 0. `return_rip` is the address of the NEXT
+/// instruction (the `INT3` has length 1): a trap saves the address after the instruction, so
+/// the handler returns past it. The caller runs the instruction at a boundary, retires it on
+/// `Delivered` and does not otherwise change RIP.
+///
+/// Refused before any write: not Long64 CPL0, the CPU not `Running`, the STI shadow not `Clear`,
+/// a gate that is not present or not type 0xE/0xF, IST != 0, a software DPL violation, and the
+/// same descriptor, selector and stack conditions as [`deliver_page_fault_cpl0_set`]. A
+/// `#GP`/`#NP` the CPU would raise for these is not delivered (the caller stops).
+///
+/// Frame (IA-32e, the same five qwords as an external interrupt, no error code): RSP is
+/// aligned down to 16, then SS, old RSP, RFLAGS, CS and `return_rip` are stored downwards. RFLAGS
+/// in the frame is the live RFLAGS with RF cleared and bit 1 set (a trap does not set RF; IF is
+/// saved as it is). After the entry: CS = the gate selector, RIP = the gate offset, RSP = the
+/// frame, SS unchanged, live RFLAGS with TF, NT, RF and VM cleared (AC kept) and IF cleared for
+/// an interrupt gate only. CR2 is untouched.
+///
+/// SDM, from memory, not checked against the text: `#BP` is a trap taken after the `INT3` with
+/// the saved RIP of the next instruction (Vol. 3, 6.15 exception table); the IF rule of the two
+/// gate types (6.12.1.3); the DPL check of the software form (6.12.1.1); the frame layout as for
+/// the other IA-32e entries.
+pub fn deliver_int3_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    return_rip: u64,
+    context: AccessContext,
+) -> Cpl0Int3Delivery {
+    use Cpl0Int3Refusal as Refusal;
+    let refuse = Cpl0Int3Delivery::Refused;
+    if context.mode != InstructionMode::Long64 || context.privilege != PrivilegeLevel::Ring0 {
+        return refuse(Refusal::NotRing0Long64);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return refuse(Refusal::ActivityOutsideProfile);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return refuse(Refusal::StiShadowActive);
+    }
+    let gate = match resolve_cpl0_gate(state, memory, context, 3) {
+        Ok(gate) => gate,
+        Err(failure) => return int3_gate_failure(failure),
+    };
+    if !software_gate_dpl_ok(0, gate.dpl) {
+        return refuse(Refusal::GateDplBelowCpl);
+    }
+    let saved_rflags = (state.rflags & !(1 << 16)) | (1 << 1);
+    match commit_cpl0_gate(
+        state,
+        memory,
+        context,
+        &gate,
+        saved_rflags,
+        return_rip,
+        None,
+    ) {
+        Ok((target_rip, new_rsp)) => Cpl0Int3Delivery::Delivered {
+            target_rip,
+            new_rsp,
+            trap_gate: gate.trap_gate,
+        },
+        Err(failure) => int3_gate_failure(failure),
+    }
+}
+
+fn int3_gate_failure(failure: GateFailure) -> Cpl0Int3Delivery {
+    match failure {
+        GateRefused(refusal) => Cpl0Int3Delivery::Refused(refusal.into()),
+        GateAborted { phase, cause } => {
+            const SLOTS: [InterruptFrameSlot; 5] = [
+                InterruptFrameSlot::OldSs,
+                InterruptFrameSlot::OldRsp,
+                InterruptFrameSlot::OldRflags,
+                InterruptFrameSlot::OldCs,
+                InterruptFrameSlot::OldRip,
+            ];
+            let phase = match phase {
+                GateAbortPhase::IdtGateRead => Cpl0Int3Phase::IdtGateRead,
+                GateAbortPhase::TargetCodeDescriptorRead => Cpl0Int3Phase::TargetCodeDescriptorRead,
+                GateAbortPhase::StackWrite(index) => {
+                    Cpl0Int3Phase::StackWrite { slot: SLOTS[index] }
+                }
+                GateAbortPhase::TargetCodeDescriptorAccessedWrite => {
+                    Cpl0Int3Phase::TargetCodeDescriptorAccessedWrite
+                }
+            };
+            Cpl0Int3Delivery::Aborted { phase, cause }
         }
     }
 }
@@ -1367,6 +1543,21 @@ mod tests {
     use super::*;
     use crate::OperandSize;
     use crate::memory::{AccessKind, ArchitecturalFault};
+
+    #[test]
+    fn the_software_gate_dpl_check_needs_cpl_not_above_the_gate_dpl() {
+        // Intel SDM Vol. 3, 6.12.1.1 (from memory): INT n / INT3 fault when CPL > gate DPL.
+        for cpl in 0..=3u8 {
+            for dpl in 0..=3u8 {
+                assert_eq!(software_gate_dpl_ok(cpl, dpl), cpl <= dpl, "{cpl} {dpl}");
+            }
+        }
+        // CPL0 passes every gate DPL; CPL3 passes only a DPL 3 gate.
+        assert!((0..=3).all(|dpl| software_gate_dpl_ok(0, dpl)));
+        assert!(software_gate_dpl_ok(3, 3));
+        assert!(!software_gate_dpl_ok(3, 0));
+        assert!(!software_gate_dpl_ok(1, 0));
+    }
 
     struct Ram {
         bytes: Vec<u8>,

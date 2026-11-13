@@ -281,6 +281,10 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
                             // implements them. Off for the DiagnosticV1 default.
                             fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                            // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
+                            // `#BP` through the IDT; the INT3 member delivers it. Off for the
+                            // DiagnosticV1 default (its member list stays as it was).
+                            int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -2105,6 +2109,7 @@ mod tests {
                 "msr:kernel_gs_base_write",
                 "msr:tdx_keyid_partitioning_read",
                 "fp_state",
+                "int3",
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
@@ -2167,6 +2172,67 @@ mod tests {
                 .as_array()
                 .expect("members")
                 .contains(&json!("fp_state")),
+            "{off:#}"
+        );
+    }
+
+    #[test]
+    fn stage4a_delivers_int3_through_the_guest_idt_and_the_default_profile_does_not() {
+        // CLI; LIDT [RIP+0x1f8]; INT3; HLT. Handler at +0x100 is IRETQ; the pseudo-descriptor is
+        // at +0x200 (limit 0xff, base entry+0x300); gate 3 (+0x300+48) is an interrupt gate with
+        // DPL 3 (0xEE, what Linux installs), selector 0x10, to the handler.
+        const ENTRY: u64 = 0x0100_0200;
+        let mut code = vec![0u8; 0x400];
+        code[..9].copy_from_slice(&[0xFA, 0x0F, 0x01, 0x1D, 0xF8, 0x01, 0x00, 0x00, 0xCC]);
+        code[9] = 0xF4;
+        code[0x100..0x102].copy_from_slice(&[0x48, 0xCF]);
+        code[0x200..0x202].copy_from_slice(&0xFFu16.to_le_bytes());
+        code[0x202..0x20A].copy_from_slice(&(ENTRY + 0x300).to_le_bytes());
+        let handler = ENTRY + 0x100;
+        let gate = 0x300 + 3 * 16;
+        code[gate..gate + 2].copy_from_slice(&(handler as u16).to_le_bytes());
+        code[gate + 2..gate + 4].copy_from_slice(&0x10u16.to_le_bytes());
+        code[gate + 5] = 0xEE;
+        code[gate + 6..gate + 8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        code[gate + 8..gate + 12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-int3",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let on = run(CpuidProfile::X8664V1Stage4A);
+        let stop = &on["stop"];
+        // CLI, LIDT, INT3, IRETQ retire; HLT (outside the set) is the stop after the INT3.
+        assert_eq!(stop["exit_kind"], "unsupported", "{on:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xf4", "{on:#}");
+        assert_eq!(stop["retired"], 4, "{on:#}");
+        assert!(
+            stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("int3")),
+            "{on:#}"
+        );
+        // DiagnosticV1: no INT3 member, the stop is the INT3 itself after CLI and LIDT.
+        let off = run(CpuidProfile::DiagnosticV1);
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xcc", "{off:#}");
+        assert_eq!(stop["retired"], 2, "{off:#}");
+        assert!(
+            !stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("int3")),
             "{off:#}"
         );
     }

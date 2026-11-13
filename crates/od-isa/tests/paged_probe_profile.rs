@@ -2857,3 +2857,22 @@ fn out_in_imm8_stay_unsupported_in_the_paged_probe_profiles() {
         assert!(pio.reads.is_empty() && pio.writes.is_empty());
     }
 }
+
+#[test]
+fn int3_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9e belongs to the CPL0 set only; this profile refuses `CC` without mutation.
+    let mut memory = Memory::new(&[0xcc, 0x90]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xcc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
