@@ -721,6 +721,60 @@ mod tests {
     }
 
     #[test]
+    fn pm_timer_takes_one_dword_access_through_both_cpu_port_views() {
+        // S4-38L9u: `ED` (`IN EAX, DX`) at port 0x608 reaches the timer as one access of width 4.
+        use od_isa::PortIo as _;
+        let (mut bus, handle, clock) = bus();
+        advance(&clock, 1_000_000_000);
+        {
+            let (_, mut port) = bus.split_for_pio_step();
+            assert_eq!(port.read_u32(ACPI_PM_TMR_BLK), Ok(3_579_545));
+            // The byte view returns the same data, little-endian.
+            assert_eq!(port.read_u8(ACPI_PM_TMR_BLK), Ok(3_579_545u32 as u8));
+            assert_eq!(
+                port.read_u8(ACPI_PM_TMR_BLK + 2),
+                Ok((3_579_545u32 >> 16) as u8)
+            );
+            // The timer is read-only; the typed bus error is kept and nothing is stored.
+            assert!(matches!(
+                port.write_u32(ACPI_PM_TMR_BLK, 0),
+                Err(BusAccessError::Device {
+                    source: DeviceError::ReadOnly,
+                    ..
+                })
+            ));
+            // Two registers in one dword (PM1_STS + PM1_EN) and the unmapped tail stay errors.
+            assert!(matches!(
+                port.read_u32(ACPI_PM_BASE_PORT),
+                Err(BusAccessError::Device {
+                    source: DeviceError::CrossesRegister,
+                    ..
+                })
+            ));
+            assert_eq!(
+                port.read_u32(ACPI_PM_BASE_PORT + 0x10),
+                Err(BusAccessError::UnmappedPort(PortAddress::new(
+                    ACPI_PM_BASE_PORT + 0x10
+                )))
+            );
+            assert_eq!(port.read_u32(ACPI_PM_TMR_BLK), Ok(3_579_545));
+        }
+        // The same read through the set-loop port view (one timer read, like the bus view).
+        let reads = handle.timer_reads();
+        let (_, io) = bus.split_for_set_step();
+        let mut port = io.port_io();
+        assert_eq!(port.read_u32(ACPI_PM_TMR_BLK), Ok(3_579_545));
+        assert!(matches!(
+            port.write_u32(ACPI_PM_TMR_BLK, 0),
+            Err(BusAccessError::Device {
+                source: DeviceError::ReadOnly,
+                ..
+            })
+        ));
+        assert_eq!(handle.timer_reads(), reads + 1);
+    }
+
+    #[test]
     fn s5_through_the_machine_bus_uses_the_cnt_port() {
         let (mut bus, handle, _) = bus();
         bus.write_port(

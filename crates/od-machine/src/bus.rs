@@ -661,6 +661,27 @@ impl PortIo for SetStepPortIo<'_, '_> {
             u32::from(value),
         )
     }
+
+    fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
+        let mut devices = self.devices()?;
+        read_port_from(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Dword,
+        )
+    }
+
+    fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
+        let mut devices = self.devices()?;
+        write_port_to(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Dword,
+            value,
+        )
+    }
 }
 
 impl MachineBus {
@@ -1271,6 +1292,25 @@ impl PortIo for MachineBusPortIo<'_> {
             PortAddress::new(port),
             AccessWidth::Word,
             u32::from(value),
+        )
+    }
+
+    fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
+        read_port_from(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Dword,
+        )
+    }
+
+    fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
+        write_port_to(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Dword,
+            value,
         )
     }
 }

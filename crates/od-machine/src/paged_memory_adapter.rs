@@ -1006,6 +1006,19 @@ impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
         }
         result
     }
+
+    fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
+        self.inner.read_u32(port)
+    }
+
+    fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
+        let result = self.inner.write_u32(port, value);
+        // A dword write covers `port..=port + 3` (S4-38L9u).
+        if result.is_ok() && (0x3d..=0x43).contains(&port) {
+            self.pit_written = true;
+        }
+        result
+    }
 }
 
 /// RFLAGS.IF, bit 9.
@@ -3111,6 +3124,54 @@ mod pit_word_watch_tests {
             assert_eq!(watch.read_u16(port), Ok(0x1234));
             assert_eq!(watch.write_u16(port, 0xbeef), Ok(()));
             assert_eq!(watch.inner.words, [(port, 0xbeef)]);
+            assert_eq!(watch.pit_written, noted, "{port:#x}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod pit_dword_watch_tests {
+    use super::PitWriteWatch;
+    use od_isa::PortIo;
+
+    #[derive(Default)]
+    struct Recorder {
+        dwords: Vec<(u16, u32)>,
+    }
+
+    impl PortIo for Recorder {
+        type Error = ();
+
+        fn read_u8(&mut self, _port: u16) -> Result<u8, ()> {
+            Err(())
+        }
+
+        fn write_u8(&mut self, _port: u16, _value: u8) -> Result<(), ()> {
+            Err(())
+        }
+
+        fn read_u32(&mut self, _port: u16) -> Result<u32, ()> {
+            Ok(0x1234_5678)
+        }
+
+        fn write_u32(&mut self, port: u16, value: u32) -> Result<(), ()> {
+            self.dwords.push((port, value));
+            Ok(())
+        }
+    }
+
+    /// S4-38L9u: the dword forwarders keep the width (the word default would split it) and a
+    /// retired dword write that covers a PIT port counts as a PIT write.
+    #[test]
+    fn dword_accesses_pass_through_and_a_dword_write_over_the_pit_ports_is_noted() {
+        for (port, noted) in [(0x3c_u16, false), (0x3d, true), (0x43, true), (0x44, false)] {
+            let mut watch = PitWriteWatch {
+                inner: Recorder::default(),
+                pit_written: false,
+            };
+            assert_eq!(watch.read_u32(port), Ok(0x1234_5678));
+            assert_eq!(watch.write_u32(port, 0xdead_beef), Ok(()));
+            assert_eq!(watch.inner.dwords, [(port, 0xdead_beef)]);
             assert_eq!(watch.pit_written, noted, "{port:#x}");
         }
     }
