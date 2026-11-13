@@ -17,7 +17,7 @@
 | S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое ревью `gpt-6.1-sol/high`; [коммит `4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc). `git diff --check` чист; `check_layout.py` сообщает только 45 существующих битых ссылок на отсутствующие work evidence артефакты, новых S6 ошибок нет. Graphify обновлён на этот коммит. Документ фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity; реализация и выбор host primitive не входят. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
 | S6-05 | `not_started` | — |
 | S6-06 | `not_started` | — |
-| S6-07 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло. Основной inventory: 233/233 совпадений, exact file:line coverage без пропусков; secondary ownership counts 25/218/7/6; все focused paths имеют owner, production assumptions без владельца не обнаружены. Код не менялся. |
+| S6-07 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло; [коммит `8b19597`](https://github.com/edelars/open_desktop/commit/8b19597); Graphify обновлён после inventory commit. Основной inventory: 233/233 совпадений, exact file:line coverage без пропусков; secondary ownership counts 25/218/7/6; все focused paths имеют owner, production assumptions без владельца не обнаружены. `git diff --check` чист; `check_layout.py` сообщает только 45 существующих work-evidence ошибок, S6 links clean. Код не менялся. |
 | S6-08 | `not_started` | — |
 | S6-09 | `not_started` | — |
 | S6-10 | `blocked` | S4-21 |

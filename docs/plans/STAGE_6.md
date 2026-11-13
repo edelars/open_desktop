@@ -398,7 +398,7 @@
 ### S6-07. Перечислить однопроцессорные допущения в коде
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-13):** полный inventory прошёл независимое ревью; 233 primary hits покрыты строка-в-строку, secondary ownership counts и focused paths записаны в [отчёте S6](../reports/STAGE_6_REPORT.md#s6-07--inventory-однопроцессорных-допущений). Код не менялся; production assumptions без владельца не найдены.
+- **Текущий статус (2026-11-13):** полный inventory прошёл независимое ревью; коммит [`8b19597`](https://github.com/edelars/open_desktop/commit/8b19597); 233 primary hits покрыты строка-в-строку, secondary ownership counts и focused paths записаны в [отчёте S6](../reports/STAGE_6_REPORT.md#s6-07--inventory-однопроцессорных-допущений). Код не менялся; production assumptions без владельца не найдены.
 - **Где:** таблица в `docs/reports/STAGE_6_REPORT.md`. Код не меняется.
 - **Сделать:**
   1. Основной поиск: `rg -n -i 'one vcpu|single vcpu|one-cpu|single-cpu|one cpu|single cpu|smp|fixed apic id|apic id 0|bus lock|private synchronous' crates firmware tools apps --glob '!target'`. Дополнительный поиск — узкий: `&mut PhysicalMemory`, выдача `&mut [u8]` на байты RAM, `Rc<` и `RefCell<` вне тестов в `crates/od-machine/src` и `crates/od-host/src`.
