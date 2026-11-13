@@ -36857,19 +36857,28 @@ fn step_configured(
             destination,
             source,
         } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0xc1
-                && instruction.operand_size == OperandSize::Qword
-                && destination.size == OperandSize::Qword
-                && source.size() == OperandSize::Qword
-                && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                && instruction.prefixes.group1.is_none()
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && instruction.prefixes.segment.is_none()
-                // S4-38L7ay: the CPL0 set models only the LOCK form (`LockXaddMem`); the board
-                // adapters have no atomic fetch-add, so the bare memory form is refused there.
-                && control_policy.is_none()
+            if control_policy.is_some() {
+                // S4-38L9k: in the CPL0 set the bare memory form (dword or qword) runs as the
+                // LOCK form (`LockXaddMem`): on the single vCPU LOCK changes only the atomicity
+                // against other processors. The decoder has already validated the prefixes
+                // (no LOCK/REP/0x66/0x67/segment byte, REX directly before the opcode).
+                // S4-38L7ay: the board adapters have no atomic fetch-add, hence the outside-set
+                // gate below keeps the qword-only S2-21d path.
+                context.privilege == PrivilegeLevel::Ring0
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc1
+            } else {
+                instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc1
+                    && instruction.operand_size == OperandSize::Qword
+                    && destination.size == OperandSize::Qword
+                    && source.size() == OperandSize::Qword
+                    && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    && instruction.prefixes.group1.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.segment.is_none()
+            }
         }
         // S4-38L7ay: LOCK XADD m32/m64. In the CPL0 set (Ring0) it is read -> write on the single
         // vCPU; the decoder has already validated the prefixes. Outside the set only the S2-21f
@@ -36902,19 +36911,26 @@ fn step_configured(
             destination,
             source,
         } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0xb1
-                && instruction.operand_size == OperandSize::Qword
-                && destination.size == OperandSize::Qword
-                && source.size() == OperandSize::Qword
-                && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                && instruction.prefixes.group1.is_none()
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && instruction.prefixes.segment.is_none()
-                // S4-38L7k: the CPL0 set models only the LOCK form (the board adapters have no
-                // atomic compare-exchange); the plain memory form is refused there.
-                && control_policy.is_none()
+            if control_policy.is_some() {
+                // S4-38L9k: in the CPL0 set the bare memory form (dword or qword) runs as the
+                // LOCK form (`LockCmpxchgMem`); see `XaddMemory`. S4-38L7k: the board adapters
+                // have no atomic compare-exchange, hence the outside-set gate below keeps the
+                // qword-only S2-21 path.
+                context.privilege == PrivilegeLevel::Ring0
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xb1
+            } else {
+                instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xb1
+                    && instruction.operand_size == OperandSize::Qword
+                    && destination.size == OperandSize::Qword
+                    && source.size() == OperandSize::Qword
+                    && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    && instruction.prefixes.group1.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.segment.is_none()
+            }
         }
         Operation::Xadd {
             destination,
@@ -49733,6 +49749,18 @@ fn step_configured(
                 return report_memory_error(error);
             }
         }
+        // S4-38L9k: in the CPL0 set the bare XADD/CMPXCHG memory forms (dword and qword) share the
+        // LOCK-form arms of `transfer` (one vCPU: LOCK changes nothing); outside the set they
+        // keep the atomic-call arms below.
+        operation @ (Operation::XaddMemory { .. } | Operation::CmpxchgMemory { .. })
+            if control_policy.is_some() =>
+        {
+            match transfer(state, memory, context, next_rip, operation) {
+                Ok(()) => {}
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+                Err(error) => return Err(error),
+            }
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -55759,7 +55787,12 @@ fn transfer(
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             cmpxchg_at(state, memory, context, address, destination.size, source)?;
         }
+        // S4-38L9k: and the bare memory form (CPL0 set only; one vCPU, LOCK changes nothing).
         Operation::LockCmpxchgMem {
+            destination,
+            source,
+        }
+        | Operation::CmpxchgMemory {
             destination,
             source,
         } => {
@@ -55890,6 +55923,11 @@ fn transfer(
         // S4-38L9g: the DS-override form without LOCK; on one vCPU LOCK changes nothing, so the
         // two forms share this arm (SDM XADD: TEMP = SRC + DEST, SRC = DEST, DEST = TEMP).
         | Operation::XaddDsMem {
+            destination,
+            source,
+        }
+        // S4-38L9k: and the bare memory form (CPL0 set only), for the same reason.
+        | Operation::XaddMemory {
             destination,
             source,
         } => {

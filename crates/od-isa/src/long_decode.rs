@@ -846,7 +846,9 @@ pub enum Operation {
         destination: RegisterView,
         source: RegisterView,
     },
-    /// Bare (no LOCK) long-mode qword XADD from a GPR into ordinary memory.
+    /// Bare (no LOCK) long-mode qword XADD from a GPR into ordinary memory. S4-38L9k: the dword
+    /// form (no REX.W) decodes here too; both widths execute in the CPL0 set as `LockXaddMem`
+    /// (on one vCPU LOCK changes nothing), outside it only the qword form exists (atomic call).
     XaddMemory {
         destination: MemoryOperand,
         source: RegisterView,
@@ -873,7 +875,9 @@ pub enum Operation {
         destination: RegisterView,
         source: RegisterView,
     },
-    /// Bare long-mode qword memory-destination CMPXCHG, using RAX as accumulator.
+    /// Bare long-mode qword memory-destination CMPXCHG, using RAX as accumulator. S4-38L9k: the
+    /// dword form (EAX, no REX.W) decodes here too; both widths execute in the CPL0 set as
+    /// `LockCmpxchgMem`, outside it only the qword form exists (atomic call).
     CmpxchgMemory {
         destination: MemoryOperand,
         source: RegisterView,
@@ -8157,7 +8161,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // byte, if any, directly before the opcode (the decoder drops a REX that precedes a
                 // legacy prefix, which would silently change the width).
                 let ds = ds_lock_substitute(&prefixes, &prefix_bytes[..prefix_count]);
-                let dword = size == OperandSize::Dword && (lock || ds);
+                // S4-38L9k: the bare memory form (no LOCK, no segment byte; 0x66/0x67 are refused
+                // below) is the LOCK-equivalent on the single vCPU (the kernel leaves it where its
+                // SMP-alternatives patch does not apply). The dword form decodes to `XaddMemory`
+                // as well; the execute gate lets the qword form run outside the CPL0 set (the
+                // S2-21d atomic fetch-add) and both widths inside it (Ring0).
+                let plain = prefixes.group1.is_none() && prefixes.segment.is_none();
+                let dword = size == OperandSize::Dword && (lock || ds || plain);
                 if !(qword || dword)
                     || (lock && stale_rex)
                     || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
@@ -8170,7 +8180,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let source = view(((modrm >> 3) & 7) | ((rex & 4) << 1), size, true);
                 match self.rm_operand(modrm, prefixes, size)? {
-                    Operand::Register(destination) if prefixes.group1.is_none() && !ds => {
+                    Operand::Register(destination) if qword && prefixes.group1.is_none() && !ds => {
                         Operation::Xadd {
                             destination,
                             source,
@@ -8189,7 +8199,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }
                     }
                     Operand::Memory(destination)
-                        if qword && destination.size == OperandSize::Qword =>
+                        if plain && !stale_rex && destination.size == size =>
                     {
                         Operation::XaddMemory {
                             destination,
@@ -8290,8 +8300,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 // the DS byte in place of LOCK (`ds_lock_substitute`); the register form with DS
                 // stays refused.
                 let ds = ds_lock_substitute(&prefixes, &prefix_bytes[..prefix_count]);
+                // S4-38L9k: the bare memory form (no LOCK, no segment byte) is the LOCK-equivalent
+                // on the single vCPU and decodes to `CmpxchgMemory` (dword and qword); the
+                // register form stays qword only.
+                let plain = prefixes.group1.is_none() && prefixes.segment.is_none();
                 let dword = size == OperandSize::Dword
-                    && (prefixes.group1 == Some(0xf0) || ds)
+                    && (prefixes.group1 == Some(0xf0) || ds || plain)
                     && !stale_rex;
                 if !(qword || dword)
                     || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
@@ -8322,7 +8336,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }
                     }
                     Operand::Memory(destination)
-                        if qword && destination.size == OperandSize::Qword =>
+                        if plain && !stale_rex && destination.size == size =>
                     {
                         Operation::CmpxchgMemory {
                             destination,
@@ -20400,7 +20414,8 @@ mod tests {
             &[0x67, 0x48, 0x0f, 0xc1, 0xc0],
             &[0x2e, 0x48, 0x0f, 0xc1, 0xc0],
             &[0xf0, 0x48, 0x0f, 0xc1, 0xc0],
-            &[0x0f, 0xc1, 0x00], // default dword memory destination
+            // S4-38L9k: the default dword memory destination (`0f c1 00`) decodes now (see
+            // `plain_memory_xadd_and_cmpxchg_decode_as_the_bare_memory_operations`).
             &[0x66, 0x48, 0x0f, 0xc1, 0x00],
             &[0x67, 0x48, 0x0f, 0xc1, 0x00],
             &[0x2e, 0x48, 0x0f, 0xc1, 0x00],
@@ -20464,7 +20479,7 @@ mod tests {
         for bytes in [
             &[0xf0, 0x48, 0x0f, 0xc1, 0xc0][..], // LOCK register destination
             &[0xf0, 0x0f, 0xc1, 0xc0][..],       // LOCK dword register destination
-            &[0x0f, 0xc1, 0x00][..],             // bare dword memory destination
+            // S4-38L9k: the bare dword memory destination (`0f c1 00`) decodes as `XaddMemory`.
             &[0xf0, 0x66, 0x48, 0x0f, 0xc1, 0x00],
             &[0xf0, 0x66, 0x0f, 0xc1, 0x00],
             &[0xf0, 0x67, 0x48, 0x0f, 0xc1, 0x00],
@@ -20644,7 +20659,7 @@ mod tests {
             &[0x48, 0x3e, 0x0f, 0xb1, 0x17], // REX before DS or not before the opcode
             &[0x3e, 0x48, 0x40, 0x0f, 0xb1, 0x17],
             &[0x3e, 0x48, 0x66, 0x0f, 0xb1, 0x17],
-            &[0x0f, 0xb1, 0x17], // no prefix, dword memory (pre-existing refusal)
+            // S4-38L9k: `0f b1 17` (no prefix, dword memory) decodes now as `CmpxchgMemory`.
         ] {
             assert!(
                 matches!(
@@ -20761,7 +20776,7 @@ mod tests {
             &[0x2e, 0x48, 0x0f, 0xb1, 0xd9],
             &[0xf0, 0x48, 0x0f, 0xb1, 0xd9],
             &[0xf3, 0x48, 0x0f, 0xb1, 0x18],
-            &[0x0f, 0xb1, 0x18], // default dword memory destination
+            // S4-38L9k: the default dword memory destination (`0f b1 18`) decodes now.
         ] {
             assert!(
                 matches!(
@@ -24121,13 +24136,12 @@ mod tests {
             Operation::LockCmpxchgMem { destination, .. }
                 if destination.size == OperandSize::Qword
         ));
-        // Without LOCK the dword form (memory or register) stays refused; nothing is added.
-        // With LOCK the register form, 0x66/0x67, REP/F2, a repeated LOCK, any segment prefix
-        // and a stale REX are refused.
+        // S4-38L9k: the bare dword memory forms (`0f b1 13`, `40 0f b1 13`, `44 0f b1 25 ...`) used
+        // to be refused here; they decode now as `CmpxchgMemory` (see
+        // `plain_memory_xadd_and_cmpxchg_decode_as_the_bare_memory_operations`). The bare dword
+        // register form stays refused. With LOCK the register form, 0x66/0x67, REP/F2, a repeated
+        // LOCK, any segment prefix and a stale REX are refused.
         for bytes in [
-            &[0x0f, 0xb1, 0x13][..],
-            &[0x40, 0x0f, 0xb1, 0x13][..],
-            &[0x44, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
             &[0x0f, 0xb1, 0xd3][..],
             &[0xf0, 0x0f, 0xb1, 0xd3][..],
             &[0xf0, 0x41, 0x0f, 0xb1, 0xc8][..],
@@ -24152,6 +24166,110 @@ mod tests {
                 matches!(
                     memory.decode(),
                     Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xb1
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_memory_xadd_and_cmpxchg_decode_as_the_bare_memory_operations() {
+        // S4-38L9k: the bare (no LOCK, no segment byte) `[REX] 0F C1 /r` and `[REX] 0F B1 /r`
+        // with a memory destination decode at the dword (no REX.W) and qword (REX.W) widths to
+        // `XaddMemory` / `CmpxchgMemory`; the CPL0 set executes them as the LOCK forms.
+        let rax_base = |size| MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size,
+        };
+        // The diagnostic boundary: `xadd %rdx, (%rax)`.
+        let decoded = Memory::new(&[0x48, 0x0f, 0xc1, 0x10]).decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.prefixes.group1, None);
+        assert_eq!(decoded.prefixes.segment, None);
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert_eq!(
+            decoded.operation,
+            Operation::XaddMemory {
+                destination: rax_base(OperandSize::Qword),
+                source: RegisterView::low(Register::Rdx, OperandSize::Qword),
+            }
+        );
+        // The dword forms: `xadd %edx, (%rax)` and, with REX.R/REX.B, `xadd %r9d, (%r8)`.
+        assert_eq!(
+            Memory::new(&[0x0f, 0xc1, 0x10]).decode().unwrap().operation,
+            Operation::XaddMemory {
+                destination: rax_base(OperandSize::Dword),
+                source: RegisterView::low(Register::Rdx, OperandSize::Dword),
+            }
+        );
+        assert!(matches!(
+            Memory::new(&[0x45, 0x0f, 0xc1, 0x08]).decode().unwrap().operation,
+            Operation::XaddMemory { destination, source }
+                if source == RegisterView::low(Register::R9, OperandSize::Dword)
+                    && destination.base == AddressBase::Register(Register::R8)
+                    && destination.size == OperandSize::Dword
+        ));
+        // CMPXCHG: `cmpxchg %rdx, (%rax)` and `cmpxchg %edx, (%rax)`.
+        let decoded = Memory::new(&[0x48, 0x0f, 0xb1, 0x10]).decode().unwrap();
+        assert_eq!(decoded.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert_eq!(
+            decoded.operation,
+            Operation::CmpxchgMemory {
+                destination: rax_base(OperandSize::Qword),
+                source: RegisterView::low(Register::Rdx, OperandSize::Qword),
+            }
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0xb1, 0x10]).decode().unwrap().operation,
+            Operation::CmpxchgMemory {
+                destination: rax_base(OperandSize::Dword),
+                source: RegisterView::low(Register::Rdx, OperandSize::Dword),
+            }
+        );
+        // Still refused with the opcode: the bare dword register forms, 0x66/0x67, REP/REPNE,
+        // LOCK is a different form (not listed), every non-DS segment byte, a REX byte that is
+        // not directly before the opcode (qword and dword), and the byte forms (`0F C0`/`0F B0`).
+        for (bytes, opcode) in [
+            (&[0x0f, 0xc1, 0xd0][..], 0xc1),
+            (&[0x44, 0x0f, 0xc1, 0xd0][..], 0xc1),
+            (&[0x66, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x66, 0x48, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x67, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x48, 0x67, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0xf3, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0xf2, 0x48, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x2e, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x26, 0x48, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x36, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x64, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x65, 0x48, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x48, 0x40, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x40, 0x48, 0x0f, 0xc1, 0x10][..], 0xc1),
+            (&[0x0f, 0xb1, 0xd0][..], 0xb1),
+            (&[0x44, 0x0f, 0xb1, 0xd0][..], 0xb1),
+            (&[0x66, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x66, 0x48, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x67, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0xf3, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0xf2, 0x48, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x2e, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x26, 0x48, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x36, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x48, 0x40, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x40, 0x48, 0x0f, 0xb1, 0x10][..], 0xb1),
+            (&[0x0f, 0xc0, 0x10][..], 0xc0),
+            (&[0x48, 0x0f, 0xc0, 0x10][..], 0xc0),
+            (&[0x0f, 0xb0, 0x10][..], 0xb0),
+            (&[0x48, 0x0f, 0xb0, 0x10][..], 0xb0),
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { opcode: refused, .. }) if refused.byte == opcode
                 ),
                 "{bytes:02x?}"
             );
@@ -25532,8 +25650,8 @@ mod tests {
         ));
         // Refused with 0xb1: no segment, CS, register form, LOCK, REP/REPNE, 0x66, 0x67, repeated
         // or mixed segment prefixes and a stale REX.
+        // (S4-38L9k: the no-segment dword memory form `0f b1 0f` decodes now as `CmpxchgMemory`.)
         for bytes in [
-            &[0x0f, 0xb1, 0x0f][..],
             &[0x2e, 0x48, 0x0f, 0xb1, 0x0f][..],
             &[0x64, 0x48, 0x0f, 0xb1, 0xc1][..],
             &[0xf0, 0x65, 0x48, 0x0f, 0xb1, 0x0f][..],

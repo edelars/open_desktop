@@ -3006,3 +3006,37 @@ fn segment_logic_load_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
+
+#[test]
+fn plain_dword_xadd_and_cmpxchg_stay_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9k belongs to the CPL0 set only (the bare memory forms run there as the LOCK forms);
+    // this profile refuses the bare dword memory forms of XADD and CMPXCHG without mutation.
+    for (bytes, opcode) in [
+        (&[0x0f, 0xc1, 0x43, 0x58][..], 0xc1u8),
+        (&[0x44, 0x0f, 0xc1, 0x05, 0x34, 0x12, 0x00, 0x00][..], 0xc1),
+        (&[0x0f, 0xb1, 0x43, 0x58][..], 0xb1),
+        (&[0x44, 0x0f, 0xb1, 0x05, 0x34, 0x12, 0x00, 0x00][..], 0xb1),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported {
+                opcode: opcode.into()
+            },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}

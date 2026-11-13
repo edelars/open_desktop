@@ -4633,11 +4633,17 @@ mod tests {
     }
 
     #[test]
-    fn plain_cmpxchg_memory_form_without_lock_is_refused_in_the_cpl0_set() {
-        // The set models only the LOCK form; the plain `48 0F B1 /r` memory form is refused
-        // through the facade with opcode 0xB1 after the one preceding MOV retired.
+    fn plain_cmpxchg_memory_form_without_lock_executes_as_the_lock_form_in_the_cpl0_set() {
+        // S4-38L9k: S4-38L7k refused the plain `48 0F B1 /r` memory form; on the single vCPU it is
+        // the LOCK form (LOCK changes only the atomicity against other processors), so it executes
+        // through the facade. MOV RAX,5; MOV [0x0200_0020],RAX; MOV RDX,9; CMPXCHG [m],RDX
+        // (RAX == [m]: [m] = 9, RAX stays 5, ZF set); MOV RCX,[m]; HLT.
         let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(9u64.to_le_bytes());
         code.extend([0x48, 0x0F, 0xB1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x8B, 0x0C, 0x25, 0x20, 0x00, 0x00, 0x02]);
         code.push(0xF4);
         let (mut boot, file) = boot_with_entry(&code);
         let record = run_set_facade(
@@ -4649,13 +4655,16 @@ mod tests {
                 ..LinuxCpl0SetMembers::minimal()
             },
         );
-        assert_eq!(
-            record.exit,
-            PagedProbeExit::Unsupported { opcode: 0xB1 },
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
             "{record:?}"
         );
-        assert_eq!(record.retired, 1);
-        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 5);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 9);
+        assert_eq!(state.rflags & (1 << 6), 1 << 6, "ZF");
     }
 
     // ---- S4-38L7y: LOCK CMPXCHG m32, r32 through the board facade ----
@@ -4801,11 +4810,16 @@ mod tests {
     }
 
     #[test]
-    fn plain_xadd_memory_form_without_lock_is_refused_in_the_cpl0_set() {
-        // The set models only the LOCK form; the plain `48 0F C1 /r` memory form is refused
-        // through the facade with opcode 0xC1 after the one preceding MOV retired.
+    fn plain_xadd_memory_form_without_lock_executes_as_the_lock_form_in_the_cpl0_set() {
+        // S4-38L9k: S4-38L7ay refused the plain `48 0F C1 /r` memory form; on the single vCPU it
+        // is the LOCK form, so it executes through the facade. MOV RAX,5; MOV [0x0200_0020],RAX;
+        // MOV RDX,3; XADD [m],RDX ([m] = 8, RDX = 5); MOV RCX,[m]; HLT.
         let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(3u64.to_le_bytes());
         code.extend([0x48, 0x0F, 0xC1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x8B, 0x0C, 0x25, 0x20, 0x00, 0x00, 0x02]);
         code.push(0xF4);
         let (mut boot, file) = boot_with_entry(&code);
         let record = run_set_facade(
@@ -4817,13 +4831,15 @@ mod tests {
                 ..LinuxCpl0SetMembers::minimal()
             },
         );
-        assert_eq!(
-            record.exit,
-            PagedProbeExit::Unsupported { opcode: 0xC1 },
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
             "{record:?}"
         );
-        assert_eq!(record.retired, 1);
-        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 8);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 5);
     }
 
     // ---- S4-38L7z: LOCK ADD m32, imm8 on an RSP base through the board facade ----
