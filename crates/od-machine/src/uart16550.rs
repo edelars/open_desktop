@@ -21,6 +21,13 @@
 //! effect while PEN = 0 and are ignored, so `0x13` passes. Otherwise the write
 //! is refused with `UnsupportedConfiguration` without mutation.
 //!
+//! S4-38L9y: IER stores bits 3..0 (RDA, THRE, RLS, MS) and returns them;
+//! bits 7..4 are dropped on write and read as 0 (a write of `0xff` reads back
+//! `0x0f`). RLS and MS are stored only: the model has no line-status or
+//! modem-status interrupt source, so they never change IIR or the line. RDA
+//! and THRE behave as before. Semantics follow the 16550 datasheet from memory
+//! and were not checked against a primary source.
+//!
 //! S4-38L7br: the modem control register (offset 4) stores bit 0 (DTR), bit 1
 //! (RTS), bit 2 (OUT1) and bit 3 (OUT2) and reads them back. DTR, RTS and OUT1
 //! have no effect: the board has no modem and the lines are not wired, so no
@@ -46,6 +53,10 @@ const IIR_THRE: u8 = 0x02;
 const IIR_RDA: u8 = 0x04;
 const IER_RDA: u8 = 0x01;
 const IER_THRE: u8 = 0x02;
+/// IER bits 3..0 (RDA, THRE, RLS, MS) are stored; bits 7..4 read as 0. Only
+/// RDA and THRE have interrupt sources; RLS (bit 2) and MS (bit 3) are
+/// stored only.
+const IER_STORED: u8 = 0x0f;
 /// MCR bits 0..2 (DTR, RTS, OUT1) are stored and read back only; OUT2
 /// (bit 3) additionally gates the interrupt line. LOOP (bit 4) and bits 5..7
 /// are refused.
@@ -366,7 +377,12 @@ impl UartState {
             1 if self.dlab() => {
                 self.divisor = (self.divisor & 0x00ff) | (u16::from(value) << 8);
             }
-            1 if value & !(IER_RDA | IER_THRE) == 0 => {
+            1 => {
+                // S4-38L9y: bits 3..0 (RDA, THRE, RLS, MS) are stored and read
+                // back; bits 7..4 are not implemented and are dropped, so
+                // they read as 0. RLS and MS are stored only: the model has
+                // no line-status or modem-status interrupt source.
+                let value = value & IER_STORED;
                 // Enabling THRE while the holding register is empty raises
                 // the condition; disabling it drops any pending condition.
                 if value & IER_THRE == 0 {
@@ -376,8 +392,6 @@ impl UartState {
                 }
                 self.ier = value;
             }
-            // Line-status and modem-status interrupts are not modelled.
-            1 => return Err(DeviceError::UnsupportedConfiguration),
             2 if value == 0 => {}
             2 => return Err(DeviceError::UnsupportedConfiguration),
             // S4-38L7bq: LCR stores all eight bits (word length, stop, parity,
@@ -512,10 +526,8 @@ mod tests {
         assert_eq!(device.complete_transmission(), Some(0x42));
         assert_eq!(device.read(access(5)), Ok(0x60));
 
-        assert_eq!(
-            device.write(access(1), 0x04),
-            Err(DeviceError::UnsupportedConfiguration)
-        );
+        // FCR = 1 (FIFO enable) stays refused; the IER = 0x04 refusal that was
+        // here became execution in S4-38L9y.
         assert_eq!(
             device.write(access(2), 1),
             Err(DeviceError::UnsupportedConfiguration)
@@ -579,19 +591,13 @@ mod tests {
     }
 
     #[test]
-    fn ier_accepts_only_rda_and_thre_and_mcr_accepts_only_bits_0_to_3() {
+    fn ier_stores_bits_0_to_3_and_mcr_accepts_only_bits_0_to_3() {
         let mut device = Uart16550PollingTx::new();
-        for value in [0x00, 0x01, 0x02, 0x03] {
+        for value in 0x00..=0x0f_u8 {
             write(&mut device, 1, value);
             assert_eq!(read(&mut device, 1), value);
         }
-        for value in [0x04_u8, 0x08, 0x0f, 0x80] {
-            assert_eq!(
-                device.write(access(1), u64::from(value)),
-                Err(DeviceError::UnsupportedConfiguration)
-            );
-            assert_eq!(read(&mut device, 1), 0x03);
-        }
+        write(&mut device, 1, 0x03);
         write(&mut device, 4, 0x08);
         assert_eq!(read(&mut device, 4), 0x08);
         for value in [0x10_u8, 0x18, 0x20, 0x40, 0x80, 0xff] {
@@ -699,6 +705,134 @@ mod tests {
         assert_eq!(read(&mut device, 1), 0);
         assert_eq!(read(&mut device, 4), 0);
         assert!(!handle.interrupt_line());
+    }
+
+    // S4-38L9y. Oracles are hand-computed 16550 values (datasheet from
+    // memory): IER bits 3..0 = RDA, THRE, RLS, MS are stored; bits 7..4 read 0.
+
+    #[test]
+    fn ier_0x0f_is_stored_and_read_back_and_bits_7_to_4_read_as_zero() {
+        let mut device = Uart16550PollingTx::new();
+        // The kernel UART existence test: IER = 0, read, IER = 0x0f, read.
+        write(&mut device, 1, 0x00);
+        assert_eq!(read(&mut device, 1), 0x00);
+        write(&mut device, 1, 0x0f);
+        assert_eq!(read(&mut device, 1), 0x0f);
+        write(&mut device, 1, 0x00);
+        assert_eq!(read(&mut device, 1), 0x00);
+        for (written, stored) in [
+            (0xff_u8, 0x0f_u8),
+            (0xf0, 0x00),
+            (0x10, 0x00),
+            (0x80, 0x00),
+            (0xfd, 0x0d),
+            (0x85, 0x05),
+            (0x4a, 0x0a),
+        ] {
+            device.write(access(1), u64::from(written)).unwrap();
+            assert_eq!(read(&mut device, 1), stored);
+        }
+    }
+
+    #[test]
+    fn ier_rls_and_ms_bits_are_stored_only_and_raise_nothing() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        setup_8n1_divisor(&mut device);
+        write(&mut device, 4, 0x08);
+        write(&mut device, 1, 0x0c);
+        assert_eq!(read(&mut device, 1), 0x0c);
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert!(!handle.interrupt_line());
+        // Conditions exist but neither RLS nor MS reports them.
+        device.inject_received_byte(0x33).unwrap();
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert!(!handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert_eq!(read(&mut device, 0), 0x33);
+        write(&mut device, 0, 0x41);
+        assert!(device.transfer_holding_to_shift());
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert!(!handle.interrupt_line());
+        assert_eq!(device.complete_transmission(), Some(0x41));
+    }
+
+    #[test]
+    fn ier_0x0f_keeps_rda_and_thre_behaviour_of_bits_0_and_1() {
+        let mut device = Uart16550PollingTx::new();
+        let handle = device.handle();
+        setup_8n1_divisor(&mut device);
+        write(&mut device, 4, 0x08);
+        // THRE enable edge with 0x0f raises exactly as with 0x02.
+        write(&mut device, 1, 0x0f);
+        assert_eq!(handle.peek_iir(), 0x02);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x02);
+        assert_eq!(read(&mut device, 2), 0x01);
+        // Rewriting 0x0f does not raise THRE again (no enable edge).
+        write(&mut device, 1, 0x0f);
+        assert_eq!(handle.peek_iir(), 0x01);
+        // RDA has priority and is cleared only by an RBR read.
+        device.inject_received_byte(0x5a).unwrap();
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert_eq!(read(&mut device, 0), 0x5a);
+        assert_eq!(read(&mut device, 2), 0x01);
+        // Dropping bits 0 and 1 while keeping RLS and MS silences the line.
+        write(&mut device, 0, 0x41);
+        assert!(device.transfer_holding_to_shift());
+        assert!(handle.interrupt_line());
+        write(&mut device, 1, 0x0c);
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert!(!handle.interrupt_line());
+        // 0xff behaves as 0x0f for the enable edge.
+        write(&mut device, 1, 0x00);
+        assert_eq!(device.complete_transmission(), Some(0x41));
+        write(&mut device, 1, 0xff);
+        assert_eq!(read(&mut device, 1), 0x0f);
+        assert_eq!(handle.peek_iir(), 0x02);
+    }
+
+    #[test]
+    fn ier_write_does_not_touch_other_registers_and_dlab_redirects_offset_1() {
+        let mut device = Uart16550PollingTx::new();
+        write(&mut device, 3, 0x13);
+        write(&mut device, 4, 0x0b);
+        write(&mut device, 7, 0xa5);
+        write(&mut device, 1, 0x0f);
+        assert_eq!(read(&mut device, 3), 0x13);
+        assert_eq!(read(&mut device, 4), 0x0b);
+        assert_eq!(read(&mut device, 7), 0xa5);
+        assert_eq!(read(&mut device, 5), 0x60);
+        // Other writes do not change IER either.
+        write(&mut device, 3, 0x1b);
+        write(&mut device, 4, 0x01);
+        write(&mut device, 7, 0x5a);
+        assert_eq!(read(&mut device, 1), 0x0f);
+        // With DLAB set offset 1 is DLM: a 0x0f / 0xff write there is a
+        // divisor byte (not masked to 4 bits) and IER keeps 0x0f.
+        write(&mut device, 3, 0x83);
+        write(&mut device, 1, 0xff);
+        assert_eq!(read(&mut device, 1), 0xff);
+        write(&mut device, 1, 0x00);
+        assert_eq!(read(&mut device, 1), 0x00);
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 1), 0x0f);
+        // DLAB set: a DLM write of 0x00 does not clear a stored IER, and an
+        // IER write with DLAB clear does not touch the divisor.
+        write(&mut device, 3, 0x83);
+        write(&mut device, 0, 0x0c);
+        write(&mut device, 1, 0x12);
+        write(&mut device, 3, 0x03);
+        write(&mut device, 1, 0x05);
+        write(&mut device, 3, 0x83);
+        assert_eq!(read(&mut device, 0), 0x0c);
+        assert_eq!(read(&mut device, 1), 0x12);
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 1), 0x05);
+        // Reset clears the IER.
+        device.reset();
+        assert_eq!(read(&mut device, 1), 0x00);
     }
 
     // S4-38L7bq. Oracles are hand-computed 16550 values (datasheet from
