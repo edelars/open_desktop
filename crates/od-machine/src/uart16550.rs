@@ -28,6 +28,18 @@
 //! and THRE behave as before. Semantics follow the 16550 datasheet from memory
 //! and were not checked against a primary source.
 //!
+//! S4-38L9z: the FIFO control register (offset 2, write) accepts any byte and
+//! stores it as written except bits 2..1 (RX and TX FIFO reset, self-clearing);
+//! [`Uart16550Handle::fcr`] returns the stored value (the guest cannot read
+//! it: offset 2 reads IIR). The model has no FIFO queues, so the reset bits are
+//! no-ops and FCR never changes IIR or the interrupt line. IIR bits 7..6 stay
+//! 0 ("FIFOs not enabled") even after FCR bit 0 = 1: announcing a 16550A would
+//! switch the driver to FIFO mode that the one-byte model does not implement,
+//! so the driver detects a 16450 (no FIFO) instead. RBR read with an empty
+//! receiver returns the last byte received (0 after reset) and has no side
+//! effect on RDA or the line. Semantics follow the 16550 datasheet from memory
+//! and were not checked against a primary source.
+//!
 //! S4-38L7br: the modem control register (offset 4) stores bit 0 (DTR), bit 1
 //! (RTS), bit 2 (OUT1) and bit 3 (OUT2) and reads them back. DTR, RTS and OUT1
 //! have no effect: the board has no modem and the lines are not wired, so no
@@ -63,6 +75,8 @@ const IER_STORED: u8 = 0x0f;
 const MCR_STORED_ONLY: u8 = 0x07;
 const MCR_OUT2: u8 = 0x08;
 const MCR_ACCEPTED: u8 = MCR_STORED_ONLY | MCR_OUT2;
+/// FCR bits 2..1 (RX and TX FIFO reset) are self-clearing and not stored.
+const FCR_RESET_BITS: u8 = 0x06;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
@@ -93,6 +107,10 @@ struct UartState {
     holding: Option<u8>,
     shift: Option<u8>,
     received: Option<u8>,
+    /// Last byte that was received; RBR returns it while the receiver is empty.
+    last_received: u8,
+    /// FCR as written, without the self-clearing reset bits 2..1.
+    fcr: u8,
     ier: u8,
     mcr: u8,
     thre_pending: bool,
@@ -225,6 +243,12 @@ impl Uart16550Handle {
         self.with_state(|state| state.received)
     }
 
+    /// The FCR value as last written (bits 2..1 are self-clearing and read as
+    /// 0). The guest cannot read it: offset 2 reads IIR.
+    pub fn fcr(&self) -> u8 {
+        self.with_state(|state| state.fcr)
+    }
+
     /// Supplies one byte to the receive register shared with the bus device.
     pub fn inject_received_byte(&self, value: u8) -> Result<(), DeviceError> {
         self.with_state(|state| state.inject_received_byte(value))
@@ -240,6 +264,8 @@ impl UartState {
             holding: None,
             shift: None,
             received: None,
+            last_received: 0,
+            fcr: 0,
             ier: 0,
             mcr: 0,
             thre_pending: false,
@@ -330,11 +356,13 @@ impl UartState {
         let value = match offset {
             0 if self.dlab() => self.divisor as u8,
             0 => {
-                return self
-                    .received
-                    .take()
-                    .map(u64::from)
-                    .ok_or(DeviceError::WriteOnly);
+                // A full receiver hands over its byte; an empty one keeps
+                // showing the last received byte (S4-38L9z), without touching
+                // RDA.
+                if let Some(byte) = self.received.take() {
+                    self.last_received = byte;
+                }
+                self.last_received
             }
             1 if self.dlab() => (self.divisor >> 8) as u8,
             1 => self.ier,
@@ -392,8 +420,9 @@ impl UartState {
                 }
                 self.ier = value;
             }
-            2 if value == 0 => {}
-            2 => return Err(DeviceError::UnsupportedConfiguration),
+            // S4-38L9z: FCR is stored (bit 0 enable, bits 7..6 trigger level);
+            // the reset bits 2..1 have no queue to clear and do not stick.
+            2 => self.fcr = value & !FCR_RESET_BITS,
             // S4-38L7bq: LCR stores all eight bits (word length, stop, parity,
             // break, DLAB) and reads them back. Only the THR path interprets
             // them: a THR write needs 8N1 with parity off and DLAB clear
@@ -526,12 +555,9 @@ mod tests {
         assert_eq!(device.complete_transmission(), Some(0x42));
         assert_eq!(device.read(access(5)), Ok(0x60));
 
-        // FCR = 1 (FIFO enable) stays refused; the IER = 0x04 refusal that was
-        // here became execution in S4-38L9y.
-        assert_eq!(
-            device.write(access(2), 1),
-            Err(DeviceError::UnsupportedConfiguration)
-        );
+        // FCR = 1 (FIFO enable) is accepted since S4-38L9z (the IER = 0x04
+        // refusal became execution in S4-38L9y); neither touches TX state.
+        write(&mut device, 2, 1);
         assert_eq!(device.read(access(5)), Ok(0x60));
         assert_eq!(device.complete_transmission(), None);
     }
@@ -556,7 +582,7 @@ mod tests {
         assert_eq!(device.complete_transmission(), None);
         assert_eq!(device.read(access(3)), Ok(0));
         assert_eq!(device.read(access(7)), Ok(0));
-        assert_eq!(device.read(access(0)), Err(DeviceError::WriteOnly));
+        assert_eq!(device.read(access(0)), Ok(0));
     }
 
     #[test]
@@ -581,7 +607,7 @@ mod tests {
             Err(DeviceError::UnsupportedConfiguration)
         );
         assert_eq!(device.write(access(5), 0x20), Err(DeviceError::ReadOnly));
-        assert_eq!(device.read(access(0)), Err(DeviceError::WriteOnly));
+        assert_eq!(device.read(access(0)), Ok(0));
         assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
         assert_eq!(device.read(access(5)), Ok(0x60));
     }
@@ -891,7 +917,7 @@ mod tests {
         assert_eq!(read(&mut device, 1), 0x00);
         write(&mut device, 1, 0x03);
         assert_eq!(read(&mut device, 1), 0x03);
-        assert_eq!(device.read(access(0)), Err(DeviceError::WriteOnly));
+        assert_eq!(device.read(access(0)), Ok(0));
         device.inject_received_byte(0x5a).unwrap();
         assert_eq!(read(&mut device, 0), 0x5a);
         // The divisor survived the DLAB-clear accesses.
@@ -984,11 +1010,8 @@ mod tests {
         assert_eq!(device.write(access(8), 1), Err(DeviceError::UnknownOffset));
         assert_eq!(device.read(access(6)), Err(DeviceError::UnknownOffset));
         assert_eq!(device.read(access(8)), Err(DeviceError::UnknownOffset));
-        // FCR and MCR refusals are unchanged by the DLAB bit.
-        assert_eq!(
-            device.write(access(2), 0x07),
-            Err(DeviceError::UnsupportedConfiguration)
-        );
+        // The MCR refusal is unchanged by the DLAB bit (FCR = 0x07 is
+        // accepted since S4-38L9z and moved to the FCR tests).
         assert_eq!(
             device.write(access(4), 0x10),
             Err(DeviceError::UnsupportedConfiguration)
@@ -1114,5 +1137,123 @@ mod tests {
         assert_eq!(device.snapshot(), before);
         assert_eq!(read(&mut device, 4), 0x07);
         assert_eq!(read(&mut device, 3), 0x93);
+    }
+
+    // S4-38L9z. Oracles are hand-computed 16550 values (datasheet from memory).
+    #[test]
+    fn fcr_accepts_any_byte_and_stores_it_without_the_reset_bits() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        assert_eq!(handle.fcr(), 0);
+        write(&mut device, 2, 0x01);
+        assert_eq!(handle.fcr(), 0x01);
+        write(&mut device, 2, 0xc7);
+        assert_eq!(handle.fcr(), 0xc1);
+        for value in 0..=0xff_u8 {
+            write(&mut device, 2, value);
+            assert_eq!(handle.fcr(), value & !0x06);
+        }
+        write(&mut device, 2, 0x00);
+        assert_eq!(handle.fcr(), 0);
+        // FCR is the same under DLAB.
+        write(&mut device, 3, 0x80);
+        write(&mut device, 2, 0x01);
+        assert_eq!(handle.fcr(), 0x01);
+    }
+
+    #[test]
+    fn fcr_does_not_change_iir_or_the_interrupt_line() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        write(&mut device, 4, 0x08);
+        write(&mut device, 2, 0x01);
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert_eq!(read(&mut device, 2) & 0xc0, 0);
+        assert!(!handle.interrupt_line());
+        // RDA pending: FCR leaves IIR, the line and the received byte alone.
+        write(&mut device, 1, 0x01);
+        device.inject_received_byte(0x41).unwrap();
+        assert!(handle.interrupt_line());
+        write(&mut device, 2, 0xc7);
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert!(handle.interrupt_line());
+        assert_eq!(handle.received_byte(), Some(0x41));
+        assert_eq!(read(&mut device, 5) & 0x01, 0x01);
+        // THRE pending: reading IIR after FCR still acknowledges it once.
+        assert_eq!(read(&mut device, 0), 0x41);
+        write(&mut device, 1, 0x02);
+        assert_eq!(read(&mut device, 2), 0x02);
+        write(&mut device, 2, 0x01);
+        assert_eq!(read(&mut device, 2), 0x01);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn fcr_reset_bits_leave_lcr_mcr_ier_scratch_and_rx_alone() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        write(&mut device, 3, 0x13);
+        write(&mut device, 4, 0x0b);
+        write(&mut device, 1, 0x05);
+        write(&mut device, 7, 0xa5);
+        device.inject_received_byte(0x33).unwrap();
+        let before = device.snapshot();
+        write(&mut device, 2, 0x07);
+        assert_eq!(read(&mut device, 3), 0x13);
+        assert_eq!(read(&mut device, 4), 0x0b);
+        assert_eq!(read(&mut device, 1), 0x05);
+        assert_eq!(read(&mut device, 7), 0xa5);
+        assert_eq!(handle.received_byte(), Some(0x33));
+        let mut after = device.snapshot();
+        assert_eq!(after.fcr, 0x01);
+        after.fcr = before.fcr;
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn kernel_probe_sequence_after_fcr_reads_as_a_16450() {
+        // autoconfig: LCR = 0xbf, offset 2 = 0 (EFR absent: FCR), LCR = 0,
+        // FCR = 1, IIR[7:6] = 0, SCR test, RBR read, IER clear.
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        write(&mut device, 3, 0xbf);
+        write(&mut device, 2, 0x00);
+        write(&mut device, 3, 0x00);
+        write(&mut device, 2, 0x01);
+        assert_eq!(read(&mut device, 2) & 0xc0, 0);
+        write(&mut device, 7, 0xa5);
+        assert_eq!(read(&mut device, 7), 0xa5);
+        write(&mut device, 7, 0x5a);
+        assert_eq!(read(&mut device, 7), 0x5a);
+        write(&mut device, 7, 0);
+        assert_eq!(read(&mut device, 0), 0);
+        write(&mut device, 1, 0);
+        assert_eq!(read(&mut device, 1), 0);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn rbr_on_empty_receiver_returns_last_byte_without_touching_rda() {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        assert_eq!(read(&mut device, 0), 0);
+        assert_eq!(read(&mut device, 5), 0x60);
+        device.inject_received_byte(0x7e).unwrap();
+        assert_eq!(read(&mut device, 5), 0x61);
+        // A full receiver still returns the byte once and clears RDA.
+        assert_eq!(read(&mut device, 0), 0x7e);
+        assert_eq!(read(&mut device, 5), 0x60);
+        // Empty again: the last byte repeats, no RDA, injection still works.
+        assert_eq!(read(&mut device, 0), 0x7e);
+        assert_eq!(read(&mut device, 0), 0x7e);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert_eq!(handle.received_byte(), None);
+        write(&mut device, 4, 0x08);
+        write(&mut device, 1, 0x01);
+        assert!(!handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x01);
+        device.inject_received_byte(0x01).unwrap();
+        assert_eq!(read(&mut device, 2), 0x04);
+        assert_eq!(read(&mut device, 0), 0x01);
+        // Reset forgets the last byte.
+        device.reset();
+        assert_eq!(read(&mut device, 0), 0);
+        assert_eq!(handle.fcr(), 0);
     }
 }

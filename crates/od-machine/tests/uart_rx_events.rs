@@ -124,7 +124,8 @@ fn stop_and_zero_budget_do_not_inject_and_stop_precedes_budget() {
         pump.dispatch_due(generation, 0, 0, || false).unwrap().exit,
         UartRxDispatchExit::BudgetExhausted
     );
-    assert_eq!(read_rx(&mut device), Err(DeviceError::WriteOnly));
+    // S4-38L9z: an empty receiver reads as the last received byte (0 here).
+    assert_eq!(read_rx(&mut device), Ok(0));
     assert_eq!(pump.len(), 1);
 }
 
@@ -145,7 +146,8 @@ fn cancel_duplicate_full_and_zero_capacity_are_atomic() {
     );
     pump.cancel(generation, 7).unwrap();
     assert!(pump.is_empty());
-    assert_eq!(read_rx(&mut device), Err(DeviceError::WriteOnly));
+    // S4-38L9z: an empty receiver reads as the last received byte (0 here).
+    assert_eq!(read_rx(&mut device), Ok(0));
 
     let (_, zero_capacity_handle) = uart();
     let mut zero_capacity = UartRxEventPump::new(0, zero_capacity_handle);
@@ -187,7 +189,8 @@ fn reset_discards_pending_payload_invalidates_old_generation_and_preserves_rx_an
             EventQueueError::StaleGeneration
         ))
     );
-    assert_eq!(read_rx(&mut device), Err(DeviceError::WriteOnly));
+    // S4-38L9z: an empty receiver reads as the last received byte (0xa1 here).
+    assert_eq!(read_rx(&mut device), Ok(0xa1));
 
     pump.schedule(new, 1, 12, 0xc3).unwrap();
     assert_eq!(

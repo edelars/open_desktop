@@ -110,12 +110,10 @@ fn in_al_dx_reads_one_uart_receive_byte_and_retires_once() {
     assert_eq!(state.rip, 1);
     assert_eq!(accesses.load(Ordering::SeqCst), 1);
 
+    // S4-38L9z: RBR with an empty receiver reads as the last received byte.
     assert_eq!(
         bus.read_port(PortAddress::new(COM1), AccessWidth::Byte),
-        Err(BusAccessError::Device {
-            device_index: 0,
-            source: DeviceError::WriteOnly,
-        })
+        Ok(0xa5)
     );
     assert_eq!(
         bus.read_port(PortAddress::new(COM1 + 5), AccessWidth::Byte),
