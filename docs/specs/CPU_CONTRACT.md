@@ -654,6 +654,100 @@ For CPUID, the input ECX is ignored for every listed function in this profile; u
 
 The choice uses the exact Ubuntu 7.0.0-38.38 source/binary mapping in [S2-00 Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#exact-source-to-binary-mapping--28-октября-2026); static evidence does not prove any runtime branch or guest boot. Windows CPU profile remains unselected. The x86-64-v1 baseline decision and its evidence are described in [GUEST_REQUIREMENTS.md](GUEST_REQUIREMENTS.md).
 
+### S6-14a — bounded AP startup trampoline profile
+
+This is the CPU profile for one statically selected AP startup path of Ubuntu
+Generic `amd64` package `7.0.0-38.38`. It is an AP-only extension to
+`od-x86-64-v1-neutral-v0.1`; it does not change the firmware entry contract.
+The evidence is the linked `real_mode_blob` extracted from the staged image,
+re-decoded on a physical x86 host, and recorded in the
+[S6-02 inventory](../reports/data/stage6/ap-start-inventory.json) and
+[physical decode report](../reports/data/stage6/s6-02-x86-reverification.md).
+The byte-level decode rows that define the closed instruction-form allowlist
+are preserved in the report's [real-16](../reports/data/stage6/s6-02-x86/16bit-objdump.txt),
+[protected-32](../reports/data/stage6/s6-02-x86/32bit-objdump.txt),
+[long-mode trampoline](../reports/data/stage6/s6-02-x86/64bit-objdump.txt),
+and the [common verify](../reports/data/stage6/s6-02-x86/common-verify-objdump.txt)
+and [common no-verify](../reports/data/stage6/s6-02-x86/common-no-verify-objdump.txt)
+outputs. The table below selects the instruction rows by the stated control-flow
+and target predicates; the raw outputs also contain unselected branches and
+alignment bytes, which are not thereby admitted to this profile.
+The static inventory establishes instruction bytes and control-flow targets,
+not a signed upstream source-to-binary chain, runtime AP execution, or the
+runtime-selected Linux callback. `setup_real_mode()` copies the linked blob to
+low memory and applies segment and linear relocations; the runtime copy's
+absolute operands therefore depend on its allocation base.
+
+The selected entry is native physical xAPIC INIT/SIPI. The first SIPI enters
+`pa_trampoline_start` at blob offset `0x1000` in real mode. The architectural
+AP state and SIPI vector address are defined by
+[`SMP_CONTRACT.md` §§3–4](SMP_CONTRACT.md#3-состояния-vcpu-и-переходы). For
+this profile, vector `v` is represented by the canonical real-mode entry
+`CS.selector = v << 8`, `CS.base = v << 12`, `IP = 0`, yielding physical
+address `v << 12` as specified for AP startup by Intel SDM Vol. 3A
+§11.4.3 step 6 and §11.4.4.1 step 10; the canonical selector/base pair
+follows the real-address segment-base rule in §12.1.4. See the
+[official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The `0x1000` here is an offset in the extracted blob, not a claim about its
+runtime physical copy base. The bounded path is:
+
+| Order | Blob location | Execution mode / decode defaults | Profile path |
+|---|---|---|---|
+| 1 | `0x1000`–`0x1024` | real-address, 16-bit defaults | `CLI`, `WBINVD`, real-mode far jump, CS-to-AX and AX-to-DS/ES/SS moves, `LOCK BTS` startup lock with its `JAE`/`PAUSE`/back-edge loop, 32-bit stack-pointer load, then `CALL verify_cpu` at `0x1024`. |
+| 2 | `0x1080`–`0x11a8` | real-address, 16-bit defaults | `verify_cpu` checks RFLAGS.ID/CPUID; probes leaves 0, 1, `0x80000000`, and `0x80000001`; validates feature masks. The `OpenDesktop ` vendor selects neither AMD nor Intel vendor-specific branches, and target features satisfy long-mode and SSE/SSE2 checks. The selected success path returns zero at `0x11a4`–`0x11a8`; the alternate failure return is at `0x119b`–`0x11a2`. AMD/Intel-specific MSR paths are not selected. |
+| 3 | `0x1027`–`0x102b` | real-address, 16-bit defaults | After return, `TEST EAX,EAX` at `0x1027` and `JNE 0x104c` at `0x102a` select the success continuation for this target. A nonzero failure result branches to the terminal `HLT`/back-edge loop at `0x104c`–`0x104d`; that conditional failure path is not taken by the selected target. The `NOP` at `0x104f` is unreachable padding. |
+| 4 | `0x102c`–`0x1041` | real-address, 16-bit defaults through the CR0 write | On successful verification, `LIDT` and `LGDT` read the real-mode tables through DS; DX is loaded with the flat data selector; `MOV CR0,EAX` at `0x1041` sets PE while paging remains clear. |
+| 5 | `0x1044` | protected mode, 16-bit transition state | The single required 16-bit protected-mode instruction is the far jump to selector `0x08`, offset `0x2000`; it enters the flat 32-bit code segment. No general 16-bit protected-mode execution is included. |
+| 6 | `0x2000`–`0x2062` | protected mode, 32-bit defaults through the CR0 write | The flat data selector is loaded into SS/DS/ES/FS/GS. The target's non-encrypted branch skips the optional AMD SME MSR sequence. CR4 is loaded from the trampoline header, CR3 receives the trampoline page-table root, EFER is read and conditionally updated from the header, then `MOV CR0,EAX` at `0x2062` enables paging and IA-32e mode. |
+| 7 | `0x2065` | IA-32e compatibility mode, 32-bit decode | The single transition-state far jump targets selector `0x10`, offset `0x20f0`, entering 64-bit code. No general compatibility-mode execution is included. |
+| 8 | `0x20f0` | 64-bit mode | One RIP-relative indirect `JMP` reads the target at blob offset `0x5000` and transfers to `secondary_startup_64`. The separately inventoried common-entry bytes are `CALL verify_cpu` at `0xffffffff8139c090` and the aliased no-verify entry `XOR R15D,R15D` at `0xffffffff8139c095`; they are evidence for the handoff boundary, not an extension to general Long64 support. |
+
+The real-mode decode has 16-bit default operand and address sizes. An observed
+`0x66` selects a 32-bit operand for forms such as `PUSHFD`/`POPFD` and the
+32-bit register forms that encode it; it does not change the 16-bit address
+size. Fixed-width system forms retain their architectural operands: for
+example, the unprefixed `0F 22 C0` is `MOV CR0,EAX`, and `CPUID`/`RDMSR` use
+their defined EAX/EDX register operands. `LOCK` is admitted only on the
+inventoried `BTS m32, imm8`; `F3` only on the inventoried `PAUSE`. There is no
+address-size override in the selected real-mode rows. Real-mode addresses use
+`segment.base = selector << 4`; a 16-bit effective offset wraps at 16 bits
+before adding that base. Instruction fetch uses CS, implicit stack accesses use
+SS, and the inventoried explicit data references use DS. SS's 16-bit stack
+address size means the path uses SP even when `0x66` makes a PUSH/POP operand
+32-bit; the 32-bit load of ESP at `0x101e` leaves its upper half zero. The
+real-mode IDT/GDT pseudo-descriptor loads use their recorded operand-size
+override with a 16-bit effective address. No general-purpose real-mode
+segmentation API is implied.
+
+The protected-mode transition uses a GDT loaded by the real-mode path. Selector
+`0x08` names the flat 32-bit code segment; selector `0x18` names the flat data
+segment used by the startup code. The far jump to selector `0x10` enters the
+64-bit code segment after CR4.PAE, the trampoline CR3, EFER.LME and CR0.PG are
+configured from the selected header. The target profile excludes memory
+encryption and SNP/Hyper-V/UV overrides, so the optional AMD encrypted-memory
+branch is outside the executed path.
+
+The inventory also contains the separate real-mode entry at blob offset
+`0x1050` (`sev_es_trampoline_start`). It is not selected for this target because
+the accepted profile excludes SEV-ES/SNP; its segment/lock setup is therefore
+not an admitted alternative SIPI entry. The profile similarly excludes the
+conditional AMD SME branch and vendor-specific AMD/Intel checks that are not
+selected by the `OpenDesktop ` CPUID vendor string.
+
+This allowlist is closed over the linked instruction rows and the stated branch
+conditions; it does not admit arbitrary code in real or protected mode. An
+instruction not present in these rows, a different prefix/addressing form, or
+an unselected optional path is outside this profile and must return an explicit
+unsupported result in later implementation slices. It does not add BIOS,
+reset-vector, v8086, general 16-bit protected mode, general IA-32e compatibility
+mode, interrupt-delivery, or general real-mode support. Windows CPU-06 remains
+a separate unverified hypothesis.
+
+S6-02's x86 repeat matched 119 real-mode rows (excluding three alignment-byte
+decodes), 29 protected-mode rows, one long-mode trampoline row, and two common
+entry instructions. It did not execute the guest. The profile and its limits
+are recorded in the [S6-14a report](../reports/STAGE_6_REPORT.md#s6-14a--ap-startup-trampoline-profile).
+
 ### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
 
 This section records the selected target's normative legacy FP/SIMD memory

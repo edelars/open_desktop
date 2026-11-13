@@ -24,7 +24,7 @@
 | S6-11 | `blocked` | S4-21 (через S6-10) |
 | S6-12 | `blocked` | S4-21 (через S6-10) |
 | S6-13 | `blocked` | S4-21; согласование кода `od-isa` по D5/S4-38 |
-| S6-14 | `not_started` | срезы a/b доступны; срез кода c — S4-21 и согласование по D5/S4-38 |
+| S6-14 | `in_progress` | S6-14a AP startup profile принят после независимого архитектурного ревью `gpt-6.1-sol/high`; см. ниже. S6-14b не начат; код S6-14c+ остаётся ограничен S4-21 и согласованием с S4-38 по D5. |
 | S6-15 | `blocked` | S4-21, S4-22, S4-23 |
 | S6-16 | `blocked` | S4-21, S4-22, S4-23 |
 | S6-17 | `blocked` | S4-13 (полный срез), S4-14 (полный срез), S4-21, S4-22, S4-23 |
@@ -142,6 +142,27 @@ S6-02 принят по статическому inventory и Linux target-path 
 ### S6-03 — SMP contract (accepted document)
 
 Создан [контракт SMP](../specs/SMP_CONTRACT.md) с неизменным набором vCPU, индексом/APIC ID, BSP/AP state transitions, INIT reset state по Intel SDM 253668-093US, INIT/SIPI, закрытым подмножеством физических xAPIC ICR кодировок, IOAPIC/MSI и NMI. Pinned Linux evidence требует targeted physical Fixed, Fixed all-but-self и targeted/all-but-self NMI; INIT/SIPI — targeted physical. Matrix также включает Fixed Self/All/All-but-self из S6-12 и сохраняет уже принятый S4-25c Self encoding. Неиспользуемые доставки и режимы явно отклоняются. ICR Level/Trigger кодировки для Fixed/NMI/SIPI повторяют pinned Linux source. `cpu_count`, CPUID.1 EBX и MADT согласуются; package/core topology для неизвестного vendor `OpenDesktop` не заявляется и передана S6-18. Переменная времени, TSC и all-HLT behavior открыты до полного принятия S4-22/S4-23. Safe-point остановка и pending event preservation записаны по D1; I/O barrier остаётся S9-28. Независимое архитектурное ревью `gpt-6.1-sol/high` прошло без замечаний. Код многопроцессорной платы и guest runtime не выполнялись.
+
+### S6-14a — AP startup trampoline profile
+
+`CPU_CONTRACT.md` now defines the AP-only profile for the statically selected
+Ubuntu Generic `amd64` 7.0.0-38.38 native xAPIC INIT/SIPI path: SIPI real-16
+entry, `verify_cpu`, the successful real→protected transition, flat protected
+32-bit setup, paging/EFER transition, and the long-mode indirect handoff. It
+states real-mode operand/address defaults and the observed prefix subset,
+segment roles, code/data selectors, conditional target branches, and explicit
+unsupported boundary. The separate SEV-ES entry and AMD SME branch are recorded
+as present in the linked inventory but outside the selected target path. The
+first two common-entry bytes are retained as handoff evidence only.
+
+`FIRMWARE_BOOT.md` distinguishes its direct Long64 firmware entry from the
+separate bounded AP startup path. Independent architecture review
+`gpt-6.1-sol/high` passed without remaining findings. The reviewer checked the
+tracked byte-decode evidence, selected branch paths, SIPI state, transition
+modes, real-mode addressing rules, and profile exclusions. This is a
+document-only result: it does not implement instruction execution, claim AP
+runtime, or settle the physical relocation base. The pinned staged image has
+no signed source-to-binary chain; Windows CPU-06 remains unverified.
 
 ### S6-07 — inventory однопроцессорных допущений (in progress)
 
