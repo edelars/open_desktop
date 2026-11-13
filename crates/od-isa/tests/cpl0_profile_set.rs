@@ -1556,17 +1556,14 @@ fn mov_rax_cr3_stays_unsupported_outside_the_set() {
 #[test]
 fn mov_rax_cr3_other_forms_are_unsupported_without_mutation() {
     for bytes in [
+        // S4-38L9F: `40/49 0F 20 D8`, `0F 20 D9`, `48 0F 20 D9` and `41 0F 20 D8` moved to the
+        // `mov_r64_cr3_*` tests (MOV r64, CR3 into any GPR now executes).
         &[0x66, 0x0f, 0x20, 0xd8][..],
         &[0xf0, 0x0f, 0x20, 0xd8][..],
-        &[0x40, 0x0f, 0x20, 0xd8][..],
-        &[0x49, 0x0f, 0x20, 0xd8][..],
-        &[0x0f, 0x20, 0xd9][..],
         &[0x0f, 0x20, 0x18][..],
-        &[0x48, 0x0f, 0x20, 0xd9][..],
         &[0xf3, 0x0f, 0x20, 0xd8][..],
         &[0x67, 0x0f, 0x20, 0xd8][..],
         &[0x2e, 0x0f, 0x20, 0xd8][..],
-        &[0x41, 0x0f, 0x20, 0xd8][..],
         &[0x4c, 0x0f, 0x20, 0xd8][..],
         // Only the REX nearest the opcode is effective, but the length 5 is outside the
         // exact forms: the executor refuses it.
@@ -2050,10 +2047,8 @@ fn mov_r64_cr2_writes_the_full_64_bits() {
 fn mov_r64_cr2_other_forms_are_unsupported_without_mutation() {
     for bytes in [
         &[0x0f, 0x20, 0xc9][..],             // CR1
-        &[0x0f, 0x20, 0xdb][..],             // CR3 into RBX
         &[0x0f, 0x20, 0xc3][..],             // CR0 into RBX
         &[0x48, 0x0f, 0x20, 0xc3][..],       // REX.W CR0 into RBX
-        &[0x41, 0x0f, 0x20, 0xd8][..],       // CR3 into R8 (REX.B)
         &[0x44, 0x0f, 0x20, 0xd3][..],       // REX.R: CR10
         &[0x4d, 0x0f, 0x20, 0xdf][..],       // REX.W+R+B: CR10 into R15
         &[0x0f, 0x20, 0x13][..],             // mod 00: not modeled (SDM ignores mod; conservative)
@@ -2176,17 +2171,286 @@ fn mov_r64_cr2_is_not_reachable_from_cpl3() {
 
 #[test]
 fn mov_r64_cr0_cr3_cr4_keep_their_results() {
-    // CR3 stays RAX-only; the new CR2 forms must not widen it.
+    // The exact RAX CR3 form keeps its result. S4-38L9F: `0F 20 DB` (CR3 into RBX) used to be
+    // refused here and now executes; see the `mov_r64_cr3_*` tests.
     let mut state = cr2_state(Some(CR2_DISTINCT));
     let mut memory = Memory::code(&MOV_RAX_CR3);
     run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
     assert_eq!(state.gpr[0], CR3_DISTINCT);
     let mut state = cr2_state(Some(CR2_DISTINCT));
-    let before = state.clone();
     let mut memory = Memory::code(&[0x0f, 0x20, 0xdb]);
+    run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(state.gpr[Register::Rbx as usize], CR3_DISTINCT);
+    assert_eq!(state.gpr[0], cr2_state(None).gpr[0]);
+}
+
+// ---- S4-38L9F: MOV r64, CR3 into any general register ----------------------
+
+fn cr3_any_reg_state(value: u64) -> LongModeState {
+    let mut state = cr3_state(value);
+    state.cr2 = Some(CR2_DISTINCT);
+    state.rflags = 2 | IF | 0x1 | 0x40 | 0x800;
+    for (index, gpr) in state.gpr.iter_mut().enumerate() {
+        *gpr = 0x1111_0000_0000_0000 + index as u64;
+    }
+    state.gpr[Register::Rsp as usize] = 0x7000;
+    state
+}
+
+fn cr3_any_reg_expected(
+    before: &LongModeState,
+    dest: usize,
+    value: u64,
+    length: u64,
+) -> LongModeState {
+    let mut expected = before.clone();
+    expected.gpr[dest] = value;
+    expected.rip = RIP + length;
+    expected
+}
+
+#[test]
+fn mov_rdi_cr3_is_the_real_kernel_form() {
+    // `0F 20 DF` at 0xffffffff810011f9 (swapgs_restore_regs_and_return_to_usermode+0x89).
+    let mut state = cr3_any_reg_state(CR3_LINUX);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xdf]);
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+    assert_eq!(state.gpr[Register::Rdi as usize], CR3_LINUX);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(
+        state,
+        cr3_any_reg_expected(&before, Register::Rdi as usize, CR3_LINUX, 3)
+    );
+    assert_eq!(state.cr3, Some(CR3_LINUX));
+}
+
+#[test]
+fn mov_r64_cr3_writes_every_low_register_and_touches_nothing_else() {
+    for rm in 0u8..8 {
+        for rex in [None, Some(0x40u8), Some(0x48), Some(0x42), Some(0x4a)] {
+            let mut bytes = Vec::new();
+            bytes.extend(rex);
+            bytes.extend_from_slice(&[0x0f, 0x20, 0xd8 | rm]);
+            let mut state = cr3_any_reg_state(CR3_DISTINCT);
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !ARITHMETIC);
+            let expected =
+                cr3_any_reg_expected(&before, rm as usize, CR3_DISTINCT, bytes.len() as u64);
+            assert_eq!(state, expected, "{bytes:02x?}");
+            assert_eq!(state.rflags, before.rflags, "{bytes:02x?}");
+            assert_eq!(state.cr3, Some(CR3_DISTINCT));
+            assert_eq!(state.cr2, Some(CR2_DISTINCT));
+        }
+    }
+}
+
+#[test]
+fn mov_r64_cr3_with_rex_b_writes_r8_to_r15() {
+    for rm in 0u8..8 {
+        for rex in [0x41u8, 0x49, 0x43, 0x4b] {
+            let bytes = [rex, 0x0f, 0x20, 0xd8 | rm];
+            let mut state = cr3_any_reg_state(CR3_LINUX);
+            let before = state.clone();
+            let mut memory = Memory::code(&bytes);
+            let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+            assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+            assert_eq!(
+                state,
+                cr3_any_reg_expected(&before, 8 + rm as usize, CR3_LINUX, 4),
+                "{bytes:02x?}"
+            );
+            // The low register of the same number is untouched.
+            assert_eq!(state.gpr[rm as usize], before.gpr[rm as usize]);
+        }
+    }
+}
+
+#[test]
+fn mov_rsp_and_rbp_cr3_are_plain_register_writes() {
+    for (rm, reg) in [(4u8, Register::Rsp), (5, Register::Rbp)] {
+        let mut state = cr3_any_reg_state(CR3_LINUX);
+        let before = state.clone();
+        let mut memory = Memory::code(&[0x0f, 0x20, 0xd8 | rm]);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gpr[reg as usize], CR3_LINUX);
+        assert_eq!(
+            state,
+            cr3_any_reg_expected(&before, reg as usize, CR3_LINUX, 3)
+        );
+    }
+}
+
+#[test]
+fn mov_r64_cr3_writes_the_value_as_modeled_with_low_pcid_bits() {
+    // The 64-bit register receives the modeled CR3 unchanged (PCID bits included).
+    let mut state = cr3_any_reg_state(0x3ffe_005);
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xd9]);
+    run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x3ffe_005);
+}
+
+#[test]
+fn mov_rdi_cr3_follows_a_cr3_write_and_reads_the_new_value() {
+    // `mov cr3, rbx` stops with a translation-context change; after resuming,
+    // `mov rdi, cr3` returns the new CR3.
+    let mut state = cr3_any_reg_state(0x1000);
+    state.gpr[Register::Rbx as usize] = CR3_LINUX;
+    let mut memory = Memory::code(&[0x0f, 0x22, 0xdb, 0x0f, 0x20, 0xdf]);
     let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
+    assert_eq!(result.exit, cr3_write(0x1000, CR3_LINUX));
+    let result = run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rdi as usize], CR3_LINUX);
+    assert_eq!(state.rip, RIP + 6);
+}
+
+#[test]
+fn mov_r64_cr3_other_forms_are_unsupported_without_mutation() {
+    for bytes in [
+        &[0x44, 0x0f, 0x20, 0xdf][..],       // REX.R: CR11
+        &[0x4d, 0x0f, 0x20, 0xdf][..],       // REX.W+R+B
+        &[0x0f, 0x20, 0x1f][..],             // mod 00
+        &[0x0f, 0x20, 0x5f, 0x08][..],       // mod 01
+        &[0x0f, 0x20, 0x9f, 0, 0, 0, 0][..], // mod 10
+        &[0xf0, 0x0f, 0x20, 0xdf][..],       // LOCK
+        &[0xf0, 0x41, 0x0f, 0x20, 0xdf][..],
+        &[0x66, 0x0f, 0x20, 0xdf][..],
+        &[0x66, 0x41, 0x0f, 0x20, 0xdf][..],
+        &[0xf3, 0x0f, 0x20, 0xdf][..],
+        &[0xf2, 0x0f, 0x20, 0xdf][..],
+        &[0x67, 0x0f, 0x20, 0xdf][..],
+        &[0x2e, 0x0f, 0x20, 0xdf][..],
+        &[0x64, 0x0f, 0x20, 0xdf][..],
+        &[0x41, 0x66, 0x0f, 0x20, 0xdf][..], // REX before another prefix
+        &[0x40, 0x41, 0x0f, 0x20, 0xdf][..], // several REX
+        &[0x41, 0x40, 0x0f, 0x20, 0xdf][..],
+        &[0x40, 0x48, 0x0f, 0x20, 0xd8][..],
+    ] {
+        let mut state = cr3_any_reg_state(CR3_LINUX);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert!(
+            matches!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x20 })
+            ),
+            "{bytes:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_r64_cr3_with_unmodeled_cr3_is_refused_before_any_fetch() {
+    // The CR3-owning set requires a modeled CR3, so the read never runs without one.
+    let mut state = board_state();
+    state.cr3 = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xdf]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::Cr3Missing);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+#[test]
+fn mov_r64_cr3_stays_unsupported_without_the_cr3_owning_set() {
+    for bytes in [&[0x0f, 0x20, 0xdf][..], &[0x41, 0x0f, 0x20, 0xdf][..]] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr_set(), 64).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn mov_r64_cr3_stays_unsupported_outside_the_set() {
+    for bytes in [&[0x0f, 0x20, 0xdf][..], &[0x41, 0x0f, 0x20, 0xdf][..]] {
+        let mut state = LongModeState {
+            rip: RIP,
+            rflags: 2 | IF,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 4),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x20 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn mov_r64_cr3_is_not_reachable_from_cpl3() {
+    let mut state = cr3_state(CR3_LINUX);
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x0f, 0x20, 0xdf]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &cr3_set(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+#[test]
+fn mov_r64_cr2_and_rax_cr3_keep_their_results_next_to_cr3_into_any() {
+    for (bytes, dest, expect) in [
+        (&[0x0f, 0x20, 0xd7][..], Register::Rdi, CR2_DISTINCT),
+        (&[0x0f, 0x20, 0xd0][..], Register::Rax, CR2_DISTINCT),
+        (&[0x0f, 0x20, 0xd8][..], Register::Rax, CR3_DISTINCT),
+    ] {
+        let mut state = cr3_any_reg_state(CR3_DISTINCT);
+        let mut memory = Memory::code(bytes);
+        run_set(&mut state, &mut memory, &cr3_set(), 1).unwrap();
+        assert_eq!(state.gpr[dest as usize], expect, "{bytes:02x?}");
+    }
 }
 
 // ---- S4-38L7b: MOV r64, CR4 into any general register ----------------------

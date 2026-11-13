@@ -28265,7 +28265,10 @@ fn step_configured(
         || (cpu_owned_cr3.is_some()
             && matches!(
                 instruction.operation,
-                Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_)
+                Operation::ReadCr3
+                    | Operation::ReadCr3Into(_)
+                    | Operation::ReadCr2
+                    | Operation::ReadCr2Into(_)
             )))
         && context.privilege != PrivilegeLevel::Ring0
     {
@@ -33721,6 +33724,40 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::ReadCr3Into(dest) if cpu_owned_cr3.is_some() => {
+            // S4-38L9F: `[REX] 0F 20 /3` MOV r64, CR3 into any GPR except the exact
+            // RAX forms of `ReadCr3`. The decoder validated mod = 11, reg = CR3, the
+            // REX.R-free prefix and the destination (`rm` + REX.B); the executor
+            // re-checks the shape. CPL > 0 was already refused with #GP(0) above. The
+            // set owns CR3, so `state.cr3` is the authoritative value (all 64 bits as
+            // modeled). RSP/RBP are ordinary registers here (mod = 11 is never an address).
+            // Flags are architecturally undefined after MOV r64, CRn, like the siblings.
+            let rex_only = match instruction.prefixes.rex {
+                Some(rex) => {
+                    (0x40..=0x4f).contains(&rex)
+                        && rex & 0x04 == 0
+                        && instruction.length == 4
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(rex),
+                                ..Prefixes::default()
+                            })
+                }
+                None => instruction.length == 3 && instruction.prefixes == Prefixes::default(),
+            };
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x20
+                && rex_only
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            let Some(value) = state.cr3.filter(|_| exact_form) else {
+                return Ok(StepOutcome::Unsupported { opcode: 0x20 });
+            };
+            state.write(RegisterView::low(dest, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         Operation::ReadCr2 if cpu_owned_cr3.is_some() => {
             // S4-38L5a: `0F 20 D0` and `48 0F 20 D0` only (the decoder maps
             // other register operands, prefixes and the write direction away
@@ -36133,9 +36170,10 @@ fn step_configured(
         Operation::ReadCr4Into(_) | Operation::WriteCr4From(_) => control_policy.is_some(),
         // S4-38L9d: `MOV CR0, RDI` exists only in the CPL0 set built with the FP member.
         Operation::WriteCr0Rdi => control_policy.is_some() && fp_cpl0.is_some(),
-        Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
-            cpu_owned_cr3.is_some()
-        }
+        Operation::ReadCr3
+        | Operation::ReadCr3Into(_)
+        | Operation::ReadCr2
+        | Operation::ReadCr2Into(_) => cpu_owned_cr3.is_some(),
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -38564,6 +38602,7 @@ fn step_configured(
         | Operation::WriteCr3
         | Operation::WriteCr3From(_)
         | Operation::ReadCr3
+        | Operation::ReadCr3Into(_)
         | Operation::ReadCr2
         | Operation::ReadCr2Into(_) => {
             unreachable!("CR operations commit in their explicit profile path")
