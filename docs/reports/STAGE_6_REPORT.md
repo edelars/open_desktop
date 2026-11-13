@@ -14,7 +14,7 @@
 | S6-01 | `not_started` | Методический срез прошёл ревью и закоммичен как [`5183584`](https://github.com/edelars/open_desktop/commit/5183584); numeric calibration pending для S6-05, S6-08/S6-09, S6-19/S6-36, S6-34/35/37 |
 | S6-02 | `in_progress` | Первый evidence-срез по закреплённому Linux artifact и выбору INIT/SIPI; полный AP inventory и архитектурная приёмка ещё не выполнены. См. [`ap-start-inventory.json`](data/stage6/ap-start-inventory.json). |
 | S6-03 | `not_started` | — |
-| S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое архитектурное ревью; срез фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity. Реализация и выбор host primitive не входят в этот срез. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
+| S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое ревью `gpt-6.1-sol/high`; [коммит `4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc). `git diff --check` чист; `check_layout.py` сообщает только 45 существующих битых ссылок на отсутствующие work evidence артефакты, новых S6 ошибок нет. Graphify обновлён на этот коммит. Документ фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity; реализация и выбор host primitive не входят. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
 | S6-05 | `not_started` | — |
 | S6-06 | `not_started` | — |
 | S6-07 | `not_started` | — |
