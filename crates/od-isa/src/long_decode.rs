@@ -862,6 +862,15 @@ pub enum Operation {
     LoadGsSelectorReg {
         source: Register,
     },
+    /// S4-38L9D: `[REX.B] 8E /r` with mod = 11, `sreg` = reg field 0 (ES), 2 (SS) or 3 (DS), and
+    /// a source other than the bare `8E C0` / `8E D0` / `8E D8` forms (AX, no REX), e.g. `41 8E DC`
+    /// = `mov %r12d, %ds`. The source is r/m16 (low 16 bits of the register; REX.B selects
+    /// r8..r15); only REX.B is decoded (W, R, X, 0x40 and every other prefix are refused).
+    /// Executed only in the CPL0 profile set: null selector only (DS/ES 0..=3, SS exactly 0).
+    LoadSegmentSelectorReg {
+        sreg: u8,
+        source: Register,
+    },
     /// S2-22k null selector loads: bare `8E D8` / `8E C0` at CPL0.
     LoadNullDsSelector,
     LoadNullEsSelector,
@@ -10145,19 +10154,48 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, 0x8e) => {
                 let modrm = self.byte()?;
-                if self.length != 2 || prefixes != Prefixes::default() {
+                // S4-38L9D: `41 8E /r` (REX.B only: W, R, X and the plain 0x40 stay refused) for
+                // ES/SS/DS, mod = 11. REX.B extends r/m to r8..r15. With REX the form has length 3
+                // and no other prefix, so the REX byte directly precedes the opcode.
+                let rex_b = prefixes
+                    == Prefixes {
+                        rex: Some(0x41),
+                        ..Prefixes::default()
+                    };
+                if !(self.length == 2 && prefixes == Prefixes::default()
+                    || self.length == 3 && rex_b)
+                {
                     return Err(self.unsupported(opcode));
                 }
                 // S4-38L9B: a register source other than AX for FS/GS (`8E /r`, mod = 11,
-                // reg = 4 or 5). ES/CS/SS/DS with another source and every memory form stay
-                // unsupported.
+                // reg = 4 or 5). S4-38L9D: the same for ES, SS and DS (reg = 0, 2, 3), with
+                // or without REX.B. CS (reg = 1), reg = 6/7, FS/GS with REX.B and every memory
+                // form stay unsupported.
                 let register_form = modrm >> 6 == 3;
+                let reg = (modrm >> 3) & 7;
                 match modrm {
+                    _ if rex_b => {
+                        if !register_form || !matches!(reg, 0 | 2 | 3) {
+                            return Err(self.unsupported(opcode));
+                        }
+                        Operation::LoadSegmentSelectorReg {
+                            sreg: reg,
+                            source: Register::from_encoding((modrm & 7) | 8)
+                                .expect("a four-bit register encoding"),
+                        }
+                    }
                     0xe0 => Operation::LoadFsSelector,
                     0xe8 => Operation::LoadGsSelector,
                     0xd8 => Operation::LoadNullDsSelector,
                     0xc0 => Operation::LoadNullEsSelector,
                     0xd0 => Operation::LoadNullSsSelector,
+                    _ if register_form && matches!(reg, 0 | 2 | 3) => {
+                        Operation::LoadSegmentSelectorReg {
+                            sreg: reg,
+                            source: Register::from_encoding(modrm & 7)
+                                .expect("a three-bit register encoding"),
+                        }
+                    }
                     _ if register_form && (modrm >> 3) & 7 == 4 => Operation::LoadFsSelectorReg {
                         source: Register::from_encoding(modrm & 7)
                             .expect("a three-bit register encoding"),
@@ -10485,6 +10523,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::LoadGsSelector => false,
                 Operation::LoadFsSelectorReg { .. } => false,
                 Operation::LoadGsSelectorReg { .. } => false,
+                Operation::LoadSegmentSelectorReg { .. } => false,
                 Operation::LoadNullDsSelector => false,
                 Operation::LoadNullEsSelector => false,
                 Operation::LoadNullSsSelector => false,
@@ -28581,10 +28620,7 @@ mod tests {
             &[0xf0, 0x8e, 0xef][..],
             &[0xf2, 0x8e, 0xef][..],
             &[0xf3, 0x8e, 0xef][..],
-            &[0x8e, 0xc7][..], // ES
-            &[0x8e, 0xcf][..], // CS
-            &[0x8e, 0xd7][..], // SS
-            &[0x8e, 0xdf][..], // DS
+            &[0x8e, 0xcf][..], // CS (ES/SS/DS became LoadSegmentSelectorReg in S4-38L9D)
             &[0x8e, 0xf7][..], // reg 6
             &[0x8e, 0xff][..], // reg 7
             &[0x8e, 0x2f][..], // memory source
@@ -28610,10 +28646,10 @@ mod tests {
             assert_eq!(decoded.length, 2);
             assert_eq!(decoded.operation, operation);
         }
+        // `8E D9` (`mov %ecx, %ds`) became LoadSegmentSelectorReg in S4-38L9D.
         for bytes in [
             &[0x8e, 0xc8][..],
             &[0x8e, 0x20][..],
-            &[0x8e, 0xd9][..],
             &[0x48, 0x8e, 0xd8][..],
             &[0x66, 0x8e, 0xc0][..],
             &[0xf3, 0x8e, 0xd8][..],
@@ -28624,6 +28660,100 @@ mod tests {
                 Err(DecodeError::Unsupported { .. })
             ));
         }
+    }
+
+    #[test]
+    fn es_ss_ds_selector_loads_from_registers_decode_with_optional_rex_b() {
+        // S4-38L9D: ES (reg 0), SS (reg 2), DS (reg 3), mod = 11.
+        for sreg in [0u8, 2, 3] {
+            for rm in 0u8..=7 {
+                let modrm = 0xc0 | (sreg << 3) | rm;
+                let bare_ax_form = rm == 0;
+                // No prefix: the bare AX forms keep their own operations.
+                let mut memory = Memory::new(&[0x8e, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(decoded.length, 2);
+                if bare_ax_form {
+                    let expected = match sreg {
+                        0 => Operation::LoadNullEsSelector,
+                        2 => Operation::LoadNullSsSelector,
+                        _ => Operation::LoadNullDsSelector,
+                    };
+                    assert_eq!(decoded.operation, expected);
+                } else {
+                    assert_eq!(
+                        decoded.operation,
+                        Operation::LoadSegmentSelectorReg {
+                            sreg,
+                            source: Register::from_encoding(rm).unwrap()
+                        }
+                    );
+                }
+                // REX.B (0x41): r8..r15, including rm = 0 (r8).
+                let mut memory = Memory::new(&[0x41, 0x8e, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(decoded.length, 3);
+                assert_eq!(
+                    decoded.operation,
+                    Operation::LoadSegmentSelectorReg {
+                        sreg,
+                        source: Register::from_encoding(rm | 8).unwrap()
+                    }
+                );
+            }
+        }
+        // `41 8e dc` is `mov %r12d, %ds` (the S4-38L9C boundary).
+        let mut memory = Memory::new(&[0x41, 0x8e, 0xdc]);
+        assert_eq!(
+            memory.decode().unwrap().operation,
+            Operation::LoadSegmentSelectorReg {
+                sreg: 3,
+                source: Register::R12
+            }
+        );
+    }
+
+    #[test]
+    fn es_ss_ds_selector_loads_refuse_other_rex_bits_prefixes_and_forms() {
+        for bytes in [
+            &[0x40, 0x8e, 0xdc][..], // plain REX
+            &[0x42, 0x8e, 0xdc][..], // REX.X
+            &[0x44, 0x8e, 0xdc][..], // REX.R
+            &[0x48, 0x8e, 0xdc][..], // REX.W
+            &[0x49, 0x8e, 0xdc][..], // REX.WB
+            &[0x45, 0x8e, 0xdc][..], // REX.RB
+            &[0x43, 0x8e, 0xdc][..], // REX.XB
+            &[0x4f, 0x8e, 0xdc][..], // REX.WRXB
+            &[0x66, 0x41, 0x8e, 0xdc][..],
+            &[0x41, 0x66, 0x8e, 0xdc][..],
+            &[0x67, 0x41, 0x8e, 0xdc][..],
+            &[0x64, 0x41, 0x8e, 0xdc][..],
+            &[0x65, 0x41, 0x8e, 0xdc][..],
+            &[0xf0, 0x41, 0x8e, 0xdc][..],
+            &[0xf2, 0x41, 0x8e, 0xdc][..],
+            &[0xf3, 0x41, 0x8e, 0xdc][..],
+            &[0x41, 0x41, 0x8e, 0xdc][..], // two REX bytes
+            &[0x66, 0x8e, 0xdc][..],
+            &[0x67, 0x8e, 0xdc][..],
+            &[0x64, 0x8e, 0xdc][..],
+            &[0xf3, 0x8e, 0xdc][..],
+            &[0x41, 0x8e, 0xcc][..],       // CS with REX.B
+            &[0x41, 0x8e, 0xe4][..],       // FS with REX.B stays refused
+            &[0x41, 0x8e, 0xec][..],       // GS with REX.B stays refused
+            &[0x41, 0x8e, 0xf4][..],       // reg 6
+            &[0x41, 0x8e, 0xfc][..],       // reg 7
+            &[0x41, 0x8e, 0x1c, 0x24][..], // memory form with REX.B
+            &[0x41, 0x8e, 0x58, 0x08][..],
+            &[0x8e, 0x1c, 0x24][..], // memory form
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        let mut truncated = Memory::new(&[0x41, 0x8e]);
+        assert!(matches!(truncated.decode(), Err(DecodeError::Memory(_))));
     }
 
     #[test]
