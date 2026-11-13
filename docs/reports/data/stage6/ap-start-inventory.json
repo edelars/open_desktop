@@ -227,6 +227,11 @@
         "path": "arch/x86/include/asm/cpufeatures.h",
         "sha256": "c582c182aefadee0dcb49edfb6a70f38534774f1e0bebeb09652096e617fc683",
         "areas": "XMM/SSE and XMM2/SSE2 feature-bit definitions referenced by verify_cpu.S"
+      },
+      {
+        "path": "arch/x86/kernel/apic/local.h",
+        "sha256": "02119a4a41bfb35c4ed50fc66bf2e8e821015763a5c01df3fd214e482f0240c2",
+        "areas": "__prepare_ICR encodings for fixed, NMI, INIT, and startup IPIs"
       }
     ]
   },
@@ -1885,11 +1890,14 @@
       "ap_start": "Startup INIT/SIPI sequence is targeted to phys_apicid; it does not use shorthand."
     },
     "topology_cpuid_leaves": {
-      "common_selection": "The shared cpu_parse_topology_ext() tries available leaf 0x1f, then 0x80000026, then 0x0b; it is not vendor-gated in this helper. Runtime selection depends on guest maximum basic/extended CPUID leaves.",
+      "common_selection": "cpu_parse_topology_ext() tries leaves 0x1f, 0x80000026, then 0x0b when called. topology_common.c calls it only in the Intel vendor branch; leaf presence alone does not establish that the helper runs for another vendor.",
       "intel": "The Intel path uses the shared extended-leaf order; if none parses, it falls back to legacy topology. Leaf 1 EBX supplies the initial APIC ID and logical-processor count used by the legacy parser; leaf 4 subleaf 0 supplies the legacy core count when available. If CPUID level is at least 0x1a, Linux also reads leaf 0x1a for CPU type.",
       "amd_hygon": "AMD/Hygon path tries the shared extended-leaf order; if unavailable, AMD falls back to leaf 0x80000008. When the extended topology path or legacy 0x80000008 path succeeds, Linux also tries leaf 0x8000001e for additional SMT/APIC/node information, then falls back to the Fam10h node-ID MSR when that leaf is unavailable. AMD HTR cores may also read leaf 0x80000026 EBX for CPU type.",
       "other_legacy": "Centaur/Zhaoxin use the legacy parser. Its core/thread topology uses leaf 1 EBX logical-processor count and leaf 4 subleaf 0 core count when supported.",
-      "runtime_leaf_values": "Pending: S4-35 does not pin the guest CPU vendor/model or exposed CPUID maximum leaves."
+      "runtime_leaf_values": "The reference profile max leaves exclude 0x1f, 0x80000026, and 0x0b. Independently, OpenDesktop is an unknown vendor to the pinned topology_common.c vendor switch, so no topology parser is selected; no runtime Linux boot/log confirms CPU enumeration.",
+      "unknown_vendor": "For reference vendor OpenDesktop (classified as unknown by this Linux source), topology_common.c reads CPUID.1 EBX initial APIC ID and derives ebx1_nproc_shift, then has no vendor switch branch to call cpu_parse_topology_ext() or parse_legacy(). Defaults remain one logical CPU and zero topology shifts. This does not establish N-core/package topology.",
+      "linux_fallback": "No generic legacy topology fallback is selected for the OpenDesktop vendor. The common setup reads CPUID.1 EBX initial APIC ID and logical-count shift, but the vendor switch only calls AMD/Hygon, Centaur/Zhaoxin, or Intel topology parsers. The target must keep CPUID.1 APIC ID, MADT IDs, and cpu_count consistent; full package/core topology is unestablished and deferred to S6-18.",
+      "s6_2_or_4_vcpu_requirement": "Expose CPUID.1 EBX logical-processor count N and current APIC ID 0..N-1 consistently with MADT type 0 entries. This is a board consistency requirement, not proof Linux classifies OpenDesktop as an N-core package; topology_common.c leaves unknown-vendor topology domains at their one-CPU defaults. Resolve package/core domains in S6-18."
     },
     "expected_madt_and_namespace": {
       "xapic_2_vcpus": "Processor Local APIC (MADT type 0) entries for UID/APIC ID 0 and 1, both enabled.",
@@ -1910,7 +1918,7 @@
   },
   "not_yet_inventoried": [
     "Runtime confirmation that the future S6 2/4-vCPU implementation exposes the specified APIC CPUID/APIC_BASE state and xAPIC selection; current Stage4A remains one-vCPU/APIC-clear.",
-    "Runtime confirmation of conditional IOAPIC/MSI behavior, topology fallback, and NMI paths under the future guest profile.",
+    "Linux CPU-topology enumeration and package/core-domain behavior for the unknown OpenDesktop vendor; CPUID.1 EBX, MADT, and cpu_count consistency remains a target requirement.",
     "Runtime observation of the calibrated udelay delay_fn; source-selected INIT delay for the neutral OpenDesktop target is 10,000 microseconds unless overridden."
   ],
   "sources": [
@@ -2007,7 +2015,8 @@
       "arch/x86/kernel/apic/apic.h:244-246 and apic/apic.c:1866-1877 (X2APIC_DISABLED when CPUID.X2APIC is clear)",
       "arch/x86/kernel/apic/apic_flat_64.c:22-67 (physical-flat xAPIC driver and unset wakeup callbacks)",
       "arch/x86/kernel/coco/sev/core.c:888-898 and arch/x86/kernel/cpu/mshyperv.c:410-423 (SEV-SNP and Hyper-V SNP callbacks); CONFIG_HYPERV_VTL_MODE is disabled in staged config",
-      "docs/specs/CPU_CONTRACT.md reference target; current executable CPUID in crates/od-isa/src/cpuid.rs:41-70; current single-LAPIC MADT in crates/od-machine/src/madt.rs:37,58-59,239-276"
+      "docs/specs/CPU_CONTRACT.md reference target; current executable CPUID in crates/od-isa/src/cpuid.rs:41-70; current single-LAPIC MADT in crates/od-machine/src/madt.rs:37,58-59,239-276",
+      "arch/x86/kernel/cpu/topology_common.c:112-177 (unknown vendor keeps one-CPU topology defaults; reads CPUID.1 EBX but dispatches topology parsers only for known vendors); arch/x86/kernel/cpu/topology_ext.c:133-145 (leaf parser called from vendor paths, not universal)"
     ],
     "scope_limit": "The static future target path and D2 are accepted by independent architecture review. This does not claim current Stage4A implementation, APIC_BASE wiring, multi-LAPIC MADT, AP execution, or 2/4-vCPU runtime are implemented or observed.",
     "topology_selection": {
@@ -2019,8 +2028,8 @@
         "0x1f",
         "0x80000026"
       ],
-      "linux_fallback": "The documented topology helper tries 0x1f, 0x80000026, then 0x0b; all are outside this reference target. Linux therefore uses its legacy CPUID.1 EBX logical-count/APIC-ID path for this profile.",
-      "s6_2_or_4_vcpu_requirement": "Set CPUID.1 EBX logical-processor count to N and the current vCPU APIC ID to 0..N-1; the present reference table is only the N=1 seed and current implementation remains N=1."
+      "linux_fallback": "For OpenDesktop, the unknown-vendor switch branch is absent: Linux reads CPUID.1 EBX initial APIC ID and derives the logical-count shift, but invokes neither parse_legacy() nor cpu_parse_topology_ext(). Default domains remain one logical CPU with zero shifts; an N-core package is not established. Keep APIC ID, CPUID count and MADT entries consistent, and resolve topology domains in S6-18.",
+      "s6_2_or_4_vcpu_requirement": "Expose CPUID.1 EBX count N and current APIC ID 0..N-1 consistently with enabled MADT type 0 entries. This is a consistency requirement, not evidence of Linux N-core topology classification for unknown vendor OpenDesktop; resolve in S6-18."
     },
     "d2_architecture_decision": {
       "owner_response": "No answer recorded in STAGE_6.md as of 2026-11-13; use the documented default.",
