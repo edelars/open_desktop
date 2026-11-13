@@ -146,6 +146,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let report = od_bench::page_walk_compare::run(process_run)?;
             write_json(output.as_ref(), &report)?;
         }
+        "stage6-host-memory" => {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            write_json(
+                output.as_ref(),
+                &od_bench::stage6_host_memory::run(process_run)?,
+            )?;
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            return Err("stage6-host-memory requires native Apple Silicon macOS execution".into());
+        }
         "dispatch-cache" => {
             let case_list = case_list.ok_or("dispatch-cache requires --case-list PATH")?;
             let trace = trace_path.ok_or("dispatch-cache requires --trace PATH")?;
@@ -764,7 +773,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, page-walk-compare, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
+                "expected record, measure, synthetic, page-walk-compare, stage6-host-memory, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -804,7 +813,7 @@ fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register]\n\
+        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench stage6-host-memory --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json [--generic-register]\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\

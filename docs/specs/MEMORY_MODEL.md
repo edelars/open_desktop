@@ -1,6 +1,6 @@
 # Модель памяти гостя x86 и владение RAM (S6-04)
 
-Статус: контракт модели для последующей реализации; это не описание уже реализованного SMP backend. Выбор конкретной реализации остаётся за S6-06 и последующими задачами. Гостевая модель — x86-TSO для обычной когерентной WB-памяти; MMIO, page-walk side effects и смешанные/разделённые доступы ограничиваются отдельно ниже.
+Статус: контракт модели для последующей реализации; это не описание уже реализованного SMP backend. Ограниченные host primitive choices для aligned same-width accesses измерены в S6-06 ниже; завершённый RAM backend остаётся за последующими задачами. Гостевая модель — x86-TSO для обычной когерентной WB-памяти; MMIO, page-walk side effects и смешанные/разделённые доступы ограничиваются отдельно ниже.
 
 ## Нормативная модель и источники
 
@@ -49,6 +49,44 @@ Rust atomic access model запрещает несинхронизированн
 Выравнивание проверяется по host pointer, не только по guest address. Обычные `LDR/STR` имеют single-copy atomicity при естественном выравнивании (размер доступа) по B2.2.1. `LDAR/STLR` требуют естественного выравнивания и иначе fault (B2.3.11/B2-178). При `SCTLR.A=0` обычные невыровненные Normal accesses допустимы, но без FEAT_LSE2 имеют только byte-level single-copy atomicity. FEAT_LSE2 обеспечивает full-width single-copy atomicity для access, все байты которого находятся внутри одного aligned 16-byte block и Normal Inner/Outer WB cacheable memory; выход за эту область может оставить только byte-level atomicity либо fault в зависимости от `nAA` (B2.5.2). Невыровненные LDAR/STLR подчиняются этому же LSE2 envelope; без него они fault при `SCTLR.A=0`, а при `SCTLR.A=1` fault. Проект может выбрать более узкий aligned-only assembly contract.
 
 Нельзя вывести требуемое host pointer alignment лишь из guest alignment или типа backing allocation: [`Vec<T>` layout contract](https://doc.rust-lang.org/std/vec/struct.Vec.html#guarantees) выравнивает allocation по `T`, а `u8` имеет alignment 1. S6-30 должен явно предусмотреть и проверить выравнивание host backing для всякой atomic/LDAR/STLR ширины или обеспечить её другим контролируемым layout/primitive.
+
+## Выбор по замеру (S6-06)
+
+Три correctness-checked release-прогона на Apple M3 Max, macOS 26.7.1,
+`aarch64-apple-darwin`, с 128-byte cache line, сравнили кандидатов и сохранили
+raw samples, разброс, fingerprints и disassembly в
+[отчёте S6-06](../reports/data/stage6/s6-06-host-summary.md). Каждая обычная
+операция/кандидат агрегирует 1,200 paired sample ratios (3 процесса × 20 пар ×
+4 ширины × 5 thread/layout профилей); RMW 1/2/4/8 агрегирует 240 пар на профиль,
+а 16-byte RMW — 60. Выбор ниже ограничен измеренными aligned same-width
+accesses; это не готовый parallel RAM backend.
+
+- Для ordinary load/store одного размера из набора 1/2/4/8 байт выбран Rust
+  `SeqCst` atomic API как safe host candidate. Load имел 2.237× relaxed-baseline
+  elapsed time (pooled IQR 1.855–2.260); store имел 1.047× (IQR 1.000–2.276),
+  поэтому ускорение store не заявляется. `LDAR`/`STLR` и `LDR/STR; DMB`
+  измерены, но не выбраны: inline assembly сама не задаёт Rust synchronization
+  contract. Same-line store spread был широким.
+- Для same-width atomic RMW 1/2/4/8 байт выбран Rust std `fetch_add(SeqCst)`.
+  Disassembly этого benchmark показал `LDADDALB/H/W/X`. Без конкуренции Rust
+  std имел paired ratio 0.541× LL/SC (IQR 0.539–0.544), почти как explicit LSE
+  0.542× (0.539–0.544). При четырёх потоках Rust std pooled ratio был 0.870×
+  (IQR 0.740–1.015); pooled IQR включает 1.0, как и width-specific IQR для трёх
+  из четырёх размеров. Custom LSE probe с `DMB ISH` вокруг операции занимал
+  1.588× время LL/SC (IQR 1.352–1.843) и не выбран.
+- Для aligned 16-byte atomic RMW выбран LL/SC pair (`LDAXP`/`STLXP`) вместо
+  `CASPAL`: CASP занял 1.265× времени LL/SC без конкуренции (IQR 1.259–1.271)
+  и 3.672× при четырёх потоках (3.014–4.176). Rust std не предоставляет
+  128-bit atomic type, поэтому будущая `UnsafeCell`/ownership обёртка требует
+  отдельного аудита.
+
+Rust `SeqCst` задаёт более сильный порядок, чем x86-TSO, и запрещает разрешённый
+guest SB `0,0` outcome. Кроме того, atomic accesses разных размеров к
+перекрывающимся байтам нельзя смешивать по Rust memory model. Поэтому эти
+результаты задают host primitive для однородных aligned width cases, но не
+выбирают завершённый RAM mapping, не снимают mixed-width ограничения и не
+решают общий writer/reader ownership protocol. Page walk, DMA, descriptor,
+split-lock и MMIO transactions сохраняют свои отдельные требования.
 
 ## Атомарность и разделённые доступы
 
