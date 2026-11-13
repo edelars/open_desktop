@@ -36084,6 +36084,9 @@ fn step_configured(
         // S4-38L7bo: and for the FS/GS-based CMPXCHG m32/m64, r32/r64.
         | Operation::CmpxchgFsMem { .. }
         | Operation::CmpxchgGsMem { .. }
+        // S4-38L9x: and for the FS/GS-based XADD m8/m16/m32, r.
+        | Operation::XaddFsMem { .. }
+        | Operation::XaddGsMem { .. }
         // S4-38L7k: and for LOCK CMPXCHG m64, r64.
         | Operation::LockCmpxchgMem { .. }
         // S4-38L7l: and for LOCK INC m32/m64.
@@ -50075,6 +50078,9 @@ fn step_configured(
         | Operation::CmpxchgGsMemByte { .. }
         | Operation::CmpxchgFsMem { .. }
         | Operation::CmpxchgGsMem { .. }
+        // S4-38L9x: and for the FS/GS-based XADD m8/m16/m32, r.
+        | Operation::XaddFsMem { .. }
+        | Operation::XaddGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockDecMem { .. }
@@ -55426,6 +55432,29 @@ fn cmpxchg_at(
     Ok(())
 }
 
+/// S4-38L9x: the XADD read -> write at an already resolved address (FS/GS-based forms), by the
+/// width of the destination (SDM XADD: TEMP = SRC + DEST, SRC = DEST, DEST = TEMP; flags as ADD).
+/// The addend is read before the access; the sum is written back through one write (a read-only
+/// page faults), and the old value goes to the source register and the flags commit only after that
+/// write succeeded, so a faulting read or write leaves memory, register and flags untouched. A
+/// dword register write zero-extends into the 64-bit register; byte and word writes keep the rest.
+fn xadd_at(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    size: OperandSize,
+    source: RegisterView,
+) -> Result<(), MemoryError> {
+    let addend = state.read(source);
+    let old = memory.read_integer(address, context, size)?;
+    let (result, flags) = arithmetic_result(size, ArithmeticKind::Add, old, addend, state.rflags);
+    memory.write_integer(address, context, size, result)?;
+    state.write(source, old);
+    state.rflags = flags;
+    Ok(())
+}
+
 fn transfer(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -56098,6 +56127,25 @@ fn transfer(
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             cmpxchg_at(state, memory, context, address, destination.size, source)?;
+        }
+        Operation::XaddFsMem {
+            destination,
+            source,
+        } => {
+            // S4-38L9x: the base + effective address (RIP-relative is relative to the end of the
+            // instruction) is resolved before any access: a non-canonical start or last byte is
+            // #GP(0); RSP/RBP bases follow the shared FS/GS policy.
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            xadd_at(state, memory, context, address, destination.size, source)?;
+        }
+        Operation::XaddGsMem {
+            destination,
+            source,
+        } => {
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            xadd_at(state, memory, context, address, destination.size, source)?;
         }
         // S4-38L9k: and the bare memory form (CPL0 set only; one vCPU, LOCK changes nothing).
         Operation::LockCmpxchgMem {
