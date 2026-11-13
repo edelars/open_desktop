@@ -1,7 +1,7 @@
 {
   "slice": "S6-02",
-  "status": "in_progress",
-  "acceptance": "not_accepted",
+  "status": "accepted_for_documented_s6_target_profile",
+  "acceptance": "accepted",
   "evidence_date": "2026-11-13",
   "artifact": {
     "manifest": "docs/reports/data/stage4/s4-35-linux-artifact.json",
@@ -241,27 +241,29 @@
     "selected_project_path": {
       "name": "INIT/SIPI",
       "basis": [
-        "The current project board MADT has one enabled Processor Local APIC entry for UID/APIC ID 0 and has no Multiprocessor Wakeup entry; no alternate wakeup callback is part of the current board contract.",
-        "The Stage 6 first vertical slice explicitly requires BSP INIT/SIPI and an AP real-mode trampoline.",
-        "smpboot.c dispatches in order: wakeup_secondary_cpu_64 callback, wakeup_secondary_cpu callback, then wakeup_secondary_cpu_via_init fallback. A board MADT without type 0x10 does not rule out another callback override. The selected callback for the final VM CPU/APIC configuration is pending runtime/source-path verification."
+        "The current Stage4A board MADT contains one enabled Processor Local APIC entry for UID/APIC ID 0 and no Multiprocessor Wakeup type 0x10; the current executable profile is not SMP-capable.",
+        "The S6 first SMP target extends reference od-x86-64-v1-neutral-v0.1 with CPUID APIC=1, X2APIC=0, hypervisor-present=0, xAPIC APIC_BASE state, 2/4 APIC IDs 0..N-1 and matching MADT type 0 entries.",
+        "Linux dispatch order is wakeup_secondary_cpu_64, then wakeup_secondary_cpu, then wakeup_secondary_cpu_via_init. Under the target profile there is no valid type 0x10 entry or active platform callback override, so the selected static target path is native INIT/SIPI."
       ],
-      "status": "recommendation_for_architecture_review",
-      "apic_mode_limit": "The project board candidate records BSP xAPIC as selected-but-unverified (S4-00c). Linux configuration alone does not establish guest xAPIC/x2APIC runtime selection.",
+      "status": "statically_resolved_for_s6_target_and_architecturally_accepted",
+      "apic_mode_limit": "The S6 target selects physical-flat xAPIC with physical destinations. Current Stage4A execution remains one-vCPU/APIC-clear; the target is a contract, not implemented runtime.",
       "avoid_publishing_madt_type_0x10": "Publishing the entry would install the firmware mailbox callback, a different AP handoff contract that the current VM board does not implement; other overrides must also be checked."
     }
   },
   "init_sipi_sequence": {
     "source_function": "arch/x86/kernel/smpboot.c:send_init_sequence and wakeup_secondary_cpu_via_init",
-    "destination": "phys_apicid target argument; with the project xAPIC candidate this is physical destination mode, but guest runtime mode remains unverified.",
+    "destination": "phys_apicid target argument; under the S6 target profile CPUID.X2APIC=0 selects physical-flat xAPIC and physical destination mode. The current executable Stage4A profile cannot start APs.",
     "init_assert": "ICR = LEVEL_TRIGGER | ASSERT | DELIVERY_INIT; wait for ICR idle.",
     "init_delay": {
       "default_modern_cpu": "0 microseconds for Intel family/model >= Pentium Pro, AMD family >= 0x0f, or Hygon family >= 0x18.",
       "legacy_cpu": "10 milliseconds.",
-      "override": "cpu_init_udelay= kernel command-line option."
+      "override": "cpu_init_udelay= kernel command-line option.",
+      "default_for_s6_target": "10,000 microseconds: the OpenDesktop vendor string does not match Linux Intel/AMD/Hygon zero-delay predicates; cpu_init_udelay= remains an explicit override."
     },
     "delay_provider": {
       "mechanism": "The source calls udelay(); arch/x86/lib/delay.c converts this using loops_per_jiffy and the configured delay_fn. The kernel can select TSC-based delay (use_tsc_delay) or other delay providers.",
-      "runtime_provider": "Pending: S4-35 pins no guest CPU feature set/boot log showing which provider the final VM uses."
+      "runtime_provider": "Pending: S4-35 pins no guest CPU feature set/boot log showing which provider the final VM uses.",
+      "target_init_delay": "The source-selected INIT delay is 10 ms for the reference OpenDesktop target. udelay() uses loops_per_jiffy and configured delay_fn; exact runtime provider remains unobserved."
     },
     "init_deassert": "ICR = LEVEL_TRIGGER | DELIVERY_INIT with ASSERT clear; wait for ICR idle.",
     "sipi": {
@@ -271,7 +273,7 @@
       "delay_when_init_delay_nonzero": "300 microseconds after send, wait for ICR idle, then 200 microseconds before reading ESR.",
       "retry": "The loop stops on send or APIC delivery error; otherwise it may issue the second SIPI."
     },
-    "caveat": "Actual default delay depends on the guest CPU vendor/family/model and kernel command line, neither of which is pinned by S4-35."
+    "caveat": "For the documented OpenDesktop S6 target, Linux selects the 10 ms INIT branch and, absent cpu_init_udelay=, the nonzero-delay SIPI waits. The current S4-35 artifact does not execute or runtime-confirm this target."
   },
   "trampoline_image_evidence": {
     "source_image": "vmlinux-debug-7.0.0-38-generic",
@@ -1640,7 +1642,7 @@
       ],
       "execution_scope": "The decoded path is the native INIT/SIPI trampoline path selected by do_boot_cpu when no wakeup_secondary_cpu_64 or wakeup_secondary_cpu callback is installed. The static inventory does not prove which callback the staged guest selects at runtime. The direct 64-bit startup trampoline is a distinct callback path and is not the selected D2 recommendation.",
       "runtime_relocation_caveat": "instruction_bytes records the bytes linked into real_mode_blob in the staged ELF. setup_real_mode() copies the blob into a low-memory allocation and applies 16-bit segment relocations and 32-bit linear relocations before AP execution. Therefore relocation-bearing operands can differ in the runtime copy; the selected low-memory base is not pinned by S4-35 and no guest runtime trace is available. The 32-bit linear relocation at blob offset 0x2032 patches the immediate operand of the MOV at 0x2031 for pa_trampoline_pgd: linked value 0x4000 becomes runtime CR3 = phys_base + 0x4000. Other transition targets are also runtime-relocated: far-jump operand fixups at 0x1046 and 0x2066 add phys_base to the linked offsets 0x2000 and 0x20f0, respectively.",
-      "pending": "The linked-image instruction inventory and physical x86 repeat are complete. The physical repeat passed independent evidence review; architecture acceptance and resolving the Linux runtime callback/APIC path remain pending. The Windows CPU-06 source was not found; keep it explicitly as an unverified hypothesis for the Stage 8 trace, as permitted by the S6-02 plan. This Windows trace is not an S6-02 acceptance gate.",
+      "pending": "The linked-image instruction inventory and physical x86 repeat passed independent evidence review. The static Linux startup/APIC target path and D2 are accepted by independent architecture review for the documented S6 first-SMP target profile. Current executable Stage4A remains one-vCPU/APIC-clear; no runtime implementation or AP execution is claimed. Windows CPU-06 remains an unverified hypothesis reserved for the Stage 8 trace, as permitted by the S6-02 plan.",
       "common_64_entry_instructions": [
         {
           "path": "tr_start -> secondary_startup_64",
@@ -1858,7 +1860,8 @@
       "two_or_four_vcpus_with_apic_ids_0_to_n_minus_1": "xAPIC physical addressing supports these IDs and remains sufficient; vCPU count alone does not require x2APIC.",
       "xapic_candidate": "The default x86_64 APIC driver in this build is physical-flat: APIC IDs are physical, dest_mode_logical=false, and normal APIC register access uses xAPIC MMIO.",
       "x2apic_conditions": "CONFIG_X86_X2APIC=y is only build support. Runtime requires CPUID.X2APIC and x2APIC enabled in APIC_BASE or enabled by Linux. Without interrupt remapping, Linux also requires hypervisor x2APIC availability; it then uses physical destination mode and limits APIC ID to 255, or 32767 if virtual extended MSI destinations are available. With interrupt remapping, x2APIC selection/physical-vs-cluster driver depends on the remapper and platform ops.",
-      "actual_two_four_cpu_choice": "Not established from S4-35: the staged artifact pins neither the VM CPUID/APIC_BASE presentation nor IRQ-remapping capability/boot log."
+      "actual_two_four_cpu_choice": "For the S6 first SMP target profile (APIC=1, X2APIC=0, APIC_BASE xAPIC state, no platform override), static Linux selection is physical-flat xAPIC; current executable Stage4A remains one-vCPU/APIC-clear, so runtime selection has not occurred.",
+      "target_profile_source": "docs/specs/CPU_CONTRACT.md:631-656 defines reference vendor OpenDesktop, APIC=1, X2APIC=0, hypervisor-present=0; S6 requires a 2/4-vCPU cardinality and matching APIC IDs/MADT rows."
     },
     "destination_modes": {
       "xapic_physical_flat": {
@@ -1906,10 +1909,9 @@
     "runtime_gates": "NMI execution depends on panic/reboot/kdump/debug paths, CPU PMU capabilities, and nonmi_ipi/runtime configuration; source inventory does not prove these paths ran in the VM."
   },
   "not_yet_inventoried": [
-    "Two- and four-vCPU runtime xAPIC/x2APIC selection under the project's final CPUID and IRQ-remapping exposure.",
-    "Runtime confirmation of the documented conditional IOAPIC/MSI modes, topology leaves and NMI paths under the final guest profile.",
-    "The calibrated runtime udelay provider selected for the final guest CPU profile and boot command line.",
-    "Windows-specific CPU-06 confirmation and Windows DSDT-object absence behavior."
+    "Runtime confirmation that the future S6 2/4-vCPU implementation exposes the specified APIC CPUID/APIC_BASE state and xAPIC selection; current Stage4A remains one-vCPU/APIC-clear.",
+    "Runtime confirmation of conditional IOAPIC/MSI behavior, topology fallback, and NMI paths under the future guest profile.",
+    "Runtime observation of the calibrated udelay delay_fn; source-selected INIT delay for the neutral OpenDesktop target is 10,000 microseconds unless overridden."
   ],
   "sources": [
     {
@@ -1947,5 +1949,87 @@
       "description": "VTL interrupt management documents INIT/startup IPIs only in the Hyper-V/VSM scope",
       "url": "https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm#vtl-interrupt-management"
     }
+  ],
+  "smp_target_profile": {
+    "status": "accepted_by_independent_architecture_review",
+    "reference_cpu_profile": "docs/specs/CPU_CONTRACT.md#ubuntu-generic-amd64-od-x86-64-v1-neutral-v01",
+    "reference_vendor": "OpenDesktop ",
+    "reference_cpuid1": {
+      "edx": "0x0781A379",
+      "apic": 1,
+      "ecx": "0x00000000",
+      "x2apic": 0,
+      "hypervisor_present": 0,
+      "ebx": "0x00000100",
+      "logical_processors": 1,
+      "apic_id": 0
+    },
+    "current_executable_stage4a": {
+      "cpuid1_edx": "0x01000011",
+      "apic": 0,
+      "cpuid1_ecx": "0x00000000",
+      "ebx": "0x00000100",
+      "logical_processors": 1,
+      "apic_id": 0,
+      "madt_enabled_lapic_count": 1,
+      "smp_capable": false
+    },
+    "required_s6_two_or_four_vcpu_extension": {
+      "logical_processors": [
+        2,
+        4
+      ],
+      "apic_ids": "0 through N-1 in CPUID.1 EBX and matching enabled MADT type 0 entries",
+      "cpuid_apic": 1,
+      "cpuid_x2apic": 0,
+      "cpuid_hypervisor_present": 0,
+      "apic_base": "LAPIC globally enabled; x2APIC enable bit clear (xAPIC MMIO state)",
+      "command_line": "No apic=, nolapic, or cpu_init_udelay= override for this target",
+      "firmware": "No MADT Multiprocessor Wakeup type 0x10; publish one enabled Local APIC structure per APIC ID 0..N-1",
+      "platform_exposure": "No SEV-SNP, Hyper-V SNP/VTL, Numachip, or UV override path for the neutral reference target and current ODFWAPIC/OPNDSK board identity"
+    },
+    "static_linux_selection_under_required_target": {
+      "apic_driver": "apic_flat_64 physical-flat xAPIC; dest_mode_logical=false; xAPIC MMIO operations; x2APIC is disabled by CPUID.X2APIC=0 regardless of remapping/hypervisor predicates",
+      "startup_callback": "No valid MADT type 0x10 callback and no active platform callback override; apic_flat_64 leaves both wakeup callbacks unset; smpboot falls through to wakeup_secondary_cpu_via_init",
+      "ipi_destination": "phys_apicid in physical destination mode; AP startup is targeted and uses no shorthand",
+      "ioapic_msi_destination": "Physical destination mode under the physical-flat xAPIC driver",
+      "addressability": "xAPIC addresses APIC IDs 0..3 for both 2-vCPU and 4-vCPU target configurations"
+    },
+    "delay_under_required_target": {
+      "init_delay_us": 10000,
+      "reason": "OpenDesktop is not Intel, AMD, or Hygon, so Linux takes the legacy/default 10 ms branch unless cpu_init_udelay= overrides it",
+      "sipi_delay": "Because init delay is nonzero: 300 us after SIPI, wait for ICR idle, then 200 us before ESR; at most two SIPI attempts for an integrated APIC",
+      "mechanism": "smpboot calls udelay(); delay accounting uses loops_per_jiffy and the configured delay_fn. The reference target advertises TSC, but the exact runtime delay_fn is not yet observed."
+    },
+    "source_refs": [
+      "Ubuntu linux-source 7.0.0-38.38: arch/x86/kernel/smpboot.c:805-821 (INIT delay vendor/family predicates), :1005 and :1051-1056 (callback order and INIT fallback)",
+      "arch/x86/kernel/acpi/madt_wakeup.c:212-246 (MADT type 0x10 callback)",
+      "arch/x86/kernel/apic/apic.h:244-246 and apic/apic.c:1866-1877 (X2APIC_DISABLED when CPUID.X2APIC is clear)",
+      "arch/x86/kernel/apic/apic_flat_64.c:22-67 (physical-flat xAPIC driver and unset wakeup callbacks)",
+      "arch/x86/kernel/coco/sev/core.c:888-898 and arch/x86/kernel/cpu/mshyperv.c:410-423 (SEV-SNP and Hyper-V SNP callbacks); CONFIG_HYPERV_VTL_MODE is disabled in staged config",
+      "docs/specs/CPU_CONTRACT.md reference target; current executable CPUID in crates/od-isa/src/cpuid.rs:41-70; current single-LAPIC MADT in crates/od-machine/src/madt.rs:37,58-59,239-276"
+    ],
+    "scope_limit": "The static future target path and D2 are accepted by independent architecture review. This does not claim current Stage4A implementation, APIC_BASE wiring, multi-LAPIC MADT, AP execution, or 2/4-vCPU runtime are implemented or observed.",
+    "topology_selection": {
+      "reference_max_basic_leaf": "0x00000001",
+      "reference_max_extended_leaf": "0x80000008",
+      "available_topology_leaves": [],
+      "absent_leaves": [
+        "0x0b",
+        "0x1f",
+        "0x80000026"
+      ],
+      "linux_fallback": "The documented topology helper tries 0x1f, 0x80000026, then 0x0b; all are outside this reference target. Linux therefore uses its legacy CPUID.1 EBX logical-count/APIC-ID path for this profile.",
+      "s6_2_or_4_vcpu_requirement": "Set CPUID.1 EBX logical-processor count to N and the current vCPU APIC ID to 0..N-1; the present reference table is only the N=1 seed and current implementation remains N=1."
+    },
+    "d2_architecture_decision": {
+      "owner_response": "No answer recorded in STAGE_6.md as of 2026-11-13; use the documented default.",
+      "decision_for_review": "Accepted default: native INIT/SIPI startup from real16, then protected32, then long64, under the defined OpenDesktop xAPIC target profile.",
+      "basis": "The staged Linux 7.0.0-38.38 native callback path under the specified target falls through to wakeup_secondary_cpu_via_init; Windows CPU-06 remains an unverified Stage 8 hypothesis and is not generalized.",
+      "status": "accepted_by_independent_architecture_review"
+    }
+  },
+  "deferred_hypotheses": [
+    "Windows CPU-06 remains an unverified hypothesis reserved for the Stage 8 trace; this is explicitly permitted by S6-02 step 5."
   ]
 }
