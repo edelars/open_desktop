@@ -7,6 +7,7 @@ mod apic_pair;
 mod bus;
 mod diagnostic_vcpu;
 mod display_device;
+mod dma_page;
 mod event_queue;
 mod fetch_translation_cache;
 mod firmware_board;
@@ -87,6 +88,7 @@ pub use bus::{
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError,
 };
+pub use dma_page::{DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DmaPage0};
 pub use pic_8259::{
     ISA_IRQ_VECTOR_BASE, PIC_ELCR_BASE_PORT, PIC_ELCR_MASTER_MASK, PIC_ELCR_PORT_BYTES,
     PIC_ELCR_SLAVE_MASK, PIC_ICW1_ACCEPTED, PIC_ICW4_ACCEPTED, PIC_ICW4_MASTER_AEOI,

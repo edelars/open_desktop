@@ -17,18 +17,19 @@ use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
     DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
-    DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, GuestLinearAddress,
-    GuestPhysicalAddress, GuestPhysicalRange, IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic,
-    LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle, Long64ProbeConfig,
-    MachineBus, MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind,
-    MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
-    NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
-    PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
-    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
-    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
-    PciEcam, Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding,
-    RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
-    VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
+    DISPLAY_SECOND_FRAMEBUFFER_BASE, DMA_PAGE_0_PORT, DMA_PAGE_0_PORT_BYTES, DisplayDevice,
+    DisplayHandle, DmaPage0, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
+    IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE,
+    LocalApic, LocalApicHandle, Long64ProbeConfig, MachineBus, MachineMemoryMap, MachineStopReason,
+    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE,
+    NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError, NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT,
+    PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR, PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES,
+    PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
+    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
+    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Pair, Pit8254Devices,
+    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
+    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
+    run_paged_probe, run_paged_probe_with_rdtsc,
 };
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
@@ -2082,6 +2083,12 @@ pub(crate) fn assemble_board(
                 Box::new(AbsentPorts::new(region)),
             )?;
         }
+        // The DMA page register the kernel probes in `i8237A_init_ops` (S4-38L9w).
+        bind(
+            DMA_PAGE_0_PORT,
+            DMA_PAGE_0_PORT_BYTES,
+            Box::new(DmaPage0::new()),
+        )?;
     }
     let bus = MachineBus::new(
         map,
@@ -4257,9 +4264,9 @@ mod tests {
     }
 
     /// Ports the profile binds (or, without the flag, leaves as a trap).
-    const LINUX_PROFILE_PORTS: [u16; 17] = [
+    const LINUX_PROFILE_PORTS: [u16; 18] = [
         0x40, 0x41, 0x42, 0x43, 0x61, 0x20, 0x21, 0xA0, 0xA1, 0x70, 0x71, 0xED, 0x80, 0x60, 0x64,
-        0x4D0, 0x4D1,
+        0x4D0, 0x4D1, 0x87,
     ];
 
     #[test]
@@ -4420,6 +4427,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// S4-38L9w: `i8237A_init_ops` reads `DMA_PAGE_0` (`0x87`) once; the
+    /// register is a stored byte (0 from reset) and the other page registers and
+    /// the DMA controller ports stay traps.
+    #[test]
+    fn linux_profile_dma_page_0_stores_a_byte_and_its_neighbours_stay_traps() {
+        let mut board = linux_board();
+        assert_eq!(inb(&mut board, 0x87), Ok(0));
+        for value in [0x12u32, 0xFF, 0x00] {
+            outb(&mut board, 0x87, value).unwrap();
+            assert_eq!(inb(&mut board, 0x87), Ok(value), "after {value:#x}");
+        }
+        outb(&mut board, 0x87, 0x5A).unwrap();
+        // The POST port still reads 0xFF, the other page registers and the
+        // controllers are unbound, and none of them saw the write.
+        assert_eq!(inb(&mut board, 0x80), Ok(0xFF));
+        for port in [
+            0x81u16, 0x82, 0x83, 0x86, 0x88, 0x89, 0x8A, 0x8B, 0x8F, 0x00, 0x0F, 0xC0, 0xDF,
+        ] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+            assert_eq!(
+                outb(&mut board, port, 0),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "write {port:#x}"
+            );
+        }
+        assert_eq!(inb(&mut board, 0x87), Ok(0x5A));
+        // Only byte accesses reach the register.
+        assert!(
+            board
+                .bus_mut()
+                .read_port(io_port(0x87), AccessWidth::Word)
+                .is_err()
+        );
+        // Without the profile the port is a trap (covered by the off-by-default
+        // test through LINUX_PROFILE_PORTS).
     }
 
     #[test]
