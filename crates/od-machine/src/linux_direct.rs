@@ -797,6 +797,15 @@ pub struct LinuxCpl0SetMembers {
     /// [`Self::minimal`] and in [`Self::linux_default`] (so a default run is unchanged); the
     /// runner turns it on only with `--cpuid-profile stage4a`.
     pub fp_state: bool,
+    /// `with_int3` (S4-38L9e): the bare `INT3` (`CC`) delivered as `#BP` (vector 3) through the
+    /// guest IDT gate (the kernel installs an interrupt gate, type 0xE, DPL 3, IST 0), with the
+    /// five-qword frame holding the address after the `INT3`, and the instruction retires; the
+    /// kernel's `int3_selftest` needs it. `false` in [`Self::minimal`] and in
+    /// [`Self::linux_default`] (so a default run, its member list included, is unchanged); the
+    /// runner turns it on only with `--cpuid-profile stage4a`, like `fp_state`. Independent of
+    /// the other members. A missing IDTR/GDTR, a gate that is not deliverable and a shadow that
+    /// is not `Clear` make the `INT3` itself `Unsupported` (opcode `0xcc`) with no write.
+    pub int3: bool,
     /// `with_halt`.
     pub halt: bool,
     /// `with_sti` (S4-38L7bp): the bare `STI` (`FB`): IF := 1 and the one-instruction shadow. The
@@ -863,6 +872,7 @@ impl LinuxCpl0SetMembers {
             msr_kernel_gs_base: false,
             msr_tdx_keyid_partitioning_read: false,
             fp_state: false,
+            int3: false,
             halt: false,
             sti: false,
             pio_u8: false,
@@ -902,6 +912,7 @@ impl LinuxCpl0SetMembers {
             msr_kernel_gs_base: true,
             msr_tdx_keyid_partitioning_read: false,
             fp_state: false,
+            int3: false,
             fetch_cache: true,
             diagnostic_past_c7: false,
             irq: true,
@@ -1025,6 +1036,10 @@ pub fn run_linux_direct_board_set(
     if members.fp_state {
         set = set.with_fp_state(&fp_cell);
         names.push("fp_state".into());
+    }
+    if members.int3 {
+        set = set.with_int3();
+        names.push("int3".into());
     }
     if members.halt {
         set = set.with_halt(&halt);
@@ -9025,6 +9040,149 @@ mod tests {
             "{record:?}"
         );
         assert_eq!(record.retired, 0);
+    }
+
+    // ---- S4-38L9e: INT3 (#BP) through the guest IDT on the board ----
+
+    /// A board that runs `code` at the entry. IDT gate 3 (CS 0x10, `attributes`) leads to a
+    /// handler that is one `IRETQ`; IF = 1 in the entry flags.
+    fn int3_board(attributes: u8, code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = boot_with_entry(code);
+        write_phys(&mut boot, PF_HANDLER_AT, &[0x48, 0xCF]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(PF_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = attributes;
+        gate[6..8].copy_from_slice(&((PF_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, PF_IDT_AT + 3 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.rflags = 2 | (1 << 9) | 1;
+        (boot, file)
+    }
+
+    #[test]
+    fn int3_member_is_off_in_the_default_member_sets() {
+        assert!(!LinuxCpl0SetMembers::minimal().int3);
+        assert!(!LinuxCpl0SetMembers::linux_default().int3);
+        // Without the member the `INT3` is the stop it was (0xcc) and nothing is named.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = int3_board(0x8E, &[0xFA, 0xCC, 0xF4]);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xcc },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 1, "CLI; INT3 is the stop");
+            assert_eq!(record.rip, ENTRY + 1);
+            assert!(!record.set_members.contains(&"int3".to_string()));
+        }
+    }
+
+    #[test]
+    fn int3_through_the_board_set_delivers_the_frame_and_the_handler_returns_after_it() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        // One instruction: the INT3 retires into the handler with IF cleared (interrupt gate).
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli).with_int3());
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(
+            report.delivered_exceptions, 0,
+            "not a board-delivered fault"
+        );
+        assert_eq!(state.rip, PF_HANDLER_AT);
+        assert_eq!(state.cs_selector, Some(0x10));
+        let frame = rsp & !15;
+        assert_eq!(state.gpr[Register::Rsp as usize], frame - 40);
+        assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+        // Hand-computed frame: SS 0x18, old RSP, RFLAGS 0x203 (IF kept, RF clear), CS 0x10 and the
+        // address after the INT3.
+        assert_eq!(read_qword(&mut boot, frame - 8), 0x18);
+        assert_eq!(read_qword(&mut boot, frame - 16), rsp);
+        assert_eq!(read_qword(&mut boot, frame - 24), 0x203);
+        assert_eq!(read_qword(&mut boot, frame - 32), 0x10);
+        assert_eq!(read_qword(&mut boot, frame - 40), ENTRY + 1);
+        // Two instructions: the handler's IRETQ returns to the NOP after the INT3.
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli).with_int3());
+        assert_eq!(report.instructions_executed, 2, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 1);
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_ne!(state.rflags & (1 << 9), 0, "IF back from the frame");
+        assert_eq!(state.cs_selector, Some(0x10));
+    }
+
+    #[test]
+    fn int3_through_a_trap_gate_keeps_if_on_the_board() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = int3_board(0x8F, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli).with_int3());
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, PF_HANDLER_AT);
+        assert_ne!(state.rflags & (1 << 9), 0, "a trap gate keeps IF");
+    }
+
+    #[test]
+    fn int3_stays_the_stop_on_the_board_set_without_the_member_or_with_a_bad_gate() {
+        let cli = CliProfile::NonPviLong64V1;
+        // Without the member: no write, the stop is the INT3.
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0xcc }),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(read_qword(&mut boot, (rsp & !15) - 40), 0);
+        // With the member but a gate that is not present: the same stop, still no write.
+        let (mut boot, _) = int3_board(0x0E, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli).with_int3());
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0xcc }),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_eq!(read_qword(&mut boot, (rsp & !15) - 40), 0);
+    }
+
+    #[test]
+    fn int3_member_runs_through_the_board_facade_and_is_named_after_fp_state() {
+        let members = LinuxCpl0SetMembers {
+            int3: true,
+            ..fp_default()
+        };
+        // CLI; INT3; HLT with the IRETQ handler: CLI, INT3, IRETQ and HLT retire.
+        let (mut boot, file) = int3_board(0xEE, &[0xFA, 0xCC, 0xF4]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 3, "RIP after the HLT");
+        assert_eq!(record.gpr[Register::Rsp as usize], rsp);
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "int3")
+            .expect("member named");
+        assert_eq!(names[position - 1], "fp_state");
+        assert_eq!(names[position + 1], "halt");
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----

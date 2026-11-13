@@ -1920,6 +1920,7 @@ pub struct Cpl0ProfileSet<'a> {
     popf_cpl0: bool,
     sti: Option<&'a crate::StiProfile>,
     fp_state: Option<&'a RefCell<GuestFpState>>,
+    int3: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1947,6 +1948,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             popf_cpl0: false,
             sti: None,
             fp_state: None,
+            int3: false,
         }
     }
 
@@ -2154,6 +2156,22 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// `Unsupported` in the set, as before.
     pub const fn with_fp_state(mut self, cell: &'a RefCell<GuestFpState>) -> Self {
         self.fp_state = Some(cell);
+        self
+    }
+
+    /// S4-38L9e: admit the bare `INT3` (`CC`, no prefix, no REX) at CPL0 under Long64: the software
+    /// breakpoint `#BP` (vector 3) is delivered through the IDT gate of vector 3 with the frame of
+    /// the other IA-32e entries (SS, RSP, RFLAGS, CS and the address of the NEXT instruction, five
+    /// qwords, no error code) and the `INT3` retires. The gate may be an interrupt gate (0xE, IF
+    /// cleared on entry; what Linux installs) or a trap gate (0xF, IF kept); a gate that is not
+    /// present, of another type, with IST != 0, or an unreadable IDT/GDT/stack stops the run with
+    /// `Unsupported` (opcode `0xcc`) and no write, except that a memory fault of the delivery is
+    /// reported as the fault of the `INT3` (state unchanged). The STI shadow must be `Clear`.
+    /// Needs a modeled IDTR, GDTR and CS/SS (as the other IDT deliveries of the set). Without this
+    /// call `INT3` stays `Unsupported` (opcode `0xcc`) in the set and outside it. See
+    /// [`crate::deliver_int3_cpl0_set`].
+    pub const fn with_int3(mut self) -> Self {
+        self.int3 = true;
         self
     }
 
@@ -2551,6 +2569,9 @@ struct ExecutionProfiles<'a> {
     /// built with `with_sti`. Distinct from `sti`, whose bounded NOP/STI/CLI/HLT sequence the
     /// set does not use.
     sti_cpl0: bool,
+    /// S4-38L9e: the bare `INT3` (`CC`) delivered through the IDT gate of vector 3, set only by a
+    /// `Cpl0ProfileSet` built with `with_int3`.
+    int3_cpl0: bool,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3686,6 +3707,7 @@ pub fn run_with_maxss_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3846,6 +3868,7 @@ pub fn run_with_minsd_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4006,6 +4029,7 @@ pub fn run_with_maxsd_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4166,6 +4190,7 @@ pub fn run_with_minpd_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4326,6 +4351,7 @@ pub fn run_with_minps_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4486,6 +4512,7 @@ pub fn run_with_maxps_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4646,6 +4673,7 @@ pub fn run_with_maxpd_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4806,6 +4834,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4966,6 +4995,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5126,6 +5156,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5286,6 +5317,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5446,6 +5478,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5606,6 +5639,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5766,6 +5800,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5926,6 +5961,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6086,6 +6122,7 @@ pub fn run_with_cvtss2si_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6246,6 +6283,7 @@ pub fn run_with_cvttss2si_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6405,6 +6443,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6598,6 +6637,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6758,6 +6798,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6953,6 +6994,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7117,6 +7159,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7310,6 +7353,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7470,6 +7514,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7630,6 +7675,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7823,6 +7869,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7984,6 +8031,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8144,6 +8192,7 @@ pub fn run_with_cvtdq2pd_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8304,6 +8353,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8463,6 +8513,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8623,6 +8674,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8816,6 +8868,7 @@ fn run_with_cvtdq2ps_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8976,6 +9029,7 @@ pub fn run_with_cvtps2dq_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9136,6 +9190,7 @@ pub fn run_with_cvttps2dq_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9329,6 +9384,7 @@ fn run_with_cvtps2dq_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9522,6 +9578,7 @@ fn run_with_cvttps2dq_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9715,6 +9772,7 @@ fn run_with_cvttpd2dq_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9908,6 +9966,7 @@ fn run_with_cvtpd2dq_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10068,6 +10127,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10228,6 +10288,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10388,6 +10449,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10548,6 +10610,7 @@ pub fn run_with_cvtss2sd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10708,6 +10771,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10904,6 +10968,7 @@ fn run_with_cvtpi2ps_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11231,6 +11296,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11391,6 +11457,7 @@ pub fn run_with_cvtps2pd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11551,6 +11618,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11711,6 +11779,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11870,6 +11939,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12030,6 +12100,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12248,6 +12319,7 @@ fn run_with_cmpss_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12408,6 +12480,7 @@ pub fn run_with_cmpsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12568,6 +12641,7 @@ pub fn run_with_cmppd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12727,6 +12801,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12886,6 +12961,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13068,6 +13144,7 @@ fn run_with_minsd_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13228,6 +13305,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13415,6 +13493,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13587,6 +13666,7 @@ fn run_with_minpd_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13782,6 +13862,7 @@ fn run_with_minps_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13942,6 +14023,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14102,6 +14184,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14261,6 +14344,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14420,6 +14504,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14579,6 +14664,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14771,6 +14857,7 @@ fn run_with_sqrtps_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14930,6 +15017,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15121,6 +15209,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15312,6 +15401,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15510,6 +15600,7 @@ fn run_with_maxpd_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15708,6 +15799,7 @@ fn run_with_maxps_memory_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15920,6 +16012,7 @@ fn run_minss_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16122,6 +16215,7 @@ fn run_maxss_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16281,6 +16375,7 @@ pub fn run_with_cmpps_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16441,6 +16536,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -16654,6 +16750,7 @@ pub fn run_with_efer_rdmsr_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -17059,6 +17156,7 @@ pub fn run_with_cr0_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -17278,6 +17376,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -20478,6 +20577,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -20884,6 +20984,7 @@ fn run_cpl0_profile_set_inner(
                 }),
             popf_cpl0: set.popf_cpl0,
             sti_cpl0: set.sti.is_some(),
+            int3_cpl0: set.int3,
             cr4: None,
         },
         StepRuntime {
@@ -21346,6 +21447,7 @@ pub fn step_with_cr0_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21749,6 +21851,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21909,6 +22012,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22293,6 +22397,7 @@ fn run_with_comparison_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22455,6 +22560,7 @@ pub fn run_with_sqrtss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22615,6 +22721,7 @@ pub fn run_with_sqrtsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22775,6 +22882,7 @@ pub fn run_with_sqrtps_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22935,6 +23043,7 @@ pub fn run_with_sqrtpd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23100,6 +23209,7 @@ fn run_with_subpd_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23315,6 +23425,7 @@ pub fn run_with_mulpd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23478,6 +23589,7 @@ fn run_with_addpd_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23671,6 +23783,7 @@ fn run_with_mulpd_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23886,6 +23999,7 @@ pub fn run_with_addsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24046,6 +24160,7 @@ pub fn run_with_divpd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24239,6 +24354,7 @@ fn run_with_divpd_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24399,6 +24515,7 @@ pub fn run_with_addss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24593,6 +24710,7 @@ fn run_with_addss_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24786,6 +24904,7 @@ fn run_with_addsd_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24982,6 +25101,7 @@ fn run_with_addps_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25142,6 +25262,7 @@ pub fn run_with_divsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25338,6 +25459,7 @@ fn run_with_divps_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25498,6 +25620,7 @@ pub fn run_with_divss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25658,6 +25781,7 @@ pub fn run_with_mulsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25818,6 +25942,7 @@ pub fn run_with_mulss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26014,6 +26139,7 @@ fn run_with_mulps_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26174,6 +26300,7 @@ pub fn run_with_subsd_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26334,6 +26461,7 @@ pub fn run_with_subss_register_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26494,6 +26622,7 @@ fn run_with_scalar_float_memory_rax_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26898,6 +27027,7 @@ fn run_with_subps_profile(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -27057,6 +27187,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             pio_u8: None,
             popf_cpl0: false,
             sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -27515,6 +27646,7 @@ fn step_configured(
         pio_u8,
         popf_cpl0,
         sti_cpl0,
+        int3_cpl0,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -33619,6 +33751,28 @@ fn step_configured(
         }
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::Int3 {
+        // S4-38L9e: the bare `CC` is delivered through the IDT gate of vector 3 inside the CPL0
+        // profile set under its INT3 member only; everywhere else (bare `run`/`step`, the paged
+        // probes, a set without the member, a shadow that is not `Clear`) it is the stop it was.
+        // The decoder has already refused every prefixed form.
+        if !(int3_cpl0
+            && control_policy.is_some()
+            && instruction.prefixes == Prefixes::default()
+            && instruction.length == 1
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode == InstructionMode::Long64)
+        {
+            return Ok(StepOutcome::Unsupported { opcode: 0xcc });
+        }
+        return match crate::interrupt::deliver_int3_cpl0_set(state, memory, next_rip, context) {
+            crate::interrupt::Cpl0Int3Delivery::Delivered { .. } => Ok(StepOutcome::Branched),
+            crate::interrupt::Cpl0Int3Delivery::Refused(_) => {
+                Ok(StepOutcome::Unsupported { opcode: 0xcc })
+            }
+            crate::interrupt::Cpl0Int3Delivery::Aborted { cause, .. } => report_memory_error(cause),
+        };
+    }
     if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
         let has_cli = cli_profile.is_some() || sti_profile.is_some();
         let is_sti = instruction.operation == Operation::Sti;
@@ -35655,7 +35809,9 @@ fn step_configured(
         | Operation::InAlImm8 { .. }
         | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
-        | Operation::OutDx { .. } => false,
+        | Operation::OutDx { .. }
+        // S4-38L9e: INT3 commits in its own gated path before this point.
+        | Operation::Int3 => false,
         Operation::Swapgs => true,
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
@@ -38069,6 +38225,7 @@ fn step_configured(
             unreachable!("PIO operations are rejected outside the explicit PIO entry")
         }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
+        Operation::Int3 => unreachable!("INT3 commits in its profile-gated state path"),
         Operation::ReadCr0
         | Operation::WriteCr0
         | Operation::WriteCr0Rdi
