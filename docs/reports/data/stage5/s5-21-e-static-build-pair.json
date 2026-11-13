@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-paddq-e-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-paddq-e-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-paddq-e-pass1.json",
-    "compact_inventory_sha256": "efb9a04cf529ca2c7d1f543932ae8bf5c8f239a5c4107a5f725c3a4962b53cc0",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-paddd-e-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-paddd-e-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-paddd-e-pass1.json",
+    "compact_inventory_sha256": "51db43e9338ed2b803bc60882c4d4f7cd96e80216c5b73d641b958bc5c7c4beb",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "18ebf39ad1d01c9bda111a926d60fb17999ec428a571e188f6663310ceddb219",
+    "raw_inventory_sha256": "060a838e14862b75c5be8c818739fd27466bd713e5072aa620a82d38066d0d2f",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -56,23 +56,23 @@
     "pxor_xmm_memory_unclassified_rows": 5,
     "pxor_xmm_memory_unclassified_forms": 2,
     "pxor_local_profile_scope": "local_interpreter_profile only; no CPL3/native/JIT evidence",
-    "classified_normalized_forms": 1061,
-    "unclassified_normalized_forms": 208,
+    "classified_normalized_forms": 1062,
+    "unclassified_normalized_forms": 207,
     "classification_frequencies": {
-      "proven_supported": 6296264,
-      "unclassified": 214481
+      "proven_supported": 6296396,
+      "unclassified": 214349
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293913,
+      "local_interpreter_profile": 6294045,
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
     "unique_instruction_rows_with_any_conditional_candidate": 113215,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "efb9a04cf529ca2c7d1f543932ae8bf5c8f239a5c4107a5f725c3a4962b53cc0",
+    "compact_repeat_sha256": "51db43e9338ed2b803bc60882c4d4f7cd96e80216c5b73d641b958bc5c7c4beb",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-paddq-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-paddq-e-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-paddd-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-paddd-e-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -94,16 +94,16 @@
       "punpckhqdq xmm,mem128": 1
     },
     "punpck_local_profile_scope": "local_interpreter_profile only; no machine CPL3/native/physical evidence",
-    "local_interpreter_profile_rows": 6293913,
+    "local_interpreter_profile_rows": 6294045,
     "machine_cpl3_profile_rows": 2351,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322714,
-        "unclassified": 23435
+        "proven_supported": 322732,
+        "unclassified": 23417
       },
       "D": {
-        "proven_supported": 6226929,
-        "unclassified": 209285
+        "proven_supported": 6227043,
+        "unclassified": 209171
       }
     },
     "local_simd_logic_rows": 1858,
@@ -316,7 +316,14 @@
     "paddq_register_rows_by_profile": {
       "S2-35.16-PADDQ-XMM-register-register": 77
     },
-    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance."
+    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance.",
+    "paddd_register_rows": 132,
+    "paddd_register_normalized_forms": 1,
+    "paddd_register_encoding_forms": 21,
+    "paddd_register_rows_by_profile": {
+      "S2-35.14-PADDD-XMM-register-register": 132
+    },
+    "paddd_scope": "Accepted local-only PADDD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST+SRC) modulo 2^32, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed three ISA tests, one schema test and one fixture. CPU_CONTRACT and accepted plan have PADDD entries; Stage 2 report has no PADDD-specific entry. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac. No native/JIT/physical acceptance."
   },
   "unchanged_rootfs_binary_inputs": true
 }

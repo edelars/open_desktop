@@ -999,6 +999,66 @@ class ParseObjdumpTests(unittest.TestCase):
             row = analyzer.parse_row(f"  403400: {encoding} {operands}")
             self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
 
+    def test_s2_35_14_paddd_matches_all_register_pairs_and_strict_legacy_gate(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        expected = "S2-35.14-PADDD-XMM-register-register"
+        seen = set()
+        for destination in range(16):
+            for source in range(16):
+                rex = 0x40 | (0x04 if destination >= 8 else 0) | (0x01 if source >= 8 else 0)
+                prefix = "66 " if rex == 0x40 else f"66 {rex:02x} "
+                modrm = 0xC0 | ((destination & 7) << 3) | (source & 7)
+                encoding = f"{prefix}0f fe {modrm:02x}"
+                operands = f"paddd xmm{destination},xmm{source}"
+                row = analyzer.parse_row(f"  405700: {encoding} {operands}")
+                self.assertEqual(row["signature"], "paddd xmm,xmm", encoding)
+                self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+                self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+                seen.add(tuple(row["byte_values"]))
+        self.assertEqual(len(seen), 256)
+        self.assertEqual(analyzer.local_profile_candidate(analyzer.parse_row(
+            "  405800: 66 40 0f fe c1 paddd xmm0,xmm1")), expected)
+        rejected = (
+            ("0f fe c1", "paddd mm0,mm1"),
+            ("0f fe c1", "paddd xmm0,xmm1"),
+            ("66 42 0f fe c1", "paddd xmm0,xmm1"),
+            ("66 48 0f fe c1", "paddd xmm0,xmm1"),
+            ("66 4c 0f fe c1", "paddd xmm8,xmm1"),
+            ("66 66 0f fe c1", "paddd xmm0,xmm1"),
+            ("66 f2 0f fe c1", "paddd xmm0,xmm1"),
+            ("66 f3 0f fe c1", "paddd xmm0,xmm1"),
+            ("67 66 0f fe c1", "paddd xmm0,xmm1"),
+            ("44 66 0f fe c1", "paddd xmm8,xmm1"),
+            ("66 0f fe 01", "paddd xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fe 41 00", "paddd xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fe 81 00 00 00 00", "paddd xmm0,XMMWORD PTR [rcx]"),
+            ("66 0f fa c1", "paddd xmm0,xmm1"),
+            ("66 0f fe", "paddd xmm0,xmm1"),
+            ("66 0f fe c1 90", "paddd xmm0,xmm1"),
+            ("c5 f9 fe c1", "vpaddd xmm0,xmm1,xmm2"),
+            ("62 f1 75 08 fe c1", "vpaddd xmm0,xmm1,xmm2"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  405900: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_35_14_paddd_registry_records_fresh_review_and_report_gap(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        self.assertFalse(registry["registry_complete"])
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-35.14 PADDD XMM register-register only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("fresh independent review", profile["gate"])
+        self.assertIn("Stage 2 report does not contain a PADDD entry", profile["gate"])
+        self.assertIn("Linux-gated assertion was compiled but not run on this Mac", profile["gate"])
+        family = profile["families"][0]
+        self.assertIn("66 [one optional REX.R/B] 0F FE /r", family["encoding"])
+        self.assertIn("modulo 2^32", family["outcome"])
+        self.assertIn("carry confined to its dword", family["outcome"])
+
     def test_s2_35_16_paddq_matches_all_register_pairs_and_strict_legacy_gate(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
         exact, _ = analyzer.profile_matcher_maps(registry)

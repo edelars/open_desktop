@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-paddq-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-paddd-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddq-rootfs-pass1.json",
-      "sha256": "53934834a54fe21e97ac02d50b862cf7bcf58a9f885d9c899fe9c8a9d776c24f",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddd-rootfs-pass1.json",
+      "sha256": "684f504a1eaf232cc2b343769878c8e6de093416347dd35e7deca48c9ce68365",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddq-rootfs-pass2.json",
-      "sha256": "53934834a54fe21e97ac02d50b862cf7bcf58a9f885d9c899fe9c8a9d776c24f",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-paddd-rootfs-pass2.json",
+      "sha256": "684f504a1eaf232cc2b343769878c8e6de093416347dd35e7deca48c9ce68365",
       "exit_code": 0
     }
   ],
@@ -32,27 +32,27 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6295980,
-      "unclassified": 214420
+      "proven_supported": 6296112,
+      "unclassified": 214288
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6293629,
+      "local_interpreter_profile": 6293761,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
     "conditional_cpl0_candidate_hits": 113232,
     "unique_instruction_rows_with_any_conditional_candidate": 113155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1061,
-    "unclassified_normalized_forms": 208,
+    "classified_normalized_forms": 1062,
+    "unclassified_normalized_forms": 207,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322714,
-        "unclassified": 23435
+        "proven_supported": 322732,
+        "unclassified": 23417
       },
       "D": {
-        "proven_supported": 6226929,
-        "unclassified": 209285
+        "proven_supported": 6227043,
+        "unclassified": 209171
       }
     },
     "movups_memory_rows": 23912,
@@ -79,7 +79,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted bounded local interpreter profiles only; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "53934834a54fe21e97ac02d50b862cf7bcf58a9f885d9c899fe9c8a9d776c24f",
+    "raw_inventory_sha256": "684f504a1eaf232cc2b343769878c8e6de093416347dd35e7deca48c9ce68365",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -136,7 +136,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6293629,
+    "local_interpreter_profile_rows": 6293761,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -265,15 +265,22 @@
     "paddq_register_rows_by_profile": {
       "S2-35.16-PADDQ-XMM-register-register": 77
     },
-    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance."
+    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance.",
+    "paddd_register_rows": 132,
+    "paddd_register_normalized_forms": 1,
+    "paddd_register_encoding_forms": 21,
+    "paddd_register_rows_by_profile": {
+      "S2-35.14-PADDD-XMM-register-register": 132
+    },
+    "paddd_scope": "Accepted local-only PADDD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST+SRC) modulo 2^32, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed three ISA tests, one schema test and one fixture. CPU_CONTRACT and accepted plan have PADDD entries; Stage 2 report has no PADDD-specific entry. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac. No native/JIT/physical acceptance."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "96462874e73eeb9038cc46f7ac533763920b54a8972759017a0168b73f034f2c",
-    "size_bytes": 1005337,
+    "sha256": "7121232e0495e3bcfa5485ea22143db369f176e81e632dc4f55b7db8a0379242",
+    "size_bytes": 1005483,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-paddq-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-paddq-rootfs-pass1.json.gz",
-    "repeat_sha256": "96462874e73eeb9038cc46f7ac533763920b54a8972759017a0168b73f034f2c",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-paddd-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-paddd-rootfs-pass1.json.gz",
+    "repeat_sha256": "7121232e0495e3bcfa5485ea22143db369f176e81e632dc4f55b7db8a0379242",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },
