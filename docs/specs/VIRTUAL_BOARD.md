@@ -6,6 +6,8 @@
 
 ## Выбранные границы
 
+Целевой SMP-профиль и ограничения CPUID/MADT описаны в [SMP_CONTRACT.md](SMP_CONTRACT.md); SMP не входит в текущую исполняемую конфигурацию платы.
+
 | Подсистема | Проект v0.1 | Основание и статус проверки |
 |---|---|---|
 | Загрузочный путь | Прямая загрузка Linux через Linux/x86 Boot Protocol для отладки; Windows — только через собственную UEFI. Legacy BIOS/CSM не входит в профиль. | Разделяет быстрый Linux CPU bring-up и обязательный UEFI Windows path. Linux kernel/initramfs и Windows image ещё не прогонялись. Передача управления прошивке (собственный Long64 boot entry, не reset vector), handoff block, окна ROM/NVRAM и boot reservations описаны контрактом [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (S7-02, ожидает ревью; [план этапа 7](../plans/STAGE_7.md)); реализации нет — её делают S7-03 (машина) и S7-04 (прошивка). |

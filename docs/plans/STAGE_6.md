@@ -331,6 +331,7 @@
 ### S6-03. Описать контракт нескольких процессоров
 
 - [ ] Принято после архитектурного ревью.
+- Текущий статус: [`SMP_CONTRACT.md`](../specs/SMP_CONTRACT.md) прошёл независимое архитектурное ревью `gpt-6.1-sol/high`. Контракт содержит vCPU state transitions, bounded xAPIC ICR matrix с Linux-required delivery и S6-12 Fixed shorthands (с сохранением S4-25c Self), INIT/SIPI state, IOAPIC/NMI, CPUID/MADT и границы остановки. Время явно открыто до принятия S4-22/S4-23; topology domains OpenDesktop переданы S6-18. Реализация SMP не заявляется.
 - **Где:** `docs/specs/SMP_CONTRACT.md` (новый); ссылки из `MACHINE_CONTRACT.md` и `VIRTUAL_BOARD.md`.
 - **Сделать:**
   1. Набор vCPU: число задаётся конфигурацией машины, индекс 0 — BSP, APIC ID равен индексу, набор неизменен до выключения машины.

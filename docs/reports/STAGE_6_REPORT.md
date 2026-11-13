@@ -13,7 +13,7 @@
 | S6-00 | `accepted` | независимое ревью пройдено; коммит [`38f4c81`](https://github.com/edelars/open_desktop/commit/38f4c81) |
 | S6-01 | `accepted` | Методика прошла независимое ревью и закоммичена как [`5183584`](https://github.com/edelars/open_desktop/commit/5183584). Numeric candidates остаются provisional у задач-владельцев, которые ещё не измерили свои gates; S6-05 уже измерила complete-schedule threshold и seed range. S6-19 использует калиброванные S6-05 threshold/seed в режиме чередования. |
 | S6-02 | `accepted` | Static byte inventory native INIT/SIPI trampoline получен из staged `vmlinuz` и повторно декодирован на физическом Intel x86 с GNU Binutils 2.46: все 149 trampoline rows и 2 common-entry инструкции совпали; физический повтор прошёл independent evidence review. Архитектурное ревью приняло статический Linux target path и D2 для документированного S6 2/4-vCPU профиля (`OpenDesktop`, APIC=1/X2APIC=0, physical-flat xAPIC, native INIT/SIPI). Текущая Stage4A реализация остаётся однопроцессорной/APIC-clear; runtime AP execution не заявляется, Windows CPU-06 отложен до трассы этапа 8. См. [`ap-start-inventory.json`](data/stage6/ap-start-inventory.json) и [x86 repeat report](data/stage6/s6-02-x86-reverification.md). |
-| S6-03 | `not_started` | — |
+| S6-03 | `accepted` | [SMP contract](../specs/SMP_CONTRACT.md) прошёл независимое архитектурное ревью `gpt-6.1-sol/high`. S4-25c Self-IPI сохранён; Fixed shorthand Self/All/All-but-self включены по S6-12. Время открыто до S4-22/S4-23; неизвестный-vendor Linux topology передан S6-18. Реализация SMP не заявляется. |
 | S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое ревью `gpt-6.1-sol/high`; [коммит `4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc). `git diff --check` чист; `check_layout.py` сообщает только 45 существующих битых ссылок на отсутствующие work evidence артефакты, новых S6 ошибок нет. Graphify обновлён на этот коммит. Документ фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity; реализация и выбор host primitive не входят. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
 | S6-05 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло без оставшихся замечаний. Приняты стандартно-библиотечный генератор, 15 конечных fixtures плюс один JSON-файл formula counter group и калибровка 1,000,000 complete schedules / seeds 0…9,999; см. [evidence](#s6-05--accepted-litmus-corpus-and-calibration) и [raw data](data/stage6/s6-05-enumerator-calibration.json). |
 | S6-06 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло без оставшихся замечаний. Приняты повторяемые измерения обычных access’ов и атомарных кандидатов, проверка emitted instructions и ограниченный выбор host-примитивов; сводка — [S6-06 measurements](data/stage6/s6-06-host-summary.md), сырые процессы 1–3 и disassembly сохранены рядом. |
@@ -76,7 +76,7 @@
 | Вопрос | Действующее значение по умолчанию |
 |---|---|
 | D1 — остановка vCPU и snapshot barrier | Этап 6 отвечает за остановку vCPU и их состояние; S9-28 — за полный barrier с I/O, epoch и публикацией; формат остаётся у S9-24/S9-25. |
-| D2 — запуск AP | INIT/SIPI с trampoline; окончательный выбор после фактов S6-02. |
+| D2 — запуск AP | Принято по S6-02: native INIT/SIPI с trampoline для документированного OpenDesktop physical-flat xAPIC target; runtime AP execution не заявляется. |
 | D3 — число vCPU | Два функционально доступны; «поддержано» и 4 vCPU определяются только измерениями S6-38; VM bundle не меняется. |
 | D4 — x2APIC | Не входит, пока S6-02 не подтвердит требование выбранной ОС. |
 | D5 — код до S4-21 и правки `od-isa` при S4-38 | Машинный код S6-10+ ждёт S4-21; код `od-isa` согласуется с владельцем S4-38, один автор на файл. До этого доступны S6-00…09 и S6-14a/b. |
@@ -89,7 +89,7 @@
 
 - Roadmap задаёт 2–4 vCPU, а `VM_BUNDLE.md` — 1–32 с неуказанным основанием. По умолчанию D3 схема bundle не меняется; поддержанный максимум определяется замерами S6-38.
 - План этапа 7 относит SMP и x2APIC к этапу 6, хотя roadmap не задаёт x2APIC. По умолчанию D4 x2APIC исключён до подтверждения S6-02.
-- `CPU_CONTRACT.md` говорит, что real-mode entry не требуется, тогда как гипотеза CPU-06 в `WINDOWS_PLATFORM_REQUIREMENTS.md` связывает запуск второго CPU с INIT/SIPI и real-mode trampoline. D2 остаётся предварительным до S6-02.
+- `CPU_CONTRACT.md` описывает текущий direct Long64 BSP handoff; он не задаёт AP startup. Принятый D2/S6-02 target использует для AP native INIT/SIPI с real-mode trampoline, а S6-14 должен описать AP mode-transition profile. Гипотеза CPU-06 для Windows остаётся непроверенной до трассы этапа 8.
 - В [отчёте этапа 9](STAGE_9_REPORT.md) строка S9-26 ошибочно называет UEFI зависимостью этапов 6/8; UEFI относится к этапу 7. Подтверждённая документальная ошибка зарегистрирована как [ISSUE-086](../KNOWN_ISSUES.md#issue-086-s9-26-wrong-uefi-stage-reference). Отчёт этапа 9 не менялся. **Передача владельцу S9:** исправить ссылку S9-26 на этап 7 в `STAGE_9_REPORT.md`; до этого ISSUE-086 остаётся открытой.
 
 ## 5. Проверка этого среза
@@ -138,6 +138,10 @@ S6-02 принят по статическому inventory и Linux target-path 
 
 Начальный evidence-срез, расширение APIC/NMI/topology и исходный pinned-image byte inventory ранее независимо проверил `gpt-6.1-sol` / `high` — pass. Физический x86 повтор прошёл независимое evidence review `gpt-6.1-sol` / `high` без оставшихся замечаний; отдельное архитектурное ревью (`gpt-6.1-sol` / `high`) приняло статический target path и D2 для ограниченного S6-профиля. S6-02 принят как provenance, source-path и linked-byte evidence; текущий Stage4A runtime, AP execution, APIC_BASE wiring и 2/4-vCPU реализация не подтверждены. Windows CPU-06 остаётся гипотезой с проверкой на этапе 8 согласно плану. В этом срезе проверены JSON parse, input, metadata и stdout SHA-256, строгая сверка 149 trampoline rows плюс двух common-entry адресов/байтов; `git diff --check` чист. `check_layout.py` сообщает только 45 существующих ошибок ссылок на отсутствующие work evidence, новых S6 ошибок нет.
 
+
+### S6-03 — SMP contract (accepted document)
+
+Создан [контракт SMP](../specs/SMP_CONTRACT.md) с неизменным набором vCPU, индексом/APIC ID, BSP/AP state transitions, INIT reset state по Intel SDM 253668-093US, INIT/SIPI, закрытым подмножеством физических xAPIC ICR кодировок, IOAPIC/MSI и NMI. Pinned Linux evidence требует targeted physical Fixed, Fixed all-but-self и targeted/all-but-self NMI; INIT/SIPI — targeted physical. Matrix также включает Fixed Self/All/All-but-self из S6-12 и сохраняет уже принятый S4-25c Self encoding. Неиспользуемые доставки и режимы явно отклоняются. ICR Level/Trigger кодировки для Fixed/NMI/SIPI повторяют pinned Linux source. `cpu_count`, CPUID.1 EBX и MADT согласуются; package/core topology для неизвестного vendor `OpenDesktop` не заявляется и передана S6-18. Переменная времени, TSC и all-HLT behavior открыты до полного принятия S4-22/S4-23. Safe-point остановка и pending event preservation записаны по D1; I/O barrier остаётся S9-28. Независимое архитектурное ревью `gpt-6.1-sol/high` прошло без замечаний. Код многопроцессорной платы и guest runtime не выполнялись.
 
 ### S6-07 — inventory однопроцессорных допущений (in progress)
 
