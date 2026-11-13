@@ -2,7 +2,11 @@ use std::process::ExitCode;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod fxsave64;
+#[cfg(any(target_os = "linux", test))]
+mod litmus_policy;
 mod native_fp;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod native_litmus;
 mod rep_trace;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -15,7 +19,7 @@ mod supervisor;
 fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--help") {
         println!(
-            "od-x86-runner: isolated x86-64 oracle runner\nUsage: od-x86-runner --fixture CASE.json --json\n       od-x86-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-mov-memory CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-rep-stosb CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-push-pop CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-branch-nops CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --fxsave64-oracle (Linux x86_64 only)"
+            "od-x86-runner: isolated x86-64 oracle runner\nUsage: od-x86-runner --fixture CASE.json --json\n       od-x86-runner --litmus-corpus DIR --iterations N --counter-n N --counter-k K --json --output RESULT.json (Linux x86_64 only)\n       od-x86-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-mov-memory CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-rep-stosb CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-push-pop CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --reduce-native-branch-nops CASE.json [--limit N] [--output-dir DIR]\n       od-x86-runner --fxsave64-oracle (Linux x86_64 only)"
         );
         return ExitCode::SUCCESS;
     }

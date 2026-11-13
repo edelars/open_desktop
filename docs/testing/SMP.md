@@ -1,6 +1,6 @@
 # Методика проверок SMP и модели памяти
 
-Статус: **методика S6-01; реализация vCPU и результаты испытаний отсутствуют**. Этот документ задаёт входные данные, оракулы, стартовые бюджеты и правила фиксации результата. Числовая калибровка остаётся открытой до S6-05/S6-08/S6-09; сами плановые числа не подтверждают поддержку SMP.
+Статус: **методика S6-01; S6-05 принята; реализация отдельного нативного runner S6-08 проходит локальную проверку и ещё не получила Linux/Intel execution evidence**. Реализация SMP в VM и результаты VM-прогонов отсутствуют. Этот документ задаёт входные данные, оракулы, стартовые бюджеты и правила фиксации результата. Числовая калибровка native/physical остаётся открытой до S6-08/S6-09; сами плановые числа не подтверждают поддержку SMP.
 
 ## 1. Источники и границы утверждений
 
@@ -137,6 +137,21 @@ The seed range was measured separately in three fresh workers, each executing on
 
 ### Native x86 and physical x86
 
+#### S6-08 native runner
+
+`od-x86-runner --litmus-corpus` is a separate, Linux x86_64-only mode for the S6-05 corpus. It validates every instruction with the `od-isa` long-mode decoder and a corpus-specific exact operation/operand policy before mapping code. It requires the complete finite and formula corpus, pins each OS thread to an allowed logical CPU (preferring distinct physical cores and reporting SMT-sibling fallback), synchronizes round starts with a barrier, resets shared cells on every round, and emits per-process plus combined JSON histograms. The mandatory output path is initialized before child work and retains progress or failure details. Build revision, source fingerprint, dirty state, compiler, target/profile, and extra Rust flags are included in the result.
+
+The mode does not widen `--fixture` or the existing native supervisor admission. Its current child limits are 30 seconds CPU, 30 seconds wall time, and 256 MiB address space for each fixture process. The standard mode uses three fresh child processes per fixture. These limits and the iteration count must be rechecked against measured throughput before choosing the accepted run budget. `MFENCE` and the supported `LOCK` forms are admitted only by this exact litmus policy after decoded-operation checks; unsupported forms, malformed corpus entries, and out-of-range branches fail before execution. The narrowly decoded bare `LOOP rel8` is allowed only for the formula counter group and remains unsupported by ordinary fixture admission and the interpreter/JIT.
+
+On Linux x86_64, build the runner in release mode, then run the entire corpus with the iteration count selected by S6-08 calibration. `N` and `K` are formula-counter parameters (`2 <= N <= 4`, `1 <= K <= 4096`):
+
+```sh
+cargo build --release -p od-x86-runner --offline
+target/release/od-x86-runner --litmus-corpus tests/fixtures/guest/stage6/litmus --iterations "$S6_LITMUS_ITERATIONS" --counter-n 2 --counter-k 2 --json --output work/stage6/s6-08-native.json
+```
+
+The command currently exercises 15 finite cases from 16 JSON files (the sixteenth file defines the formula group) and three formula identities, with three fresh processes per case. The host-side macOS checks and Linux cross-target typecheck do not exercise the threaded native path. No accepted iteration count or throughput is recorded yet; Linux execution, histogram conservation under load, and the physical Intel SB `00` observation remain pending. Keep failed output under ignored `work/stage6/`; accepted raw runs and summaries belong in `docs/reports/data/stage6/`.
+
 - Candidate standard run: `10,000,000` rounds/test/process in three fresh processes, hence `30,000,000` rounds/test. This is a starting budget, not a probability guarantee. S6-08/S6-09 must record throughput and duration; the accepted iteration count is the value that fits the documented run budget while preserving the SB minimum-observation criterion. If the corpus has `M` tests, the candidate base work is `30,000,000 × M` rounds; report `M`, actual rounds, and elapsed time.
 - For SB, an interesting `00` outcome must be observed at least once on the physical Intel x86 stand. If it has not appeared after the base budget, continue that test to a cumulative `3,200,000,000` rounds and retain both the initial and extended histograms. If it still does not appear, report the physical-x86 gate as not passed; do not weaken the model or change the expected set. The 3.2-billion ceiling is a bounded search budget informed by the scale of a rare event reported for a *different* test in the paper; it is not a probability estimate for SB.
 
@@ -166,4 +181,4 @@ Every run records: fixture and corpus SHA-256; test ID; source revision; runner 
 
 On a forbidden outcome, set/status mismatch, crash, or timeout: stop the gate, retain the raw output and exact input, and report the smallest reproducible fixture. Do not turn a forbidden result into noise, average it away, update expected outcomes from the run, or claim a pass after a later clean retry. A retry is additional evidence and must keep the first result.
 
-The expected litmus corpus and its own TSO/SC enumerator are S6-05. Native x86 execution is S6-08, the physical x86 run is S6-09, and parallel-mode sensitivity is S6-36; this methodology does not claim any of those tasks has started.
+The expected litmus corpus and its own TSO/SC enumerator are S6-05. The S6-08 runner implementation is under review-complete local development; native Linux execution and calibration are pending. The physical x86 run is S6-09, and parallel-mode sensitivity is S6-36.

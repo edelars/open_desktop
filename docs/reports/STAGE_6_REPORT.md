@@ -1,6 +1,6 @@
 # Этап 6. Промежуточный отчёт
 
-Статус отчёта: **промежуточный; этап не принят**. Сверка выполнена 2026-11-13; ветки `codex` и `main` имеют общий базовый commit `7f5546c`; на момент сверки `main` продвинулся до `add8ae5` (S4-38L9x принят). Следующая диагностическая граница main — `OUTB` в IER COM1 (`EE`, порт `0x3f9`, значение `0x0f`); предложенный следующий срез — S4-38L9y. План S6 подготовлен, но ни одна задача реализации этапа 6 не принята. Этап 4 остаётся открытым; родительские S4-21, S4-22 и S4-23 остаются открытыми.
+Статус отчёта: **промежуточный; этап не принят**. Сверка выполнена 2026-11-13; ветки `codex` и `main` имеют общий базовый commit `7f5546c`. На момент этой записи `main` — `5d401da` (S4-38L9b принят); следующие S4-21/22/23 остаются открытыми. S6-04…07 приняты; S6-08 реализована локально, прошла независимое code review и локальные проверки, но native Linux run, throughput calibration и физическое SB свидетельство ещё не получены. Полный этап 6 не принят.
 
 ## 1. Сводка задач
 
@@ -15,10 +15,10 @@
 | S6-02 | `in_progress` | Статический байтовый inventory native INIT/SIPI trampoline получен непосредственно из staged `vmlinuz`: 119 rows с 16-bit decode (включая 2 недостижимые padding/trap), 29 с 32-bit decode и 1 с 64-bit decode; execution mode на двух far-jump переходах указан отдельно в JSON; независимое ревью byte-inventory прошло; повторение на x86 bench и архитектурная приёмка ещё впереди. Фактический runtime callback/APIC путь гостя не подтверждён. См. [`ap-start-inventory.json`](data/stage6/ap-start-inventory.json). |
 | S6-03 | `not_started` | — |
 | S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое ревью `gpt-6.1-sol/high`; [коммит `4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc). `git diff --check` чист; `check_layout.py` сообщает только 45 существующих битых ссылок на отсутствующие work evidence артефакты, новых S6 ошибок нет. Graphify обновлён на этот коммит. Документ фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity; реализация и выбор host primitive не входят. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
-| S6-05 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло без оставшихся замечаний. Приняты стандартно-библиотечный генератор, 16 конечных fixtures, formula counter group и калибровка 1,000,000 complete schedules / seeds 0…9,999; см. [evidence](#s6-05--accepted-litmus-corpus-and-calibration) и [raw data](data/stage6/s6-05-enumerator-calibration.json). |
+| S6-05 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло без оставшихся замечаний. Приняты стандартно-библиотечный генератор, 15 конечных fixtures плюс один JSON-файл formula counter group и калибровка 1,000,000 complete schedules / seeds 0…9,999; см. [evidence](#s6-05--accepted-litmus-corpus-and-calibration) и [raw data](data/stage6/s6-05-enumerator-calibration.json). |
 | S6-06 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло без оставшихся замечаний. Приняты повторяемые измерения обычных access’ов и атомарных кандидатов, проверка emitted instructions и ограниченный выбор host-примитивов; сводка — [S6-06 measurements](data/stage6/s6-06-host-summary.md), сырые процессы 1–3 и disassembly сохранены рядом. |
 | S6-07 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло; [коммит `8b19597`](https://github.com/edelars/open_desktop/commit/8b19597); Graphify обновлён после inventory commit. Основной inventory: 233/233 совпадений, exact file:line coverage без пропусков; secondary ownership counts 25/218/7/6; все focused paths имеют owner, production assumptions без владельца не обнаружены. `git diff --check` чист; `check_layout.py` сообщает только 45 существующих work-evidence ошибок, S6 links clean. Код не менялся. |
-| S6-08 | `not_started` | — |
+| S6-08 | `in_progress` | Local review and checks passed; Linux x86_64 threaded execution, throughput calibration, and physical SB `00` evidence pending. |
 | S6-09 | `not_started` | — |
 | S6-10 | `blocked` | S4-21 |
 | S6-11 | `blocked` | S4-21 (через S6-10) |
