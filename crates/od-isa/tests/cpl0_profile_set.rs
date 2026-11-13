@@ -7938,11 +7938,10 @@ fn rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone() {
         expected.rip += 2;
         assert_eq!(state, expected, "only RAX, RDX and RIP change");
     }
-    // WRMSR of EFER and other MSRs stay Unsupported without mutation.
+    // WRMSR of EFER and the indexes a member names stay Unsupported without mutation.
     for (code, rcx) in [
         ([0x0f, 0x30], 0xc000_0080u64),
         ([0x0f, 0x32], 0xc000_0081),
-        ([0x0f, 0x32], 0x1b),
         ([0x0f, 0x32], 0x174),
         ([0x0f, 0x30], 0xc000_0081),
     ] {
@@ -7955,6 +7954,20 @@ fn rdmsr_efer_works_with_pse_pge_cr4_and_leaves_other_state_alone() {
         );
         assert_eq!(state, before);
     }
+    // S4-38L9v: RDMSR of an index no member names is `#GP(0)` in this set (it models an MSR file),
+    // without mutation; before S4-38L9v it was Unsupported.
+    let (state, before, result) =
+        run_efer_with_cr(&set, &[0x0f, 0x32], 0x1b, CR4_BASE | (1 << 4) | (1 << 7));
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
 }
 
 // ---- S4-38L7f: WRMSR IA32_EFER (SCE) and CR0.AM (EFER bits per SDM, from memory) ----
@@ -40147,27 +40160,12 @@ fn rdmsr_tdx_keyid_partitioning_without_the_member_stays_unsupported() {
 }
 
 #[test]
-fn rdmsr_other_indexes_stay_unsupported_with_the_tdx_keyid_partitioning_member() {
-    // The neighbours 0x86 and 0x88, IA32_APIC_BASE, IA32_ARCH_CAPABILITIES, IA32_MISC_ENABLE,
-    // the bases and EFER (no profile in this set), look-alikes with other index classes and an
-    // unknown index: refused with 0x32, no mutation.
+fn rdmsr_member_named_indexes_stay_unsupported_with_the_tdx_keyid_partitioning_member() {
+    // The indexes some MSR member or profile names (EFER, the bases, SYSENTER_CS) are refused
+    // with 0x32 in this set (no profile for them), no mutation. S4-38L9v: every other index is
+    // `#GP(0)`, see `rdmsr_outside_the_set_is_gp0_without_mutation`.
     let set = base().with_msr_tdx_keyid_partitioning_read();
-    for index in [
-        0x86u64,
-        0x88,
-        0x8,
-        0x1b,
-        0x10a,
-        0x1a0,
-        0x174,
-        0xc000_0080,
-        0xc000_0100,
-        0xc000_0102,
-        0x0001_0087,
-        0x8000_0087,
-        0xc000_0087,
-        0x1234_5678,
-    ] {
+    for index in [0x174u64, 0xc000_0080, 0xc000_0100, 0xc000_0102] {
         let (state, before, result) = run_star(&set, &RDMSR, (index, 5, 6), 1);
         assert_eq!(
             exit(&result),
@@ -40177,6 +40175,135 @@ fn rdmsr_other_indexes_stay_unsupported_with_the_tdx_keyid_partitioning_member()
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
     }
+}
+
+// ---- S4-38L9v: RDMSR of an index outside the set is #GP(0) ----
+
+fn gp0_fault() -> RunExit {
+    RunExit::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    })
+}
+
+#[test]
+fn rdmsr_outside_the_set_is_gp0_without_mutation() {
+    // The neighbours 0x86 and 0x88, IA32_APIC_BASE, IA32_ARCH_CAPABILITIES, IA32_MISC_ENABLE,
+    // the uncore discovery MSR 0x201e, look-alikes with other index classes and an unknown
+    // index: `#GP(0)`, nothing retired, RIP, EAX, EDX and every other register as they were.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    for index in [
+        0x86u64,
+        0x88,
+        0x8,
+        0x1b,
+        0x10a,
+        0x1a0,
+        0x201e,
+        0x0001_0087,
+        0x8000_0087,
+        0xc000_0087,
+        0x1234_5678,
+    ] {
+        let (state, before, result) = run_star(&set, &RDMSR, (index, 5, 6), 1);
+        assert_eq!(exit(&result), &gp0_fault(), "{index:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{index:#x}");
+        assert_eq!((state.gpr[0], state.gpr[2]), (5, 6));
+    }
+    // The index is ECX[31:0]: the upper half of RCX is ignored, so RCX = 0x1_0000_0087 reads
+    // the member MSR 0x87 (zeros), not a fault.
+    let (state, _, result) = run_star(&set, &RDMSR, (0x1_0000_0087, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!((state.gpr[0], state.gpr[2]), (0, 0));
+}
+
+#[test]
+fn rdmsr_of_member_indexes_keeps_its_previous_answer() {
+    // Inside the set: the 0x87 member still reads 0:0.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    let (state, _, result) = run_star(&set, &RDMSR, (TDX_KEYID_PARTITIONING_MSR, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!((state.gpr[0], state.gpr[2]), (0, 0));
+    // The write-only cells: RDMSR of STAR/LSTAR/CSTAR/SYSCALL_MASK/KERNEL_GS_BASE/SYSENTER_*
+    // stays Unsupported (never a fault), also in a set that configures the cell.
+    let star = Cell::new(0);
+    let set = base().with_msr_star_write(&star);
+    for index in [
+        0xc000_0081u64,
+        0xc000_0082,
+        0xc000_0083,
+        0xc000_0084,
+        0xc000_0102,
+        0x174,
+        0x175,
+        0x176,
+    ] {
+        let (state, before, result) = run_star(&set, &RDMSR, (index, 5, 6), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x32 },
+            "{index:#x}"
+        );
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn rdmsr_gp0_needs_a_set_that_models_an_msr_file_and_the_bare_form() {
+    // A set without any MSR member or profile: Unsupported as before.
+    let (state, before, result) = run_star(&base(), &RDMSR, (0x201e, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+    assert_eq!(state, before);
+    // Prefixed forms keep their refusal in a set that has the member.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    for code in [
+        &[0x66u8, 0x0f, 0x32][..],
+        &[0xf3, 0x0f, 0x32],
+        &[0xf2, 0x0f, 0x32],
+        &[0x48, 0x0f, 0x32],
+        &[0x40, 0x0f, 0x32],
+        &[0x2e, 0x0f, 0x32],
+        &[0x67, 0x0f, 0x32],
+    ] {
+        let (state, before, result) = run_star(&set, code, (0x201e, 5, 6), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x32 },
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+    }
+    // WRMSR of an unmodelled index stays Unsupported (only the read faults).
+    let (state, before, result) = run_star(&set, &WRMSR, (0x201e, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn rdmsr_outside_the_set_at_cpl3_never_reaches_the_fault() {
+    // The set is CPL0 only: a CPL3 run is rejected at entry, before any fetch.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    let mut state = board_state();
+    state.gpr[1] = 0x201e;
+    let before = state.clone();
+    let mut memory = Memory::code(&RDMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
 }
 
 #[test]
@@ -49519,4 +49646,324 @@ fn dword_in_out_is_not_reachable_from_cpl3_in_the_set() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(pio.dword_reads.is_empty() && pio.narrow_calls == 0);
+}
+
+// ---- S4-38L9v: #GP(0) of RDMSR through the IDT gate of vector 13 in the CPL0 set ----
+
+const GP_VECTOR: u8 = 13;
+const GP_GATE: u64 = PF_IDT + GP_VECTOR as u64 * 16;
+const GP_HANDLER: u64 = RIP + 0x200;
+const UNCORE_DISCOVERY_MSR: u64 = 0x201e;
+
+fn gp_set() -> Cpl0ProfileSet<'static> {
+    base().with_msr_tdx_keyid_partitioning_read()
+}
+
+/// A CPL0 state with `RDMSR` (ECX = the uncore discovery MSR, EAX = 5, EDX = 6) at `RIP`; IDT
+/// gate 13 is an interrupt gate to `GP_HANDLER`; the handler drops the error code and `IRETQ`s.
+/// CR2 holds a marker. Live flags: IF, AC, ZF, CF (no TF/NT/RF).
+fn gp_state() -> (LongModeState, LretqMemory) {
+    let (mut state, mut memory) = pf_state();
+    let mut code = vec![0x0f, 0x32];
+    code.resize((GP_HANDLER - RIP) as usize, 0x90);
+    code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x08]);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    ext_put_gate(
+        &mut memory,
+        GP_VECTOR,
+        pf_gate_bytes(GP_HANDLER, 0x10, 0, 0x8e),
+    );
+    state.gpr[Register::Rcx as usize] = UNCORE_DISCOVERY_MSR;
+    state.gpr[Register::Rax as usize] = 5;
+    state.gpr[Register::Rdx as usize] = 6;
+    state.rflags = 2 | IF | PF_AC | 0x1 | 0x40;
+    state.cr2 = Some(0xdead_0000);
+    (state, memory)
+}
+
+fn gp_fault() -> ArchitecturalFault {
+    ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    }
+}
+
+fn gp_deliver(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+) -> od_isa::Cpl0GeneralProtectionDelivery {
+    od_isa::deliver_general_protection_cpl0_set(
+        state,
+        memory,
+        &gp_fault(),
+        context(PrivilegeLevel::Ring0),
+    )
+}
+
+fn run_gp(
+    state: &mut LongModeState,
+    memory: &mut LretqMemory,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &gp_set(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn rdmsr_outside_the_set_faults_then_gp_delivery_writes_the_exact_frame() {
+    let (mut state, mut memory) = gp_state();
+    let before = state.clone();
+    let result = run_gp(&mut state, &mut memory, 1);
+    // The fault: nothing retired, RIP, EAX, EDX and every other register untouched, no store.
+    assert_eq!(exit(&result), &RunExit::Fault(gp_fault()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+
+    let reads_before = memory.reads.len();
+    let delivered = gp_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0GeneralProtectionDelivery::Delivered {
+            target_rip: GP_HANDLER,
+            new_rsp: PF_RSP - 48,
+            trap_gate: false,
+        }
+    );
+    // Hand-computed. Live flags 0x40243 (IF 0x200 | AC 0x40000 | ZF 0x40 | CF 1 | bit 1); the
+    // saved image has RF 0x10000 set: 0x50243. The frame, from the highest address: SS 0x18, old
+    // RSP, RFLAGS, CS 0x10, RIP of the RDMSR, error code 0.
+    assert_eq!(before.rflags, 0x4_0243);
+    assert_eq!(pf_qword(&memory, PF_RSP - 8), 0x18);
+    assert_eq!(pf_qword(&memory, PF_RSP - 16), PF_RSP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 24), 0x5_0243);
+    assert_eq!(pf_qword(&memory, PF_RSP - 32), 0x10);
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), RIP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 48), 0);
+    assert_eq!(memory.writes, 6, "six stores, no Accessed write");
+    assert!(
+        memory
+            .write_log
+            .iter()
+            .all(|(_, bytes, origin)| bytes.len() == 8 && *origin == AccessOrigin::ImplicitStack)
+    );
+    assert_eq!(
+        &memory.reads[reads_before..],
+        [
+            (GP_GATE, 8, AccessOrigin::DescriptorTable),
+            (GP_GATE + 8, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+    // CPU: handler, RSP below the frame, IF cleared (interrupt gate), RF cleared, AC/ZF/CF kept,
+    // CR2, EAX, EDX, ECX untouched, shadow clear.
+    let mut expected = before.clone();
+    expected.rip = GP_HANDLER;
+    expected.gpr[Register::Rsp as usize] = PF_RSP - 48;
+    expected.rflags = 0x4_0043;
+    assert_eq!(state, expected);
+    assert_eq!(state.cr2, Some(0xdead_0000));
+    assert_eq!(
+        (state.gpr[0], state.gpr[1], state.gpr[2]),
+        (5, UNCORE_DISCOVERY_MSR, 6)
+    );
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+}
+
+#[test]
+fn gp_delivery_aligns_rsp_down_to_16_and_keeps_the_old_rsp_in_the_frame() {
+    let (mut state, mut memory) = gp_state();
+    let old_rsp = PF_RSP + 0xb;
+    state.gpr[Register::Rsp as usize] = old_rsp;
+    let delivered = gp_deliver(&mut state, &mut memory);
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0GeneralProtectionDelivery::Delivered {
+            target_rip: GP_HANDLER,
+            new_rsp: PF_RSP - 48,
+            trap_gate: false,
+        }
+    );
+    assert_eq!(pf_qword(&memory, PF_RSP - 16), old_rsp);
+    assert_eq!(pf_qword(&memory, PF_RSP - 40), RIP);
+    assert_eq!(pf_qword(&memory, PF_RSP - 48), 0);
+}
+
+#[test]
+fn gp_delivery_through_a_trap_gate_keeps_if_and_through_an_interrupt_gate_clears_it() {
+    for (attributes, if_after) in [(0x8e, 0), (0xee, 0), (0x8f, IF), (0xef, IF)] {
+        let (mut state, mut memory) = gp_state();
+        ext_put_gate(
+            &mut memory,
+            GP_VECTOR,
+            pf_gate_bytes(GP_HANDLER, 0x10, 0, attributes),
+        );
+        // TF and NT are live: the entry clears both whatever the gate type.
+        state.rflags |= (1 << 8) | (1 << 14);
+        let delivered = gp_deliver(&mut state, &mut memory);
+        assert!(
+            matches!(
+                delivered,
+                od_isa::Cpl0GeneralProtectionDelivery::Delivered { .. }
+            ),
+            "{attributes:#x}"
+        );
+        assert_eq!(state.rflags & IF, if_after, "{attributes:#x}");
+        assert_eq!(state.rflags & ((1 << 8) | (1 << 14) | (1 << 16)), 0);
+        // The saved image keeps IF = 1 and has RF = 1.
+        assert_eq!(
+            pf_qword(&memory, PF_RSP - 24) & (IF | (1 << 16)),
+            IF | (1 << 16)
+        );
+    }
+}
+
+#[test]
+fn gp_delivery_then_the_handler_iretq_returns_to_the_faulting_rdmsr() {
+    let (mut state, mut memory) = gp_state();
+    let start = state.clone();
+    let result = run_gp(&mut state, &mut memory, 1);
+    assert_eq!(result.instructions_executed, 0);
+    gp_deliver(&mut state, &mut memory);
+    // ADD RSP, 8 (drop the error code) and IRETQ: back on the RDMSR with RF = 1 (the saved image).
+    let result = run_gp(&mut state, &mut memory, 2);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = start.clone();
+    expected.rflags |= 1 << 16;
+    assert_eq!(state, expected);
+    assert_eq!(state.rip, RIP);
+    assert_eq!(state.gpr[Register::Rsp as usize], PF_RSP);
+}
+
+#[test]
+fn gp_delivery_without_an_idtr_is_refused_before_any_access() {
+    let (mut state, mut memory) = gp_state();
+    state.idtr = None;
+    let before = state.clone();
+    let reads = memory.reads.len();
+    assert_eq!(
+        gp_deliver(&mut state, &mut memory),
+        od_isa::Cpl0GeneralProtectionDelivery::Refused(
+            od_isa::Cpl0GeneralProtectionRefusal::MissingIdtr
+        )
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    assert_eq!(memory.reads.len(), reads);
+}
+
+#[test]
+fn gp_delivery_refusals_leave_state_and_memory_untouched() {
+    use od_isa::Cpl0GeneralProtectionRefusal as Refusal;
+    // The fault, the activity and the shadow.
+    for (fault, expected) in [
+        (
+            ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: None,
+            },
+            Refusal::NotGeneralProtection,
+        ),
+        (
+            ArchitecturalFault {
+                vector: 13,
+                error_code: None,
+                linear_address: None,
+            },
+            Refusal::MissingFaultMetadata,
+        ),
+    ] {
+        let (mut state, mut memory) = gp_state();
+        let before = state.clone();
+        let delivered = od_isa::deliver_general_protection_cpl0_set(
+            &mut state,
+            &mut memory,
+            &fault,
+            context(PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            delivered,
+            od_isa::Cpl0GeneralProtectionDelivery::Refused(expected)
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    }
+    let (mut state, mut memory) = gp_state();
+    state.sti_shadow = Some(StiShadow::Blocking);
+    assert_eq!(
+        gp_deliver(&mut state, &mut memory),
+        od_isa::Cpl0GeneralProtectionDelivery::Refused(Refusal::StiShadowActive)
+    );
+    let (mut state, mut memory) = gp_state();
+    state.activity = Some(CpuActivity::Halted);
+    assert_eq!(
+        gp_deliver(&mut state, &mut memory),
+        od_isa::Cpl0GeneralProtectionDelivery::Refused(Refusal::ActivityOutsideProfile)
+    );
+    // The gate: beyond the IDT limit, not present, an IST entry, a task gate.
+    let (mut state, mut memory) = gp_state();
+    state.idtr = Some(od_isa::state::Idtr {
+        base: PF_IDT,
+        limit: (GP_VECTOR as u16) * 16 + 14,
+    });
+    assert_eq!(
+        gp_deliver(&mut state, &mut memory),
+        od_isa::Cpl0GeneralProtectionDelivery::Refused(Refusal::GateBeyondIdtLimit)
+    );
+    for (ist, attributes, expected) in [
+        (0, 0x0e, Refusal::GateNotPresent),
+        (1, 0x8e, Refusal::UnsupportedIst(1)),
+        (0, 0x85, Refusal::InvalidGateType(0x85)),
+    ] {
+        let (mut state, mut memory) = gp_state();
+        ext_put_gate(
+            &mut memory,
+            GP_VECTOR,
+            pf_gate_bytes(GP_HANDLER, 0x10, ist, attributes),
+        );
+        let before = state.clone();
+        assert_eq!(
+            gp_deliver(&mut state, &mut memory),
+            od_isa::Cpl0GeneralProtectionDelivery::Refused(expected)
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.writes, 0);
+    }
+    // Not CPL0.
+    let (mut state, mut memory) = gp_state();
+    let delivered = od_isa::deliver_general_protection_cpl0_set(
+        &mut state,
+        &mut memory,
+        &gp_fault(),
+        context(PrivilegeLevel::Ring3),
+    );
+    assert_eq!(
+        delivered,
+        od_isa::Cpl0GeneralProtectionDelivery::Refused(Refusal::NotRing0Long64)
+    );
+}
+
+#[test]
+fn gp_delivery_does_not_change_the_pf_delivery_of_the_same_state() {
+    // The #PF path still writes its six-qword frame and sets CR2 (the shared frame code).
+    let (mut state, mut memory) = gp_state();
+    let delivered = pf_deliver(&mut state, &mut memory);
+    assert!(matches!(
+        delivered,
+        od_isa::Cpl0PageFaultDelivery::Delivered { .. }
+    ));
+    assert_eq!(state.cr2, Some(PF_FAULT_ADDRESS));
+    assert_eq!(pf_qword(&memory, PF_RSP - 48), 3);
 }
