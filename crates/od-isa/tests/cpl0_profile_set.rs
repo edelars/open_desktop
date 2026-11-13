@@ -39232,3 +39232,188 @@ fn pause_inside_the_sti_shadow_stays_unsupported_in_the_sti_profile() {
     assert_eq!(result.instructions_executed, 2);
     assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
 }
+
+// ---- S4-38L9c: RDMSR of IA32_MKTME_KEYID_PARTITIONING (0x87) ----
+//
+// Oracle (kernel source, not this implementation): `tdx_init` -> `record_keyid_partitioning`
+// (arch/x86/virt/vmx/tdx/tdx.c) reads MSR 0x87 with `rdmsr_safe` and returns -EINVAL, which
+// makes `tdx_init` return silently, when the read faults or when EDX (the number of TDX
+// private KeyIDs) is zero. The member answers EDX:EAX = 0:0.
+
+const TDX_KEYID_PARTITIONING_MSR: u64 = 0x87;
+
+#[test]
+fn rdmsr_tdx_keyid_partitioning_returns_zero_and_changes_only_rip_rax_rdx() {
+    // The boundary of the Linux run: `0F 32`, ECX = 0x87, RAX and RDX hold garbage (the upper
+    // halves too): EDX:EAX = 0:0 and the upper halves are cleared, RCX is untouched.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    let (state, before, result) = run_star(
+        &set,
+        &RDMSR,
+        (
+            TDX_KEYID_PARTITIONING_MSR,
+            0xffff_ffff_dead_beef,
+            0xffff_ffff_8000_0001,
+        ),
+        1,
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before.clone();
+    expected.rip += 2;
+    expected.gpr[0] = 0;
+    expected.gpr[2] = 0;
+    assert_eq!(state, expected, "only RIP, RAX and RDX change");
+    assert_eq!(state.gpr[1], TDX_KEYID_PARTITIONING_MSR);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+
+    // ECX is a 32-bit index: the upper half of RCX is ignored.
+    let (state, _, result) = run_star(
+        &set,
+        &RDMSR,
+        (TDX_KEYID_PARTITIONING_MSR | (1 << 32), 5, 6),
+        1,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!((state.gpr[0], state.gpr[2]), (0, 0));
+}
+
+#[test]
+fn rdmsr_tdx_keyid_partitioning_composes_with_the_efer_profile_and_other_members() {
+    // mov ecx,0x87; rdmsr; mov ecx,0xc0000080; rdmsr (EFER: the read-only profile, whose value
+    // lands in EDX:EAX after the 0x87 zeros).
+    let code = [
+        0xb9, 0x87, 0x00, 0x00, 0x00, 0x0f, 0x32, 0xb9, 0x80, 0x00, 0x00, 0xc0, 0x0f, 0x32,
+    ];
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    let efer_cell = Cell::new(0xd00);
+    let star = Cell::new(0);
+    let set = base()
+        .with_msr(&efer)
+        .with_msr_efer_write(&efer_cell)
+        .with_msr_star_write(&star)
+        .with_msr_fs_gs_base()
+        .with_msr_tdx_keyid_partitioning_read();
+    let mut state = board_state();
+    state.gpr[0] = 0x77;
+    state.gpr[2] = 0x88;
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!((state.gpr[0], state.gpr[2]), (0xd00, 0));
+    assert_eq!(star.get(), 0, "no cell is touched");
+
+    // The 0x87 read alone, with those members present: zeros.
+    let mut state = board_state();
+    state.gpr[0] = 0x77;
+    state.gpr[2] = 0x88;
+    let mut memory = Memory::code(&code[..7]);
+    let result = run_set(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!((state.gpr[0], state.gpr[2]), (0, 0));
+}
+
+#[test]
+fn rdmsr_tdx_keyid_partitioning_without_the_member_stays_unsupported() {
+    let efer = MsrProfile::EferReadOnlyV1(0xd00);
+    for set in [base(), base().with_msr(&efer).with_msr_fs_gs_base()] {
+        let (state, before, result) = run_star(&set, &RDMSR, (TDX_KEYID_PARTITIONING_MSR, 5, 6), 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x32 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn rdmsr_other_indexes_stay_unsupported_with_the_tdx_keyid_partitioning_member() {
+    // The neighbours 0x86 and 0x88, IA32_APIC_BASE, IA32_ARCH_CAPABILITIES, IA32_MISC_ENABLE,
+    // the bases and EFER (no profile in this set), look-alikes with other index classes and an
+    // unknown index: refused with 0x32, no mutation.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    for index in [
+        0x86u64,
+        0x88,
+        0x8,
+        0x1b,
+        0x10a,
+        0x1a0,
+        0x174,
+        0xc000_0080,
+        0xc000_0100,
+        0xc000_0102,
+        0x0001_0087,
+        0x8000_0087,
+        0xc000_0087,
+        0x1234_5678,
+    ] {
+        let (state, before, result) = run_star(&set, &RDMSR, (index, 5, 6), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x32 },
+            "{index:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn wrmsr_tdx_keyid_partitioning_stays_unsupported_with_the_member() {
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    let (state, before, result) = run_star(&set, &WRMSR, (TDX_KEYID_PARTITIONING_MSR, 5, 6), 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x30 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn rdmsr_tdx_keyid_partitioning_with_prefixes_is_unsupported_without_mutation() {
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    for code in [
+        &[0x66u8, 0x0f, 0x32][..],
+        &[0xf3, 0x0f, 0x32],
+        &[0xf2, 0x0f, 0x32],
+        &[0x48, 0x0f, 0x32],
+        &[0x40, 0x0f, 0x32],
+        &[0x2e, 0x0f, 0x32],
+        &[0x3e, 0x0f, 0x32],
+        &[0x67, 0x0f, 0x32],
+    ] {
+        let (state, before, result) = run_star(&set, code, (TDX_KEYID_PARTITIONING_MSR, 5, 6), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x32 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn rdmsr_tdx_keyid_partitioning_at_cpl3_is_not_answered() {
+    // The member is a CPL0 one: at CPL3 the read falls through to the existing refusal.
+    let set = base().with_msr_tdx_keyid_partitioning_read();
+    let mut state = board_state();
+    state.gpr[1] = TDX_KEYID_PARTITIONING_MSR;
+    state.gpr[0] = 5;
+    state.gpr[2] = 6;
+    let before = state.clone();
+    let mut memory = Memory::code(&RDMSR);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    // The CPL0 set is not entered at CPL3 at all (entry check), so the read is never answered.
+    assert!(
+        matches!(result, Err(Cpl0ProfileSetInputError::WrongPrivilege)),
+        "{result:?}"
+    );
+    assert_eq!(state, before);
+}

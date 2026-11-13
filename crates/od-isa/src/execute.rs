@@ -1908,6 +1908,7 @@ pub struct Cpl0ProfileSet<'a> {
     msr_sysenter_stack: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     msr_syscall_mask: Option<&'a Cell<u64>>,
     msr_kernel_gs_base: Option<&'a Cell<u64>>,
+    msr_tdx_keyid_partitioning_read: bool,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1933,6 +1934,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_sysenter_stack: None,
             msr_syscall_mask: None,
             msr_kernel_gs_base: None,
+            msr_tdx_keyid_partitioning_read: false,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2110,6 +2112,20 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// handles the index keeps it (as for `0x174..=0x176`), so the member never overrides it.
     pub const fn with_msr_kernel_gs_base_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_kernel_gs_base = Some(cell);
+        self
+    }
+
+    /// S4-38L9c: admit `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) at CPL0 under Long64.
+    /// The value is the constant `EDX:EAX = 0:0` (no MKTME and no TDX private KeyIDs, the
+    /// "TDX not enabled by the BIOS" reading; the kernel's `tdx_init` treats it exactly like the
+    /// `#GP(0)` of a CPU without the MSR, see CPU_CONTRACT S4-38L9c). There is no cell and no
+    /// `WRMSR`: only the bare two-byte form `0F 32` (no prefix, no REX) is admitted, `WRMSR` of
+    /// `0x87`, any other form and any other index keep their refusal (`Unsupported`).
+    ///
+    /// Precedence: an MSR profile that handles the index would keep it; today no [`MsrProfile`]
+    /// covers `0x87`, so the member is never overridden.
+    pub const fn with_msr_tdx_keyid_partitioning_read(mut self) -> Self {
+        self.msr_tdx_keyid_partitioning_read = true;
         self
     }
 
@@ -2307,6 +2323,8 @@ struct GuestMsrCells<'a> {
     sysenter_eip: Option<&'a Cell<u64>>,
     syscall_mask: Option<&'a Cell<u64>>,
     kernel_gs_base: Option<&'a Cell<u64>>,
+    /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
+    tdx_keyid_partitioning_read: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -20538,6 +20556,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_sysenter_stack.is_some()
                 || set.msr_syscall_mask.is_some()
                 || set.msr_kernel_gs_base.is_some()
+                || set.msr_tdx_keyid_partitioning_read
             {
                 Some(GuestMsrCells {
                     star: set.msr_star,
@@ -20548,6 +20567,7 @@ fn run_cpl0_profile_set_inner(
                     sysenter_eip: set.msr_sysenter_stack.map(|(_, eip)| eip),
                     syscall_mask: set.msr_syscall_mask,
                     kernel_gs_base: set.msr_kernel_gs_base,
+                    tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
                 })
             } else {
                 None
@@ -33544,6 +33564,26 @@ fn step_configured(
                 (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
                     | u64::from(state.gpr[Register::Rax as usize] as u32),
             );
+            state.rip = next_rip;
+            return Ok(StepOutcome::Advanced);
+        }
+        // S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns EDX:EAX = 0:0 in the
+        // set that has the member (the kernel's `tdx_init` reads it unconditionally and treats
+        // "no TDX KeyIDs" as "TDX off"). Same conditions as the write cells; an MSR profile that
+        // handles the index keeps it; `WRMSR`, a prefix, CPL > 0 and any other index fall
+        // through to the existing refusal.
+        if instruction.operation == Operation::ReadMsr
+            && msr_index == 0x87
+            && guest_msr_cells.is_some_and(|cells| cells.tdx_keyid_partitioning_read)
+            && !msr_profile.is_some_and(|profile| profile.handles_index(0x87))
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+        {
+            state.gpr[Register::Rax as usize] = 0;
+            state.gpr[Register::Rdx as usize] = 0;
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
         }

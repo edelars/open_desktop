@@ -272,6 +272,11 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
                             diagnostic_past_c7: options.diagnostic_past_c7,
                             cpuid_profile: options.cpuid_profile,
+                            // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
+                            // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
+                            // the DiagnosticV1 default, whose run does not get there.
+                            msr_tdx_keyid_partitioning_read: options.cpuid_profile
+                                == CpuidProfile::X8664V1Stage4A,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -2093,6 +2098,7 @@ mod tests {
                 "msr:sysenter_stack_write",
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
+                "msr:tdx_keyid_partitioning_read",
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
@@ -2100,6 +2106,45 @@ mod tests {
                 "irq"
             ])
         );
+    }
+
+    #[test]
+    fn stage4a_answers_rdmsr_0x87_with_zero_and_the_default_profile_does_not() {
+        // CLI; MOV ECX, 0x87; MOV EAX, 0x55; MOV EDX, 0x66; RDMSR; HLT.
+        let code = [
+            0xFA, 0xB9, 0x87, 0x00, 0x00, 0x00, 0xB8, 0x55, 0x00, 0x00, 0x00, 0xBA, 0x66, 0x00,
+            0x00, 0x00, 0x0F, 0x32, 0xF4,
+        ];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-rdmsr-87",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let on = run(CpuidProfile::X8664V1Stage4A);
+        let stop = &on["stop"];
+        // Oracle: the kernel's tdx_init reads 0 as "no TDX KeyIDs" (arch/x86/virt/vmx/tdx/tdx.c).
+        assert_eq!(stop["gpr"]["rax"], "0x0", "{on:#}");
+        assert_eq!(stop["gpr"]["rdx"], "0x0", "{on:#}");
+        assert_eq!(stop["gpr"]["rcx"], "0x87", "{on:#}");
+        assert_eq!(
+            stop["retired"], 5,
+            "CLI, 3 MOV, RDMSR; HLT is outside the set"
+        );
+        let off = run(CpuidProfile::DiagnosticV1);
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x32", "{off:#}");
+        assert_eq!(stop["retired"], 4, "{off:#}");
+        assert_eq!(stop["gpr"]["rax"], "0x55", "{off:#}");
     }
 
     #[test]
