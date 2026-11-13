@@ -38983,3 +38983,187 @@ fn sti_is_outside_the_bare_entries() {
     );
     assert_eq!(state, before);
 }
+
+// ---- S4-38L9b: PAUSE (`F3 90`) ---------------------------------------------------
+
+#[test]
+fn pause_in_the_set_is_a_two_byte_nop() {
+    // `F3 90` retires once, advances RIP by two and touches no register or flag. The state
+    // carries an unusual flag pattern and distinct general registers to catch any write.
+    let mut state = endbr_state();
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        if index != 4 {
+            *value = 0x0123_4567_89ab_cdef ^ ((index as u64) << 56);
+        }
+    }
+    let mut before = state.clone();
+    before.rip += 2;
+    let mut memory = Memory::code(&[0xf3, 0x90]);
+    let defined = 0x1 | 0x40;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        defined,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.rflags_defined, defined);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn pause_then_nop_then_hlt_retires_all_three() {
+    // `pause; nop; hlt`: PAUSE and the bare NOP retire, then HLT retires as in `cli; hlt`.
+    let halt = HaltProfile::Long64V1;
+    let set = base().with_halt(&halt);
+    let mut state = board_state();
+    let mut memory = Memory::code(&[0xf3, 0x90, 0x90, 0xf4, 0x90]);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(exit(&result), &RunExit::Halted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.activity, Some(CpuActivity::Halted));
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(state.rflags & IF, IF);
+    // The byte after HLT is never fetched.
+    assert_eq!(memory.fetches, 4);
+}
+
+#[test]
+fn pause_lookalikes_stay_unsupported_in_the_set() {
+    for code in [
+        &[0xf3u8, 0x41, 0x90][..],
+        &[0xf3, 0x40, 0x90],
+        &[0xf3, 0x48, 0x90],
+        &[0x41, 0xf3, 0x90],
+        &[0x66, 0xf3, 0x90],
+        &[0xf3, 0x66, 0x90],
+        &[0xf2, 0x90],
+        &[0xf2, 0xf3, 0x90],
+        &[0xf3, 0xf2, 0x90],
+        &[0xf0, 0x90],
+        &[0xf0, 0xf3, 0x90],
+        &[0xf3, 0xf0, 0x90],
+        &[0xf3, 0xf3, 0x90],
+        &[0xf3, 0x2e, 0x90],
+        &[0x2e, 0xf3, 0x90],
+        &[0x64, 0xf3, 0x90],
+        &[0xf3, 0x65, 0x90],
+        &[0xf3, 0x67, 0x90],
+        &[0x67, 0xf3, 0x90],
+    ] {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x90 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn f3_with_other_xchg_rax_opcodes_stays_unsupported_in_the_set() {
+    for code in [&[0xf3u8, 0x91][..], &[0xf3, 0x97]] {
+        let mut state = endbr_state();
+        let before = state.clone();
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: code[1] },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn bare_nop_and_xchg_nops_keep_their_behavior_in_the_set() {
+    // `90`, `66 90` (XCHG AX,AX) and `48 90` (XCHG RAX,RAX) are unchanged.
+    for (code, length) in [
+        (&[0x90u8][..], 1u64),
+        (&[0x66, 0x90], 2),
+        (&[0x48, 0x90], 2),
+    ] {
+        let mut state = endbr_state();
+        state.gpr[0] = 0x1111_2222_3333_4444;
+        let mut before = state.clone();
+        before.rip += length;
+        let mut memory = Memory::code(code);
+        let result = run_set(&mut state, &mut memory, &base(), 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn pause_outside_the_set_stays_unsupported() {
+    let mut state = endbr_state();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf3, 0x90]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x90 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+
+    let mut memory = Memory::code(&[0xf3, 0x90]);
+    let outcome = od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
+    assert_eq!(
+        outcome,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x90 })
+    );
+    assert_eq!(state, before);
+
+    // The bare NOP keeps executing outside the set.
+    let mut memory = Memory::code(&[0x90]);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 1);
+}
+
+#[test]
+fn pause_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = endbr_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xf3, 0x90]);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!((memory.fetches, &state), (0, &before));
+}

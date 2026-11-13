@@ -2255,6 +2255,10 @@ pub enum Operation {
     /// `F3 0F 1E FA` (ENDBR64) as an architectural NOP, because the CPU does not declare
     /// CET_IBT. Execution is admitted only inside the CPL0 profile set (S2-48).
     Endbr64Nop,
+    /// Bare `F3 90` (PAUSE, S4-38L9b): an architectural NOP hint of length 2 (no SMT or
+    /// spin-wait delay is modeled). Only the exact two-byte form decodes to it; execution is
+    /// admitted only inside the CPL0 profile set, unlike the bare `90` NOP.
+    Pause,
     /// `0F 1F /0` (NOP r/m16/32/64) as an architectural NOP (S4-38L4d): the ModRM/SIB/disp
     /// bytes only contribute to the instruction length; the operand is never read, written
     /// or translated. Execution is admitted only inside the CPL0 profile set.
@@ -5579,8 +5583,20 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.is_some()
                     && prefix_bytes[0] == 0xf3
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        // S4-38L9b: exactly `F3 90` (no other prefix, no REX, two bytes in total) is PAUSE.
+        // Every other prefixed `90` form keeps the refusal below.
+        let pause = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0x90
+            && !duplicate
+            && prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    ..Prefixes::default()
+                })
+            && self.length == 2;
         if !known
             || (prefixes.group1.is_some()
+                && !pause
                 && !rep_bsf
                 && !rep_stosb
                 && !rep_stos
@@ -9457,7 +9473,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, byte @ 0x90..=0x97) => {
                 let encoding = (byte & 7) | ((rex & 1) << 3);
-                if encoding == 0 {
+                if pause {
+                    Operation::Pause
+                } else if encoding == 0 {
                     Operation::Nop
                 } else {
                     Operation::Xchg {
@@ -29160,6 +29178,50 @@ mod tests {
                 ),
                 "{bytes:02x?}"
             );
+        }
+    }
+
+    #[test]
+    fn pause_decodes_only_the_exact_f3_90_form() {
+        // S4-38L9b: `F3 90` is the 2-byte PAUSE; every other prefixed `90` form stays
+        // unsupported with opcode 0x90, and the bare/`66`/REX forms keep their meaning.
+        let decoded = Memory::new(&[0xf3, 0x90]).decode().unwrap();
+        assert_eq!(decoded.length, 2);
+        assert_eq!(decoded.operation, Operation::Pause);
+        let decoded = Memory::new(&[0x90]).decode().unwrap();
+        assert_eq!((decoded.length, decoded.operation), (1, Operation::Nop));
+        for bytes in [&[0x66u8, 0x90][..], &[0x48, 0x90], &[0x41, 0x90]] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_ne!(decoded.operation, Operation::Pause, "{bytes:02x?}");
+        }
+        for bytes in [
+            &[0xf3u8, 0x41, 0x90][..],
+            &[0xf3, 0x40, 0x90],
+            &[0xf3, 0x48, 0x90],
+            &[0x41, 0xf3, 0x90],
+            &[0x66, 0xf3, 0x90],
+            &[0xf3, 0x66, 0x90],
+            &[0xf2, 0x90],
+            &[0xf0, 0x90],
+            &[0xf0, 0xf3, 0x90],
+            &[0xf3, 0xf0, 0x90],
+            &[0xf3, 0xf3, 0x90],
+            &[0xf3, 0x2e, 0x90],
+            &[0x2e, 0xf3, 0x90],
+            &[0xf3, 0x67, 0x90],
+            &[0xf3, 0x91],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        match Memory::new(&[0xf3, 0x41, 0x90]).decode() {
+            Err(DecodeError::Unsupported { opcode, .. }) => assert_eq!(opcode.byte, 0x90),
+            other => panic!("unexpected {other:?}"),
         }
     }
 
