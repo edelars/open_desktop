@@ -657,7 +657,7 @@
 - **Проверить:** у каждого descriptor-writing path есть точная ссылка на CPU semantics, заданная fault/commit граница и явное покрытие generation/callback; отчёт этапа фиксирует оставшийся implementation gate без регистрации будущей работы как дефекта.
 - **Готово:** S6-30 и соответствующие инструкции можно реализовать без неявного RMW/commit контракта.
 - **Не делать:** не менять набор инструкций, не объявлять descriptor updates SMP-safe до реализации общей RAM transaction.
-- Текущее состояние (2026-11-13): контракт восьми descriptor-writing paths добавлен в `MEMORY_MODEL.md` и связан с `CPU_CONTRACT.md`; независимое архитектурное ревью `gpt-6.1-sol/high` завершено без оставшихся замечаний. Результат и оставшийся SMP implementation gate внесены в [отчёт S6-26](../reports/STAGE_6_REPORT.md#s6-26--контракт-побочных-записей-дескрипторов-accepted). Checkbox не менялся.
+- Текущее состояние (2026-11-13): контракт восьми descriptor-writing paths добавлен в `MEMORY_MODEL.md` и связан с `CPU_CONTRACT.md`; коммит `422d0a3`, независимое архитектурное ревью `gpt-6.1-sol/high` завершено без оставшихся замечаний. Результат и оставшийся SMP implementation gate внесены в [отчёт S6-26](../reports/STAGE_6_REPORT.md#s6-26--контракт-побочных-записей-дескрипторов-accepted). Checkbox не менялся.
 
 ### S6-30. Реализовать разделяемую гостевую RAM
 

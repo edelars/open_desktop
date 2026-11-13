@@ -36,7 +36,7 @@
 | S6-23 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для зависимого S6-20 |
 | S6-24 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для цепочки S6-13/S6-14c |
 | S6-25 | `blocked` | S4-09 (полный объём; принятый ограниченный срез не закрывает задачу), S4-21, S4-22, S4-23 (через S6-20) |
-| S6-26 | `accepted` | Документный контракт восьми descriptor-writing paths прошёл независимое архитектурное ревью `gpt-6.1-sol/high`; замечаний не осталось. `git diff --check` чист; `check_layout.py` сообщает 45 прежних broken links в work evidence, новых в изменённых docs нет. SMP реализация остаётся gate для S6-30/S6-31. |
+| S6-26 | `accepted` | Документный контракт восьми descriptor-writing paths прошёл независимое архитектурное ревью `gpt-6.1-sol/high`; замечаний не осталось. Реализация документации — коммит `422d0a3`; `git diff --check` чист; `check_layout.py` сообщает 45 прежних broken links в work evidence, новых в изменённых docs нет. SMP реализация остаётся gate для S6-30/S6-31. |
 | S6-30 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-31 | `blocked` | S4-09, S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-32 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
@@ -421,7 +421,8 @@ cross-page qword store сначала проверяет обе линейные
 (revision 093)](https://cdrdv2.intel.com/v1/dl/getContent/671241).
 
 S6-26 прошёл независимое архитектурное ревью `gpt-6.1-sol/high`; замечаний не
-осталось. `git diff --check` чист. `check_layout.py` сообщает 45 старых broken
+осталось. Документный срез внесён коммитом `422d0a3`. `git diff --check` чист.
+`check_layout.py` сообщает 45 старых broken
 links на отсутствующие work evidence; ни одна ссылка не затрагивает изменённые
 S6-26 документы. SMP реализация descriptor transactions остаётся gate для
 S6-30/S6-31. Плановый checkbox оставлен без изменения согласно указанию
