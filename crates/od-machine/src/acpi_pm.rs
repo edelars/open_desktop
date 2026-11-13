@@ -679,6 +679,48 @@ mod tests {
     }
 
     #[test]
+    fn pm1_registers_take_one_word_access_through_the_cpu_port_view() {
+        // S4-38L9r: `66 ED` / `66 EF` reach the device as one access of width 2.
+        use od_isa::PortIo as _;
+        let (mut bus, _, _) = bus();
+        let (_, mut port) = bus.split_for_pio_step();
+        // PM1_EN (port 0x602) resets to zero and stores only the defined bits.
+        assert_eq!(port.read_u16(0x602), Ok(0));
+        port.write_u16(0x602, 0xFFFF).unwrap();
+        assert_eq!(port.read_u16(0x602), Ok(PM1_EN_MASK));
+        // The byte view returns the same data.
+        assert_eq!(port.read_u8(0x602), Ok(PM1_EN_MASK as u8));
+        assert_eq!(port.read_u8(0x603), Ok((PM1_EN_MASK >> 8) as u8));
+        // PM1_STS is write-one-to-clear through the word write too.
+        port.write_u16(0x600, 0xFFFF).unwrap();
+        assert_eq!(port.read_u16(0x600), Ok(0));
+        // PM1_CNT keeps SCI_EN set from reset.
+        assert_eq!(port.read_u16(ACPI_PM1A_CNT_BLK), Ok(1));
+        // Errors are typed bus errors and leave the stored value alone.
+        assert!(matches!(
+            port.write_u16(ACPI_PM_TMR_BLK, 0),
+            Err(BusAccessError::Device {
+                source: DeviceError::ReadOnly,
+                ..
+            })
+        ));
+        assert!(matches!(
+            port.read_u16(ACPI_RESET_REG),
+            Err(BusAccessError::Device {
+                source: DeviceError::CrossesRegister | DeviceError::UnknownOffset,
+                ..
+            })
+        ));
+        assert_eq!(
+            port.read_u16(ACPI_PM_BASE_PORT + 0x10),
+            Err(BusAccessError::UnmappedPort(PortAddress::new(
+                ACPI_PM_BASE_PORT + 0x10
+            )))
+        );
+        assert_eq!(port.read_u16(0x602), Ok(PM1_EN_MASK));
+    }
+
+    #[test]
     fn s5_through_the_machine_bus_uses_the_cnt_port() {
         let (mut bus, handle, _) = bus();
         bus.write_port(

@@ -982,6 +982,19 @@ impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
         }
         result
     }
+
+    fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
+        self.inner.read_u16(port)
+    }
+
+    fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
+        let result = self.inner.write_u16(port, value);
+        // A word write covers `port` and `port + 1` (S4-38L9r).
+        if result.is_ok() && (0x3f..=0x43).contains(&port) {
+            self.pit_written = true;
+        }
+        result
+    }
 }
 
 /// RFLAGS.IF, bit 9.
@@ -2975,5 +2988,53 @@ mod tests {
         // The whole-bus form hands the bus out.
         let mut adapter_bus = AdapterBus::from(&mut machine);
         assert!(adapter_bus.machine().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod pit_word_watch_tests {
+    use super::PitWriteWatch;
+    use od_isa::PortIo;
+
+    #[derive(Default)]
+    struct Recorder {
+        words: Vec<(u16, u16)>,
+    }
+
+    impl PortIo for Recorder {
+        type Error = ();
+
+        fn read_u8(&mut self, _port: u16) -> Result<u8, ()> {
+            Err(())
+        }
+
+        fn write_u8(&mut self, _port: u16, _value: u8) -> Result<(), ()> {
+            Err(())
+        }
+
+        fn read_u16(&mut self, _port: u16) -> Result<u16, ()> {
+            Ok(0x1234)
+        }
+
+        fn write_u16(&mut self, port: u16, value: u16) -> Result<(), ()> {
+            self.words.push((port, value));
+            Ok(())
+        }
+    }
+
+    /// S4-38L9r: the word forwarders keep the width (the byte default would split it) and a
+    /// retired word write that covers a PIT port counts as a PIT write.
+    #[test]
+    fn word_accesses_pass_through_and_a_word_write_over_the_pit_ports_is_noted() {
+        for (port, noted) in [(0x3e_u16, false), (0x3f, true), (0x43, true), (0x44, false)] {
+            let mut watch = PitWriteWatch {
+                inner: Recorder::default(),
+                pit_written: false,
+            };
+            assert_eq!(watch.read_u16(port), Ok(0x1234));
+            assert_eq!(watch.write_u16(port, 0xbeef), Ok(()));
+            assert_eq!(watch.inner.words, [(port, 0xbeef)]);
+            assert_eq!(watch.pit_written, noted, "{port:#x}");
+        }
     }
 }

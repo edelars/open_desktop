@@ -48343,3 +48343,290 @@ fn xchg_qword_is_not_reachable_from_cpl3_in_the_set() {
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }
+
+// ---- S4-38L9r: `66 ED` (IN AX, DX) and `66 EF` (OUT DX, AX) under `pio_u8` ----
+
+/// Port double that records the word accesses separately from the byte ones.
+#[derive(Default)]
+struct WordPio {
+    word_value: u16,
+    word_reads: Vec<u16>,
+    word_writes: Vec<(u16, u16)>,
+    byte_calls: u32,
+    fail: bool,
+}
+
+impl PortIo for WordPio {
+    type Error = &'static str;
+
+    fn read_u8(&mut self, _port: u16) -> Result<u8, Self::Error> {
+        self.byte_calls += 1;
+        Ok(0)
+    }
+
+    fn write_u8(&mut self, _port: u16, _value: u8) -> Result<(), Self::Error> {
+        self.byte_calls += 1;
+        Ok(())
+    }
+
+    fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
+        self.word_reads.push(port);
+        if self.fail {
+            Err("word read failed")
+        } else {
+            Ok(self.word_value)
+        }
+    }
+
+    fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
+        self.word_writes.push((port, value));
+        if self.fail {
+            Err("word write failed")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+type WordRun = (
+    LongModeState,
+    LongModeState,
+    Cpl0ProfileSetResult<&'static str>,
+    WordPio,
+);
+
+fn run_word(set: &Cpl0ProfileSet<'_>, code: &[u8], rax: u64, rdx: u64, pio: WordPio) -> WordRun {
+    let mut pio = pio;
+    let mut state = board_state();
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_with_cpl0_profile_set_and_pio(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        &mut pio,
+        || false,
+    )
+    .unwrap();
+    (before, state, result, pio)
+}
+
+#[test]
+fn in_ax_dx_reads_one_word_and_keeps_the_upper_rax_bits() {
+    let cli = CliProfile::NonPviLong64V1;
+    let pio = WordPio {
+        word_value: 0xbeef,
+        ..WordPio::default()
+    };
+    // RDX[63:16] is ignored: the port is DX.
+    let (before, state, result, pio) = run_word(
+        &pio_set(&cli),
+        &[0x66, 0xed],
+        PCI_RAX,
+        0xffff_0000_0000_0602,
+        pio,
+    );
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.word_reads, [0x602]);
+    assert!(pio.word_writes.is_empty() && pio.byte_calls == 0);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_beef);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.rflags, before.rflags);
+    let mut expected = before;
+    expected.gpr[0] = 0x1111_2222_3333_beef;
+    expected.rip = RIP + 2;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn out_dx_ax_writes_the_low_word_of_rax_and_changes_only_rip() {
+    let cli = CliProfile::NonPviLong64V1;
+    let (before, state, result, pio) = run_word(
+        &pio_set(&cli),
+        &[0x66, 0xef],
+        PCI_RAX,
+        0x1234_0602,
+        WordPio::default(),
+    );
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(pio.word_writes, [(0x602, 0x4444)]);
+    assert!(pio.word_reads.is_empty() && pio.byte_calls == 0);
+    let mut expected = before;
+    expected.rip = RIP + 2;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn word_port_error_is_typed_and_leaves_the_instruction_unretired() {
+    let cli = CliProfile::NonPviLong64V1;
+    for (code, message) in [
+        (&[0x66, 0xed][..], "word read failed"),
+        (&[0x66, 0xef][..], "word write failed"),
+    ] {
+        let pio = WordPio {
+            fail: true,
+            ..WordPio::default()
+        };
+        let (before, state, result, pio) = run_word(&pio_set(&cli), code, PCI_RAX, 0x602, pio);
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::PortIo(message),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:x?}");
+        assert_eq!(pio.word_reads.len() + pio.word_writes.len(), 1);
+    }
+}
+
+#[test]
+fn word_forms_on_a_byte_only_port_use_two_little_endian_byte_accesses() {
+    // The provided `PortIo::read_u16` / `write_u16` defaults (test doubles only).
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    state.gpr[0] = PCI_RAX;
+    state.gpr[2] = 0x602;
+    let mut memory = Memory::code(&[0x66, 0xed, 0x66, 0xef]);
+    let mut pio = TestPio {
+        read_value: 0x5a,
+        ..TestPio::default()
+    };
+    let result = run_pio(&mut state, &mut memory, &pio_set(&cli), &mut pio, 2);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(pio.reads, [0x602, 0x603]);
+    assert_eq!(pio.writes, [(0x602, 0x5a), (0x603, 0x5a)]);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_5a5a);
+}
+
+#[test]
+fn word_forms_need_the_byte_pio_member() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0x1234_5678);
+    let bare = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
+    let pci_only = pci_set(&cli, &cell);
+    for (name, set) in [("bare", &bare), ("pci_only", &pci_only)] {
+        for (code, opcode) in [(&[0x66, 0xed][..], 0xed), (&[0x66, 0xef][..], 0xef)] {
+            let (before, state, result, pio) =
+                run_word(set, code, PCI_RAX, 0x602, WordPio::default());
+            assert_eq!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+                "{name} {code:x?}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(pio.word_reads.is_empty() && pio.word_writes.is_empty());
+            assert_eq!(pio.byte_calls, 0);
+        }
+    }
+    assert_eq!(cell.get(), 0x1234_5678);
+}
+
+#[test]
+fn dword_forms_and_prefixed_word_forms_stay_unsupported_under_the_byte_member() {
+    let cli = CliProfile::NonPviLong64V1;
+    for (code, opcode) in [
+        (&[0xed][..], 0xed), // 32-bit IN stays out
+        (&[0xef][..], 0xef),
+        (&[0x48, 0xed][..], 0xed), // REX.W
+        (&[0x48, 0xef][..], 0xef),
+        (&[0x40, 0x66, 0xed][..], 0xed), // REX
+        (&[0x66, 0x40, 0xef][..], 0xef),
+        (&[0x66, 0x66, 0xed][..], 0xed),
+        (&[0xf0, 0x66, 0xed][..], 0xed), // LOCK
+        (&[0x66, 0xf0, 0xef][..], 0xef),
+        (&[0xf3, 0x66, 0xed][..], 0xed), // REP
+        (&[0x66, 0xf3, 0xef][..], 0xef),
+        (&[0xf2, 0x66, 0xed][..], 0xed), // REPNE
+        (&[0x66, 0xf2, 0xef][..], 0xef),
+        (&[0x2e, 0x66, 0xed][..], 0xed), // segment
+        (&[0x66, 0x64, 0xef][..], 0xef),
+        (&[0x67, 0x66, 0xed][..], 0xed), // address size
+        (&[0x66, 0x67, 0xef][..], 0xef),
+    ] {
+        let (before, state, result, pio) =
+            run_word(&pio_set(&cli), code, PCI_RAX, 0x602, WordPio::default());
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+            "{code:x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:x?}");
+        assert_eq!(state, before, "{code:x?}");
+        assert!(pio.word_reads.is_empty() && pio.word_writes.is_empty());
+        assert_eq!(pio.byte_calls, 0, "{code:x?}");
+    }
+}
+
+#[test]
+fn word_forms_with_both_members_keep_the_pci_ports_with_the_pci_member() {
+    let cli = CliProfile::NonPviLong64V1;
+    let cell = Cell::new(0x8000_0000);
+    let both = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(&cli)
+        .with_pio_u8()
+        .with_pci_config(&cell);
+    // A non-PCI port goes to the port callback as one word access.
+    let pio = WordPio {
+        word_value: 0x0102,
+        ..WordPio::default()
+    };
+    let (_, state, result, pio) = run_word(&both, &[0x66, 0xed], PCI_RAX, 0x602, pio);
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(pio.word_reads, [0x602]);
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_0102);
+    // CONFIG_DATA word IN: all ones from the PCI member, the port is not touched.
+    let (_, state, result, pio) =
+        run_word(&both, &[0x66, 0xed], PCI_RAX, 0xcfc, WordPio::default());
+    assert_eq!(result.exit, budget_exhausted());
+    assert_eq!(state.gpr[0], 0x1111_2222_3333_ffff);
+    assert!(pio.word_reads.is_empty() && pio.byte_calls == 0);
+    // CONFIG_ADDRESS and the odd bytes between: refused exactly as before, no mutation.
+    for port in [0xcf8_u64, 0xcf9, 0xcfa, 0xcfb] {
+        for (code, opcode) in [(&[0x66, 0xed][..], 0xed), (&[0x66, 0xef][..], 0xef)] {
+            let (before, state, result, pio) =
+                run_word(&both, code, PCI_RAX, port, WordPio::default());
+            assert_eq!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }),
+                "{code:x?} {port:#x}"
+            );
+            assert_eq!(state, before);
+            assert!(pio.word_reads.is_empty() && pio.word_writes.is_empty());
+            assert_eq!(pio.byte_calls, 0);
+        }
+    }
+    assert_eq!(cell.get(), 0x8000_0000);
+}
+
+#[test]
+fn word_in_out_is_not_reachable_from_cpl3_in_the_set() {
+    let cli = CliProfile::NonPviLong64V1;
+    let mut state = board_state();
+    state.gpr[2] = 0x602;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x66, 0xed]);
+    let mut pio = WordPio::default();
+    let error = run_with_cpl0_profile_set_and_pio(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &pio_set(&cli),
+        None,
+        &mut pio,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(pio.word_reads.is_empty() && pio.byte_calls == 0);
+}
