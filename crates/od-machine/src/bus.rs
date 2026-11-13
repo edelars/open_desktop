@@ -493,6 +493,10 @@ pub(crate) struct SetStepPortIo<'a, 'b>(&'b MachineBusSetStepIo<'a>);
 
 /// MMIO dispatch of one tracked data access, for the page walker of the set loop.
 pub(crate) trait SetStepMmio {
+    /// The only physical range this dispatch serves, `(base, size)`: every other MMIO operand of
+    /// the set loop stays the typed error it was before S4-38L9s.
+    fn window(&self) -> crate::page_walk::MmioWindow;
+
     fn dispatch(
         &self,
         address: GuestPhysicalAddress,
@@ -507,7 +511,21 @@ impl<'a> MachineBusSetStepIo<'a> {
     }
 }
 
+/// The set loop reaches ECAM and nothing else (S4-38L9s): the PCI configuration device is the one
+/// MMIO device its profile needs, and the other MMIO (local APIC, I/O APIC, display, NVMe) is not
+/// admitted by this slice.
+fn set_step_mmio_window() -> crate::page_walk::MmioWindow {
+    (
+        crate::PCI_ECAM_DESCRIPTOR.base,
+        crate::PCI_ECAM_DESCRIPTOR.size,
+    )
+}
+
 impl SetStepMmio for MachineBusSetStepIo<'_> {
+    fn window(&self) -> crate::page_walk::MmioWindow {
+        set_step_mmio_window()
+    }
+
     fn dispatch(
         &self,
         address: GuestPhysicalAddress,
@@ -523,6 +541,15 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
             _ => return Err(Backend(format!("unsupported MMIO width {width}"))),
         };
         let len = u64::from(width.bytes());
+        let (window_base, window_size) = set_step_mmio_window();
+        if address.get() < window_base
+            || u128::from(address.get()) + u128::from(len)
+                > u128::from(window_base) + u128::from(window_size)
+        {
+            return Err(Backend(format!(
+                "MMIO address {address:?} is outside the ECAM window the set loop serves"
+            )));
+        }
         let (binding, _) = self
             .mmio
             .iter()
