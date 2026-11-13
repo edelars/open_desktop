@@ -3,7 +3,7 @@ use od_isa::execute::{
     Cpl0ProfileSetResult, MovCr3Long64V1, RdtscControls, RunConfig, RunExit, run,
     run_with_cli_profile, run_with_cpl0_profile_set, run_with_cpl0_profile_set_and_pio,
     run_with_cpuid_profile, run_with_efer_rdmsr_profile, run_with_halt_profile,
-    run_with_msr_profile, run_with_rdtsc_source,
+    run_with_msr_profile, run_with_rdtsc_source, run_with_sti_profile,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CliProfile, CpuActivity,
@@ -39166,4 +39166,69 @@ fn pause_is_not_reachable_from_cpl3() {
     .unwrap_err();
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!((memory.fetches, &state), (0, &before));
+}
+
+#[test]
+fn pause_inside_the_sti_shadow_retires_and_clears_it_in_the_set() {
+    // `sti; pause; nop` under `with_sti`: STI arms the shadow, PAUSE retires as the one shadowed
+    // instruction and clears it. The trailing NOP is not reached.
+    let set = sti_set();
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xf3, 0x90, 0x90]);
+    run_set(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.rip, RIP + 1);
+    assert_eq!(state.rflags & IF, IF);
+
+    let mut state = if_clear_state(0);
+    let mut memory = Memory::code(&[0xfb, 0xf3, 0x90, 0x90]);
+    let result = run_set(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.rflags & IF, IF);
+}
+
+#[test]
+fn pause_inside_the_sti_shadow_stays_unsupported_in_the_sti_profile() {
+    // The standalone STI profile admits only `nop`/`sti`/`cli` inside the shadow; `F3 90` is
+    // refused with opcode 0x90 and the state after STI is untouched.
+    // The standalone profile runs without CR0/CR4 and activity state (as in `sti.rs`).
+    let sti_profile_state = || {
+        let mut state = if_clear_state(0);
+        state.cr0 = None;
+        state.cr4 = None;
+        state.activity = None;
+        state
+    };
+    let mut state = sti_profile_state();
+    let mut memory = Memory::code(&[0xfb, 0xf3, 0x90]);
+    let result = run_with_sti_profile(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 4),
+        &od_isa::StiProfile::NonPviLong64V1,
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x90 });
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = sti_profile_state();
+    expected.rflags |= IF;
+    expected.rip = RIP + 1;
+    expected.sti_shadow = Some(StiShadow::Blocking);
+    assert_eq!(state, expected);
+    // The same bytes with a bare `nop` in the shadow retire, so the refusal is PAUSE-specific.
+    let mut state = sti_profile_state();
+    let mut memory = Memory::code(&[0xfb, 0x90]);
+    let result = run_with_sti_profile(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        &od_isa::StiProfile::NonPviLong64V1,
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
 }
