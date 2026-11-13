@@ -42903,7 +42903,7 @@ fn ds_xadd_write_or_read_fault_leaves_register_flags_rip_and_memory_unchanged() 
 
 #[test]
 fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation() {
-    let cases: [&[u8]; 29] = [
+    let cases: [&[u8]; 28] = [
         // S4-38L9k: the no-DS, no-LOCK memory forms `48 0f c1 43 3d` and `0f c1 43 3d` were
         // refused here; they run as the LOCK form now (see `plain_xadd_*`).
         // DS with a register destination (mod = 11).
@@ -42924,11 +42924,11 @@ fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation
         &[0xf0, 0x3e, 0x0f, 0xc1, 0x43, 0x3d],
         &[0xf0, 0x3e, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x3e, 0xf0, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
-        // CS/ES/SS and FS/GS overrides (FS/GS XADD is a separate slice).
+        // CS/ES/SS overrides and the FS/GS qword form. S4-38L9x: the FS/GS byte, word and dword
+        // forms (`64 0f c1 43 3d`) are executed now (see `xadd_*`).
         &[0x2e, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x26, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x36, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
-        &[0x64, 0x0f, 0xc1, 0x43, 0x3d],
         &[0x65, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
         // DS together with another segment override, or repeated.
         &[0x3e, 0x64, 0x48, 0x0f, 0xc1, 0x43, 0x3d],
@@ -45208,9 +45208,9 @@ fn plain_xadd_and_cmpxchg_ignore_the_fs_and_gs_bases() {
 #[test]
 fn plain_xadd_and_cmpxchg_forms_outside_the_slice_are_refused_without_mutation() {
     // S4-38L9k keeps these refused: the dword register form, 0x66 and 0x67, REP/REPNE,
-    // CS/ES/SS/FS/GS (FS/GS XADD does not exist in the set; FS/GS CMPXCHG has its own forms), a
+    // CS/ES/SS/FS/GS (the FS/GS XADD dword form is S4-38L9x, the qword form stays refused; FS/GS CMPXCHG has its own forms), a
     // REX byte that is not directly before the opcode, and the byte forms (`0F C0`, `0F B0`).
-    let cases: [(&[u8], u8); 38] = [
+    let cases: [(&[u8], u8); 37] = [
         (&[0x0f, 0xc1, 0xd0], 0xc1),
         (&[0x44, 0x0f, 0xc1, 0xd0], 0xc1),
         (&[0x66, 0x0f, 0xc1, 0x13], 0xc1),
@@ -45223,7 +45223,7 @@ fn plain_xadd_and_cmpxchg_forms_outside_the_slice_are_refused_without_mutation()
         (&[0x2e, 0x0f, 0xc1, 0x13], 0xc1),
         (&[0x26, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
         (&[0x36, 0x0f, 0xc1, 0x13], 0xc1),
-        (&[0x64, 0x0f, 0xc1, 0x13], 0xc1),
+        // S4-38L9x: `64 0f c1 13` (FS dword) is executed now; the FS/GS qword stays refused.
         (&[0x65, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
         (&[0x48, 0x40, 0x0f, 0xc1, 0x13], 0xc1),
         (&[0x40, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
@@ -49966,4 +49966,726 @@ fn gp_delivery_does_not_change_the_pf_delivery_of_the_same_state() {
     ));
     assert_eq!(state.cr2, Some(PF_FAULT_ADDRESS));
     assert_eq!(pf_qword(&memory, PF_RSP - 48), 3);
+}
+
+// ---- S4-38L9x: `[64|65] [66] [REX] 0F C0|C1 /r` (XADD m8, r8; XADD m16, r16; XADD m32, r32) with an
+// FS/GS override and a memory destination, no LOCK (SDM Vol.2 XADD: TEMP = SRC + DEST, SRC = DEST,
+// DEST = TEMP; flags as ADD; from memory, not re-checked against the SDM text). The address is the
+// FS/GS base plus the effective address (RIP-relative from the end of the instruction); memory is
+// read and written back at the operand width (neighbouring bytes are untouched); the register source
+// receives the old value (a dword write zeroes bits 63:32, byte and word writes keep the rest); the
+// flags and the register commit after the write, so any fault leaves everything unchanged. ----
+
+/// `xaddl %eax, %gs:(%rdx)` (the S4-38L9w diagnostic boundary bytes), then `addl %esi,%eax; cmpl $0x3f,%eax`.
+const GS_XADDL_EAX_RDX_BOUNDARY: [u8; 9] = [0x65, 0x0f, 0xc1, 0x02, 0x01, 0xf0, 0x83, 0xf8, 0x3f];
+
+/// The stored sum and the ADD flags of `old + src` at `bits` width from the `initial` flags,
+/// computed with host integers independently of the interpreter.
+fn xadd_oracle(bits: u32, old: u64, src: u64, initial: u64) -> (u64, u64) {
+    let mask = (1u64 << bits) - 1;
+    let sum = (old + src) & mask;
+    let top = 1u64 << (bits - 1);
+    let cf = old + src > mask;
+    let of = (old ^ sum) & (src ^ sum) & top != 0;
+    let af = (old ^ src ^ sum) & 0x10 != 0;
+    let mut flags = initial & !ARITH;
+    for (set, bit) in [
+        (cf, FLAG_CF),
+        (of, FLAG_OF),
+        (af, FLAG_AF),
+        (sum == 0, FLAG_ZF),
+        (sum & top != 0, FLAG_SF),
+        ((sum as u8).count_ones() % 2 == 0, FLAG_PF),
+    ] {
+        if set {
+            flags |= bit;
+        }
+    }
+    (sum, flags)
+}
+
+/// Guest bytes `at - 16 ..= at + 15`: a distinctive pattern, with `old` (little-endian, `size`
+/// bytes) at `at`.
+fn xadd_fill(memory: &mut BitsMemory, at: u64, old: u64, size: usize) {
+    for index in 0..32u64 {
+        memory.data.insert(at - 16 + index, 0xa0 + index as u8);
+    }
+    for (index, byte) in old.to_le_bytes()[..size].iter().enumerate() {
+        memory.data.insert(at + index as u64, *byte);
+    }
+}
+
+fn xadd_window(memory: &BitsMemory, at: u64) -> Vec<u8> {
+    (0..32u64)
+        .map(|index| memory.data.get(&(at - 16 + index)).copied().unwrap_or(0))
+        .collect()
+}
+
+/// The window of `xadd_fill` with `value` (`size` bytes) at offset 16.
+fn xadd_expected_window(value: u64, size: usize) -> Vec<u8> {
+    let mut window: Vec<u8> = (0..32u64).map(|index| 0xa0 + index as u8).collect();
+    for (index, byte) in value.to_le_bytes()[..size].iter().enumerate() {
+        window[16 + index] = *byte;
+    }
+    window
+}
+
+/// One generated form: the code, its operand width in bytes, whether it uses GS, the base register
+/// of the memory operand (no displacement), the source register and its bit shift (AH is 8).
+struct XaddForm {
+    code: &'static [u8],
+    size: usize,
+    gs: bool,
+    base: Register,
+    source: Register,
+    shift: u32,
+}
+
+fn xadd_forms() -> Vec<XaddForm> {
+    let form = |code: &'static [u8], size, gs, base, source, shift| XaddForm {
+        code,
+        size,
+        gs,
+        base,
+        source,
+        shift,
+    };
+    vec![
+        // xaddl %eax, %gs|fs:(%rdx)
+        form(
+            &[0x65, 0x0f, 0xc1, 0x02],
+            4,
+            true,
+            Register::Rdx,
+            Register::Rax,
+            0,
+        ),
+        form(
+            &[0x64, 0x0f, 0xc1, 0x02],
+            4,
+            false,
+            Register::Rdx,
+            Register::Rax,
+            0,
+        ),
+        // xaddl %r9d, %gs|fs:(%r12) (REX.R and REX.B, SIB)
+        form(
+            &[0x65, 0x45, 0x0f, 0xc1, 0x0c, 0x24],
+            4,
+            true,
+            Register::R12,
+            Register::R9,
+            0,
+        ),
+        form(
+            &[0x64, 0x45, 0x0f, 0xc1, 0x0c, 0x24],
+            4,
+            false,
+            Register::R12,
+            Register::R9,
+            0,
+        ),
+        // xaddw %cx, %gs|fs:(%rdx), both prefix orders.
+        form(
+            &[0x65, 0x66, 0x0f, 0xc1, 0x0a],
+            2,
+            true,
+            Register::Rdx,
+            Register::Rcx,
+            0,
+        ),
+        form(
+            &[0x66, 0x65, 0x0f, 0xc1, 0x0a],
+            2,
+            true,
+            Register::Rdx,
+            Register::Rcx,
+            0,
+        ),
+        form(
+            &[0x64, 0x66, 0x0f, 0xc1, 0x0a],
+            2,
+            false,
+            Register::Rdx,
+            Register::Rcx,
+            0,
+        ),
+        form(
+            &[0x66, 0x64, 0x0f, 0xc1, 0x0a],
+            2,
+            false,
+            Register::Rdx,
+            Register::Rcx,
+            0,
+        ),
+        // xaddb %al, %gs|fs:(%rdx); xaddb %ah, ...; xaddb %spl, ...; xaddb %dl, %gs|fs:(%r8)
+        form(
+            &[0x65, 0x0f, 0xc0, 0x02],
+            1,
+            true,
+            Register::Rdx,
+            Register::Rax,
+            0,
+        ),
+        form(
+            &[0x64, 0x0f, 0xc0, 0x02],
+            1,
+            false,
+            Register::Rdx,
+            Register::Rax,
+            0,
+        ),
+        form(
+            &[0x65, 0x0f, 0xc0, 0x22],
+            1,
+            true,
+            Register::Rdx,
+            Register::Rax,
+            8,
+        ),
+        form(
+            &[0x64, 0x0f, 0xc0, 0x22],
+            1,
+            false,
+            Register::Rdx,
+            Register::Rax,
+            8,
+        ),
+        form(
+            &[0x65, 0x40, 0x0f, 0xc0, 0x22],
+            1,
+            true,
+            Register::Rdx,
+            Register::Rsp,
+            0,
+        ),
+        // REX.W with the byte opcode is ignored (as for CMPXCHG m8): xaddb %al, %gs:(%rdx)
+        form(
+            &[0x65, 0x48, 0x0f, 0xc0, 0x02],
+            1,
+            true,
+            Register::Rdx,
+            Register::Rax,
+            0,
+        ),
+        form(
+            &[0x65, 0x41, 0x0f, 0xc0, 0x10],
+            1,
+            true,
+            Register::R8,
+            Register::Rdx,
+            0,
+        ),
+        form(
+            &[0x64, 0x41, 0x0f, 0xc0, 0x10],
+            1,
+            false,
+            Register::R8,
+            Register::Rdx,
+            0,
+        ),
+    ]
+}
+
+/// Prepares the state of a form: distinct FS/GS bases (the used one is `used`), the base register
+/// holds 0x2468, the source register holds distinctive bits around the `src` operand.
+fn xadd_state(form: &XaddForm, used: u64, other: u64, src: u64) -> LongModeState {
+    let mut state = board_state();
+    state.gs_base = if form.gs { used } else { other };
+    state.fs_base = if form.gs { other } else { used };
+    state.gpr[form.base as usize] = 0x2468;
+    let mask = (1u64 << (8 * form.size)) - 1;
+    state.gpr[form.source as usize] =
+        (0xfedc_ba98_7654_3210u64 & !(mask << form.shift)) | ((src & mask) << form.shift);
+    state
+}
+
+/// Runs one form; returns the state before, the state after, the memory and the address.
+fn xadd_run(
+    form: &XaddForm,
+    old: u64,
+    src: u64,
+    initial_flags: u64,
+) -> (LongModeState, LongModeState, BitsMemory, u64) {
+    let used = 0xffff_8880_4321_0000u64;
+    let mut state = xadd_state(form, used, 0xffff_8880_9999_0000, src);
+    state.rflags = initial_flags;
+    let before = state.clone();
+    let at = used + 0x2468;
+    let mut memory = BitsMemory::new(form.code);
+    xadd_fill(&mut memory, at, old, form.size);
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:02x?}", form.code);
+    (before, state, memory, at)
+}
+
+#[test]
+fn gs_xadd_boundary_form_adds_into_memory_and_returns_the_old_value() {
+    // The S4-38L9w boundary `65 0f c1 02` (`mod_memcg_lruvec_state+0x161`): the address is the GS base
+    // plus RDX; the bytes after the instruction do not matter. RDX is a kernel-space offset, so the
+    // sum wraps modulo 2^64 to the canonical target.
+    let target = 0xffff_8880_0783_b000u64;
+    let rdx = 0xffff_ffff_8444_0cc0u64;
+    let gs_base = target.wrapping_sub(rdx);
+    let mut memory = BitsMemory::new(&GS_XADDL_EAX_RDX_BOUNDARY);
+    xadd_fill(&mut memory, target, 0x0000_0010, 4);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::Rdx as usize] = rdx;
+    // RAX = 1 in the low dword with garbage above: the source is EAX only.
+    state.gpr[Register::Rax as usize] = 0xfeed_face_0000_0001;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_AF;
+    let initial_flags = state.rflags;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(target, 4)]);
+    assert_eq!(
+        memory.writes,
+        vec![(target, 0x0000_0011u32.to_le_bytes().to_vec())]
+    );
+    assert_eq!(
+        xadd_window(&memory, target),
+        xadd_expected_window(0x11, 4),
+        "only the dword changes"
+    );
+    // The old value (0x10) goes to RAX with bits 63:32 cleared; 0x10 + 1 = 0x11 sets none of
+    // CF/OF/ZF/SF/AF; PF: 0x11 has two bits set.
+    expected.rip += 4;
+    expected.gpr[Register::Rax as usize] = 0x0000_0000_0000_0010;
+    expected.rflags = (initial_flags & !ARITH) | FLAG_PF;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn xadd_dword_flag_boundaries_follow_hand_computed_add_results() {
+    // (old, source, stored sum, ADD flags), written by hand from the SDM ADD definition at 32 bits.
+    let cases: [(u32, u32, u32, u64); 7] = [
+        // 0xffff_ffff + 1 = 0: CF, ZF, AF (0xf + 1 carries out of the low nibble), PF (0x00).
+        (0xffff_ffff, 1, 0, FLAG_CF | FLAG_ZF | FLAG_AF | FLAG_PF),
+        // 0x7fff_ffff + 1 = 0x8000_0000: OF, SF, AF, PF.
+        (
+            0x7fff_ffff,
+            1,
+            0x8000_0000,
+            FLAG_OF | FLAG_SF | FLAG_AF | FLAG_PF,
+        ),
+        // 0 + 0 = 0: ZF, PF.
+        (0, 0, 0, FLAG_ZF | FLAG_PF),
+        // 0x8000_0000 + 0x8000_0000 = 0: CF, OF, ZF, PF.
+        (
+            0x8000_0000,
+            0x8000_0000,
+            0,
+            FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_PF,
+        ),
+        // 0x10 + 0x10 = 0x20: no flag (one bit set: PF clear; no nibble carry).
+        (0x10, 0x10, 0x20, 0),
+        // 1 + 2 = 3: PF only (two bits set).
+        (1, 2, 3, FLAG_PF),
+        // 0xffff_ffff + 0xffff_ffff = 0xffff_fffe: CF, SF, AF; no OF; the low byte 0xfe has seven
+        // ones (PF clear).
+        (
+            0xffff_ffff,
+            0xffff_ffff,
+            0xffff_fffe,
+            FLAG_CF | FLAG_SF | FLAG_AF,
+        ),
+    ];
+    for form in xadd_forms().iter().filter(|form| form.size == 4) {
+        for (old, src, sum, flags) in cases {
+            // Start with every arithmetic flag set so a missed update shows.
+            let (before, state, memory, at) =
+                xadd_run(form, u64::from(old), u64::from(src), 2 | IF | ARITH);
+            let label = format!("{:02x?} {old:#x} + {src:#x}", form.code);
+            assert_eq!(state.rflags & ARITH, flags, "{label}");
+            assert_eq!(state.rflags & !ARITH, 2 | IF, "{label}");
+            assert_eq!(
+                xadd_window(&memory, at),
+                xadd_expected_window(u64::from(sum), 4),
+                "{label}"
+            );
+            // The register holds the old value, bits 63:32 cleared.
+            assert_eq!(state.gpr[form.source as usize], u64::from(old), "{label}");
+            assert_eq!(state.rip, before.rip + form.code.len() as u64, "{label}");
+        }
+    }
+}
+
+#[test]
+fn xadd_results_flags_and_registers_follow_the_host_oracle_for_every_form() {
+    let narrow: [u64; 10] = [0, 1, 0x0f, 0x10, 0x7f, 0x80, 0xff, 0x7fff, 0x8000, 0xffff];
+    let wide: [u64; 4] = [0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x1234_5678];
+    for form in xadd_forms() {
+        let bits = 8 * form.size as u32;
+        let mask = (1u64 << bits) - 1;
+        let mut candidates: Vec<u64> = narrow.iter().chain(wide.iter()).map(|v| v & mask).collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        for &old in &candidates {
+            for &src in &candidates {
+                for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                    let (sum, flags) = xadd_oracle(bits, old, src, initial);
+                    let (before, state, memory, at) = xadd_run(&form, old, src, initial);
+                    let label = format!("{:02x?} {old:#x} + {src:#x} from {initial:#x}", form.code);
+                    assert_eq!(memory.reads, vec![(at, form.size)], "{label}");
+                    assert_eq!(
+                        memory.writes,
+                        vec![(at, sum.to_le_bytes()[..form.size].to_vec())],
+                        "{label}: the sum is always written, also when it equals the old value"
+                    );
+                    assert_eq!(
+                        xadd_window(&memory, at),
+                        xadd_expected_window(sum, form.size),
+                        "{label}"
+                    );
+                    let mut expected = before.clone();
+                    expected.rip += form.code.len() as u64;
+                    expected.rflags = flags;
+                    let register = &mut expected.gpr[form.source as usize];
+                    *register = match form.size {
+                        // A dword write zero-extends into the 64-bit register.
+                        4 => old,
+                        _ => (*register & !(mask << form.shift)) | (old << form.shift),
+                    };
+                    assert_eq!(state, expected, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn xadd_with_the_source_register_as_the_base_uses_the_address_from_before_the_instruction() {
+    // `xaddl %edx, %gs:(%rdx)` = 65 0f c1 12: the address uses RDX before the write; RDX then holds
+    // the old memory value (zero-extended), the memory holds old + the old low dword of RDX.
+    let gs_base = 0xffff_8880_1000_0000u64;
+    let mut memory = BitsMemory::new(&[0x65, 0x0f, 0xc1, 0x12]);
+    let at = gs_base + 0x3000;
+    xadd_fill(&mut memory, at, 0x0000_0100, 4);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.gpr[Register::Rdx as usize] = 0x3000;
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 4)]);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0000_0100);
+    assert_eq!(xadd_window(&memory, at), xadd_expected_window(0x3100, 4));
+}
+
+#[test]
+fn xadd_rip_relative_word_form_of_choose_new_asid_uses_the_end_of_the_instruction() {
+    // `xaddw %cx, %gs:0x301b8a4(%rip)` = 65 66 0f c1 0d a4 b8 01 03 (9 bytes): the address is the
+    // GS base + RIP + 9 + disp32.
+    let code = [0x65u8, 0x66, 0x0f, 0xc1, 0x0d, 0xa4, 0xb8, 0x01, 0x03];
+    let gs_base = 0xffff_8880_0100_0000u64;
+    let at = gs_base + RIP + 9 + 0x0301_b8a4;
+    let mut memory = BitsMemory::new(&code);
+    xadd_fill(&mut memory, at, 0xfffe, 2);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_0003;
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 2)]);
+    // 0xfffe + 3 = 0x0001 (word wrap: CF, AF as 0xe + 3 carries); RCX keeps bits 63:16.
+    assert_eq!(xadd_window(&memory, at), xadd_expected_window(0x0001, 2));
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x1234_5678_9abc_fffe);
+    assert_eq!(state.rip, RIP + 9);
+    let (_, flags) = xadd_oracle(16, 0xfffe, 3, 2 | IF);
+    assert_eq!(state.rflags, flags);
+    assert_eq!(state.rflags & ARITH, FLAG_CF | FLAG_AF);
+}
+
+#[test]
+fn xadd_zero_bases_use_the_effective_address() {
+    for form in xadd_forms() {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        state.gpr[form.base as usize] = 0x2468;
+        let mut memory = BitsMemory::new(form.code);
+        xadd_fill(&mut memory, 0x2468, 5, form.size);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{:02x?}", form.code);
+        assert_eq!(
+            memory.reads,
+            vec![(0x2468, form.size)],
+            "{:02x?}",
+            form.code
+        );
+    }
+}
+
+#[test]
+fn xadd_non_canonical_address_is_gp0_without_mutation_or_access() {
+    for form in xadd_forms() {
+        // The effective address is in the hole, or its last byte crosses into it; the last
+        // canonical dword/word/byte below the hole is accepted.
+        let last = 0x0000_7fff_ffff_ffff_u64 - (form.size as u64 - 1);
+        for (address, faults) in [
+            (0x0000_8000_0000_0000u64, true),
+            (last + 1, true),
+            (last, false),
+        ] {
+            let mut state = board_state();
+            state.gpr[form.base as usize] = address;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(form.code);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            let label = format!("{:02x?} {address:#x}", form.code);
+            if faults {
+                assert_eq!(exit(&result), &RunExit::Fault(GP0), "{label}");
+                assert_eq!(result.instructions_executed, 0, "{label}");
+                assert_eq!(state, before, "{label}");
+                assert!(
+                    memory.reads.is_empty() && memory.writes.is_empty(),
+                    "{label}"
+                );
+            } else {
+                assert_eq!(result.instructions_executed, 1, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn xadd_write_fault_leaves_memory_register_flags_and_rip_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0xffff_8880_4321_2468),
+    };
+    for form in xadd_forms() {
+        // Also with a zero source: the always-performed write still faults.
+        for src in [0u64, 7] {
+            let used = 0xffff_8880_4321_0000u64;
+            let mut state = xadd_state(&form, used, used, src);
+            state.rflags |= FLAG_CF | FLAG_OF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(form.code);
+            let at = used + 0x2468;
+            xadd_fill(&mut memory, at, 0x55, form.size);
+            let window = xadd_window(&memory, at);
+            memory.write_fault = Some(fault.clone());
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            let label = format!("{:02x?} src {src}", form.code);
+            assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{label}");
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            assert_eq!(state, before, "{label}");
+            assert!(memory.writes.is_empty(), "{label}");
+            assert_eq!(xadd_window(&memory, at), window, "{label}");
+        }
+    }
+}
+
+#[test]
+fn xadd_read_fault_changes_nothing() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_4321_2468),
+    };
+    for form in xadd_forms() {
+        let used = 0xffff_8880_4321_0000u64;
+        let mut state = xadd_state(&form, used, used, 9);
+        state.rflags |= FLAG_CF | FLAG_OF;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(form.code);
+        let at = used + 0x2468;
+        xadd_fill(&mut memory, at, 0x55, form.size);
+        let window = xadd_window(&memory, at);
+        memory.read_fault = Some(fault.clone());
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(fault.clone()),
+            "{:02x?}",
+            form.code
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{:02x?}", form.code);
+        assert!(memory.writes.is_empty());
+        assert_eq!(xadd_window(&memory, at), window);
+    }
+}
+
+#[test]
+fn xadd_forms_outside_the_slice_are_refused_with_their_opcode_without_mutation() {
+    // (code, refused opcode): the qword form, the register form, 0x66 with the byte opcode,
+    // LOCK/REP/REPNE, 0x67, a second or a non-FS/GS segment byte next to FS/GS, a REX byte that is
+    // not directly before the opcode, and the bare byte form (no memory form in the set).
+    let cases: [(&[u8], u8); 27] = [
+        (&[0x65, 0x48, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x64, 0x48, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0x4c, 0x0f, 0xc1, 0x0a], 0xc1),
+        (&[0x65, 0x66, 0x48, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x66, 0x64, 0x48, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0x0f, 0xc1, 0xc2], 0xc1),
+        (&[0x64, 0x66, 0x0f, 0xc1, 0xc2], 0xc1),
+        (&[0x64, 0x0f, 0xc0, 0xc2], 0xc0),
+        (&[0x65, 0x66, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x66, 0x64, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0xf0, 0x65, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0xf0, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0xf0, 0x64, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0xf3, 0x65, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0xf2, 0x64, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x67, 0x65, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0x67, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x64, 0x65, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0x64, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x65, 0x3e, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x2e, 0x65, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x41, 0x65, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x45, 0x64, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x65, 0x41, 0x66, 0x0f, 0xc1, 0x02], 0xc1),
+        (&[0x65, 0x48, 0x40, 0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x0f, 0xc0, 0x02], 0xc0),
+        (&[0x66, 0x0f, 0xc0, 0x02], 0xc0),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdx as usize] = 0x2000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn xadd_with_a_truncated_modrm_sib_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x0f, 0xc1][..],
+        &[0x64, 0x0f, 0xc0][..],
+        &[0x65, 0x66, 0x0f, 0xc1][..],
+        &[0x65, 0x0f, 0xc1, 0x42][..],
+        &[0x65, 0x66, 0x0f, 0xc1, 0x0d, 0xa4, 0xb8][..],
+        &[0x64, 0x45, 0x0f, 0xc1, 0x0c][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_xadd_stays_unsupported_outside_the_set_by_run_and_by_the_bare_step_entry_point() {
+    for (code, opcode) in [
+        (&GS_XADDL_EAX_RDX_BOUNDARY[..4], 0xc1u8),
+        (&[0x64, 0x0f, 0xc1, 0x02][..], 0xc1),
+        (&[0x65, 0x66, 0x0f, 0xc1, 0x0a][..], 0xc1),
+        (&[0x65, 0x0f, 0xc0, 0x02][..], 0xc0),
+        (&[0x64, 0x0f, 0xc0, 0x02][..], 0xc0),
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdx as usize] = 0x2000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let outcome = od_isa::execute::step(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        );
+        assert_eq!(
+            outcome,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode })
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_xadd_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    for code in [
+        &GS_XADDL_EAX_RDX_BOUNDARY[..4],
+        &[0x64, 0x66, 0x0f, 0xc1, 0x0a][..],
+        &[0x65, 0x0f, 0xc0, 0x02][..],
+    ] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            Cpl0ProfileSetInputError::WrongPrivilege,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn bare_and_ds_xadd_dword_forms_ignore_the_fs_and_gs_bases_next_to_the_segment_forms() {
+    // Regression: `0f c1 02` (bare) and `3e 0f c1 02` (DS) use the effective address, as before
+    // this slice.
+    for code in [&[0x0fu8, 0xc1, 0x02][..], &[0x3e, 0x0f, 0xc1, 0x02][..]] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdx as usize] = 0x2468;
+        state.gpr[Register::Rax as usize] = 3;
+        let mut memory = BitsMemory::new(code);
+        xadd_fill(&mut memory, 0x2468, 4, 4);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(0x2468, 4)], "{code:02x?}");
+        assert_eq!(xadd_window(&memory, 0x2468), xadd_expected_window(7, 4));
+        assert_eq!(state.gpr[Register::Rax as usize], 4);
+    }
 }
