@@ -1556,7 +1556,14 @@ def cpl0_misc_candidates(row: dict) -> list[str]:
     op = v["opcode"][0] if len(v["opcode"]) == 1 else None
     two = v["opcode"]
     modrm = v["modrm"]
+    prefix_bytes = v["prefixes"]
     candidates = []
+    # These Stage 4 profiles are conditional CPL0 candidates only. Keep the
+    # exact encoding gates here; neither candidate proves runtime state.
+    if op == 0x90 and prefix_bytes == [0xF3]:
+        candidates.append("S4-38L9b-PAUSE-exact-F3-90")
+    if op == 0xC9 and not prefix_bytes:
+        candidates.append("S4-38L6d-LEAVE-bare-C9")
     if two == (0x0F,0x1F) and modrm is not None and ((modrm >> 3) & 7) == 0 and (modrm >> 6) != 3:
         candidates.append("S4-38L4d-multi-byte-memory-NOP")
     if two == (0x0F,0xA2): candidates.append("S2-45-CPUID")

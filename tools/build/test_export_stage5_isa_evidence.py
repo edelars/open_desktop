@@ -7,6 +7,8 @@ import importlib.util
 import gzip
 import hashlib
 import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,6 +21,10 @@ ANALYZER_SPEC = importlib.util.spec_from_file_location("analyze_stage5_isa", Pat
 assert ANALYZER_SPEC and ANALYZER_SPEC.loader
 analyzer = importlib.util.module_from_spec(ANALYZER_SPEC)
 ANALYZER_SPEC.loader.exec_module(analyzer)
+ANNOTATOR_SPEC = importlib.util.spec_from_file_location("annotate_stage5_cpl0_candidates", Path(__file__).with_name("annotate_stage5_cpl0_candidates.py"))
+assert ANNOTATOR_SPEC and ANNOTATOR_SPEC.loader
+annotator = importlib.util.module_from_spec(ANNOTATOR_SPEC)
+ANNOTATOR_SPEC.loader.exec_module(annotator)
 
 
 def exact_form(prefix, modrm, address, count, binary, classification):
@@ -40,6 +46,42 @@ def exact_form(prefix, modrm, address, count, binary, classification):
 
 
 class NormalizedFormTests(unittest.TestCase):
+    def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        cases = (
+            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "b9059f45adda311f3a11950c440d75e67c22d255c7d2899d13b76c7dc3d12377"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c"),
+        )
+        expected_binary_counts = {
+            "S4-38L9b-PAUSE-exact-F3-90": {"gcc-cc1": 2, "gcc-collect2": 2, "gcc-driver": 2},
+            "S4-38L6d-LEAVE-bare-C9": {
+                "bash": 868, "dash": 58, "gcc-as": 88, "gcc-cc1": 285,
+                "gcc-collect2": 262, "gcc-driver": 262, "gcc-ld-bfd": 54, "tar": 128,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for relative, expected_sha in cases:
+                base = subprocess.run(
+                    ["git", "show", f"HEAD:{relative}"], cwd=repo_root,
+                    check=True, capture_output=True,
+                ).stdout
+                target = Path(tmp) / Path(relative).name
+                target.write_bytes(base)
+                annotator.annotate(target)
+                self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), expected_sha)
+                result = json.loads(gzip.decompress(target.read_bytes()))
+                for candidate, binary_counts in expected_binary_counts.items():
+                    observed = {
+                        name: record["conditional_cpl0_candidate_frequencies"][candidate]
+                        for name, record in result["binaries"].items()
+                        if candidate in record.get("conditional_cpl0_candidate_frequencies", {})
+                    }
+                    self.assertEqual(observed, binary_counts)
+                for record in result["exact_encoding_forms"]:
+                    if record["conditional_candidate_frequencies"].keys() & expected_binary_counts.keys():
+                        self.assertEqual(record["classification_frequencies"], {"unclassified": record["count"]})
+                        self.assertEqual(record["evidence_scope_frequencies"], {})
+
     def test_saved_inventory_manifests_distinguish_coarse_and_normalized_forms(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         data_root = repo_root / "docs/reports/data/stage5"
@@ -146,9 +188,9 @@ class NormalizedFormTests(unittest.TestCase):
                     "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
                     "S2-37be-CVTSD2SS-register-state-gated": 1,
                 })
-                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 113663 if full_key else 113723)
-                self.assertEqual(fields["conditional_candidate_hit_count"], 113740 if full_key else 113800)
-                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 113232 if full_key else 113292)
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 115674 if full_key else 115734)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 115751 if full_key else 115811)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115243 if full_key else 115303)
                 self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
                 expected_by_binary = {
                     "bash": {"S2-37q-CVTSI2SD-register-state-gated": 1},

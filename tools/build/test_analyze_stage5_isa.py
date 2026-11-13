@@ -2590,6 +2590,16 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertEqual(analyzer.cpl0_misc_candidates(memory_nop), ["S4-38L4d-multi-byte-memory-NOP"])
         self.assertNotIn("S4-38L4d-multi-byte-memory-NOP", analyzer.cpl0_misc_candidates(register_nop))
 
+    def test_stage4_pause_and_leave_are_exact_cpl0_candidates(self) -> None:
+        pause = analyzer.parse_row("  401064: f3 90 pause")
+        bare_nop = analyzer.parse_row("  401066: 90 nop")
+        leave = analyzer.parse_row("  401067: c9 leave")
+        prefixed_leave = analyzer.parse_row("  401068: 66 c9 leave")
+        self.assertEqual(analyzer.cpl0_misc_candidates(pause), ["S4-38L9b-PAUSE-exact-F3-90"])
+        self.assertNotIn("S4-38L9b-PAUSE-exact-F3-90", analyzer.cpl0_misc_candidates(bare_nop))
+        self.assertEqual(analyzer.cpl0_misc_candidates(leave), ["S4-38L6d-LEAVE-bare-C9"])
+        self.assertNotIn("S4-38L6d-LEAVE-bare-C9", analyzer.cpl0_misc_candidates(prefixed_leave))
+
     def test_optional_e_static_elf_is_a_separate_static_input(self) -> None:
         specs = analyzer.binary_specs(Path("work/stage5/s5-21/stage5-e-static.elf"))
         self.assertEqual(len(specs), len(analyzer.BINARIES) + 1)

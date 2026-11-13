@@ -49,6 +49,9 @@
 
 - **CVTSD2SS conditional-local annotation (2026-11-13):** the existing compact exact-form records contain exactly one `F2 0F 5A F1` row (`cvtsd2ss xmm6,xmm1`) in `gcc-cc1`; it remains unclassified/outside `evidence_scope` and `proven_supported`. The local candidate total is 508 (rootfs and E-inclusive); rootfs/E generic conditional hits/unique rows are 113740/113663 and 113800/113723. Supported/unclassified totals, 205 open forms, CPL0 counts and 40-row overlap are unchanged. This is a guarded annotation of the existing compact row; raw analyzer pass hashes remain the previous verified pair and no new bytewise raw rerun is claimed. Candidate gate, MXCSR/control assumptions, raw x87 exclusion, limited semantic review and artifact hashes are recorded in the [Stage 5 report](reports/STAGE_5_REPORT.md#s5-21-conditional-local-cvtsd2ss-follow-up-2026-11-13) and [manifests](reports/data/stage5/s5-21-repeatability.json).
 
+
+- **Обновление (S5-21 CPL0 candidate annotation, 2026-11-13):** compact-only derivation добавила PAUSE `F3 90` (6 rows) и bare LEAVE `C9` (2 005 rows); обе остаются unclassified/outside evidence_scope/proven_supported. Rootfs/E CPL0 candidate hits 115243/115303; generic hits 115751/115811; unique rows 115674/115734; overlap40, local rows508 и classification totals без изменений. Raw analyzer hashes сохранены; no new bytewise raw rerun is claimed. Reproducible compact hashes: rootfs `b9059f45adda311f3a11950c440d75e67c22d255c7d2899d13b76c7dc3d12377`, E `d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c`. LEAVE's Stage 4 Intel SDM source attribution remains unverified; see [ISSUE-083](#issue-083-stage4-leave-sdm-source-unverified) and [S5-21 report](reports/STAGE_5_REPORT.md#s5-21-cpl0-conditional-candidate-follow-up-pause--leave-2026-11-13).
+
 <a id="issue-078-s5-05-rootfs-extraction-toolchain-blocked"></a>
 
 ### ISSUE-078 — S5-05: extraction toolchain failure on emulated builder
@@ -2202,3 +2205,14 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** plan summary labels the independent Sol-medium review clean, while the S2-37t report body says the independent code review is pending. A separate read-only review of HEAD `9d5fb75` confirmed only that the implemented bounded semantic/state predicates make S2-37t eligible as a conditional-local inventory candidate. It did not rerun tests and does not resolve the historical full-code-review status.
 - **Основание:** conflicting status text in the two Stage 2 documents; the limited S5-21 eligibility review is recorded in the report and candidate metadata.
 - **Следующий шаг:** reconcile the historical review claim from its original review evidence; until then preserve the conflict and do not cite the limited candidate-eligibility review as a full code review.
+
+<a id="issue-083-stage4-leave-sdm-source-unverified"></a>
+
+### ISSUE-083 — S4-38L6d LEAVE: SDM attribution has not been verified
+
+- **Дата обнаружения:** 2026-11-13, при статической разметке S5-21 кандидата `C9`.
+- **Компонент:** Stage 4 LEAVE CPL0 profile; source provenance for x86 `LEAVE` semantics.
+- **Статус:** открыта; это непроверенная атрибуция источника, не подтверждённый дефект реализации.
+- **Суть и последствия:** [LEAVE contract, CPU_CONTRACT.md:21161–21169](specs/CPU_CONTRACT.md#L21161) прямо сообщает, что ссылка на Intel SDM Vol. 2 приведена по памяти, текст первоисточника не приложен и не сверялся. Поэтому текущий source attribution нельзя считать independently source-verified. S5-21 добавил только conditional candidate metadata и не подтверждает CPU semantics. LEAVE читает qword stack value по RBP; это memory access и остаётся частью профиля.
+- **Основание:** LEAVE в [CPU_CONTRACT.md:21161](specs/CPU_CONTRACT.md#L21161); Stage 4 plan aggregate [line 2150](plans/STAGE_4.md#L2150); S5-21 [report follow-up](reports/STAGE_5_REPORT.md#s5-21-cpl0-conditional-candidate-follow-up-pause--leave-2026-11-13). PAUSE profile находится в [CPU_CONTRACT.md:24347](specs/CPU_CONTRACT.md#L24347), с агрегированной ссылкой в Stage 4 plan [line 2078](plans/STAGE_4.md#L2078).
+- **Следующий шаг:** Stage 4 owner сверяет LEAVE encoding, 64-bit semantics и exception behavior с применимой редакцией Intel SDM и обновляет S4-38L6d / CPU contract с точной ссылкой; до этого сохранять заявленную границу provenance.
