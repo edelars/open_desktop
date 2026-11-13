@@ -24,7 +24,7 @@
 | S6-11 | `blocked` | S4-21 (через S6-10) |
 | S6-12 | `blocked` | S4-21 (через S6-10) |
 | S6-13 | `blocked` | S4-21; согласование кода `od-isa` по D5/S4-38 |
-| S6-14 | `in_progress` | S6-14a AP startup profile принят после независимого архитектурного ревью `gpt-6.1-sol/high`; см. ниже. S6-14b не начат; код S6-14c+ остаётся ограничен S4-21 и согласованием с S4-38 по D5. |
+| S6-14 | `in_progress` | S6-14a AP startup profile и S6-14b real-mode KVM oracle приняты по результатам отдельных ревью; см. ниже. Код S6-14c+ остаётся ограничен S4-21 и согласованием с S4-38 по D5. |
 | S6-15 | `blocked` | S4-21, S4-22, S4-23 |
 | S6-16 | `blocked` | S4-21, S4-22, S4-23 |
 | S6-17 | `blocked` | S4-13 (полный срез), S4-14 (полный срез), S4-21, S4-22, S4-23 |
@@ -164,6 +164,39 @@ document-only result, committed as [`67a201b`](https://github.com/edelars/open_d
 it does not implement instruction execution, claim AP runtime, or settle the
 physical relocation base. The pinned staged image has no signed source-to-binary
 chain; Windows CPU-06 remains unverified.
+
+### S6-14b — KVM real-mode oracle
+
+`tools/kvm-runner/kvm_runner.c` now has an opt-in `--real-mode CS:IP` entry.
+It loads the image at the real-mode linear address, uses the requested CS:IP,
+applies the INIT CR0 preservation rule to the newly created KVM vCPU state,
+and reports read-back GPRs, segment registers and hidden attributes, GDTR/IDTR,
+and CR0/2/3/4/8 plus EFER. The existing Long64 setup and output path remain
+unchanged. Pending userspace I/O is completed with one capability-checked
+`immediate_exit` re-entry before a final snapshot; unsupported exits or failed
+completion/capture report an error and omit final state. This follows the
+[Linux KVM API completion rule](https://www.kernel.org/doc/html/latest/virt/kvm/api.html#kvm-exit-io-kvm-exit-mmio-kvm-exit-osi-kvm-exit-papr-kvm-exit-xen-kvm-exit-epr-kvm-exit-hypercall-kvm-exit-tdx-kvm-exit-x86-rdmsr-and-kvm-exit-x86-wrmsr).
+
+The updated runner built on the Intel Mini with `gcc -O2 -Wall -Wextra -Werror -std=c11`. KVM API 12 and `/dev/kvm` were available. A 16-byte real-mode probe
+at `0700:0000` executed register moves, port output, and HLT; read-back values
+matched the probe. A second run stopped at budget 1 immediately after `OUT`;
+the completion re-entry returned a valid snapshot at RIP 9 after the I/O
+instruction, with UART byte `R`. `run_count + intr_count` was 2 because that
+single completion re-entry is allowed after the main-loop budget is reached.
+The committed-source Long64 runner and updated runner produced byte-identical
+JSON for the same probe. Host/build details are in
+[`host-info.txt`](data/stage6/s6-14b-kvm/host-info.txt); full output is in
+[`realmode-hlt.json`](data/stage6/s6-14b-kvm/realmode-hlt.json),
+[`realmode-io-budget.json`](data/stage6/s6-14b-kvm/realmode-io-budget.json),
+[`long64-before.json`](data/stage6/s6-14b-kvm/long64-before.json), and
+[`long64-after.json`](data/stage6/s6-14b-kvm/long64-after.json).
+
+Independent code review `gpt-6.1-sol/high` passed after fixes for INIT EDX,
+pending KVM I/O, unavailable `KVM_CAP_IMMEDIATE_EXIT`, error snapshots,
+descriptor-table state, and preservation of the Long64 behavior. This verifies
+that this KVM host executes a small real-mode guest and that the oracle reports
+state. It does not execute the Linux AP trampoline, implement AP execution, or
+accept S6-14 as a whole; S6-14c and later remain separate work.
 
 ### S6-07 — inventory однопроцессорных допущений (in progress)
 

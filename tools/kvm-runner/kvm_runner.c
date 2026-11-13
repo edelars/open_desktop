@@ -4,18 +4,20 @@
  * Creates a VM through /dev/kvm, maps 2 MiB of anonymous guest RAM at GPA 0,
  * loads a raw freestanding image at GPA 0x1000, builds the guest's own GDT and
  * identity page tables (PML4 0x2000, PDPT 0x3000, PD 0x4000, one 2 MiB leaf),
- * enters Long64/CPL0 at RIP 0x1000 and runs KVM_RUN. UART bytes are collected
- * from I/O exits on port 0x3f8 (write only). Execution is VT-x of the host CPU;
+ * enters Long64/CPL0 at RIP 0x1000, or starts in reset real mode at a requested
+ * CS:IP, and runs KVM_RUN. UART bytes are collected from I/O exits on port 0x3f8
+ * (write only). Execution is VT-x of the host CPU;
  * no software MMU/CPU is involved. No irqchip is created: the guest runs
  * without interrupts and HLT is reported to userspace.
  *
  * Output: one JSON line on stdout. Diagnostics go to stderr.
  * run_count counts KVM_RUN returns that carried a real exit; intr_count counts
- * EINTR / KVM_EXIT_INTR returns caused by the SIGALRM watchdog. The budget limit
- * applies to run_count + intr_count.
+ * EINTR / KVM_EXIT_INTR returns from the SIGALRM watchdog or immediate-exit I/O
+ * completion. The budget limit applies to run_count + intr_count, except that
+ * one final immediate-exit re-entry to complete pending I/O may exceed it by one.
  *
  * Build: gcc -O2 -Wall -Wextra -Werror -std=c11 -o kvm_runner kvm_runner.c
- * Usage: kvm_runner <image.bin> [--budget N] [--deadline-ms MS]
+ * Usage: kvm_runner <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -36,6 +38,7 @@
 #define GUEST_RAM_SIZE (2u * 1024u * 1024u)
 #define IMAGE_GPA 0x1000u
 #define IMAGE_MAX 0x1000u
+#define REAL_MODE_IMAGE_MAX 0x10000u
 #define PML4_GPA 0x2000u
 #define PDPT_GPA 0x3000u
 #define PD_GPA 0x4000u
@@ -167,9 +170,133 @@ struct entry_state {
     unsigned cs_selector, cs_l, cs_db, cs_dpl, ss_selector;
 };
 
+struct final_state {
+    struct kvm_regs regs;
+    struct kvm_sregs sregs;
+};
+
+static void set_real_seg(struct kvm_segment *s, uint16_t selector, uint64_t base, uint8_t type)
+{
+    memset(s, 0, sizeof(*s));
+    s->base = base;
+    s->limit = 0xffffu;
+    s->selector = selector;
+    s->type = type;
+    s->present = 1;
+    s->dpl = 0;
+    s->db = 0;
+    s->s = 1;
+    s->l = 0;
+    s->g = 0;
+    s->avl = 0;
+    s->unusable = 0;
+}
+
+static int parse_cs_ip(const char *text, uint16_t *cs, uint16_t *ip)
+{
+    char *end;
+    unsigned long selector, offset;
+    const char *colon = strchr(text, ':');
+    char left[32];
+    size_t left_len;
+
+    if (!colon || colon == text || colon[1] == '\0')
+        return -1;
+    left_len = (size_t)(colon - text);
+    if (left_len >= sizeof(left))
+        return -1;
+    memcpy(left, text, left_len);
+    left[left_len] = '\0';
+    errno = 0;
+    selector = strtoul(left, &end, 0);
+    if (errno || *end || selector > 0xffffu)
+        return -1;
+    errno = 0;
+    offset = strtoul(colon + 1, &end, 0);
+    if (errno || *end || offset > 0xffffu)
+        return -1;
+    *cs = (uint16_t)selector;
+    *ip = (uint16_t)offset;
+    return 0;
+}
+
+static void configure_real_mode(struct kvm_sregs *sregs, uint16_t cs)
+{
+    /* A conventional real-mode CS:IP pair has a segment base of CS * 16. */
+    set_real_seg(&sregs->cs, cs, (uint64_t)cs << 4, 0xbu);
+    set_real_seg(&sregs->ds, 0, 0, 0x3u);
+    set_real_seg(&sregs->es, 0, 0, 0x3u);
+    set_real_seg(&sregs->fs, 0, 0, 0x3u);
+    set_real_seg(&sregs->gs, 0, 0, 0x3u);
+    set_real_seg(&sregs->ss, 0, 0, 0x3u);
+    /* INIT preserves CD/NW from the prior CR0 and sets ET (SMP_CONTRACT §4). */
+    sregs->cr0 = (sregs->cr0 & 0x60000000u) | 0x10u;
+    sregs->cr2 = 0;
+    sregs->cr3 = 0;
+    sregs->cr4 = 0;
+    sregs->cr8 = 0;
+    sregs->efer = 0;
+    sregs->gdt.base = 0;
+    sregs->gdt.limit = 0xffffu;
+    sregs->idt.base = 0;
+    sregs->idt.limit = 0xffffu;
+}
+
+static void service_io_exit(struct kvm_run *run)
+{
+    uint8_t *p = (uint8_t *)run + run->io.data_offset;
+    unsigned size = run->io.size;
+    unsigned count = run->io.count;
+    unsigned i;
+
+    if (run->io.direction == KVM_EXIT_IO_OUT) {
+        for (i = 0; i < count; i++) {
+            uint64_t value = 0;
+            memcpy(&value, p + (size_t)i * size, size > 8 ? 8 : size);
+            add_io_exit(run->io.port, size, 1, value);
+            if (run->io.port == UART_PORT && uart_len < MAX_UART)
+                uart[uart_len++] = (unsigned char)(value & 0xff);
+        }
+    } else {
+        /* Port 0x3f8 is write-only here; every IN returns all-ones. */
+        memset(p, 0xff, (size_t)size * count);
+        for (i = 0; i < count; i++)
+            add_io_exit(run->io.port, size, 0,
+                        size == 0 ? 0ull
+                                  : 0xffffffffffffffffull >> (64 - 8 * (size > 8 ? 8 : size)));
+    }
+}
+
+/* Complete userspace I/O while preventing the guest from starting another instruction. */
+static int drain_pending_io(int vcpu, struct kvm_run *run, unsigned *run_count,
+                            unsigned *intr_count, int immediate_exit_supported)
+{
+    int rc;
+
+    if (!immediate_exit_supported)
+        return -3;
+    run->immediate_exit = 1;
+    rc = ioctl(vcpu, KVM_RUN, 0);
+    run->immediate_exit = 0;
+    if (rc < 0) {
+        if (errno == EINTR) {
+            (*intr_count)++;
+            return 0;
+        }
+        return -1;
+    }
+    if (run->exit_reason == KVM_EXIT_INTR) {
+        (*intr_count)++;
+        return 0;
+    }
+    (*run_count)++;
+    /* Any other exit means guest execution advanced; refuse a final snapshot. */
+    return -2;
+}
+
 static void print_json(const char *exit_kind, const char *error, const struct entry_state *en,
                        int kvm_api, unsigned run_count, unsigned intr_count,
-                       const char *stop_reason)
+                       const char *stop_reason, const struct final_state *final, int real_mode)
 {
     struct utsname un;
     char cpu_model[256];
@@ -218,6 +345,44 @@ static void print_json(const char *exit_kind, const char *error, const struct en
                en->ss_selector);
     else
         printf(",\"entry\":null");
+    if (real_mode && final) {
+        const struct kvm_regs *r = &final->regs;
+        const struct kvm_sregs *s = &final->sregs;
+        printf(",\"final_state\":{\"gpr\":{\"rax\":%llu,\"rbx\":%llu,\"rcx\":%llu,\"rdx\":%llu,"
+               "\"rsi\":%llu,\"rdi\":%llu,\"rbp\":%llu,\"rsp\":%llu,\"r8\":%llu,\"r9\":%llu,"
+               "\"r10\":%llu,\"r11\":%llu,\"r12\":%llu,\"r13\":%llu,\"r14\":%llu,\"r15\":%llu},"
+               "\"rip\":%llu,\"rflags\":%llu,\"segments\":{",
+               (unsigned long long)r->rax, (unsigned long long)r->rbx,
+               (unsigned long long)r->rcx, (unsigned long long)r->rdx,
+               (unsigned long long)r->rsi, (unsigned long long)r->rdi,
+               (unsigned long long)r->rbp, (unsigned long long)r->rsp,
+               (unsigned long long)r->r8, (unsigned long long)r->r9,
+               (unsigned long long)r->r10, (unsigned long long)r->r11,
+               (unsigned long long)r->r12, (unsigned long long)r->r13,
+               (unsigned long long)r->r14, (unsigned long long)r->r15,
+               (unsigned long long)r->rip, (unsigned long long)r->rflags);
+#define PRINT_SEG(name, seg) \
+        printf("\"%s\":{\"selector\":%u,\"base\":%llu,\"limit\":%u,\"type\":%u,\"dpl\":%u,\"present\":%u,\"db\":%u,\"l\":%u,\"g\":%u,\"unusable\":%u}", name, (seg).selector, (unsigned long long)(seg).base, (seg).limit, (seg).type, (seg).dpl, (seg).present, (seg).db, (seg).l, (seg).g, (seg).unusable)
+        PRINT_SEG("cs", s->cs); putchar(',');
+        PRINT_SEG("ds", s->ds); putchar(',');
+        PRINT_SEG("es", s->es); putchar(',');
+        PRINT_SEG("fs", s->fs); putchar(',');
+        PRINT_SEG("gs", s->gs); putchar(',');
+        PRINT_SEG("ss", s->ss); putchar(',');
+        PRINT_SEG("tr", s->tr); putchar(',');
+        PRINT_SEG("ldtr", s->ldt);
+#undef PRINT_SEG
+        printf("},\"tables\":{\"gdtr_base\":%llu,\"gdtr_limit\":%u,\"idtr_base\":%llu,\"idtr_limit\":%u},"
+               "\"control\":{\"cr0\":%llu,\"cr2\":%llu,\"cr3\":%llu,\"cr4\":%llu,\"cr8\":%llu,\"efer\":%llu}}",
+               (unsigned long long)s->gdt.base, s->gdt.limit,
+               (unsigned long long)s->idt.base, s->idt.limit,
+               (unsigned long long)s->cr0, (unsigned long long)s->cr2,
+               (unsigned long long)s->cr3, (unsigned long long)s->cr4,
+               (unsigned long long)s->cr8,
+               (unsigned long long)s->efer);
+    }
+    else if (real_mode)
+        printf(",\"final_state\":null");
     printf(",\"kvm_api\":%d,\"run_count\":%u,\"intr_count\":%u,\"stop_reason\":", kvm_api,
            run_count, intr_count);
     json_string(stop_reason);
@@ -239,16 +404,20 @@ static void fail(const char *exit_kind, const char *what, const struct entry_sta
 {
     char msg[256];
     snprintf(msg, sizeof(msg), "%s: %s", what, strerror(errno));
-    print_json(exit_kind, msg, en, kvm_api, runs, 0, "setup_error");
+    print_json(exit_kind, msg, en, kvm_api, runs, 0, "setup_error", NULL, 0);
 }
 
 int main(int argc, char **argv)
 {
     const char *image_path = NULL;
+    int real_mode = 0;
+    uint16_t real_cs = 0, real_ip = 0;
+    uint64_t image_gpa = IMAGE_GPA;
     unsigned budget = 1000;
     unsigned deadline_ms = 2000;
     int kvm = -1, vm = -1, vcpu = -1;
     int api = 0;
+    int immediate_exit_supported = 0;
     size_t run_size;
     struct kvm_run *run = NULL;
     uint8_t *ram;
@@ -256,6 +425,12 @@ int main(int argc, char **argv)
     struct kvm_sregs sregs;
     struct kvm_regs regs;
     struct entry_state en;
+    struct final_state final;
+    uint32_t cpuid_signature = 0;
+    int cpuid_leaf1_found = 0;
+    int io_pending = 0;
+    int final_state_valid = 0;
+    const char *final_error = NULL;
     unsigned run_count = 0; /* KVM_RUN returns that carried a real exit */
     unsigned intr_count = 0; /* KVM_RUN returns with EINTR / KVM_EXIT_INTR (SIGALRM) */
     const char *exit_kind = "budget";
@@ -272,19 +447,27 @@ int main(int argc, char **argv)
             budget = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--deadline-ms") == 0 && i + 1 < argc)
             deadline_ms = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--real-mode") == 0 && i + 1 < argc) {
+            if (real_mode || parse_cs_ip(argv[++i], &real_cs, &real_ip) != 0) {
+                fprintf(stderr, "invalid --real-mode CS:IP (expected 16-bit selector:offset)\n");
+                return 2;
+            }
+            real_mode = 1;
+        }
         else if (!image_path)
             image_path = argv[i];
         else {
-            fprintf(stderr, "usage: %s <image.bin> [--budget N] [--deadline-ms MS]\n", argv[0]);
+            fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]\n", argv[0]);
             return 2;
         }
     }
     if (!image_path) {
-        fprintf(stderr, "usage: %s <image.bin> [--budget N] [--deadline-ms MS]\n", argv[0]);
+        fprintf(stderr, "usage: %s <image.bin> [--real-mode CS:IP] [--budget N] [--deadline-ms MS]\n", argv[0]);
         return 2;
     }
 
     memset(&en, 0, sizeof(en));
+    memset(&final, 0, sizeof(final));
 
     img = fopen(image_path, "rb");
     if (!img || fseek(img, 0, SEEK_END) != 0 || (img_len = ftell(img)) < 0 ||
@@ -292,10 +475,23 @@ int main(int argc, char **argv)
         fail("internal", "open image", NULL, 0, 0);
         return 2;
     }
-    if (img_len == 0 || (unsigned long)img_len > IMAGE_MAX) {
+    if (img_len == 0 ||
+        (unsigned long)img_len > (real_mode ? REAL_MODE_IMAGE_MAX : IMAGE_MAX)) {
         errno = EFBIG;
-        fail("internal", "image size must be 1..0x1000 bytes", NULL, 0, 0);
+        fail("internal", real_mode ? "image exceeds the real-mode size limit"
+                                    : "image size must be 1..0x1000 bytes",
+             NULL, 0, 0);
         return 2;
+    }
+
+    if (real_mode) {
+        image_gpa = ((uint64_t)real_cs << 4) + real_ip;
+        if ((uint64_t)real_ip + (uint64_t)img_len > 0x10000u ||
+            image_gpa + (uint64_t)img_len > GUEST_RAM_SIZE) {
+            errno = EFBIG;
+            fail("internal", "real-mode CS:IP image exceeds guest RAM", NULL, 0, 0);
+            return 2;
+        }
     }
 
     kvm = open("/dev/kvm", O_RDWR | O_CLOEXEC);
@@ -309,6 +505,8 @@ int main(int argc, char **argv)
         fail("internal", "unexpected KVM_GET_API_VERSION", NULL, api, 0);
         return 2;
     }
+    if (real_mode)
+        immediate_exit_supported = ioctl(kvm, KVM_CHECK_EXTENSION, KVM_CAP_IMMEDIATE_EXIT) > 0;
     vm = ioctl(kvm, KVM_CREATE_VM, 0);
     if (vm < 0) {
         fail("internal", "KVM_CREATE_VM", NULL, api, 0);
@@ -332,7 +530,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (fread(ram + IMAGE_GPA, 1, (size_t)img_len, img) != (size_t)img_len) {
+    if (fread(ram + image_gpa, 1, (size_t)img_len, img) != (size_t)img_len) {
         errno = EIO;
         fail("internal", "read image", NULL, api, 0);
         return 2;
@@ -340,7 +538,7 @@ int main(int argc, char **argv)
     fclose(img);
 
     /* Guest page tables: identity map of the first 2 MiB with one PS leaf. */
-    {
+    if (!real_mode) {
         uint64_t *pml4 = (uint64_t *)(ram + PML4_GPA);
         uint64_t *pdpt = (uint64_t *)(ram + PDPT_GPA);
         uint64_t *pd = (uint64_t *)(ram + PD_GPA);
@@ -349,7 +547,7 @@ int main(int argc, char **argv)
         pd[0] = 0x0 | 0x83;        /* P | RW | PS: 0..2 MiB */
     }
     /* Guest GDT: null, 64-bit code (0x08), data (0x10). */
-    {
+    if (!real_mode) {
         uint64_t *gdt = (uint64_t *)(ram + GDT_GPA);
         gdt[0] = 0;
         gdt[1] = 0x00af9b000000ffffull;
@@ -384,6 +582,14 @@ int main(int argc, char **argv)
             }
             cpuid->nent = nent;
             if (ioctl(kvm, KVM_GET_SUPPORTED_CPUID, cpuid) == 0) {
+                unsigned j;
+                for (j = 0; j < cpuid->nent; j++) {
+                    if (cpuid->entries[j].function == 1 && cpuid->entries[j].index == 0) {
+                        cpuid_signature = cpuid->entries[j].eax;
+                        cpuid_leaf1_found = 1;
+                        break;
+                    }
+                }
                 got = 1;
             } else if (errno == E2BIG && nent < CPUID_MAX_ENT) {
                 nent = nent * 2 > CPUID_MAX_ENT ? CPUID_MAX_ENT : nent * 2;
@@ -398,30 +604,41 @@ int main(int argc, char **argv)
         }
         free(cpuid);
     }
+    if (real_mode && !cpuid_leaf1_found) {
+        errno = ENOTSUP;
+        fail("internal", "configured KVM CPUID model lacks leaf 1 signature", NULL, api, 0);
+        return 2;
+    }
 
     if (ioctl(vcpu, KVM_GET_SREGS, &sregs) < 0) {
         fail("internal", "KVM_GET_SREGS", NULL, api, 0);
         return 2;
     }
-    set_seg(&sregs.cs, 0x08, 0xB, 1);
-    set_seg(&sregs.ds, 0x10, 0x3, 0);
-    sregs.es = sregs.ds;
-    sregs.fs = sregs.ds;
-    sregs.gs = sregs.ds;
-    sregs.ss = sregs.ds;
-    sregs.gdt.base = GDT_GPA;
-    sregs.gdt.limit = 3 * 8 - 1;
-    sregs.cr0 = CR0_VALUE;
-    sregs.cr3 = PML4_GPA;
-    sregs.cr4 = CR4_VALUE;
-    sregs.efer = EFER_VALUE;
+    if (real_mode) {
+        configure_real_mode(&sregs, real_cs);
+    } else {
+        set_seg(&sregs.cs, 0x08, 0xB, 1);
+        set_seg(&sregs.ds, 0x10, 0x3, 0);
+        sregs.es = sregs.ds;
+        sregs.fs = sregs.ds;
+        sregs.gs = sregs.ds;
+        sregs.ss = sregs.ds;
+        sregs.gdt.base = GDT_GPA;
+        sregs.gdt.limit = 3 * 8 - 1;
+        sregs.cr0 = CR0_VALUE;
+        sregs.cr3 = PML4_GPA;
+        sregs.cr4 = CR4_VALUE;
+        sregs.efer = EFER_VALUE;
+    }
     if (ioctl(vcpu, KVM_SET_SREGS, &sregs) < 0) {
         fail("internal", "KVM_SET_SREGS", NULL, api, 0);
         return 2;
     }
     memset(&regs, 0, sizeof(regs));
-    regs.rip = IMAGE_GPA;
-    regs.rsp = STACK_TOP;
+    regs.rip = real_mode ? real_ip : IMAGE_GPA;
+    regs.rsp = real_mode ? 0 : STACK_TOP;
+    if (real_mode)
+        regs.rdx = cpuid_signature; /* INIT preserves EDX processor signature. */
     regs.rflags = 0x2;
     if (ioctl(vcpu, KVM_SET_REGS, &regs) < 0) {
         fail("internal", "KVM_SET_REGS", NULL, api, 0);
@@ -476,42 +693,28 @@ int main(int argc, char **argv)
         rc = ioctl(vcpu, KVM_RUN, 0);
         if (rc < 0) {
             if (errno == EINTR) {
+                io_pending = 0; /* Re-entry completes pending I/O before EINTR is returned. */
                 intr_count++;
                 continue;
             }
             run_count++;
             exit_kind = "internal";
             stop_reason = "kvm_run_ioctl_failed";
+            if (real_mode)
+                final_error = "KVM_RUN ioctl failed; final CPU state omitted";
             break;
         }
+        io_pending = 0; /* Successful KVM_RUN re-entry completes the previous I/O exit. */
         if (run->exit_reason == KVM_EXIT_INTR) {
             intr_count++;
             continue;
         }
         run_count++;
         switch (run->exit_reason) {
-        case KVM_EXIT_IO: {
-            uint8_t *p = (uint8_t *)run + run->io.data_offset;
-            unsigned size = run->io.size;
-            unsigned n = run->io.count;
-            unsigned k;
-            if (run->io.direction == KVM_EXIT_IO_OUT) {
-                for (k = 0; k < n; k++) {
-                    uint64_t v = 0;
-                    memcpy(&v, p + (size_t)k * size, size > 8 ? 8 : size);
-                    add_io_exit(run->io.port, size, 1, v);
-                    if (run->io.port == UART_PORT && uart_len < MAX_UART)
-                        uart[uart_len++] = (unsigned char)(v & 0xff);
-                }
-            } else {
-                /* Port 0x3f8 is write-only here; every IN returns all-ones. */
-                memset(p, 0xff, (size_t)size * n);
-                for (k = 0; k < n; k++)
-                    add_io_exit(run->io.port, size, 0, size == 0 ? 0ull
-                                       : 0xffffffffffffffffull >> (64 - 8 * (size > 8 ? 8 : size)));
-            }
+        case KVM_EXIT_IO:
+            service_io_exit(run);
+            io_pending = 1;
             continue;
-        }
         case KVM_EXIT_HLT:
             add_exit("hlt");
             exit_kind = "hlt";
@@ -526,22 +729,60 @@ int main(int argc, char **argv)
             add_exit("fail_entry");
             exit_kind = "fail_entry";
             stop_reason = "vm_entry_failed";
+            if (real_mode)
+                final_error = "KVM_EXIT_FAIL_ENTRY; final CPU state omitted";
             goto done;
         case KVM_EXIT_INTERNAL_ERROR:
             add_exit("internal");
             exit_kind = "internal";
             stop_reason = "kvm_internal_error";
+            if (real_mode)
+                final_error = "KVM_EXIT_INTERNAL_ERROR; final CPU state omitted";
+            goto done;
+        case KVM_EXIT_MMIO:
+            add_exit(real_mode ? "mmio" : "other");
+            exit_kind = "internal";
+            stop_reason = real_mode ? "unsupported_mmio_exit" : "unexpected_exit_reason";
+            if (real_mode)
+                final_error = "KVM_EXIT_MMIO is unsupported; final CPU state omitted";
             goto done;
         default:
             add_exit("other");
             exit_kind = "internal";
             stop_reason = "unexpected_exit_reason";
+            if (real_mode)
+                final_error = "unsupported KVM exit; final CPU state omitted";
             goto done;
         }
     }
 done:
     memset(&tv, 0, sizeof(tv));
     setitimer(ITIMER_REAL, &tv, NULL);
-    print_json(exit_kind, NULL, &en, api, run_count, intr_count, stop_reason);
+    if (real_mode && io_pending) {
+        int drain_result = drain_pending_io(vcpu, run, &run_count, &intr_count,
+                                            immediate_exit_supported);
+        if (drain_result != 0) {
+            exit_kind = "internal";
+            stop_reason = "pending_io_drain_failed";
+            if (!final_error && drain_result == -1)
+                final_error = "KVM_RUN failed while draining pending I/O";
+            else if (!final_error && drain_result == -2)
+                final_error = "guest advanced during pending-I/O drain";
+            else if (!final_error)
+                final_error = "KVM_CAP_IMMEDIATE_EXIT unavailable for pending-I/O drain";
+        }
+    }
+    if (real_mode && !final_error) {
+        if (ioctl(vcpu, KVM_GET_SREGS, &final.sregs) < 0 ||
+            ioctl(vcpu, KVM_GET_REGS, &final.regs) < 0) {
+            exit_kind = "internal";
+            stop_reason = "read_final_state_failed";
+            final_error = "KVM_GET_SREGS or KVM_GET_REGS failed";
+        } else {
+            final_state_valid = 1;
+        }
+    }
+    print_json(exit_kind, final_error, &en, api, run_count, intr_count, stop_reason,
+               final_state_valid ? &final : NULL, real_mode);
     return 0;
 }

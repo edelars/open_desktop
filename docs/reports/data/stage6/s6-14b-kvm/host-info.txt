@@ -1,0 +1,35 @@
+S6-14b KVM real-mode oracle evidence
+Date: 2026-11-13
+Codex source HEAD at baseline: ffab6a1
+Changed runner source SHA-256: fee638839861a93fd8204921c5bbfd07b765e12ec4a67fba09501b8da989fb65
+Baseline runner source SHA-256: 20a55f4903cbb5539a2c8260873ed2625993b62b3b6b89d38c7b79e04b62cb0b
+
+Host:
+- Linux 7.0.0-42-generic x86_64
+- Intel Core i5-3210M CPU @ 2.50GHz; VMX=true
+- /dev/kvm readable; KVM API version 12
+- gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+
+Build command for both baseline and changed source:
+  gcc -O2 -Wall -Wextra -Werror -std=c11 -o kvm_runner <source>.c
+
+Binary SHA-256:
+- baseline `kvm_runner-before`: 0522438d5de2686fe47e1d03d21c11771ad529eb9a3c389c7221784d23b7b808
+- changed `kvm_runner` (rebuilt from the recorded changed source): 22c97a5b0204edb5b2c3b30748c1389881208b6592e27c7ec328b6f1bca65c35
+
+Probe images:
+- real mode, bytes `b9 bc 9a ba f8 03 b0 52 ee b8 34 12 bb 78 56 f4`, SHA-256 `c19216a0d9fb8881a0194329488c63954145c838096dbe99c6e7f0fdcfdb3a25`
+- Long64, bytes `b8 78 56 34 12 bb ef cd ab 89 f4`, SHA-256 `5eb787b64b2a724f558945c7bfd078ccbad2dafc9769a0c11b416671dea690c9`
+
+Run commands:
+  ./kvm_runner realmode-probe.bin --real-mode 0x700:0
+  ./kvm_runner realmode-probe.bin --real-mode 0x700:0 --budget 1
+  ./kvm_runner-before long64-probe.bin
+  ./kvm_runner long64-probe.bin
+
+Results:
+- Real-mode HLT: exit `hlt`, RIP 16, RAX=0x1234, RBX=0x5678, RCX=0x9abc, DX=0x03f8, CS selector=0x0700/base=0x7000, CR0=0x60000010, CR2/3/4/8=0, EFER=0.
+- Budget-1 I/O drain: exit `budget`; UART emitted `R`; final RIP=9 (past OUT), final state present, `run_count=1`, `intr_count=1`. The single immediate-exit re-entry completes pending I/O and may increment the total beyond the main-loop budget by one.
+- Baseline and changed Long64 JSON are byte-identical (both SHA-256 `c36961a0dbab81813b5127c0f80df8916ac02977bfd98f0cf4928aec4fc4072c`).
+
+The real-mode tests execute a small register-and-I/O probe under physical KVM. They do not execute the Linux AP trampoline or claim AP startup/runtime support.
