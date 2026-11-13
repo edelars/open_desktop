@@ -842,6 +842,14 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S4-38L9g: `3E [REX] 0F C1 /r` (XADD m32, r32, or m64, r64 with REX.W, without LOCK), memory
+    /// destination only; the DS override is the only legacy prefix (no effect on the address in
+    /// 64-bit mode). Executed only in the CPL0 set, with the same single-vCPU read -> write
+    /// semantics as `LockXaddMem` (the two forms differ only in the decoding).
+    XaddDsMem {
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// Bare long-mode qword register-register CMPXCHG, using RAX as accumulator.
     Cmpxchg {
         destination: RegisterView,
@@ -2434,7 +2442,9 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::XaddMemory { .. } | Operation::LockXaddMem { .. } => FlagEffects {
+            Operation::XaddMemory { .. }
+            | Operation::LockXaddMem { .. }
+            | Operation::XaddDsMem { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -8118,11 +8128,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let qword =
                     size == OperandSize::Qword && prefixes.rex.is_some_and(|rex| rex & 8 != 0);
                 let lock = prefixes.group1 == Some(0xf0);
-                let dword = size == OperandSize::Dword && lock;
+                // S4-38L9g: `3E [REX] 0F C1 /r` with a memory destination (XADD without LOCK; the
+                // kernel's SMP-alternatives patch replaces the LOCK byte by a DS override, which has
+                // no effect on the address in 64-bit mode). The DS byte must be the only non-REX
+                // prefix (so no LOCK/REP/0x66/0x67, no second or other segment override) and the REX
+                // byte, if any, directly before the opcode (the decoder drops a REX that precedes a
+                // legacy prefix, which would silently change the width).
+                let ds = prefixes.segment == Some(0x3e)
+                    && !stale_rex
+                    && prefix_bytes[..prefix_count]
+                        .iter()
+                        .filter(|byte| !(0x40..=0x4f).contains(*byte))
+                        .count()
+                        == 1;
+                let dword = size == OperandSize::Dword && (lock || ds);
                 if !(qword || dword)
                     || (lock && stale_rex)
                     || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
-                    || prefixes.segment.is_some()
+                    || (prefixes.segment.is_some() && !ds)
                     || prefixes.operand_override
                     || prefixes.address_override
                 {
@@ -8131,7 +8154,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 let source = view(((modrm >> 3) & 7) | ((rex & 4) << 1), size, true);
                 match self.rm_operand(modrm, prefixes, size)? {
-                    Operand::Register(destination) if prefixes.group1.is_none() => {
+                    Operand::Register(destination) if prefixes.group1.is_none() && !ds => {
                         Operation::Xadd {
                             destination,
                             source,
@@ -8139,6 +8162,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                     Operand::Memory(destination) if lock && destination.size == size => {
                         Operation::LockXaddMem {
+                            destination,
+                            source,
+                        }
+                    }
+                    Operand::Memory(destination) if ds && destination.size == size => {
+                        Operation::XaddDsMem {
                             destination,
                             source,
                         }
@@ -20375,6 +20404,76 @@ mod tests {
             &[0xf0, 0xf0, 0x48, 0x0f, 0xc1, 0x00],
             &[0x48, 0xf0, 0x0f, 0xc1, 0x00], // REX before LOCK
             &[0x41, 0xf0, 0x0f, 0xc1, 0x00],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ds_memory_xadd_decodes_the_qword_and_dword_forms_only() {
+        // S4-38L9g: `3E [REX] 0F C1 /r` with a memory destination is `XaddDsMem`.
+        let mut memory = Memory::new(&[0x3e, 0x48, 0x0f, 0xc1, 0x87, 0x48, 0x05, 0x00, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 9);
+        assert_eq!(instruction.prefixes.segment, Some(0x3e));
+        assert_eq!(
+            instruction.operation,
+            Operation::XaddDsMem {
+                destination: MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0x548,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                },
+                source: RegisterView::low(Register::Rax, OperandSize::Qword),
+            }
+        );
+        assert_eq!(instruction.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+
+        let mut memory = Memory::new(&[0x3e, 0x44, 0x0f, 0xc1, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(
+            instruction.operation,
+            Operation::XaddDsMem {
+                destination: MemoryOperand {
+                    base: AddressBase::Register(Register::Rax),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Dword,
+                },
+                source: RegisterView::low(Register::R8, OperandSize::Dword),
+            }
+        );
+
+        for bytes in [
+            &[0x3e, 0x0f, 0xc1, 0xc0][..], // register destination
+            &[0x3e, 0x48, 0x0f, 0xc1, 0xc0][..],
+            &[0x3e, 0xf0, 0x48, 0x0f, 0xc1, 0x00], // LOCK + DS, either order
+            &[0xf0, 0x3e, 0x0f, 0xc1, 0x00],
+            &[0x3e, 0x66, 0x0f, 0xc1, 0x00],
+            &[0x3e, 0x67, 0x48, 0x0f, 0xc1, 0x00],
+            &[0x3e, 0xf3, 0x0f, 0xc1, 0x00],
+            &[0x2e, 0x0f, 0xc1, 0x00], // CS/ES/SS/FS/GS
+            &[0x26, 0x48, 0x0f, 0xc1, 0x00],
+            &[0x36, 0x0f, 0xc1, 0x00],
+            &[0x64, 0x48, 0x0f, 0xc1, 0x00],
+            &[0x65, 0x0f, 0xc1, 0x00],
+            &[0x3e, 0x3e, 0x48, 0x0f, 0xc1, 0x00], // repeated or mixed overrides
+            &[0x2e, 0x3e, 0x0f, 0xc1, 0x00],
+            &[0x3e, 0x64, 0x0f, 0xc1, 0x00],
+            &[0x48, 0x3e, 0x0f, 0xc1, 0x00], // REX before DS
+            &[0x3e, 0x48, 0x40, 0x0f, 0xc1, 0x00],
         ] {
             assert!(
                 matches!(

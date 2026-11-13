@@ -36871,6 +36871,11 @@ fn step_configured(
         // S4-38L7ay: LOCK XADD m32/m64. In the CPL0 set (Ring0) it is read -> write on the single
         // vCPU; the decoder has already validated the prefixes. Outside the set only the S2-21f
         // qword form exists (one atomic fetch-add call); the dword form is refused there.
+        // S4-38L9g: XADD m32/m64 with a DS override and no LOCK; the CPL0 set only (Ring0), the
+        // decoder has already validated the prefixes. Outside the set it is refused.
+        Operation::XaddDsMem { .. } => {
+            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
         Operation::LockXaddMem {
             destination,
             source,
@@ -49787,6 +49792,8 @@ fn step_configured(
         | Operation::LockAddMem { .. }
         | Operation::LockAddMemReg { .. }
         | Operation::LockXaddMem { .. }
+        // S4-38L9g: and for XADD m32/m64 with a DS override, without LOCK.
+        | Operation::XaddDsMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
         | Operation::LockBtsMemImm { .. }
@@ -55846,6 +55853,12 @@ fn transfer(
             state.rflags = flags;
         }
         Operation::LockXaddMem {
+            destination,
+            source,
+        }
+        // S4-38L9g: the DS-override form without LOCK; on one vCPU LOCK changes nothing, so the
+        // two forms share this arm (SDM XADD: TEMP = SRC + DEST, SRC = DEST, DEST = TEMP).
+        | Operation::XaddDsMem {
             destination,
             source,
         } => {
