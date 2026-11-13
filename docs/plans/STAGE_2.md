@@ -7334,6 +7334,12 @@ hardware checks stay in the combined final substage. Sources: Intel SDM Rev.093
 Vol.2A CVTSI2SD pp.3-236–3-237, Type 3 Table 2-20 p.2-28, Vol.1 §§11.5.2.6,
 11.5.3, REX §2.2.1.2/Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
 
+Fresh independent review follow-up (2026-11-13): the q conditional-candidate
+boundary was rechecked with 7 focused ISA tests, 1 testkit test, and the runner
+matrix for all 512 forms plus literal cases. This follow-up confirms the cited
+bounded contract only; it does not change the historical acceptance scope or
+establish runtime MXCSR/CPU state.
+
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD status subset
 
 Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i/j/k/l are implemented.
@@ -7388,6 +7394,12 @@ and Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199))
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 [report](../reports/STAGE_2_REPORT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
+
+Fresh independent review follow-up (2026-11-13): the r conditional-candidate
+boundary was rechecked with 104 focused ISA tests, 2 testkit tests, and the
+runner matrix for all 512 forms plus literal cases. This follow-up confirms the
+cited bounded contract only; it does not change the historical acceptance
+scope or establish runtime MXCSR/CPU state.
 
 #### S2-37s — canonical Long64 CVTDQ2PS XMM register pairs
 

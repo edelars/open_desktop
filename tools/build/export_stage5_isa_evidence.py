@@ -66,6 +66,15 @@ def aggregate(inventory: dict) -> dict:
     exact_forms = inventory["inventory"]["encoding_forms"]
     groups: dict[str, dict] = {}
     for exact in exact_forms:
+        local_candidates = exact.get("conditional_local_candidate_frequencies", {})
+        local_candidate_hits = sum(local_candidates.values())
+        if local_candidate_hits > exact["count"]:
+            raise ValueError("local state-gated candidate hits exceed exact encoding rows")
+        if local_candidate_hits and (
+            exact["classification_frequencies"] != {"unclassified": exact["count"]}
+            or exact["evidence_scope_frequencies"]
+        ):
+            raise ValueError("local state-gated candidates must remain unclassified and outside evidence scopes")
         normalized = normalized_instruction_form(exact["dimensions"])
         key = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
         target = groups.setdefault(key, {

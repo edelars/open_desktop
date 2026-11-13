@@ -1216,8 +1216,39 @@ def cpl0_encoding_candidate(row: dict) -> str | None:
     return None
 
 
+def _x86_gpr_number(name: str) -> int | None:
+    aliases = {
+        "rax": 0, "eax": 0, "rcx": 1, "ecx": 1, "rdx": 2, "edx": 2, "rbx": 3, "ebx": 3,
+        "rsp": 4, "esp": 4, "rbp": 5, "ebp": 5, "rsi": 6, "esi": 6, "rdi": 7, "edi": 7,
+    }
+    value = name.lower().strip()
+    if value in aliases:
+        return aliases[value]
+    match = re.fullmatch(r"r(1[0-5]|[8-9])([d]?)", value)
+    return int(match.group(1)) if match else None
+
+
+def _canonical_xmm_rex(row: dict, prefixes: tuple[int, ...], mandatory: tuple[int, ...]) -> bool:
+    """Check the single optional REX byte against the encoded register indices."""
+    if prefixes[:len(mandatory)] != mandatory or len(prefixes) not in {len(mandatory), len(mandatory) + 1}:
+        return False
+    modrm = opcode_view(row)["modrm"]
+    if modrm is None or modrm >> 6 != 3:
+        return False
+    operands = [part.strip().lower() for part in row["operands"].split(",")]
+    xmm = [re.fullmatch(r"xmm(\d+)", part) for part in operands]
+    if len(xmm) != 2 or any(item is None for item in xmm):
+        return False
+    dest, src = (int(item.group(1)) for item in xmm)
+    if dest > 15 or src > 15:
+        return False
+    rex = prefixes[-1] if len(prefixes) == len(mandatory) + 1 else None
+    expected = (0x40 | (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)) if dest >= 8 or src >= 8 else None
+    return rex == expected and (modrm & 0x38) >> 3 == dest % 8 and (modrm & 7) == src % 8
+
+
 def minsd_masked_register_local_candidate(row: dict) -> str | None:
-    """Recognize MINSD register bytes with a separately recorded MXCSR gate."""
+    """Recognize MINSD register bytes with its separately recorded MXCSR gate."""
     if row["mnemonic"] != "minsd" or row["signature"] != "minsd xmm,xmm":
         return None
     view = opcode_view(row)
@@ -1230,6 +1261,60 @@ def minsd_masked_register_local_candidate(row: dict) -> str | None:
     if modrm is None or modrm >> 6 != 3 or len(raw) != len(prefixes) + 3:
         return None
     return "S2-37i-MINSD-XMM-register-masked-state-gated"
+
+
+def local_state_gated_conditional_candidate(row: dict) -> str | None:
+    """Recognize exact S2-37 register candidates without changing disposition."""
+    view = opcode_view(row)
+    prefixes, opcode, modrm = tuple(view["prefixes"]), view["opcode"], view["modrm"]
+    raw = row["byte_values"]
+    if modrm is None or modrm >> 6 != 3 or len(raw) != len(prefixes) + 3:
+        return None
+
+    mnemonic = row["mnemonic"]
+    signature = row["signature"]
+
+    if mnemonic in {"cvtsi2sd", "cvtsi2ss"} and signature in {
+        f"{mnemonic} xmm,r32", f"{mnemonic} xmm,r64"
+    } and opcode == (0x0F, 0x2A):
+        mode = signature.rsplit(",", 1)[1]
+        mandatory = (0xF2,) if mnemonic == "cvtsi2sd" else (0xF3,)
+        if prefixes[:1] != mandatory or len(prefixes) not in {1, 2}:
+            return None
+        rex = prefixes[-1] if len(prefixes) == 2 else None
+        operands = [part.strip().lower() for part in row["operands"].split(",")]
+        dest = re.fullmatch(r"xmm(\d+)", operands[0]) if len(operands) == 2 else None
+        src_name = operands[1] if len(operands) == 2 else ""
+        src = _x86_gpr_number(src_name)
+        if dest is None or src is None:
+            return None
+        dest_num = int(dest.group(1))
+        rex_w = 0x08 if mode == "r64" else 0
+        expected_rex = 0x40 | rex_w | (0x04 if dest_num >= 8 else 0) | (0x01 if src >= 8 else 0)
+        if dest_num > 15 or src > 15 or ((modrm & 0x38) >> 3) != dest_num % 8 or (modrm & 7) != src % 8:
+            return None
+        needs_rex = bool(rex_w or dest_num >= 8 or src >= 8)
+        if (rex is None) != (not needs_rex) or (rex is not None and rex != expected_rex):
+            return None
+        return "S2-37q-CVTSI2SD-register-state-gated" if mnemonic == "cvtsi2sd" else "S2-37r-CVTSI2SS-register-state-gated"
+
+    comparison_id = None
+    expected_opcode = None
+    mandatory = ()
+    if mnemonic in {"comiss", "ucomiss"} and signature == f"{mnemonic} xmm,xmm":
+        comparison_id = "S2-37v-COMISS-UCOMISS-register-state-gated"
+        expected_opcode = (0x0F, 0x2F) if mnemonic == "comiss" else (0x0F, 0x2E)
+    elif mnemonic in {"comisd", "ucomisd"} and signature == f"{mnemonic} xmm,xmm":
+        comparison_id = "S2-37w-COMISD-UCOMISD-register-state-gated"
+        expected_opcode = (0x0F, 0x2F) if mnemonic == "comisd" else (0x0F, 0x2E)
+        mandatory = (0x66,)
+    if comparison_id and opcode == expected_opcode and _canonical_xmm_rex(row, prefixes, mandatory):
+        return comparison_id
+    return None
+
+
+def conditional_local_candidate(row: dict) -> str | None:
+    return minsd_masked_register_local_candidate(row) or local_state_gated_conditional_candidate(row)
 
 
 def cpl0_l7_candidates(row: dict) -> list[str]:
@@ -1549,7 +1634,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
             cpl0_candidate = cpl0_encoding_candidate(row)
             l7_candidates = cpl0_l7_candidates(row)
             misc_cpl0_candidates = cpl0_misc_candidates(row)
-            local_conditional_candidate = minsd_masked_register_local_candidate(row)
+            local_conditional_candidate = conditional_local_candidate(row)
             dimensions = instruction_dimensions(row)
             encoding_key = dimensions["encoding_key"]
             machine_matches = [item for item in exact_candidates if item["evidence_scope"] == "machine_cpl3_profile"]

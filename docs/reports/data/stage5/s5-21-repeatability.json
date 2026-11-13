@@ -1,50 +1,294 @@
 {
-  "date_utc": "2026-11-12",
-  "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
-  "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-minsd37i-rootfs-pass1.json",
-  "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
-  "tool": {
-    "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
-    "objdump": "x86_64-linux-gnu-objdump 2.46-3ubuntu2",
-    "package_lock": "tools/build/stage5_isa_packages.json",
-    "profile_registry": "tools/build/stage5_isa_profile_forms.json",
-    "registry_complete": false
-  },
-  "runs": [
-    {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-minsd37i-rootfs-pass1.json",
-      "sha256": "1975a4a61e67629866b2e73b4628b4f1db97bae26e27fc6d4273ae59386a9f05",
-      "exit_code": 0
-    },
-    {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-minsd37i-rootfs-pass2.json",
-      "sha256": "1975a4a61e67629866b2e73b4628b4f1db97bae26e27fc6d4273ae59386a9f05",
-      "exit_code": 0
-    }
-  ],
   "bytewise_cmp_exit_code": 0,
-  "full_inventory": {
-    "instructions": 6510400,
-    "unique_mnemonics": 192,
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json",
+  "compact_evidence": {
     "coarse_operand_signatures": 560,
-    "exact_encoding_shape_keys": 43577,
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "normalized_instruction_forms": 1269,
-    "nondecoded_continuation_rows": 0,
+    "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
+    "repeat_cmp_exit_code": 0,
+    "repeat_sha256": "7d873bbeffb15326f8063a8d4a05796c62aabd0544f184406f4d247b0d321cc5",
+    "sha256": "7d873bbeffb15326f8063a8d4a05796c62aabd0544f184406f4d247b0d321cc5",
+    "size_bytes": 1024526
+  },
+  "date_utc": "2026-11-13",
+  "full_inventory": {
     "classification_frequencies": {
       "proven_supported": 6296422,
       "unclassified": 213978
+    },
+    "classified_normalized_forms": 1064,
+    "coarse_operand_signatures": 560,
+    "conditional_candidate_hit_count": 113498,
+    "conditional_candidate_supported_overlap_rows": 40,
+    "conditional_cpl0_candidate_hits": 113232,
+    "conditional_local_state_gated_candidate_frequencies": {
+      "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+      "S2-37q-CVTSI2SD-register-state-gated": 168,
+      "S2-37r-CVTSI2SS-register-state-gated": 50,
+      "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
+    },
+    "conditional_local_state_gated_candidate_rows": 266,
+    "conditional_local_state_gated_candidate_rows_by_binary": {
+      "bash": 1,
+      "dash": 6,
+      "gcc-cc1": 190,
+      "gcc-collect2": 1,
+      "gcc-driver": 19,
+      "gcc-ld-bfd": 4,
+      "tar": 45
     },
     "evidence_scope_frequencies": {
       "local_interpreter_profile": 6294071,
       "machine_cpl3_profile": 2351
     },
+    "exact_encoding_shape_keys": 43577,
+    "instructions": 6510400,
+    "local_interpreter_profile_rows": 6294071,
+    "local_simd_logic_normalized_forms": 10,
+    "local_simd_logic_rows": 2162,
+    "local_simd_logic_rows_by_profile": {
+      "S2-34.7a-XORPS-register-register": 1261,
+      "S2-34.7b-ANDPS-register-register": 1,
+      "S2-34.7c-ORPS-register-register": 21,
+      "S2-34.7d-ANDNPS-register-register": 4,
+      "S2-35.49-PAND-XMM-register-register": 304,
+      "S2-35.50-PANDN-register-register": 133,
+      "S2-35.51-POR-register-register": 438
+    },
+    "local_simd_logic_scope": "Accepted local interpreter XMM register-register logic profiles XORPS/ANDPS/ORPS/ANDNPS, PAND, PANDN and POR; 2162 rows across 10 normalized forms. 179 SIMD logic memory rows remain unclassified, including 52 PAND memory rows; no CPL3/native/JIT/physical evidence.",
+    "machine_cpl3_profile_rows": 2351,
+    "memory_logic_unclassified_by_signature": {
+      "andps xmm,mem128": 16,
+      "orps xmm,mem128": 15,
+      "pand xmm,mem128": 52,
+      "pandn xmm,mem128": 2,
+      "por xmm,mem128": 94
+    },
+    "memory_logic_unclassified_rows": 179,
+    "movapd_register_encoding_forms": 7,
+    "movapd_register_normalized_forms": 1,
+    "movapd_register_rows": 14,
+    "movapd_register_rows_by_profile": {
+      "S2-34.13-MOVAPD-XMM-register-register": 14
+    },
+    "movapd_scope": "Accepted local-only MOVAPD forward XMM register-register profile: mandatory 66 with optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3, reg destination/r/m source; copies raw 128-bit source, advances RIP on success and preserves other state. No data-memory callback; SSE2/CR0/CR4 are assumptions only; no memory, reverse 0F29, MOVUPD 0F10, or CPL3/native/JIT/physical evidence.",
+    "movaps_register_encoding_forms": 12,
+    "movaps_register_normalized_forms": 1,
+    "movaps_register_rows": 98,
+    "movaps_register_rows_by_profile": {
+      "S2-34.11-MOVAPS-XMM-register-register": 98
+    },
+    "movaps_scope": "Accepted local-only S2-34.11 MOVAPS forward XMM register-register profile: no prefix or optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3; raw 128-bit copy. No data-memory callback. Alignment/fault semantics and real #UD/#NM gates are not modeled; no memory/reverse 0F29/MOVAPD 66 or CPL3/native/JIT/physical evidence.",
+    "movsd_rax_memory_load_encoding_forms": 1,
+    "movsd_rax_memory_load_rows": 3,
+    "movsd_rax_memory_load_rows_by_binary": {
+      "gcc-cc1": 1,
+      "gcc-collect2": 1,
+      "gcc-driver": 1
+    },
+    "movsd_rax_memory_load_scope": "Accepted S2-34.9c local-only MOVSD m64 load candidate: exact F2, optional one REX 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE2/CR0/CR4 are assumptions. Assumes successful canonical48 [RAX..RAX+7] validation and one eight-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
+    "movsd_register_encoding_forms": 1,
+    "movsd_register_normalized_forms": 1,
+    "movsd_register_rows": 2,
+    "movsd_register_rows_by_profile": {
+      "S2-34.9a-MOVSD-XMM-register-register": 2
+    },
+    "movsd_register_scope": "Accepted local-only MOVSD XMM register-register profile: mandatory F2 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; copies raw source low qword and preserves destination high qword; F2 is opcode prefix, not REPNE. No data-memory callback, reverse MOVSD, memory/string, VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "movss_rax_memory_load_encoding_forms": 2,
+    "movss_rax_memory_load_normalized_forms": 1,
+    "movss_rax_memory_load_rows": 3,
+    "movss_rax_memory_load_rows_by_binary": {
+      "tar": 3
+    },
+    "movss_rax_memory_load_scope": "Accepted local-only S2-34.8c MOVSS m32 load candidate: exact F3, optional one REX byte 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE state and CR0/CR4 are assumptions only, with no SSE2 claim. Assumes successful canonical48 [RAX..RAX+3] validation and one four-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
+    "movss_register_encoding_forms": 5,
+    "movss_register_normalized_forms": 1,
+    "movss_register_rows": 15,
+    "movss_register_rows_by_profile": {
+      "S2-34.8a-MOVSS-XMM-register-register": 15
+    },
+    "movss_scope": "Accepted local-only MOVSS legacy XMM register-register profile: mandatory F3 with optional one REX.R/B byte after F3 and before 0F 10, ModR/M.mod=3; copies raw source low32 to destination low32 and preserves destination upper96. Requires both x87 and SSE state; absent state refuses atomically. No floating-point operation, MXCSR or flags change, and no data-memory callback. No MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
+    "movups_memory_rows": 23912,
+    "nondecoded_continuation_rows": 0,
+    "normalized_instruction_forms": 1269,
+    "packuswb_register_encoding_forms": 7,
+    "packuswb_register_normalized_forms": 2,
+    "packuswb_register_rows": 16,
+    "packuswb_register_rows_by_profile": {
+      "S2-35.33-PACKUSWB-XMM-register-register": 16
+    },
+    "packuswb_scope": "Accepted local-only PACKUSWB register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; signed i16 destination words then source words saturate to [0,255] into destination bytes0-7 then source bytes8-15. No memory callback; CPU_CONTRACT has no PACKUSWB entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
+    "paddb_register_encoding_forms": 2,
+    "paddb_register_normalized_forms": 1,
+    "paddb_register_rows": 2,
+    "paddb_register_rows_by_profile": {
+      "S2-35.2-PADDB-XMM-register-register": 2
+    },
+    "paddb_scope": "Accepted local-only PADDB XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; 16 byte lanes add modulo 256; no MMX/memory/other widths/saturation/extra prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "paddd_register_encoding_forms": 21,
+    "paddd_register_normalized_forms": 1,
+    "paddd_register_rows": 132,
+    "paddd_register_rows_by_profile": {
+      "S2-35.14-PADDD-XMM-register-register": 132
+    },
+    "paddd_scope": "Accepted local-only PADDD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST+SRC) modulo 2^32, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed three ISA tests, one schema test and one fixture. CPU_CONTRACT and accepted plan have PADDD entries; Stage 2 report has no PADDD-specific entry. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac. No native/JIT/physical acceptance.",
+    "paddq_register_encoding_forms": 8,
+    "paddq_register_normalized_forms": 1,
+    "paddq_register_rows": 77,
+    "paddq_register_rows_by_profile": {
+      "S2-35.16-PADDQ-XMM-register-register": 77
+    },
+    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance.",
+    "paddw_register_encoding_forms": 1,
+    "paddw_register_normalized_forms": 1,
+    "paddw_register_rows": 2,
+    "paddw_register_rows_by_profile": {
+      "S2-35.6-PADDW-XMM-register-register": 2
+    },
+    "paddw_scope": "Accepted local-only PADDW XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; eight independent little-endian u16 lanes add modulo 65536; no MMX/memory/saturation/other widths/other prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "pand_register_encoding_forms": 38,
+    "pand_register_normalized_forms": 2,
+    "pand_register_rows": 304,
+    "pand_register_rows_by_profile": {
+      "S2-35.49-PAND-XMM-register-register": 304
+    },
+    "pand_scope": "Accepted local-only S2-35.49 PAND XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; raw 128-bit result is original_DEST AND original_SRC. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh PAND-only review passed three ISA checks, two testkit tests and one fixture; this new bounded review does not imply historical acceptance. No memory callback; no MMX/memory or CPL3/native/JIT/physical evidence.",
+    "pand_unreviewed_unclassified_forms": 0,
+    "pand_unreviewed_unclassified_rows": 0,
+    "pcmpeqb_register_encoding_forms": 2,
+    "pcmpeqb_register_normalized_forms": 1,
+    "pcmpeqb_register_rows": 6,
+    "pcmpeqb_register_rows_by_profile": {
+      "S2-35.18-PCMPEQB-XMM-register-register": 6
+    },
+    "pcmpeqb_scope": "Accepted local-only PCMPEQB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen independent byte lanes write FF for equality, otherwise 00. No data-memory callback; no memory/MMX, other comparisons, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "pcmpeqd_register_encoding_forms": 18,
+    "pcmpeqd_register_normalized_forms": 2,
+    "pcmpeqd_register_rows": 126,
+    "pcmpeqd_register_rows_by_profile": {
+      "S2-35.20-PCMPEQD-XMM-register-register": 126
+    },
+    "pcmpeqd_scope": "Accepted local-only S2-35.20 PCMPEQD XMM register-register profile: mandatory 66, optional one REX.R/B, 0F 76 /r, ModR/M.mod=3; four independent little-endian u32 lanes write FFFFFFFF for equality, otherwise zero. No data-memory callback; no memory/MMX, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; CPU_CONTRACT has no PCMPEQD entry, so only accepted plan/report scope is credited.",
+    "pcmpgtb_register_encoding_forms": 3,
+    "pcmpgtb_register_normalized_forms": 2,
+    "pcmpgtb_register_rows": 3,
+    "pcmpgtb_register_rows_by_profile": {
+      "S2-35.21-PCMPGTB-XMM-register-register": 3
+    },
+    "pcmpgtb_scope": "Accepted local-only PCMPGTB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen signed i8 lanes write FF iff DEST>SRC, otherwise 00. No data-memory callback; no memory/MMX, other packed compares, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence.",
+    "pcmpgtd_register_encoding_forms": 18,
+    "pcmpgtd_register_normalized_forms": 1,
+    "pcmpgtd_register_rows": 40,
+    "pcmpgtd_register_rows_by_profile": {
+      "S2-35.23-PCMPGTD-XMM-register-register": 40
+    },
+    "pcmpgtd_scope": "Accepted local-only PCMPGTD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, opcode 0F 66, ModR/M.mod=3, reg destination/r/m source; four signed little-endian i32 lanes write FFFFFFFF iff DEST>SRC, otherwise 00000000. No memory callback; CPU_CONTRACT has no PCMPGTD entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
+    "pmovmskb_register_encoding_forms": 3,
+    "pmovmskb_register_normalized_forms": 1,
+    "pmovmskb_register_rows": 7,
+    "pmovmskb_register_rows_by_profile": {
+      "S2-35.61-PMOVMSKB-XMM-source-GPR32-destination": 7
+    },
+    "pmovmskb_scope": "Accepted local-only PMOVMSKB XMM-to-GPR32 register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; REX.R extends GPR32 destination and REX.B extends XMM source. Low 16 bits receive byte sign bits in byte order; GPR32 write zero-extends to GPR64. Requires both x87 and SSE state; absent state refuses atomically. RIP advances on success and all other state is preserved. No data-memory callback; no MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
+    "pmuludq_register_encoding_forms": 2,
+    "pmuludq_register_normalized_forms": 1,
+    "pmuludq_register_rows": 8,
+    "pmuludq_register_rows_by_profile": {
+      "S2-35.62-PMULUDQ-XMM-register-register": 8
+    },
+    "pmuludq_scope": "Accepted local-only PMULUDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; REX.R extends destination XMM and REX.B source XMM. Unsigned dword lanes 0 and 2 are multiplied into full 64-bit products in destination lanes 0 and 1; source lanes 1 and 3 are ignored. Requires both x87 and SSE state; absent state refuses atomically. Source/destination aliasing is valid. RIP advances on success and all other state is preserved. No data-memory callback; no MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
     "proven_missing": 0,
-    "conditional_cpl0_candidate_hits": 113232,
-    "unique_instruction_rows_with_any_conditional_candidate": 113159,
-    "conditional_candidate_supported_overlap_rows": 40,
-    "classified_normalized_forms": 1064,
-    "unclassified_normalized_forms": 205,
+    "pshufd_memory_unclassified_rows": 1,
+    "pshufd_register_normalized_forms": 2,
+    "pshufd_register_rows": 805,
+    "pshufd_register_rows_by_profile": {
+      "S2-35.35-PSHUFD-XMM-register-register": 805
+    },
+    "pshufd_scope": "Accepted local-only register forms; imm8 unrestricted; no MMX, REX.W/X, extra prefixes, VEX/EVEX, CPL3/native/JIT/physical evidence.",
+    "pslld_register_normalized_forms": 1,
+    "pslld_register_rows": 2,
+    "pslld_register_rows_by_prefix": {
+      "operand_size": 2
+    },
+    "pslld_register_rows_by_profile": {
+      "S2-35.41-PSLLD-XMM-immediate-register": 2
+    },
+    "pslld_scope": "Accepted local-only PSLLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /6, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psrad_register_normalized_forms": 1,
+    "psrad_register_rows": 12,
+    "psrad_register_rows_by_prefix": {
+      "operand_size": 12,
+      "operand_size+rex": 0
+    },
+    "psrad_register_rows_by_profile": {
+      "S2-35.43-PSRAD-XMM-immediate-register": 12
+    },
+    "psrad_scope": "Accepted local-only PSRAD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8; signed i32 arithmetic shift, counts >=32 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psraw_register_normalized_forms": 2,
+    "psraw_register_rows": 6,
+    "psraw_register_rows_by_prefix": {
+      "operand_size": 5,
+      "operand_size+rex": 1
+    },
+    "psraw_register_rows_by_profile": {
+      "S2-35.39-PSRAW-XMM-immediate-register": 6
+    },
+    "psraw_scope": "Accepted local-only PSRAW register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8 count with signed i16 arithmetic shifts; counts >=16 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psrld_register_normalized_forms": 1,
+    "psrld_register_rows": 11,
+    "psrld_register_rows_by_prefix": {
+      "operand_size": 11,
+      "operand_size+rex": 0
+    },
+    "psrld_register_rows_by_profile": {
+      "S2-35.42-PSRLD-XMM-immediate-register": 11
+    },
+    "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psrldq_register_normalized_forms": 2,
+    "psrldq_register_rows": 355,
+    "psrldq_register_rows_by_prefix": {
+      "operand_size": 345,
+      "operand_size+rex": 10
+    },
+    "psrldq_register_rows_by_profile": {
+      "S2-35.47-PSRLDQ-XMM-immediate-register": 355
+    },
+    "psrldq_scope": "Accepted local-only legacy register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /3, unsigned imm8; no CPL3/native/JIT/physical evidence.",
+    "psrlq_register_normalized_forms": 1,
+    "psrlq_register_rows": 5,
+    "psrlq_register_rows_by_modrm": {
+      "D0": 4,
+      "D3": 1
+    },
+    "psrlq_register_rows_by_profile": {
+      "S2-35.45-PSRLQ-XMM-immediate-register": 5
+    },
+    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "psubd_register_encoding_forms": 8,
+    "psubd_register_normalized_forms": 1,
+    "psubd_register_rows": 24,
+    "psubd_register_rows_by_profile": {
+      "S2-35.15-PSUBD-XMM-register-register": 24
+    },
+    "psubd_scope": "Accepted local-only PSUBD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST-SRC) modulo 2^32, without inter-lane borrow. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed ISA/schema/fixture checks; prior S2-35.16 corrected an early native guard, whose Linux-gated assertion was compiled but not run on this Mac host. No native/JIT/physical acceptance is implied.",
+    "psubq_register_encoding_forms": 5,
+    "psubq_register_normalized_forms": 1,
+    "psubq_register_rows": 12,
+    "psubq_register_rows_by_profile": {
+      "S2-35.17-PSUBQ-XMM-register-register": 12
+    },
+    "psubq_scope": "Accepted local-only PSUBQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; two little-endian u64 lanes independently compute (DEST-SRC) modulo 2^64. No data-memory callback; CPU_CONTRACT has no PSUBQ entry. No memory/MMX or CPL3/native/JIT/physical evidence.",
+    "psubw_register_normalized_forms": 1,
+    "psubw_register_rows": 1,
+    "psubw_register_rows_by_profile": {
+      "S2-35.7-PSUBW-XMM-register-register": 1
+    },
+    "psubw_scope": "Accepted local-only PSUBW register-register profile: mandatory 66, optional single REX.R/B byte, ModR/M.mod=3, ModR/M.reg destination and ModR/M.r/m source; eight u16 lanes subtract modulo 65536; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
+    "punpck_register_rows": 11723,
+    "pxor_xmm_xmm_rows": 3305,
+    "raw_inventory_sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1",
     "scenario_classification_frequencies": {
       "C": {
         "proven_supported": 322742,
@@ -55,265 +299,9 @@
         "unclassified": 208864
       }
     },
-    "movups_memory_rows": 23912,
-    "pxor_xmm_xmm_rows": 3305,
-    "punpck_register_rows": 11723,
-    "local_simd_logic_rows": 2162,
-    "local_simd_logic_normalized_forms": 10,
-    "local_simd_logic_rows_by_profile": {
-      "S2-34.7a-XORPS-register-register": 1261,
-      "S2-34.7b-ANDPS-register-register": 1,
-      "S2-34.7c-ORPS-register-register": 21,
-      "S2-34.7d-ANDNPS-register-register": 4,
-      "S2-35.50-PANDN-register-register": 133,
-      "S2-35.51-POR-register-register": 438,
-      "S2-35.49-PAND-XMM-register-register": 304
-    },
-    "pand_unreviewed_unclassified_rows": 0,
-    "pand_unreviewed_unclassified_forms": 0,
-    "memory_logic_unclassified_rows": 179,
-    "memory_logic_unclassified_by_signature": {
-      "por xmm,mem128": 94,
-      "pand xmm,mem128": 52,
-      "andps xmm,mem128": 16,
-      "orps xmm,mem128": 15,
-      "pandn xmm,mem128": 2
-    },
-    "local_simd_logic_scope": "Accepted local interpreter XMM register-register logic profiles XORPS/ANDPS/ORPS/ANDNPS, PAND, PANDN and POR; 2162 rows across 10 normalized forms. 179 SIMD logic memory rows remain unclassified, including 52 PAND memory rows; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "1975a4a61e67629866b2e73b4628b4f1db97bae26e27fc6d4273ae59386a9f05",
-    "pshufd_register_rows": 805,
-    "pshufd_register_normalized_forms": 2,
-    "pshufd_memory_unclassified_rows": 1,
-    "pshufd_register_rows_by_profile": {
-      "S2-35.35-PSHUFD-XMM-register-register": 805
-    },
-    "pshufd_scope": "Accepted local-only register forms; imm8 unrestricted; no MMX, REX.W/X, extra prefixes, VEX/EVEX, CPL3/native/JIT/physical evidence.",
-    "psrldq_register_rows": 355,
-    "psrldq_register_normalized_forms": 2,
-    "psrldq_register_rows_by_profile": {
-      "S2-35.47-PSRLDQ-XMM-immediate-register": 355
-    },
-    "psrldq_register_rows_by_prefix": {
-      "operand_size": 345,
-      "operand_size+rex": 10
-    },
-    "psrldq_scope": "Accepted local-only legacy register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /3, unsigned imm8; no CPL3/native/JIT/physical evidence.",
-    "pslld_register_rows": 2,
-    "pslld_register_normalized_forms": 1,
-    "pslld_register_rows_by_profile": {
-      "S2-35.41-PSLLD-XMM-immediate-register": 2
-    },
-    "pslld_register_rows_by_prefix": {
-      "operand_size": 2
-    },
-    "pslld_scope": "Accepted local-only PSLLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /6, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "psrlq_register_rows": 5,
-    "psrlq_register_normalized_forms": 1,
-    "psrlq_register_rows_by_profile": {
-      "S2-35.45-PSRLQ-XMM-immediate-register": 5
-    },
-    "psrlq_register_rows_by_modrm": {
-      "D0": 4,
-      "D3": 1
-    },
-    "psrlq_scope": "Accepted local-only PSRLQ register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "psraw_register_rows": 6,
-    "psraw_register_normalized_forms": 2,
-    "psraw_register_rows_by_profile": {
-      "S2-35.39-PSRAW-XMM-immediate-register": 6
-    },
-    "psraw_register_rows_by_prefix": {
-      "operand_size": 5,
-      "operand_size+rex": 1
-    },
-    "psraw_scope": "Accepted local-only PSRAW register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8 count with signed i16 arithmetic shifts; counts >=16 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "psrld_register_rows": 11,
-    "psrld_register_normalized_forms": 1,
-    "psrld_register_rows_by_profile": {
-      "S2-35.42-PSRLD-XMM-immediate-register": 11
-    },
-    "psrld_register_rows_by_prefix": {
-      "operand_size": 11,
-      "operand_size+rex": 0
-    },
-    "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6294071,
-    "machine_cpl3_profile_rows": 2351,
-    "psrad_register_rows": 12,
-    "psrad_register_normalized_forms": 1,
-    "psrad_register_rows_by_profile": {
-      "S2-35.43-PSRAD-XMM-immediate-register": 12
-    },
-    "psrad_register_rows_by_prefix": {
-      "operand_size": 12,
-      "operand_size+rex": 0
-    },
-    "psrad_scope": "Accepted local-only PSRAD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /4, unsigned imm8; signed i32 arithmetic shift, counts >=32 sign-fill negative lanes and clear nonnegative lanes; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "psubw_register_rows": 1,
-    "psubw_register_normalized_forms": 1,
-    "psubw_register_rows_by_profile": {
-      "S2-35.7-PSUBW-XMM-register-register": 1
-    },
-    "psubw_scope": "Accepted local-only PSUBW register-register profile: mandatory 66, optional single REX.R/B byte, ModR/M.mod=3, ModR/M.reg destination and ModR/M.r/m source; eight u16 lanes subtract modulo 65536; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "paddb_register_rows": 2,
-    "paddb_register_normalized_forms": 1,
-    "paddb_register_encoding_forms": 2,
-    "paddb_register_rows_by_profile": {
-      "S2-35.2-PADDB-XMM-register-register": 2
-    },
-    "paddb_scope": "Accepted local-only PADDB XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; 16 byte lanes add modulo 256; no MMX/memory/other widths/saturation/extra prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence.",
-    "paddw_register_rows": 2,
-    "paddw_register_normalized_forms": 1,
-    "paddw_register_encoding_forms": 1,
-    "paddw_register_rows_by_profile": {
-      "S2-35.6-PADDW-XMM-register-register": 2
-    },
-    "paddw_scope": "Accepted local-only PADDW XMM register-register profile: mandatory 66, optional one REX.R/B byte, ModR/M.mod=3; eight independent little-endian u16 lanes add modulo 65536; no MMX/memory/saturation/other widths/other prefixes/REX.W/X/VEX/EVEX or CPL3/native/JIT/physical evidence.",
-    "movsd_register_rows": 2,
-    "movsd_register_normalized_forms": 1,
-    "movsd_register_encoding_forms": 1,
-    "movsd_register_rows_by_profile": {
-      "S2-34.9a-MOVSD-XMM-register-register": 2
-    },
-    "movsd_register_scope": "Accepted local-only MOVSD XMM register-register profile: mandatory F2 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; copies raw source low qword and preserves destination high qword; F2 is opcode prefix, not REPNE. No data-memory callback, reverse MOVSD, memory/string, VEX/EVEX or CPL3/native/JIT/physical evidence.",
-    "pcmpgtb_register_rows": 3,
-    "pcmpgtb_register_normalized_forms": 2,
-    "pcmpgtb_register_encoding_forms": 3,
-    "pcmpgtb_register_rows_by_profile": {
-      "S2-35.21-PCMPGTB-XMM-register-register": 3
-    },
-    "pcmpgtb_scope": "Accepted local-only PCMPGTB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen signed i8 lanes write FF iff DEST>SRC, otherwise 00. No data-memory callback; no memory/MMX, other packed compares, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence.",
-    "pcmpeqb_register_rows": 6,
-    "pcmpeqb_register_normalized_forms": 1,
-    "pcmpeqb_register_encoding_forms": 2,
-    "pcmpeqb_register_rows_by_profile": {
-      "S2-35.18-PCMPEQB-XMM-register-register": 6
-    },
-    "pcmpeqb_scope": "Accepted local-only PCMPEQB XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; sixteen independent byte lanes write FF for equality, otherwise 00. No data-memory callback; no memory/MMX, other comparisons, additional prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence.",
-    "psubq_register_rows": 12,
-    "psubq_register_normalized_forms": 1,
-    "psubq_register_encoding_forms": 5,
-    "psubq_register_rows_by_profile": {
-      "S2-35.17-PSUBQ-XMM-register-register": 12
-    },
-    "psubq_scope": "Accepted local-only PSUBQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3, reg destination/r/m source; two little-endian u64 lanes independently compute (DEST-SRC) modulo 2^64. No data-memory callback; CPU_CONTRACT has no PSUBQ entry. No memory/MMX or CPL3/native/JIT/physical evidence.",
-    "movapd_register_rows": 14,
-    "movapd_register_normalized_forms": 1,
-    "movapd_register_encoding_forms": 7,
-    "movapd_register_rows_by_profile": {
-      "S2-34.13-MOVAPD-XMM-register-register": 14
-    },
-    "movapd_scope": "Accepted local-only MOVAPD forward XMM register-register profile: mandatory 66 with optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3, reg destination/r/m source; copies raw 128-bit source, advances RIP on success and preserves other state. No data-memory callback; SSE2/CR0/CR4 are assumptions only; no memory, reverse 0F29, MOVUPD 0F10, or CPL3/native/JIT/physical evidence.",
-    "packuswb_register_rows": 16,
-    "packuswb_register_normalized_forms": 2,
-    "packuswb_register_encoding_forms": 7,
-    "packuswb_register_rows_by_profile": {
-      "S2-35.33-PACKUSWB-XMM-register-register": 16
-    },
-    "packuswb_scope": "Accepted local-only PACKUSWB register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; signed i16 destination words then source words saturate to [0,255] into destination bytes0-7 then source bytes8-15. No memory callback; CPU_CONTRACT has no PACKUSWB entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
-    "pcmpgtd_register_rows": 40,
-    "pcmpgtd_register_normalized_forms": 1,
-    "pcmpgtd_register_encoding_forms": 18,
-    "pcmpgtd_register_rows_by_profile": {
-      "S2-35.23-PCMPGTD-XMM-register-register": 40
-    },
-    "pcmpgtd_scope": "Accepted local-only PCMPGTD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, opcode 0F 66, ModR/M.mod=3, reg destination/r/m source; four signed little-endian i32 lanes write FFFFFFFF iff DEST>SRC, otherwise 00000000. No memory callback; CPU_CONTRACT has no PCMPGTD entry; no memory/MMX or CPL3/native/JIT/physical evidence.",
-    "movaps_register_rows": 98,
-    "movaps_register_normalized_forms": 1,
-    "movaps_register_encoding_forms": 12,
-    "movaps_register_rows_by_profile": {
-      "S2-34.11-MOVAPS-XMM-register-register": 98
-    },
-    "movaps_scope": "Accepted local-only S2-34.11 MOVAPS forward XMM register-register profile: no prefix or optional one REX.R/B byte, 0F 28 /r, ModR/M.mod=3; raw 128-bit copy. No data-memory callback. Alignment/fault semantics and real #UD/#NM gates are not modeled; no memory/reverse 0F29/MOVAPD 66 or CPL3/native/JIT/physical evidence.",
-    "pcmpeqd_register_rows": 126,
-    "pcmpeqd_register_normalized_forms": 2,
-    "pcmpeqd_register_encoding_forms": 18,
-    "pcmpeqd_register_rows_by_profile": {
-      "S2-35.20-PCMPEQD-XMM-register-register": 126
-    },
-    "pcmpeqd_scope": "Accepted local-only S2-35.20 PCMPEQD XMM register-register profile: mandatory 66, optional one REX.R/B, 0F 76 /r, ModR/M.mod=3; four independent little-endian u32 lanes write FFFFFFFF for equality, otherwise zero. No data-memory callback; no memory/MMX, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; CPU_CONTRACT has no PCMPEQD entry, so only accepted plan/report scope is credited.",
-    "pmovmskb_register_rows": 7,
-    "pmovmskb_register_normalized_forms": 1,
-    "pmovmskb_register_encoding_forms": 3,
-    "pmovmskb_register_rows_by_profile": {
-      "S2-35.61-PMOVMSKB-XMM-source-GPR32-destination": 7
-    },
-    "pmovmskb_scope": "Accepted local-only PMOVMSKB XMM-to-GPR32 register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; REX.R extends GPR32 destination and REX.B extends XMM source. Low 16 bits receive byte sign bits in byte order; GPR32 write zero-extends to GPR64. Requires both x87 and SSE state; absent state refuses atomically. RIP advances on success and all other state is preserved. No data-memory callback; no MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
-    "pmuludq_register_rows": 8,
-    "pmuludq_register_normalized_forms": 1,
-    "pmuludq_register_encoding_forms": 2,
-    "pmuludq_register_rows_by_profile": {
-      "S2-35.62-PMULUDQ-XMM-register-register": 8
-    },
-    "pmuludq_scope": "Accepted local-only PMULUDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; REX.R extends destination XMM and REX.B source XMM. Unsigned dword lanes 0 and 2 are multiplied into full 64-bit products in destination lanes 0 and 1; source lanes 1 and 3 are ignored. Requires both x87 and SSE state; absent state refuses atomically. Source/destination aliasing is valid. RIP advances on success and all other state is preserved. No data-memory callback; no MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or CPL3/native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
-    "movss_register_rows": 15,
-    "movss_register_normalized_forms": 1,
-    "movss_register_encoding_forms": 5,
-    "movss_register_rows_by_profile": {
-      "S2-34.8a-MOVSS-XMM-register-register": 15
-    },
-    "movss_scope": "Accepted local-only MOVSS legacy XMM register-register profile: mandatory F3 with optional one REX.R/B byte after F3 and before 0F 10, ModR/M.mod=3; copies raw source low32 to destination low32 and preserves destination upper96. Requires both x87 and SSE state; absent state refuses atomically. No floating-point operation, MXCSR or flags change, and no data-memory callback. No MMX/memory, extra prefixes, REX.W/X, VEX/EVEX or native/JIT/physical evidence; fresh independent review covered this bounded inventory slice only.",
-    "psubd_register_rows": 24,
-    "psubd_register_normalized_forms": 1,
-    "psubd_register_encoding_forms": 8,
-    "psubd_register_rows_by_profile": {
-      "S2-35.15-PSUBD-XMM-register-register": 24
-    },
-    "psubd_scope": "Accepted local-only PSUBD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST-SRC) modulo 2^32, without inter-lane borrow. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed ISA/schema/fixture checks; prior S2-35.16 corrected an early native guard, whose Linux-gated assertion was compiled but not run on this Mac host. No native/JIT/physical acceptance is implied.",
-    "paddq_register_rows": 77,
-    "paddq_register_normalized_forms": 1,
-    "paddq_register_encoding_forms": 8,
-    "paddq_register_rows_by_profile": {
-      "S2-35.16-PADDQ-XMM-register-register": 77
-    },
-    "paddq_scope": "Accepted local-only PADDQ XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. CPU_CONTRACT has no PADDQ entry, so only accepted plan/report evidence is credited. Fresh review passed three ISA tests and one fixture; no od-testkit schema test exists. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac; no native/JIT/physical acceptance.",
-    "paddd_register_rows": 132,
-    "paddd_register_normalized_forms": 1,
-    "paddd_register_encoding_forms": 21,
-    "paddd_register_rows_by_profile": {
-      "S2-35.14-PADDD-XMM-register-register": 132
-    },
-    "paddd_scope": "Accepted local-only PADDD XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; four independent little-endian u32 lanes compute (DEST+SRC) modulo 2^32, without inter-lane carry. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh review passed three ISA tests, one schema test and one fixture. CPU_CONTRACT and accepted plan have PADDD entries; Stage 2 report has no PADDD-specific entry. Native runner has an early local-only guard; Linux-gated assertion compiled but not run on Mac. No native/JIT/physical acceptance.",
-    "pand_register_rows": 304,
-    "pand_register_normalized_forms": 2,
-    "pand_register_encoding_forms": 38,
-    "pand_register_rows_by_profile": {
-      "S2-35.49-PAND-XMM-register-register": 304
-    },
-    "pand_scope": "Accepted local-only S2-35.49 PAND XMM register-register profile: mandatory 66 with optional one REX.R/B byte, ModR/M.mod=3; raw 128-bit result is original_DEST AND original_SRC. Requires both x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Fresh PAND-only review passed three ISA checks, two testkit tests and one fixture; this new bounded review does not imply historical acceptance. No memory callback; no MMX/memory or CPL3/native/JIT/physical evidence.",
-    "movsd_rax_memory_load_rows": 3,
-    "movsd_rax_memory_load_encoding_forms": 1,
-    "movsd_rax_memory_load_rows_by_binary": {
-      "gcc-cc1": 1,
-      "gcc-collect2": 1,
-      "gcc-driver": 1
-    },
-    "movsd_rax_memory_load_scope": "Accepted S2-34.9c local-only MOVSD m64 load candidate: exact F2, optional one REX 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE2/CR0/CR4 are assumptions. Assumes successful canonical48 [RAX..RAX+7] validation and one eight-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
-    "movss_rax_memory_load_rows": 3,
-    "movss_rax_memory_load_normalized_forms": 1,
-    "movss_rax_memory_load_encoding_forms": 2,
-    "movss_rax_memory_load_rows_by_binary": {
-      "tar": 3
-    },
-    "movss_rax_memory_load_scope": "Accepted local-only S2-34.8c MOVSS m32 load candidate: exact F3, optional one REX byte 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE state and CR0/CR4 are assumptions only, with no SSE2 claim. Assumes successful canonical48 [RAX..RAX+3] validation and one four-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
-    "conditional_candidate_hit_count": 113236,
-    "conditional_local_state_gated_candidate_rows": 4,
-    "conditional_local_state_gated_candidate_frequencies": {
-      "S2-37i-MINSD-XMM-register-masked-state-gated": 4
-    },
-    "conditional_local_state_gated_candidate_rows_by_binary": {
-      "gcc-cc1": 4
-    }
-  },
-  "compact_evidence": {
-    "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "57f4a7212d9ba787b558020fb8e82d1b8d8681a2c6a922aa5020e48d1a683834",
-    "size_bytes": 1022548,
-    "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-minsd37i-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-minsd37i-rootfs-verified-pass1.json.gz",
-    "repeat_sha256": "57f4a7212d9ba787b558020fb8e82d1b8d8681a2c6a922aa5020e48d1a683834",
-    "repeat_cmp_exit_code": 0,
-    "coarse_operand_signatures": 560
+    "unclassified_normalized_forms": 205,
+    "unique_instruction_rows_with_any_conditional_candidate": 113421,
+    "unique_mnemonics": 192
   },
   "limits": [
     "Guest ELF binaries were extracted from the accepted rootfs and statically disassembled; none were executed.",
@@ -324,5 +312,27 @@
     "The two raw and compact outputs were produced from the same accepted rootfs and frozen analyzer/registry; only output paths differ. No target ELF was executed.",
     "S2-35.24–.31 matches only eight exact local interpreter XMM register-register profiles: 11,723 rows in 14 normalized forms. Fifty-three observed XMM-memory PUNPCK rows in seven forms remain unclassified. No machine CPL3/native/physical support is inferred.",
     "S2-34.7a–.7d and S2-35.50/.51 add 1,858 rows across eight normalized forms in accepted bounded local-interpreter register-register profiles only; PAND S2-35.49 remains pending independent review (304 rows/two forms unclassified), and 179 memory-form SIMD logic rows remain unclassified."
-  ]
+  ],
+  "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
+  "runs": [
+    {
+      "exit_code": 0,
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass1.json",
+      "sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1"
+    },
+    {
+      "exit_code": 0,
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-qrvw-rootfs-pass2.json",
+      "sha256": "cd2e484b4ded73e8d1086676161baac308de9016306e99c0f3b01d1c3413d6b1"
+    }
+  ],
+  "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "source_rootfs_size_bytes": 2147483648,
+  "tool": {
+    "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
+    "objdump": "x86_64-linux-gnu-objdump 2.46-3ubuntu2",
+    "package_lock": "tools/build/stage5_isa_packages.json",
+    "profile_registry": "tools/build/stage5_isa_profile_forms.json",
+    "registry_complete": false
+  }
 }

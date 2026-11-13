@@ -77,12 +77,24 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 self.assertIn(compact_sha, issue_text.splitlines()[44])
                 if full_key:
-                    self.assertIn("work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json", issue_text.splitlines()[45])
+                    self.assertIn("work/stage5/s5-21/s5-21-isa-inventory-qrvw-e-pass1.json", issue_text.splitlines()[45])
 
                 self.assertEqual(compact["normalized_instruction_form_count"], 1269)
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
+                forms = compact["normalized_instruction_forms"]
+                classified_forms = sum(
+                    1
+                    for form in forms
+                    if form["classification_frequencies"].get("proven_supported", 0) > 0
+                    and form["classification_frequencies"].get("unclassified", 0) == 0
+                )
+                unclassified_forms = sum(
+                    1 for form in forms if form["classification_frequencies"].get("unclassified", 0) > 0
+                )
+                self.assertEqual(fields["classified_normalized_forms"], classified_forms)
+                self.assertEqual(fields["unclassified_normalized_forms"], unclassified_forms)
                 self.assertEqual(fields["classified_normalized_forms"], 1064)
                 self.assertEqual(fields["unclassified_normalized_forms"], 205)
                 self.assertEqual(fields["movsd_rax_memory_load_rows"], 3)
@@ -96,23 +108,69 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
-                self.assertEqual(fields["conditional_local_state_gated_candidate_rows"], 4)
+                self.assertEqual(fields["conditional_local_state_gated_candidate_rows"], 266)
                 self.assertEqual(fields["conditional_local_state_gated_candidate_frequencies"], {
                     "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                    "S2-37q-CVTSI2SD-register-state-gated": 168,
+                    "S2-37r-CVTSI2SS-register-state-gated": 50,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
                 })
-                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 113159 if full_key else 113219)
-                self.assertEqual(fields["conditional_candidate_hit_count"], 113236 if full_key else 113296)
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 113421 if full_key else 113481)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 113498 if full_key else 113558)
                 self.assertEqual(fields["conditional_cpl0_candidate_hits"], 113232 if full_key else 113292)
                 self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
-                self.assertEqual(compact["binaries"]["gcc-cc1"]["conditional_local_state_gated_candidate_frequencies"], {
-                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
-                })
+                expected_by_binary = {
+                    "bash": {"S2-37q-CVTSI2SD-register-state-gated": 1},
+                    "dash": {"S2-37q-CVTSI2SD-register-state-gated": 6},
+                    "tar": {
+                        "S2-37q-CVTSI2SD-register-state-gated": 16,
+                        "S2-37r-CVTSI2SS-register-state-gated": 10,
+                        "S2-37v-COMISS-UCOMISS-register-state-gated": 8,
+                        "S2-37w-COMISD-UCOMISD-register-state-gated": 11,
+                    },
+                    "gcc-driver": {"S2-37q-CVTSI2SD-register-state-gated": 17, "S2-37w-COMISD-UCOMISD-register-state-gated": 2},
+                    "gcc-cc1": {
+                        "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                        "S2-37q-CVTSI2SD-register-state-gated": 123,
+                        "S2-37r-CVTSI2SS-register-state-gated": 40,
+                        "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
+                        "S2-37w-COMISD-UCOMISD-register-state-gated": 21,
+                    },
+                    "gcc-collect2": {"S2-37q-CVTSI2SD-register-state-gated": 1},
+                    "gcc-ld-bfd": {"S2-37q-CVTSI2SD-register-state-gated": 4},
+                }
+                self.assertEqual({name: item["conditional_local_state_gated_candidate_frequencies"]
+                                  for name, item in compact["binaries"].items()
+                                  if item["conditional_local_state_gated_candidate_frequencies"]}, expected_by_binary)
+                if "conditional_local_state_gated_candidate_rows_by_binary" in fields:
+                    self.assertEqual(fields["conditional_local_state_gated_candidate_rows_by_binary"], {
+                        "bash": 1, "dash": 6, "gcc-cc1": 190, "gcc-collect2": 1,
+                        "gcc-driver": 19, "gcc-ld-bfd": 4, "tar": 45,
+                    })
                 self.assertEqual(compact["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
                     "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                    "S2-37q-CVTSI2SD-register-state-gated": 152,
+                    "S2-37r-CVTSI2SS-register-state-gated": 40,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 23,
                 })
                 self.assertEqual(compact["scenarios"]["C"]["conditional_local_candidate_frequencies"], {
                     "S2-37i-MINSD-XMM-register-masked-state-gated": 0,
+                    "S2-37q-CVTSI2SD-register-state-gated": 23,
+                    "S2-37r-CVTSI2SS-register-state-gated": 10,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 8,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 11,
                 })
+                self.assertEqual(sum(compact["conditional_local_state_gated_candidate_frequencies"].values()), 266)
+                conditional_signatures = {"cvtsi2sd xmm,r32", "cvtsi2sd xmm,r64", "cvtsi2ss xmm,r32",
+                                          "cvtsi2ss xmm,r64", "comiss xmm,xmm", "comisd xmm,xmm", "ucomisd xmm,xmm"}
+                for form in compact["normalized_instruction_forms"]:
+                    if form["instruction_form"]["operand_signature"] in conditional_signatures:
+                        candidate_total = sum(form["conditional_local_candidate_frequencies"].values())
+                        if candidate_total:
+                            self.assertEqual(form["classification_frequencies"], {"unclassified": form["count"]})
+                            self.assertEqual(form["evidence_scope_frequencies"], {})
                 self.assertEqual(fields["local_simd_logic_rows"], 2162)
                 self.assertEqual(fields["local_simd_logic_normalized_forms"], 10)
                 self.assertEqual(sum(fields["local_simd_logic_rows_by_profile"].values()), 2162)
@@ -164,9 +222,16 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("6 294 355", local_scope_line)
                 self.assertIn("6 294 071", local_scope_line)
                 conditional_line = next(line for line in report_lines if line.startswith("| Local state-gated conditional candidate |"))
-                self.assertIn("4 MINSD register rows", conditional_line)
-                self.assertIn("113 296 hits / 113 219 unique rows", conditional_line)
-                self.assertIn("runtime MXCSR was not measured", conditional_line)
+                self.assertIn("5 profile families / 10 normalized forms / 95 exact keys", conditional_line)
+                self.assertIn("MINSD S2-37i contributes 4 unclassified rows", conditional_line)
+                self.assertIn("both raw x87 and SSE state are required", conditional_line)
+                self.assertIn("For q/r/v/w only", conditional_line)
+                self.assertIn("113 498 generic conditional hits /113 421 unique rows", conditional_line)
+                self.assertIn("No runtime CPU/MXCSR state is inferred", conditional_line)
+                self.assertEqual(
+                    sum("Conditional candidate follow-up (2026-11-13): S2-37q/r/v/w" in line for line in report_lines),
+                    1,
+                )
                 movsd_memory_report = next(line for line in report_lines if line.startswith("The accepted local-only S2-34.9c"))
                 self.assertIn("three bounded local-profile matches and 85 rows remain unclassified", movsd_memory_report)
                 self.assertIn("six-profile accepted local SIMD logic group of 1 858 rows plus PAND 304 rows (2 162 / 10 forms total)", local_scope_line)
@@ -210,21 +275,17 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("MOVSD S2-34.9c adds three exact `F2 0F 10 00` `[RAX]` m64 load rows", issue_section)
                 self.assertIn("3 supported and 85 unclassified", issue_section)
                 self.assertIn("four ISA checks (three load_rax plus decoder), one schema test and one fixture", issue_section)
-                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json", issue_section)
+                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-qrvw-e-pass1.json", issue_section)
                 if not full_key:
-                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json")
+                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-qrvw-e-pass1.json")
                 stage2_plan = (repo_root / "docs/plans/STAGE_2.md").read_text()
                 self.assertIn("Independent review was pending at this implementation check", stage2_plan)
                 self.assertIn("fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture", stage2_plan)
                 self.assertIn("gcc-cc1 (63), gcc-collect2 (5), gcc-driver (5), gcc-ld.bfd (1), and tar (3)", issue_section)
                 self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
                 self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
-                for digest in (
-                    "1975a4a61e67629866b2e73b4628b4f1db97bae26e27fc6d4273ae59386a9f05",
-                    "57f4a7212d9ba787b558020fb8e82d1b8d8681a2c6a922aa5020e48d1a683834",
-                    "55a26120a8d637a0503166f8a45602984e9f34607f342f3970d0f7e98e0b1a95",
-                    "a5b18254790f90edbffcb51c75590253eea3fd042871412cfda4b6fc49182ba9",
-                ):
+                raw_sha = manifest["runs"][0]["sha256"] if full_key else fields["raw_inventory_sha256"]
+                for digest in (raw_sha, compact_sha):
                     self.assertIn(digest, issue_section)
                 self.assertIn("6 296 422 bounded-profile evidence, 213 978 unclassified", issue_section)
                 self.assertIn("6 296 706 evidence, 214 039 unclassified", issue_section)
@@ -977,6 +1038,18 @@ class NormalizedFormTests(unittest.TestCase):
         self.assertEqual(result["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
             "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
         })
+
+    def test_local_state_gated_candidates_cannot_be_supported_or_scoped(self) -> None:
+        candidate = exact_form([], "C8", {"form": "none", "size": None, "segment": None}, 1, "gcc-cc1", "proven_supported")
+        candidate["conditional_local_candidate_frequencies"] = {"S2-37q-CVTSI2SD-register-state-gated": 1}
+        report = {"inventory": {"encoding_forms": [candidate]}}
+        with self.assertRaisesRegex(ValueError, "must remain unclassified and outside evidence scopes"):
+            exporter.aggregate(report)
+
+        candidate["classification_frequencies"] = {"unclassified": 1}
+        candidate["evidence_scope_frequencies"] = {"local_interpreter_profile": 1}
+        with self.assertRaisesRegex(ValueError, "must remain unclassified and outside evidence scopes"):
+            exporter.aggregate(report)
 
     def test_e_static_inventory_is_separate_from_runtime_generated_code(self) -> None:
         exact = exact_form(["48"], "00", {"form": "base_only", "size": 64, "segment": None}, 7, "stage5-e-static", "unclassified")

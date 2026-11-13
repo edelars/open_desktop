@@ -19,6 +19,107 @@ SPEC.loader.exec_module(analyzer)
 
 
 class ParseObjdumpTests(unittest.TestCase):
+    def test_s2_37_q_r_v_w_conditional_candidates_are_exact_and_unclassified(self) -> None:
+        gpr64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"] + [f"r{i}" for i in range(8, 16)]
+        gpr32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"] + [f"r{i}d" for i in range(8, 16)]
+
+        for mnemonic, mandatory, opcode, source_width, candidate in (
+            ("cvtsi2sd", 0xF2, 0x2A, "r32", "S2-37q-CVTSI2SD-register-state-gated"),
+            ("cvtsi2sd", 0xF2, 0x2A, "r64", "S2-37q-CVTSI2SD-register-state-gated"),
+            ("cvtsi2ss", 0xF3, 0x2A, "r32", "S2-37r-CVTSI2SS-register-state-gated"),
+            ("cvtsi2ss", 0xF3, 0x2A, "r64", "S2-37r-CVTSI2SS-register-state-gated"),
+        ):
+            gprs = gpr64 if source_width == "r64" else gpr32
+            for dest in range(16):
+                for src in range(16):
+                    rex_w = 8 if source_width == "r64" else 0
+                    rex_bits = rex_w | (4 if dest >= 8 else 0) | (1 if src >= 8 else 0)
+                    rex = 0x40 | rex_bits
+                    use_rex = rex_bits != 0
+                    data = [mandatory] + ([rex] if use_rex else []) + [0x0F, opcode, 0xC0 | ((dest & 7) << 3) | (src & 7)]
+                    encoded = " ".join(f"{byte:02x}" for byte in data)
+                    row = analyzer.parse_row(f"  401000: {encoded} {mnemonic} xmm{dest},{gprs[src]}")
+                    self.assertIsNotNone(row)
+                    self.assertEqual(analyzer.local_state_gated_conditional_candidate(row), candidate, encoded)
+
+        for precision, names in (("ss", ("comiss", "ucomiss")), ("sd", ("comisd", "ucomisd"))):
+            for mnemonic in names:
+                expected = ("S2-37v-COMISS-UCOMISS-register-state-gated" if precision == "ss"
+                            else "S2-37w-COMISD-UCOMISD-register-state-gated")
+                opcode = 0x2F if mnemonic.startswith("comi") and not mnemonic.startswith("u") else 0x2E
+                mandatory = [0x66] if precision == "sd" else []
+                for dest in range(16):
+                    for src in range(16):
+                        ext = (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                        data = mandatory + ([0x40 | ext] if ext else []) + [0x0F, opcode, 0xC0 | ((dest & 7) << 3) | (src & 7)]
+                        encoded = " ".join(f"{byte:02x}" for byte in data)
+                        row = analyzer.parse_row(f"  401000: {encoded} {mnemonic} xmm{dest},xmm{src}")
+                        self.assertIsNotNone(row)
+                        self.assertEqual(analyzer.local_state_gated_conditional_candidate(row), expected, encoded)
+
+        rejected = [
+            ("cvtsi2sd", "cvtsi2sd xmm1,rax", "f3 0f 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,rax", "f2 0f 2a c8"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,eax", "0f 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,eax", "0f 2a c8"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,eax", "f2 40 0f 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,eax", "f3 40 0f 2a c8"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,eax", "f2 48 0f 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,rax", "f3 41 0f 2a c8"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,DWORD PTR [rax]", "f2 0f 2a 08"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,DWORD PTR [rax]", "f3 0f 2a 08"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,rax", "c5 fb 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,rax", "62 f1 7f 08 2a c8"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,rax", "f2 f2 0f 2a c8"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,rax", "48 f3 0f 2a c8"),
+            ("comiss", "comiss xmm1,xmm0", "40 0f 2f c8"),
+            ("comiss", "comiss xmm1,xmm0", "66 0f 2f c8"),
+            ("comiss", "comiss xmm1,xmm0", "48 0f 2f c8"),
+            ("comiss", "comiss xmm1,xmm0", "42 0f 2f c8"),
+            ("ucomiss", "ucomiss xmm1,xmm0", "0f 2f c8"),
+            ("comisd", "comisd xmm1,xmm0", "66 40 0f 2f c8"),
+            ("ucomisd", "ucomisd xmm1,xmm0", "66 0f 2f c8"),
+            ("comisd", "comisd xmm1,QWORD PTR [rax]", "66 0f 2f 08"),
+            ("comiss", "comiss xmm1,DWORD PTR [rax]", "0f 2f 08"),
+            ("ucomisd", "ucomisd xmm1,xmm0", "44 66 0f 2e c8"),
+            ("comisd", "comisd xmm1,xmm0", "66 66 0f 2f c8"),
+            ("comisd", "comisd xmm1,xmm0", "66 48 0f 2f c8"),
+            ("comisd", "comisd xmm1,xmm0", "0f 2f c8"),
+            ("ucomisd", "ucomisd xmm1,xmm0", "66 42 0f 2e c8"),
+            ("comiss", "comiss xmm1,xmm0", "c5 f8 2f c8"),
+            ("ucomisd", "ucomisd xmm1,xmm0", "62 f1 7f 08 2e c8"),
+            ("comisd", "comisd xmm1,xmm0", "66 0f 2f"),
+            ("ucomisd", "ucomisd xmm1,xmm0", "66 0f 2e c8 90"),
+            ("cvtsi2sd", "cvtsi2sd xmm1,rax", "f2 0f 2a"),
+            ("cvtsi2ss", "cvtsi2ss xmm1,eax", "f3 0f 2a c8 90"),
+        ]
+        for _mnemonic, assembly, byte_values in rejected:
+            row = analyzer.parse_row(f"  401000: {byte_values} {assembly}")
+            self.assertIsNotNone(row, byte_values)
+            self.assertIsNone(analyzer.local_state_gated_conditional_candidate(row), byte_values)
+
+        registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
+        candidates = registry["conditional_local_state_gated_candidates"]
+        by_id = {item["candidate_id"]: item for item in candidates}
+        self.assertEqual(len(by_id), 5)
+        for candidate in ("S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
+                          "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated"):
+            gate = by_id[candidate]["gate"]
+            self.assertIn("0xffff0040", gate)
+            self.assertIn("rejects an x87 snapshot", gate)
+            self.assertIn("architectural x87 prohibition", gate)
+            self.assertTrue(by_id[candidate]["sse_payload_required"])
+            self.assertTrue(by_id[candidate]["sse_isa_required"])
+            self.assertEqual(by_id[candidate]["x87_payload_allowed_by_schema"], False)
+            self.assertEqual(by_id[candidate]["x87_payload_restriction_is_architectural"], False)
+            self.assertIn("CR0.EM=0", by_id[candidate]["control_gate"])
+            self.assertIn("CR4.OSFXSR=1", by_id[candidate]["control_gate"])
+            self.assertEqual(by_id[candidate]["status"], "conditional_candidate_only_unclassified")
+        self.assertTrue(by_id["S2-37q-CVTSI2SD-register-state-gated"]["sse2_isa_required"])
+        self.assertFalse(by_id["S2-37r-CVTSI2SS-register-state-gated"]["sse2_isa_required"])
+        self.assertTrue(by_id["S2-37w-COMISD-UCOMISD-register-state-gated"]["sse2_isa_required"])
+        self.assertFalse(registry["registry_complete"])
+
     def test_minsd_masked_register_local_candidate_is_exact_and_state_gated(self) -> None:
         for dest in range(16):
             for src in range(16):
@@ -62,14 +163,14 @@ class ParseObjdumpTests(unittest.TestCase):
 
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = registry["conditional_local_state_gated_candidates"]
-        self.assertEqual(len(candidates), 1)
-        gate = candidates[0]["gate"]
+        candidate = next(item for item in candidates if item["candidate_id"] == "S2-37i-MINSD-XMM-register-masked-state-gated")
+        gate = candidate["gate"]
         self.assertIn("0xffff9fc0)==0x1f80", gate)
         self.assertIn("both raw x87 and SSE state", gate)
         self.assertIn("Runtime MXCSR is unmeasured", gate)
-        self.assertEqual(candidates[0]["status"], "conditional_candidate_only_unclassified")
+        self.assertEqual(candidate["status"], "conditional_candidate_only_unclassified")
         self.assertFalse(registry["registry_complete"])
-        self.assertNotIn(candidates[0]["candidate_id"], {profile["task"] for profile in registry["profiles"]})
+        self.assertNotIn(candidate["candidate_id"], {profile["task"] for profile in registry["profiles"]})
 
     def test_register_and_memory_forms_keep_operand_width(self) -> None:
         mov = analyzer.parse_row("  401000: 48 89 e5 mov rbp,rsp")
