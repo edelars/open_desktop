@@ -12,15 +12,15 @@ import annotate_stage5_cpl0_candidates as annotate
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE_COMMIT = "c8ecd0264c138102fe7300f5a7f97005ba8eac6b"
+BASE_COMMIT = "45401a1fcb5487fa83b12b3c26abda4dd137711e"
 INVENTORIES = {
     "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": (
-        "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
         "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
+        "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
     ),
     "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": (
-        "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
         "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+        "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
     ),
 }
 
@@ -226,6 +226,8 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
                     record for record in data["normalized_instruction_forms"]
                     if record["instruction_form"]["operand_signature"] == "tzcnt r64,r64"
                 )
+                exact["conditional_candidate_frequencies"].pop(candidate, None)
+                normalized["conditional_candidate_frequencies"].pop(candidate, None)
                 exact_mutation(exact["dimensions"])
                 normalized_mutation(normalized["instruction_form"])
                 self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
@@ -242,11 +244,11 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
         candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
         expected = {
             "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": {
-                "cpl0": 115647, "all": 116155, "unique": 116078,
+                "cpl0": 115683, "all": 116191, "unique": 116114,
                 "classification": {"proven_supported": 6296422, "unclassified": 213978},
             },
             "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": {
-                "cpl0": 115707, "all": 116215, "unique": 116138,
+                "cpl0": 115743, "all": 116251, "unique": 116174,
                 "classification": {"proven_supported": 6296706, "unclassified": 214039},
             },
         }
@@ -308,6 +310,8 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
             if record["instruction_form"]["operand_signature"] == "tzcnt r32,r32"
             and record["instruction_form"]["semantic_prefixes"] == ["rep"]
         )
+        exact["conditional_candidate_frequencies"].pop(candidate, None)
+        normalized["conditional_candidate_frequencies"].pop(candidate, None)
         exact["dimensions"]["prefix_bytes"] = ["F3", "49"]
         exact["dimensions"]["instruction_length"] = 5
         normalized["instruction_form"]["semantic_prefixes"] = ["rep", "rex_w"]
@@ -329,6 +333,7 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
             if record["dimensions"]["operand_signature"] == "tzcnt r64,r64"
             and record["dimensions"]["prefix_bytes"] == ["F3", "48"]
         )
+        exact["conditional_candidate_frequencies"].pop(candidate, None)
         dimensions = exact["dimensions"]
         dimensions["prefix_bytes"] = ["F3"]
         dimensions["instruction_length"] = 4
@@ -340,6 +345,145 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
                 annotate.annotate(target)
             self.assertEqual(target.read_bytes(), mutated)
+
+    def test_lock_xadd_candidates_reject_mismatched_encodings(self) -> None:
+        mutations = {
+            "missing_lock": (
+                lambda d: d.update(prefix_bytes=[]),
+                lambda f: f.update(semantic_prefixes=[]),
+            ),
+            "extra_prefix": (
+                lambda d: d.update(prefix_bytes=["F0", "66"], instruction_length=6),
+                lambda f: f.update(semantic_prefixes=["lock", "operand_size"]),
+            ),
+            "wrong_opcode": (
+                lambda d: d.update(opcode_bytes=["0F", "C0"]),
+                lambda f: f.update(opcode_bytes=["0F", "C0"]),
+            ),
+            "wrong_length": (
+                lambda d: d.update(instruction_length=6),
+                lambda f: None,
+            ),
+            "wrong_modrm_mode": (
+                lambda d: d["modrm"].update(mod=3, raw="C8"),
+                lambda f: f.update(modrm_mode="register"),
+            ),
+            "unobserved_modrm": (
+                lambda d: d["modrm"].update(raw="49"),
+                lambda f: None,
+            ),
+            "modrm_reg_field": (
+                lambda d: d["modrm"].update(reg=7),
+                lambda f: None,
+            ),
+            "modrm_rm_field": (
+                lambda d: d["modrm"].update(rm=3),
+                lambda f: None,
+            ),
+            "sib_present": (
+                lambda d: d.update(sib={"base": 0, "index": 1, "scale": 1}),
+                lambda f: f.update(address={"form": "sib", "segment": None, "size": 64}),
+            ),
+            "wrong_address_size": (
+                lambda d: d.update(address={"form": "base_only", "segment": None, "size": 32}),
+                lambda f: f.update(address={"form": "base_only", "segment": None, "size": 32}),
+            ),
+            "segment_override": (
+                lambda d: d.update(address={"form": "base_only", "segment": "FS", "size": 64}),
+                lambda f: f.update(address={"form": "base_only", "segment": "FS", "size": 64}),
+            ),
+        }
+        candidate = "S4-38L7ay-LOCK-XADD-m32-r32-base-only"
+        for name, (exact_mutation, normalized_mutation) in mutations.items():
+            with self.subTest(mutation=name):
+                data = self._baseline_payload("docs/reports/data/stage5/s5-21-isa-inventory.json.gz")
+                exact = next(record for record in data["exact_encoding_forms"]
+                             if record["dimensions"]["operand_signature"] == "lock xadd mem32,r32")
+                normalized = next(record for record in data["normalized_instruction_forms"]
+                                  if record["instruction_form"]["operand_signature"] == "lock xadd mem32,r32")
+                exact_mutation(exact["dimensions"])
+                normalized_mutation(normalized["instruction_form"])
+                self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
+                self.assertNotIn(candidate, normalized["conditional_candidate_frequencies"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "inventory.json.gz"
+                    mutated = gzip.compress(json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), mtime=0)
+                    target.write_bytes(mutated)
+                    with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
+                        annotate.annotate(target)
+                    self.assertEqual(target.read_bytes(), mutated)
+
+    def test_lock_xadd_candidate_counts_and_classifications(self) -> None:
+        candidate = "S4-38L7ay-LOCK-XADD-m32-r32-base-only"
+        expected = {
+            "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": {
+                "cpl0": 115683, "all": 116191, "unique": 116114,
+                "classification": {"proven_supported": 6296422, "unclassified": 213978},
+            },
+            "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": {
+                "cpl0": 115743, "all": 116251, "unique": 116174,
+                "classification": {"proven_supported": 6296706, "unclassified": 214039},
+            },
+        }
+        for relative, want in expected.items():
+            baseline = subprocess.run(["git", "show", f"{BASE_COMMIT}:{relative}"], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "inventory.json.gz"
+                target.write_bytes(baseline)
+                annotate.annotate(target)
+                data = json.loads(gzip.decompress(target.read_bytes()))
+            self.assertEqual(data["conditional_cpl0_candidate_hit_count"], want["cpl0"])
+            self.assertEqual(data["conditional_candidate_hit_count"], want["all"])
+            self.assertEqual(data["exact_instruction_rows_with_any_conditional_candidate"], want["unique"])
+            self.assertEqual(data["conditional_candidate_supported_overlap_rows"], 40)
+            self.assertEqual(data["classification_frequencies"], want["classification"])
+            self.assertEqual(data["conditional_cpl0_candidate_frequencies"][candidate], 36)
+            self.assertEqual(data["binaries"]["gcc-cc1"]["conditional_cpl0_candidate_frequencies"][candidate], 12)
+            self.assertEqual(data["binaries"]["gcc-collect2"]["conditional_cpl0_candidate_frequencies"][candidate], 12)
+            self.assertEqual(data["binaries"]["gcc-driver"]["conditional_cpl0_candidate_frequencies"][candidate], 12)
+            self.assertTrue(all(record["classification_frequencies"] == {"unclassified": record["count"]}
+                                and not record["evidence_scope_frequencies"]
+                                for record in data["exact_encoding_forms"]
+                                if candidate in record["conditional_candidate_frequencies"]))
+            matches = [record for record in data["exact_encoding_forms"]
+                       if candidate in record["conditional_candidate_frequencies"]]
+            self.assertEqual(len(matches), 6)
+            self.assertEqual(sum(record["count"] for record in matches), 36)
+
+    def test_scenario_candidate_summaries_match_exact_records(self) -> None:
+        candidate = "S4-38L7ay-LOCK-XADD-m32-r32-base-only"
+        for relative in INVENTORIES:
+            baseline = subprocess.run(["git", "show", f"{BASE_COMMIT}:{relative}"], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "inventory.json.gz"
+                target.write_bytes(baseline)
+                annotate.annotate(target)
+                data = json.loads(gzip.decompress(target.read_bytes()))
+            exact = data["exact_encoding_forms"]
+            all_cpl0 = {key for record in exact for key in record["conditional_candidate_frequencies"]}
+            all_local = {key for record in exact for key in record.get("conditional_local_candidate_frequencies", {})}
+            for scenario_name in ("C", "D"):
+                scenario = data["scenarios"][scenario_name]
+                binaries = scenario["binaries"]
+                cpl0 = {key: 0 for key in all_cpl0}
+                local = {key: 0 for key in all_local}
+                instruction_rows = 0
+                for record in exact:
+                    binary_rows = sum(record["binary_frequencies"].get(binary, 0) for binary in binaries)
+                    cpl0_candidates = record["conditional_candidate_frequencies"]
+                    local_candidates = record.get("conditional_local_candidate_frequencies", {})
+                    if cpl0_candidates or local_candidates:
+                        instruction_rows += binary_rows
+                    for key in cpl0_candidates:
+                        cpl0[key] += binary_rows
+                    for key in local_candidates:
+                        local[key] += binary_rows
+                self.assertEqual(scenario["conditional_candidate_frequencies"], cpl0)
+                self.assertEqual(scenario["conditional_local_candidate_frequencies"], local)
+                self.assertEqual(scenario["conditional_candidate_instruction_rows"], instruction_rows)
+            self.assertEqual(data["scenarios"]["C"]["conditional_candidate_frequencies"][candidate], 0)
+            self.assertEqual(data["scenarios"]["D"]["conditional_candidate_frequencies"][candidate], 36)
+            self.assertEqual(data["scenarios"]["C"]["conditional_candidate_frequencies"]["S4-38L6d-LEAVE-bare-C9"], 1054)
 
 
 if __name__ == "__main__":

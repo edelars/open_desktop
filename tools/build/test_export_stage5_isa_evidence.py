@@ -49,8 +49,8 @@ class NormalizedFormTests(unittest.TestCase):
     def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         cases = (
-            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9"),
-            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239"),
         )
         expected_binary_counts = {
             "S4-38L9b-PAUSE-exact-F3-90": {"gcc-cc1": 2, "gcc-collect2": 2, "gcc-driver": 2},
@@ -60,6 +60,9 @@ class NormalizedFormTests(unittest.TestCase):
             },
             "S4-38L4g-REP-BSF-register-BMI1-clear": {
                 "gcc-as": 5, "gcc-cc1": 391, "gcc-driver": 1, "gcc-ld-bfd": 1,
+            },
+            "S4-38L7ay-LOCK-XADD-m32-r32-base-only": {
+                "gcc-cc1": 12, "gcc-collect2": 12, "gcc-driver": 12,
             },
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,10 +120,11 @@ class NormalizedFormTests(unittest.TestCase):
                 repeat_sha = compact_fields.get("repeat_sha256", compact_fields.get("compact_repeat_sha256"))
                 self.assertEqual(repeat_sha, compact_sha)
                 annotation = manifest["candidate_annotation_lineage"]
-                self.assertEqual(annotation["baseline_commit"], "c8ecd0264c138102fe7300f5a7f97005ba8eac6b")
-                self.assertEqual(annotation["added_candidate"]["candidate_id"], "S4-38L4g-REP-BSF-register-BMI1-clear")
-                self.assertEqual(annotation["added_candidate"]["rows"], 398)
-                self.assertEqual(annotation["added_candidate"]["exact_encoding_keys"], 72)
+                self.assertEqual(annotation["baseline_commit"], "45401a1fcb5487fa83b12b3c26abda4dd137711e")
+                self.assertEqual(annotation["added_candidate"]["candidate_id"], "S4-38L7ay-LOCK-XADD-m32-r32-base-only")
+                self.assertEqual(annotation["added_candidate"]["rows"], 36)
+                self.assertEqual(annotation["added_candidate"]["exact_encoding_keys"], 6)
+                self.assertIn("Long64", annotation["added_candidate"]["condition"])
                 self.assertIn("Long64", annotation["added_candidate"]["condition"])
                 self.assertEqual(annotation["latest_compact_sha256"], compact_sha)
                 self.assertEqual(annotation["compact_payload_repeat_sha256"], compact_sha)
@@ -196,10 +200,17 @@ class NormalizedFormTests(unittest.TestCase):
                     "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
                     "S2-37be-CVTSD2SS-register-state-gated": 1,
                 })
-                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 116078 if full_key else 116138)
-                self.assertEqual(fields["conditional_candidate_hit_count"], 116155 if full_key else 116215)
-                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115647 if full_key else 115707)
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 116114 if full_key else 116174)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 116191 if full_key else 116251)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115683 if full_key else 115743)
                 self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
+                self.assertEqual(fields["scenario_candidate_summaries"], {
+                    name: {
+                        key: compact["scenarios"][name][key]
+                        for key in ("conditional_candidate_frequencies", "conditional_local_candidate_frequencies", "conditional_candidate_instruction_rows")
+                    }
+                    for name in ("C", "D")
+                })
                 expected_by_binary = {
                     "bash": {"S2-37q-CVTSI2SD-register-state-gated": 1},
                     "dash": {"S2-37q-CVTSI2SD-register-state-gated": 6, "S2-37ae-CVTTSD2SI-register-state-gated": 4},
@@ -298,6 +309,7 @@ class NormalizedFormTests(unittest.TestCase):
                     "S2-37ay-DIVSS-register-state-gated": 0,
                     "S2-37bb-ADDSD-register-state-gated": 7,
                     "S2-37bc-ADDSS-register-state-gated": 5,
+                    "S2-37be-CVTSD2SS-register-state-gated": 0,
                 })
                 self.assertEqual(sum(compact["conditional_local_state_gated_candidate_frequencies"].values()), 508)
                 conditional_signatures = {"cvtsi2sd xmm,r32", "cvtsi2sd xmm,r64", "cvtsi2ss xmm,r32",

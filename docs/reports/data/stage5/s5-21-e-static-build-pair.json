@@ -40,13 +40,13 @@
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
     "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json",
-    "compact_generation_command": "Historical compact export source (not rerun in this slice): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json; latest compact payload is reproducibly derived from committed checkpoint c8ecd02 with tools/build/annotate_stage5_cpl0_candidates.py. No analyzer rerun or target ELF execution.",
-    "compact_inventory_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "compact_generation_command": "Historical compact export source (preserved): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json; final compact payload reproducibly derived from committed checkpoint 45401a1 with tools/build/annotate_stage5_cpl0_candidates.py. No analyzer rerun or target ELF execution.",
+    "compact_inventory_sha256": "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_repeat_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
-    "conditional_candidate_hit_count": 116215,
+    "compact_repeat_sha256": "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
+    "conditional_candidate_hit_count": 116251,
     "conditional_candidate_supported_overlap_rows": 40,
-    "conditional_cpl0_candidate_hits": 115707,
+    "conditional_cpl0_candidate_hits": 115743,
     "conditional_local_state_gated_candidate_frequencies": {
       "S2-37ad-CVTTSS2SI-register-state-gated": 8,
       "S2-37ae-CVTTSD2SI-register-state-gated": 28,
@@ -57,13 +57,13 @@
       "S2-37ay-DIVSS-register-state-gated": 13,
       "S2-37bb-ADDSD-register-state-gated": 46,
       "S2-37bc-ADDSS-register-state-gated": 15,
+      "S2-37be-CVTSD2SS-register-state-gated": 1,
       "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
       "S2-37q-CVTSI2SD-register-state-gated": 168,
       "S2-37r-CVTSI2SS-register-state-gated": 50,
       "S2-37t-CVTSS2SD-register-state-gated": 19,
       "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
-      "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
-      "S2-37be-CVTSD2SS-register-state-gated": 1
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
     },
     "conditional_local_state_gated_candidate_rows": 508,
     "conditional_local_state_gated_candidate_rows_by_binary": {
@@ -374,10 +374,10 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 116138,
+    "unique_instruction_rows_with_any_conditional_candidate": 116174,
     "unique_mnemonics": 192,
     "date": "2026-11-13",
-    "exact_instruction_rows_with_any_conditional_candidate": 116138,
+    "exact_instruction_rows_with_any_conditional_candidate": 116174,
     "conditional_local_state_gated_candidate_unique_rows": 508,
     "conditional_cpl0_candidate_frequencies": {
       "S2-45-CPUID": 77,
@@ -389,6 +389,7 @@
       "S4-38L6a-PREFETCHNTA-base-only": 3,
       "S4-38L6a-PREFETCHT0-base-only": 3,
       "S4-38L6d-LEAVE-bare-C9": 2005,
+      "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 36,
       "S4-38L7i-FS-GS-qword-load": 1214,
       "S4-38L7j-FS-GS-qword-SUB": 1862,
       "S4-38L7k-LOCK-CMPXCHG-qword": 36,
@@ -397,29 +398,115 @@
       "S4-38L9b-PAUSE-exact-F3-90": 6,
       "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
     },
-    "conditional_cpl0_candidate_hit_count": 115707,
+    "conditional_cpl0_candidate_hit_count": 115743,
     "prefetch_candidate_rows": {
       "S4-38L6a-PREFETCHNTA-base-only": 3,
       "S4-38L6a-PREFETCHT0-base-only": 3
+    },
+    "lock_xadd_candidate_rows": {
+      "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 36
+    },
+    "scenario_candidate_summaries": {
+      "C": {
+        "conditional_candidate_frequencies": {
+          "S2-45-CPUID": 0,
+          "S2-45-HLT": 3,
+          "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 3806,
+          "S4-20c kernel tail (CPL0 gate conditional)": 0,
+          "S4-38L4d-multi-byte-memory-NOP": 14705,
+          "S4-38L4g-REP-BSF-register-BMI1-clear": 0,
+          "S4-38L6a-PREFETCHNTA-base-only": 0,
+          "S4-38L6a-PREFETCHT0-base-only": 0,
+          "S4-38L6d-LEAVE-bare-C9": 1054,
+          "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 0,
+          "S4-38L7i-FS-GS-qword-load": 689,
+          "S4-38L7j-FS-GS-qword-SUB": 813,
+          "S4-38L7k-LOCK-CMPXCHG-qword": 0,
+          "S4-38L7y-LOCK-CMPXCHG-dword": 0,
+          "S4-38L7z-LOCK-ADD-memory-immediate": 0,
+          "S4-38L9b-PAUSE-exact-F3-90": 0,
+          "composed_cpl0_profile_candidate; control/state/port gates unresolved": 0
+        },
+        "conditional_local_candidate_frequencies": {
+          "S2-37ad-CVTTSS2SI-register-state-gated": 6,
+          "S2-37ae-CVTTSD2SI-register-state-gated": 10,
+          "S2-37ap-SUBSD-register-state-gated": 8,
+          "S2-37at-MULSD-register-state-gated": 4,
+          "S2-37au-MULSS-register-state-gated": 5,
+          "S2-37ax-DIVSD-register-state-gated": 9,
+          "S2-37ay-DIVSS-register-state-gated": 0,
+          "S2-37bb-ADDSD-register-state-gated": 7,
+          "S2-37bc-ADDSS-register-state-gated": 5,
+          "S2-37be-CVTSD2SS-register-state-gated": 0,
+          "S2-37i-MINSD-XMM-register-masked-state-gated": 0,
+          "S2-37q-CVTSI2SD-register-state-gated": 23,
+          "S2-37r-CVTSI2SS-register-state-gated": 10,
+          "S2-37t-CVTSS2SD-register-state-gated": 0,
+          "S2-37v-COMISS-UCOMISS-register-state-gated": 8,
+          "S2-37w-COMISD-UCOMISD-register-state-gated": 11
+        },
+        "conditional_candidate_instruction_rows": 21176
+      },
+      "D": {
+        "conditional_candidate_frequencies": {
+          "S2-45-CPUID": 77,
+          "S2-45-HLT": 7,
+          "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 54400,
+          "S4-20c kernel tail (CPL0 gate conditional)": 4,
+          "S4-38L4d-multi-byte-memory-NOP": 51681,
+          "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
+          "S4-38L6a-PREFETCHNTA-base-only": 3,
+          "S4-38L6a-PREFETCHT0-base-only": 3,
+          "S4-38L6d-LEAVE-bare-C9": 1877,
+          "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 36,
+          "S4-38L7i-FS-GS-qword-load": 1030,
+          "S4-38L7j-FS-GS-qword-SUB": 1640,
+          "S4-38L7k-LOCK-CMPXCHG-qword": 36,
+          "S4-38L7y-LOCK-CMPXCHG-dword": 9,
+          "S4-38L7z-LOCK-ADD-memory-immediate": 33,
+          "S4-38L9b-PAUSE-exact-F3-90": 6,
+          "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
+        },
+        "conditional_local_candidate_frequencies": {
+          "S2-37ad-CVTTSS2SI-register-state-gated": 2,
+          "S2-37ae-CVTTSD2SI-register-state-gated": 22,
+          "S2-37ap-SUBSD-register-state-gated": 12,
+          "S2-37at-MULSD-register-state-gated": 31,
+          "S2-37au-MULSS-register-state-gated": 1,
+          "S2-37ax-DIVSD-register-state-gated": 58,
+          "S2-37ay-DIVSS-register-state-gated": 13,
+          "S2-37bb-ADDSD-register-state-gated": 39,
+          "S2-37bc-ADDSS-register-state-gated": 10,
+          "S2-37be-CVTSD2SS-register-state-gated": 1,
+          "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+          "S2-37q-CVTSI2SD-register-state-gated": 152,
+          "S2-37r-CVTSI2SS-register-state-gated": 40,
+          "S2-37t-CVTSS2SD-register-state-gated": 19,
+          "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
+          "S2-37w-COMISD-UCOMISD-register-state-gated": 23
+        },
+        "conditional_candidate_instruction_rows": 111669
+      }
     }
   },
   "unchanged_rootfs_binary_inputs": true,
   "candidate_annotation_lineage": {
-    "baseline_commit": "c8ecd0264c138102fe7300f5a7f97005ba8eac6b",
-    "baseline_compact_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
-    "latest_compact_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "baseline_commit": "45401a1fcb5487fa83b12b3c26abda4dd137711e",
+    "baseline_compact_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "latest_compact_sha256": "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
     "raw_analyzer_rerun": false,
     "raw_analyzer_pair_sha256": [
       "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570",
       "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570"
     ],
-    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically re-applies the existing exact-form overlays and adds the register-only REP-BSF candidate. Raw analyzer outputs and target ELFs were not regenerated or executed. The prior compact payload is an explicit checkpoint, not a fresh analyzer export.",
+    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically re-applies existing exact-form overlays and adds the bounded S4-38L7ay LOCK XADD dword memory candidate. The Stage 4 contract historically records SDM attribution as unchecked; a separate current review checked Intel SDM rev. 093. Raw analyzer outputs and target ELFs were not regenerated or executed.",
     "prior_cpl0_candidate_frequencies_preserved": {
       "S2-45-CPUID": 77,
       "S2-45-HLT": 9,
       "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55276,
       "S4-20c kernel tail (CPL0 gate conditional)": 4,
       "S4-38L4d-multi-byte-memory-NOP": 54695,
+      "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
       "S4-38L6a-PREFETCHNTA-base-only": 3,
       "S4-38L6a-PREFETCHT0-base-only": 3,
       "S4-38L6d-LEAVE-bare-C9": 2005,
@@ -450,25 +537,38 @@
       "S2-37w-COMISD-UCOMISD-register-state-gated": 34
     },
     "added_candidate": {
-      "candidate_id": "S4-38L4g-REP-BSF-register-BMI1-clear",
-      "condition": "Long64 runtime gate; F3 0F BC /r register forms only; applicable only when CPUID BMI1=0 and composed CPL0 control_policy is active, where the reviewed profile treats REP-BSF encoding as BSF. This does not claim TZCNT semantics or support.",
-      "rows": 398,
-      "exact_encoding_keys": 72,
-      "normalized_forms": {
-        "r32_register": 2,
-        "r64_register": 1
-      },
+      "candidate_id": "S4-38L7ay-LOCK-XADD-m32-r32-base-only",
+      "rows": 36,
+      "normalized_forms": 1,
+      "exact_encoding_keys": 6,
       "binary_frequencies": {
-        "gcc-as": 5,
-        "gcc-cc1": 391,
-        "gcc-driver": 1,
-        "gcc-ld-bfd": 1
+        "gcc-cc1": 12,
+        "gcc-collect2": 12,
+        "gcc-driver": 12
       },
-      "memory_rows_excluded": 2,
       "classification": "unclassified",
-      "evidence_scope": "outside"
+      "evidence_scope": "outside",
+      "condition": "Long64 runtime gate; Ring0 with composed CPL0 control_policy enabled; exact F0 0F C1 /r dword memory form (ModR/M.mod=01 with disp8, 64-bit base-only address, no SIB, segment, or REX). The reviewed single-vCPU profile reads source/address from pre-instruction state, requires a successful dword read and write, and writes even when source is zero. No runtime privilege/mapping/backend state or multi-vCPU atomicity is claimed.",
+      "source_provenance": "Historical CPU_CONTRACT attribution was unchecked; this separate candidate review checked Intel SDM 325383-093US, Vol. 2D, pp. 6-27–6-28.",
+      "atomicity_scope": "single-vCPU read-modify-write only; no multi-vCPU atomicity claim"
     },
     "candidate_ids_after_derivation": [
+      "S2-37ad-CVTTSS2SI-register-state-gated",
+      "S2-37ae-CVTTSD2SI-register-state-gated",
+      "S2-37ap-SUBSD-register-state-gated",
+      "S2-37at-MULSD-register-state-gated",
+      "S2-37au-MULSS-register-state-gated",
+      "S2-37ax-DIVSD-register-state-gated",
+      "S2-37ay-DIVSS-register-state-gated",
+      "S2-37bb-ADDSD-register-state-gated",
+      "S2-37bc-ADDSS-register-state-gated",
+      "S2-37be-CVTSD2SS-register-state-gated",
+      "S2-37i-MINSD-XMM-register-masked-state-gated",
+      "S2-37q-CVTSI2SD-register-state-gated",
+      "S2-37r-CVTSI2SS-register-state-gated",
+      "S2-37t-CVTSS2SD-register-state-gated",
+      "S2-37v-COMISS-UCOMISS-register-state-gated",
+      "S2-37w-COMISD-UCOMISD-register-state-gated",
       "S2-45-CPUID",
       "S2-45-HLT",
       "S2-48 ENDBR64 no-op (CPL0 gate conditional)",
@@ -478,6 +578,7 @@
       "S4-38L6a-PREFETCHNTA-base-only",
       "S4-38L6a-PREFETCHT0-base-only",
       "S4-38L6d-LEAVE-bare-C9",
+      "S4-38L7ay-LOCK-XADD-m32-r32-base-only",
       "S4-38L7i-FS-GS-qword-load",
       "S4-38L7j-FS-GS-qword-SUB",
       "S4-38L7k-LOCK-CMPXCHG-qword",
@@ -486,7 +587,7 @@
       "S4-38L9b-PAUSE-exact-F3-90",
       "composed_cpl0_profile_candidate; control/state/port gates unresolved"
     ],
-    "compact_payload_repeat_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "compact_payload_repeat_sha256": "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
     "compact_payload_repeat_cmp_exit_code": 0
   }
 }

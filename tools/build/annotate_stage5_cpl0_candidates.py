@@ -21,6 +21,7 @@ def annotate(path: Path) -> None:
         "S4-38L6a-PREFETCHNTA-base-only": ("prefetchnta mem8", ["0F", "18"], []),
         "S4-38L6a-PREFETCHT0-base-only": ("prefetcht0 mem8", ["0F", "18"], []),
         "S4-38L4g-REP-BSF-register-BMI1-clear": ("tzcnt register operands; BSF when BMI1=0", ["0F", "BC"], ["F3"]),
+        "S4-38L7ay-LOCK-XADD-m32-r32-base-only": ("lock xadd mem32,r32", ["0F", "C1"], ["F0"]),
     }
     candidate_ids = set(candidates)
     forms: dict[str, int] = {}
@@ -48,6 +49,15 @@ def annotate(path: Path) -> None:
                     and form["semantic_prefixes"] in allowed_prefixes.get(signature, ())
                     and form["modrm_mode"] == "register"
                     and form["address"] == {"form": "none", "segment": None, "size": None}
+                    and form["group_extension"] is None
+                )
+            if candidate == "S4-38L7ay-LOCK-XADD-m32-r32-base-only":
+                matches = (
+                    form["operand_signature"] == "lock xadd mem32,r32"
+                    and form["opcode_bytes"] == ["0F", "C1"]
+                    and form["semantic_prefixes"] == ["lock"]
+                    and form["modrm_mode"] == "memory"
+                    and form["address"] == {"form": "base_only", "segment": None, "size": 64}
                     and form["group_extension"] is None
                 )
             if candidate.startswith("S4-38L6a-PREFETCH"):
@@ -89,6 +99,23 @@ def annotate(path: Path) -> None:
                     and dimensions["address"] == {"form": "none", "segment": None, "size": None}
                     and dimensions["sib"] is None
                 )
+            if candidate == "S4-38L7ay-LOCK-XADD-m32-r32-base-only":
+                modrm = dimensions["modrm"]
+                observed_modrm_registers = {
+                    "48": (1, 0), "50": (2, 0), "47": (0, 7),
+                    "4A": (1, 2), "51": (2, 1), "56": (2, 6),
+                }
+                matches = (
+                    dimensions["operand_signature"] == "lock xadd mem32,r32"
+                    and dimensions["opcode_bytes"] == ["0F", "C1"]
+                    and dimensions["prefix_bytes"] == ["F0"]
+                    and dimensions["instruction_length"] == 5
+                    and modrm["mod"] == 1
+                    and modrm["raw"] in observed_modrm_registers
+                    and (modrm["reg"], modrm["rm"]) == observed_modrm_registers.get(modrm["raw"])
+                    and dimensions["address"] == {"form": "base_only", "segment": None, "size": 64}
+                    and dimensions["sib"] is None
+                )
             if candidate.startswith("S4-38L6a-PREFETCH"):
                 reg = 0 if candidate.endswith("PREFETCHNTA-base-only") else 1
                 matches = matches and dimensions == {
@@ -114,6 +141,7 @@ def annotate(path: Path) -> None:
         "S4-38L6a-PREFETCHNTA-base-only": 3,
         "S4-38L6a-PREFETCHT0-base-only": 3,
         "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
+        "S4-38L7ay-LOCK-XADD-m32-r32-base-only": 36,
     }
     if forms != expected:
         raise ValueError(f"observed candidate counts changed: {forms}")
@@ -136,6 +164,38 @@ def annotate(path: Path) -> None:
         item["count"] for item in data["exact_encoding_forms"]
         if item["conditional_candidate_frequencies"] or item.get("conditional_local_candidate_frequencies")
     )
+    for scenario in data.get("scenarios", {}).values():
+        if "binaries" not in scenario:
+            continue
+        binaries = scenario["binaries"]
+        cpl0 = Counter()
+        local = Counter()
+        candidate_instruction_rows = 0
+        for item in data["exact_encoding_forms"]:
+            binary_rows = sum(item["binary_frequencies"].get(binary, 0) for binary in binaries)
+            cpl0_candidates = item["conditional_candidate_frequencies"]
+            local_candidates = item.get("conditional_local_candidate_frequencies", {})
+            if cpl0_candidates or local_candidates:
+                candidate_instruction_rows += binary_rows
+            for candidate in cpl0_candidates:
+                cpl0[candidate] += binary_rows
+            for candidate in local_candidates:
+                local[candidate] += binary_rows
+        all_cpl0_candidates = {
+            candidate for item in data["exact_encoding_forms"]
+            for candidate in item["conditional_candidate_frequencies"]
+        }
+        all_local_candidates = {
+            candidate for item in data["exact_encoding_forms"]
+            for candidate in item.get("conditional_local_candidate_frequencies", {})
+        }
+        scenario["conditional_candidate_frequencies"] = {
+            candidate: cpl0[candidate] for candidate in sorted(all_cpl0_candidates)
+        }
+        scenario["conditional_local_candidate_frequencies"] = {
+            candidate: local[candidate] for candidate in sorted(all_local_candidates)
+        }
+        scenario["conditional_candidate_instruction_rows"] = candidate_instruction_rows
     payload = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     path.write_bytes(gzip.compress(payload, mtime=0))
 
