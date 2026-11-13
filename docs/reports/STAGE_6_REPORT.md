@@ -14,7 +14,7 @@
 | S6-01 | `not_started` | Методический срез прошёл ревью и закоммичен как [`5183584`](https://github.com/edelars/open_desktop/commit/5183584); numeric calibration pending для S6-05, S6-08/S6-09, S6-19/S6-36, S6-34/35/37 |
 | S6-02 | `in_progress` | Первый evidence-срез по закреплённому Linux artifact и выбору INIT/SIPI; полный AP inventory и архитектурная приёмка ещё не выполнены. См. [`ap-start-inventory.json`](data/stage6/ap-start-inventory.json). |
 | S6-03 | `not_started` | — |
-| S6-04 | `not_started` | — |
+| S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое архитектурное ревью; срез фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity. Реализация и выбор host primitive не входят в этот срез. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
 | S6-05 | `not_started` | — |
 | S6-06 | `not_started` | — |
 | S6-07 | `not_started` | — |
@@ -36,6 +36,7 @@
 | S6-23 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для зависимого S6-20 |
 | S6-24 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для цепочки S6-13/S6-14c |
 | S6-25 | `blocked` | S4-09 (полный объём; принятый ограниченный срез не закрывает задачу), S4-21, S4-22, S4-23 (через S6-20) |
+| S6-26 | `not_started` | S6-07: сначала завершить inventory descriptor-writing instruction paths |
 | S6-30 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-31 | `blocked` | S4-09, S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-32 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
