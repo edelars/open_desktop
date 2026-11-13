@@ -277,6 +277,10 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // the DiagnosticV1 default, whose run does not get there.
                             msr_tdx_keyid_partitioning_read: options.cpuid_profile
                                 == CpuidProfile::X8664V1Stage4A,
+                            // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
+                            // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
+                            // implements them. Off for the DiagnosticV1 default.
+                            fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -311,7 +315,7 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// The marker follows the request of the flag, not its effect.
 ///
 /// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
-/// a subset of the target, TSC only) and the result is not counted either: `acceptance` is
+/// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and the result is not counted either: `acceptance` is
 /// `diagnostic_not_counted` and `cpuid_profile` says `X8664V1Stage4A` (the key is absent for the
 /// default profile, so its evidence is unchanged). `diagnostic_past_c7` still follows its flag.
 fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
@@ -329,8 +333,8 @@ fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile
     let mut parts = Vec::new();
     if subset {
         parts.push(
-            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC only; checkpoint \
-             C7 boundary off by the profile)",
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile)",
         );
     }
     if diagnostic_past_c7 {
@@ -2068,11 +2072,12 @@ mod tests {
         let stop = &value["stop"];
         assert_ne!(stop["exit_kind"], "cpuid_divergence", "{value:#}");
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
-        // Oracle from the contract table: EDX has only the TSC bit.
+        // Oracle from the contract table (SDM bit positions): EDX has FPU (bit 0), TSC (bit 4)
+        // and FXSR (bit 24) since S4-38L9d, and not SSE/SSE2.
         assert_eq!(stop["gpr"]["rax"], "0x600");
         assert_eq!(stop["gpr"]["rbx"], "0x100");
         assert_eq!(stop["gpr"]["rcx"], "0x0");
-        assert_eq!(stop["gpr"]["rdx"], "0x10");
+        assert_eq!(stop["gpr"]["rdx"], "0x1000011");
         assert_eq!(
             stop["retired"], 3,
             "CLI, MOV, CPUID; HLT is outside the set"
@@ -2099,12 +2104,70 @@ mod tests {
                 "msr:syscall_mask_write",
                 "msr:kernel_gs_base_write",
                 "msr:tdx_keyid_partitioning_read",
+                "fp_state",
                 "pio_u8",
                 "sti",
                 "popf_cpl0",
                 "pci_config",
                 "irq"
             ])
+        );
+    }
+
+    #[test]
+    fn stage4a_runs_fninit_and_fxsave_and_the_default_profile_does_not() {
+        // CLI; MOV RAX,CR0; AND RAX,-13; MOV RDI,RAX; MOV CR0,RDI; MOV EDI,0x620; MOV CR4,RDI;
+        // FNINIT; HLT: the `fpu__init_cpu_generic` sequence of the kernel (HLT is outside the set).
+        let code = [
+            0xFA, 0x0F, 0x20, 0xC0, 0x48, 0x83, 0xE0, 0xF3, 0x48, 0x89, 0xC7, 0x0F, 0x22, 0xC7,
+            0xBF, 0x20, 0x06, 0x00, 0x00, 0x0F, 0x22, 0xE7, 0xDB, 0xE3, 0xF4,
+        ];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-fp",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            (value, exit)
+        };
+        let (on, exit) = run(CpuidProfile::X8664V1Stage4A);
+        assert_eq!(exit, 0, "{on:#}");
+        let stop = &on["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{on:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xf4", "{on:#}");
+        assert_eq!(stop["retired"], 8, "CLI .. FNINIT retire; HLT is the stop");
+        assert!(
+            stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("fp_state")),
+            "{on:#}"
+        );
+        // CR4 got OSFXSR and OSXMMEXCPT (bits 9 and 10).
+        let cr4 = u64::from_str_radix(
+            stop["cr4"].as_str().expect("cr4").trim_start_matches("0x"),
+            16,
+        )
+        .expect("hex");
+        assert_eq!(cr4 & 0x600, 0x600, "{on:#}");
+        // DiagnosticV1: no FP member, so the run stops earlier, at `MOV CR0, RDI` (opcode 0x22), after
+        // CLI, MOV RAX,CR0, AND and MOV RDI,RAX; it never reaches FNINIT or HLT.
+        let (off, exit) = run(CpuidProfile::DiagnosticV1);
+        assert_eq!(exit, 0, "{off:#}");
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x22", "{off:#}");
+        assert!(
+            !stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("fp_state")),
+            "{off:#}"
         );
     }
 

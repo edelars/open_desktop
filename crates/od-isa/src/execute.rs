@@ -1801,6 +1801,10 @@ const fn efer_write_decision(current: u64, value: u64) -> EferWrite {
 /// CPL3 accesses together with EFLAGS.AC; the model has no alignment checks, so AM alone changes
 /// nothing observable.
 const CR0_AM: u64 = 1 << 18;
+/// CPUID.1:EDX bit 0 (FPU) and bit 24 (FXSR), the features the `with_fp_state` member needs
+/// declared (bit positions from the Intel SDM, from memory).
+const FP_FEATURE_FPU: u32 = 1 << 0;
+const FP_FEATURE_FXSR: u32 = 1 << 24;
 /// CR4.PSE (bit 4), added to the CPL0 set policy in S4-38L7c.
 const CR4_PSE: u64 = 1 << 4;
 /// CR4.PGE (bit 7), added to the CPL0 set policy in S4-38L7d.
@@ -1915,6 +1919,7 @@ pub struct Cpl0ProfileSet<'a> {
     pci_config: Option<&'a Cell<u32>>,
     popf_cpl0: bool,
     sti: Option<&'a crate::StiProfile>,
+    fp_state: Option<&'a RefCell<GuestFpState>>,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1941,6 +1946,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             pci_config: None,
             popf_cpl0: false,
             sti: None,
+            fp_state: None,
         }
     }
 
@@ -2129,6 +2135,28 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// S4-38L9d: admit the FP-state instructions the Linux kernel runs in `fpu__init_system`:
+    /// the bare `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`, no prefix,
+    /// no REX), together with the exact `MOV CR0, RDI` (`0F 22 C7`) of `native_write_cr0`. `cell`
+    /// holds the caller's guest FP state (x87 environment and registers, MXCSR, XMM) between runs;
+    /// it is NOT part of `LongModeState` (whose `x87`/`sse` stay `None` under the set, so every
+    /// other x87/SSE/MMX form keeps its refusal with its exact opcode). `FNINIT` applies the
+    /// architectural reset of the x87 environment (FCW `0x037F`, FSW 0, FTW `0xFFFF`, FIP/FDP/FOP
+    /// and the selectors 0; register payloads survive). `FXSAVE` writes the 512-byte image through
+    /// the set's memory with the S2-39c layout (16-byte alignment else `#GP(0)`; MXCSR_MASK
+    /// `TARGET_FXSAVE_MXCSR_MASK`; reserved bytes untouched), the 13 defined fields in ascending
+    /// order, each stored as 8/4/2/1-byte `write` calls (the widths of the board's paged adapter;
+    /// not a transaction: a fault in a later piece leaves the earlier ones written). Both fault with `#NM` when
+    /// CR0.EM or CR0.TS is set; `FXSAVE` is `Unsupported` (`0xAE`) with CR4.OSFXSR clear. The
+    /// member requires a CPUID profile with the FPU (EDX bit 0) and FXSR (EDX bit 24) bits
+    /// declared (`Cpl0ProfileSetInputError::FpFeaturesNotDeclared` otherwise) and a cell whose FCS/FDS
+    /// selectors are known (`FpStateNotAdmitted`). Without this call all of the above stay
+    /// `Unsupported` in the set, as before.
+    pub const fn with_fp_state(mut self, cell: &'a RefCell<GuestFpState>) -> Self {
+        self.fp_state = Some(cell);
+        self
+    }
+
     /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
     /// the set delivers no interrupt (STI exists only under [`Self::with_sti`], S4-38L7bp, and
     /// models the instruction, not the delivery), so HLT cannot resume itself.
@@ -2191,6 +2219,40 @@ impl<'a> Cpl0ProfileSet<'a> {
     }
 }
 
+/// S4-38L9d: the FP state the CPL0 set owns through [`Cpl0ProfileSet::with_fp_state`]: the x87
+/// environment and registers and the SSE state (XMM and MXCSR), in the model of `X87State` and
+/// `SseState` that the S2-39 profiles use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuestFpState {
+    pub x87: crate::state::X87State,
+    pub sse: crate::state::SseState,
+}
+
+impl GuestFpState {
+    /// The state after `FNINIT` with zeroed registers: FCW `0x037F`, FSW 0, FTW `0xFFFF` (all
+    /// empty), FIP/FDP/FOP 0, FCS/FDS known and 0, ST0-7 and XMM0-15 zero, MXCSR `0x1F80`
+    /// (Intel SDM Vol. 1 Table 8-1 and §10.2.3, from memory).
+    pub const fn initial() -> Self {
+        Self {
+            x87: crate::state::X87State {
+                registers: [[0; 10]; 8],
+                control_word: 0x037f,
+                status_word: 0,
+                tag_word: 0xffff,
+                instruction_pointer: 0,
+                data_pointer: 0,
+                instruction_selector: Some(0),
+                data_selector: Some(0),
+                last_opcode: 0,
+            },
+            sse: crate::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            },
+        }
+    }
+}
+
 /// Exit of a CPL0 profile-set run. `E` is the port error of the PIO entry
 /// point; entries without a port use the uninhabited default.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2243,6 +2305,10 @@ pub enum Cpl0ProfileSetInputError {
         value: u64,
     },
     FpStateNotAdmitted,
+    /// S4-38L9d: `with_fp_state` was selected but the set has no CPUID profile that declares
+    /// both FPU (CPUID.1:EDX bit 0) and FXSR (bit 24): the FP instructions of the member must
+    /// not run on a CPU that says it has no FPU/FXSAVE.
+    FpFeaturesNotDeclared,
     ActivityMissing,
     NotRunning,
     StiShadowMissing,
@@ -2466,6 +2532,10 @@ struct ExecutionProfiles<'a> {
     cr4: Option<Cr4Profile>,
     mov_cr3: Option<MovCr3Long64V1>,
     control_policy: Option<ControlRegisterPolicy>,
+    /// S4-38L9d: the FP state of the CPL0 set (`FNINIT`, plain `FXSAVE`), set only by a
+    /// `Cpl0ProfileSet` built with `with_fp_state`. `LongModeState.x87/sse` stay `None`
+    /// under a policy, so every other x87/SSE form keeps its refusal.
+    fp_cpl0: Option<&'a RefCell<GuestFpState>>,
     /// CPU-owned CR3 under a control-register policy. The cell receives the
     /// translation-context effect of a retired `MOV CR3, RAX`, which makes the
     /// run loop stop at the following instruction boundary.
@@ -3611,6 +3681,7 @@ pub fn run_with_maxss_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -3770,6 +3841,7 @@ pub fn run_with_minsd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -3929,6 +4001,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4088,6 +4161,7 @@ pub fn run_with_minpd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4247,6 +4321,7 @@ pub fn run_with_minps_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4406,6 +4481,7 @@ pub fn run_with_maxps_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4565,6 +4641,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4724,6 +4801,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -4883,6 +4961,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5042,6 +5121,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5201,6 +5281,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5360,6 +5441,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5519,6 +5601,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5678,6 +5761,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5837,6 +5921,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -5996,6 +6081,7 @@ pub fn run_with_cvtss2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -6155,6 +6241,7 @@ pub fn run_with_cvttss2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -6313,6 +6400,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -6505,6 +6593,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -6664,6 +6753,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -6858,6 +6948,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7021,6 +7112,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7213,6 +7305,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7372,6 +7465,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7531,6 +7625,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7723,6 +7818,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -7883,6 +7979,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8042,6 +8139,7 @@ pub fn run_with_cvtdq2pd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8201,6 +8299,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8359,6 +8458,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8518,6 +8618,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8710,6 +8811,7 @@ fn run_with_cvtdq2ps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -8869,6 +8971,7 @@ pub fn run_with_cvtps2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9028,6 +9131,7 @@ pub fn run_with_cvttps2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9220,6 +9324,7 @@ fn run_with_cvtps2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9412,6 +9517,7 @@ fn run_with_cvttps2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9604,6 +9710,7 @@ fn run_with_cvttpd2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9796,6 +9903,7 @@ fn run_with_cvtpd2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -9955,6 +10063,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -10114,6 +10223,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -10273,6 +10383,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -10432,6 +10543,7 @@ pub fn run_with_cvtss2sd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -10591,6 +10703,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -10786,6 +10899,7 @@ fn run_with_cvtpi2ps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11112,6 +11226,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11271,6 +11386,7 @@ pub fn run_with_cvtps2pd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11430,6 +11546,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11589,6 +11706,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11747,6 +11865,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -11906,6 +12025,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12123,6 +12243,7 @@ fn run_with_cmpss_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12282,6 +12403,7 @@ pub fn run_with_cmpsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12441,6 +12563,7 @@ pub fn run_with_cmppd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12599,6 +12722,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12757,6 +12881,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -12938,6 +13063,7 @@ fn run_with_minsd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13097,6 +13223,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13283,6 +13410,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13454,6 +13582,7 @@ fn run_with_minpd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13648,6 +13777,7 @@ fn run_with_minps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13807,6 +13937,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -13966,6 +14097,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14124,6 +14256,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14282,6 +14415,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14440,6 +14574,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14631,6 +14766,7 @@ fn run_with_sqrtps_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14789,6 +14925,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -14979,6 +15116,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -15169,6 +15307,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -15366,6 +15505,7 @@ fn run_with_maxpd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -15563,6 +15703,7 @@ fn run_with_maxps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -15774,6 +15915,7 @@ fn run_minss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -15975,6 +16117,7 @@ fn run_maxss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -16133,6 +16276,7 @@ pub fn run_with_cmpps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -16292,6 +16436,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cr0: Some(Cr0Profile::FpInitLong64V1),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -16504,6 +16649,7 @@ pub fn run_with_efer_rdmsr_profile(
             cr0: Some(Cr0Profile::EferReadOnlyLong64V1),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -16908,6 +17054,7 @@ pub fn run_with_cr0_profile(
             cr0: Some(profile),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -17126,6 +17273,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             }),
             mov_cr3: mov_cr3_profile,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -20325,6 +20473,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -20500,6 +20649,26 @@ fn run_cpl0_profile_set_inner(
     }
     if state.x87.is_some() || state.sse.is_some() {
         return Err(Error::FpStateNotAdmitted);
+    }
+    if let Some(cell) = set.fp_state {
+        // S4-38L9d: the FP instructions of the member run only on a CPU that declares them.
+        let declared = set.cpuid.is_some_and(|profile| {
+            let edx = profile.query(1, 0).edx;
+            edx & FP_FEATURE_FPU != 0 && edx & FP_FEATURE_FXSR != 0
+        });
+        if !declared {
+            return Err(Error::FpFeaturesNotDeclared);
+        }
+        // The plain FXSAVE image carries FCS/FDS: both selectors must be represented. The step
+        // takes `borrow_mut()` (FNINIT) and `borrow()` (FXSAVE): a cell the caller still holds
+        // borrowed would panic mid-run, so the entry refuses it (`try_borrow_mut` succeeds only
+        // when there is no outstanding borrow at all).
+        let selectors_known = cell.try_borrow_mut().is_ok_and(|fp| {
+            fp.x87.instruction_selector.is_some() && fp.x87.data_selector.is_some()
+        });
+        if !selectors_known {
+            return Err(Error::FpStateNotAdmitted);
+        }
     }
     match state.activity {
         None => return Err(Error::ActivityMissing),
@@ -20703,6 +20872,7 @@ fn run_cpl0_profile_set_inner(
             cr0: None,
             mov_cr3: None,
             control_policy: Some(set.policy),
+            fp_cpl0: set.fp_state,
             cpu_owned_cr3: set.cpu_owned_cr3.then_some(&cr3_effect),
             pio_u8: pio_cell
                 .as_ref()
@@ -21171,6 +21341,7 @@ pub fn step_with_cr0_profile(
             cr0: Some(profile),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -21573,6 +21744,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -21732,6 +21904,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22115,6 +22288,7 @@ fn run_with_comparison_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22276,6 +22450,7 @@ pub fn run_with_sqrtss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22435,6 +22610,7 @@ pub fn run_with_sqrtsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22594,6 +22770,7 @@ pub fn run_with_sqrtps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22753,6 +22930,7 @@ pub fn run_with_sqrtpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -22917,6 +23095,7 @@ fn run_with_subpd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -23131,6 +23310,7 @@ pub fn run_with_mulpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -23293,6 +23473,7 @@ fn run_with_addpd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -23485,6 +23666,7 @@ fn run_with_mulpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -23699,6 +23881,7 @@ pub fn run_with_addsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -23858,6 +24041,7 @@ pub fn run_with_divpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24050,6 +24234,7 @@ fn run_with_divpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24209,6 +24394,7 @@ pub fn run_with_addss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24402,6 +24588,7 @@ fn run_with_addss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24594,6 +24781,7 @@ fn run_with_addsd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24789,6 +24977,7 @@ fn run_with_addps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -24948,6 +25137,7 @@ pub fn run_with_divsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25143,6 +25333,7 @@ fn run_with_divps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25302,6 +25493,7 @@ pub fn run_with_divss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25461,6 +25653,7 @@ pub fn run_with_mulsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25620,6 +25813,7 @@ pub fn run_with_mulss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25815,6 +26009,7 @@ fn run_with_mulps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -25974,6 +26169,7 @@ pub fn run_with_subsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -26133,6 +26329,7 @@ pub fn run_with_subss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -26292,6 +26489,7 @@ fn run_with_scalar_float_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -26695,6 +26893,7 @@ fn run_with_subps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -26853,6 +27052,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
@@ -27310,6 +27510,7 @@ fn step_configured(
         cr0: cr0_profile,
         mov_cr3: mov_cr3_profile,
         control_policy,
+        fp_cpl0,
         cpu_owned_cr3,
         pio_u8,
         popf_cpl0,
@@ -27780,6 +27981,7 @@ fn step_configured(
                 instruction.operation,
                 Operation::ReadCr0
                     | Operation::WriteCr0
+                    | Operation::WriteCr0Rdi
                     | Operation::ReadCr4
                     | Operation::ReadCr4Into(_)
                     | Operation::WriteCr4
@@ -33029,6 +33231,17 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    // S4-38L9d: the FP member of the CPL0 set owns `FNINIT` and the plain `FXSAVE`; its state lives
+    // in the member's cell, so these two never reach the `state.x87`/`state.sse` paths below.
+    if let Some(fp_cell) = fp_cpl0
+        && control_policy.is_some()
+        && matches!(
+            instruction.operation,
+            Operation::Fninit | Operation::FxsaveRipRelative(_)
+        )
+    {
+        return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
+    }
     match instruction.operation {
         Operation::ReadCr0 if cr0_profile.is_some() => {
             let value = state.cr0.expect("CR0 profile state was prevalidated");
@@ -33184,6 +33397,28 @@ fn step_configured(
             } else {
                 state.cr4 = Some(value);
             }
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        Operation::WriteCr0Rdi if control_policy.is_some() && fp_cpl0.is_some() => {
+            // S4-38L9d: `0F 22 C7` MOV CR0, RDI, the `native_write_cr0` form. The decoder admits
+            // only the prefix-free three-byte encoding; the executor re-checks the shape. CPL > 0
+            // was already refused with #GP(0) above. The value follows the CPL0 set policy
+            // exactly like `MOV CR0, RAX`: an out-of-policy value is `Unsupported`, no state
+            // change.
+            let policy = control_policy.expect("guarded by the match arm");
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x22
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default()
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            let value = state.gpr[Register::Rdi as usize];
+            if !exact_form || !policy.accepts_cr0(value) {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            state.cr0 = Some(value);
             state.rip = next_rip;
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
@@ -35522,6 +35757,8 @@ fn step_configured(
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
         Operation::WriteCr3From(_) => cpu_owned_cr3.is_some(),
         Operation::ReadCr4Into(_) | Operation::WriteCr4From(_) => control_policy.is_some(),
+        // S4-38L9d: `MOV CR0, RDI` exists only in the CPL0 set built with the FP member.
+        Operation::WriteCr0Rdi => control_policy.is_some() && fp_cpl0.is_some(),
         Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
             cpu_owned_cr3.is_some()
         }
@@ -37140,7 +37377,18 @@ fn step_configured(
     }
     if let Operation::FxsaveRipRelative(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
-        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Plain) {
+        let (Some(x87), Some(sse)) = (state.x87.as_ref(), state.sse.as_ref()) else {
+            unreachable!("FXSAVE x87/SSE state was prevalidated");
+        };
+        if let Err(error) = fxsave(
+            x87,
+            sse,
+            memory,
+            context,
+            address,
+            FxsaveLayout::Plain,
+            false,
+        ) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -37148,7 +37396,18 @@ fn step_configured(
     }
     if let Operation::Fxsave64RaxDisp8(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
-        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Long64) {
+        let (Some(x87), Some(sse)) = (state.x87.as_ref(), state.sse.as_ref()) else {
+            unreachable!("FXSAVE64 x87/SSE state was prevalidated");
+        };
+        if let Err(error) = fxsave(
+            x87,
+            sse,
+            memory,
+            context,
+            address,
+            FxsaveLayout::Long64,
+            false,
+        ) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -37812,6 +38071,7 @@ fn step_configured(
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
         Operation::ReadCr0
         | Operation::WriteCr0
+        | Operation::WriteCr0Rdi
         | Operation::ReadCr4
         | Operation::ReadCr4Into(_)
         | Operation::WriteCr4
@@ -54342,6 +54602,98 @@ enum FxsaveLayout {
     Long64,
 }
 
+/// S4-38L9d: `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
+/// set under `with_fp_state`. The caller guarantees the operation, a control-register policy and
+/// the admitted CR0/CR4 (both modeled). Order of the checks: exact encoding (else `Unsupported`
+/// with the opcode byte), then for `FXSAVE` CR4.OSFXSR = 0 (`Unsupported`, the S2-39 convention:
+/// the architecture leaves it implementation-dependent), then CR0.EM or CR0.TS (`#NM`, the S2-39
+/// convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
+/// `#GP(0)`, a page fault is the memory's own fault) before anything commits. The FP cell is
+/// changed only by `FNINIT`; the CPU state changes only by the RIP.
+fn step_cpl0_fp(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+) -> Result<StepOutcome, MemoryError> {
+    let unsupported = Ok(StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    });
+    let (Some(cr0), Some(cr4)) = (state.cr0, state.cr4) else {
+        return unsupported;
+    };
+    let device_not_available = Ok(StepOutcome::Fault(ArchitecturalFault {
+        vector: 7,
+        error_code: None,
+        linear_address: None,
+    }));
+    match instruction.operation {
+        Operation::Fninit => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0xdb
+                || instruction.length != 2
+                || instruction.prefixes != Prefixes::default()
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let mut fp = cell.borrow_mut();
+            fp.x87.fninit();
+            // FNINIT also clears the selectors the model represents (SDM Vol. 1 Table 8-1,
+            // from memory); `Some(0)` stays known.
+            let x87 = &mut fp.x87;
+            for selector in [&mut x87.instruction_selector, &mut x87.data_selector] {
+                if selector.is_some() {
+                    *selector = Some(0);
+                }
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::FxsaveRipRelative(area) => {
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 7
+                || instruction.prefixes != Prefixes::default()
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::NextRip
+                || area.index.is_some()
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let fp = cell.borrow();
+            if fp.x87.instruction_selector.is_none() || fp.x87.data_selector.is_none() {
+                return unsupported;
+            }
+            let address = area.effective_address(state, next_rip);
+            if let Err(error) = fxsave(
+                &fp.x87,
+                &fp.sse,
+                memory,
+                context,
+                address,
+                FxsaveLayout::Plain,
+                // The paged adapter of the board stores 1/2/4/8 bytes per call.
+                true,
+            ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        _ => unsupported,
+    }
+}
+
 #[cfg(test)]
 fn fxsave_rip_relative(
     state: &LongModeState,
@@ -54349,23 +54701,6 @@ fn fxsave_rip_relative(
     context: AccessContext,
     address: u64,
 ) -> Result<(), MemoryError> {
-    fxsave(state, memory, context, address, FxsaveLayout::Plain)
-}
-
-fn fxsave(
-    state: &LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    address: u64,
-    layout: FxsaveLayout,
-) -> Result<(), MemoryError> {
-    const IMAGE_BYTES: u64 = 512;
-
-    let last = address.checked_add(IMAGE_BYTES - 1);
-    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
-        return Err(general_protection().into());
-    }
-
     let x87 = state
         .x87
         .as_ref()
@@ -54374,6 +54709,35 @@ fn fxsave(
         .sse
         .as_ref()
         .expect("FXSAVE SSE state was prevalidated");
+    fxsave(
+        x87,
+        sse,
+        memory,
+        context,
+        address,
+        FxsaveLayout::Plain,
+        false,
+    )
+}
+
+/// The FXSAVE image store shared by the S2-39 profiles (state in `LongModeState`) and the CPL0
+/// set member of S4-38L9d (state in its `GuestFpState` cell).
+fn fxsave(
+    x87: &crate::state::X87State,
+    sse: &crate::state::SseState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    layout: FxsaveLayout,
+    narrow_stores: bool,
+) -> Result<(), MemoryError> {
+    const IMAGE_BYTES: u64 = 512;
+
+    let last = address.checked_add(IMAGE_BYTES - 1);
+    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        return Err(general_protection().into());
+    }
+
     let mut environment_0 = [0u8; 5];
     environment_0[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
     environment_0[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
@@ -54425,24 +54789,60 @@ fn fxsave(
         xmm[register * 16..(register + 1) * 16].copy_from_slice(bytes);
     }
 
-    // These are exactly the 13 ascending writes required by this local
-    // profile. Reserved and software-available bytes remain untouched.
-    memory.write(address, context, &environment_0)?;
+    // These are exactly the 13 ascending field stores required by this local profile (each one
+    // `GuestMemory::write` call, or, with `narrow_stores`, a run of 8/4/2/1-byte calls over the same
+    // bytes in the same ascending order). Reserved and software-available bytes remain untouched.
+    let mut store = |at: u64, bytes: &[u8]| {
+        if narrow_stores {
+            write_narrow(memory, context, at, bytes)
+        } else {
+            memory.write(at, context, bytes)
+        }
+    };
+    store(address, &environment_0)?;
     match layout {
         FxsaveLayout::Plain => {
-            memory.write(address + 6, context, &environment_1[..8])?;
-            memory.write(address + 16, context, &environment_2[..6])?;
+            store(address + 6, &environment_1[..8])?;
+            store(address + 16, &environment_2[..6])?;
         }
         FxsaveLayout::Long64 => {
-            memory.write(address + 6, context, &environment_1)?;
-            memory.write(address + 16, context, &environment_2)?;
+            store(address + 6, &environment_1)?;
+            store(address + 16, &environment_2)?;
         }
     }
-    memory.write(address + 24, context, &mxcsr_fields)?;
+    store(address + 24, &mxcsr_fields)?;
     for (logical, slot) in x87_stack.iter().enumerate() {
-        memory.write(address + 32 + (logical as u64) * 16, context, slot)?;
+        store(address + 32 + (logical as u64) * 16, slot)?;
     }
-    memory.write(address + 160, context, &xmm)?;
+    store(address + 160, &xmm)?;
+    Ok(())
+}
+
+/// S4-38L9d: store `bytes` ascending as 8-, 4-, 2- and 1-byte `GuestMemory::write` calls (greedy,
+/// widest first). The paged adapter of the Linux board writes only these widths, and the CPL0 set
+/// has no wider store; the FXSAVE fields (5, 6, 8, 10 and 256 bytes) are therefore stored in pieces.
+/// A failing piece leaves the earlier ones written (the FXSAVE stores are not a transaction).
+fn write_narrow(
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    bytes: &[u8],
+) -> Result<(), MemoryError> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let width = match bytes.len() - offset {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        memory.write(
+            address.wrapping_add(offset as u64),
+            context,
+            &bytes[offset..offset + width],
+        )?;
+        offset += width;
+    }
     Ok(())
 }
 

@@ -6,8 +6,10 @@
 //!
 //! `X8664V1Stage4A` (S4-38L9a) is the first named subset of the Linux board target
 //! `od-x86-64-v1-neutral-v0.1` (`docs/specs/CPU_CONTRACT.md`): it declares only the features whose
-//! behaviour the board's CPU set already implements (TSC, through `RDTSC`). It is not the full
-//! target table and not an Ubuntu boot contract.
+//! behaviour the board's CPU set already implements (TSC, through `RDTSC`; since S4-38L9d the FPU
+//! and FXSR bits are declared, but only `FNINIT` and the plain `FXSAVE` of the set's FP member are
+//! implemented: every other x87/FXSR form, e.g. `FXRSTOR`, stays `Unsupported`). It is not the
+//! full target table and not an Ubuntu boot contract.
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -23,21 +25,29 @@ pub struct CpuidResult {
 pub enum CpuidProfile {
     /// Local diagnostic identity with all CPUID feature masks disabled.
     DiagnosticV1,
-    /// Subset L9a of the Linux board target: `DiagnosticV1` plus the TSC bit
-    /// (CPUID.01H:EDX[4]) and nothing else. Every other feature bit of the target table (APIC,
-    /// PAT, SEP, ...) stays clear until the slice that implements its behaviour declares it.
+    /// Subset of the Linux board target: `DiagnosticV1` plus the TSC bit (CPUID.01H:EDX[4], S4-38L9a),
+    /// the FPU bit (EDX[0]) and the FXSR bit (EDX[24]) (S4-38L9d), and nothing else. Every other
+    /// feature bit of the target table (APIC, PAT, SEP, SSE, SSE2, ...) stays clear until the slice
+    /// that implements its behaviour declares it.
     X8664V1Stage4A,
 }
 
 /// CPUID.01H:EDX bit 4 (TSC); the bit position is from the Intel SDM, from memory.
 const LEAF1_EDX_TSC: u32 = 1 << 4;
+/// CPUID.01H:EDX bit 0 (FPU), declared since S4-38L9d: `FNINIT` is implemented in the CPL0 set's FP
+/// member (the kernel's `fpu__init_system` gives up without this bit). From the Intel SDM, from memory.
+const LEAF1_EDX_FPU: u32 = 1 << 0;
+/// CPUID.01H:EDX bit 24 (FXSR), declared since S4-38L9d: the plain `FXSAVE` is implemented in the
+/// same member. SSE (25) and SSE2 (26) are NOT declared: no SSE instruction is implemented. From the
+/// Intel SDM, from memory.
+const LEAF1_EDX_FXSR: u32 = 1 << 24;
 
 impl CpuidProfile {
     /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
         let leaf1_edx = match self {
             Self::DiagnosticV1 => 0,
-            Self::X8664V1Stage4A => LEAF1_EDX_TSC,
+            Self::X8664V1Stage4A => LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR,
         };
         match leaf {
             0 => CpuidResult {
@@ -148,21 +158,26 @@ mod tests {
         }
     }
 
-    /// S4-38L9a. Oracles written by hand from the contract table (`CPU_CONTRACT.md`, row
-    /// `CPUID(1)`: EAX 0x600, EBX 0x100, ECX 0) and the SDM TSC bit (EDX bit 4), not from the
-    /// implementation.
+    /// S4-38L9a, extended by S4-38L9d. Oracles written by hand from the contract table
+    /// (`CPU_CONTRACT.md`, row `CPUID(1)`: EAX 0x600, EBX 0x100, ECX 0) and the SDM bit positions
+    /// (FPU bit 0, TSC bit 4, FXSR bit 24), not from the implementation.
     #[test]
-    fn stage4a_leaf_1_declares_only_tsc() {
+    fn stage4a_leaf_1_declares_only_fpu_tsc_and_fxsr() {
         let leaf1 = CpuidProfile::X8664V1Stage4A.query(1, 0);
         assert_eq!(leaf1.eax, 0x0000_0600);
         assert_eq!(leaf1.ebx, 0x0000_0100);
         assert_eq!(leaf1.ecx, 0);
-        assert_eq!(leaf1.edx, 0x0000_0010, "only EDX bit 4 (TSC)");
+        // 1 (FPU) | 1 << 4 (TSC) | 1 << 24 (FXSR).
+        assert_eq!(leaf1.edx, 0x0100_0011, "only EDX bits 0, 4 and 24");
+        // Declared bits.
+        for (bit, name) in [(0, "FPU"), (4, "TSC"), (24, "FXSR")] {
+            assert_ne!(leaf1.edx & (1 << bit), 0, "{name} must be declared");
+        }
         // Feature bits of the target table that this subset must not declare. SEP (bit 11) is
         // not in the target table either (SEP=0 by the contract) and stays clear; the table's
-        // 0x0781A379 is not asserted bit by bit here.
+        // 0x0781A379 is not asserted bit by bit here. SSE and SSE2 stay clear: the set has no SSE
+        // instruction, only the FXSAVE image of the (zero) XMM registers and MXCSR.
         for (bit, name) in [
-            (0, "FPU"),
             (3, "PSE"),
             (5, "MSR"),
             (6, "PAE"),
@@ -173,7 +188,6 @@ mod tests {
             (15, "CMOV"),
             (16, "PAT"),
             (23, "MMX"),
-            (24, "FXSR"),
             (25, "SSE"),
             (26, "SSE2"),
         ] {
@@ -250,7 +264,7 @@ mod tests {
             let new = CpuidProfile::X8664V1Stage4A.query(leaf, 0);
             if leaf == 1 {
                 assert_eq!((new.eax, new.ebx, new.ecx), (old.eax, old.ebx, old.ecx));
-                assert_eq!((old.edx, new.edx), (0, 0x10));
+                assert_eq!((old.edx, new.edx), (0, 0x0100_0011));
             } else {
                 assert_eq!(new, old, "leaf={leaf:#x}");
             }
