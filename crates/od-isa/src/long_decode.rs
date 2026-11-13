@@ -731,6 +731,20 @@ pub enum Operation {
         dst: MemoryOperand,
         immediate: u64,
     },
+    /// S4-38L9f: `64 [REX] 81 /0 id` (ADD m32, imm32, or m64, imm32 sign-extended with REX.W,
+    /// with the FS base), memory operand only. `immediate` is the zero-extended imm32 for a dword
+    /// destination and the sign-extended imm32 for a qword one. read -> write; all six arithmetic
+    /// flags are defined. Executed only in the CPL0 set.
+    AddFsMemImm {
+        dst: MemoryOperand,
+        immediate: u64,
+    },
+    /// S4-38L9f: `65 [REX] 81 /0 id` (ADD m32/m64, imm32 with the GS base), memory operand only.
+    /// Executed only in the CPL0 set.
+    AddGsMemImm {
+        dst: MemoryOperand,
+        immediate: u64,
+    },
     /// The sole supported segment-register read in S2-22c: `48 8C E0`.
     MovFsSelectorToRax,
     MovGsSelectorToRax,
@@ -2380,7 +2394,10 @@ impl Instruction {
             | Operation::CmpFsMem { .. }
             | Operation::CmpGsMem { .. }
             | Operation::CmpFsMemImm { .. }
-            | Operation::CmpGsMemImm { .. } => FlagEffects {
+            | Operation::CmpGsMemImm { .. }
+            // S4-38L9f: and the FS/GS-based ADD m, imm32.
+            | Operation::AddFsMemImm { .. }
+            | Operation::AddGsMemImm { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -8975,7 +8992,39 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     immediate
                 };
-                if let (true, 7, Some(0x64 | 0x65), Operand::Memory(destination)) =
+                if let (true, 0, Some(0x64 | 0x65), Operand::Memory(destination)) =
+                    (byte == 0x81, group, prefixes.segment, dst)
+                {
+                    // S4-38L9f: `[64|65] [REX] 81 /0 id` (ADD m32, imm32, or m64, imm32
+                    // sign-extended with REX.W) with a memory destination. The register form
+                    // (mod = 11), the unprefixed form, `83 /0 ib` and the other `81 /n`
+                    // selectors are not touched. LOCK (already refused above), REP/REPNE, 0x66
+                    // (word), 0x67 and a REX byte that is not immediately before the opcode stay
+                    // refused with this opcode.
+                    let stale_rex = prefix_bytes[..prefix_count]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    if stale_rex
+                        || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                        || prefixes.group1.is_some()
+                        || prefixes.operand_override
+                        || prefixes.address_override
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    if prefixes.segment == Some(0x64) {
+                        Operation::AddFsMemImm {
+                            dst: destination,
+                            immediate,
+                        }
+                    } else {
+                        Operation::AddGsMemImm {
+                            dst: destination,
+                            immediate,
+                        }
+                    }
+                } else if let (true, 7, Some(0x64 | 0x65), Operand::Memory(destination)) =
                     (byte == 0x83, group, prefixes.segment, dst)
                 {
                     // S4-38L7ah: `[64|65] [REX] 83 /7 ib` (CMP m32, imm8, or m64, imm8 with
@@ -10102,6 +10151,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::CmpGsMem { .. } => false,
                 Operation::CmpFsMemImm { .. } => false,
                 Operation::CmpGsMemImm { .. } => false,
+                Operation::AddFsMemImm { .. } => false,
+                Operation::AddGsMemImm { .. } => false,
                 Operation::OrFsMem { .. } => false,
                 Operation::OrGsMem { .. } => false,
                 Operation::TestFsMemByte { .. } => false,
@@ -26364,6 +26415,108 @@ mod tests {
             (&[0x65, 0x83, 0x25, 1, 0, 0, 0, 1][..], 0x83),
             (&[0x65, 0x80, 0x3d, 1, 0, 0, 0, 1][..], 0x80),
             (&[0x65, 0x81, 0x3d, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_add_imm32_decodes_fs_gs_memory_forms_only() {
+        // S4-38L9f: `[64|65] [REX] 81 /0 id` with a memory destination.
+        // The S4-38L9e diagnostic boundary bytes: `addl $0x110000, %gs:0x1cf3784(%rip)`.
+        let mut memory = Memory::new(&[
+            0x65, 0x81, 0x05, 0x84, 0x37, 0xcf, 0x01, 0x00, 0x00, 0x11, 0x00,
+        ]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 11);
+        assert!(matches!(
+            decoded.operation,
+            Operation::AddGsMemImm { dst, immediate: 0x11_0000 }
+                if dst.size == OperandSize::Dword
+                    && dst.base == AddressBase::NextRip
+                    && dst.displacement == 0x01cf_3784
+        ));
+        // REX.W: qword; the imm32 is sign-extended to 64 bits.
+        let mut memory = Memory::new(&[0x64, 0x48, 0x81, 0x05, 1, 0, 0, 0, 0x00, 0x00, 0x00, 0x80]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 12);
+        assert!(matches!(
+            decoded.operation,
+            Operation::AddFsMemImm { dst, immediate: 0xffff_ffff_8000_0000 }
+                if dst.size == OperandSize::Qword
+        ));
+        // A dword keeps the imm32 zero-extended (the executor masks it to the width).
+        let mut memory = Memory::new(&[0x64, 0x81, 0x00, 0xff, 0xff, 0xff, 0xff]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::AddFsMemImm { dst, immediate: 0xffff_ffff }
+                if dst.size == OperandSize::Dword
+        ));
+        // A REX byte without W stays a dword; REX.B extends the base.
+        let mut memory = Memory::new(&[0x65, 0x41, 0x81, 0x00, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::AddGsMemImm { dst, immediate: 1 }
+                if dst.size == OperandSize::Dword && dst.base == AddressBase::Register(Register::R8)
+        ));
+        // No segment prefix: still the plain arithmetic operation.
+        let mut memory = Memory::new(&[0x81, 0x05, 1, 0, 0, 0, 0x01, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                ..
+            }
+        ));
+        // The register form (mod = 11) is not touched: the prefix is ignored, plain ADD.
+        for bytes in [
+            &[0x65, 0x81, 0xc0, 1, 0, 0, 0][..],
+            &[0x64, 0x48, 0x81, 0xc2, 0xff, 0xff, 0xff, 0xff][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Arithmetic {
+                        kind: ArithmeticKind::Add,
+                        ..
+                    }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for (bytes, refused_opcode) in [
+            // 0x66, 0x67, LOCK, REP, REPNE.
+            (&[0x66, 0x65, 0x81, 0x05, 1, 0, 0, 0, 1, 0][..], 0x81),
+            (
+                &[0x65, 0x66, 0x48, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..],
+                0x81,
+            ),
+            (&[0x65, 0x67, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0xf0, 0x65, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0x65, 0xf0, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (
+                &[0xf3, 0x65, 0x48, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..],
+                0x81,
+            ),
+            (&[0xf2, 0x64, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            // A second segment prefix.
+            (&[0x64, 0x65, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0x2e, 0x65, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            // REX not directly before the opcode.
+            (&[0x48, 0x65, 0x81, 0x05, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0x65, 0x48, 0x66, 0x81, 0x05, 1, 0, 0, 0, 1, 0][..], 0x81),
+            // Other `81 /n` selectors and `83 /0` with FS/GS stay outside the slice.
+            (&[0x65, 0x81, 0x0d, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0x65, 0x81, 0x3d, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+            (&[0x65, 0x83, 0x05, 1, 0, 0, 0, 1][..], 0x83),
         ] {
             let mut memory = Memory::new(bytes);
             let result = memory.decode();

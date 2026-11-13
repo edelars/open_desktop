@@ -35856,6 +35856,9 @@ fn step_configured(
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
+        | Operation::AddFsMemImm { .. }
+        | Operation::AddGsMemImm { .. }
         // S4-38L7az: and for the FS/GS-based OR m32/m64, r.
         | Operation::OrFsMem { .. }
         | Operation::OrGsMem { .. }
@@ -49760,6 +49763,9 @@ fn step_configured(
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
+        | Operation::AddFsMemImm { .. }
+        | Operation::AddGsMemImm { .. }
         | Operation::OrFsMem { .. }
         | Operation::OrGsMem { .. }
         | Operation::TestFsMemByte { .. }
@@ -55359,6 +55365,31 @@ fn transfer(
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
+            state.rflags = flags;
+        }
+        Operation::AddFsMemImm { dst, immediate } => {
+            // S4-38L9f: as AddFsMem with the imm32 (zero-extended for a dword, sign-extended for a
+            // qword; `arithmetic_result` masks it to the operand width) as the addend. Base +
+            // effective address (RIP-relative is relative to the end of the instruction, imm32
+            // included, as `next_rip` is); a non-canonical start or last byte is #GP(0) before any
+            // access. read -> write; the sum is written back even for a zero addend and the flags
+            // commit only after the write succeeded, so a faulting read or write leaves memory
+            // and flags untouched. Nothing is written to a register.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
             state.rflags = flags;
         }
         Operation::OrFsMem {
