@@ -39379,6 +39379,8 @@ fn rdmsr_tdx_keyid_partitioning_with_prefixes_is_unsupported_without_mutation() 
         &[0x2e, 0x0f, 0x32],
         &[0x3e, 0x0f, 0x32],
         &[0x67, 0x0f, 0x32],
+        &[0x66, 0x48, 0x0f, 0x32],
+        &[0xf3, 0x48, 0x0f, 0x32],
     ] {
         let (state, before, result) = run_star(&set, code, (TDX_KEYID_PARTITIONING_MSR, 5, 6), 1);
         assert_eq!(
@@ -39389,6 +39391,23 @@ fn rdmsr_tdx_keyid_partitioning_with_prefixes_is_unsupported_without_mutation() 
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
     }
+    // LOCK (F0) is the existing #UD of the decoder for RDMSR, not an answer: no mutation.
+    let (state, before, result) = run_star(
+        &set,
+        &[0xf0, 0x0f, 0x32],
+        (TDX_KEYID_PARTITIONING_MSR, 5, 6),
+        1,
+    );
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(od_isa::ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
 }
 
 #[test]
