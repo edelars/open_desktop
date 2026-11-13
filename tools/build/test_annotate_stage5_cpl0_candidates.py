@@ -12,15 +12,15 @@ import annotate_stage5_cpl0_candidates as annotate
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE_COMMIT = "63581fb3ae8e31b2cdb4f64d70c10deb4165253f"
+BASE_COMMIT = "c8ecd0264c138102fe7300f5a7f97005ba8eac6b"
 INVENTORIES = {
     "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": (
-        "b9059f45adda311f3a11950c440d75e67c22d255c7d2899d13b76c7dc3d12377",
         "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
+        "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
     ),
     "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": (
-        "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c",
         "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
+        "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
     ),
 }
 
@@ -47,6 +47,8 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
             record for record in data["normalized_instruction_forms"]
             if record["instruction_form"]["operand_signature"] == "prefetchnta mem8"
         )
+        exact["conditional_candidate_frequencies"].pop(candidate, None)
+        normalized["conditional_candidate_frequencies"].pop(candidate, None)
         exact_mutation(exact["dimensions"])
         normalized_mutation(normalized["instruction_form"])
         self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
@@ -176,6 +178,168 @@ class PrefetchCandidateAnnotationTests(unittest.TestCase):
                         and form["semantic_prefixes"] == []
                     )
                     self.assertEqual(candidate in record["conditional_candidate_frequencies"], is_exact_candidate_shape)
+
+    def test_rep_bsf_register_gate_rejects_mismatched_forms(self) -> None:
+        mutations = {
+            "extra_prefix": (
+                lambda d: (d.update(prefix_bytes=["F3", "66", "48"]), d.update(instruction_length=6)),
+                lambda f: f.update(semantic_prefixes=["rep", "operand_size", "rex_w"]),
+            ),
+            "reordered_prefix": (
+                lambda d: (d.update(prefix_bytes=["48", "F3"]), d.update(instruction_length=5)),
+                lambda f: f.update(semantic_prefixes=["rex_w", "rep"]),
+            ),
+            "wrong_opcode": (
+                lambda d: d.update(opcode_bytes=["0F", "BD"]),
+                lambda f: f.update(opcode_bytes=["0F", "BD"]),
+            ),
+            "wrong_length": (
+                lambda d: d.update(instruction_length=6),
+                lambda f: None,
+            ),
+            "non_register_modrm": (
+                lambda d: (d["modrm"].update(mod=0, raw="00"), d.update(address={"form": "base_only", "segment": None, "size": 64}, sib=None, operand_signature="tzcnt r64,mem64")),
+                lambda f: (f.update(modrm_mode="memory", address={"form": "base_only", "segment": None, "size": 64}, operand_signature="tzcnt r64,mem64")),
+            ),
+            "bad_rex_byte": (
+                lambda d: d.update(prefix_bytes=["F3", "50"]),
+                lambda f: f.update(semantic_prefixes=["rep", "rex"]),
+            ),
+            "wrong_address": (
+                lambda d: d.update(address={"form": "rip_relative", "segment": None, "size": 64}),
+                lambda f: f.update(address={"form": "rip_relative", "segment": None, "size": 64}),
+            ),
+            "segment_override": (
+                lambda d: d.update(address={"form": "base_only", "segment": "FS", "size": 64}),
+                lambda f: f.update(address={"form": "base_only", "segment": "FS", "size": 64}),
+            ),
+        }
+        candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
+        for name, (exact_mutation, normalized_mutation) in mutations.items():
+            with self.subTest(mutation=name):
+                data = self._baseline_payload("docs/reports/data/stage5/s5-21-isa-inventory.json.gz")
+                exact = next(
+                    record for record in data["exact_encoding_forms"]
+                    if record["dimensions"]["operand_signature"] == "tzcnt r64,r64"
+                )
+                normalized = next(
+                    record for record in data["normalized_instruction_forms"]
+                    if record["instruction_form"]["operand_signature"] == "tzcnt r64,r64"
+                )
+                exact_mutation(exact["dimensions"])
+                normalized_mutation(normalized["instruction_form"])
+                self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
+                self.assertNotIn(candidate, normalized["conditional_candidate_frequencies"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "inventory.json.gz"
+                    mutated = gzip.compress(json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), mtime=0)
+                    target.write_bytes(mutated)
+                    with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
+                        annotate.annotate(target)
+                    self.assertEqual(target.read_bytes(), mutated)
+
+    def test_rep_bsf_register_forms_keep_counts_and_exclude_memory(self) -> None:
+        candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
+        expected = {
+            "docs/reports/data/stage5/s5-21-isa-inventory.json.gz": {
+                "cpl0": 115647, "all": 116155, "unique": 116078,
+                "classification": {"proven_supported": 6296422, "unclassified": 213978},
+            },
+            "docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz": {
+                "cpl0": 115707, "all": 116215, "unique": 116138,
+                "classification": {"proven_supported": 6296706, "unclassified": 214039},
+            },
+        }
+        for relative, want in expected.items():
+            baseline = subprocess.run(
+                ["git", "show", f"{BASE_COMMIT}:{relative}"], cwd=ROOT,
+                check=True, stdout=subprocess.PIPE,
+            ).stdout
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "inventory.json.gz"
+                target.write_bytes(baseline)
+                annotate.annotate(target)
+                data = json.loads(gzip.decompress(target.read_bytes()))
+            self.assertEqual(data["conditional_cpl0_candidate_hit_count"], want["cpl0"])
+            self.assertEqual(data["conditional_candidate_hit_count"], want["all"])
+            self.assertEqual(data["exact_instruction_rows_with_any_conditional_candidate"], want["unique"])
+            self.assertEqual(data["conditional_candidate_supported_overlap_rows"], 40)
+            self.assertEqual(data["classification_frequencies"], want["classification"])
+            self.assertEqual(data["conditional_cpl0_candidate_frequencies"][candidate], 398)
+            self.assertEqual(data["binaries"]["gcc-cc1"]["conditional_cpl0_candidate_frequencies"][candidate], 391)
+            self.assertEqual(data["binaries"]["gcc-as"]["conditional_cpl0_candidate_frequencies"][candidate], 5)
+            self.assertEqual(data["binaries"]["gcc-driver"]["conditional_cpl0_candidate_frequencies"][candidate], 1)
+            self.assertEqual(data["binaries"]["gcc-ld-bfd"]["conditional_cpl0_candidate_frequencies"][candidate], 1)
+            exact_matches = [
+                record for record in data["exact_encoding_forms"]
+                if candidate in record["conditional_candidate_frequencies"]
+            ]
+            self.assertEqual(len(exact_matches), 72)
+            self.assertEqual(sum(record["count"] for record in exact_matches), 398)
+            self.assertTrue(all(record["dimensions"]["modrm"]["mod"] == 3 for record in exact_matches))
+            self.assertTrue(all(record["classification_frequencies"] == {"unclassified": record["count"]} for record in exact_matches))
+            self.assertTrue(all(record["evidence_scope_frequencies"] == {} for record in exact_matches))
+            memory_forms = [
+                record for record in data["exact_encoding_forms"]
+                if record["dimensions"]["opcode_bytes"] == ["0F", "BC"]
+                and "F3" in record["dimensions"]["prefix_bytes"]
+                and record["dimensions"]["modrm"]["mod"] != 3
+            ]
+            self.assertEqual(sum(record["count"] for record in memory_forms), 2)
+            self.assertTrue(all(candidate not in record["conditional_candidate_frequencies"] for record in memory_forms))
+            for record in exact_matches:
+                dims = record["dimensions"]
+                signature = dims["operand_signature"]
+                prefixes = dims["prefix_bytes"]
+                self.assertEqual(prefixes[0], "F3")
+                if len(prefixes) == 2:
+                    rex = int(prefixes[1], 16)
+                    self.assertEqual(bool(rex & 0x08), signature == "tzcnt r64,r64")
+
+    def test_rep_bsf_rex_w_must_match_operand_width(self) -> None:
+        data = self._baseline_payload("docs/reports/data/stage5/s5-21-isa-inventory.json.gz")
+        candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
+        exact = next(
+            record for record in data["exact_encoding_forms"]
+            if record["dimensions"]["operand_signature"] == "tzcnt r32,r32"
+        )
+        normalized = next(
+            record for record in data["normalized_instruction_forms"]
+            if record["instruction_form"]["operand_signature"] == "tzcnt r32,r32"
+            and record["instruction_form"]["semantic_prefixes"] == ["rep"]
+        )
+        exact["dimensions"]["prefix_bytes"] = ["F3", "49"]
+        exact["dimensions"]["instruction_length"] = 5
+        normalized["instruction_form"]["semantic_prefixes"] = ["rep", "rex_w"]
+        self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
+        self.assertNotIn(candidate, normalized["conditional_candidate_frequencies"])
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "inventory.json.gz"
+            mutated = gzip.compress(json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), mtime=0)
+            target.write_bytes(mutated)
+            with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
+                annotate.annotate(target)
+            self.assertEqual(target.read_bytes(), mutated)
+
+    def test_rep_bsf_r64_requires_rex_w(self) -> None:
+        data = self._baseline_payload("docs/reports/data/stage5/s5-21-isa-inventory.json.gz")
+        candidate = "S4-38L4g-REP-BSF-register-BMI1-clear"
+        exact = next(
+            record for record in data["exact_encoding_forms"]
+            if record["dimensions"]["operand_signature"] == "tzcnt r64,r64"
+            and record["dimensions"]["prefix_bytes"] == ["F3", "48"]
+        )
+        dimensions = exact["dimensions"]
+        dimensions["prefix_bytes"] = ["F3"]
+        dimensions["instruction_length"] = 4
+        self.assertNotIn(candidate, exact["conditional_candidate_frequencies"])
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "inventory.json.gz"
+            mutated = gzip.compress(json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(), mtime=0)
+            target.write_bytes(mutated)
+            with self.assertRaisesRegex(ValueError, "observed candidate counts changed"):
+                annotate.annotate(target)
+            self.assertEqual(target.read_bytes(), mutated)
 
 
 if __name__ == "__main__":

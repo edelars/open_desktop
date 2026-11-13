@@ -40,13 +40,13 @@
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
     "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json",
-    "compact_generation_command": "Historical base export (pre-annotation only): python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz. Final annotated compact payload is reproducibly derived from existing exact forms with tools/build/annotate_stage5_cpl0_candidates.py.",
-    "compact_inventory_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
+    "compact_generation_command": "Historical compact export source (not rerun in this slice): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json; latest compact payload is reproducibly derived from committed checkpoint c8ecd02 with tools/build/annotate_stage5_cpl0_candidates.py. No analyzer rerun or target ELF execution.",
+    "compact_inventory_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_repeat_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
-    "conditional_candidate_hit_count": 115817,
+    "compact_repeat_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "conditional_candidate_hit_count": 116215,
     "conditional_candidate_supported_overlap_rows": 40,
-    "conditional_cpl0_candidate_hits": 115309,
+    "conditional_cpl0_candidate_hits": 115707,
     "conditional_local_state_gated_candidate_frequencies": {
       "S2-37ad-CVTTSS2SI-register-state-gated": 8,
       "S2-37ae-CVTTSD2SI-register-state-gated": 28,
@@ -374,12 +374,47 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 115740,
+    "unique_instruction_rows_with_any_conditional_candidate": 116138,
     "unique_mnemonics": 192,
     "date": "2026-11-13",
-    "exact_instruction_rows_with_any_conditional_candidate": 115734,
+    "exact_instruction_rows_with_any_conditional_candidate": 116138,
     "conditional_local_state_gated_candidate_unique_rows": 508,
     "conditional_cpl0_candidate_frequencies": {
+      "S2-45-CPUID": 77,
+      "S2-45-HLT": 9,
+      "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55276,
+      "S4-20c kernel tail (CPL0 gate conditional)": 4,
+      "S4-38L4d-multi-byte-memory-NOP": 54695,
+      "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
+      "S4-38L6a-PREFETCHNTA-base-only": 3,
+      "S4-38L6a-PREFETCHT0-base-only": 3,
+      "S4-38L6d-LEAVE-bare-C9": 2005,
+      "S4-38L7i-FS-GS-qword-load": 1214,
+      "S4-38L7j-FS-GS-qword-SUB": 1862,
+      "S4-38L7k-LOCK-CMPXCHG-qword": 36,
+      "S4-38L7y-LOCK-CMPXCHG-dword": 9,
+      "S4-38L7z-LOCK-ADD-memory-immediate": 33,
+      "S4-38L9b-PAUSE-exact-F3-90": 6,
+      "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
+    },
+    "conditional_cpl0_candidate_hit_count": 115707,
+    "prefetch_candidate_rows": {
+      "S4-38L6a-PREFETCHNTA-base-only": 3,
+      "S4-38L6a-PREFETCHT0-base-only": 3
+    }
+  },
+  "unchanged_rootfs_binary_inputs": true,
+  "candidate_annotation_lineage": {
+    "baseline_commit": "c8ecd0264c138102fe7300f5a7f97005ba8eac6b",
+    "baseline_compact_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
+    "latest_compact_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "raw_analyzer_rerun": false,
+    "raw_analyzer_pair_sha256": [
+      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570",
+      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570"
+    ],
+    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically re-applies the existing exact-form overlays and adds the register-only REP-BSF candidate. Raw analyzer outputs and target ELFs were not regenerated or executed. The prior compact payload is an explicit checkpoint, not a fresh analyzer export.",
+    "prior_cpl0_candidate_frequencies_preserved": {
       "S2-45-CPUID": 77,
       "S2-45-HLT": 9,
       "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55276,
@@ -396,55 +431,62 @@
       "S4-38L9b-PAUSE-exact-F3-90": 6,
       "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
     },
-    "conditional_cpl0_candidate_hit_count": 115303,
-    "prefetch_candidate_rows": {
-      "S4-38L6a-PREFETCHNTA-base-only": 3,
-      "S4-38L6a-PREFETCHT0-base-only": 3
-    }
-  },
-  "unchanged_rootfs_binary_inputs": true,
-  "candidate_annotation_lineage": {
-    "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
-    "observed_exact_instruction_rows": 1,
-    "binary_frequencies": {
-      "gcc-cc1": 1
+    "prior_local_state_gated_candidate_frequencies_preserved": {
+      "S2-37ad-CVTTSS2SI-register-state-gated": 8,
+      "S2-37ae-CVTTSD2SI-register-state-gated": 28,
+      "S2-37ap-SUBSD-register-state-gated": 16,
+      "S2-37at-MULSD-register-state-gated": 31,
+      "S2-37au-MULSS-register-state-gated": 6,
+      "S2-37ax-DIVSD-register-state-gated": 59,
+      "S2-37ay-DIVSS-register-state-gated": 13,
+      "S2-37bb-ADDSD-register-state-gated": 46,
+      "S2-37bc-ADDSS-register-state-gated": 15,
+      "S2-37be-CVTSD2SS-register-state-gated": 1,
+      "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+      "S2-37q-CVTSI2SD-register-state-gated": 168,
+      "S2-37r-CVTSI2SS-register-state-gated": 50,
+      "S2-37t-CVTSS2SD-register-state-gated": 19,
+      "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
     },
-    "exact_bytes": "F2 0F 5A F1",
-    "prior_raw_pair_sha256": [
-      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570",
-      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570"
-    ],
-    "raw_analyzer_rerun": false,
-    "basis": "Guarded annotation derived from the existing compact exact-form record; accepted rootfs and pinned analyzer inputs unchanged. No target ELF execution; static E ELF remains a separate 345-row binary.",
-    "compact_payload_repeat_sha256": "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c",
-    "compact_payload_repeat_cmp_exit_code": 0,
-    "compact_derivation": "Decoded prior compact JSON, annotated the existing exact F3 90 and C9 forms in normalized and exact records, and serialized deterministic JSON+gzip twice. Raw analyzer pair was not regenerated; its recorded hashes remain unchanged.",
-    "additional_candidates": [
-      {
-        "candidate_id": "S4-38L9b-PAUSE-exact-F3-90",
-        "bytes": "F3 90",
-        "rows": 6,
-        "binary_frequencies": {
-          "gcc-cc1": 2,
-          "gcc-collect2": 2,
-          "gcc-driver": 2
-        }
+    "added_candidate": {
+      "candidate_id": "S4-38L4g-REP-BSF-register-BMI1-clear",
+      "condition": "Long64 runtime gate; F3 0F BC /r register forms only; applicable only when CPUID BMI1=0 and composed CPL0 control_policy is active, where the reviewed profile treats REP-BSF encoding as BSF. This does not claim TZCNT semantics or support.",
+      "rows": 398,
+      "exact_encoding_keys": 72,
+      "normalized_forms": {
+        "r32_register": 2,
+        "r64_register": 1
       },
-      {
-        "candidate_id": "S4-38L6d-LEAVE-bare-C9",
-        "bytes": "C9",
-        "rows": 2005,
-        "binary_frequencies": {
-          "bash": 868,
-          "dash": 58,
-          "gcc-as": 88,
-          "gcc-cc1": 285,
-          "gcc-collect2": 262,
-          "gcc-driver": 262,
-          "gcc-ld-bfd": 54,
-          "tar": 128
-        }
-      }
-    ]
+      "binary_frequencies": {
+        "gcc-as": 5,
+        "gcc-cc1": 391,
+        "gcc-driver": 1,
+        "gcc-ld-bfd": 1
+      },
+      "memory_rows_excluded": 2,
+      "classification": "unclassified",
+      "evidence_scope": "outside"
+    },
+    "candidate_ids_after_derivation": [
+      "S2-45-CPUID",
+      "S2-45-HLT",
+      "S2-48 ENDBR64 no-op (CPL0 gate conditional)",
+      "S4-20c kernel tail (CPL0 gate conditional)",
+      "S4-38L4d-multi-byte-memory-NOP",
+      "S4-38L4g-REP-BSF-register-BMI1-clear",
+      "S4-38L6a-PREFETCHNTA-base-only",
+      "S4-38L6a-PREFETCHT0-base-only",
+      "S4-38L6d-LEAVE-bare-C9",
+      "S4-38L7i-FS-GS-qword-load",
+      "S4-38L7j-FS-GS-qword-SUB",
+      "S4-38L7k-LOCK-CMPXCHG-qword",
+      "S4-38L7y-LOCK-CMPXCHG-dword",
+      "S4-38L7z-LOCK-ADD-memory-immediate",
+      "S4-38L9b-PAUSE-exact-F3-90",
+      "composed_cpl0_profile_candidate; control/state/port gates unresolved"
+    ],
+    "compact_payload_repeat_sha256": "a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad",
+    "compact_payload_repeat_cmp_exit_code": 0
   }
 }

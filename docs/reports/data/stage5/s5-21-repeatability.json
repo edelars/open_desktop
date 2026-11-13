@@ -3,13 +3,13 @@
   "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json",
   "compact_evidence": {
     "coarse_operand_signatures": 560,
-    "generation_command": "Historical base export (pre-annotation only): python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json docs/reports/data/stage5/s5-21-isa-inventory.json.gz. Final annotated compact payload is reproducibly derived from existing exact forms with tools/build/annotate_stage5_cpl0_candidates.py.",
+    "generation_command": "Historical compact export source (not rerun in this slice): work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json; latest compact payload is reproducibly derived from committed checkpoint c8ecd02 with tools/build/annotate_stage5_cpl0_candidates.py.",
     "normalized_instruction_forms": 1269,
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "repeat_cmp_exit_code": 0,
-    "repeat_sha256": "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
-    "sha256": "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
-    "size_bytes": 1124419
+    "repeat_sha256": "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
+    "sha256": "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
+    "size_bytes": 1125553
   },
   "date_utc": "2026-11-13",
   "full_inventory": {
@@ -19,9 +19,9 @@
     },
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
-    "conditional_candidate_hit_count": 115757,
+    "conditional_candidate_hit_count": 116155,
     "conditional_candidate_supported_overlap_rows": 40,
-    "conditional_cpl0_candidate_hits": 115249,
+    "conditional_cpl0_candidate_hits": 115647,
     "conditional_local_state_gated_candidate_frequencies": {
       "S2-37ad-CVTTSS2SI-register-state-gated": 8,
       "S2-37ae-CVTTSD2SI-register-state-gated": 28,
@@ -311,7 +311,7 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 115680,
+    "unique_instruction_rows_with_any_conditional_candidate": 116078,
     "unique_mnemonics": 192,
     "instruction_rows": 6510400,
     "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json",
@@ -321,6 +321,7 @@
       "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55243,
       "S4-20c kernel tail (CPL0 gate conditional)": 4,
       "S4-38L4d-multi-byte-memory-NOP": 54671,
+      "S4-38L4g-REP-BSF-register-BMI1-clear": 398,
       "S4-38L6a-PREFETCHNTA-base-only": 3,
       "S4-38L6a-PREFETCHT0-base-only": 3,
       "S4-38L6d-LEAVE-bare-C9": 2005,
@@ -332,8 +333,8 @@
       "S4-38L9b-PAUSE-exact-F3-90": 6,
       "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
     },
-    "conditional_cpl0_candidate_hit_count": 115249,
-    "exact_instruction_rows_with_any_conditional_candidate": 115680
+    "conditional_cpl0_candidate_hit_count": 115647,
+    "exact_instruction_rows_with_any_conditional_candidate": 116078
   },
   "limits": [
     "Guest ELF binaries were extracted from the accepted rootfs and statically disassembled; none were executed.",
@@ -369,67 +370,88 @@
   },
   "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass3.json",
   "candidate_annotation_lineage": {
-    "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
-    "observed_exact_instruction_rows": 1,
-    "binary_frequencies": {
-      "gcc-cc1": 1
-    },
-    "exact_bytes": "F2 0F 5A F1",
-    "prior_raw_pair_sha256": [
+    "baseline_commit": "c8ecd0264c138102fe7300f5a7f97005ba8eac6b",
+    "baseline_compact_sha256": "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
+    "latest_compact_sha256": "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
+    "raw_analyzer_rerun": false,
+    "raw_analyzer_pair_sha256": [
       "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc",
       "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc"
     ],
-    "raw_analyzer_rerun": false,
-    "basis": "Guarded annotation derived from the existing compact exact-form record; accepted rootfs and pinned analyzer inputs unchanged. No target ELF execution.",
-    "compact_payload_repeat_sha256": "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4",
-    "compact_payload_repeat_cmp_exit_code": 0,
-    "compact_derivation": "Decoded prior compact JSON, annotated existing exact F3 90, C9, 0F 18 00 and 0F 18 08 forms in normalized and exact records, and serialized deterministic JSON+gzip twice. Raw analyzer pair was not regenerated; its recorded hashes remain unchanged.",
-    "additional_candidates": [
-      {
-        "candidate_id": "S4-38L9b-PAUSE-exact-F3-90",
-        "bytes": "F3 90",
-        "rows": 6,
-        "binary_frequencies": {
-          "gcc-cc1": 2,
-          "gcc-collect2": 2,
-          "gcc-driver": 2
-        }
+    "derivation": "Decoded the committed compact inventory at baseline_commit; tools/build/annotate_stage5_cpl0_candidates.py deterministically re-applies the existing exact-form overlays and adds the register-only REP-BSF candidate. Raw analyzer outputs and target ELFs were not regenerated or executed. The prior compact payload is an explicit checkpoint, not a fresh analyzer export.",
+    "prior_cpl0_candidate_frequencies_preserved": {
+      "S2-45-CPUID": 77,
+      "S2-45-HLT": 8,
+      "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55243,
+      "S4-20c kernel tail (CPL0 gate conditional)": 4,
+      "S4-38L4d-multi-byte-memory-NOP": 54671,
+      "S4-38L6a-PREFETCHNTA-base-only": 3,
+      "S4-38L6a-PREFETCHT0-base-only": 3,
+      "S4-38L6d-LEAVE-bare-C9": 2005,
+      "S4-38L7i-FS-GS-qword-load": 1213,
+      "S4-38L7j-FS-GS-qword-SUB": 1861,
+      "S4-38L7k-LOCK-CMPXCHG-qword": 36,
+      "S4-38L7y-LOCK-CMPXCHG-dword": 9,
+      "S4-38L7z-LOCK-ADD-memory-immediate": 33,
+      "S4-38L9b-PAUSE-exact-F3-90": 6,
+      "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
+    },
+    "prior_local_state_gated_candidate_frequencies_preserved": {
+      "S2-37ad-CVTTSS2SI-register-state-gated": 8,
+      "S2-37ae-CVTTSD2SI-register-state-gated": 28,
+      "S2-37ap-SUBSD-register-state-gated": 16,
+      "S2-37at-MULSD-register-state-gated": 31,
+      "S2-37au-MULSS-register-state-gated": 6,
+      "S2-37ax-DIVSD-register-state-gated": 59,
+      "S2-37ay-DIVSS-register-state-gated": 13,
+      "S2-37bb-ADDSD-register-state-gated": 46,
+      "S2-37bc-ADDSS-register-state-gated": 15,
+      "S2-37be-CVTSD2SS-register-state-gated": 1,
+      "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+      "S2-37q-CVTSI2SD-register-state-gated": 168,
+      "S2-37r-CVTSI2SS-register-state-gated": 50,
+      "S2-37t-CVTSS2SD-register-state-gated": 19,
+      "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
+    },
+    "added_candidate": {
+      "candidate_id": "S4-38L4g-REP-BSF-register-BMI1-clear",
+      "condition": "Long64 runtime gate; F3 0F BC /r register forms only; applicable only when CPUID BMI1=0 and composed CPL0 control_policy is active, where the reviewed profile treats REP-BSF encoding as BSF. This does not claim TZCNT semantics or support.",
+      "rows": 398,
+      "exact_encoding_keys": 72,
+      "normalized_forms": {
+        "r32_register": 2,
+        "r64_register": 1
       },
-      {
-        "candidate_id": "S4-38L6d-LEAVE-bare-C9",
-        "bytes": "C9",
-        "rows": 2005,
-        "binary_frequencies": {
-          "bash": 868,
-          "dash": 58,
-          "gcc-as": 88,
-          "gcc-cc1": 285,
-          "gcc-collect2": 262,
-          "gcc-driver": 262,
-          "gcc-ld-bfd": 54,
-          "tar": 128
-        }
+      "binary_frequencies": {
+        "gcc-as": 5,
+        "gcc-cc1": 391,
+        "gcc-driver": 1,
+        "gcc-ld-bfd": 1
       },
-      {
-        "candidate_id": "S4-38L6a-PREFETCHNTA-base-only",
-        "bytes": "0F 18 00",
-        "rows": 3,
-        "binary_frequencies": {
-          "gcc-cc1": 1,
-          "gcc-collect2": 1,
-          "gcc-driver": 1
-        }
-      },
-      {
-        "candidate_id": "S4-38L6a-PREFETCHT0-base-only",
-        "bytes": "0F 18 08",
-        "rows": 3,
-        "binary_frequencies": {
-          "gcc-cc1": 1,
-          "gcc-collect2": 1,
-          "gcc-driver": 1
-        }
-      }
-    ]
+      "memory_rows_excluded": 2,
+      "classification": "unclassified",
+      "evidence_scope": "outside"
+    },
+    "candidate_ids_after_derivation": [
+      "S2-45-CPUID",
+      "S2-45-HLT",
+      "S2-48 ENDBR64 no-op (CPL0 gate conditional)",
+      "S4-20c kernel tail (CPL0 gate conditional)",
+      "S4-38L4d-multi-byte-memory-NOP",
+      "S4-38L4g-REP-BSF-register-BMI1-clear",
+      "S4-38L6a-PREFETCHNTA-base-only",
+      "S4-38L6a-PREFETCHT0-base-only",
+      "S4-38L6d-LEAVE-bare-C9",
+      "S4-38L7i-FS-GS-qword-load",
+      "S4-38L7j-FS-GS-qword-SUB",
+      "S4-38L7k-LOCK-CMPXCHG-qword",
+      "S4-38L7y-LOCK-CMPXCHG-dword",
+      "S4-38L7z-LOCK-ADD-memory-immediate",
+      "S4-38L9b-PAUSE-exact-F3-90",
+      "composed_cpl0_profile_candidate; control/state/port gates unresolved"
+    ],
+    "compact_payload_repeat_sha256": "7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9",
+    "compact_payload_repeat_cmp_exit_code": 0
   }
 }

@@ -251,6 +251,9 @@ S5-21 CPL0 PREFETCH follow-up (2026-11-13): the exact bare `0F 18 00` PREFETCHNT
 
 Текущий статус (2026-11-13, PREFETCH candidate slice): точные observed compact records PREFETCHNTA/T0 помечены как CPL0 conditional candidates без изменения classification/evidence scope; six rows rootfs/E. Повторяемость компактной derivation проверяется парным тестом. Raw analyzer pass не выполнялся. Полная S5-21 остаётся blocked по incomplete accepted-profile disposition и runtime E/JIT evidence; checkbox остаётся пустым. S4-38L6a minor tests на truncated operand/repeated `66` остаются открыты (ISSUE-084); SDM attribution остаётся отдельным открытым provenance вопросом (ISSUE-085).
 
+
+Текущий статус (2026-11-13, REP-BSF register candidate slice): компактная разметка включает 398 точных регистровых строк (`F3 0F BC /r`) в 72 exact keys, при условии Long64 runtime gate, CPUID BMI1=0 и composed CPL0 gate; две memory строки исключены. Все строки остаются unclassified и вне evidence_scope. Compact-only derivation from `c8ecd02`, raw analyzer не перезапускался и target ELF не исполнялись. Новые compact SHA-256: rootfs `7dceca57748810beb6d1c05802c9d1a83aeb6e2c61faa0d36d3eab6b1864b3a9`, E-inclusive `a4032b62e963025f4e0020306968807cd306e91e56ba15a9b285a51b08cb47ad`. Independent semantic review approves candidate-only eligibility at HEAD `c8ecd02`; it verified Intel SDM rev. 093 source for the BSF fallback. Historical Stage 4 minor tests remain open; S5-21 остаётся blocked, checkbox пустой. См. [отчётный follow-up](../reports/STAGE_5_REPORT.md#s5-21-cpl0-conditional-candidate-follow-up-rep-bsf-registers-2026-11-13) и [ISSUE-079](../KNOWN_ISSUES.md#issue-079-s5-21-accepted-profile-registry-is-incomplete).
+
 ### S5-02. Описать контракт постоянного диска
 
 - [x] Принято после архитектурного ревью.
