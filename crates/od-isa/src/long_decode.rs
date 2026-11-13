@@ -737,7 +737,8 @@ pub enum Operation {
     /// S4-38L7ah: `64 [REX] 83 /7 ib` (CMP m32, imm8, or m64, imm8 with REX.W, with the FS base),
     /// memory operand only. `immediate` is the imm8 already sign-extended to 64 bits; the compare
     /// masks it to the operand width. Only the flags change (no write). Executed only in the CPL0
-    /// set.
+    /// set. S4-38L9j: the destination may also be a word (`64 66 83 /7 ib`, imm8 sign-extended to
+    /// 16 bits, and `64 66 81 /7 iw`, imm16); `dst.size` is then `Word` and two bytes are read.
     CmpFsMemImm {
         dst: MemoryOperand,
         immediate: u64,
@@ -9089,22 +9090,34 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }
                     }
                 } else if let (true, 7, Some(0x64 | 0x65), Operand::Memory(destination)) =
-                    (byte == 0x83, group, prefixes.segment, dst)
+                    (byte == 0x83 || byte == 0x81, group, prefixes.segment, dst)
                 {
                     // S4-38L7ah: `[64|65] [REX] 83 /7 ib` (CMP m32, imm8, or m64, imm8 with
                     // REX.W) with a memory destination. The register form (mod = 11) and the
                     // other `83 /n` selectors are not touched (they take the paths below, with
-                    // the existing refusals); `80 /7` and `81 /7` with FS/GS stay refused.
-                    // LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte that is
-                    // not immediately before the opcode (the rule of S4-38L7aa).
+                    // the existing refusals); `80 /7` with FS/GS stays refused.
+                    // S4-38L9j: and the word forms `[64|65] 66 83 /7 ib` (imm8 sign-extended to
+                    // 16 bits) and `[64|65] 66 81 /7 iw` (imm16), either order of 0x66 and the
+                    // segment prefix; the dword/qword `81 /7` stays refused with its opcode.
+                    // LOCK/REP, 0x66 with REX.W (the size is then qword), 0x67 stay refused, as
+                    // does a REX byte that is not immediately before the opcode (the rule of
+                    // S4-38L7aa).
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()
                         .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                    let size_in_slice = if byte == 0x83 {
+                        match size {
+                            OperandSize::Qword | OperandSize::Dword => !prefixes.operand_override,
+                            OperandSize::Word => true,
+                            _ => false,
+                        }
+                    } else {
+                        size == OperandSize::Word
+                    };
                     if stale_rex
-                        || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                        || !size_in_slice
                         || prefixes.group1.is_some()
-                        || prefixes.operand_override
                         || prefixes.address_override
                     {
                         return Err(self.unsupported(opcode));
@@ -26843,8 +26856,8 @@ mod tests {
             );
         }
         for (bytes, refused_opcode) in [
-            // 0x66, 0x67, LOCK, REP, REPNE.
-            (&[0x66, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            // 0x66 with REX.W (qword), 0x67, LOCK, REP, REPNE. (The word forms with 0x66 and
+            // no REX.W are decoded since S4-38L9j.)
             (&[0x65, 0x66, 0x48, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
             (&[0x65, 0x67, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
             (&[0xf0, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
@@ -26868,6 +26881,101 @@ mod tests {
                 matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
                 "{bytes:02x?}: {result:?}"
             );
+        }
+    }
+
+    #[test]
+    fn segment_cmp_word_decodes_fs_gs_memory_forms_only() {
+        // S4-38L9j: `[64|65] 66 83 /7 ib` and `[64|65] 66 81 /7 iw`, either prefix order.
+        // The S4-38L9i diagnostic boundary: `cmpw $0x0, %gs:0x2fcee35(%rip)`.
+        let mut memory = Memory::new(&[0x65, 0x66, 0x83, 0x3d, 0x35, 0xee, 0xfc, 0x02, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 9);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmpGsMemImm { dst, immediate: 0 }
+                if dst.size == OperandSize::Word
+                    && dst.base == AddressBase::NextRip
+                    && dst.displacement == 0x02fc_ee35
+        ));
+        // 66 before the segment prefix; a negative imm8 is sign-extended (masked at execution).
+        let mut memory = Memory::new(&[0x66, 0x64, 0x83, 0x3d, 1, 0, 0, 0, 0xff]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 9);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmpFsMemImm { dst, immediate: u64::MAX } if dst.size == OperandSize::Word
+        ));
+        // `66 81 /7 iw`: imm16 as is, length counts both prefix bytes, ModRM, disp32 and imm16.
+        let mut memory = Memory::new(&[0x65, 0x66, 0x81, 0x3d, 1, 0, 0, 0, 0x34, 0x12]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 10);
+        assert!(matches!(
+            decoded.operation,
+            Operation::CmpGsMemImm { dst, immediate: 0x1234 } if dst.size == OperandSize::Word
+        ));
+        let mut memory = Memory::new(&[0x66, 0x64, 0x81, 0x38, 0x00, 0x80]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpFsMemImm { dst, immediate: 0x8000 } if dst.size == OperandSize::Word
+        ));
+        // REX.B between 66/segment and the opcode extends the base.
+        let mut memory = Memory::new(&[0x66, 0x65, 0x41, 0x83, 0x38, 0x01]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpGsMemImm { dst, immediate: 1 }
+                if dst.size == OperandSize::Word && dst.base == AddressBase::Register(Register::R8)
+        ));
+        // The register form with 66 and a segment prefix is the plain word CMP.
+        let mut memory = Memory::new(&[0x65, 0x66, 0x83, 0xf8, 0x01]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                ..
+            }
+        ));
+        for (bytes, refused_opcode) in [
+            // LOCK, REP, REPNE, 0x67, a second segment prefix, a doubled 0x66, 0x66 with REX.W.
+            (&[0xf0, 0x66, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0xf3, 0x65, 0x66, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0xf2, 0x66, 0x64, 0x81, 0x3d, 1, 0, 0, 0, 1, 0][..], 0x81),
+            (&[0x67, 0x66, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0x66, 0x64, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0x66, 0x66, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0x66, 0x65, 0x48, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (
+                &[0x66, 0x65, 0x48, 0x81, 0x3d, 1, 0, 0, 0, 1, 0, 0, 0][..],
+                0x81,
+            ),
+            // CS/DS/ES/SS next to FS/GS.
+            (&[0x66, 0x2e, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            // REX not directly before the opcode.
+            (&[0x48, 0x66, 0x65, 0x83, 0x3d, 1, 0, 0, 0, 1][..], 0x83),
+            (
+                &[0x66, 0x65, 0x48, 0x66, 0x83, 0x3d, 1, 0, 0, 0, 1][..],
+                0x83,
+            ),
+            // `80 /7`, the dword `81 /7` and the other word `83 /n` stay outside the slice.
+            (&[0x66, 0x65, 0x80, 0x3d, 1, 0, 0, 0, 1][..], 0x80),
+            (&[0x66, 0x65, 0x83, 0x05, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0x66, 0x65, 0x83, 0x2d, 1, 0, 0, 0, 1][..], 0x83),
+            (&[0x65, 0x81, 0x3d, 1, 0, 0, 0, 1, 0, 0, 0][..], 0x81),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
+            );
+        }
+        // A truncated immediate (imm8 missing, imm16 with one byte) is not a decoded form.
+        for bytes in [
+            &[0x65u8, 0x66, 0x83, 0x3d, 0x35, 0xee, 0xfc, 0x02][..],
+            &[0x65, 0x66, 0x81, 0x3d, 1, 0, 0, 0, 0x34][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
     }
 
