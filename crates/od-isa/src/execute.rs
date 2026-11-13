@@ -37051,6 +37051,20 @@ fn step_configured(
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
         }
+        // S4-38L9B: `MOV FS/GS, r16` (`8E /r`, mod = 11, no prefix) with a register other than AX
+        // executes the null-selector load only (0..=3, any RPL), inside the CPL0 profile set at
+        // CPL0 in Long64. A non-null selector (GDT read, descriptor checks) is refused with the
+        // opcode and nothing mutated.
+        Operation::LoadFsSelectorReg { source } | Operation::LoadGsSelectorReg { source } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8e
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default()
+                && control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.gpr[source as usize] as u16 & !3 == 0
+        }
         Operation::LoadNullDsSelector
         | Operation::LoadNullEsSelector
         | Operation::LoadNullSsSelector => {
@@ -50330,6 +50344,16 @@ fn step_configured(
         }
         Operation::LoadGsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
             state.gs_selector = 0;
+            state.gs_unusable = true;
+        }
+        // S4-38L9B: the selector (0..=3, checked in the admission above) is stored as given; the
+        // FS/GS base and any modeled cache are left untouched, as for the null load from AX.
+        Operation::LoadFsSelectorReg { source } => {
+            state.fs_selector = state.gpr[source as usize] as u16;
+            state.fs_unusable = true;
+        }
+        Operation::LoadGsSelectorReg { source } => {
+            state.gs_selector = state.gpr[source as usize] as u16;
             state.gs_unusable = true;
         }
         Operation::LoadFsSelector => {

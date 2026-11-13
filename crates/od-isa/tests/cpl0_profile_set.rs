@@ -50876,3 +50876,273 @@ fn bare_and_ds_xadd_dword_forms_ignore_the_fs_and_gs_bases_next_to_the_segment_f
         assert_eq!(state.gpr[Register::Rax as usize], 4);
     }
 }
+
+// ---- S4-38L9B: MOV FS/GS, r16 (`8E /r`, mod = 11, a source register other than AX) in the CPL0
+// set. Only the null selectors 0..=3 execute: the visible selector takes the source's low 16 bits,
+// the register is marked unusable, and the FS/GS base and any modeled cache stay as they were
+// (SDM Vol.3 "Segment Loading Instructions in IA-32e Mode", from memory, not re-checked against the
+// text: in 64-bit mode a null selector load into FS/GS does not clear the base; the base comes from
+// the MSRs or WRFSBASE/WRGSBASE). ----
+
+const MOV_EDI_GS: [u8; 2] = [0x8e, 0xef];
+const MOV_EDI_FS: [u8; 2] = [0x8e, 0xe7];
+const SREG_FS_BASE: u64 = 0xffff_8880_00aa_0000;
+const SREG_GS_BASE: u64 = 0xffff_8880_1bad_0000;
+const SREG_RFLAGS: u64 = 2 | IF | (1 << 10) | 1 | (1 << 6);
+
+/// A board state with distinct, non-zero FS/GS values and non-zero source registers.
+fn gs9b_state() -> LongModeState {
+    let mut state = board_state();
+    state.fs_base = SREG_FS_BASE;
+    state.gs_base = SREG_GS_BASE;
+    state.fs_selector = 0x2b;
+    state.gs_selector = 0x2c;
+    state.rflags = SREG_RFLAGS;
+    for (index, value) in state.gpr.iter_mut().enumerate().skip(1) {
+        *value = 0x0123_4567_89ab_cdef ^ ((index as u64) << 40);
+    }
+    state.gpr[Register::Rsp as usize] = 0x7ff0;
+    state
+}
+
+fn run_gs9b(code: &[u8], state: &mut LongModeState) -> Cpl0ProfileSetResult {
+    let mut memory = Memory::code(code);
+    run_set(state, &mut memory, &base(), 1).unwrap()
+}
+
+#[test]
+fn mov_edi_gs_with_the_null_selector_sets_the_selector_and_keeps_the_base() {
+    // The S4-38L9A boundary: `8e ef` at asm_load_gs_index+0x7 with RDI = 0.
+    let mut state = gs9b_state();
+    state.gpr[Register::Rdi as usize] = 0;
+    let before = state.clone();
+    let result = run_gs9b(&MOV_EDI_GS, &mut state);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    expected.rip += 2;
+    expected.gs_selector = 0;
+    expected.gs_unusable = true;
+    assert_eq!(state, expected);
+    assert_eq!(state.gs_base, SREG_GS_BASE);
+    assert_eq!(state.fs_base, SREG_FS_BASE);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x7ff0);
+    assert_eq!(state.rflags, SREG_RFLAGS);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn mov_edi_fs_with_the_null_selector_sets_the_selector_and_keeps_the_base() {
+    let mut state = gs9b_state();
+    state.gpr[Register::Rdi as usize] = 0;
+    let before = state.clone();
+    let result = run_gs9b(&MOV_EDI_FS, &mut state);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    expected.rip += 2;
+    expected.fs_selector = 0;
+    expected.fs_unusable = true;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn mov_sreg_register_forms_read_the_low_16_bits_of_every_source_register() {
+    // Every source register 1..=7 for FS and GS, and the null selectors with RPL bits; the upper
+    // bits of the source are ignored (r/m16).
+    for (reg_field, is_gs) in [(4u8, false), (5u8, true)] {
+        for rm in 1u8..=7 {
+            for (value, selector) in [
+                (0u64, 0u16),
+                (1, 1),
+                (2, 2),
+                (3, 3),
+                (0xdead_beef_1234_0002, 2),
+                (0xffff_ffff_ffff_0000, 0),
+            ] {
+                let modrm = 0xc0 | (reg_field << 3) | rm;
+                let mut state = gs9b_state();
+                state.gpr[rm as usize] = value;
+                let before = state.clone();
+                let result = run_gs9b(&[0x8e, modrm], &mut state);
+                let label = format!("modrm {modrm:#x} value {value:#x}");
+                assert_eq!(result.instructions_executed, 1, "{label}");
+                let mut expected = before;
+                expected.rip += 2;
+                if is_gs {
+                    expected.gs_selector = selector;
+                    expected.gs_unusable = true;
+                } else {
+                    expected.fs_selector = selector;
+                    expected.fs_unusable = true;
+                }
+                assert_eq!(state, expected, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn mov_sreg_register_form_keeps_a_modeled_cache() {
+    let mut state = gs9b_state();
+    state.fs_cache = Some(FS_GS_CACHE);
+    state.gs_cache = Some(FS_GS_CACHE);
+    state.gpr[Register::Rdi as usize] = 0;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x8e, 0xef, 0x8e, 0xe7]);
+    let result = run_set(&mut state, &mut memory, &base(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = before;
+    expected.rip += 4;
+    expected.gs_selector = 0;
+    expected.fs_selector = 0;
+    expected.gs_unusable = true;
+    expected.fs_unusable = true;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn mov_sreg_register_form_with_a_non_null_selector_is_refused_without_mutation() {
+    for modrm in [0xefu8, 0xe7, 0xe1, 0xe9, 0xee] {
+        for value in [4u64, 8, 0x10, 0x2b, 0x1_0000 | 0x18, 0xffff] {
+            let mut state = gs9b_state();
+            state.gpr[(modrm & 7) as usize] = value;
+            let before = state.clone();
+            let result = run_gs9b(&[0x8e, modrm], &mut state);
+            let label = format!("modrm {modrm:#x} value {value:#x}");
+            assert_eq!(
+                exit(&result),
+                &RunExit::Unsupported { opcode: 0x8e },
+                "{label}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            assert_eq!(state, before, "{label}");
+        }
+    }
+}
+
+#[test]
+fn mov_sreg_register_form_prefix_variants_are_refused_without_mutation() {
+    let forms: [&[u8]; 10] = [
+        &[0x66, 0x8e, 0xef],
+        &[0x67, 0x8e, 0xef],
+        &[0xf2, 0x8e, 0xef],
+        &[0xf3, 0x8e, 0xef],
+        &[0x64, 0x8e, 0xef],
+        &[0x65, 0x8e, 0xef],
+        &[0x48, 0x8e, 0xef],
+        &[0x40, 0x8e, 0xef],
+        &[0x41, 0x8e, 0xef],
+        &[0xf0, 0x8e, 0xef],
+    ];
+    for code in forms {
+        let mut state = gs9b_state();
+        state.gpr[Register::Rdi as usize] = 0;
+        let before = state.clone();
+        let result = run_gs9b(code, &mut state);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8e },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn other_8e_forms_stay_refused_with_a_non_ax_source() {
+    // ES/CS/SS/DS (reg 0..3) with a non-AX register, reg 6/7, and memory forms (mod != 11).
+    let forms: [&[u8]; 12] = [
+        &[0x8e, 0xc7],
+        &[0x8e, 0xcf],
+        &[0x8e, 0xd7],
+        &[0x8e, 0xdf],
+        &[0x8e, 0xf7],
+        &[0x8e, 0xff],
+        &[0x8e, 0x28],
+        &[0x8e, 0x20],
+        &[0x8e, 0x6f, 0x08],
+        &[0x8e, 0xa7, 0, 1, 0, 0],
+        &[0x8e, 0x2c, 0x24],
+        &[0x8e, 0x2d, 0, 0, 0, 0],
+    ];
+    for code in forms {
+        let mut state = gs9b_state();
+        state.gpr[Register::Rdi as usize] = 0;
+        state.gpr[Register::Rax as usize] = 0;
+        let before = state.clone();
+        let result = run_gs9b(code, &mut state);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8e },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn mov_sreg_register_form_outside_the_set_is_unsupported() {
+    // The plain entry has no control-register policy: the form is not admitted.
+    let mut state = LongModeState {
+        cr0: None,
+        cr4: None,
+        activity: None,
+        sti_shadow: None,
+        ..gs9b_state()
+    };
+    state.gpr[Register::Rdi as usize] = 0;
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_EDI_GS);
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn mov_sreg_register_form_at_cpl3_is_rejected_at_entry_without_mutation() {
+    let mut state = gs9b_state();
+    state.gpr[Register::Rdi as usize] = 0;
+    let before = state.clone();
+    let mut memory = Memory::code(&MOV_EDI_GS);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+}
+
+#[test]
+fn bare_mov_fs_gs_ax_still_takes_its_own_path() {
+    // Regression: `8e e0` / `8e e8` (MOV FS/GS, AX) keep the S2-46 behaviour.
+    let mut state = gs9b_state();
+    state.gpr[Register::Rax as usize] = 0;
+    let before = state.clone();
+    let mut memory = Memory::code(&[0x8e, 0xe0, 0x8e, 0xe8]);
+    let result = run_set(&mut state, &mut memory, &base(), 2).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    let mut expected = before;
+    expected.rip += 4;
+    expected.fs_selector = 0;
+    expected.gs_selector = 0;
+    expected.fs_unusable = true;
+    expected.gs_unusable = true;
+    assert_eq!(state, expected);
+}
