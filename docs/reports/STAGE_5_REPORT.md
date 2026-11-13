@@ -366,3 +366,43 @@ The rootfs and E-inclusive compact inventories each contain the same 292 exact r
 These rows are outside the accepted S2-16d/e near-indirect-JMP slices, which currently accept ordinary `FF /4` register forms with REX.B and ordinary memory forms, respectively; the Stage 5 profile registry has no `3E`/NOTRACK entry. The decoder's register-ModRM indirect-JMP path rejects segment-prefixed forms (including its existing segment-prefix rejection case), so these observations do not demonstrate decoder acceptance. Intel SDM Vol. 1 CET NOTRACK behavior is runtime-gated by the applicable `IA32_U_CET.NO_TRACK_EN` or `IA32_S_CET.NO_TRACK_EN` state; the `3E` encoding alone cannot establish whether IBT tracking is suppressed. See the [Intel SDM documentation page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) and the open Stage 2/4 handoff in [ISSUE-079](../KNOWN_ISSUES.md#issue-079-s5-21-accepted-profile-registry-is-incomplete).
 
 Next owner slice: Stage 2 must decide and accept the exact `3E FF /4` register-prefix semantics, including CET/IBT runtime gates and target/fault/no-commit boundaries. Stage 4 may separately choose whether to add a CPL0 gate for the observed profile. Stage 5 may annotate these rows only after the relevant Stage 2 acceptance (and any selected Stage 4 gate) is explicit. This handoff changes no source, inventory, classification, counters, or Stage 4 disposition; S5-21 remains blocked/unaccepted.
+
+### S5-21 ranked strict residual handoff (2026-11-13)
+
+A strict static residual ranking is now available for the rootfs and E-inclusive compact inventories. Rootfs has 97,808 rows across 157 normalized forms and 1,973 exact encoding keys; E-inclusive has 97,809 rows across the same 157 forms and 1,973 keys. The E delta is one row, with zero new normalized forms or exact keys. Scenario C (bash, dash, tar) contributes 2,213 rootfs rows / 61 forms / 322 keys; scenario D contributes 97,152 / 149 / 1,937. Both scenarios have zero E delta.
+
+Compact input SHA-256: rootfs `5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2`; E-inclusive `40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239`.
+
+A normalized form is ranked only if its aggregate classification is wholly `unclassified` and its conditional-candidate, local-candidate, evidence-scope, and profile-match maps are empty. Every exact key under the form must pass the same checks; any partial exact-key profile/evidence match excludes the whole normalized form. All ranked rows remain unclassified. This is a static coverage opportunity ranking, not runtime frequency, performance, speedup, or implementation-cost evidence. It does not imply unsupported status and does not change candidate counts/classifications or historical counters; those remain dated snapshot history above.
+
+#### Scenario C top normalized signatures
+
+| # | Signature | Prefixes | Opcode | Group | ModR/M | Address | Rows | Exact keys | Binary distribution |
+|---:|---|---|---|---:|---|---|---:|---:|---|
+| 1 | `movaps mem128,xmm` | `(none)` | `0F 29` |  | memory | `base_only/a64` | 534 | 19 | bash=306, dash=70, tar=158 |
+| 2 | `movdqa xmm,mem128` | `operand_size` | `0F 6F` |  | memory | `rip_relative/a64` | 269 | 2 | bash=248, dash=3, tar=18 |
+| 3 | `movaps mem128,xmm` | `(none)` | `0F 29` |  | memory | `rip_relative/a64` | 246 | 8 | bash=217, dash=3, tar=26 |
+| 4 | `movdqa xmm,mem128` | `operand_size` | `0F 6F` |  | memory | `base_only/a64` | 218 | 16 | bash=158, dash=1, tar=59 |
+| 5 | `movq xmm,r64` | `operand_size rex_w` | `0F 6E` |  | register | `none/aNone` | 112 | 35 | bash=46, dash=14, tar=52 |
+| 6 | `notrack jmp r64` | `ds` | `FF` | 4 | register | `none/aNone` | 110 | 3 | bash=61, dash=23, tar=26 |
+| 7 | `movdqu xmm,mem128` | `rep rex` | `0F 6F` |  | memory | `base_only/a64` | 76 | 21 | bash=26, dash=1, tar=49 |
+| 8 | `movq mem64,xmm` | `operand_size` | `0F D6` |  | memory | `base_only/a64` | 61 | 16 | bash=35, dash=5, tar=21 |
+| 9 | `movq xmm,mem64` | `rep` | `0F 7E` |  | memory | `rip_relative/a64` | 61 | 6 | bash=50, dash=6, tar=5 |
+| 10 | `movd xmm,r32` | `operand_size` | `0F 6E` |  | register | `none/aNone` | 57 | 19 | bash=45, dash=4, tar=8 |
+
+#### Scenario D top normalized signatures
+
+| # | Signature | Prefixes | Opcode | Group | ModR/M | Address | Rows | Exact keys | Binary distribution |
+|---:|---|---|---|---:|---|---|---:|---:|---|
+| 1 | `movaps mem128,xmm` | `(none)` | `0F 29` |  | memory | `base_only/a64` | 23789 | 51 | bash=306, dash=70, gcc-as=152, gcc-cc1=22403, gcc-collect2=304, gcc-driver=406, gcc-ld-bfd=148 |
+| 2 | `movq xmm,r64` | `operand_size rex_w` | `0F 6E` |  | register | `none/aNone` | 14526 | 113 | bash=46, dash=14, gcc-as=73, gcc-cc1=14038, gcc-collect2=83, gcc-driver=181, gcc-ld-bfd=91 |
+| 3 | `movq xmm,mem64` | `rep` | `0F 7E` |  | memory | `base_only/a64` | 10728 | 68 | bash=19, dash=3, gcc-as=8, gcc-cc1=10626, gcc-collect2=33, gcc-driver=35, gcc-ld-bfd=4 |
+| 4 | `movaps xmm,mem128` | `(none)` | `0F 28` |  | memory | `base_only/a64` | 9164 | 32 | gcc-as=1, gcc-cc1=9059, gcc-collect2=41, gcc-driver=59, gcc-ld-bfd=4 |
+| 5 | `movdqa xmm,mem128` | `operand_size` | `0F 6F` |  | memory | `base_only/a64` | 8212 | 50 | bash=158, dash=1, gcc-as=33, gcc-cc1=7783, gcc-collect2=84, gcc-driver=101, gcc-ld-bfd=52 |
+| 6 | `movq mem64,xmm` | `operand_size` | `0F D6` |  | memory | `base_only/a64` | 7102 | 57 | bash=35, dash=5, gcc-as=15, gcc-cc1=6979, gcc-collect2=26, gcc-driver=36, gcc-ld-bfd=6 |
+| 7 | `notrack jmp mem64` | `ds` | `FF` | 4 | memory | `scaled_index/a64` | 3803 | 7 | gcc-cc1=3718, gcc-collect2=31, gcc-driver=54 |
+| 8 | `movdqu xmm,mem128` | `rep` | `0F 6F` |  | memory | `base_only/a64` | 3406 | 121 | bash=19, dash=1, gcc-as=34, gcc-cc1=3174, gcc-collect2=70, gcc-driver=73, gcc-ld-bfd=35 |
+| 9 | `movhps xmm,mem64` | `(none)` | `0F 16` |  | memory | `base_only/a64` | 2024 | 54 | bash=4, dash=2, gcc-as=3, gcc-cc1=1970, gcc-collect2=16, gcc-driver=20, gcc-ld-bfd=9 |
+| 10 | `movd xmm,r32` | `operand_size` | `0F 6E` |  | register | `none/aNone` | 1561 | 45 | bash=45, dash=4, gcc-as=13, gcc-cc1=1478, gcc-collect2=5, gcc-driver=6, gcc-ld-bfd=10 |
+
+The complete machine-readable ranking and reproducible exact encoding-shape tables are in [JSON](data/stage5/s5-21-ranked-residuals.json) and [Markdown](data/stage5/s5-21-ranked-residuals.md). This handoff does not reclassify inventory rows, rerun the raw analyzer, or execute target ELFs; Stage 5 remains blocked/unaccepted pending the existing Stage 2/4 and runtime evidence gates.
