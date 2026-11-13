@@ -17,7 +17,7 @@
 | S6-04 | `accepted` | Документный контракт модели памяти прошёл независимое ревью `gpt-6.1-sol/high`; [коммит `4d65fbc`](https://github.com/edelars/open_desktop/commit/4d65fbc). `git diff --check` чист; `check_layout.py` сообщает только 45 существующих битых ссылок на отсутствующие work evidence артефакты, новых S6 ошибок нет. Graphify обновлён на этот коммит. Документ фиксирует x86 fences, split accesses, A/D compare-and-retry и commit/callback granularity; реализация и выбор host primitive не входят. Отдельный descriptor side-effect owner добавлен в S6-26. См. [MEMORY_MODEL.md](../specs/MEMORY_MODEL.md). |
 | S6-05 | `not_started` | — |
 | S6-06 | `not_started` | — |
-| S6-07 | `not_started` | — |
+| S6-07 | `accepted` | Независимое ревью `gpt-6.1-sol/high` прошло. Основной inventory: 233/233 совпадений, exact file:line coverage без пропусков; secondary ownership counts 25/218/7/6; все focused paths имеют owner, production assumptions без владельца не обнаружены. Код не менялся. |
 | S6-08 | `not_started` | — |
 | S6-09 | `not_started` | — |
 | S6-10 | `blocked` | S4-21 |
@@ -36,7 +36,7 @@
 | S6-23 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для зависимого S6-20 |
 | S6-24 | `blocked` | S4-21, S4-22, S4-23; согласование S4-38 для цепочки S6-13/S6-14c |
 | S6-25 | `blocked` | S4-09 (полный объём; принятый ограниченный срез не закрывает задачу), S4-21, S4-22, S4-23 (через S6-20) |
-| S6-26 | `not_started` | S6-07: сначала завершить inventory descriptor-writing instruction paths |
+| S6-26 | `not_started` | —; S6-07 inventory descriptor-writing paths accepted |
 | S6-30 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-31 | `blocked` | S4-09, S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
 | S6-32 | `blocked` | S4-21, S4-22, S4-23; S4-38 для кода `od-isa` |
@@ -113,3 +113,278 @@ S4-35 Linux artifact найден в корневом checkout `main` в ignored
 Полный S6-02 остаётся открытым: inventory пока не содержит полного списка инструкций/байтов с корректным 16-bit decode. Рабочая машина — macOS `arm64`; доступный Apple LLVM `llvm-objdump` декодирует 32/64-bit x86, но не имеет 16-bit режима; Docker API недоступен. До архитектурной приёмки требуется проверить полный byte inventory штатным x86 toolchain. CPU-06 для Windows остаётся гипотезой по правилу самой задачи: источник о выборе INIT/SIPI и real-mode trampoline для обычной Windows x64 не найден; сверить трассой на этапе 8. ACPI 6.6 требует Processor Local APIC MADT entry и соответствующий processor device object в DSDT (§5.2.12.2; для x2APIC — §5.2.12.12); объект объявляется под `\_SB` с `_HID=ACPI0007` и matching `_UID` (§8.4). Текущая прошивка проекта размещает namespace в DSDT. Microsoft namespace guidance, найденное в этом срезе, прямо ограничивает область SoC-based platforms.
 
 Начальный evidence-срез и текущее расширение APIC/NMI/topology независимо проверил `gpt-6.1-sol` / `high` — pass. В текущем ревью исправлены требования ACPI 6.6 к DSDT, условность panic NMI shootdown и topology leaf fallback; повторно сверены 26 SHA-256 исходных файлов. Полная задача S6-02 не принята. Проверки: JSON parse и `git diff --check` прошли; `check_layout.py` сейчас сообщает 45 сломанных локальных ссылок в документах Stage 2/3 и реестре проблем; ошибок, относящихся к изменённым S6-файлам, нет.
+
+
+### S6-07 — inventory однопроцессорных допущений (in progress)
+
+Код не менялся. Перед поиском выполнен Graphify query. Основной поиск выполнен ровно командой из плана; raw hit count **233**, число строк таблицы **233**. Сверка `file:line` охватывает весь raw hit set. Дополнительные буквальные поиски по `crates/od-machine/src` и `crates/od-host/src`: `&mut PhysicalMemory` — **25**, `&mut [u8]` — **218**, `Rc<` — **7**, `RefCell<` — **6**; overlap с основным поиском — **0** строк для каждого. Эти counts — raw `rg` результаты по src paths, включая inline unit-test blocks; отдельные `tests/` files отмечены как fixture evidence.
+
+Коды и одинаковая для каждого hit rationale:
+
+- `A-LOCK`: один serial instruction path делает read→write без межпроцессорного вмешательства; переключение только после инструкции сохраняет семантику (`✓`). Параллельный поток может войти между чтением и записью (`✗`). S6-20 заменяет последовательность единым guest atomic API и решает DS substitute; host primitive остаётся S6-31.
+- `A-RAM`: указанный caller contract требует private synchronous RAM без concurrent observer; синхронный instruction call с boundary switching его сохраняет (`✓`), параллельный общий backing нарушает это предусловие (`✗`). S6-30 вводит shared RAM и удаляет borrowed API.
+- `A-fence`: текущие fence no-op допустимы в однопроцессорном serial profile (`✓`); параллельно они не задают x86 TSO order (`✗`). S6-32 реализует fence и обычный-access order.
+- `A-APIC`: the current firmware/device state has one LAPIC or APIC ID 0. Instruction-boundary serialization prevents concurrent mutation but does not provide distinct per-vCPU LAPIC state, IDs, or target routing; this assumption is false for multi-vCPU interleaving and parallel modes (`✗`/`✗`). Per-vCPU LAPIC/IPI and firmware count belong to S6-11/S6-12/S6-18; MADT edits are coordinated with S7-13.
+- `A-vCPU`: bounded pump/session admission and CPU state require one vCPU. A single host-thread scheduler does not create the distinct state/session needed for multi-vCPU interleaving; separate threads need it too (`✗`/`✗`). S6-10 introduces per-vCPU state; S6-15 introduces the interleaving scheduler.
+- `A-clock`: уникальная clock capability корректна при одном scheduler, который продвигает общую шкалу; параллельный режим также корректен только если один coordinator остаётся единственным advancer (`✓*`), а не каждый vCPU двигает её независимо. Это закреплено S6-15/S6-34.
+- `A-memory`: текущая GuestMemory/atomic contract даёт serial effects при whole-instruction scheduling (`✓`), но не гарантирует concurrent shared-RAM serialization/order (`✗`); общая RAM — S6-30, LOCK API — S6-20, host primitive — S6-31.
+- `T-LOCK` и `T-APIC`: тесты подтверждают только serial one-CPU fixture/current MADT expectations; строки не утверждают production parallel behavior, поэтому оба режима `—`. LOCK oracle tests сопровождает S6-20, APIC expectations — S6-18/S7-13. `T-fixture`: только bounded test/safety-fixture facts, без product runtime assumption; оба режима `—` и owner отсутствует именно потому, что это не product contract.
+- `F-evidence`: benchmark/build/contract-profile evidence, а не guest runtime; режимы `—`, owner отсутствует. `F-contract`: факт текущего documented API scope (serial private RAM; no SMP ordering claim); `✓/✗` фиксируют, где сам текущий контракт применим, а не заявляют реализацию parallel; последующая работа принадлежит перечисленным S6 tasks. `F-status`: README сообщает, что SMP пока не реализован; `✓` означает факт для текущего baseline, `✗` — второй vCPU сейчас не предоставлен; реализация распределена по S6-10…18.
+
+`✓` — сохраняется при переключении только на границе инструкции; `✗` — не гарантируется параллельным режимом; `✓*` — сохраняется при одном общем scheduler/advancer; `—` — режим к тестовому или документному факту неприменим. У каждой строки заполнены оба режима и owner/причина без owner.
+
+| file:line | факт / допущение | чередование | параллельно | владелец S6 / основание |
+|---|---|---:|---:|---|
+| `crates/od-jit/src/memory_dispatch.rs:914` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `crates/od-jit/src/memory_dispatch.rs:1425` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `firmware/uefi/src/acpi/madt/tests.rs:82` | `T-APIC` | — | — | S6-18/S7-13 regression |
+| `firmware/uefi/src/acpi/madt/tests.rs:118` | `T-APIC` | — | — | S6-18/S7-13 regression |
+| `firmware/uefi/src/acpi/madt/tests.rs:429` | `T-APIC` | — | — | S6-18/S7-13 regression |
+| `firmware/uefi/src/acpi/madt.rs:1` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `firmware/uefi/src/acpi/madt.rs:22` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `firmware/uefi/src/acpi/madt.rs:56` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `firmware/uefi/src/acpi/madt.rs:57` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `firmware/uefi/src/acpi/madt.rs:62` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `firmware/uefi/src/acpi/madt.rs:298` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `crates/od-jit/src/memory_load_v2.rs:873` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `tools/build/stage5_isa_profile_forms.json:193` | `F-evidence` | — | — | — (scope/evidence only) |
+| `tools/build/stage5_isa_profile_forms.json:680` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-jit/src/memory_cache.rs:273` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `crates/od-jit/src/memory_cache.rs:512` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `crates/od-jit/src/memory_cache.rs:618` | `A-RAM` | ✓ | ✗ | S6-30; JIT lifecycle S6-40…42 |
+| `tools/build/s4_38l2_contract_status.py:50` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-isa/src/memory.rs:258` | `A-memory` | ✓ | ✗ | S6-20/S6-30 |
+| `crates/od-isa/src/memory.rs:275` | `A-memory` | ✓ | ✗ | S6-20/S6-30 |
+| `crates/od-isa/src/memory.rs:276` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/memory.rs:296` | `A-memory` | ✓ | ✗ | S6-20/S6-30 |
+| `crates/od-isa/src/memory.rs:312` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/memory.rs:317` | `A-memory` | ✓ | ✗ | S6-20/S6-30 |
+| `crates/od-machine/src/diagnostic_vcpu.rs:397` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/diagnostic_vcpu.rs:671` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/diagnostic_vcpu.rs:728` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/diagnostic_vcpu.rs:796` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/diagnostic_vcpu.rs:798` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/diagnostic_vcpu.rs:897` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/virtual_clock.rs:78` | `A-clock` | ✓ | ✓* | S6-15/S6-34; one scheduler owner |
+| `crates/od-host/tests/memory_corpus.rs:713` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/tests/memory_corpus.rs:773` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/tests/memory_corpus.rs:874` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/tests/memory_corpus.rs:910` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/tests/memory_corpus.rs:1008` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:658` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:703` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:776` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:1103` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:1106` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:1126` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:2518` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:2788` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-host/src/lib.rs:24144` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:29223` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:29646` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:30025` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:30381` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:31971` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:34583` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:36867` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39270` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39299` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39440` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39708` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39847` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:39866` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:40527` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:40851` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:41158` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:43317` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:43351` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:43460` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:43477` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:43533` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44084` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44118` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44655` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44694` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44926` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:44991` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:45039` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47097` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47147` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47242` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47358` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47435` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47483` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47611` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:47659` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:53677` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:53832` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:56548` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59074` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59090` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59173` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59211` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59535` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:59572` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:60473` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:60542` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:60626` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:60733` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61137` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61175` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61283` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61320` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61378` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61559` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61827` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:61867` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62091` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62128` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62251` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62315` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62406` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62475` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62543` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62699` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:62737` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63209` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63275` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63455` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63489` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63638` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:63673` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64165` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64199` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64711` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64745` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64945` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:64979` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:65852` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:66045` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:66120` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:66205` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:82696` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:82781` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:83833` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:83900` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:84279` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:86514` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:86549` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:86917` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:86973` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87216` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87249` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87350` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87385` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87496` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87531` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87674` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87737` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87854` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87926` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:87989` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:88731` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:88764` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:88848` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:89057` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:89092` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:89186` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:90614` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:90653` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:90762` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:90851` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:90924` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:91444` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:91479` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:91574` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:91609` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-host/src/lib.rs:92008` | `T-fixture` | — | — | — (fixture/test only) |
+| `crates/od-testkit/src/memory.rs:152` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-testkit/src/memory.rs:153` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-isa/README.md:99` | `F-contract` | ✓ | ✗ | S6-20/S6-30/S6-32 |
+| `crates/od-isa/README.md:101` | `F-contract` | ✓ | ✗ | S6-20/S6-30/S6-32 |
+| `crates/od-isa/README.md:104` | `F-contract` | ✓ | ✗ | S6-20/S6-30/S6-32 |
+| `crates/od-isa/README.md:149` | `F-contract` | ✓ | ✗ | S6-20/S6-30/S6-32 |
+| `crates/od-machine/src/io_apic.rs:13` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `crates/od-machine/src/io_apic.rs:975` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `crates/od-isa/src/interrupt.rs:1281` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/iretq.rs:112` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/iretq.rs:126` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/lretq.rs:102` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `tools/bench/src/two_site_memory_cached.rs:849` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-isa/tests/cpl0_profile_set.rs:12847` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:31038` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42400` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42401` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42924` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42925` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42926` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:42966` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:44563` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:44564` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:47221` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:47494` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/tests/cpl0_profile_set.rs:47947` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-machine/src/local_apic.rs:1` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `crates/od-machine/src/local_apic.rs:449` | `A-APIC` | ✗ | ✗ | S6-11/S6-12/S6-18; MADT also needs S7-13 |
+| `tools/bench/src/dispatch_cache_stress.rs:1116` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-machine/src/paged_pump_backend.rs:4` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `tools/bench/src/dispatch_cache.rs:2997` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-isa/src/long_decode.rs:883` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:891` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:919` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:8205` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:8212` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:8213` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:8351` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:10461` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:10462` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-isa/src/long_decode.rs:10463` | `A-LOCK` | ✓ | ✗ | S6-20, includes DS substitution |
+| `crates/od-machine/README.md:95` | `F-status` | ✓ | ✗ | S6-10…18 feature owners |
+| `crates/od-machine/src/interrupt_pump.rs:351` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/interrupt_pump.rs:809` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `tools/bench/src/two_site_memory_cold.rs:767` | `F-evidence` | — | — | — (scope/evidence only) |
+| `crates/od-machine/src/paged_apic_entry.rs:53` | `A-vCPU` | ✗ | ✗ | S6-10/S6-15; distinct CPU state is required even in an interleaving scheduler |
+| `crates/od-machine/src/linux_direct.rs:4641` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-machine/src/linux_direct.rs:4818` | `T-LOCK` | — | — | S6-20 test oracle |
+| `crates/od-isa/src/execute.rs:16913` | `A-RAM` | ✓ | ✗ | S6-30 |
+| `crates/od-isa/src/execute.rs:36772` | `A-fence` | ✓ | ✗ | S6-32 |
+| `crates/od-isa/src/execute.rs:36956` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:36974` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:49865` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:49891` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:49903` | `A-fence` | ✓ | ✗ | S6-32 |
+| `crates/od-isa/src/execute.rs:55992` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56001` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56026` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56039` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56040` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56055` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56079` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56102` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56125` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56136` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56137` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56158` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56177` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56205` | `A-LOCK` | ✓ | ✗ | S6-20 |
+| `crates/od-isa/src/execute.rs:56303` | `A-LOCK` | ✓ | ✗ | S6-20 |
+#### Дополнительный поиск: RAM и shared state
+
+Все четыре буквальных дополнительных набора не пересекаются с основным поиском на уровне `file:line` (0 overlap). Counts ниже оставлены как raw counts; source-поиск захватывает inline `#[cfg(test)]` blocks, поэтому test-only occurrences отдельно названы, а не выданы за production ownership.
+
+- **`&mut PhysicalMemory`: 25 raw hits.** 20 production sites передают эксклюзивный borrow владеющего RAM `PhysicalMemory`; пять — inline test helpers (`translation_probe_cache.rs:881`, `page_walk.rs:2557`, `:2891`, `:2973`, `:3032`). Текущая конструкция запрещает одновременно выдать mutable borrow нескольким интерпретаторам, но подходит одному потоку, который меняет vCPU только на завершённых instruction steps. Parallel sharing — S6-30: один адаптер на vCPU с общей RAM и новый API. `page_walk.rs:693-700` фиксирует A/D entry как полный `write_u64`, а не CAS/atomic update; `S6-25` владеет A/D semantics, `S6-30` общей RAM, S6-31 host primitive.
+- **`&mut [u8]`: 218 raw hits по 31 файлу.** 13 строк принадлежат явным тестовым путям `acpi_blob/tests.rs`, `nvme/tests.rs`, `raw_file_tests.rs`, `tests/native_register_v1_corpus.rs`; raw count также включает inline tests. Это преимущественно output/destination buffers для копирования, codec/load buffers, framebuffer copies и NVMe/DMA transfer buffers. Непосредственного выдающего RAM backing API в этих hits не найдено: `PhysicalMemory::read_bytes` копирует backing в предоставленный output; `ram_frame` выдаёт opaque handle, чтение делает scalar `read_ram_frame_u8`; guest write принимает input slice и копирует его в backing под `&mut self`. Удаление/замена любого будущего writable RAM slice API — S6-30. Device/DMA transfer buffers, если участвуют одновременно с vCPU, относятся к S6-33.
+- **`Rc<`: 7 raw hits; `RefCell<`: 6 raw hits.** Production `Rc` hits: `pit_ioapic_irq_source.rs:193` и четыре поля arena/handle в `od-host/src/lib.rs:2586-2595`; две test-only `Rc` строки — `pci_ecam.rs:577` и `linux_direct.rs:11213`. Production `RefCell` hits: `bus.rs:485` (массив `BusDevice`), `pit_ioapic_irq_source.rs:193`, `fetch_translation_cache.rs:73`, `od-host/src/lib.rs:2586,2594`; `linux_direct.rs:11213` — test-only. Пересечение `Rc`/`RefCell` — 4 строки (`pit_ioapic_irq_source.rs:193`, `linux_direct.rs:11213`, `od-host/src/lib.rs:2586,2594`). `MachineBus` и PIT→IOAPIC связка содержат изменяемое device state для текущего последовательного bus dispatch; parallel access требует порядка и синхронизации S6-33. Fetch translation cache должен быть собственностью одного vCPU (S6-17), поэтому per-vCPU `RefCell` допустим при thread confinement, но не как общий cache. `od-host` `Rc<RefCell<ArenaInner>>` намеренно не `Send`/`Sync`; выбор cache ownership, MAP_JIT multi-thread execution и безопасное освобождение блоков — S6-40/S6-42.
+
+#### Отдельно проверенные instruction/device пути
+
+- **LOCK/XCHG.** В `execute.rs` current CPL0-set locked memory operations — `LockCmpxchgMem` (и bare `CmpxchgMemory`), `LockIncMem`, `LockDecMem`, `LockOrMem`, `LockAddMem`, `LockAddMemReg`, `LockXaddMem` (плюс `XaddMemory`/`XaddDsMem`), `LockAndMem`, `LockBitMem` register bit forms, `LockBtsMemImm`. Они читают operand, вычисляют значение, затем пишут обратно двумя `GuestMemory` вызовами; comments явно опираются на one-vCPU serial access. Такую read→write последовательность делает неделимой планировщик чередования с границей инструкции; параллельно между вызовами может вмешаться другой vCPU. Dword и qword `XchgMemory` в CPL0 set (bare или с `LOCK`) тоже идут read→write; qword вне этого bounded CPL0 path использует `atomic_exchange_integer`. Register-register `Xchg` RAM не затрагивает. Для всех этих форм контракт и общий API — S6-20; host atomics добавляет S6-31.
+- **DS substitute для LOCK.** `long_decode.rs` описывает Linux `.smp_locks` substitution `F0` → `3E`; в 64-bit mode DS не меняет адрес, поэтому на однопроцессорном board decoder treats DS `XADD`/`CMPXCHG` как LOCK-equivalent. Если гостю видны два процессора, но ОС не переписала `.smp_locks`, семантика DS-формы должна соответствовать ожидаемой ОС атомарности; одной DS-prefix interpretation недостаточно. S6-20 step 6 прямо назначает решение по этой судьбе и запись в `CPU_CONTRACT.md`, поэтому это не orphan.
+- **Accessed/A/D.** Page-walk A bit (и D bit на write) сейчас обновляется отдельной записью `write_u64`; конкурентное read/modify/write может терять чужой установленный бит. S6-04 уже фиксирует compare-and-retry контракт, S6-25 владеет bit path, S6-30 общей RAM API, S6-31 host atomic primitive. Descriptor Accessed writes — отдельные instruction side effects, не page-table A/D; их widths, fault/commit и callback boundaries принадлежат S6-26.
+- **Descriptor updates.** В `execute.rs` effects имеют несколько путей и ширин: `far_return_cpl0` пишет CS Accessed bit целым qword (`:53698–53710`); `iretq_cpl0` отдельно пишет CS и при наличии SS descriptor qword после проверок (`:53845–53868`); общий `load_sreg_cpl0` также пишет descriptor целым qword (`:54130–54131`); отдельный bounded segment helper для DS/ES/FS/GS меняет только Accessed byte (`:54492–54496`). `load_tr_cpl0` читает 16-byte TSS descriptor двумя qword reads, затем меняет busy bit только в low qword до commit `TR` (`:54263–54320`); это отдельный путь от paged LTR. В `interrupt.rs::commit_cpl0_gate` сначала фиксируются stack-frame writes, затем при необходимости целиком записывается target code-segment descriptor; ошибка descriptor write не меняет CPU state, но уже committed stack/page-walk effects не откатывает (`:694–747`). Bounded `#PF` delivery path делает descriptor Accessed-byte write отдельной операцией после preflight и stack-slot commits; поздняя ошибка оставляет уже записанные frame slots, но CPU entry state не коммитится (`interrupt.rs:351–389`). В `page_walk.rs::commit_paged_ltr_descriptor` 16-byte TSS busy image пишется после read/validate/write-permission checks и leaf D-bit; page-table A updates с callback остаются committed при более поздней ошибке (`:1491–1497`, `:1574–1594`). Эти пути не взаимозаменяемы с ordinary store, LOCK API или A/D CAS; code comments требуют exclusive owner для paged LTR и не заявляют system-wide locked-bus atomicity. Один host thread предотвращает конкурентный вход внутрь вызова, но этого недостаточно для точной multi-vCPU guest semantics; S6-26 определит per-path width, fault order, commit and notification boundaries, отделённые от S6-20/S6-31.
+- **`VirtualClockAdvancer`.** `virtual_clock.rs:78-80,112-120` создаёт одну exclusive advancement capability на time domain; `Arc<Mutex<...>>` защищает состояние, но не вводит отдельное временное продвижение каждого vCPU. Это соответствует serial scheduler S6-15; параллельно правильно лишь при единственном общем владельце времени, как требуют S6-15/S6-34.
+- **`PairState`.** `apic_pair.rs:39-44` contains exactly one `local: State`, one shared IOAPIC `route`, and one timer. It is current one-vCPU device state, not a per-vCPU LAPIC array. Serialization preserves mutation safety but does not provide per-vCPU LAPIC state or APIC ID routing: multi-vCPU interleaving and parallel modes both require S6-11/S6-12/S6-18. Shared IOAPIC/PIT access can be serialized in interleaving mode; parallel access belongs to S6-33.
+
+#### Допущения без владельца
+
+Production предположений без S6 owner в этом inventory не осталось. Все конкурентные RAM writes сопоставлены с S6-25/S6-30/S6-31; descriptor writes — с S6-26; device/bus state — с S6-33; LAPIC state — с S6-11/S6-12; scheduler/time ownership — с S6-15/S6-34; JIT arena — с S6-40/S6-42. Test/fixture-only записи не являются неустранёнными product assumptions. Поэтому `KNOWN_ISSUES.md` не изменялся. Архитектурное ревью таблицы остаётся необходимым; S6-07 status — `in_progress`, checkbox плана не менялся.
