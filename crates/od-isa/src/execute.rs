@@ -35847,6 +35847,9 @@ fn step_configured(
         | Operation::AddFsLoad { .. }
         | Operation::AddGsLoad { .. }
         // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        // S4-38L9i: and for the FS/GS-based OR/AND/XOR r32/r64, m.
+        | Operation::LogicFsLoad { .. }
+        | Operation::LogicGsLoad { .. }
         | Operation::CmpFsLoad { .. }
         | Operation::CmpGsLoad { .. }
         // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
@@ -49759,6 +49762,9 @@ fn step_configured(
         | Operation::AddFsLoad { .. }
         | Operation::AddGsLoad { .. }
         // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        // S4-38L9i: and for the FS/GS-based OR/AND/XOR r32/r64, m.
+        | Operation::LogicFsLoad { .. }
+        | Operation::LogicGsLoad { .. }
         | Operation::CmpFsLoad { .. }
         | Operation::CmpGsLoad { .. }
         // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
@@ -55506,6 +55512,31 @@ fn transfer(
                 rhs,
                 state.rflags,
             );
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::LogicFsLoad { kind, dst, src } => {
+            // S4-38L9i: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before the read, so
+            // before any register or flag write. The dword/qword is read once and combined with
+            // the destination through the shared `logic_result` of the non-prefixed OR/AND/XOR at
+            // the destination width (CF = OF = 0, SF/ZF/PF from the result, AF kept);
+            // `state.write` masks and (for a dword) zero-extends the result. The register and the
+            // flags are written only after the read succeeded. Memory is not written.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) =
+                logic_result(dst.size(), kind, state.read(dst), rhs, state.rflags);
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::LogicGsLoad { kind, dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) =
+                logic_result(dst.size(), kind, state.read(dst), rhs, state.rflags);
             state.write(dst, result);
             state.rflags = flags;
         }
