@@ -2112,8 +2112,10 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// exactly the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the
     /// caller's guest KERNEL_GS_BASE and receives `EDX:EAX` exactly (full 64-bit value; no
     /// canonical check, no other state change). Only the bare two-byte form `0F 30` is admitted,
-    /// `RDMSR` of KERNEL_GS_BASE stays `Unsupported`, and `SWAPGS` is not modelled by the member,
-    /// so nothing in the set consumes the value. The member is separate from
+    /// `RDMSR` of KERNEL_GS_BASE stays `Unsupported`. S4-38L9A: the cell is also the
+    /// KERNEL_GS_BASE that the bare `SWAPGS` (`0F 01 F8`) exchanges with `gs_base` (CPL0, Long64,
+    /// control-register policy; both values canonical; `LongModeState.kernel_gs_base` is not
+    /// touched). Without the member `SWAPGS` stays `Unsupported`. The member is separate from
     /// [`Self::with_msr_bases`], which covers IA32_FS_BASE and IA32_GS_BASE only.
     ///
     /// Precedence: [`MsrProfile::KernelGsBaseV1`] handles `0xC000_0102`; a set whose MSR profile
@@ -37761,6 +37763,28 @@ fn step_configured(
         });
     }
     if instruction.operation == Operation::Swapgs {
+        // S4-38L9A: a set that carries the IA32_KERNEL_GS_BASE cell models `SWAPGS` (`0F 01 F8`)
+        // as an exchange of `gs_base` and that cell. Same conditions as the other CPL0 set forms:
+        // a control-register policy, CPL0, Long64, no prefix, length 3. Both values must be
+        // canonical (the cell is guest-written and unchecked); otherwise the instruction keeps
+        // its refusal. The check precedes the exchange; the architectural state is committed last.
+        if swapgs_profile.is_none()
+            && let Some(cell) = guest_msr_cells.and_then(|cells| cells.kernel_gs_base)
+            && !msr_profile.is_some_and(|profile| profile.handles_index(0xc000_0102))
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 3
+            && instruction.prefixes == Prefixes::default()
+            && canonical(state.gs_base)
+            && canonical(cell.get())
+        {
+            let old_gs_base = state.gs_base;
+            state.gs_base = cell.get();
+            cell.set(old_gs_base);
+            state.rip = next_rip;
+            return Ok(StepOutcome::Advanced);
+        }
         if swapgs_profile.is_none() {
             return Ok(StepOutcome::Unsupported { opcode: 0x01 });
         }

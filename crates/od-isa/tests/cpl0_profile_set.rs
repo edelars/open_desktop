@@ -30553,24 +30553,211 @@ fn syscall_and_sysenter_instructions_stay_unsupported_with_the_kernel_gs_base_me
     }
 }
 
+// ---- S4-38L9A: SWAPGS (`0F 01 F8`) exchanges gs_base and the set's KERNEL_GS_BASE cell ----
+
+const SWAPGS: [u8; 3] = [0x0f, 0x01, 0xf8];
+const SWAPGS_GS_BASE: u64 = 0xffff_8880_0000_1000;
+const SWAPGS_KERNEL_GS: u64 = 0xffff_8880_1234_5678;
+
+/// A board state with distinct, non-zero segment state so that any collateral change shows.
+fn swapgs_state() -> LongModeState {
+    let mut state = board_state();
+    state.gs_base = SWAPGS_GS_BASE;
+    state.fs_base = 0xffff_8880_00aa_0000;
+    state.fs_selector = 0x2b;
+    state.gs_selector = 0x2c;
+    state.rflags = 2 | IF | (1 << 10) | 1 | (1 << 6);
+    state
+}
+
+fn run_swapgs(
+    set: &Cpl0ProfileSet<'_>,
+    code: &[u8],
+    budget: u64,
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let mut state = swapgs_state();
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_set(&mut state, &mut memory, set, budget).unwrap();
+    (state, before, result)
+}
+
 #[test]
-fn swapgs_stays_unsupported_with_the_kernel_gs_base_member() {
-    // The stored KERNEL_GS_BASE is never consumed: SWAPGS (`0F 01 F8`) keeps its refusal in the
-    // set, without mutation, whether or not the cell has been written; gs_base is not swapped.
-    let kernel_gs = Cell::new(KERNEL_GS_BASE_VALUE);
-    let set = base()
-        .with_msr_fs_gs_base()
-        .with_msr_kernel_gs_base_write(&kernel_gs);
-    let (state, before, result) = run_star(
-        &set,
-        &[0x0f, 0x01, 0xf8],
-        (KERNEL_GS_BASE_MSR, KERNEL_GS_BASE_EAX, KERNEL_GS_BASE_EDX),
-        1,
+fn swapgs_exchanges_gs_base_and_the_kernel_gs_base_cell() {
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let (state, before, result) = run_swapgs(&set, &SWAPGS, 1);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(kernel_gs.get(), SWAPGS_GS_BASE);
+    // Only gs_base and RIP change: segment registers, other bases, flags and GPRs stay.
+    let mut expected = before.clone();
+    expected.gs_base = SWAPGS_KERNEL_GS;
+    expected.rip += 3;
+    assert_eq!(state, expected);
+    assert_eq!(
+        state.kernel_gs_base, None,
+        "the CPU's own field is not used by the set"
     );
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
-    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+}
+
+#[test]
+fn swapgs_twice_restores_both_values_in_one_run_and_across_runs() {
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let (state, before, result) = run_swapgs(&set, &[0x0f, 0x01, 0xf8, 0x0f, 0x01, 0xf8], 2);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS);
+    let mut expected = before.clone();
+    expected.rip += 6;
+    assert_eq!(state, expected);
+
+    // Two separate runs through the same cell: the second goes the other direction.
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let mut state = swapgs_state();
+    let before = state.clone();
+    for expected_gs in [SWAPGS_KERNEL_GS, SWAPGS_GS_BASE] {
+        state.rip = RIP;
+        let mut memory = Memory::code(&SWAPGS);
+        let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gs_base, expected_gs);
+    }
+    state.rip = RIP;
     assert_eq!(state, before);
-    assert_eq!(kernel_gs.get(), KERNEL_GS_BASE_VALUE);
+    assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS);
+}
+
+#[test]
+fn swapgs_with_a_zero_cell_moves_zero_into_gs_base() {
+    let kernel_gs = Cell::new(0);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let (state, _, result) = run_swapgs(&set, &SWAPGS, 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gs_base, 0);
+    assert_eq!(kernel_gs.get(), SWAPGS_GS_BASE);
+}
+
+#[test]
+fn swapgs_needs_the_kernel_gs_base_member() {
+    // Without the cell (also with the FS/GS base member) SWAPGS keeps its refusal.
+    for set in [base(), base().with_msr_fs_gs_base()] {
+        let (state, before, result) = run_swapgs(&set, &SWAPGS, 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn swapgs_with_an_msr_profile_that_handles_kernel_gs_base_keeps_the_refusal() {
+    let profile = MsrProfile::KernelGsBaseV1;
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base()
+        .with_msr(&profile)
+        .with_msr_kernel_gs_base_write(&kernel_gs);
+    let (state, before, result) = run_swapgs(&set, &SWAPGS, 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+    assert_eq!(state, before);
+    assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS);
+}
+
+#[test]
+fn swapgs_with_a_prefix_is_refused_without_mutation() {
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let forms: [&[u8]; 8] = [
+        &[0x66, 0x0f, 0x01, 0xf8],
+        &[0xf2, 0x0f, 0x01, 0xf8],
+        &[0xf3, 0x0f, 0x01, 0xf8],
+        &[0xf0, 0x0f, 0x01, 0xf8],
+        &[0x48, 0x0f, 0x01, 0xf8],
+        &[0x64, 0x0f, 0x01, 0xf8],
+        &[0x65, 0x0f, 0x01, 0xf8],
+        &[0x67, 0x0f, 0x01, 0xf8],
+    ];
+    for code in forms {
+        let (state, before, result) = run_swapgs(&set, code, 1);
+        // LOCK on a non-lockable instruction is #UD (decoder, independent of the member).
+        let expected = if code[0] == 0xf0 {
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        } else {
+            RunExit::Unsupported { opcode: 0x01 }
+        };
+        assert_eq!(exit(&result), &expected, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS, "{code:02x?}");
+    }
+}
+
+#[test]
+fn other_0f01_forms_stay_unsupported_with_the_member() {
+    // Only `F8` is SWAPGS: RDTSCP (`F9`), XGETBV (`D0`) and a truncated form are not.
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    for modrm in [0xf9u8, 0xd0, 0xf0, 0xfa] {
+        let (state, before, result) = run_swapgs(&set, &[0x0f, 0x01, modrm], 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x01 },
+            "{modrm:#x}"
+        );
+        assert_eq!(state, before, "{modrm:#x}");
+        assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS);
+    }
+}
+
+#[test]
+fn swapgs_with_a_non_canonical_base_is_refused_without_mutation() {
+    for (gs_base, cell_value) in [
+        (0x0001_0000_0000_0000, SWAPGS_KERNEL_GS),
+        (SWAPGS_GS_BASE, 0x0001_0000_0000_0000),
+        (SWAPGS_GS_BASE, 0x8000_0000_0000_0000),
+    ] {
+        let kernel_gs = Cell::new(cell_value);
+        let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+        let mut state = swapgs_state();
+        state.gs_base = gs_base;
+        let before = state.clone();
+        let mut memory = Memory::code(&SWAPGS);
+        let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x01 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(kernel_gs.get(), cell_value);
+    }
+}
+
+#[test]
+fn swapgs_at_cpl3_is_rejected_at_entry_without_mutation() {
+    let kernel_gs = Cell::new(SWAPGS_KERNEL_GS);
+    let set = base().with_msr_kernel_gs_base_write(&kernel_gs);
+    let mut state = swapgs_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&SWAPGS);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Cpl0ProfileSetInputError::WrongPrivilege
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches, 0);
+    assert_eq!(kernel_gs.get(), SWAPGS_KERNEL_GS);
 }
 
 #[test]

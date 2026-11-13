@@ -8066,6 +8066,49 @@ mod tests {
     }
 
     #[test]
+    fn swapgs_exchanges_gs_base_with_the_board_kernel_gs_base_through_the_board_set() {
+        // S4-38L9A: WRMSR KERNEL_GS_BASE (EDX:EAX = 0xFFFF8880:12345678), then SWAPGS, HLT. The
+        // cell becomes the board's old gs_base and gs_base becomes the written value; a second
+        // SWAPGS returns both.
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code.extend_from_slice(&[0x0F, 0x01, 0xF8, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 16, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, MOV, MOV, WRMSR, SWAPGS, HLT");
+        assert_ne!(record.guest_kernel_gs_base, 0xFFFF_8880_1234_5678);
+
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code.extend_from_slice(&[0x0F, 0x01, 0xF8, 0x0F, 0x01, 0xF8, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 16, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7);
+        assert_eq!(record.guest_kernel_gs_base, 0xFFFF_8880_1234_5678);
+        assert_eq!(boot.board.guest_kernel_gs_base(), 0xFFFF_8880_1234_5678);
+    }
+
+    #[test]
+    fn swapgs_without_the_kernel_gs_base_member_is_the_stop_through_the_board_set() {
+        let members = LinuxCpl0SetMembers {
+            msr_kernel_gs_base: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&[0x0F, 0x01, 0xF8]);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x01 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0);
+    }
+
+    #[test]
     fn rdmsr_syscall_and_sysenter_stay_the_stop_after_the_syscall_mask_write_through_the_board_set()
     {
         // The write is retired, the next instruction is the stop (RDMSR: not readable; SYSCALL,
@@ -8252,13 +8295,13 @@ mod tests {
     }
 
     #[test]
-    fn rdmsr_swapgs_syscall_and_sysenter_stay_the_stop_after_the_kernel_gs_base_write_through_the_board_set()
+    fn rdmsr_syscall_and_sysenter_stay_the_stop_after_the_kernel_gs_base_write_through_the_board_set()
      {
-        // The write is retired, the next instruction is the stop (RDMSR: not readable; SWAPGS,
-        // SYSCALL, SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record.
+        // The write is retired, the next instruction is the stop (RDMSR: not readable; SYSCALL,
+        // SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record. SWAPGS is no
+        // longer here (S4-38L9A): it is executed, see the tests below.
         for (tail, opcode) in [
             (&[0x0F, 0x32][..], 0x32u8),
-            (&[0x0F, 0x01, 0xF8], 0x01),
             (&[0x0F, 0x05], 0x05),
             (&[0x0F, 0x07], 0x07),
             (&[0x0F, 0x34], 0x34),
