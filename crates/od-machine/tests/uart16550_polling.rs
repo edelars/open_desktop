@@ -90,14 +90,9 @@ fn polling_errors_and_reset_leave_shared_state_atomic() {
     write(&mut bus, 1, 0x12).unwrap();
     write(&mut bus, 3, 0x03).unwrap();
 
-    // S4-24e: IER bits 0 and 1 are accepted; line/modem-status enables are not.
-    assert_eq!(
-        write(&mut bus, 1, 0x04),
-        Err(BusAccessError::Device {
-            device_index: 0,
-            source: DeviceError::UnsupportedConfiguration,
-        })
-    );
+    // S4-38L9y: IER bits 0..3 are stored (RLS and MS bits too, with no event sources);
+    // the refusal of line/modem-status enables from S4-24e is superseded.
+    assert_eq!(write(&mut bus, 1, 0x04), Ok(()));
     assert_eq!(
         write(&mut bus, 2, 0x01),
         Err(BusAccessError::Device {
