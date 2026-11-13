@@ -40740,3 +40740,31 @@ fn the_external_interrupt_path_keeps_refusing_a_trap_gate_next_to_the_int3_membe
         )
     );
 }
+
+#[test]
+fn int_n_into_and_int1_are_not_int3_and_stay_unsupported_with_their_own_opcode() {
+    // S4-38L9e regression: only the bare `CC` is INT3. `CD ib` (INT n, also `CD 03`), `CE`
+    // (INTO) and `F1` (INT1) keep their own refusal and never reach the vector-3 delivery.
+    for (bytes, opcode) in [
+        (&[0xcdu8, 0x03][..], 0xcd),
+        (&[0xcd, 0x80][..], 0xcd),
+        (&[0xce][..], 0xce),
+        (&[0xf1][..], 0xf1),
+    ] {
+        let (mut state, mut memory) = int3_state();
+        memory.code.splice(0..1, bytes.iter().copied());
+        let before = state.clone();
+        let ram = memory.ram.clone();
+        let result = run_int3(&mut state, &mut memory, &int3_set(), 4);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+        assert_eq!(memory.ram, ram, "{bytes:02x?}");
+        assert_eq!(memory.writes, 0, "{bytes:02x?}");
+        assert!(memory.reads.is_empty(), "{bytes:02x?}");
+    }
+}

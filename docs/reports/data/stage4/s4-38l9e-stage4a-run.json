@@ -152,13 +152,13 @@
     "initramfs": {
       "bytes": 4688,
       "expected_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
-      "path": "/Users/senya/projects/open_desktop/work/stage4/initramfs/initramfs.cpio",
+      "path": "work/stage4/initramfs/initramfs.cpio",
       "sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588"
     },
     "vmlinuz": {
       "bytes": 17320328,
       "expected_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
-      "path": "/Users/senya/projects/open_desktop/work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
+      "path": "work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic",
       "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
     }
   },

@@ -1182,6 +1182,10 @@ pub fn deliver_int3_cpl0_set(
         Ok(gate) => gate,
         Err(failure) => return int3_gate_failure(failure),
     };
+    // By the `INT n` pseudocode (from memory) the DPL check comes BEFORE the present check, so a
+    // DPL violation raises `#GP` before `#NP`. At CPL0 the check cannot fail, so the order is
+    // not observable here; when another CPL is ever modeled, `GateNotPresent` (resolved above)
+    // must not mask this refusal and the refusal type must be revisited.
     if !software_gate_dpl_ok(0, gate.dpl) {
         return refuse(Refusal::GateDplBelowCpl);
     }
