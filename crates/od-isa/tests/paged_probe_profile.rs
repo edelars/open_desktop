@@ -2972,3 +2972,34 @@ fn ds_cmpxchg_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 }
+
+#[test]
+fn segment_logic_load_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9i belongs to the CPL0 set only; this profile refuses OR/AND/XOR r, m with FS/GS
+    // (dword and qword) without mutation, with the exact opcode.
+    for (bytes, opcode) in [
+        (&[0x65, 0x48, 0x0b, 0x05, 0xb4, 0x7c, 0xce, 0x01][..], 0x0b),
+        (&[0x64, 0x0b, 0x15, 0x34, 0x12, 0x00, 0x00][..], 0x0b),
+        (&[0x65, 0x48, 0x23, 0x15, 0x34, 0x12, 0x00, 0x00][..], 0x23),
+        (&[0x64, 0x33, 0x15, 0x34, 0x12, 0x00, 0x00][..], 0x33),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
