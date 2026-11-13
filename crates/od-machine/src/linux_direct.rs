@@ -716,10 +716,19 @@ pub struct LinuxCpl0SetMembers {
     /// handed to the CPU either way; without this member the set refuses the state
     /// (`Cr3NotAdmitted`, a negative control).
     pub cpu_owned_cr3: bool,
-    /// `with_cpuid(DiagnosticV1)`: only what that profile declares, nothing more. With this
-    /// member the run also stops before a `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`,
-    /// S4-38L4): the profile does not answer the feature leaves of the target.
+    /// `with_cpuid(<profile>)` (the profile is [`Self::cpuid_profile`]): only what that profile
+    /// declares, nothing more. With the default profile `DiagnosticV1` the run also stops before a
+    /// `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`, S4-38L4): that profile does not answer
+    /// the feature leaves of the target. With `X8664V1Stage4A` there is no such stop (see
+    /// [`Self::cpuid_profile`]).
     pub cpuid: bool,
+    /// The CPUID profile of the `cpuid` member (S4-38L9a). [`CpuidProfile::DiagnosticV1`] (the
+    /// default of [`Self::minimal`] and [`Self::linux_default`]) keeps the C7 boundary above.
+    /// [`CpuidProfile::X8664V1Stage4A`] is the declared subset L9a of the target (TSC only): it
+    /// answers leaf 1 and 0x8000_0001 honestly for that subset, so the C7 boundary is OFF for it
+    /// (nothing made-up to stop on) and the result is still not counted as the target CPU. Has no
+    /// effect without `cpuid`. Not a separate set member: it names the `cpuid:<profile>` member.
+    pub cpuid_profile: CpuidProfile,
     /// `with_rdtsc`: the source is the board clock, which also queues the 1 us RDTSC tick like
     /// `run_boot`; admitted only under the board's Linux profile.
     pub rdtsc: bool,
@@ -827,6 +836,7 @@ impl LinuxCpl0SetMembers {
         Self {
             cpu_owned_cr3: true,
             cpuid: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
             rdtsc: false,
             msr: false,
             msr_fs_gs_base: false,
@@ -891,9 +901,10 @@ impl LinuxCpl0SetMembers {
 /// Nothing is executed that the set does not admit: the first inadmissible instruction is the
 /// stop (`Unsupported`), and the segment caches the loader left are not touched.
 ///
-/// CPUID boundary (S4-38L4, checkpoint C7): with `members.cpuid` the run stops BEFORE retiring a
-/// `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`, `cpuid_divergence_leaf`
-/// set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
+/// CPUID boundary (S4-38L4, checkpoint C7), for the `DiagnosticV1` profile only (the default; for
+/// `X8664V1Stage4A` see the profile paragraph below): with `members.cpuid` the run stops BEFORE
+/// retiring a `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`,
+/// `cpuid_divergence_leaf` set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
 /// word would steer the kernel) and does not patch the kernel: the run ends at the honest edge.
 /// Other leaves (0, 0x8000_0000, ...) are answered by DiagnosticV1 as the set does. Results past
 /// the edge are diagnostic only. Without the member `CPUID` stays `Unsupported` (0xa2).
@@ -901,6 +912,11 @@ impl LinuxCpl0SetMembers {
 /// Diagnostic mode (S4-38L7, `members.diagnostic_past_c7`): the boundary is off. Leaf 1 and
 /// 0x8000_0001 are answered by DiagnosticV1 as every other leaf and the run goes on; the record
 /// carries `diagnostic_past_c7: true` and the result is NOT counted.
+///
+/// CPUID profile (S4-38L9a, `members.cpuid_profile`): the boundary above belongs to
+/// `DiagnosticV1`. With `X8664V1Stage4A` (the declared subset: TSC only) the boundary is off even
+/// without `diagnostic_past_c7`: leaf 1 and 0x8000_0001 are answered for what the subset declares
+/// and the member is named `cpuid:X8664V1Stage4A`.
 pub fn run_linux_direct_board_set(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
@@ -908,7 +924,7 @@ pub fn run_linux_direct_board_set(
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let cli = CliProfile::NonPviLong64V1;
-    let cpuid = CpuidProfile::DiagnosticV1;
+    let cpuid = members.cpuid_profile;
     // The profile only names the member and seeds nothing under the cell, so it carries the
     // constant board EFER: `set_members` keeps `msr:EferReadOnlyV1(3328)` on every run.
     let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
@@ -940,7 +956,7 @@ pub fn run_linux_direct_board_set(
     }
     if members.cpuid {
         set = set.with_cpuid(&cpuid);
-        names.push("cpuid:DiagnosticV1".into());
+        names.push(format!("cpuid:{cpuid:?}"));
     }
     if members.rdtsc {
         set = set.with_rdtsc();
@@ -1009,7 +1025,9 @@ pub fn run_linux_direct_board_set(
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
-        members.cpuid && !members.diagnostic_past_c7,
+        // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a
+        // subset profile answers leaves 1 and 0x8000_0001 for what it declares.
+        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1,
         members.fetch_cache,
         members.irq,
     );
@@ -8598,6 +8616,147 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA2 });
         assert!(record.diagnostic_past_c7);
+    }
+
+    // ---- S4-38L9a: the CPUID subset profile X8664V1Stage4A ----
+
+    /// The halting default set with the L9a subset profile, no `diagnostic_past_c7`.
+    fn stage4a_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4A,
+            ..halting_default()
+        }
+    }
+
+    #[test]
+    fn cpuid_profile_defaults_to_diagnostic_v1() {
+        assert_eq!(
+            LinuxCpl0SetMembers::minimal().cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+        assert_eq!(
+            LinuxCpl0SetMembers::linux_default().cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+    }
+
+    #[test]
+    fn stage4a_leaf_1_runs_without_the_c7_stop_and_gives_only_tsc() {
+        // CLI; MOV EBX, 0x1234; MOV EAX, 1; CPUID; HLT, with no `diagnostic_past_c7`: the C7
+        // boundary does not fire for the subset profile.
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.exit_kind, "halted");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert!(!record.diagnostic_past_c7);
+        assert_eq!(record.retired, 5, "CLI, MOV, MOV, CPUID, HLT");
+        // Oracle from the contract table: EAX 0x600, EBX 0x100, ECX 0, EDX only bit 4 (TSC).
+        assert_eq!(record.gpr[Register::Rax as usize], 0x600);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x10);
+        assert!(
+            record
+                .set_members
+                .contains(&"cpuid:X8664V1Stage4A".to_string()),
+            "{:?}",
+            record.set_members
+        );
+        assert!(!record.set_members.iter().any(|m| m == "cpuid:DiagnosticV1"));
+    }
+
+    #[test]
+    fn stage4a_leaf_0x80000001_runs_without_the_c7_stop_and_gives_zeros() {
+        let mut code = vec![
+            0xFA, 0xB9, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x21, 0x43, 0x65, 0x07,
+        ];
+        code.extend(mov_eax(0x8000_0001));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert_eq!(record.retired, 6, "CLI, three MOVs, CPUID, HLT");
+        for register in [Register::Rax, Register::Rbx, Register::Rcx, Register::Rdx] {
+            assert_eq!(record.gpr[register as usize], 0, "{register:?}");
+        }
+    }
+
+    #[test]
+    fn stage4a_leaf_1_ignores_ecx_on_the_board() {
+        // CLI; MOV ECX, 0x12345678; MOV EAX, 1; CPUID; HLT: the same tuple as with ECX = 0.
+        let mut code = vec![0xFA, 0xB9, 0x78, 0x56, 0x34, 0x12];
+        code.extend(mov_eax(1));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.gpr[Register::Rax as usize], 0x600);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x10);
+    }
+
+    #[test]
+    fn stage4a_unclaimed_leaves_give_zeros_on_the_board() {
+        for leaf in [2u32, 7, 0x8000_0002, 0x8000_0007, 0x21] {
+            let (mut boot, file) = boot_with_entry(&divergence_program(&[], leaf));
+            let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{leaf:#x}: {record:?}");
+            for register in [Register::Rax, Register::Rcx, Register::Rdx] {
+                assert_eq!(record.gpr[register as usize], 0, "{leaf:#x} {register:?}");
+            }
+            // EBX is seeded with 0x1234 by the program and the CPUID overwrote it with zero.
+            assert_eq!(record.gpr[Register::Rbx as usize], 0, "{leaf:#x}");
+        }
+    }
+
+    #[test]
+    fn stage4a_changes_only_the_cpuid_member_name_of_the_set() {
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
+        let old = run_set_facade(&mut boot, &file, 8, halting_default());
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
+        let new = run_set_facade(&mut boot, &file, 8, stage4a_default());
+        let renamed: Vec<String> = old
+            .set_members
+            .iter()
+            .map(|name| {
+                if name == "cpuid:DiagnosticV1" {
+                    "cpuid:X8664V1Stage4A".to_string()
+                } else {
+                    name.clone()
+                }
+            })
+            .collect();
+        assert_eq!(new.set_members, renamed);
+    }
+
+    #[test]
+    fn stage4a_without_cpuid_member_stays_unsupported() {
+        let mut code = vec![0xFA];
+        code.extend(mov_eax(1));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4A,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA2 });
+    }
+
+    #[test]
+    fn diagnostic_v1_boundary_is_unchanged_with_the_explicit_profile_field() {
+        // The explicit DiagnosticV1 profile behaves exactly like the default: C7 stop.
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::DiagnosticV1,
+            ..halting_default()
+        };
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit_kind, "cpuid_divergence", "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, Some(1));
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----
