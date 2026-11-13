@@ -1007,6 +1007,12 @@ pub enum Operation {
     },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
+    /// S4-38L9o: bare `0F AE E8` (LFENCE); a no-op for the single-vCPU model, admitted only
+    /// inside the CPL0 profile set.
+    Lfence,
+    /// S4-38L9o: bare `0F AE F8` (SFENCE); a no-op for the single-vCPU model, admitted only
+    /// inside the CPL0 profile set.
+    Sfence,
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
     FxsaveRipRelative(MemoryOperand),
     /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
@@ -8130,6 +8136,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if prefixes == Prefixes::default() {
                     match modrm {
                         0xf0 => Operation::Mfence,
+                        // S4-38L9o: register-only fence encodings (SDM from memory).
+                        0xe8 => Operation::Lfence,
+                        0xf8 => Operation::Sfence,
                         0x05 => {
                             let Operand::Memory(area) =
                                 self.rm_operand(modrm, prefixes, OperandSize::Qword)?
@@ -20218,9 +20227,22 @@ mod tests {
         assert_eq!(instruction.prefixes, Prefixes::default());
         assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
 
+        // S4-38L9o: LFENCE and SFENCE decode as their own bare operations.
+        for (bytes, operation) in [
+            (&[0x0f, 0xae, 0xe8], Operation::Lfence),
+            (&[0x0f, 0xae, 0xf8], Operation::Sfence),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, operation);
+            assert_eq!(instruction.length, 3);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+        }
         for bytes in [
-            &[0x0f, 0xae, 0xe8][..], // LFENCE
-            &[0x0f, 0xae, 0xf8][..], // SFENCE
+            &[0x0f, 0xae, 0xe0][..],
+            &[0x66, 0x0f, 0xae, 0xe8][..],
+            &[0x48, 0x0f, 0xae, 0xf8][..],
+            &[0xf3, 0x0f, 0xae, 0xe8][..],
             &[0x0f, 0xae, 0xf1][..], // alternate hardware-accepted MFENCE encoding
             &[0x0f, 0xae, 0x00][..], // memory ModR/M form
             &[0x66, 0x0f, 0xae, 0xf0][..],
