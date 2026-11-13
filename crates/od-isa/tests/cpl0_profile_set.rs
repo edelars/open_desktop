@@ -47487,3 +47487,456 @@ fn fences_are_not_reachable_from_cpl3() {
         );
     }
 }
+
+// ---- S4-38L9p: XCHG r/m32, r32 with a memory operand (`[REX] 87 /r`, no REX.W, optional LOCK) in
+// the CPL0 set. SDM Vol.2 (from memory, not re-checked against the primary source): TEMP = DEST;
+// DEST = SRC; SRC = TEMP; the instruction changes no flag, and the memory form is implicitly
+// locked. The set runs it as read -> write on one vCPU with synchronous memory (BitsMemory fails
+// on any backend atomic call). A 32-bit register write zero-extends into the 64-bit register.
+// Outside the set the dword form is refused with opcode 0x87. ----
+
+/// The `stage4a` boundary bytes: `xchg %eax, 0x18(%r12)`.
+const XCHGL_EAX_R12_18: [u8; 5] = [0x41, 0x87, 0x44, 0x24, 0x18];
+const XCHG_MARK_FLAGS: u64 = 0x1 | 0x4 | 0x10 | 0x40 | 0x80 | 0x800;
+
+fn run_xchg_set(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+    budget: u64,
+) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+}
+
+#[test]
+fn xchg_dword_boundary_swaps_eax_with_the_dword_at_r12_plus_0x18() {
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+    state.gpr[Register::R12 as usize] = 0x20_0000;
+    state.rflags |= XCHG_MARK_FLAGS;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&XCHGL_EAX_R12_18);
+    set_dword(&mut memory, 0x20_0018, 0xdead_beef);
+    // The neighbouring dwords prove that exactly four bytes are written.
+    set_dword(&mut memory, 0x20_0014, 0xa5a5_a5a5);
+    set_dword(&mut memory, 0x20_001c, 0x5a5a_5a5a);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(0x20_0018, 4)]);
+    assert_eq!(
+        memory.writes,
+        vec![(0x20_0018, vec![0x44, 0x44, 0x33, 0x33])]
+    );
+    assert_eq!(dword_at(&memory, 0x20_0018), 0x3333_4444);
+    assert_eq!(dword_at(&memory, 0x20_0014), 0xa5a5_a5a5);
+    assert_eq!(dword_at(&memory, 0x20_001c), 0x5a5a_5a5a);
+    // The old memory value lands in EAX and the upper half of RAX is cleared.
+    expected.gpr[Register::Rax as usize] = 0xdead_beef;
+    expected.rip += 5;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn xchg_dword_boundary_then_the_rip_relative_load_executes_at_rip_plus_five() {
+    // `xchgl %eax, 0x18(%r12)` followed by `mov 0x0(%rip), %rax` (`48 8b 05 00 00 00 00`).
+    let code = [
+        0x41, 0x87, 0x44, 0x24, 0x18, 0x48, 0x8b, 0x05, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 7;
+    state.gpr[Register::R12 as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&code);
+    set_dword(&mut memory, 0x20_0018, 0x0102_0304);
+    // The load reads the 8 bytes at RIP + 12 (the end of the load).
+    memory.set_qword(RIP + 12, 0x1122_3344_5566_7788);
+    let result = run_xchg_set(&mut state, &mut memory, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(memory.writes, vec![(0x20_0018, vec![7, 0, 0, 0])]);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+    assert_eq!(state.rip, RIP + 12);
+}
+
+#[test]
+fn xchg_dword_lock_form_is_the_same_exchange_one_byte_longer() {
+    let code = [0xf0, 0x41, 0x87, 0x44, 0x24, 0x18];
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = 0xffff_ffff_0000_0005;
+    state.gpr[Register::R12 as usize] = 0x20_0000;
+    let mut expected = state.clone();
+    let mut memory = BitsMemory::new(&code);
+    set_dword(&mut memory, 0x20_0018, 0x8000_0001);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(dword_at(&memory, 0x20_0018), 5);
+    expected.gpr[Register::Rax as usize] = 0x8000_0001;
+    expected.rip += 6;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn xchg_dword_leaves_every_flag_untouched_for_equal_and_different_values() {
+    for (register, cell) in [
+        (0u32, 0u32),
+        (5, 5),
+        (0xffff_ffff, 1),
+        (0x8000_0000, 0x7fff_ffff),
+    ] {
+        for flags in [0u64, XCHG_MARK_FLAGS] {
+            let mut state = board_state();
+            state.rflags = (state.rflags & !XCHG_MARK_FLAGS) | flags;
+            state.gpr[Register::Rax as usize] = u64::from(register) | (0xabcd << 40);
+            state.gpr[Register::R12 as usize] = 0x20_0000;
+            let rflags = state.rflags;
+            let mut memory = BitsMemory::new(&XCHGL_EAX_R12_18);
+            set_dword(&mut memory, 0x20_0018, cell);
+            let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rflags, rflags, "{register:#x} {cell:#x} {flags:#x}");
+            assert_eq!(state.gpr[Register::Rax as usize], u64::from(cell));
+            assert_eq!(dword_at(&memory, 0x20_0018), register);
+        }
+    }
+}
+
+#[test]
+fn xchg_dword_with_every_legacy_and_extended_register_field() {
+    // `xchg %rN32, (%rbx)`: REX.R selects r8..r15; reg = N & 7; modrm = 0x03 | (reg << 3).
+    for number in 0u8..16 {
+        if number == 3 {
+            continue; // the base register itself is checked separately
+        }
+        let mut code = Vec::new();
+        if number >= 8 {
+            code.push(0x44);
+        }
+        code.push(0x87);
+        code.push(0x03 | ((number & 7) << 3));
+        let mut state = board_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0xf0f0_f0f0_0000_0000 | (index as u64 * 0x1111_1111 + 0x1234_0000);
+        }
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rip = RIP;
+        let register = number as usize;
+        let source = state.gpr[register] as u32;
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        set_dword(&mut memory, 0x20_0000, 0x0abc_def0);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            result.instructions_executed,
+            1,
+            "{number}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(dword_at(&memory, 0x20_0000), source, "{number}");
+        assert_eq!(memory.writes.len(), 1, "{number}");
+        assert_eq!(memory.writes[0].1.len(), 4, "{number}");
+        // A 32-bit write clears bits 63:32 of the register; no other register changes.
+        expected.gpr[register] = 0x0abc_def0;
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{number}");
+    }
+}
+
+#[test]
+fn xchg_dword_with_every_extended_base_register_r8_to_r15() {
+    // `xchg %eax, 0x0(%rN)` via REX.B: mod = 01 with disp8 0; R12 needs a SIB byte.
+    for number in 8u8..16 {
+        let code: Vec<u8> = if number & 7 == 4 {
+            vec![0x41, 0x87, 0x44, 0x24, 0x00]
+        } else {
+            vec![0x41, 0x87, 0x40 | (number & 7), 0x00]
+        };
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 0x9999_9999_1357_9bdf;
+        state.gpr[number as usize] = 0x30_0000 + u64::from(number) * 0x1000;
+        let at = state.gpr[number as usize];
+        let mut expected = state.clone();
+        let mut memory = BitsMemory::new(&code);
+        set_dword(&mut memory, at, 0x2468_ace0);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            result.instructions_executed,
+            1,
+            "{number}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(dword_at(&memory, at), 0x1357_9bdf, "{number}");
+        expected.gpr[Register::Rax as usize] = 0x2468_ace0;
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{number}");
+    }
+}
+
+#[test]
+fn xchg_dword_with_base_index_scale_displacement_and_rip_relative_addresses() {
+    // `xchg %edx, 0x10(%rbx,%rcx,4)` = 87 54 8b 10.
+    let mut state = board_state();
+    state.gpr[Register::Rdx as usize] = 0xaaaa_bbbb_cccc_dddd;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gpr[Register::Rcx as usize] = 0x100;
+    let mut memory = BitsMemory::new(&[0x87, 0x54, 0x8b, 0x10]);
+    set_dword(&mut memory, 0x20_0410, 0x0000_0042);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(dword_at(&memory, 0x20_0410), 0xcccc_dddd);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x42);
+    // `xchg %ecx, 0x1234(%rip)` = 87 0d 34 12 00 00: relative to the end of the instruction.
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = 0x1_0000_0009;
+    let at = RIP + 6 + 0x1234;
+    let mut memory = BitsMemory::new(&[0x87, 0x0d, 0x34, 0x12, 0x00, 0x00]);
+    set_dword(&mut memory, at, 0x77);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(dword_at(&memory, at), 9);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x77);
+    assert_eq!(state.rip, RIP + 6);
+}
+
+#[test]
+fn xchg_dword_with_the_base_register_as_the_source_uses_the_pre_state_address() {
+    // `xchg %ebx, (%rbx)` = 87 1b.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = BitsMemory::new(&[0x87, 0x1b]);
+    set_dword(&mut memory, 0x20_0000, 0x1234_5678);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    assert_eq!(dword_at(&memory, 0x20_0000), 0x20_0000);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x1234_5678);
+}
+
+#[test]
+fn xchg_dword_non_canonical_address_is_gp0_and_non_canonical_rsp_is_ss0() {
+    for rbx in [
+        0x0000_8000_0000_0000u64,
+        0xffff_7fff_ffff_ffffu64,
+        // The last byte (address + 3) is in the hole.
+        0x0000_8000_0000_0000 - 3,
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.gpr[Register::Rax as usize] = 1;
+        state.rflags |= XCHG_MARK_FLAGS;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&[0x87, 0x03]);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{rbx:#x}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{rbx:#x}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{rbx:#x}"
+        );
+    }
+    // The last canonical dword (address + 3 = 0x7fff_ffff_ffff) is accepted.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000 - 4;
+    let mut memory = BitsMemory::new(&[0x87, 0x03]);
+    let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", exit(&result));
+    for (register, value, code) in [
+        (
+            Register::Rsp,
+            0x0000_8000_0000_0004u64,
+            &[0x87, 0x44, 0x24, 0xfc][..],
+        ),
+        (
+            Register::Rbp,
+            0x0000_8000_0000_0000,
+            &[0x87, 0x45, 0x00][..],
+        ),
+    ] {
+        let mut state = board_state();
+        state.gpr[register as usize] = value;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{register:?}"
+        );
+        assert_eq!(state, before, "{register:?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn xchg_dword_read_or_write_fault_leaves_register_flags_rip_and_memory_unchanged() {
+    for (read, write) in [(true, false), (false, true)] {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(if read { 0x2 } else { 0x3 }),
+            linear_address: Some(0x20_0018),
+        };
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 0x1111_2222_3333_4444;
+        state.gpr[Register::R12 as usize] = 0x20_0000;
+        state.rflags |= XCHG_MARK_FLAGS;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&XCHGL_EAX_R12_18);
+        set_dword(&mut memory, 0x20_0018, 0xdead_beef);
+        if read {
+            memory.read_fault = Some(fault.clone());
+        }
+        if write {
+            memory.write_fault = Some(fault.clone());
+        }
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault), "read {read}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "read {read}");
+        assert_eq!(dword_at(&memory, 0x20_0018), 0xdead_beef);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn xchg_dword_forms_outside_the_slice_are_refused_with_opcode_0x87_without_mutation() {
+    let refused: [&[u8]; 22] = [
+        &[0x66, 0x87, 0x00],
+        &[0x66, 0x41, 0x87, 0x44, 0x24, 0x18],
+        &[0x67, 0x87, 0x00],
+        &[0x67, 0x41, 0x87, 0x44, 0x24, 0x18],
+        &[0xf2, 0x87, 0x00],
+        &[0xf3, 0x87, 0x00],
+        &[0xf0, 0xf3, 0x87, 0x00],
+        &[0xf3, 0xf0, 0x87, 0x00],
+        &[0xf0, 0xf0, 0x87, 0x00],
+        &[0xf0, 0x66, 0x87, 0x00],
+        &[0xf0, 0x67, 0x87, 0x00],
+        // Segment overrides.
+        &[0x26, 0x87, 0x00],
+        &[0x2e, 0x87, 0x00],
+        &[0x36, 0x87, 0x00],
+        &[0x3e, 0x87, 0x00],
+        &[0x64, 0x87, 0x00],
+        &[0x65, 0x87, 0x00],
+        &[0xf0, 0x65, 0x87, 0x00],
+        // REX before a legacy prefix is dropped, so the prefix still refuses the form.
+        &[0x41, 0x66, 0x87, 0x00],
+        &[0x48, 0x2e, 0x87, 0x00],
+        // LOCK with a register destination.
+        &[0xf0, 0x87, 0xc0],
+        &[0xf0, 0x41, 0x87, 0xc4],
+    ];
+    for code in refused {
+        let mut state = board_state();
+        state.gpr[Register::R12 as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        set_dword(&mut memory, 0x20_0000, 0x1234_5678);
+        let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x87 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{code:02x?}"
+        );
+    }
+}
+
+#[test]
+fn xchg_dword_with_a_truncated_modrm_sib_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &XCHGL_EAX_R12_18[..],
+        &[0x87, 0x0d, 0x34, 0x12, 0x00, 0x00][..],
+        &[0xf0, 0x87, 0x54, 0x8b, 0x10][..],
+    ] {
+        for cut in 0..code.len() {
+            let mut state = board_state();
+            state.gpr[Register::R12 as usize] = 0x20_0000;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(&code[..cut]);
+            let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+            assert_eq!(result.instructions_executed, 0, "{code:02x?} cut {cut}");
+            assert!(
+                !matches!(exit(&result), RunExit::InstructionBudgetExhausted),
+                "{code:02x?} cut {cut}"
+            );
+            assert_eq!(state, before, "{code:02x?} cut {cut}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn xchg_dword_stays_unsupported_outside_the_set_by_run_and_by_step() {
+    for code in [
+        &XCHGL_EAX_R12_18[..],
+        &[0xf0, 0x87, 0x03][..],
+        &[0x87, 0x03][..],
+    ] {
+        let mut state = legacy_state();
+        state.gpr[Register::R12 as usize] = 0x20_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x87 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+
+        let outcome =
+            od_isa::execute::step(&mut state, &mut memory, context(PrivilegeLevel::Ring0));
+        assert_eq!(
+            outcome,
+            Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x87 }),
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn xchg_dword_is_not_reachable_from_cpl3() {
+    let mut state = board_state();
+    state.gpr[Register::R12 as usize] = 0x20_0000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&XCHGL_EAX_R12_18);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}

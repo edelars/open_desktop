@@ -867,7 +867,8 @@ pub enum Operation {
         left: RegisterView,
         right: RegisterView,
     },
-    /// Bare long-mode qword XCHG between a GPR and ordinary memory.
+    /// Bare long-mode qword (S4-38L9p: and, in the CPL0 set, dword) XCHG between a GPR and
+    /// ordinary memory.
     XchgMemory {
         register: RegisterView,
         memory: MemoryOperand,
@@ -9728,7 +9729,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                     Operand::Memory(memory)
                         if byte == 0x87
-                            && size == OperandSize::Qword
+                            // S4-38L9p: the dword form too; the executor admits it only in the
+                            // CPL0 set (Ring0).
+                            && matches!(size, OperandSize::Qword | OperandSize::Dword)
                             && !duplicate
                             && matches!(prefixes.group1, None | Some(0xf0))
                             && !prefixes.operand_override
@@ -20413,7 +20416,7 @@ mod tests {
             }
         );
         for bytes in [
-            &[0x87, 0x00][..],
+            &[0x66, 0x87, 0x00][..],
             &[0x66, 0x48, 0x87, 0x00],
             &[0x67, 0x48, 0x87, 0x00],
             &[0x2e, 0x48, 0x87, 0x00],
@@ -20431,6 +20434,65 @@ mod tests {
             register_form.decode().unwrap().operation,
             Operation::Xchg { .. }
         ));
+    }
+
+    #[test]
+    fn dword_memory_xchg_decodes_the_bare_and_lock_forms_only() {
+        // S4-38L9p: `[REX] 87 /r` with memory and no REX.W is XCHG r/m32, r32.
+        let mut memory = Memory::new(&[0x41, 0x87, 0x44, 0x24, 0x18]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(instruction.operand_size, OperandSize::Dword);
+        assert_eq!(
+            instruction.operation,
+            Operation::XchgMemory {
+                register: RegisterView::low(Register::Rax, OperandSize::Dword),
+                memory: MemoryOperand {
+                    base: AddressBase::Register(Register::R12),
+                    index: None,
+                    scale: 1,
+                    displacement: 0x18,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Dword,
+                },
+            }
+        );
+        let mut memory = Memory::new(&[0xf0, 0x87, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 3);
+        assert!(matches!(
+            instruction.operation,
+            Operation::XchgMemory {
+                memory: MemoryOperand {
+                    size: OperandSize::Dword,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            Memory::new(&[0x87, 0xc0]).decode().unwrap().operation,
+            Operation::Xchg { .. }
+        ));
+        for bytes in [
+            &[0x66, 0x87, 0x00][..],
+            &[0x67, 0x87, 0x00],
+            &[0x2e, 0x87, 0x00],
+            &[0xf2, 0x87, 0x00],
+            &[0xf3, 0x87, 0x00],
+            &[0xf0, 0xf3, 0x87, 0x00],
+            &[0xf0, 0x87, 0xc0],       // LOCK register destination
+            &[0x48, 0x66, 0x87, 0x00], // REX before a legacy prefix is dropped: 66 stays
+            &[0x41, 0x2e, 0x87, 0x00],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
     }
 
     #[test]
@@ -20456,7 +20518,7 @@ mod tests {
 
         for bytes in [
             &[0xf0, 0x48, 0x87, 0xc0][..], // LOCK register destination
-            &[0xf0, 0x87, 0x00][..],       // default dword width
+            &[0xf0, 0x66, 0x87, 0x00][..], // LOCK 16-bit width
             &[0xf0, 0x66, 0x48, 0x87, 0x00],
             &[0xf0, 0x67, 0x48, 0x87, 0x00],
             &[0xf0, 0x2e, 0x48, 0x87, 0x00],
@@ -28761,7 +28823,7 @@ mod tests {
             &[0x66, 0x0f, 0xbf, 0xc0],
             &[0x86, 0x00],
             &[0x66, 0x48, 0x87, 0x03],
-            &[0x87, 0x03],
+            &[0x66, 0x87, 0x03],
             &[0xf0, 0x48, 0x87, 0xc3],
         ] {
             let mut memory = Memory::new(bytes);

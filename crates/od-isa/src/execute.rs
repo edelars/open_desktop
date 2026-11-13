@@ -36859,13 +36859,23 @@ fn step_configured(
         Operation::XchgMemory { memory, .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x87
-                && instruction.operand_size == OperandSize::Qword
-                && memory.size == OperandSize::Qword
-                && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                 && matches!(instruction.prefixes.group1, None | Some(0xf0))
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
                 && instruction.prefixes.segment.is_none()
+                && if memory.size == OperandSize::Dword {
+                    // S4-38L9p: XCHG r/m32, r32 with memory (`[REX] 87 /r`, no REX.W): the CPL0
+                    // set only (Ring0), run as read -> write on the single vCPU; outside the set
+                    // the dword form is refused.
+                    control_policy.is_some()
+                        && context.privilege == PrivilegeLevel::Ring0
+                        && instruction.operand_size == OperandSize::Dword
+                        && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                } else {
+                    instruction.operand_size == OperandSize::Qword
+                        && memory.size == OperandSize::Qword
+                        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                }
         }
         Operation::XaddMemory {
             destination,
@@ -56175,8 +56185,15 @@ fn transfer(
         } => {
             let address = operand.access_address_48(state, next_rip)?;
             let replacement = state.read(register);
-            let previous =
-                memory.atomic_exchange_integer(address, context, operand.size, replacement)?;
+            let previous = if operand.size == OperandSize::Dword {
+                // S4-38L9p: the CPL0-set dword form is read -> write (one vCPU, synchronous
+                // memory); a failing read or write leaves memory and the register untouched.
+                let old = memory.read_integer(address, context, operand.size)?;
+                memory.write_integer(address, context, operand.size, replacement)?;
+                old
+            } else {
+                memory.atomic_exchange_integer(address, context, operand.size, replacement)?
+            };
             state.write(register, previous);
         }
         Operation::Nop => {}
