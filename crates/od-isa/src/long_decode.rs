@@ -1960,6 +1960,11 @@ pub enum Operation {
     /// Exact `0F 20 D0` / `48 0F 20 D0` MOV RAX, CR2 (S4-38L5a). Executes only
     /// in the CPL0 profile set that owns CR3 (`with_cpu_owned_cr3`); read-only.
     ReadCr2,
+    /// S4-38L9F: `[REX] 0F 20 /3` with mod = 11 (MOV r64, CR3) into any GPR except
+    /// the exact RAX forms `0F 20 D8` / `48 0F 20 D8`, which stay [`Operation::ReadCr3`].
+    /// Executes only in the CPL0 profile set that owns CR3 (`with_cpu_owned_cr3`);
+    /// read-only. The destination is `rm` extended by REX.B; REX.W carries no meaning.
+    ReadCr3Into(Register),
     /// `[REX] 0F 20 /2` MOV r64, CR2 into any general register other than the
     /// exact RAX forms of `ReadCr2` (S4-38L5d). Executes only in the CPL0
     /// profile set that owns CR3; read-only. The destination is `rm` extended
@@ -3049,13 +3054,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
             // S4-38L7h: `0F 22 /3` with mod = 11 (MOV CR3, r64) takes any REX
             // without R, like CR4. The bare `0F 22 D8` stays `WriteCr3`.
             let cr3_write = opcode.byte == 0x22 && modrm & 0xf8 == 0xd8 && rex & 0x04 == 0;
+            // S4-38L9F: `0F 20 /3` with mod = 11 (MOV r64, CR3) takes any REX
+            // without R, like CR2/CR4. The exact RAX forms (`0F 20 D8`,
+            // `48 0F 20 D8`) stay `ReadCr3`.
+            let cr3_read = opcode.byte == 0x20 && modrm & 0xf8 == 0xd8 && rex & 0x04 == 0;
             let old_cr_form = matches!(modrm, 0xc0 | 0xd8 | 0xe0)
                 && (prefixes == Prefixes::default() || rex_w_read_cr3);
             // S4-38L9d: `0F 22 C7` (MOV CR0, RDI) only, without any prefix.
             let cr0_write_rdi =
                 opcode.byte == 0x22 && modrm == 0xc7 && prefixes == Prefixes::default();
-            if !(old_cr_form || cr2_read || cr4_read || cr4_write || cr3_write || cr0_write_rdi)
-                || (rex_w_read_cr3 && modrm != 0xd8 && !cr2_read && !cr4_read)
+            if !(old_cr_form
+                || cr2_read
+                || cr3_read
+                || cr4_read
+                || cr4_write
+                || cr3_write
+                || cr0_write_rdi)
+                || (rex_w_read_cr3 && modrm != 0xd8 && !cr2_read && !cr3_read && !cr4_read)
             {
                 return Err(self.unsupported(opcode));
             }
@@ -3100,6 +3115,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     operand_size: OperandSize::Qword,
                     address_size: OperandSize::Qword,
                     operation: Operation::WriteCr3From(src),
+                });
+            }
+            if cr3_read && !(modrm == 0xd8 && matches!(prefixes.rex, None | Some(0x48))) {
+                let dest = Register::from_encoding((modrm & 7) | ((rex & 1) << 3)).unwrap();
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::ReadCr3Into(dest),
                 });
             }
             if cr2_read {
@@ -31615,8 +31641,6 @@ mod tests {
             &[0x0f, 0x20, 0x13][..], // memory forms
             &[0x0f, 0x20, 0x53, 0x08][..],
             &[0x0f, 0x20, 0xc3][..], // CR0/CR3/CR4 into RBX
-            &[0x0f, 0x20, 0xdb][..],
-            &[0x41, 0x0f, 0x20, 0xd8][..],
             &[0x48, 0x0f, 0x20, 0xc0][..],
             &[0x0f, 0x22, 0xd3][..],
             &[0x66, 0x0f, 0x20, 0xd3][..],
@@ -31653,6 +31677,98 @@ mod tests {
         assert_eq!(
             Memory::new(&[0x0f, 0x20, 0xc0]).decode().unwrap().operation,
             Operation::ReadCr0
+        );
+    }
+
+    #[test]
+    fn mov_r64_cr3_decodes_every_destination_with_any_rex_but_r() {
+        // S4-38L9F: the exact RAX forms keep `ReadCr3`; every other destination
+        // (any REX without R, any rm, REX.B) is `ReadCr3Into`.
+        for rex in [
+            None,
+            Some(0x40u8),
+            Some(0x41),
+            Some(0x48),
+            Some(0x49),
+            Some(0x4a),
+            Some(0x4b),
+        ] {
+            for rm in 0u8..8 {
+                let mut bytes = Vec::new();
+                bytes.extend(rex);
+                bytes.extend_from_slice(&[0x0f, 0x20, 0xd8 | rm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                let dest = Register::from_encoding(rm | ((rex.unwrap_or(0) & 1) << 3)).unwrap();
+                let exact_rax = dest == Register::Rax && matches!(rex, None | Some(0x48));
+                let expected = if exact_rax {
+                    Operation::ReadCr3
+                } else {
+                    Operation::ReadCr3Into(dest)
+                };
+                assert_eq!(instruction.operation, expected, "{bytes:02x?}");
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(instruction.operand_size, OperandSize::Qword);
+                assert_eq!(instruction.address_size, OperandSize::Qword);
+                assert_eq!(instruction.prefixes.rex, rex);
+            }
+        }
+        // The kernel form at 0xffffffff810011f9: `mov %cr3, %rdi`.
+        let instruction = Memory::new(&[0x0f, 0x20, 0xdf]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::ReadCr3Into(Register::Rdi));
+        assert_eq!(instruction.length, 3);
+        assert_eq!(
+            Memory::new(&[0x41, 0x0f, 0x20, 0xd8])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::ReadCr3Into(Register::R8)
+        );
+        assert_eq!(
+            Memory::new(&[0x49, 0x0f, 0x20, 0xdf])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::ReadCr3Into(Register::R15)
+        );
+        for bytes in [
+            &[0x44, 0x0f, 0x20, 0xdf][..], // REX.R: CR11
+            &[0x4d, 0x0f, 0x20, 0xdf][..],
+            &[0x0f, 0x20, 0x1f][..], // memory forms
+            &[0x0f, 0x20, 0x5f, 0x08][..],
+            &[0x66, 0x0f, 0x20, 0xdf][..],
+            &[0xf2, 0x0f, 0x20, 0xdf][..],
+            &[0xf3, 0x0f, 0x20, 0xdf][..],
+            &[0x67, 0x0f, 0x20, 0xdf][..],
+            &[0x2e, 0x0f, 0x20, 0xdf][..],
+            &[0xf0, 0x0f, 0x20, 0xdf][..],
+            &[0x66, 0x41, 0x0f, 0x20, 0xdf][..],
+            &[0x41, 0x66, 0x0f, 0x20, 0xdf][..],
+            &[0x0f, 0x21, 0xdf][..], // MOV r64, DRn is a different opcode
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // The write direction, CR0/CR2/CR4 forms keep their meaning.
+        assert_eq!(
+            Memory::new(&[0x0f, 0x22, 0xdf]).decode().unwrap().operation,
+            Operation::WriteCr3From(Register::Rdi)
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xc0]).decode().unwrap().operation,
+            Operation::ReadCr0
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xd7]).decode().unwrap().operation,
+            Operation::ReadCr2Into(Register::Rdi)
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x20, 0xe7]).decode().unwrap().operation,
+            Operation::ReadCr4Into(Register::Rdi)
         );
     }
 
@@ -31956,15 +32072,10 @@ mod tests {
         for bytes in [
             &[0x66, 0x0f, 0x20, 0xd8][..],
             &[0xf0, 0x0f, 0x20, 0xd8][..],
-            &[0x49, 0x0f, 0x20, 0xd8][..],
-            &[0x40, 0x0f, 0x20, 0xd8][..],
-            &[0x48, 0x0f, 0x20, 0xd9][..],
             &[0xf3, 0x0f, 0x20, 0xd8][..],
             &[0x67, 0x0f, 0x20, 0xd8][..],
             &[0x2e, 0x0f, 0x20, 0xd8][..],
-            &[0x41, 0x0f, 0x20, 0xd8][..],
             &[0x4c, 0x0f, 0x20, 0xd8][..],
-            &[0x0f, 0x20, 0xd9][..],
             &[0x0f, 0x20, 0x18][..],
         ] {
             assert!(
