@@ -258,6 +258,8 @@ S5-21 conditional-candidate follow-up (2026-11-13, S4-38L7ay): rootfs and E-incl
 
 Scenario candidate summaries in the compact inventories are derived from exact records and scenario binary membership; they now include prior overlays as well as XADD. Scenario C has 21,176 candidate-bearing rows and scenario D 111,669; XADD contributes 0/36 rows respectively. The focused regression derives each scenario map and row total from exact records.
 
+Текущий статус (2026-11-13, strict ranked residual follow-up): прежние 205 broadly unclassified normalized forms и 213 978 rootfs / 214 039 E-inclusive rows — это широкий исторический classification snapshot; он включает conditional candidates и потому не равен остатку без candidate/evidence/profile annotations. Строгий ranking требует `unclassified` и пустых aggregate и exact-key карт conditional candidate/local candidate, evidence scope и profile match; частичное совпадение exact key исключает всю normalized form. Получено: rootfs 97 808 rows / 157 forms / 1 973 exact keys; E-inclusive 97 809 / 157 / 1 973. Scenario C: 2 213 / 61 / 322; D: 97 152 / 149 / 1 937; E delta для C и D — ноль. Все строки остаются unclassified; ranking показывает только статическую возможность покрытия и не означает unsupported или implementation-cost/performance оценку. Существующие CPL0 counters сохранены: hits rootfs/E 115 683/115 743, generic hits 116 191/116 251, unique rows 116 114/116 174; исторические candidate counts и classification не пересчитывались. Полные [таблицы](../reports/data/stage5/s5-21-ranked-residuals.md) и [JSON](../reports/data/stage5/s5-21-ranked-residuals.json); S5-21 остаётся blocked, checkbox пустой.
+
 ### S5-02. Описать контракт постоянного диска
 
 - [x] Принято после архитектурного ревью.
