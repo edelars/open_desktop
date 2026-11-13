@@ -11714,7 +11714,7 @@ mod tests {
 
     /// The source of the board (PIT OUT0 -> IOAPIC INTIN2 -> Local APIC) driven by a flat guest
     /// that programs the PIT with its own `OUT`s and idles in `JMP $`. The guest cannot touch the
-    /// Local APIC or the IOAPIC (the set loop has RAM and ports only), so the host writes entry 2
+    /// Local APIC or the IOAPIC (the set loop has RAM, ports and the ECAM window only, S4-38L9s), so the host writes entry 2
     /// and SVR before the run and the EOI between the chunks of the run, through the same device
     /// registers a guest store would reach.
     mod irq_pit_source {
@@ -12007,5 +12007,300 @@ mod tests {
             let next = source.next_deadline_ns().expect("the next edge");
             assert!(next > boot.board.clock().now_ns());
         }
+    }
+
+    // ---- S4-38L9s: ECAM (PCI MMCONFIG) data accesses of the set loop ----
+
+    /// GPA of the ECAM byte for bus 0, `device`, `function`, `register`.
+    fn ecam_gpa(device: u64, function: u64, register: u64) -> u64 {
+        crate::PCI_ECAM_DESCRIPTOR.base + (device << 15) + (function << 12) + register
+    }
+
+    /// Maps GVA `SPLIT_VA + 0x1000 * (i + 1)` to the 4 KiB frame of `frames[i]` (accessed and
+    /// dirty set, so a store to the frame writes no table entry), runs `code` (at
+    /// `SPLIT_VA + 0x200`) and returns the outcome of the run without the fetch cache.
+    fn run_ecam_program(frames: &[u64], code: &[u8]) -> CacheOutcome {
+        run_mmio_program(frames, code, A_D_PRESENT_WRITABLE)
+    }
+
+    /// [`run_ecam_program`] with the leaf flags of the mapped frames chosen by the caller.
+    fn run_mmio_program(frames: &[u64], code: &[u8], leaf_flags: u64) -> CacheOutcome {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            let mut entries = vec![(0, SPLIT_PAGE0 | 3)];
+            for (i, frame) in frames.iter().enumerate() {
+                entries.push((i as u64 + 1, (frame & !0xfff) | leaf_flags));
+            }
+            write_tree(boot, TREE_PML4, &entries, None);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        run_cache_case(&build, &switch_set(&cli, &halt), 32, false)
+    }
+
+    /// `MOV RBX, imm32; <body>; HLT`, RBX = the GVA of frame `index` plus `offset`.
+    fn ecam_program(index: u64, offset: u32, body: &[u8]) -> Vec<u8> {
+        let mut code = mov_imm32(3, (SPLIT_VA + 0x1000 * (index + 1)) as u32 + offset);
+        code.extend_from_slice(body);
+        code.push(0xF4);
+        code
+    }
+
+    #[test]
+    fn the_mcfg_base_of_the_stage4_blob_is_the_boards_ecam_region() {
+        // The kernel takes the ECAM base from the MCFG of the blob; it is the one the board
+        // registers as an MMIO region.
+        let blob = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"
+        ))
+        .expect("the stage 4 blob fixture");
+        // The table header: "MCFG", then its length (44-byte header + one 16-byte allocation).
+        let at = blob
+            .windows(8)
+            .position(|w| &w[..4] == b"MCFG" && w[4..8] == 60u32.to_le_bytes())
+            .expect("an MCFG table");
+        let table = &blob[at..at + 60];
+        let base = u64::from_le_bytes(table[44..52].try_into().unwrap());
+        let (segment, start_bus, end_bus) = (
+            u16::from_le_bytes(table[52..54].try_into().unwrap()),
+            table[54],
+            table[55],
+        );
+        assert_eq!(
+            (base, segment, start_bus, end_bus),
+            (0xFC10_0000, 0, 0, 0),
+            "MCFG allocation"
+        );
+        let ecam = crate::PCI_ECAM_DESCRIPTOR;
+        assert_eq!(base, ecam.base);
+        assert_eq!(ecam.size, 0x10_0000);
+        assert_eq!(
+            (segment, start_bus, end_bus),
+            (ecam.segment, ecam.start_bus, ecam.end_bus)
+        );
+    }
+
+    #[test]
+    fn an_ecam_dword_read_of_an_absent_function_is_all_ones() {
+        // The access of `pci_mmcfg_read`: `MOV EAX, [RBX]` at bus 0, device 0, function 0,
+        // register 0 (the boundary of S4-38L9r) and at other devices and functions.
+        for (device, function, register) in [(0, 0, 0), (3, 2, 0x10), (31, 7, 0xFFC)] {
+            let gpa = ecam_gpa(device, function, register);
+            let code = ecam_program(0, (gpa & 0xfff) as u32, &[0x8B, 0x03]);
+            let out = run_ecam_program(&[gpa], &code);
+            assert_eq!(
+                out.report.exit,
+                PagedCpl0SetExit::Run(RunExit::Halted),
+                "{:?}",
+                out.report
+            );
+            assert_eq!(out.report.memory_error, None);
+            assert_eq!(out.report.instructions_executed, 3);
+            assert_eq!(out.state.gpr[Register::Rax as usize], 0xFFFF_FFFF);
+            // Only the code page's accessed bit is written; the read writes nothing.
+            assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+        }
+    }
+
+    #[test]
+    fn an_ecam_byte_and_word_read_of_an_absent_function_is_all_ones() {
+        let gpa = ecam_gpa(0, 0, 2);
+        let off = (gpa & 0xfff) as u32;
+        let word = run_ecam_program(&[gpa], &ecam_program(0, off, &[0x66, 0x8B, 0x03]));
+        assert_eq!(word.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(word.state.gpr[Register::Rax as usize] & 0xFFFF, 0xFFFF);
+        let byte = run_ecam_program(&[gpa], &ecam_program(0, off, &[0x8A, 0x03]));
+        assert_eq!(byte.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(byte.state.gpr[Register::Rax as usize] & 0xFF, 0xFF);
+    }
+
+    #[test]
+    fn an_ecam_dword_write_to_an_absent_function_is_dropped() {
+        // MOV EAX, 0x12345678 (B8 imm32); MOV [RBX], EAX; MOV ECX, [RBX].
+        let gpa = ecam_gpa(0, 0, 0x10);
+        let mut body = vec![0xB8, 0x78, 0x56, 0x34, 0x12, 0x89, 0x03];
+        body.extend([0x8B, 0x0B]);
+        let out = run_ecam_program(&[gpa], &ecam_program(0, (gpa & 0xfff) as u32, &body));
+        assert_eq!(
+            out.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            out.report
+        );
+        assert_eq!(out.report.memory_error, None);
+        assert_eq!(out.state.gpr[Register::Rax as usize], 0x1234_5678);
+        assert_eq!(out.state.gpr[Register::Rcx as usize], 0xFFFF_FFFF);
+        // The store reached no RAM and no table entry (the leaf has accessed and dirty set).
+        assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+    }
+
+    #[test]
+    fn a_read_just_past_the_ecam_region_keeps_the_old_error() {
+        // GPA ECAM_BASE + 1 MiB is not in the board's region: the walker keeps the typed
+        // physical-address error it gave before the ECAM was served by the set loop.
+        let gpa = crate::PCI_ECAM_DESCRIPTOR.base + crate::PCI_ECAM_DESCRIPTOR.size;
+        let code = ecam_program(0, 0, &[0x8B, 0x03]);
+        let out = run_ecam_program(&[gpa], &code);
+        assert!(
+            matches!(
+                out.report.memory_error,
+                Some(crate::TrackedAccessError::OperandPhysical { address, .. })
+                    if address.get() == gpa
+            ),
+            "{:?}",
+            out.report
+        );
+        assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+    }
+
+    /// The page-table entry of mapped frame `index` (`run_mmio_program` numbering), read from the
+    /// frames the outcome holds.
+    fn ecam_leaf(out: &CacheOutcome, index: u64) -> u64 {
+        let at = (0x3000 + 8 * (index + 1)) as usize;
+        u64::from_le_bytes(out.memory[at..at + 8].try_into().unwrap())
+    }
+
+    #[test]
+    fn an_ecam_store_sets_the_dirty_bit_first_and_commits_one_table_write() {
+        // The leaf has accessed set and dirty clear. The store sets dirty (one committed write of
+        // the entry, before the device is reached) and the device drops the data.
+        let gpa = ecam_gpa(0, 0, 0x10);
+        let off = (gpa & 0xfff) as u32;
+        let leaf_a = A_PRESENT_WRITABLE | (1 << 5);
+        let store = ecam_program(0, off, &[0xB8, 0x78, 0x56, 0x34, 0x12, 0x89, 0x03]);
+        let out = run_mmio_program(&[gpa], &store, leaf_a);
+        assert_eq!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(out.report.memory_error, None);
+        let entry = TREE_PML4 + 0x3000 + 8;
+        assert_eq!(ecam_leaf(&out, 0) & (1 << 6), 1 << 6, "dirty set");
+        assert_eq!(
+            out.writes.iter().filter(|w| **w == (entry, 8)).count(),
+            1,
+            "{:?}",
+            out.writes
+        );
+        // Code page accessed bit plus the one dirty write.
+        assert_eq!(out.writes.len(), 2, "{:?}", out.writes);
+        // A read does not set dirty.
+        let load = ecam_program(0, off, &[0x8B, 0x03]);
+        let out = run_mmio_program(&[gpa], &load, leaf_a);
+        assert_eq!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(ecam_leaf(&out, 0) & (1 << 6), 0);
+        assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+    }
+
+    #[test]
+    fn the_set_loop_serves_ecam_and_no_other_mmio() {
+        // The board has the Local APIC and the I/O APIC as MMIO regions; the set loop does not
+        // reach them: the same typed error as before S4-38L9s, nothing read, nothing written, and
+        // a store leaves the leaf's dirty bit alone.
+        use crate::{IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE};
+        for base in [LOCAL_APIC_MMIO_BASE, IO_APIC_MMIO_BASE] {
+            let leaf_a = A_PRESENT_WRITABLE | (1 << 5);
+            let out = run_mmio_program(&[base], &ecam_program(0, 0x20, &[0x8B, 0x03]), leaf_a);
+            assert!(
+                matches!(
+                    out.report.memory_error,
+                    Some(crate::TrackedAccessError::OperandPhysical {
+                        address,
+                        source: crate::MemoryAccessError::UnreadableRegion(
+                            crate::MemoryRegionKind::Mmio
+                        ),
+                    }) if address.get() == base + 0x20
+                ),
+                "{base:#x}: {:?}",
+                out.report
+            );
+            assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+            assert_eq!(out.state.gpr[Register::Rax as usize], 0);
+            let store = ecam_program(0, 0x20, &[0x89, 0x03]);
+            let out = run_mmio_program(&[base], &store, leaf_a);
+            assert!(
+                matches!(
+                    out.report.memory_error,
+                    Some(crate::TrackedAccessError::DeviceUnavailable { address })
+                        if address.get() == base + 0x20
+                ),
+                "{base:#x}: {:?}",
+                out.report
+            );
+            assert_eq!(
+                ecam_leaf(&out, 0) & (1 << 6),
+                0,
+                "no dirty before the error"
+            );
+            assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+        }
+        // The dispatch itself refuses them, and serves the ECAM window.
+        use crate::bus::SetStepMmio;
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let (_, io) = boot.board.bus_mut().split_for_set_step();
+        let read = crate::RamAccessOperation::Read {
+            width: crate::AccessWidth::Dword,
+        };
+        assert_eq!(
+            io.window(),
+            (
+                crate::PCI_ECAM_DESCRIPTOR.base,
+                crate::PCI_ECAM_DESCRIPTOR.size
+            )
+        );
+        for base in [LOCAL_APIC_MMIO_BASE, IO_APIC_MMIO_BASE] {
+            assert!(
+                io.dispatch(GuestPhysicalAddress::new(base), 4, read)
+                    .is_err()
+            );
+        }
+        let ecam = GuestPhysicalAddress::new(crate::PCI_ECAM_DESCRIPTOR.base);
+        assert_eq!(io.dispatch(ecam, 4, read), Ok(0xFFFF_FFFF));
+        let last = GuestPhysicalAddress::new(crate::PCI_ECAM_DESCRIPTOR.base + 0xF_FFFC);
+        assert_eq!(io.dispatch(last, 4, read), Ok(0xFFFF_FFFF));
+        let past = GuestPhysicalAddress::new(crate::PCI_ECAM_DESCRIPTOR.base + 0xF_FFFD);
+        assert!(
+            io.dispatch(past, 4, read).is_err(),
+            "crosses the window end"
+        );
+    }
+
+    #[test]
+    fn a_split_access_never_reaches_the_ecam_device() {
+        // Two adjacent ECAM pages (device 0, functions 0 and 1). A dword or word read, or a
+        // dword store, across their boundary is refused as before S4-38L9s (the typed error of an
+        // MMIO operand), not split into byte accesses to the device.
+        let (page0, page1) = (ecam_gpa(0, 0, 0), ecam_gpa(0, 1, 0));
+        let leaf_ad = A_D_PRESENT_WRITABLE;
+        for (body, last_byte) in [
+            (&[0x8Bu8, 0x03][..], 0xFFEu32),
+            (&[0x66, 0x8B, 0x03][..], 0xFFF),
+        ] {
+            let out = run_mmio_program(&[page0, page1], &ecam_program(0, last_byte, body), leaf_ad);
+            assert!(
+                matches!(
+                    out.report.memory_error,
+                    Some(crate::TrackedAccessError::OperandPhysical {
+                        source: crate::MemoryAccessError::UnreadableRegion(
+                            crate::MemoryRegionKind::Mmio
+                        ),
+                        ..
+                    })
+                ),
+                "{body:x?}: {:?}",
+                out.report
+            );
+            assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+            assert_eq!(out.state.gpr[Register::Rax as usize], 0, "{body:x?}");
+        }
+        let store = ecam_program(0, 0xFFE, &[0x89, 0x03]);
+        let out = run_mmio_program(&[page0, page1], &store, leaf_ad);
+        assert!(
+            matches!(
+                out.report.memory_error,
+                Some(crate::TrackedAccessError::DeviceUnavailable { .. })
+            ),
+            "{:?}",
+            out.report
+        );
+        assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
     }
 }

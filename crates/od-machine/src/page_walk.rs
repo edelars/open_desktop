@@ -647,6 +647,9 @@ pub(crate) enum MmioDispatchError {
     Backend(String),
 }
 
+/// The physical range `(base, size)` an MMIO dispatch is allowed to serve.
+pub(crate) type MmioWindow = (u64, u64);
+
 type MmioDispatch<'a> =
     dyn FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError> + 'a;
 
@@ -948,7 +951,16 @@ pub fn access_long64_4k_ram(
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
 ) -> TrackedAccessReport {
-    access_long64_4k_internal(memory, paging, request, committed_write, false, None, false)
+    access_long64_4k_internal(
+        memory,
+        paging,
+        request,
+        committed_write,
+        false,
+        None,
+        false,
+        None,
+    )
 }
 
 /// Opt-in tracked access through 4 KiB or 2 MiB leaves, limited to RAM.
@@ -962,7 +974,16 @@ pub fn access_long64_2m_ram(
     request: TrackedAccessRequest,
     committed_write: impl FnMut(GuestPhysicalRange),
 ) -> TrackedAccessReport {
-    access_long64_4k_internal(memory, paging, request, committed_write, false, None, true)
+    access_long64_4k_internal(
+        memory,
+        paging,
+        request,
+        committed_write,
+        false,
+        None,
+        true,
+        None,
+    )
 }
 
 /// Translates `address` through the 4 KiB / 2 MiB tracked walk WITHOUT committing anything: the
@@ -1077,6 +1098,31 @@ pub(crate) fn access_long64_4k_with_mmio(
         true,
         Some(&mut mmio),
         false,
+        None,
+    )
+}
+
+/// S4-38L9s: [`access_long64_2m_ram`] whose MMIO operands go to `mmio` instead of failing
+/// (the set loop's data path). The walk, accessed/dirty bits and every check are those of the
+/// 2 MiB RAM walk; only an operand landing in an MMIO region is dispatched, with the dirty bit set
+/// first like [`access_long64_4k_with_mmio`].
+pub(crate) fn access_long64_2m_with_mmio(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    window: MmioWindow,
+    mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
+) -> TrackedAccessReport {
+    access_long64_4k_internal(
+        memory,
+        paging,
+        request,
+        committed_write,
+        true,
+        Some(&mut mmio),
+        true,
+        Some(window),
     )
 }
 
@@ -1088,8 +1134,9 @@ fn access_long64_4k_internal(
     set_mmio_dirty_before_dispatch: bool,
     mmio: Option<&mut MmioDispatch<'_>>,
     allow_2m: bool,
+    mmio_window: Option<MmioWindow>,
 ) -> TrackedAccessReport {
-    access_long64_4k_internal_with_writer(
+    access_long64_4k_internal_windowed(
         memory,
         paging,
         request,
@@ -1098,6 +1145,7 @@ fn access_long64_4k_internal(
         mmio,
         &mut write_tracked_table_entry,
         allow_2m,
+        mmio_window,
     )
 }
 
@@ -1107,9 +1155,36 @@ fn access_long64_4k_internal_with_writer(
     request: TrackedAccessRequest,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
     set_mmio_dirty_before_dispatch: bool,
+    mmio: Option<&mut MmioDispatch<'_>>,
+    table_writer: &mut TrackedTableWriter<'_>,
+    allow_2m: bool,
+) -> TrackedAccessReport {
+    access_long64_4k_internal_windowed(
+        memory,
+        paging,
+        request,
+        committed_write,
+        set_mmio_dirty_before_dispatch,
+        mmio,
+        table_writer,
+        allow_2m,
+        None,
+    )
+}
+
+/// The tracked access. `mmio_window`, when set, limits the MMIO the dispatch serves to the
+/// physical range `(base, size)`: an operand in any other MMIO region takes the same typed error
+/// as without a dispatch, before the dirty bit or the device is touched (S4-38L9s).
+fn access_long64_4k_internal_windowed(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    set_mmio_dirty_before_dispatch: bool,
     mut mmio: Option<&mut MmioDispatch<'_>>,
     table_writer: &mut TrackedTableWriter<'_>,
     allow_2m: bool,
+    mmio_window: Option<MmioWindow>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -1203,7 +1278,11 @@ fn access_long64_4k_internal_with_writer(
     };
     let _ = range;
 
-    if is_mmio && mmio.is_none() {
+    let served = mmio_window.is_none_or(|(base, size)| {
+        physical.get() >= base
+            && u128::from(physical.get()) + u128::from(width) <= u128::from(base) + u128::from(size)
+    });
+    if is_mmio && (mmio.is_none() || !served) {
         let error = if access == AccessKind::Write {
             TrackedAccessError::DeviceUnavailable { address: physical }
         } else {

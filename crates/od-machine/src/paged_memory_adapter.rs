@@ -805,12 +805,19 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
         let clear_resume_flag =
             resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
-        let (ram, port) = bus.split_for_pio_step();
+        let (ram, io) = bus.split_for_set_step();
         let mut port = PitWriteWatch {
-            inner: port,
+            inner: io.port_io(),
             pit_written: false,
         };
-        let mut memory = set_loop_adapter(ram, paging, instruction_rip, &mut watch, cache.as_ref());
+        let mut memory = set_loop_adapter(
+            ram,
+            Some(&io),
+            paging,
+            instruction_rip,
+            &mut watch,
+            cache.as_ref(),
+        );
         let result = run_with_cpl0_profile_set_and_pio(
             state,
             &mut memory,
@@ -927,13 +934,17 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
 /// whole CPL0 set read and write widths, the optional fetch cache.
 fn set_loop_adapter<'a>(
     ram: &'a mut crate::PhysicalMemory,
+    mmio: Option<&'a dyn crate::bus::SetStepMmio>,
     paging: Long64ProbeConfig,
     instruction_rip: u64,
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     fetch_cache: Option<&'a FetchTranslationCache>,
 ) -> PagedMovMemoryAdapter<'a> {
     PagedMovMemoryAdapter {
-        bus: AdapterBus::Ram(ram),
+        bus: match mmio {
+            Some(mmio) => AdapterBus::RamMmio(ram, mmio),
+            None => AdapterBus::Ram(ram),
+        },
         paging,
         instruction_rip,
         committed_write,
@@ -1037,7 +1048,7 @@ fn deliver_pending_irq(
         return None;
     }
     let (ram, _port) = bus.split_for_pio_step();
-    let mut memory = set_loop_adapter(ram, *paging, state.rip, watch, cache);
+    let mut memory = set_loop_adapter(ram, None, *paging, state.rip, watch, cache);
     let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
@@ -1395,6 +1406,12 @@ pub fn step_paged_mov_dword_store(
 enum AdapterBus<'a> {
     Machine(&'a mut MachineBus),
     Ram(&'a mut crate::PhysicalMemory),
+    /// `Ram` plus the MMIO dispatch of the set loop (S4-38L9s): an operand in an MMIO region
+    /// goes to the board's device, as on the `Machine` form; the rest is the large-RAM walk.
+    RamMmio(
+        &'a mut crate::PhysicalMemory,
+        &'a dyn crate::bus::SetStepMmio,
+    ),
 }
 
 impl<'a> From<&'a mut MachineBus> for AdapterBus<'a> {
@@ -1409,7 +1426,7 @@ impl AdapterBus<'_> {
     fn machine(&mut self) -> Result<&mut MachineBus, MemoryError> {
         match self {
             Self::Machine(bus) => Ok(bus),
-            Self::Ram(_) => Err(MemoryError::Backend(
+            Self::Ram(_) | Self::RamMmio(..) => Err(MemoryError::Backend(
                 "the RAM-only adapter bus serves the large-RAM walk only".to_string(),
             )),
         }
@@ -1420,12 +1437,41 @@ impl AdapterBus<'_> {
         paging: &Long64ProbeConfig,
         request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
+        mmio_allowed: bool,
     ) -> crate::TrackedAccessReport {
         match self {
             Self::Machine(bus) => bus.access_tracked_2m_ram(paging, request, committed_write),
             Self::Ram(memory) => {
                 crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
             }
+            // A split access never reaches a device (S4-38L9s): it is the RAM walk, whose MMIO
+            // operand is the typed error it always was.
+            Self::RamMmio(memory, _) if !mmio_allowed => {
+                crate::page_walk::access_long64_2m_ram(memory, paging, request, committed_write)
+            }
+            Self::RamMmio(memory, mmio) => crate::page_walk::access_long64_2m_with_mmio(
+                memory,
+                paging,
+                request,
+                committed_write,
+                mmio.window(),
+                |address, width, operation| mmio.dispatch(address, width, operation),
+            ),
+        }
+    }
+
+    /// The physical memory of the `Ram` forms.
+    fn ram_mut(&mut self) -> Option<&mut crate::PhysicalMemory> {
+        match self {
+            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Machine(_) => None,
+        }
+    }
+
+    fn ram_ref(&self) -> Option<&crate::PhysicalMemory> {
+        match self {
+            Self::Ram(memory) | Self::RamMmio(memory, _) => Some(memory),
+            Self::Machine(_) => None,
         }
     }
 }
@@ -1529,6 +1575,27 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         operation: RamAccessOperation,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        self.access_with(address, context, operation, true)
+    }
+
+    /// One byte of an access that is split at a page boundary: never served by a device
+    /// (S4-38L9s), so a split access that touches MMIO is the typed error it was before.
+    fn access_split_byte(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        operation: RamAccessOperation,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
+        self.access_with(address, context, operation, false)
+    }
+
+    fn access_with(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        operation: RamAccessOperation,
+        mmio_allowed: bool,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
         let context = AccessContext {
             origin: od_isa::memory::AccessOrigin::Explicit,
             ..context
@@ -1542,8 +1609,12 @@ impl PagedMovMemoryAdapter<'_> {
         let report = if self.capture_effects {
             let mut writes = Vec::new();
             let report = if self.large_ram_profile {
-                self.bus
-                    .access_2m_ram(&self.paging, request, |range| writes.push(range))
+                self.bus.access_2m_ram(
+                    &self.paging,
+                    request,
+                    |range| writes.push(range),
+                    mmio_allowed,
+                )
             } else if self.ram_only {
                 self.bus
                     .machine()?
@@ -1568,8 +1639,12 @@ impl PagedMovMemoryAdapter<'_> {
                 );
             report
         } else if self.large_ram_profile {
-            self.bus
-                .access_2m_ram(&self.paging, request, &mut *self.committed_write)
+            self.bus.access_2m_ram(
+                &self.paging,
+                request,
+                &mut *self.committed_write,
+                mmio_allowed,
+            )
         } else if self.ram_only {
             self.bus.machine()?.access_tracked_ram(
                 &self.paging,
@@ -1606,7 +1681,7 @@ impl PagedMovMemoryAdapter<'_> {
             ..context
         };
         if let Some(frame) = cache.lookup(address, &self.paging, context)
-            && let AdapterBus::Ram(memory) = &self.bus
+            && let Some(memory) = self.bus.ram_ref()
             && let Some(byte) = memory.read_ram_frame_u8(frame, address)
         {
             return Ok(byte);
@@ -1615,7 +1690,7 @@ impl PagedMovMemoryAdapter<'_> {
             TrackedAccessOutcome::Fetched(value) => value,
             _ => return Err(Self::unsupported("non-fetch result")),
         };
-        if let AdapterBus::Ram(memory) = &mut self.bus
+        if let Some(memory) = self.bus.ram_mut()
             && let Ok((physical, tables)) = translate_long64_2m_ram_read_only_with_tables(
                 memory,
                 &self.paging,
@@ -1684,14 +1759,16 @@ impl PagedMovMemoryAdapter<'_> {
         let second_page = (address & !0xfff).wrapping_add(0x1000);
         for check_address in [address, second_page] {
             let result = match &mut self.bus {
-                AdapterBus::Ram(memory) => crate::page_walk::translate_long64_2m_ram_write_check(
-                    memory,
-                    &self.paging,
-                    self.instruction_rip,
-                    GuestLinearAddress::new(check_address),
-                    context,
-                    &mut *self.committed_write,
-                ),
+                AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _) => {
+                    crate::page_walk::translate_long64_2m_ram_write_check(
+                        memory,
+                        &self.paging,
+                        self.instruction_rip,
+                        GuestLinearAddress::new(check_address),
+                        context,
+                        &mut *self.committed_write,
+                    )
+                }
                 AdapterBus::Machine(_) => return Err(Self::unsupported("cross-page write")),
             };
             if let Err(error) = result {
@@ -1700,7 +1777,7 @@ impl PagedMovMemoryAdapter<'_> {
             }
         }
         for (index, byte) in source.iter().enumerate() {
-            let outcome = self.access(
+            let outcome = self.access_split_byte(
                 address.wrapping_add(index as u64),
                 context,
                 RamAccessOperation::Write {
@@ -1804,7 +1881,7 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             // destination is written below, only once every byte has been read.
             let mut bytes = [0u8; 8];
             for (index, byte) in bytes[..destination.len()].iter_mut().enumerate() {
-                let access = self.access(
+                let access = self.access_split_byte(
                     address.wrapping_add(index as u64),
                     context,
                     RamAccessOperation::Read {
@@ -1827,7 +1904,7 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             let mut bytes = [0u8; 2];
             for (index, byte) in bytes.iter_mut().enumerate() {
                 let byte_address = address.wrapping_add(index as u64);
-                let access = self.access(
+                let access = self.access_split_byte(
                     byte_address,
                     context,
                     RamAccessOperation::Read {
