@@ -49,8 +49,8 @@ class NormalizedFormTests(unittest.TestCase):
     def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         cases = (
-            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "b9059f45adda311f3a11950c440d75e67c22d255c7d2899d13b76c7dc3d12377"),
-            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "beb92e83d2c02c17dd50a9a616aad298a79bf42ca9f7db32cdf2b970f1f1eec4"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066"),
         )
         expected_binary_counts = {
             "S4-38L9b-PAUSE-exact-F3-90": {"gcc-cc1": 2, "gcc-collect2": 2, "gcc-driver": 2},
@@ -188,9 +188,9 @@ class NormalizedFormTests(unittest.TestCase):
                     "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
                     "S2-37be-CVTSD2SS-register-state-gated": 1,
                 })
-                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 115674 if full_key else 115734)
-                self.assertEqual(fields["conditional_candidate_hit_count"], 115751 if full_key else 115811)
-                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115243 if full_key else 115303)
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 115680 if full_key else 115740)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 115757 if full_key else 115817)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115249 if full_key else 115309)
                 self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
                 expected_by_binary = {
                     "bash": {"S2-37q-CVTSI2SD-register-state-gated": 1},

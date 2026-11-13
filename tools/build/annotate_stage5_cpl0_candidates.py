@@ -18,6 +18,8 @@ def annotate(path: Path) -> None:
     candidates = {
         "S4-38L9b-PAUSE-exact-F3-90": ("pause", ["90"], ["F3"]),
         "S4-38L6d-LEAVE-bare-C9": ("leave", ["C9"], []),
+        "S4-38L6a-PREFETCHNTA-base-only": ("prefetchnta mem8", ["0F", "18"], []),
+        "S4-38L6a-PREFETCHT0-base-only": ("prefetcht0 mem8", ["0F", "18"], []),
     }
     candidate_ids = set(candidates)
     forms: dict[str, int] = {}
@@ -30,9 +32,12 @@ def annotate(path: Path) -> None:
         }
         form = record["instruction_form"]
         for candidate, (operand, opcode, prefixes) in candidates.items():
-            if (form["operand_signature"], form["opcode_bytes"], form["semantic_prefixes"]) == (
+            matches = (form["operand_signature"], form["opcode_bytes"], form["semantic_prefixes"]) == (
                 operand, opcode, ["rep"] if prefixes == ["F3"] else []
-            ):
+            )
+            if candidate.startswith("S4-38L6a-PREFETCH"):
+                matches = matches and form["address"] == {"form": "base_only", "segment": None, "size": 64} and form["modrm_mode"] == "memory" and form["group_extension"] is None
+            if matches:
                 record["conditional_candidate_frequencies"][candidate] = record["count"]
                 if record["classification_frequencies"] != {"unclassified": record["count"]} or record["evidence_scope_frequencies"]:
                     raise ValueError(f"candidate {candidate} must remain unclassified/outside evidence scope")
@@ -43,14 +48,32 @@ def annotate(path: Path) -> None:
         }
         dimensions = record["dimensions"]
         for candidate, (operand, opcode, prefixes) in candidates.items():
-            if (dimensions["operand_signature"], dimensions["opcode_bytes"], dimensions["prefix_bytes"]) == (operand, opcode, prefixes):
+            matches = (dimensions["operand_signature"], dimensions["opcode_bytes"], dimensions["prefix_bytes"]) == (operand, opcode, prefixes)
+            if candidate.startswith("S4-38L6a-PREFETCH"):
+                reg = 0 if candidate.endswith("PREFETCHNTA-base-only") else 1
+                matches = matches and dimensions == {
+                    "address": {"form": "base_only", "segment": None, "size": 64},
+                    "encoding_key": dimensions["encoding_key"],
+                    "instruction_length": 3,
+                    "modrm": {"mod": 0, "raw": "00" if reg == 0 else "08", "reg": reg, "rm": 0},
+                    "opcode_bytes": ["0F", "18"],
+                    "operand_signature": operand,
+                    "prefix_bytes": [],
+                    "sib": None,
+                }
+            if matches:
                 record["conditional_candidate_frequencies"][candidate] = record["count"]
                 forms[candidate] = forms.get(candidate, 0) + record["count"]
                 for binary, count in record["binary_frequencies"].items():
                     candidate_rows_by_binary.setdefault(candidate, Counter())[binary] += count
                 if record["classification_frequencies"] != {"unclassified": record["count"]} or record["evidence_scope_frequencies"]:
                     raise ValueError(f"candidate {candidate} must remain unclassified/outside evidence scope")
-    expected = {"S4-38L9b-PAUSE-exact-F3-90": 6, "S4-38L6d-LEAVE-bare-C9": 2005}
+    expected = {
+        "S4-38L9b-PAUSE-exact-F3-90": 6,
+        "S4-38L6d-LEAVE-bare-C9": 2005,
+        "S4-38L6a-PREFETCHNTA-base-only": 3,
+        "S4-38L6a-PREFETCHT0-base-only": 3,
+    }
     if forms != expected:
         raise ValueError(f"observed candidate counts changed: {forms}")
     for binary, record in data["binaries"].items():

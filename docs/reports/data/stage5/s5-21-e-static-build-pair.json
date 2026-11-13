@@ -41,12 +41,12 @@
     "coarse_operand_signatures": 560,
     "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json",
     "compact_generation_command": "Historical base export (pre-annotation only): python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz. Final annotated compact payload is reproducibly derived from existing exact forms with tools/build/annotate_stage5_cpl0_candidates.py.",
-    "compact_inventory_sha256": "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c",
+    "compact_inventory_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_repeat_sha256": "d266793df5c0f924cd77f76b57f9c7898bca721be5c41989de8395ed5039084c",
-    "conditional_candidate_hit_count": 115811,
+    "compact_repeat_sha256": "2d332123379c6bf55a065ebbcb317fbe77a6dc4c111444337df05da118c71066",
+    "conditional_candidate_hit_count": 115817,
     "conditional_candidate_supported_overlap_rows": 40,
-    "conditional_cpl0_candidate_hits": 115303,
+    "conditional_cpl0_candidate_hits": 115309,
     "conditional_local_state_gated_candidate_frequencies": {
       "S2-37ad-CVTTSS2SI-register-state-gated": 8,
       "S2-37ae-CVTTSD2SI-register-state-gated": 28,
@@ -374,7 +374,7 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 115734,
+    "unique_instruction_rows_with_any_conditional_candidate": 115740,
     "unique_mnemonics": 192,
     "date": "2026-11-13",
     "exact_instruction_rows_with_any_conditional_candidate": 115734,
@@ -385,6 +385,8 @@
       "S2-48 ENDBR64 no-op (CPL0 gate conditional)": 55276,
       "S4-20c kernel tail (CPL0 gate conditional)": 4,
       "S4-38L4d-multi-byte-memory-NOP": 54695,
+      "S4-38L6a-PREFETCHNTA-base-only": 3,
+      "S4-38L6a-PREFETCHT0-base-only": 3,
       "S4-38L6d-LEAVE-bare-C9": 2005,
       "S4-38L7i-FS-GS-qword-load": 1214,
       "S4-38L7j-FS-GS-qword-SUB": 1862,
@@ -394,7 +396,11 @@
       "S4-38L9b-PAUSE-exact-F3-90": 6,
       "composed_cpl0_profile_candidate; control/state/port gates unresolved": 77
     },
-    "conditional_cpl0_candidate_hit_count": 115303
+    "conditional_cpl0_candidate_hit_count": 115303,
+    "prefetch_candidate_rows": {
+      "S4-38L6a-PREFETCHNTA-base-only": 3,
+      "S4-38L6a-PREFETCHT0-base-only": 3
+    }
   },
   "unchanged_rootfs_binary_inputs": true,
   "candidate_annotation_lineage": {
