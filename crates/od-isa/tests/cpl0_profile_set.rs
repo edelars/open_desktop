@@ -23387,14 +23387,10 @@ fn segment_cmp_imm8_forms_outside_the_slice_are_refused_without_mutation() {
             &[0x41, 0x65, 0x48, 0x83, 0x3d, 0x34, 0x12, 0, 0, 0x01],
             0x83,
         ),
-        // `80 /7 ib` and `81 /7 id` with FS/GS stay refused with their own opcodes.
+        // `80 /7 ib` with FS/GS stays refused with its own opcode. (S4-38L9l: the dword/qword
+        // `81 /7 id` with FS/GS was listed here and is executed now; see the S4-38L9l tests.)
         (&[0x65, 0x80, 0x3d, 0x34, 0x12, 0, 0, 0x01], 0x80),
         (&[0x64, 0x80, 0x3d, 0x34, 0x12, 0, 0, 0x01], 0x80),
-        (&[0x65, 0x81, 0x3d, 0x34, 0x12, 0, 0, 1, 0, 0, 0], 0x81),
-        (
-            &[0x64, 0x48, 0x81, 0x3d, 0x34, 0x12, 0, 0, 1, 0, 0, 0],
-            0x81,
-        ),
         // The other `83 /n` selectors with FS/GS: ADD, OR, ADC, SBB, AND, SUB, XOR.
         (&[0x65, 0x83, 0x05, 0x34, 0x12, 0, 0, 0x01], 0x83),
         (&[0x65, 0x83, 0x0d, 0x34, 0x12, 0, 0, 0x01], 0x83),
@@ -24200,12 +24196,8 @@ fn segment_cmpw_forms_outside_the_slice_are_refused_without_mutation() {
         ),
         // `80 /7` with FS/GS and 66 stays refused with its own opcode.
         (&[0x66, 0x65, 0x80, 0x3d, 0x34, 0x12, 0, 0, 0x01], 0x80),
-        // The dword/qword `81 /7` with FS/GS stays refused (only the word form is added).
-        (&[0x65, 0x81, 0x3d, 0x34, 0x12, 0, 0, 1, 0, 0, 0], 0x81),
-        (
-            &[0x64, 0x48, 0x81, 0x3d, 0x34, 0x12, 0, 0, 1, 0, 0, 0],
-            0x81,
-        ),
+        // S4-38L9l: the dword/qword `81 /7` with FS/GS was listed here as refused (only the word
+        // form was added by S4-38L9j); it is executed now, see the S4-38L9l tests.
         // The other word `83 /n` and `81 /n` selectors with FS/GS and 66 (not widened): ADD, OR,
         // ADC, SBB, AND, SUB, XOR.
         (&[0x65, 0x66, 0x83, 0x05, 0x34, 0x12, 0, 0, 0x01], 0x83),
@@ -42203,11 +42195,8 @@ fn segment_add_imm32_forms_outside_the_slice_are_refused_without_mutation() {
         (mk(&[0x65], 0x81, 0x0d, 4), 0x81),
         (mk(&[0x65], 0x81, 0x15, 4), 0x81),
         (mk(&[0x65], 0x81, 0x1d, 4), 0x81),
-        (mk(&[0x65], 0x81, 0x25, 4), 0x81),
-        (mk(&[0x65], 0x81, 0x2d, 4), 0x81),
-        (mk(&[0x65], 0x81, 0x35, 4), 0x81),
-        (mk(&[0x65], 0x81, 0x3d, 4), 0x81),
-        (mk(&[0x64, 0x48], 0x81, 0x3d, 4), 0x81),
+        // S4-38L9l: `81 /4`, `/5`, `/6` and `/7` with FS/GS were listed here as refused and are
+        // executed now; `/1`, `/2` and `/3` stay refused.
         (mk(&[0x65], 0x80, 0x05, 1), 0x80),
         (mk(&[0x65], 0x83, 0x05, 1), 0x83),
         (mk(&[0x64, 0x48], 0x83, 0x05, 1), 0x83),
@@ -45259,4 +45248,996 @@ fn plain_xadd_and_cmpxchg_are_not_reachable_from_cpl3() {
         assert_eq!(state, before);
         assert!(memory.reads.is_empty() && memory.writes.is_empty());
     }
+}
+
+// ---- S4-38L9l: FS/GS-based `AND`, `SUB`, `XOR` and `CMP` with `r/m32, imm32` and `r/m64, imm32`
+// (`[64|65] [REX] 81 /4|/5|/6|/7 id`, memory operand only; the imm32 is zero-extended for the
+// dword and sign-extended for the qword). SDM Vol.2 (from memory, not re-checked against the SDM
+// text): AND/XOR clear CF and OF and set SF/ZF/PF from the result (AF undefined; the model keeps its
+// old bit); SUB sets CF (borrow), OF (signed overflow), SF, ZF, AF, PF; CMP is SUB without the
+// write. The base is added to the effective address; RIP-relative addressing is relative to the end
+// of the whole instruction (the imm32 included). AND/SUB/XOR: one read, one write (always
+// performed); CMP: one read, no write. The flags commit after the write. /2 (ADC) and /3 (SBB)
+// need the incoming CF and stay refused. ----
+
+/// `andl $0x7fffffff, %gs:0x2f803b9(%rip)` (the S4-38L9k diagnostic boundary bytes, 11 bytes,
+/// `__resched_curr`).
+const GS_ANDL_IMM32_BOUNDARY: [u8; 11] = [
+    0x65, 0x81, 0x25, 0xb9, 0x03, 0xf8, 0x02, 0xff, 0xff, 0xff, 0x7f,
+];
+
+const FS_BASE_81: u64 = 0xffff_8880_2000_0000;
+const GS_BASE_81: u64 = 0xffff_8880_1000_0000;
+
+/// `{and,sub,xor,cmp}{l,q} $imm, %{fs,gs}:0x1234(%rip)`: segment prefix, optional REX.W, `81 /group`,
+/// disp32 `0x1234`, imm32.
+fn seg_81_rip(segment: u8, qword: bool, group: u8, imm: u32) -> Vec<u8> {
+    let mut code = vec![segment];
+    if qword {
+        code.push(0x48);
+    }
+    code.extend([0x81, 0x05 | (group << 3), 0x34, 0x12, 0x00, 0x00]);
+    code.extend(imm.to_le_bytes());
+    code
+}
+
+/// Independent oracle for the `81 /group` family at `bits` width: the new memory value (`None` for
+/// CMP, which does not write) and the new flags (`initial` outside the arithmetic flags kept; AF is
+/// kept for AND/XOR). SUB flags come from 128-bit signed arithmetic, not from the shared emulator
+/// function.
+fn alu81_oracle(group: u8, bits: u32, lhs: u64, imm: u32, initial: u64) -> (Option<u64>, u64) {
+    let mask = if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    let signed = |value: u64| -> i128 {
+        let value = value & mask;
+        if value >> (bits - 1) == 1 {
+            i128::from(value) - (1i128 << bits)
+        } else {
+            i128::from(value)
+        }
+    };
+    let l = lhs & mask;
+    let r = if bits == 64 {
+        imm as i32 as i64 as u64
+    } else {
+        u64::from(imm)
+    };
+    let mut flags = initial & !ARITH;
+    let result = match group {
+        4 => l & r,
+        6 => l ^ r,
+        5 | 7 => l.wrapping_sub(r),
+        _ => unreachable!(),
+    } & mask;
+    if group == 4 || group == 6 {
+        flags |= initial & FLAG_AF;
+    } else {
+        let wide = signed(l) - signed(r);
+        if l < (r & mask) {
+            flags |= FLAG_CF;
+        }
+        if wide < -(1i128 << (bits - 1)) || wide >= (1i128 << (bits - 1)) {
+            flags |= FLAG_OF;
+        }
+        if (l ^ r ^ result) & 0x10 != 0 {
+            flags |= FLAG_AF;
+        }
+    }
+    if result == 0 {
+        flags |= FLAG_ZF;
+    }
+    if result >> (bits - 1) == 1 {
+        flags |= FLAG_SF;
+    }
+    if (result as u8).count_ones() % 2 == 0 {
+        flags |= FLAG_PF;
+    }
+    (if group == 7 { None } else { Some(result) }, flags)
+}
+
+/// Runs one instruction at `RIP` with distinct FS/GS bases over a one-qword memory.
+fn run_81(code: &[u8], cell: u64, initial: u64) -> (LongModeState, CasMemory, u64) {
+    let mut state = board_state();
+    state.gs_base = GS_BASE_81;
+    state.fs_base = FS_BASE_81;
+    state.rflags = initial;
+    let mut memory = CasMemory::new(code, cell);
+    let run = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&run),
+        &RunExit::InstructionBudgetExhausted,
+        "{code:02x?}"
+    );
+    (state, memory, run.instructions_executed)
+}
+
+#[test]
+fn gs_andl_imm32_boundary_form_ands_the_dword_at_gs_base_plus_effective_address() {
+    let gs_base = 0xffff_8880_1234_0000u64;
+    // (cell, hand-computed result and flags of cell & 0x7fffffff at 32 bits); the upper dword of the
+    // cell is not part of the operation. SF is clear for every result of this mask.
+    for (cell, result, flags) in [
+        (0x8000_0001u64, 0x1u64, 0u64),
+        (0xffff_ffff, 0x7fff_ffff, FLAG_PF),
+        (0x8000_0000, 0, FLAG_ZF | FLAG_PF),
+        (0xdead_beef_8000_0003, 0x3, FLAG_PF),
+    ] {
+        let mut state = board_state();
+        state.gs_base = gs_base;
+        state.fs_base = 0xffff_8880_9999_0000;
+        state.rflags |= FLAG_CF | FLAG_OF | FLAG_SF;
+        let initial = state.rflags;
+        let mut expected = state.clone();
+        let mut memory = CasMemory::new(&GS_ANDL_IMM32_BOUNDARY, cell);
+        let run = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&run), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(run.instructions_executed, 1);
+        // next RIP (after all 11 bytes, the prefix and the imm32 included) + disp32, plus the base.
+        let address = gs_base + RIP + 11 + 0x02f8_03b9;
+        assert_eq!(memory.reads, vec![(address, 4)], "{cell:#x}");
+        assert_eq!(
+            memory.writes,
+            vec![(address, (result as u32).to_le_bytes().to_vec())],
+            "{cell:#x}"
+        );
+        assert_eq!(memory.cell, result, "{cell:#x}");
+        let (oracle, oracle_flags) = alu81_oracle(4, 32, cell, 0x7fff_ffff, initial);
+        assert_eq!(oracle, Some(result));
+        // CF, OF and SF were set and are cleared; AF is kept (clear here, as in `board_state`).
+        assert_eq!(
+            oracle_flags,
+            (initial & !ARITH) | (initial & FLAG_AF) | flags
+        );
+        expected.rip += 11;
+        expected.rflags = oracle_flags;
+        assert_eq!(state, expected, "only RIP and the flags change");
+    }
+}
+
+#[test]
+fn segment_81_family_hand_computed_corners_for_both_segments_and_widths() {
+    // (group, qword, cell, imm32, result, flags without the kept AF). AND/XOR keep AF.
+    let logic_cases: [(u8, bool, u64, u32, u64, u64); 13] = [
+        (4, false, 0xdead_beef_8000_0001, 0x7fff_ffff, 0x1, 0),
+        (4, false, 0xffff_ffff, 0x7fff_ffff, 0x7fff_ffff, FLAG_PF),
+        (4, false, 0x8000_0000, 0x7fff_ffff, 0, FLAG_ZF | FLAG_PF),
+        (4, false, 0x1234_5678, 0, 0, FLAG_ZF | FLAG_PF),
+        (6, false, 0xffff_ffff, 0xffff_ffff, 0, FLAG_ZF | FLAG_PF),
+        (6, false, 0, 0x8000_0000, 0x8000_0000, FLAG_SF | FLAG_PF),
+        (
+            6,
+            false,
+            0x7fff_ffff,
+            0x8000_0000,
+            0xffff_ffff,
+            FLAG_SF | FLAG_PF,
+        ),
+        // qword: the imm32 0x8000_0000 is sign-extended to 0xffff_ffff_8000_0000.
+        (
+            4,
+            true,
+            0x1234_5678_9abc_def0,
+            0x8000_0000,
+            0x1234_5678_8000_0000,
+            FLAG_PF,
+        ),
+        (4, true, u64::MAX, 0x7fff_ffff, 0x7fff_ffff, FLAG_PF),
+        (
+            4,
+            true,
+            u64::MAX,
+            0x8000_0000,
+            0xffff_ffff_8000_0000,
+            FLAG_SF | FLAG_PF,
+        ),
+        (6, true, 0, 0xffff_ffff, u64::MAX, FLAG_SF | FLAG_PF),
+        (6, true, u64::MAX, 0xffff_ffff, 0, FLAG_ZF | FLAG_PF),
+        (
+            6,
+            true,
+            0x8000_0000_0000_0000,
+            1,
+            0x8000_0000_0000_0001,
+            FLAG_SF,
+        ),
+    ];
+    // (qword, cell, imm32, SUB result, flags): worked by hand from the SUB definition; CMP has the
+    // same flags and leaves the cell.
+    let sub_cases: [(bool, u64, u32, u64, u64); 14] = [
+        // 0x7fff_ffff - (-1) = 0x8000_0000: borrow, signed overflow, SF, no AF (0xf - 0xf), PF.
+        (
+            false,
+            0x7fff_ffff,
+            0xffff_ffff,
+            0x8000_0000,
+            FLAG_CF | FLAG_OF | FLAG_SF | FLAG_PF,
+        ),
+        // 0x8000_0000 - 1 = 0x7fff_ffff: signed overflow, AF (borrow from bit 4), PF.
+        (
+            false,
+            0x8000_0000,
+            1,
+            0x7fff_ffff,
+            FLAG_OF | FLAG_AF | FLAG_PF,
+        ),
+        // 0 - 0x8000_0000 = 0x8000_0000: borrow, signed overflow, SF, PF.
+        (
+            false,
+            0,
+            0x8000_0000,
+            0x8000_0000,
+            FLAG_CF | FLAG_OF | FLAG_SF | FLAG_PF,
+        ),
+        (false, 5, 5, 0, FLAG_ZF | FLAG_PF),
+        (false, 0, 0, 0, FLAG_ZF | FLAG_PF),
+        // 3 - 5 = 0xffff_fffe: CF, SF, AF; 0xfe has seven bits set (odd): no PF.
+        (false, 3, 5, 0xffff_fffe, FLAG_CF | FLAG_SF | FLAG_AF),
+        // the upper dword of the cell is not part of the dword operation.
+        (false, 0x1_0000_0005, 1, 4, 0),
+        // qword: imm32 0x8000_0000 is -0x8000_0000: 0 - (-0x8000_0000) = 0x8000_0000, CF, PF.
+        (true, 0, 0x8000_0000, 0x8000_0000, FLAG_CF | FLAG_PF),
+        (
+            true,
+            0x7fff_ffff_ffff_ffff,
+            0xffff_ffff,
+            0x8000_0000_0000_0000,
+            FLAG_CF | FLAG_OF | FLAG_SF | FLAG_PF,
+        ),
+        (
+            true,
+            0x8000_0000_0000_0000,
+            1,
+            0x7fff_ffff_ffff_ffff,
+            FLAG_OF | FLAG_AF | FLAG_PF,
+        ),
+        (true, 0x1_0000_0000, 1, 0xffff_ffff, FLAG_AF | FLAG_PF),
+        (true, 0, 1, u64::MAX, FLAG_CF | FLAG_SF | FLAG_AF | FLAG_PF),
+        (true, u64::MAX, 0xffff_ffff, 0, FLAG_ZF | FLAG_PF),
+        // 0x7fff_ffff - (-0x8000_0000) = 0xffff_ffff: borrow (unsigned), no overflow, PF.
+        (
+            true,
+            0x7fff_ffff,
+            0x8000_0000,
+            0xffff_ffff,
+            FLAG_CF | FLAG_PF,
+        ),
+    ];
+    let mut table: Vec<(u8, bool, u64, u32, u64, u64)> = logic_cases.to_vec();
+    for (qword, cell, imm, result, flags) in sub_cases {
+        table.push((5, qword, cell, imm, result, flags));
+        table.push((7, qword, cell, imm, cell, flags));
+    }
+    for segment in [0x65u8, 0x64] {
+        for &(group, qword, cell, imm, result, flags) in &table {
+            for initial in [2 | IF, 2 | IF | ARITH] {
+                let code = seg_81_rip(segment, qword, group, imm);
+                let context = format!(
+                    "{code:02x?} group {group} cell {cell:#x} imm {imm:#x} initial {initial:#x}"
+                );
+                let (state, memory, executed) = run_81(&code, cell, initial);
+                assert_eq!(executed, 1, "{context}");
+                let base = if segment == 0x64 {
+                    FS_BASE_81
+                } else {
+                    GS_BASE_81
+                };
+                let size = if qword { 8 } else { 4 };
+                let address = base + RIP + code.len() as u64 + 0x1234;
+                assert_eq!(memory.reads, vec![(address, size)], "{context}");
+                if group == 7 {
+                    assert!(memory.writes.is_empty(), "{context}");
+                    assert_eq!(memory.cell, cell, "{context}");
+                } else {
+                    assert_eq!(
+                        memory.writes,
+                        vec![(address, result.to_le_bytes()[..size].to_vec())],
+                        "{context}"
+                    );
+                    assert_eq!(memory.cell, result, "{context}");
+                }
+                let (oracle_result, oracle_flags) =
+                    alu81_oracle(group, if qword { 64 } else { 32 }, cell, imm, initial);
+                assert_eq!(
+                    oracle_result,
+                    if group == 7 { None } else { Some(result) },
+                    "{context}"
+                );
+                // AND/XOR keep AF; every other arithmetic flag comes from the table.
+                let kept_af = if group == 4 || group == 6 {
+                    initial & FLAG_AF
+                } else {
+                    0
+                };
+                assert_eq!(
+                    oracle_flags,
+                    (initial & !ARITH) | kept_af | flags,
+                    "{context}"
+                );
+                let mut expected = board_state();
+                expected.gs_base = GS_BASE_81;
+                expected.fs_base = FS_BASE_81;
+                expected.rip += code.len() as u64;
+                expected.rflags = oracle_flags;
+                assert_eq!(state, expected, "{context}");
+            }
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_matches_the_oracle_for_both_segments_and_widths() {
+    let cells = [
+        0u64,
+        1,
+        0xf,
+        0x10,
+        0x7f,
+        0x80,
+        0xff,
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_fff0,
+        0xffff_ffff,
+        0x1_0000_0000,
+        0x7fff_ffff_ffff_ffff,
+        0x8000_0000_0000_0000,
+        0xffff_ffff_8000_0000,
+        u64::MAX,
+        0x1234_5678_9abc_def0,
+    ];
+    let imms = [
+        0u32,
+        1,
+        0xf,
+        0x10,
+        0xff,
+        0x7fff_ffff,
+        0x8000_0000,
+        0x8000_0001,
+        0xffff_fff0,
+        0xffff_ffff,
+    ];
+    for segment in [0x65u8, 0x64] {
+        for group in [4u8, 5, 6, 7] {
+            for qword in [false, true] {
+                for imm in imms {
+                    for cell in cells {
+                        for initial in [2 | IF | (1 << 10), 2 | IF | (1 << 10) | ARITH] {
+                            let code = seg_81_rip(segment, qword, group, imm);
+                            let context = format!(
+                                "{code:02x?} cell {cell:#x} imm {imm:#x} initial {initial:#x}"
+                            );
+                            let (state, memory, executed) = run_81(&code, cell, initial);
+                            assert_eq!(executed, 1, "{context}");
+                            let bits = if qword { 64 } else { 32 };
+                            let (result, flags) = alu81_oracle(group, bits, cell, imm, initial);
+                            match result {
+                                Some(result) => {
+                                    assert_eq!(memory.writes.len(), 1, "{context}");
+                                    assert_eq!(memory.cell, result, "{context}");
+                                }
+                                None => {
+                                    assert!(memory.writes.is_empty(), "{context}");
+                                    assert_eq!(memory.cell, cell, "{context}");
+                                }
+                            }
+                            assert_eq!(state.rflags, flags, "{context}");
+                            assert_eq!(state.rip, RIP + code.len() as u64, "{context}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_equals_the_non_prefixed_register_form() {
+    // The prefixed memory form shares the logic and arithmetic functions with `81 /n` through a
+    // register: compare the result and flags of `and/sub/xor/cmp $imm, %eax|%rax` with the memory
+    // form, for a flag state that has CF, OF, SF and AF set.
+    for group in [4u8, 5, 6, 7] {
+        for qword in [false, true] {
+            for imm in [1u32, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x110000] {
+                for cell in [
+                    0u64,
+                    1,
+                    0x7fff_ffff,
+                    0xffff_ffff,
+                    u64::MAX,
+                    0x8000_0000_0000_0000,
+                ] {
+                    let mut plain_code = Vec::new();
+                    if qword {
+                        plain_code.push(0x48);
+                    }
+                    plain_code.extend([0x81, 0xc0 | (group << 3)]);
+                    plain_code.extend(imm.to_le_bytes());
+                    let mut plain = board_state();
+                    plain.gpr[Register::Rax as usize] = cell;
+                    plain.rflags |= FLAG_CF | FLAG_OF | FLAG_SF | FLAG_AF;
+                    let mut plain_memory = CasMemory::new(&plain_code, 0);
+                    run_cas_set(&mut plain, &mut plain_memory).unwrap();
+
+                    let code = seg_81_rip(0x65, qword, group, imm);
+                    let mut state = board_state();
+                    state.rflags |= FLAG_CF | FLAG_OF | FLAG_SF | FLAG_AF;
+                    let mut memory = CasMemory::new(&code, cell);
+                    run_cas_set(&mut state, &mut memory).unwrap();
+                    let width = if qword { u64::MAX } else { 0xffff_ffff };
+                    let context = format!("{code:02x?} cell {cell:#x}");
+                    if group == 7 {
+                        assert_eq!(memory.cell, cell, "{context}");
+                    } else {
+                        assert_eq!(
+                            memory.cell,
+                            plain.gpr[Register::Rax as usize] & width,
+                            "{context}"
+                        );
+                    }
+                    assert_eq!(state.rflags, plain.rflags, "{context}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_81_family_use_their_own_base_and_ignore_the_other() {
+    for group in [4u8, 5, 6, 7] {
+        for (segment, used) in [(0x65u8, GS_BASE_81), (0x64, FS_BASE_81)] {
+            let code = seg_81_rip(segment, true, group, 7);
+            let (_, memory, _) = run_81(&code, 0x13, 2 | IF);
+            let address = used + RIP + code.len() as u64 + 0x1234;
+            assert_eq!(memory.reads, vec![(address, 8)], "{segment:#x} {group}");
+            // 0x13 & 7 = 3, 0x13 - 7 = 0xc, 0x13 ^ 7 = 0x14; CMP does not write.
+            let written = match group {
+                4 => Some(3u64),
+                5 => Some(0xc),
+                6 => Some(0x14),
+                _ => None,
+            };
+            match written {
+                Some(value) => assert_eq!(
+                    memory.writes,
+                    vec![(address, value.to_le_bytes().to_vec())],
+                    "{segment:#x} {group}"
+                ),
+                None => assert!(memory.writes.is_empty(), "{segment:#x} {group}"),
+            }
+        }
+        // A zero base reads the plain effective address, with either prefix.
+        for segment in [0x65u8, 0x64] {
+            let code = seg_81_rip(segment, false, group, 1);
+            let mut state = board_state();
+            state.fs_base = 0;
+            state.gs_base = 0;
+            let mut memory = CasMemory::new(&code, 3);
+            run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                memory.reads,
+                vec![(RIP + code.len() as u64 + 0x1234, 4)],
+                "{segment:#x} {group}"
+            );
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_with_every_extended_base_register_r8_to_r15_uses_rex_b() {
+    // `{and,sub,xor,cmp}{l,q} $0x11, %{fs,gs}:0x0(%r8..%r15)`: mod = 01, disp8 = 0 (r12 needs a SIB
+    // byte).
+    let regs = [
+        Register::R8,
+        Register::R9,
+        Register::R10,
+        Register::R11,
+        Register::R12,
+        Register::R13,
+        Register::R14,
+        Register::R15,
+    ];
+    for group in [4u8, 5, 6, 7] {
+        for (n, register) in regs.into_iter().enumerate() {
+            for (qword, rex) in [(false, 0x41u8), (true, 0x49)] {
+                for segment in [0x65u8, 0x64] {
+                    let mut code = vec![segment, rex, 0x81, 0x40 | (group << 3) | n as u8];
+                    if n == 4 {
+                        code.push(0x24);
+                    }
+                    code.push(0x00);
+                    code.extend(0x11u32.to_le_bytes());
+                    let mut state = board_state();
+                    state.gs_base = GS_BASE_81;
+                    state.fs_base = FS_BASE_81;
+                    state.gpr[register as usize] = 0x20_0000;
+                    let base = if segment == 0x64 {
+                        state.fs_base
+                    } else {
+                        state.gs_base
+                    };
+                    let initial = state.rflags;
+                    let mut expected = state.clone();
+                    let mut memory = CasMemory::new(&code, 0x33);
+                    let run = run_cas_set(&mut state, &mut memory).unwrap();
+                    assert_eq!(run.instructions_executed, 1, "{code:02x?}");
+                    assert_eq!(
+                        memory.reads,
+                        vec![(base + 0x20_0000, if qword { 8 } else { 4 })],
+                        "{code:02x?}"
+                    );
+                    let (result, flags) =
+                        alu81_oracle(group, if qword { 64 } else { 32 }, 0x33, 0x11, initial);
+                    assert_eq!(memory.cell, result.unwrap_or(0x33), "{code:02x?}");
+                    expected.rip += code.len() as u64;
+                    expected.rflags = flags;
+                    assert_eq!(
+                        state, expected,
+                        "{code:02x?}: the base register is unchanged"
+                    );
+                }
+            }
+        }
+    }
+    // A REX byte without W and without B (`40`) is a dword on the legacy base `rbx`:
+    // `andl $1, %gs:(%rbx)` reads the dword and keeps only bit 0.
+    let mut code = vec![0x65u8, 0x40, 0x81, 0x23];
+    code.extend(1u32.to_le_bytes());
+    let mut state = board_state();
+    state.gs_base = GS_BASE_81;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    let mut memory = CasMemory::new(&code, 0x1_ffff_ffff);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(memory.reads, vec![(0xffff_8880_1020_0000, 4)]);
+    assert_eq!(memory.cell, 1);
+    assert_eq!(state.rflags & ARITH, 0);
+}
+
+#[test]
+fn segment_81_family_with_disp8_sib_index_scale_and_displacement() {
+    // `subl $0x1000, %gs:0x10(%rbx,%rcx,8)`: 65 81 6c cb 10 imm32 (modrm 0x6c = /5, mod 01, SIB).
+    let mut code = vec![0x65u8, 0x81, 0x6c, 0xcb, 0x10];
+    code.extend(0x1000u32.to_le_bytes());
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.gpr[Register::Rbx as usize] = 0x20_0000;
+    state.gpr[Register::Rcx as usize] = 3;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&code, 0x1234);
+    run_cas_set(&mut state, &mut memory).unwrap();
+    let address = 0xffff_8880_0000_0000 + 0x20_0000 + 3 * 8 + 0x10;
+    assert_eq!(memory.reads, vec![(address, 4)]);
+    // 0x1234 - 0x1000 = 0x234: no borrow; 0x34 has three bits set (odd parity), AF clear.
+    assert_eq!(memory.cell, 0x234);
+    expected.rip += code.len() as u64;
+    expected.rflags &= !ARITH;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn segment_81_family_non_canonical_address_is_gp0_without_mutation_or_access() {
+    // The start or the last byte (qword: + 7, dword: + 3) lies in the non-canonical hole.
+    for group in [4u8, 5, 6, 7] {
+        for (qword, start) in [
+            (false, 0x0000_8000_0000_0000u64),
+            (true, 0x0000_8000_0000_0000),
+            (true, 0x0000_7fff_ffff_fffc),
+            (false, 0x0000_7fff_ffff_fffe),
+        ] {
+            for segment in [0x65u8, 0x64] {
+                let code = seg_81_rip(segment, qword, group, 1);
+                let base = start - 0x1234 - RIP - code.len() as u64;
+                let mut state = board_state();
+                state.gs_base = base;
+                state.fs_base = base;
+                state.rflags |= FLAG_CF;
+                let before = state.clone();
+                let mut memory = CasMemory::new(&code, 1);
+                let run = run_cas_set(&mut state, &mut memory).unwrap();
+                assert_eq!(exit(&run), &RunExit::Fault(GP0), "{code:02x?} {start:#x}");
+                assert_eq!(run.instructions_executed, 0);
+                assert_eq!(state, before, "{code:02x?} {start:#x}");
+                assert!(memory.reads.is_empty() && memory.writes.is_empty());
+                assert_eq!(memory.cell, 1);
+            }
+        }
+        // The last canonical dword (start 0x7fff_ffff_fffc) and qword (start 0x7fff_ffff_fff8) are
+        // accepted.
+        for (qword, start) in [
+            (false, 0x0000_7fff_ffff_fffcu64),
+            (true, 0x0000_7fff_ffff_fff8),
+        ] {
+            let code = seg_81_rip(0x65, qword, group, 1);
+            let mut state = board_state();
+            state.gs_base = start - 0x1234 - RIP - code.len() as u64;
+            let mut memory = CasMemory::new(&code, 1);
+            let run = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(run.instructions_executed, 1, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn gs_81_family_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `andl $1, %gs:(%rsp)` = 65 81 24 24 imm32 (SIB, /4), `subq $1, %gs:0x0(%rbp)` = 65 48 81 6d 00
+    // imm32 (/5), `xorl $1, %gs:(%rsp)` (/6), `cmpq $1, %gs:0x0(%rbp)` (/7).
+    for (code, register) in [
+        (&[0x65u8, 0x81, 0x24, 0x24, 1, 0, 0, 0][..], Register::Rsp),
+        (
+            &[0x65u8, 0x48, 0x81, 0x6d, 0x00, 1, 0, 0, 0][..],
+            Register::Rbp,
+        ),
+        (&[0x65u8, 0x81, 0x34, 0x24, 1, 0, 0, 0][..], Register::Rsp),
+        (
+            &[0x65u8, 0x48, 0x81, 0x7d, 0x00, 1, 0, 0, 0][..],
+            Register::Rbp,
+        ),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let run = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&run), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(run.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_81_family_does_not_modify_its_base_register() {
+    // `andl $0xff, %gs:(%rbx)`, ...: the register that forms the address keeps its value.
+    for group in [4u8, 5, 6, 7] {
+        let mut code = vec![0x65u8, 0x81, 0x03 | (group << 3)];
+        code.extend(0xffu32.to_le_bytes());
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let mut memory = CasMemory::new(&code, 0x20_0000);
+        run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(state.gpr[Register::Rbx as usize], 0x20_0000, "{group}");
+    }
+}
+
+#[test]
+fn segment_81_family_write_fault_leaves_memory_registers_flags_and_rip_unchanged() {
+    // A read-only page: the always-performed write of AND/SUB/XOR faults, also when the result
+    // would not change the value (AND with all ones, SUB/XOR with zero). CMP does not write, so the
+    // same read-only page does not stop it.
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for segment in [0x65u8, 0x64] {
+        for qword in [false, true] {
+            for (group, imm) in [
+                (4u8, 0xffff_ffffu32),
+                (4, 0x7fff_ffff),
+                (5, 0),
+                (5, 1),
+                (6, 0),
+                (6, 3),
+            ] {
+                let code = seg_81_rip(segment, qword, group, imm);
+                let mut state = board_state();
+                state.rflags |= FLAG_CF | FLAG_OF;
+                let before = state.clone();
+                let mut memory = CasMemory::new(&code, 0xf0);
+                memory.write_fault = Some(fault.clone());
+                let run = run_cas_set(&mut state, &mut memory).unwrap();
+                assert_eq!(exit(&run), &RunExit::Fault(fault.clone()), "{code:02x?}");
+                assert_eq!(run.instructions_executed, 0, "{code:02x?}");
+                assert_eq!(state, before, "{code:02x?}");
+                assert_eq!(memory.cell, 0xf0, "{code:02x?}");
+                assert!(memory.writes.is_empty(), "{code:02x?}");
+            }
+            let code = seg_81_rip(segment, qword, 7, 0xf0);
+            let mut state = board_state();
+            let mut memory = CasMemory::new(&code, 0xf0);
+            memory.write_fault = Some(fault.clone());
+            let run = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(run.instructions_executed, 1, "{code:02x?}");
+            assert_eq!(state.rflags & ARITH, FLAG_ZF | FLAG_PF, "{code:02x?}");
+            assert!(memory.writes.is_empty(), "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_read_fault_changes_nothing() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for group in [4u8, 5, 6, 7] {
+        for segment in [0x65u8, 0x64] {
+            for qword in [false, true] {
+                let code = seg_81_rip(segment, qword, group, 0x110000);
+                let mut state = board_state();
+                state.rflags |= FLAG_CF | FLAG_OF;
+                let before = state.clone();
+                let mut memory = CasMemory::new(&code, 1);
+                memory.read_fault = Some(fault.clone());
+                let run = run_cas_set(&mut state, &mut memory).unwrap();
+                assert_eq!(exit(&run), &RunExit::Fault(fault.clone()), "{code:02x?}");
+                assert_eq!(run.instructions_executed, 0, "{code:02x?}");
+                assert_eq!(state, before, "{code:02x?}");
+                assert!(memory.writes.is_empty());
+                assert_eq!(memory.cell, 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_forms_outside_the_slice_are_refused_without_mutation() {
+    // `mk(prefix, group, immediate_len)`: prefix bytes, `81 /group`, disp32 0x1234, immediate bytes.
+    let mk = |prefix: &[u8], group: u8, immediate_len: usize| -> Vec<u8> {
+        let mut code = prefix.to_vec();
+        code.extend([0x81, 0x05 | (group << 3), 0x34, 0x12, 0, 0]);
+        code.extend(vec![1u8; immediate_len]);
+        code
+    };
+    let mut cases: Vec<Vec<u8>> = Vec::new();
+    // ADC (/2) and SBB (/3) need the incoming CF: refused with FS/GS, dword and qword.
+    for group in [2u8, 3] {
+        cases.push(mk(&[0x65], group, 4));
+        cases.push(mk(&[0x64], group, 4));
+        cases.push(mk(&[0x65, 0x48], group, 4));
+        cases.push(mk(&[0x64, 0x48], group, 4));
+    }
+    // OR (/1) with FS/GS also stays refused.
+    cases.push(mk(&[0x65], 1, 4));
+    cases.push(mk(&[0x64, 0x48], 1, 4));
+    for group in [4u8, 5, 6, 7] {
+        // LOCK with FS/GS, in both orders.
+        cases.push(mk(&[0xf0, 0x65], group, 4));
+        cases.push(mk(&[0x65, 0xf0], group, 4));
+        cases.push(mk(&[0xf0, 0x64, 0x48], group, 4));
+        // 0x67.
+        cases.push(mk(&[0x65, 0x67], group, 4));
+        cases.push(mk(&[0x67, 0x64, 0x48], group, 4));
+        // REP, REPNE.
+        cases.push(mk(&[0xf3, 0x65], group, 4));
+        cases.push(mk(&[0xf2, 0x64, 0x48], group, 4));
+        // A second or a different segment prefix (including CS/DS/ES/SS next to FS/GS).
+        cases.push(mk(&[0x64, 0x65], group, 4));
+        cases.push(mk(&[0x65, 0x64], group, 4));
+        cases.push(mk(&[0x65, 0x65, 0x48], group, 4));
+        cases.push(mk(&[0x2e, 0x65], group, 4));
+        cases.push(mk(&[0x65, 0x3e], group, 4));
+        cases.push(mk(&[0x26, 0x64], group, 4));
+        cases.push(mk(&[0x65, 0x36], group, 4));
+        // REX not directly before the opcode (dword and qword).
+        cases.push(mk(&[0x48, 0x65], group, 4));
+        cases.push(mk(&[0x41, 0x65, 0x48], group, 4));
+        // 0x66 with REX.W (the size is then qword) is refused for every selector.
+        cases.push(mk(&[0x65, 0x66, 0x48], group, 4));
+        cases.push(mk(&[0x66, 0x64, 0x48], group, 4));
+    }
+    // The word forms with 0x66 and no REX.W: only CMP (/7, S4-38L9j) is executed; AND/SUB/XOR are
+    // refused.
+    for group in [4u8, 5, 6] {
+        cases.push(mk(&[0x66, 0x65], group, 2));
+        cases.push(mk(&[0x65, 0x66], group, 2));
+        cases.push(mk(&[0x64, 0x66], group, 2));
+    }
+    for code in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(&code, 1);
+        let run = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&run),
+            &RunExit::Unsupported { opcode: 0x81 },
+            "{code:02x?}: {run:?}"
+        );
+        assert_eq!(run.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(memory.cell, 1, "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_81_family_with_a_truncated_immediate_or_displacement_is_refused_without_mutation() {
+    for code in [
+        &[0x65u8, 0x81, 0x25][..],
+        &[0x65, 0x81, 0x25, 0x34, 0x12, 0x00][..],
+        &[0x65, 0x81, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x81, 0x25, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff][..],
+        &[0x64, 0x48, 0x81, 0x2d, 0x34, 0x12, 0x00, 0x00, 0x01][..],
+        &[0x65, 0x81, 0x35, 0x34, 0x12, 0x00, 0x00, 0x01, 0x00][..],
+        &[
+            0x64, 0x48, 0x81, 0x3d, 0x34, 0x12, 0x00, 0x00, 0x01, 0x00, 0x00,
+        ][..],
+        &[0x65, 0x81, 0x63][..],
+        &[0x65, 0x81, 0x64, 0xcb, 0x10][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let run = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(run.instructions_executed, 0, "{code:02x?}: {run:?}");
+        assert_ne!(
+            exit(&run),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(memory.cell, 5);
+    }
+}
+
+#[test]
+fn segment_prefixed_register_81_family_is_unchanged_and_ignores_the_prefix() {
+    // The register form (mod = 11) with FS/GS keeps the existing policy: the prefix is ignored and
+    // the instruction is the plain `and/sub/xor/cmp $imm32, %reg`: same result and flags as the
+    // unprefixed form, no memory access, RIP advances by the full length.
+    let imm = 0x0011_0000u32.to_le_bytes();
+    for group in [4u8, 5, 6, 7] {
+        let modrm = |register: u8| 0xc0 | (group << 3) | register;
+        for (prefixed, plain) in [
+            (vec![0x65u8, 0x81, modrm(0)], vec![0x81u8, modrm(0)]),
+            (vec![0x64, 0x48, 0x81, modrm(2)], vec![0x48, 0x81, modrm(2)]),
+            (vec![0x65, 0x41, 0x81, modrm(0)], vec![0x41, 0x81, modrm(0)]),
+        ] {
+            let mut prefixed = prefixed;
+            let mut plain = plain;
+            prefixed.extend(imm);
+            plain.extend(imm);
+            for (rax, rdx, r8) in [
+                (5u64, 0x70u64, 0x1_0011_0003u64),
+                (0xffff_ffff, 0xffff_ffff, 0xffff_ffff),
+                (0x8000_0000_0000_0000, 0x11_0000, 0x7fff_ffff),
+            ] {
+                let seed = |code: &[u8]| {
+                    let mut state = board_state();
+                    state.gs_base = 0xffff_8880_0000_0000;
+                    state.fs_base = 0xffff_8880_0000_0000;
+                    state.gpr[Register::Rax as usize] = rax;
+                    state.gpr[Register::Rdx as usize] = rdx;
+                    state.gpr[Register::R8 as usize] = r8;
+                    let mut memory = CasMemory::new(code, 1);
+                    let run = run_cas_set(&mut state, &mut memory).unwrap();
+                    (state, memory, run)
+                };
+                let (state, memory, run) = seed(&prefixed);
+                let (plain_state, _, plain_run) = seed(&plain);
+                assert_eq!(run.instructions_executed, 1, "{prefixed:02x?}");
+                assert_eq!(plain_run.instructions_executed, 1, "{plain:02x?}");
+                assert!(memory.reads.is_empty() && memory.writes.is_empty());
+                assert_eq!(state.gpr, plain_state.gpr, "{prefixed:02x?}");
+                assert_eq!(state.rflags, plain_state.rflags, "{prefixed:02x?}");
+                assert_eq!(state.rip, RIP + prefixed.len() as u64, "{prefixed:02x?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn plain_unprefixed_81_family_memory_still_uses_the_effective_address_ignoring_other_bases() {
+    // Regression: `andl $imm, 0x1234(%rip)`, `subq`, `xorl`, `cmpl` and a CS/DS/ES/SS override
+    // ignore the FS/GS bases and read the effective address (the path S4-38L9l did not touch).
+    for group in [4u8, 5, 6, 7] {
+        let modrm = 0x05 | (group << 3);
+        for (code, width) in [
+            (vec![0x81u8, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 4usize),
+            (vec![0x48, 0x81, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 8),
+            (vec![0x2e, 0x81, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 4),
+            (
+                vec![0x3e, 0x48, 0x81, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0],
+                8,
+            ),
+            (vec![0x26, 0x81, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 4),
+            (vec![0x36, 0x81, modrm, 0x34, 0x12, 0, 0, 0x0f, 0, 0, 0], 4),
+        ] {
+            let mut state = board_state();
+            state.gs_base = 0xffff_8880_0000_0000;
+            state.fs_base = 0xffff_8880_0000_0000;
+            let mut memory = CasMemory::new(&code, 0xf3);
+            let run = run_cas_set(&mut state, &mut memory).unwrap();
+            assert_eq!(run.instructions_executed, 1, "{code:02x?}");
+            assert_eq!(
+                memory.reads,
+                vec![(RIP + code.len() as u64 + 0x1234, width)],
+                "{code:02x?}"
+            );
+            // 0xf3 & 0xf = 3, 0xf3 - 0xf = 0xe4, 0xf3 ^ 0xf = 0xfc, cmp: unchanged.
+            let expected = match group {
+                4 => 3,
+                5 => 0xe4,
+                6 => 0xfc,
+                _ => 0xf3,
+            };
+            assert_eq!(memory.cell, expected, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn segment_81_family_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS forms are refused without mutation.
+    for code in [
+        &GS_ANDL_IMM32_BOUNDARY[..],
+        &seg_81_rip(0x64, true, 5, 1)[..],
+        &seg_81_rip(0x65, false, 6, 0xffff_ffff)[..],
+        &seg_81_rip(0x65, false, 7, 0x7fff_ffff)[..],
+        &seg_81_rip(0x64, true, 7, 0xffff_ffff)[..],
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0x81 },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn segment_81_family_is_refused_by_the_bare_step_entry_point() {
+    let mut state = legacy_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_ANDL_IMM32_BOUNDARY, 1);
+    let result = od_isa::execute::step(
+        &mut state,
+        &mut memory,
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Ok(od_isa::execute::StepOutcome::Unsupported { opcode: 0x81 })
+    );
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+#[test]
+fn segment_81_family_is_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    let mut state = board_state();
+    let before = state.clone();
+    let mut memory = CasMemory::new(&GS_ANDL_IMM32_BOUNDARY, 1);
+    let error = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+    assert_eq!(state, before);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }

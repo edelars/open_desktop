@@ -35862,6 +35862,11 @@ fn step_configured(
         // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
         | Operation::AddFsMemImm { .. }
         | Operation::AddGsMemImm { .. }
+        // S4-38L9l: and for the FS/GS-based AND/SUB/XOR m32/m64, imm32 (CMP: the CmpFsMemImm pair).
+        | Operation::LogicFsMemImm { .. }
+        | Operation::LogicGsMemImm { .. }
+        | Operation::SubFsMemImm { .. }
+        | Operation::SubGsMemImm { .. }
         // S4-38L7az: and for the FS/GS-based OR m32/m64, r.
         | Operation::OrFsMem { .. }
         | Operation::OrGsMem { .. }
@@ -49805,6 +49810,11 @@ fn step_configured(
         // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
         | Operation::AddFsMemImm { .. }
         | Operation::AddGsMemImm { .. }
+        // S4-38L9l: and for the FS/GS-based AND/SUB/XOR m32/m64, imm32.
+        | Operation::LogicFsMemImm { .. }
+        | Operation::LogicGsMemImm { .. }
+        | Operation::SubFsMemImm { .. }
+        | Operation::SubGsMemImm { .. }
         | Operation::OrFsMem { .. }
         | Operation::OrGsMem { .. }
         | Operation::TestFsMemByte { .. }
@@ -55430,6 +55440,59 @@ fn transfer(
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LogicFsMemImm {
+            kind,
+            dst,
+            immediate,
+        } => {
+            // S4-38L9l: `[64] 81 /4|/6 id` (AND/XOR m32/m64, imm32). Base + effective address
+            // (RIP-relative is relative to the end of the instruction, imm32 included, as
+            // `next_rip` is); a non-canonical start or last byte is #GP(0) before any access.
+            // read -> write through the shared `logic_result` of the non-prefixed AND/XOR (CF = OF
+            // = 0, SF/ZF/PF from the result, AF kept as in the other logic forms); `immediate` is
+            // the zero-extended imm32 (dword) or sign-extended (qword). The result is written back
+            // even when it equals the old value and the flags commit only after the write
+            // succeeded, so a faulting read or write leaves memory and flags untouched.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) = logic_result(dst.size, kind, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LogicGsMemImm {
+            kind,
+            dst,
+            immediate,
+        } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) = logic_result(dst.size, kind, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::SubFsMemImm { dst, immediate } => {
+            // S4-38L9l: `[64] 81 /5 id` (SUB m32/m64, imm32): as AddFsMemImm through the shared
+            // SUB arithmetic (`old - imm`, the imm32 masked to the operand width). read -> write
+            // (always); the flags commit after the write.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Sub, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::SubGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Sub, old, immediate, state.rflags);
             memory.write_integer(address, context, dst.size, result)?;
             state.rflags = flags;
         }
