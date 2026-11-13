@@ -895,6 +895,27 @@ def movss_register_local_profile_candidate(row: dict) -> str | None:
     return "S2-34.8a-MOVSS-XMM-register-register"
 
 
+def movss_memory_rax_local_profile_candidate(row: dict) -> str | None:
+    """Match only the accepted S2-34.8c legacy MOVSS m32 [RAX] load."""
+    if row["mnemonic"] != "movss" or row["signature"] != "movss xmm,mem32":
+        return None
+    if not re.fullmatch(r"xmm\d+\s*,\s*dword ptr\s*\[rax\]", row["operands"], re.IGNORECASE):
+        return None
+    view = opcode_view(row)
+    if view["opcode"] != (0x0F, 0x10):
+        return None
+    prefixes = tuple(view["prefixes"])
+    if prefixes not in {(0xF3,), (0xF3, 0x40), (0xF3, 0x44)}:
+        return None
+    modrm = view["modrm"]
+    if modrm is None or modrm >> 6 != 0 or modrm & 7 != 0:
+        return None
+    # Mandatory F3 + optional neutral/REX.R + 0F 10 + ModR/M; no SIB or displacement.
+    if len(row["byte_values"]) != len(prefixes) + 3:
+        return None
+    return "S2-34.8c-MOVSS-XMM-memory-RAX-load"
+
+
 def psrlq_local_profile_candidate(row: dict) -> str | None:
     """Match only the accepted S2-35.45 XMM register immediate form."""
     if row["mnemonic"] != "psrlq" or row["signature"] != "psrlq xmm,imm":
@@ -1073,6 +1094,9 @@ def local_profile_candidate(row: dict) -> str | None:
     movss_register_candidate = movss_register_local_profile_candidate(row)
     if movss_register_candidate is not None:
         return movss_register_candidate
+    movss_memory_rax_candidate = movss_memory_rax_local_profile_candidate(row)
+    if movss_memory_rax_candidate is not None:
+        return movss_memory_rax_candidate
     psubq_candidate = psubq_local_profile_candidate(row)
     if psubq_candidate is not None:
         return psubq_candidate

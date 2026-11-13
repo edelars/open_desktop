@@ -1808,6 +1808,32 @@
       ]
     },
     {
+      "task": "S2-34.8c MOVSS XMM m32 load from RAX only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing either state refuses atomically. SSE state setup and CR0/CR4 preconditions are assumptions only; this profile does not claim an SSE2 prerequisite. It credits only the exact base-only [RAX] m32 load and assumes a successful canonical48 [RAX..RAX+3] range check plus one four-byte read. Static inventory does not infer runtime RAX values, mapped/readable data, or guest read success. Local execution uses a temporary and updates XMM/RIP only after successful read; failure does not commit CPU state. A fresh S2-34.8c reviewer passed two ISA checks (executor and decoder), one schema test and one fixture; this is bounded profile evidence, not native/JIT/physical or CPL3 acceptance.",
+      "families": [
+        {
+          "task": "S2-34.8c",
+          "encoding": "F3 [one optional REX byte 40 or 44] 0F 10 /r; ModR/M.mod=00 and r/m=000 ([RAX]); ModR/M.reg selects XMM destination (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSS m32 load from base-only [RAX]: mandatory F3; optional single REX byte only 40 or 44 immediately after F3; ModR/M.mod=00/rm=000, any reg. REX.R extends destination to XMM8-XMM15; 40 is neutral. Reject REX.B/X/W, other bases, SIB, displacement, other/duplicate/reordered prefixes, reverse 0F 11, VEX/EVEX and string A5.",
+          "outcome": "Local execution checks the full canonical48 [RAX..RAX+3] span, reads exactly four bytes into a temporary, then copies low32, clears destination bits 127:32 and advances RIP. A static match is bounded profile evidence only and makes no inference about runtime RAX or mapped/readable data.",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11551-11574",
+            "docs/plans/STAGE_2.md:13208-13226",
+            "docs/reports/STAGE_2_REPORT.md:14291-14317"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11551-11574",
+        "docs/plans/STAGE_2.md:13208-13226",
+        "docs/reports/STAGE_2_REPORT.md:14291-14317"
+      ]
+    },
+    {
       "task": "S2-35.15 PSUBD XMM register-register only",
       "evidence_scope": "local_interpreter_profile",
       "status": "accepted_local_bounded_profiles_parent_open",

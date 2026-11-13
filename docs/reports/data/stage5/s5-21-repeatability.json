@@ -2,7 +2,7 @@
   "date_utc": "2026-11-12",
   "source_rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
   "source_rootfs_size_bytes": 2147483648,
-  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movsd9c-rootfs-pass1.json",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movss8c-rootfs-pass1.json",
   "objdump_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF>",
   "tool": {
     "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
@@ -13,13 +13,13 @@
   },
   "runs": [
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-movsd9c-rootfs-pass1.json",
-      "sha256": "5b166a9a2fe85459b48344530e10df7995cc26781241b5426117c6eb8f1d01c8",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movss8c-rootfs-pass1.json",
+      "sha256": "958b8e4afa1224e222df278a4f48e59b2146d8bc4119f106fa419e5e1c91b6ef",
       "exit_code": 0
     },
     {
-      "output": "work/stage5/s5-21/s5-21-isa-inventory-movsd9c-rootfs-pass2.json",
-      "sha256": "5b166a9a2fe85459b48344530e10df7995cc26781241b5426117c6eb8f1d01c8",
+      "output": "work/stage5/s5-21/s5-21-isa-inventory-movss8c-rootfs-pass2.json",
+      "sha256": "958b8e4afa1224e222df278a4f48e59b2146d8bc4119f106fa419e5e1c91b6ef",
       "exit_code": 0
     }
   ],
@@ -32,11 +32,11 @@
     "normalized_instruction_forms": 1269,
     "nondecoded_continuation_rows": 0,
     "classification_frequencies": {
-      "proven_supported": 6296419,
-      "unclassified": 213981
+      "proven_supported": 6296422,
+      "unclassified": 213978
     },
     "evidence_scope_frequencies": {
-      "local_interpreter_profile": 6294068,
+      "local_interpreter_profile": 6294071,
       "machine_cpl3_profile": 2351
     },
     "proven_missing": 0,
@@ -47,8 +47,8 @@
     "unclassified_normalized_forms": 205,
     "scenario_classification_frequencies": {
       "C": {
-        "proven_supported": 322739,
-        "unclassified": 23410
+        "proven_supported": 322742,
+        "unclassified": 23407
       },
       "D": {
         "proven_supported": 6227350,
@@ -80,7 +80,7 @@
       "pandn xmm,mem128": 2
     },
     "local_simd_logic_scope": "Accepted local interpreter XMM register-register logic profiles XORPS/ANDPS/ORPS/ANDNPS, PAND, PANDN and POR; 2162 rows across 10 normalized forms. 179 SIMD logic memory rows remain unclassified, including 52 PAND memory rows; no CPL3/native/JIT/physical evidence.",
-    "raw_inventory_sha256": "5b166a9a2fe85459b48344530e10df7995cc26781241b5426117c6eb8f1d01c8",
+    "raw_inventory_sha256": "958b8e4afa1224e222df278a4f48e59b2146d8bc4119f106fa419e5e1c91b6ef",
     "pshufd_register_rows": 805,
     "pshufd_register_normalized_forms": 2,
     "pshufd_memory_unclassified_rows": 1,
@@ -137,7 +137,7 @@
       "operand_size+rex": 0
     },
     "psrld_scope": "Accepted local-only PSRLD register-immediate profile: mandatory 66, optional REX.B-only 41, ModR/M.mod=3 /2, unsigned imm8; counts >=32 clear each dword lane; SSE2/CR0/CR4 assumptions only; no CPL3/native/JIT/physical evidence.",
-    "local_interpreter_profile_rows": 6294068,
+    "local_interpreter_profile_rows": 6294071,
     "machine_cpl3_profile_rows": 2351,
     "psrad_register_rows": 12,
     "psrad_register_normalized_forms": 1,
@@ -288,15 +288,22 @@
       "gcc-collect2": 1,
       "gcc-driver": 1
     },
-    "movsd_rax_memory_load_scope": "Accepted S2-34.9c local-only MOVSD m64 load candidate: exact F2, optional one REX 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE2/CR0/CR4 are assumptions. Assumes successful canonical48 [RAX..RAX+7] validation and one eight-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior."
+    "movsd_rax_memory_load_scope": "Accepted S2-34.9c local-only MOVSD m64 load candidate: exact F2, optional one REX 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE2/CR0/CR4 are assumptions. Assumes successful canonical48 [RAX..RAX+7] validation and one eight-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
+    "movss_rax_memory_load_rows": 3,
+    "movss_rax_memory_load_normalized_forms": 1,
+    "movss_rax_memory_load_encoding_forms": 2,
+    "movss_rax_memory_load_rows_by_binary": {
+      "tar": 3
+    },
+    "movss_rax_memory_load_scope": "Accepted local-only S2-34.8c MOVSS m32 load candidate: exact F3, optional one REX byte 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE state and CR0/CR4 are assumptions only, with no SSE2 claim. Assumes successful canonical48 [RAX..RAX+3] validation and one four-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior."
   },
   "compact_evidence": {
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
-    "sha256": "6e8e3e5c0c53a47ff131bd1efe24f698cfafe4554951472c0cf5b2ad5d82edc3",
-    "size_bytes": 1005817,
+    "sha256": "5d793a504b97e5160ab70f0085de4becdd9d1059a763ecf8e685abdb719d0525",
+    "size_bytes": 1005914,
     "normalized_instruction_forms": 1269,
-    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movsd9c-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movsd9c-rootfs-pass1.json.gz",
-    "repeat_sha256": "6e8e3e5c0c53a47ff131bd1efe24f698cfafe4554951472c0cf5b2ad5d82edc3",
+    "generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movss8c-rootfs-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movss8c-rootfs-pass1.json.gz",
+    "repeat_sha256": "5d793a504b97e5160ab70f0085de4becdd9d1059a763ecf8e685abdb719d0525",
     "repeat_cmp_exit_code": 0,
     "coarse_operand_signatures": 560
   },

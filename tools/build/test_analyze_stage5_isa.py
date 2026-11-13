@@ -175,7 +175,6 @@ class ParseObjdumpTests(unittest.TestCase):
         rejected = (
             ("0f 10 c1", "movups xmm0,xmm1"),  # register form belongs to other S2-34 tasks
             ("66 0f 10 00", "movupd xmm0,XMMWORD PTR [rax]"),
-            ("f3 0f 10 00", "movss xmm0,DWORD PTR [rax]"),
             ("67 0f 10 43 01", "movups xmm0,XMMWORD PTR [ebx+0x1]"),
             ("64 0f 10 00", "movups xmm0,XMMWORD PTR fs:[rax]"),
             ("f0 0f 10 00", "lock movups xmm0,XMMWORD PTR [rax]"),
@@ -190,6 +189,11 @@ class ParseObjdumpTests(unittest.TestCase):
         for encoding, operands in rejected:
             row = analyzer.parse_row(f"  401100: {encoding} {operands}")
             self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+        movss_row = analyzer.parse_row("  401100: f3 0f 10 00 movss xmm0,DWORD PTR [rax]")
+        self.assertEqual(
+            analyzer.local_profile_candidate(movss_row),
+            "S2-34.8c-MOVSS-XMM-memory-RAX-load",
+        )
 
     def test_s2_34_movups_registry_is_local_and_scoped_to_five_profiles(self) -> None:
         registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
@@ -943,6 +947,54 @@ class ParseObjdumpTests(unittest.TestCase):
         )
         for encoding, operands in rejected:
             row = analyzer.parse_row(f"  405b00: {encoding} {operands}")
+            self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
+
+    def test_s2_34_8c_movss_memory_load_is_exact_f3_rax_base_only(self) -> None:
+        registry = __import__("json").loads(analyzer.PROFILE_PATH.read_text())
+        exact, _ = analyzer.profile_matcher_maps(registry)
+        profiles = [p for p in registry["profiles"] if p["task"] == "S2-34.8c MOVSS XMM m32 load from RAX only"]
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile["evidence_scope"], "local_interpreter_profile")
+        self.assertIsNone(profile["cpl"])
+        self.assertIn("both raw x87 and SSE state", profile["gate"])
+        self.assertIn("does not claim an SSE2 prerequisite", profile["gate"])
+        self.assertIn("successful canonical48 [RAX..RAX+3] range check plus one four-byte read", profile["gate"])
+        self.assertIn("does not infer runtime RAX values", profile["gate"])
+        expected = "S2-34.8c-MOVSS-XMM-memory-RAX-load"
+        for destination in range(16):
+            rex = "" if destination < 8 else "44 "
+            encoding = f"f3 {rex}0f 10 {((destination & 7) << 3):02x}"
+            row = analyzer.parse_row(f"  405c00: {encoding} movss xmm{destination},DWORD PTR [rax]")
+            self.assertEqual(row["signature"], "movss xmm,mem32", encoding)
+            self.assertEqual(analyzer.local_profile_candidate(row), expected, encoding)
+            self.assertEqual(analyzer.exact_profile_candidates(row, exact), [], encoding)
+        neutral_rex = analyzer.parse_row("  405d00: f3 40 0f 10 00 movss xmm0,DWORD PTR [rax]")
+        self.assertEqual(analyzer.local_profile_candidate(neutral_rex), expected)
+
+        rejected = (
+            ("0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # F3 mandatory.
+            ("f3 41 0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # REX.B changes base.
+            ("f3 42 0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # REX.X.
+            ("f3 48 0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # REX.W.
+            ("f3 4c 0f 10 00", "movss xmm8,DWORD PTR [rax]"),  # REX.R/W.
+            ("f3 0f 10 01", "movss xmm0,DWORD PTR [rcx]"),  # Other base.
+            ("f3 0f 10 05 00 00 00 00", "movss xmm0,DWORD PTR [rip+0x0]"),  # RIP-relative.
+            ("f3 0f 10 04 20", "movss xmm0,DWORD PTR [rax+riz]"),  # SIB.
+            ("f3 0f 10 40 00", "movss xmm0,DWORD PTR [rax+0x0]"),  # disp8.
+            ("f3 0f 10 80 00 00 00 00", "movss xmm0,DWORD PTR [rax+0x0]"),  # disp32.
+            ("f3 66 0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # Other prefix.
+            ("44 f3 0f 10 00", "movss xmm8,DWORD PTR [rax]"),  # Prefix order.
+            ("f3 f3 0f 10 00", "movss xmm0,DWORD PTR [rax]"),  # Duplicate F3.
+            ("f3 44 44 0f 10 00", "movss xmm8,DWORD PTR [rax]"),  # Duplicate REX.
+            ("f3 0f 11 00", "movss DWORD PTR [rax],xmm0"),  # Reverse direction.
+            ("f3 0f 10", "movss xmm0,DWORD PTR [rax]"),  # Truncated.
+            ("f3 0f 10 00 90", "movss xmm0,DWORD PTR [rax]"),  # Trailing byte.
+            ("c5 fa 10 00", "vmovss xmm0,DWORD PTR [rax]"),
+            ("62 f1 7e 08 10 00", "vmovss xmm0,DWORD PTR [rax]"),
+        )
+        for encoding, operands in rejected:
+            row = analyzer.parse_row(f"  405e00: {encoding} {operands}")
             self.assertIsNone(analyzer.local_profile_candidate(row), encoding)
 
     def test_s2_35_21_pcmpgtb_matches_all_register_pairs_and_rex_extensions(self) -> None:
