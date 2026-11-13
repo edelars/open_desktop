@@ -19,6 +19,49 @@ SPEC.loader.exec_module(analyzer)
 
 
 class ParseObjdumpTests(unittest.TestCase):
+    def test_s2_37be_cvtsd2ss_candidate_matches_only_canonical_register_bytes(self) -> None:
+        for dest in range(16):
+            for src in range(16):
+                ext = (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                data = [0xF2] + ([0x40 | ext] if ext else []) + [0x0F, 0x5A, 0xC0 | ((dest & 7) << 3) | (src & 7)]
+                encoded = " ".join(f"{byte:02x}" for byte in data)
+                row = analyzer.parse_row(f"  401000: {encoded} cvtsd2ss xmm{dest},xmm{src}")
+                self.assertIsNotNone(row, encoded)
+                self.assertEqual(analyzer.cvtsd2ss_state_gated_candidate(row), "S2-37be-CVTSD2SS-register-state-gated", encoded)
+
+        rejected = (
+            "f2 40 0f 5a c8 cvtsd2ss xmm1,xmm0",  # redundant REX
+            "f2 48 0f 5a c8 cvtsd2ss xmm1,xmm0",  # W
+            "f2 42 0f 5a c8 cvtsd2ss xmm1,xmm0",  # X
+            "f2 0f 5a 08 cvtsd2ss xmm1,QWORD PTR [rax]",  # memory
+            "f2 0f 5a c8 90 cvtsd2ss xmm1,xmm0",  # trailing byte
+            "f2 f2 0f 5a c8 cvtsd2ss xmm1,xmm0",  # duplicate prefix
+            "f2 0f 5a c8 cvtss2sd xmm1,xmm0",  # mnemonic mismatch
+            "f3 0f 5a c8 cvtsd2ss xmm1,xmm0",  # wrong mandatory prefix
+            "c5 fb 5a c8 cvtsd2ss xmm1,xmm0",  # VEX
+            "62 f1 7f 08 5a c8 cvtsd2ss xmm1,xmm0",  # EVEX
+            "f2 41 0f 5a c8 cvtsd2ss xmm1,xmm0",  # unnecessary REX.B
+            "f2 44 0f 5a c8 cvtsd2ss xmm1,xmm0",  # unnecessary REX.R
+        )
+        for sample in rejected:
+            parts = sample.split()
+            index = next(i for i, part in enumerate(parts) if part in {"cvtsd2ss", "cvtss2sd"})
+            row = analyzer.parse_row(f"  401000: {' '.join(parts[:index])} {' '.join(parts[index:])}")
+            self.assertIsNotNone(row, sample)
+            self.assertIsNone(analyzer.cvtsd2ss_state_gated_candidate(row), sample)
+
+        registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
+        candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
+        self.assertEqual(len(candidates), 16)
+        item = candidates["S2-37be-CVTSD2SS-register-state-gated"]
+        self.assertEqual(item["status"], "conditional_candidate_only_unclassified")
+        self.assertTrue(item["sse_payload_required"])
+        self.assertTrue(item["sse2_isa_required"])
+        self.assertIn("~0x0000ffbf", item["gate"])
+        self.assertIn("0x00000c00", item["gate"])
+        self.assertIn("unclassified", item["outcome"])
+        self.assertFalse(registry["registry_complete"])
+
     def test_s2_37t_ad_ae_candidates_match_only_canonical_register_bytes(self) -> None:
         gpr32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"] + [f"r{i}d" for i in range(8, 16)]
         gpr64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"] + [f"r{i}" for i in range(8, 16)]
@@ -76,7 +119,7 @@ class ParseObjdumpTests(unittest.TestCase):
 
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
-        self.assertEqual(len(candidates), 15)
+        self.assertEqual(len(candidates), 16)
         for candidate, sse2 in (
             ("S2-37t-CVTSS2SD-register-state-gated", True),
             ("S2-37ad-CVTTSS2SI-register-state-gated", False),
@@ -174,7 +217,7 @@ class ParseObjdumpTests(unittest.TestCase):
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = registry["conditional_local_state_gated_candidates"]
         by_id = {item["candidate_id"]: item for item in candidates}
-        self.assertEqual(len(by_id), 15)
+        self.assertEqual(len(by_id), 16)
         for candidate in ("S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
                           "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated"):
             gate = by_id[candidate]["gate"]
@@ -237,13 +280,13 @@ class ParseObjdumpTests(unittest.TestCase):
 
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
-        self.assertEqual(len(candidates), 15)
+        self.assertEqual(len(candidates), 16)
         self.assertEqual(set(c for _, _, _, c in cases), set(candidates) - {
             "S2-37i-MINSD-XMM-register-masked-state-gated",
             "S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
             "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated",
             "S2-37t-CVTSS2SD-register-state-gated", "S2-37ad-CVTTSS2SI-register-state-gated",
-            "S2-37ae-CVTTSD2SI-register-state-gated",
+            "S2-37ae-CVTTSD2SI-register-state-gated", "S2-37be-CVTSD2SS-register-state-gated",
         })
         for _, _, _, candidate in cases:
             item = candidates[candidate]

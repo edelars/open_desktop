@@ -41,10 +41,10 @@
     "coarse_operand_signatures": 560,
     "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json",
     "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz",
-    "compact_inventory_sha256": "7d6e0f93349a01614b50aeb52ae94a6611f5c3ffb4bbf4e2e812d39d9c53c426",
+    "compact_inventory_sha256": "5e932a6f14d110603159e38495cfca3f8febf0f6b4350d403d1952d423ea8d71",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_repeat_sha256": "7d6e0f93349a01614b50aeb52ae94a6611f5c3ffb4bbf4e2e812d39d9c53c426",
-    "conditional_candidate_hit_count": 113799,
+    "compact_repeat_sha256": "5e932a6f14d110603159e38495cfca3f8febf0f6b4350d403d1952d423ea8d71",
+    "conditional_candidate_hit_count": 113800,
     "conditional_candidate_supported_overlap_rows": 40,
     "conditional_cpl0_candidate_hits": 113292,
     "conditional_local_state_gated_candidate_frequencies": {
@@ -62,15 +62,16 @@
       "S2-37r-CVTSI2SS-register-state-gated": 50,
       "S2-37t-CVTSS2SD-register-state-gated": 19,
       "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
-      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
+      "S2-37be-CVTSD2SS-register-state-gated": 1
     },
-    "conditional_local_state_gated_candidate_rows": 507,
+    "conditional_local_state_gated_candidate_rows": 508,
     "conditional_local_state_gated_candidate_rows_by_binary": {
       "bash": 1,
       "dash": 26,
       "tar": 79,
       "gcc-driver": 37,
-      "gcc-cc1": 356,
+      "gcc-cc1": 357,
       "gcc-collect2": 1,
       "gcc-ld-bfd": 7
     },
@@ -373,9 +374,28 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 113722,
+    "unique_instruction_rows_with_any_conditional_candidate": 113723,
     "unique_mnemonics": 192,
-    "date": "2026-11-13"
+    "date": "2026-11-13",
+    "exact_instruction_rows_with_any_conditional_candidate": 113723,
+    "conditional_local_state_gated_candidate_unique_rows": 508
   },
-  "unchanged_rootfs_binary_inputs": true
+  "unchanged_rootfs_binary_inputs": true,
+  "candidate_annotation_lineage": {
+    "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
+    "observed_exact_instruction_rows": 1,
+    "binary_frequencies": {
+      "gcc-cc1": 1
+    },
+    "exact_bytes": "F2 0F 5A F1",
+    "prior_raw_pair_sha256": [
+      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570",
+      "1ac9f29ab66560bac0c0ece157308e7647585e18c8201988f3986b3a218e9570"
+    ],
+    "raw_analyzer_rerun": false,
+    "basis": "Guarded annotation derived from the existing compact exact-form record; accepted rootfs and pinned analyzer inputs unchanged. No target ELF execution; static E ELF remains a separate 345-row binary.",
+    "compact_payload_repeat_sha256": "5e932a6f14d110603159e38495cfca3f8febf0f6b4350d403d1952d423ea8d71",
+    "compact_payload_repeat_cmp_exit_code": 0,
+    "compact_derivation": "Prior compact JSON was decoded, the one guarded exact-form candidate annotation applied, and deterministic JSON+gzip serialization reproduced the same compact hash twice. This does not regenerate or compare raw analyzer passes."
+  }
 }

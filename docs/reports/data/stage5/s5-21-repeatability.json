@@ -7,9 +7,9 @@
     "normalized_instruction_forms": 1269,
     "path": "docs/reports/data/stage5/s5-21-isa-inventory.json.gz",
     "repeat_cmp_exit_code": 0,
-    "repeat_sha256": "1ca3bf6e0fb6f016cc9828bc0c31942e158dec9f5dded413b0fbd4ede9c4bab6",
-    "sha256": "1ca3bf6e0fb6f016cc9828bc0c31942e158dec9f5dded413b0fbd4ede9c4bab6",
-    "size_bytes": 1025954
+    "repeat_sha256": "830c01ab7407c5bda0199cd53dfd2aaebc842ff7182f84635a4e6ebe3edfcb70",
+    "sha256": "830c01ab7407c5bda0199cd53dfd2aaebc842ff7182f84635a4e6ebe3edfcb70",
+    "size_bytes": 1025995
   },
   "date_utc": "2026-11-13",
   "full_inventory": {
@@ -19,7 +19,7 @@
     },
     "classified_normalized_forms": 1064,
     "coarse_operand_signatures": 560,
-    "conditional_candidate_hit_count": 113739,
+    "conditional_candidate_hit_count": 113740,
     "conditional_candidate_supported_overlap_rows": 40,
     "conditional_cpl0_candidate_hits": 113232,
     "conditional_local_state_gated_candidate_frequencies": {
@@ -37,15 +37,16 @@
       "S2-37r-CVTSI2SS-register-state-gated": 50,
       "S2-37t-CVTSS2SD-register-state-gated": 19,
       "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
-      "S2-37w-COMISD-UCOMISD-register-state-gated": 34
+      "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
+      "S2-37be-CVTSD2SS-register-state-gated": 1
     },
-    "conditional_local_state_gated_candidate_rows": 507,
+    "conditional_local_state_gated_candidate_rows": 508,
     "conditional_local_state_gated_candidate_rows_by_binary": {
       "bash": 1,
       "dash": 26,
       "tar": 79,
       "gcc-driver": 37,
-      "gcc-cc1": 356,
+      "gcc-cc1": 357,
       "gcc-collect2": 1,
       "gcc-ld-bfd": 7
     },
@@ -310,7 +311,7 @@
       }
     },
     "unclassified_normalized_forms": 205,
-    "unique_instruction_rows_with_any_conditional_candidate": 113662,
+    "unique_instruction_rows_with_any_conditional_candidate": 113663,
     "unique_mnemonics": 192,
     "instruction_rows": 6510400,
     "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass2.json"
@@ -347,5 +348,22 @@
     "profile_registry": "tools/build/stage5_isa_profile_forms.json",
     "registry_complete": false
   },
-  "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass3.json"
+  "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-root-pass3.json",
+  "candidate_annotation_lineage": {
+    "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
+    "observed_exact_instruction_rows": 1,
+    "binary_frequencies": {
+      "gcc-cc1": 1
+    },
+    "exact_bytes": "F2 0F 5A F1",
+    "prior_raw_pair_sha256": [
+      "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc",
+      "bbd593c567fda85f4b95c062509aa7990b34da5fdf4cb6922065aac6cce2bddc"
+    ],
+    "raw_analyzer_rerun": false,
+    "basis": "Guarded annotation derived from the existing compact exact-form record; accepted rootfs and pinned analyzer inputs unchanged. No target ELF execution.",
+    "compact_payload_repeat_sha256": "830c01ab7407c5bda0199cd53dfd2aaebc842ff7182f84635a4e6ebe3edfcb70",
+    "compact_payload_repeat_cmp_exit_code": 0,
+    "compact_derivation": "Prior compact JSON was decoded, the one guarded exact-form candidate annotation applied, and deterministic JSON+gzip serialization reproduced the same compact hash twice. This does not regenerate or compare raw analyzer passes."
+  }
 }

@@ -1414,11 +1414,43 @@ def scalar_arithmetic_state_gated_candidate(row: dict) -> str | None:
     return candidate
 
 
+def cvtsd2ss_state_gated_candidate(row: dict) -> str | None:
+    """Recognize the exact local S2-37be CVTSD2SS register candidate."""
+    if row["mnemonic"] != "cvtsd2ss" or row["signature"] != "cvtsd2ss xmm,xmm":
+        return None
+    view = opcode_view(row)
+    prefixes, modrm, raw = tuple(view["prefixes"]), view["modrm"], row["byte_values"]
+    if view["opcode"] != (0x0F, 0x5A) or modrm is None or modrm >> 6 != 3:
+        return None
+    if not prefixes or prefixes[0] != 0xF2 or len(prefixes) not in {1, 2}:
+        return None
+    if len(raw) != len(prefixes) + 3:
+        return None
+    operands = [part.strip().lower() for part in row["operands"].split(",")]
+    if len(operands) != 2:
+        return None
+    dest = re.fullmatch(r"xmm(\d+)", operands[0])
+    src = re.fullmatch(r"xmm(\d+)", operands[1])
+    if dest is None or src is None:
+        return None
+    dest_num, src_num = int(dest.group(1)), int(src.group(1))
+    if dest_num > 15 or src_num > 15:
+        return None
+    if ((modrm >> 3) & 7) != dest_num % 8 or (modrm & 7) != src_num % 8:
+        return None
+    rex_bits = (0x04 if dest_num >= 8 else 0) | (0x01 if src_num >= 8 else 0)
+    rex = prefixes[1] if len(prefixes) == 2 else None
+    if (rex is None) != (not rex_bits) or (rex is not None and rex != 0x40 | rex_bits):
+        return None
+    return "S2-37be-CVTSD2SS-register-state-gated"
+
+
 def conditional_local_candidate(row: dict) -> str | None:
     return (minsd_masked_register_local_candidate(row)
             or local_state_gated_conditional_candidate(row)
             or cvt_register_state_gated_candidate(row)
-            or scalar_arithmetic_state_gated_candidate(row))
+            or scalar_arithmetic_state_gated_candidate(row)
+            or cvtsd2ss_state_gated_candidate(row))
 
 
 def cpl0_l7_candidates(row: dict) -> list[str]:

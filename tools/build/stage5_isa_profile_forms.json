@@ -2242,6 +2242,26 @@
         "docs/specs/CPU_CONTRACT.md:15917-15967",
         "docs/reports/STAGE_2_REPORT.md:20202-20236"
       ]
+    },
+    {
+      "task": "S2-37be CVTSD2SS register state-gated candidate",
+      "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register CVTSD2SS only: F2 0F 5A /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. Raw x87 snapshot is excluded from this fixture profile; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review at HEAD f44a5ff confirms conditional-candidate eligibility only; tests were inspected, not rerun. Historical full code review status is not established by this review.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state, guest execution, backend/JIT/native behavior, or physical acceptance.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:16010-16018",
+        "docs/plans/STAGE_2.md:16629-16637",
+        "docs/reports/STAGE_2_REPORT.md:20291-20303"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
