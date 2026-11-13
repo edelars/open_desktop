@@ -12842,10 +12842,9 @@ fn lock_cmpxchg_write_fault_leaves_rax_flags_and_memory_unchanged_for_both_outco
 fn lock_cmpxchg_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mutation() {
     // S4-38L7y: the LOCK dword form (without REX.W, with or without another REX) is now
     // admitted; its refusals are in `lock_cmpxchg_dword_forms_outside_the_slice_*`.
-    let cases: [&[u8]; 17] = [
-        // No LOCK: the plain memory form stays outside the CPL0 set.
-        &[0x48, 0x0f, 0xb1, 0x13],
-        &[0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00],
+    let cases: [&[u8]; 15] = [
+        // S4-38L9k: the plain (no LOCK) memory forms `48 0f b1 13` and `4c 0f b1 25 ...` were
+        // refused here; on one vCPU they run as the LOCK form (see `plain_cmpxchg_*` below).
         // Register forms (mod = 11).
         &[0xf0, 0x48, 0x0f, 0xb1, 0xd3],
         &[0xf0, 0x4d, 0x0f, 0xb1, 0xc8],
@@ -13221,11 +13220,10 @@ fn lock_cmpxchg_dword_write_fault_leaves_rax_flags_and_memory_unchanged_for_both
 
 #[test]
 fn lock_cmpxchg_dword_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mutation() {
-    let cases: [&[u8]; 21] = [
-        // No LOCK: the plain dword form (memory or register) stays outside the CPL0 set.
-        &[0x0f, 0xb1, 0x13],
-        &[0x40, 0x0f, 0xb1, 0x13],
-        &[0x44, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00],
+    let cases: [&[u8]; 18] = [
+        // S4-38L9k: the plain dword memory forms (`0f b1 13`, `40 0f b1 13`,
+        // `44 0f b1 25 ...`) were refused here; they run as the LOCK form now. The plain dword
+        // register form stays outside the CPL0 set.
         &[0x0f, 0xb1, 0xd3],
         // Register forms (mod = 11) with LOCK.
         &[0xf0, 0x0f, 0xb1, 0xd3],
@@ -31045,12 +31043,10 @@ fn lock_xadd_read_fault_leaves_state_and_memory_unchanged() {
 
 #[test]
 fn lock_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation() {
-    let cases: [&[u8]; 31] = [
-        // No LOCK: the plain memory form stays outside the CPL0 set (the dword form never existed).
-        &[0x48, 0x0f, 0xc1, 0x43, 0x3d],
-        &[0x4c, 0x0f, 0xc1, 0x25, 0x34, 0x12, 0x00, 0x00],
-        &[0x0f, 0xc1, 0x43, 0x3d],
-        &[0x44, 0x0f, 0xc1, 0x43, 0x3d],
+    let cases: [&[u8]; 27] = [
+        // S4-38L9k: the plain (no LOCK) memory forms `48 0f c1 43 3d`, `4c 0f c1 25 ...`,
+        // `0f c1 43 3d` and `44 0f c1 43 3d` were refused here; on one vCPU they run as the LOCK
+        // form (see `plain_xadd_*` below), so they moved out of this list.
         // LOCK with a register destination (mod = 11).
         &[0xf0, 0x0f, 0xc1, 0xc3],
         &[0xf0, 0x48, 0x0f, 0xc1, 0xc3],
@@ -39346,8 +39342,8 @@ fn fs_gs_cmpxchg_wide_read_fault_changes_nothing() {
 #[test]
 fn segment_cmpxchg_wide_forms_outside_the_slice_are_refused_with_opcode_b1_without_mutation() {
     let cases: &[&[u8]] = &[
-        // No segment prefix: the plain dword form (memory or register) stays outside the set.
-        &[0x0f, 0xb1, 0x0f],
+        // No segment prefix: the plain dword register form stays outside the set (S4-38L9k: the
+        // plain dword memory form `0f b1 0f` runs as the LOCK form now).
         &[0x0f, 0xb1, 0xc1],
         // CS/ES/SS overrides are not FS/GS (S4-38L9h: the DS form `3E [REX] 0F B1 /r` with a
         // memory destination is now the LOCK operation; its tests are `ds_cmpxchg_*`).
@@ -42785,10 +42781,9 @@ fn ds_xadd_write_or_read_fault_leaves_register_flags_rip_and_memory_unchanged() 
 
 #[test]
 fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation() {
-    let cases: [&[u8]; 31] = [
-        // No DS and no LOCK: the plain memory form stays outside the CPL0 set (pre-existing).
-        &[0x48, 0x0f, 0xc1, 0x43, 0x3d],
-        &[0x0f, 0xc1, 0x43, 0x3d],
+    let cases: [&[u8]; 29] = [
+        // S4-38L9k: the no-DS, no-LOCK memory forms `48 0f c1 43 3d` and `0f c1 43 3d` were
+        // refused here; they run as the LOCK form now (see `plain_xadd_*`).
         // DS with a register destination (mod = 11).
         &[0x3e, 0x0f, 0xc1, 0xc3],
         &[0x3e, 0x48, 0x0f, 0xc1, 0xc3],
@@ -43467,11 +43462,9 @@ fn ds_cmpxchg_ignores_the_fs_and_gs_bases() {
 
 #[test]
 fn ds_cmpxchg_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mutation() {
-    let cases: [&[u8]; 22] = [
-        // The unprefixed forms stay refused (the dword form; the qword memory form is refused in
-        // the set, as before).
-        &[0x0f, 0xb1, 0x17],
-        &[0x48, 0x0f, 0xb1, 0x17],
+    let cases: [&[u8]; 20] = [
+        // S4-38L9k: the unprefixed memory forms `0f b1 17` and `48 0f b1 17` were refused here;
+        // they run as the LOCK form now (see `plain_cmpxchg_*`).
         // DS with a register destination (mod = 11).
         &[0x3e, 0x0f, 0xb1, 0xd1],
         &[0x3e, 0x48, 0x0f, 0xb1, 0xd1],
@@ -44574,4 +44567,696 @@ fn segment_logic_load_is_not_reachable_from_cpl3() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S4-38L9k: the bare (no LOCK, no DS) memory forms of XADD and CMPXCHG (`[REX] 0F C1 /r` and
+// `[REX] 0F B1 /r`, memory destination, dword without REX.W and qword with it). The `stage4a`
+// boundary is `48 0f c1 10` = `xadd %rdx, (%rax)` at `pidfs_add_pid`. The kernel patches LOCK to DS
+// (`alternatives_smp_unlock`) only where the instruction sits in `.smp_locks`; other RMW sites carry
+// no prefix at all. The set has a single vCPU and LOCK changes only the atomicity against other
+// processors, so the bare form executes exactly as the LOCK form (same read -> write, same flags,
+// same registers, same faults). Semantics from memory of the SDM (XADD: TEMP = SRC + DEST, SRC =
+// DEST, DEST = TEMP, flags as ADD; CMPXCHG: compare the accumulator with DEST, ZF = equal, DEST =
+// SRC when equal, else the accumulator takes DEST; the destination is written back on both
+// branches as in the LOCK form of this project); not re-checked against the SDM text. Still
+// refused: the register forms (dword), 0x66/0x67, REP/REPNE, CS/ES/SS/FS/GS, a stale REX, the
+// byte forms. Outside the set only the qword form exists (the atomic-call path), the dword is
+// refused. ----
+
+/// `xadd %rdx, (%rax)` (the S4-38L9j boundary bytes, `pidfs_add_pid`).
+const PLAIN_XADDQ_RDX_RAX: [u8; 4] = [0x48, 0x0f, 0xc1, 0x10];
+/// `xadd %rax, 0x3d(%rbx)` and the dword form.
+const PLAIN_XADDQ_RAX_RBX_3D: [u8; 5] = [0x48, 0x0f, 0xc1, 0x43, 0x3d];
+const PLAIN_XADDL_EAX_RBX_3D: [u8; 4] = [0x0f, 0xc1, 0x43, 0x3d];
+/// `cmpxchg %rdx, (%rdi)` and the dword form.
+const PLAIN_CMPXCHGQ_RDX_RDI: [u8; 4] = [0x48, 0x0f, 0xb1, 0x17];
+const PLAIN_CMPXCHGL_EDX_RDI: [u8; 3] = [0x0f, 0xb1, 0x17];
+
+/// The LOCK spelling of a bare form (the LOCK byte goes first, before any REX byte).
+fn with_lock(code: &[u8]) -> Vec<u8> {
+    let mut locked = vec![0xf0];
+    locked.extend_from_slice(code);
+    locked
+}
+
+/// Everything observable after one run of `code` on a fresh board state.
+type PlainSnapshot = (
+    LongModeState,
+    RunExit,
+    u64,
+    Vec<(u64, usize)>,
+    Vec<(u64, Vec<u8>)>,
+    u64,
+);
+
+fn run_plain_snapshot(
+    code: &[u8],
+    seed: &dyn Fn(&mut LongModeState),
+    cell: u64,
+    write_fault: Option<ArchitecturalFault>,
+    read_fault: Option<ArchitecturalFault>,
+) -> PlainSnapshot {
+    let mut state = board_state();
+    state.gs_base = 0xffff_8880_0000_0000;
+    state.fs_base = 0xffff_8880_0000_0000;
+    seed(&mut state);
+    let mut memory = CasMemory::new(code, cell);
+    memory.write_fault = write_fault;
+    memory.read_fault = read_fault;
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    let run_exit = exit(&result).clone();
+    (
+        state,
+        run_exit,
+        result.instructions_executed,
+        memory.reads,
+        memory.writes,
+        memory.cell,
+    )
+}
+
+/// Runs the bare `code` and its LOCK spelling and asserts the identical architectural result:
+/// registers, flags, memory, read and write journals, exit and fault. RIP differs by exactly the
+/// LOCK byte.
+fn assert_plain_equals_lock(
+    code: &[u8],
+    seed: &dyn Fn(&mut LongModeState),
+    cell: u64,
+    write_fault: Option<ArchitecturalFault>,
+    read_fault: Option<ArchitecturalFault>,
+    label: &str,
+) -> PlainSnapshot {
+    let plain = run_plain_snapshot(code, seed, cell, write_fault.clone(), read_fault.clone());
+    let locked = run_plain_snapshot(&with_lock(code), seed, cell, write_fault, read_fault);
+    let (mut plain_state, mut locked_state) = (plain.0.clone(), locked.0.clone());
+    if plain.2 == 1 {
+        assert_eq!(plain_state.rip, RIP + code.len() as u64, "{label}");
+        assert_eq!(locked_state.rip, RIP + code.len() as u64 + 1, "{label}");
+    }
+    plain_state.rip = 0;
+    locked_state.rip = 0;
+    assert_eq!(plain_state, locked_state, "{label}");
+    assert_eq!(plain.1, locked.1, "{label}");
+    assert_eq!(plain.2, locked.2, "{label}");
+    assert_eq!(plain.3, locked.3, "{label}");
+    assert_eq!(plain.4, locked.4, "{label}");
+    assert_eq!(plain.5, locked.5, "{label}");
+    plain
+}
+
+#[test]
+fn plain_xadd_stage4a_boundary_adds_rdx_to_the_qword_at_rax() {
+    // `48 0f c1 10`, RAX = the address, RDX = 1: the qword goes 0x7fffffffffffffff -> 0x8000...0
+    // (OF | SF | AF | PF by hand), RDX takes the old value, RIP advances by 4.
+    let address = 0xffff_8880_0123_4560u64;
+    let old = 0x7fff_ffff_ffff_ffffu64;
+    let mut state = board_state();
+    state.gpr[Register::Rax as usize] = address;
+    state.gpr[Register::Rdx as usize] = 1;
+    state.rflags = 2 | IF | FLAG_CF | FLAG_ZF;
+    let mut expected = state.clone();
+    let mut memory = CasMemory::new(&PLAIN_XADDQ_RDX_RAX, old);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(address, 8)]);
+    assert_eq!(
+        memory.writes,
+        vec![(address, 0x8000_0000_0000_0000u64.to_le_bytes().to_vec())]
+    );
+    expected.rip += 4;
+    expected.gpr[Register::Rdx as usize] = old;
+    expected.rflags = (2 | IF) | FLAG_OF | FLAG_SF | FLAG_AF | FLAG_PF;
+    assert_eq!(state, expected, "only RIP, RDX and the flags change");
+}
+
+#[test]
+fn plain_xadd_hand_computed_sums_and_flags_at_both_widths() {
+    // (code, old memory, addend, new memory, old value in the register, arithmetic flags)
+    let cases: [(&[u8], u64, u64, u64, u64, u64); 6] = [
+        // 2 + 3 = 5: PF only.
+        (&PLAIN_XADDQ_RAX_RBX_3D, 2, 3, 5, 2, FLAG_PF),
+        // 0xffffffffffffffff + 1 = 0: ZF | CF | PF | AF.
+        (
+            &PLAIN_XADDQ_RAX_RBX_3D,
+            u64::MAX,
+            1,
+            0,
+            u64::MAX,
+            FLAG_ZF | FLAG_CF | FLAG_PF | FLAG_AF,
+        ),
+        // Dword: 0x7fffffff + 1 = 0x80000000: OF | SF | AF | PF (low byte 0).
+        (
+            &PLAIN_XADDL_EAX_RBX_3D,
+            0x7fff_ffff,
+            1,
+            0x8000_0000,
+            0x7fff_ffff,
+            FLAG_OF | FLAG_SF | FLAG_AF | FLAG_PF,
+        ),
+        // Dword wrap: 0xffffffff + 1 = 0: ZF | CF | PF | AF; EAX = 0xffffffff (zero-extended).
+        (
+            &PLAIN_XADDL_EAX_RBX_3D,
+            0xffff_ffff,
+            1,
+            0,
+            0xffff_ffff,
+            FLAG_ZF | FLAG_CF | FLAG_PF | FLAG_AF,
+        ),
+        // Dword with a dirty upper half in the cell: only the low dword is read and written.
+        (
+            &PLAIN_XADDL_EAX_RBX_3D,
+            0xffff_ffff_0000_0010,
+            0x20,
+            0x30,
+            0x10,
+            FLAG_PF,
+        ),
+        // A zero addend still writes the unchanged value back; ZF | PF.
+        (&PLAIN_XADDQ_RAX_RBX_3D, 0, 0, 0, 0, FLAG_ZF | FLAG_PF),
+    ];
+    for (code, old, addend, new, register, flags) in cases {
+        let dword = code.len() == 4;
+        let width = if dword { 4 } else { 8 };
+        let mut state = board_state();
+        // The upper half of RAX is junk for the dword form; the source is masked to 32 bits.
+        state.gpr[Register::Rax as usize] = if dword {
+            0xdead_beef_0000_0000 | addend
+        } else {
+            addend
+        };
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.rflags = 2 | IF | ARITH;
+        let mut memory = CasMemory::new(code, old);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?} {old:#x}");
+        assert_eq!(memory.reads, vec![(0x20_003d, width)], "{code:02x?}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_003d, new.to_le_bytes()[..width].to_vec())],
+            "{code:02x?} {old:#x}"
+        );
+        assert_eq!(state.gpr[Register::Rax as usize], register, "{code:02x?}");
+        assert_eq!(state.rflags, 2 | IF | flags, "{code:02x?} {old:#x}");
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn plain_xadd_equals_the_lock_form_over_values_flags_and_widths() {
+    let values: [u64; 10] = [
+        0,
+        1,
+        0x0f,
+        0x80,
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_ffff,
+        0x7fff_ffff_ffff_ffff,
+        0x8000_0000_0000_0000,
+        0xffff_ffff_ffff_ffff,
+    ];
+    for code in [&PLAIN_XADDQ_RAX_RBX_3D[..], &PLAIN_XADDL_EAX_RBX_3D[..]] {
+        for old in values {
+            for addend in values {
+                for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                    let label = format!("{code:02x?} {old:#x} + {addend:#x} from {initial:#x}");
+                    let snapshot = assert_plain_equals_lock(
+                        code,
+                        &|state| {
+                            state.rflags = initial;
+                            state.gpr[Register::Rax as usize] = addend;
+                            state.gpr[Register::Rbx as usize] = 0x20_0000;
+                        },
+                        old,
+                        None,
+                        None,
+                        &label,
+                    );
+                    let bits = if code.len() == 4 { 32 } else { 64 };
+                    let (sum, flags) = add_oracle(bits, old, addend);
+                    let width = (bits / 8) as usize;
+                    assert_eq!(snapshot.2, 1, "{label}");
+                    assert_eq!(snapshot.3, vec![(0x20_003d, width)], "{label}");
+                    assert_eq!(
+                        snapshot.4,
+                        vec![(0x20_003d, sum.to_le_bytes()[..width].to_vec())],
+                        "{label}"
+                    );
+                    assert_eq!(snapshot.0.rflags, (initial & !ARITH) | flags, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_equal_the_lock_forms_for_every_register_and_addressing_form() {
+    // XADD and CMPXCHG, qword (REX.W) and dword, every ModRM reg 0..7 with and without REX.R,
+    // [rbx], [rbx + disp8], [rsp] (SIB), [rbp + 0], [rax] and REX.B bases r8..r15 (RIP-relative
+    // operands are in their own test: the address is relative to the end of the instruction, which
+    // is one byte longer with the LOCK spelling).
+    for opcode in [0xc1u8, 0xb1] {
+        for rex in [None, Some(0x40u8), Some(0x44), Some(0x48), Some(0x4c)] {
+            let mut forms: Vec<Vec<u8>> = Vec::new();
+            for reg in 0..8u8 {
+                for tail in [
+                    &[0x03u8][..],     // [rbx]
+                    &[0x43, 0x08][..], // [rbx + 8]
+                    &[0x04, 0x24][..], // [rsp]
+                    &[0x45, 0x00][..], // [rbp + 0]
+                    &[0x00][..],       // [rax]
+                ] {
+                    let mut modrm_tail = tail.to_vec();
+                    modrm_tail[0] |= reg << 3;
+                    let mut code = Vec::new();
+                    code.extend(rex);
+                    code.extend([0x0f, opcode]);
+                    code.extend(modrm_tail);
+                    forms.push(code);
+                }
+            }
+            for base in 0..8u8 {
+                // REX.B bases r8..r15 (a REX byte is mandatory here).
+                let rex_b = rex.unwrap_or(0x40) | 1;
+                let mut form = vec![rex_b, 0x0f, opcode];
+                match base {
+                    4 => form.extend([0x04, 0x24]), // [r12] needs a SIB byte
+                    5 => form.extend([0x45, 0x00]), // [r13 + 0] needs a disp8
+                    _ => form.push(base),
+                }
+                forms.push(form);
+            }
+            for code in forms {
+                for (cell, rax, rdx) in [
+                    (7u64, 7u64, 0x1234u64),
+                    (0x8000_0000_0000_0000, 0x1, 0x77),
+                    (0xffff_ffff_ffff_fff0, 0x20, 0x20),
+                ] {
+                    let label = format!("{code:02x?} {cell:#x} {rax:#x} {rdx:#x}");
+                    let snapshot = assert_plain_equals_lock(
+                        &code,
+                        &|state| {
+                            state.rflags = 2 | IF | FLAG_CF | FLAG_OF;
+                            state.gpr[Register::Rax as usize] = rax;
+                            state.gpr[Register::Rbx as usize] = 0x20_0000;
+                            state.gpr[Register::Rdx as usize] = rdx;
+                            state.gpr[Register::Rsp as usize] = 0x30_0000;
+                            state.gpr[Register::Rbp as usize] = 0x30_8000;
+                            state.gpr[Register::Rcx as usize] = 0x44;
+                            for (i, register) in EXTENDED.iter().enumerate() {
+                                state.gpr[*register as usize] = 0x40_0000 + i as u64 * 0x1000;
+                            }
+                        },
+                        cell,
+                        None,
+                        None,
+                        &label,
+                    );
+                    // Exactly one instruction with one read and one write at the same address.
+                    assert_eq!(snapshot.2, 1, "{label}");
+                    assert_eq!(snapshot.3.len(), 1, "{label}");
+                    assert_eq!(snapshot.4.len(), 1, "{label}");
+                    assert_eq!(snapshot.3[0].0, snapshot.4[0].0, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_rip_relative_operands_are_relative_to_the_end_of_the_instruction() {
+    // `xadd %rdx, 0x1234(%rip)` and `cmpxchg %edx, 0x1234(%rip)`: the target is RIP + length + disp.
+    for (code, width) in [
+        (
+            &[0x48u8, 0x0f, 0xc1, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+            8usize,
+        ),
+        (&[0x0f, 0xb1, 0x15, 0x34, 0x12, 0x00, 0x00][..], 4),
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 3;
+        state.gpr[Register::Rdx as usize] = 3;
+        let mut memory = CasMemory::new(code, 3);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        let target = RIP + code.len() as u64 + 0x1234;
+        assert_eq!(memory.reads, vec![(target, width)], "{code:02x?}");
+        assert_eq!(memory.writes.len(), 1, "{code:02x?}");
+        assert_eq!(memory.writes[0].0, target, "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_cmpxchg_hand_computed_equal_and_not_equal_cases() {
+    // (code, RAX, memory, source, new memory, new RAX, arithmetic flags of CMP RAX, memory)
+    let cases: [(&[u8], u64, u64, u64, u64, u64, u64); 6] = [
+        // Qword equal: ZF | PF; memory = RDX, RAX kept.
+        (
+            &PLAIN_CMPXCHGQ_RDX_RDI,
+            7,
+            7,
+            0x1234,
+            0x1234,
+            7,
+            FLAG_ZF | FLAG_PF,
+        ),
+        // Qword not equal, 1 - 0x8000000000000000: CF | SF | OF; RAX takes the old value and
+        // the old value is written back.
+        (
+            &PLAIN_CMPXCHGQ_RDX_RDI,
+            1,
+            0x8000_0000_0000_0000,
+            9,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            FLAG_CF | FLAG_SF | FLAG_OF,
+        ),
+        // Qword 0 - 1: CF | AF | SF | PF.
+        (
+            &PLAIN_CMPXCHGQ_RDX_RDI,
+            0,
+            1,
+            3,
+            1,
+            1,
+            FLAG_CF | FLAG_AF | FLAG_SF | FLAG_PF,
+        ),
+        // Dword equal, the unlocked spinlock case (RAX = 0, RDX = 1, lock word 0).
+        (&PLAIN_CMPXCHGL_EDX_RDI, 0, 0, 1, 1, 0, FLAG_ZF | FLAG_PF),
+        // Dword not equal: EAX loads the old dword zero-extended (the upper half of the cell is
+        // ignored); CMP 3 - 5 = 0xfffffffe: CF | AF | SF.
+        (
+            &PLAIN_CMPXCHGL_EDX_RDI,
+            0xdead_beef_0000_0003,
+            0xffff_ffff_0000_0005,
+            0x77,
+            5,
+            5,
+            FLAG_CF | FLAG_AF | FLAG_SF,
+        ),
+        // Dword equal compares only EAX (the upper halves differ).
+        (
+            &PLAIN_CMPXCHGL_EDX_RDI,
+            0xaaaa_aaaa_0000_0009,
+            0xbbbb_bbbb_0000_0009,
+            0x55,
+            0x55,
+            0xaaaa_aaaa_0000_0009,
+            FLAG_ZF | FLAG_PF,
+        ),
+    ];
+    for (code, rax, old, source, new, new_rax, flags) in cases {
+        let dword = code.len() == 3;
+        let width = if dword { 4 } else { 8 };
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = rax;
+        state.gpr[Register::Rdx as usize] = source;
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        state.rflags = 2 | IF | ARITH;
+        let mut memory = CasMemory::new(code, old);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?} {old:#x}");
+        assert_eq!(memory.reads, vec![(0x20_0000, width)], "{code:02x?}");
+        assert_eq!(
+            memory.writes,
+            vec![(0x20_0000, new.to_le_bytes()[..width].to_vec())],
+            "{code:02x?} {old:#x}"
+        );
+        assert_eq!(state.gpr[Register::Rax as usize], new_rax, "{code:02x?}");
+        assert_eq!(state.gpr[Register::Rdx as usize], source, "{code:02x?}");
+        assert_eq!(state.rflags, 2 | IF | flags, "{code:02x?} {old:#x}");
+        assert_eq!(state.rip, RIP + code.len() as u64);
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_fault_like_the_lock_forms_without_mutation() {
+    // Read fault and write fault: identical to the LOCK spelling, and nothing (register, flags,
+    // RIP, memory) changes.
+    let read_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(0x20_0000),
+    };
+    let write_fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(0x20_0000),
+    };
+    for code in [
+        &PLAIN_XADDQ_RAX_RBX_3D[..],
+        &PLAIN_XADDL_EAX_RBX_3D[..],
+        &[0x48, 0x0f, 0xb1, 0x13][..],
+        &[0x0f, 0xb1, 0x13][..],
+    ] {
+        for (write, read) in [
+            (Some(write_fault.clone()), None),
+            (None, Some(read_fault.clone())),
+        ] {
+            let seed = |state: &mut LongModeState| {
+                state.gpr[Register::Rax as usize] = 5;
+                state.gpr[Register::Rbx as usize] = 0x20_0000;
+                state.gpr[Register::Rdx as usize] = 6;
+                state.rflags = 2 | IF | FLAG_CF;
+            };
+            let before = {
+                let mut state = board_state();
+                state.gs_base = 0xffff_8880_0000_0000;
+                state.fs_base = 0xffff_8880_0000_0000;
+                seed(&mut state);
+                state
+            };
+            let snapshot =
+                assert_plain_equals_lock(code, &seed, 9, write, read, &format!("{code:02x?}"));
+            assert_eq!(snapshot.2, 0, "{code:02x?}");
+            assert_eq!(snapshot.0, before, "{code:02x?}");
+            assert!(snapshot.4.is_empty(), "{code:02x?}");
+            assert_eq!(snapshot.5, 9, "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_non_canonical_addresses_fault_like_the_lock_forms() {
+    // A non-canonical base (#GP(0)), through RBX, and through a non-canonical RSP or RBP base
+    // (#SS(0)): identical to the LOCK spelling, no access and no mutation.
+    let non_canonical = 0x0001_0000_0000_0000u64;
+    for code in [
+        &[0x48u8, 0x0f, 0xc1, 0x03][..],     // xadd %rax, (%rbx)
+        &[0x0f, 0xc1, 0x03][..],             // xadd %eax, (%rbx)
+        &[0x48, 0x0f, 0xc1, 0x04, 0x24][..], // xadd %rax, (%rsp)
+        &[0x0f, 0xc1, 0x45, 0x00][..],       // xadd %eax, 0(%rbp)
+        &[0x48, 0x0f, 0xb1, 0x13][..],       // cmpxchg %rdx, (%rbx)
+        &[0x0f, 0xb1, 0x13][..],             // cmpxchg %edx, (%rbx)
+        &[0x48, 0x0f, 0xb1, 0x14, 0x24][..], // cmpxchg %rdx, (%rsp)
+        &[0x0f, 0xb1, 0x55, 0x00][..],       // cmpxchg %edx, 0(%rbp)
+    ] {
+        let seed = |state: &mut LongModeState| {
+            state.gpr[Register::Rbx as usize] = non_canonical;
+            state.gpr[Register::Rsp as usize] = non_canonical;
+            state.gpr[Register::Rbp as usize] = non_canonical;
+        };
+        let snapshot =
+            assert_plain_equals_lock(code, &seed, 9, None, None, &format!("{code:02x?}"));
+        assert_eq!(snapshot.2, 0, "{code:02x?}");
+        assert!(
+            snapshot.3.is_empty() && snapshot.4.is_empty(),
+            "{code:02x?}"
+        );
+        assert_eq!(snapshot.5, 9, "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_ignore_the_fs_and_gs_bases() {
+    for code in [&PLAIN_XADDQ_RAX_RBX_3D[..], &PLAIN_CMPXCHGQ_RDX_RDI[..]] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8881_0000_0000;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let mut memory = CasMemory::new(code, 1);
+        run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(memory.reads.len(), 1, "{code:02x?}");
+        assert!(memory.reads[0].0 < 0x21_0000, "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_forms_outside_the_slice_are_refused_without_mutation() {
+    // S4-38L9k keeps these refused: the dword register form, 0x66 and 0x67, REP/REPNE,
+    // CS/ES/SS/FS/GS (FS/GS XADD does not exist in the set; FS/GS CMPXCHG has its own forms), a
+    // REX byte that is not directly before the opcode, and the byte forms (`0F C0`, `0F B0`).
+    let cases: [(&[u8], u8); 38] = [
+        (&[0x0f, 0xc1, 0xd0], 0xc1),
+        (&[0x44, 0x0f, 0xc1, 0xd0], 0xc1),
+        (&[0x66, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x66, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x48, 0x66, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x67, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x48, 0x67, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0xf3, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0xf2, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x2e, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x26, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x36, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x64, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x65, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x48, 0x40, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x40, 0x48, 0x0f, 0xc1, 0x13], 0xc1),
+        (&[0x0f, 0xb1, 0xd1], 0xb1),
+        (&[0x44, 0x0f, 0xb1, 0xd1], 0xb1),
+        (&[0x66, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x66, 0x48, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x48, 0x66, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x67, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x48, 0x67, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0xf3, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0xf2, 0x48, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x2e, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x26, 0x48, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x36, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x48, 0x40, 0x0f, 0xb1, 0x13], 0xb1),
+        (&[0x40, 0x48, 0x0f, 0xb1, 0x13], 0xb1),
+        // FS/GS CMPXCHG register destination stays refused with its own gate.
+        (&[0x64, 0x0f, 0xb1, 0xd1], 0xb1),
+        (&[0x65, 0x48, 0x0f, 0xb1, 0xd1], 0xb1),
+        // The byte forms have no bare memory form in the set.
+        (&[0x0f, 0xc0, 0x13], 0xc0),
+        (&[0x48, 0x0f, 0xc0, 0x13], 0xc0),
+        (&[0x0f, 0xb0, 0x13], 0xb0),
+        (&[0x48, 0x0f, 0xb0, 0x13], 0xb0),
+        (&[0x44, 0x0f, 0xb0, 0x13], 0xb0),
+        (&[0x44, 0x0f, 0xc0, 0x13], 0xc0),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gpr[Register::Rax as usize] = 5;
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported {
+                opcode: opcode.into()
+            },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+        assert_eq!(memory.cell, 5, "{code:02x?}");
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_with_a_truncated_modrm_or_displacement_are_refused_without_mutation() {
+    for code in [
+        &[0x48u8, 0x0f, 0xc1][..],
+        &[0x0f, 0xc1][..],
+        &[0x48, 0x0f, 0xc1, 0x43][..],
+        &[0x48, 0x0f, 0xc1, 0x04][..],
+        &[0x0f, 0xc1, 0x05, 0x34, 0x12][..],
+        &[0x48, 0x0f, 0xb1][..],
+        &[0x0f, 0xb1, 0x43][..],
+        &[0x48, 0x0f, 0xb1, 0x04][..],
+    ] {
+        let mut state = board_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run_cas_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}: {result:?}");
+        assert_ne!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(memory.cell, 5);
+    }
+}
+
+#[test]
+fn plain_dword_xadd_and_cmpxchg_stay_unsupported_outside_the_set() {
+    // No control policy (legacy state): only the qword bare form exists (the S2-21 atomic-call
+    // path, pinned by `lock_and_bare_qword_memory_xadd_outside_the_set_*`); the dword form is
+    // refused by `run` and by the bare `step` entry point.
+    for (code, opcode) in [
+        (&PLAIN_XADDL_EAX_RBX_3D[..], 0xc1u8),
+        (&[0x44, 0x0f, 0xc1, 0x43, 0x3d][..], 0xc1),
+        (&PLAIN_CMPXCHGL_EDX_RDI[..], 0xb1),
+        (&[0x44, 0x0f, 0xb1, 0x17][..], 0xb1),
+    ] {
+        let mut state = legacy_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::Rdi as usize] = 0x20_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported {
+                opcode: opcode.into()
+            },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+
+        let mut state = legacy_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let outcome = od_isa::execute::step(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        );
+        assert_eq!(
+            outcome,
+            Ok(od_isa::execute::StepOutcome::Unsupported {
+                opcode: opcode.into()
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn plain_xadd_and_cmpxchg_are_not_reachable_from_cpl3() {
+    // Set admission rejects CPL > 0 before any fetch.
+    for code in [&PLAIN_XADDQ_RDX_RAX[..], &PLAIN_CMPXCHGL_EDX_RDI[..]] {
+        let mut state = board_state();
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 5);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
 }
