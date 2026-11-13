@@ -2113,6 +2113,135 @@
         "docs/plans/STAGE_2.md:15621-15655",
         "docs/reports/STAGE_2_REPORT.md:19297-19325"
       ]
+    },
+    {
+      "task": "S2-37ap SUBSD register state-gated candidate",
+      "candidate_id": "S2-37ap-SUBSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register SUBSD only: F2 0F 5C /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted by this profile; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review confirms conditional-candidate eligibility only; execution results remain dated 2026-10-30",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime MXCSR, guest execution, CPL3/native/JIT/physical acceptance, or full unmasked exception support.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15347-15385",
+        "docs/reports/STAGE_2_REPORT.md:19702-19730",
+        "docs/plans/STAGE_2.md:14500-14530"
+      ]
+    },
+    {
+      "task": "S2-37at MULSD register state-gated candidate",
+      "candidate_id": "S2-37at-MULSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register MULSD only: F2 0F 59 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15478-15529",
+        "docs/reports/STAGE_2_REPORT.md:19830-19858"
+      ]
+    },
+    {
+      "task": "S2-37au MULSS register state-gated candidate",
+      "candidate_id": "S2-37au-MULSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register MULSS only: F3 0F 59 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15530-15579",
+        "docs/reports/STAGE_2_REPORT.md:19871-19904"
+      ]
+    },
+    {
+      "task": "S2-37ax DIVSD register state-gated candidate",
+      "candidate_id": "S2-37ax-DIVSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register DIVSD only: F2 0F 5E /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15676-15710",
+        "docs/reports/STAGE_2_REPORT.md:20011-20042"
+      ]
+    },
+    {
+      "task": "S2-37ay DIVSS register state-gated candidate",
+      "candidate_id": "S2-37ay-DIVSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register DIVSS only: F3 0F 5E /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review at HEAD 4ffd54f confirms conditional-candidate eligibility only; execution results remain dated 2026-10-30",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state, guest execution, or full unmasked OE/UE or physical acceptance.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15711-15752",
+        "docs/reports/STAGE_2_REPORT.md:20042-20070"
+      ]
+    },
+    {
+      "task": "S2-37bb ADDSD register state-gated candidate",
+      "candidate_id": "S2-37bb-ADDSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register ADDSD only: F2 0F 58 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15872-15916",
+        "docs/reports/STAGE_2_REPORT.md:20166-20202"
+      ]
+    },
+    {
+      "task": "S2-37bc ADDSS register state-gated candidate",
+      "candidate_id": "S2-37bc-ADDSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register ADDSS only: F3 0F 58 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15917-15967",
+        "docs/reports/STAGE_2_REPORT.md:20202-20236"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],

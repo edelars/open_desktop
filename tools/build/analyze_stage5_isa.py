@@ -1371,10 +1371,54 @@ def cvt_register_state_gated_candidate(row: dict) -> str | None:
     return candidate
 
 
+def scalar_arithmetic_state_gated_candidate(row: dict) -> str | None:
+    """Recognize the exact legacy scalar arithmetic register candidates."""
+    specs = {
+        "subsd": (0xF2, 0x5C, "subsd xmm,xmm", "S2-37ap-SUBSD-register-state-gated"),
+        "mulsd": (0xF2, 0x59, "mulsd xmm,xmm", "S2-37at-MULSD-register-state-gated"),
+        "mulss": (0xF3, 0x59, "mulss xmm,xmm", "S2-37au-MULSS-register-state-gated"),
+        "divsd": (0xF2, 0x5E, "divsd xmm,xmm", "S2-37ax-DIVSD-register-state-gated"),
+        "divss": (0xF3, 0x5E, "divss xmm,xmm", "S2-37ay-DIVSS-register-state-gated"),
+        "addsd": (0xF2, 0x58, "addsd xmm,xmm", "S2-37bb-ADDSD-register-state-gated"),
+        "addss": (0xF3, 0x58, "addss xmm,xmm", "S2-37bc-ADDSS-register-state-gated"),
+    }
+    spec = specs.get(row["mnemonic"])
+    if spec is None or row["signature"] != spec[2]:
+        return None
+    mandatory, opcode_byte, _, candidate = spec
+    view = opcode_view(row)
+    prefixes, modrm, raw = tuple(view["prefixes"]), view["modrm"], row["byte_values"]
+    if view["opcode"] != (0x0F, opcode_byte) or modrm is None or modrm >> 6 != 3:
+        return None
+    if not prefixes or prefixes[0] != mandatory or len(prefixes) not in {1, 2}:
+        return None
+    if len(raw) != len(prefixes) + 3:
+        return None
+    operands = [part.strip().lower() for part in row["operands"].split(",")]
+    if len(operands) != 2:
+        return None
+    dest = re.fullmatch(r"xmm(\d+)", operands[0])
+    src = re.fullmatch(r"xmm(\d+)", operands[1])
+    if dest is None or src is None:
+        return None
+    dest_num, src_num = int(dest.group(1)), int(src.group(1))
+    if dest_num > 15 or src_num > 15:
+        return None
+    if ((modrm >> 3) & 7) != dest_num % 8 or (modrm & 7) != src_num % 8:
+        return None
+    rex_bits = (0x04 if dest_num >= 8 else 0) | (0x01 if src_num >= 8 else 0)
+    needs_rex = bool(rex_bits)
+    rex = prefixes[1] if len(prefixes) == 2 else None
+    if (rex is None) != (not needs_rex) or (rex is not None and rex != 0x40 | rex_bits):
+        return None
+    return candidate
+
+
 def conditional_local_candidate(row: dict) -> str | None:
     return (minsd_masked_register_local_candidate(row)
             or local_state_gated_conditional_candidate(row)
-            or cvt_register_state_gated_candidate(row))
+            or cvt_register_state_gated_candidate(row)
+            or scalar_arithmetic_state_gated_candidate(row))
 
 
 def cpl0_l7_candidates(row: dict) -> list[str]:

@@ -76,7 +76,7 @@ class ParseObjdumpTests(unittest.TestCase):
 
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
-        self.assertEqual(len(candidates), 8)
+        self.assertEqual(len(candidates), 15)
         for candidate, sse2 in (
             ("S2-37t-CVTSS2SD-register-state-gated", True),
             ("S2-37ad-CVTTSS2SI-register-state-gated", False),
@@ -174,7 +174,7 @@ class ParseObjdumpTests(unittest.TestCase):
         registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
         candidates = registry["conditional_local_state_gated_candidates"]
         by_id = {item["candidate_id"]: item for item in candidates}
-        self.assertEqual(len(by_id), 8)
+        self.assertEqual(len(by_id), 15)
         for candidate in ("S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
                           "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated"):
             gate = by_id[candidate]["gate"]
@@ -192,6 +192,67 @@ class ParseObjdumpTests(unittest.TestCase):
         self.assertFalse(by_id["S2-37r-CVTSI2SS-register-state-gated"]["sse2_isa_required"])
         self.assertTrue(by_id["S2-37w-COMISD-UCOMISD-register-state-gated"]["sse2_isa_required"])
         self.assertFalse(registry["registry_complete"])
+
+    def test_scalar_arithmetic_conditional_profiles_match_exact_register_bytes(self) -> None:
+        cases = (
+            ("subsd", 0xF2, 0x5C, "S2-37ap-SUBSD-register-state-gated"),
+            ("mulsd", 0xF2, 0x59, "S2-37at-MULSD-register-state-gated"),
+            ("mulss", 0xF3, 0x59, "S2-37au-MULSS-register-state-gated"),
+            ("divsd", 0xF2, 0x5E, "S2-37ax-DIVSD-register-state-gated"),
+            ("divss", 0xF3, 0x5E, "S2-37ay-DIVSS-register-state-gated"),
+            ("addsd", 0xF2, 0x58, "S2-37bb-ADDSD-register-state-gated"),
+            ("addss", 0xF3, 0x58, "S2-37bc-ADDSS-register-state-gated"),
+        )
+        for mnemonic, prefix, opcode, candidate in cases:
+            for dest in range(16):
+                for src in range(16):
+                    rex_bits = (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                    data = [prefix] + ([0x40 | rex_bits] if rex_bits else []) + [0x0F, opcode,
+                            0xC0 | ((dest & 7) << 3) | (src & 7)]
+                    encoded = " ".join(f"{byte:02x}" for byte in data)
+                    row = analyzer.parse_row(f"  401000: {encoded} {mnemonic} xmm{dest},xmm{src}")
+                    self.assertIsNotNone(row)
+                    self.assertEqual(analyzer.scalar_arithmetic_state_gated_candidate(row), candidate, encoded)
+
+        rejected = (
+            ("subsd", "f3 0f 5c c1", "xmm0,xmm1"),
+            ("mulsd", "f2 0f 59 01", "xmm0,xmm1"),
+            ("mulss", "f3 40 0f 59 c1", "xmm0,xmm1"),
+            ("divsd", "f2 48 0f 5e c1", "xmm0,xmm1"),
+            ("divss", "f3 42 0f 5e c1", "xmm0,xmm1"),
+            ("addsd", "f2 f2 0f 58 c1", "xmm0,xmm1"),
+            ("addss", "44 f3 0f 58 c1", "xmm0,xmm1"),
+            ("addss", "f3 0f 58 c1 90", "xmm0,xmm1"),
+            ("subsd", "c5 f9 5c c1", "xmm0,xmm1"),
+            ("mulsd", "f2 0f 59 08", "xmm0,xmm1"),
+            ("divss", "f3 0f 5e c1", "xmm0,DWORD PTR [rax]"),
+            ("addsd", "f2 44 0f 58 c1", "xmm0,xmm9"),
+            ("addss", "f3 41 0f 58 c1", "xmm0,xmm1"),
+            ("subsd", "f2 0f 5c c1", "xmm16,xmm1"),
+        )
+        for mnemonic, byte_values, operands in rejected:
+            row = analyzer.parse_row(f"  401000: {byte_values} {mnemonic} {operands}")
+            self.assertIsNotNone(row, byte_values)
+            self.assertIsNone(analyzer.scalar_arithmetic_state_gated_candidate(row), byte_values)
+
+        registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
+        candidates = {item["candidate_id"]: item for item in registry["conditional_local_state_gated_candidates"]}
+        self.assertEqual(len(candidates), 15)
+        self.assertEqual(set(c for _, _, _, c in cases), set(candidates) - {
+            "S2-37i-MINSD-XMM-register-masked-state-gated",
+            "S2-37q-CVTSI2SD-register-state-gated", "S2-37r-CVTSI2SS-register-state-gated",
+            "S2-37v-COMISS-UCOMISS-register-state-gated", "S2-37w-COMISD-UCOMISD-register-state-gated",
+            "S2-37t-CVTSS2SD-register-state-gated", "S2-37ad-CVTTSS2SI-register-state-gated",
+            "S2-37ae-CVTTSD2SI-register-state-gated",
+        })
+        for _, _, _, candidate in cases:
+            item = candidates[candidate]
+            self.assertEqual(item["status"], "conditional_candidate_only_unclassified")
+            self.assertTrue(item["sse_payload_required"])
+            self.assertIn("~0x0000ffbf", item["gate"])
+            self.assertIn("(mxcsr & 0x00000c00)==0x00000c00", item["gate"])
+            self.assertIn("unclassified", item["outcome"])
+            self.assertNotIn(candidate, {profile["task"] for profile in registry["profiles"]})
 
     def test_minsd_masked_register_local_candidate_is_exact_and_state_gated(self) -> None:
         for dest in range(16):
