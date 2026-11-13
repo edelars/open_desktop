@@ -10,7 +10,7 @@
 
 | Задача | Статус | Внешние блокеры |
 |---|---|---|
-| S6-00 | `accepted` | независимое ревью пройдено; коммит этого среза |
+| S6-00 | `accepted` | независимое ревью пройдено; коммит [`38f4c81`](https://github.com/edelars/open_desktop/commit/38f4c81) |
 | S6-01 | `not_started` | — |
 | S6-02 | `not_started` | — |
 | S6-03 | `not_started` | — |
