@@ -12008,4 +12008,144 @@ mod tests {
             assert!(next > boot.board.clock().now_ns());
         }
     }
+
+    // ---- S4-38L9s: ECAM (PCI MMCONFIG) data accesses of the set loop ----
+
+    /// GPA of the ECAM byte for bus 0, `device`, `function`, `register`.
+    fn ecam_gpa(device: u64, function: u64, register: u64) -> u64 {
+        crate::PCI_ECAM_DESCRIPTOR.base + (device << 15) + (function << 12) + register
+    }
+
+    /// Maps GVA `SPLIT_VA + 0x1000 * (i + 1)` to the 4 KiB frame of `frames[i]` (accessed and
+    /// dirty set, so a store to the frame writes no table entry), runs `code` (at
+    /// `SPLIT_VA + 0x200`) and returns the outcome of the run without the fetch cache.
+    fn run_ecam_program(frames: &[u64], code: &[u8]) -> CacheOutcome {
+        let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+        let build = |boot: &mut LinuxDirectBoot| {
+            let mut entries = vec![(0, SPLIT_PAGE0 | 3)];
+            for (i, frame) in frames.iter().enumerate() {
+                entries.push((i as u64 + 1, (frame & !0xfff) | A_D_PRESENT_WRITABLE));
+            }
+            write_tree(boot, TREE_PML4, &entries, None);
+            write_phys(boot, SPLIT_PAGE0 + 0x200, code);
+            tree_state(boot, TREE_PML4, SPLIT_VA + 0x200)
+        };
+        run_cache_case(&build, &switch_set(&cli, &halt), 32, false)
+    }
+
+    /// `MOV RBX, imm32; <body>; HLT`, RBX = the GVA of frame `index` plus `offset`.
+    fn ecam_program(index: u64, offset: u32, body: &[u8]) -> Vec<u8> {
+        let mut code = mov_imm32(3, (SPLIT_VA + 0x1000 * (index + 1)) as u32 + offset);
+        code.extend_from_slice(body);
+        code.push(0xF4);
+        code
+    }
+
+    #[test]
+    fn the_mcfg_base_of_the_stage4_blob_is_the_boards_ecam_region() {
+        // The kernel takes the ECAM base from the MCFG of the blob; it is the one the board
+        // registers as an MMIO region.
+        let blob = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin"
+        ))
+        .expect("the stage 4 blob fixture");
+        // The table header: "MCFG", then its length (44-byte header + one 16-byte allocation).
+        let at = blob
+            .windows(8)
+            .position(|w| &w[..4] == b"MCFG" && w[4..8] == 60u32.to_le_bytes())
+            .expect("an MCFG table");
+        let table = &blob[at..at + 60];
+        let base = u64::from_le_bytes(table[44..52].try_into().unwrap());
+        let (segment, start_bus, end_bus) = (
+            u16::from_le_bytes(table[52..54].try_into().unwrap()),
+            table[54],
+            table[55],
+        );
+        assert_eq!(
+            (base, segment, start_bus, end_bus),
+            (0xFC10_0000, 0, 0, 0),
+            "MCFG allocation"
+        );
+        let ecam = crate::PCI_ECAM_DESCRIPTOR;
+        assert_eq!(base, ecam.base);
+        assert_eq!(ecam.size, 0x10_0000);
+        assert_eq!(
+            (segment, start_bus, end_bus),
+            (ecam.segment, ecam.start_bus, ecam.end_bus)
+        );
+    }
+
+    #[test]
+    fn an_ecam_dword_read_of_an_absent_function_is_all_ones() {
+        // The access of `pci_mmcfg_read`: `MOV EAX, [RBX]` at bus 0, device 0, function 0,
+        // register 0 (the boundary of S4-38L9r) and at other devices and functions.
+        for (device, function, register) in [(0, 0, 0), (3, 2, 0x10), (31, 7, 0xFFC)] {
+            let gpa = ecam_gpa(device, function, register);
+            let code = ecam_program(0, (gpa & 0xfff) as u32, &[0x8B, 0x03]);
+            let out = run_ecam_program(&[gpa], &code);
+            assert_eq!(
+                out.report.exit,
+                PagedCpl0SetExit::Run(RunExit::Halted),
+                "{:?}",
+                out.report
+            );
+            assert_eq!(out.report.memory_error, None);
+            assert_eq!(out.report.instructions_executed, 3);
+            assert_eq!(out.state.gpr[Register::Rax as usize], 0xFFFF_FFFF);
+            // Only the code page's accessed bit is written; the read writes nothing.
+            assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+        }
+    }
+
+    #[test]
+    fn an_ecam_byte_and_word_read_of_an_absent_function_is_all_ones() {
+        let gpa = ecam_gpa(0, 0, 2);
+        let off = (gpa & 0xfff) as u32;
+        let word = run_ecam_program(&[gpa], &ecam_program(0, off, &[0x66, 0x8B, 0x03]));
+        assert_eq!(word.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(word.state.gpr[Register::Rax as usize] & 0xFFFF, 0xFFFF);
+        let byte = run_ecam_program(&[gpa], &ecam_program(0, off, &[0x8A, 0x03]));
+        assert_eq!(byte.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+        assert_eq!(byte.state.gpr[Register::Rax as usize] & 0xFF, 0xFF);
+    }
+
+    #[test]
+    fn an_ecam_dword_write_to_an_absent_function_is_dropped() {
+        // MOV EAX, 0x12345678 (B8 imm32); MOV [RBX], EAX; MOV ECX, [RBX].
+        let gpa = ecam_gpa(0, 0, 0x10);
+        let mut body = vec![0xB8, 0x78, 0x56, 0x34, 0x12, 0x89, 0x03];
+        body.extend([0x8B, 0x0B]);
+        let out = run_ecam_program(&[gpa], &ecam_program(0, (gpa & 0xfff) as u32, &body));
+        assert_eq!(
+            out.report.exit,
+            PagedCpl0SetExit::Run(RunExit::Halted),
+            "{:?}",
+            out.report
+        );
+        assert_eq!(out.report.memory_error, None);
+        assert_eq!(out.state.gpr[Register::Rax as usize], 0x1234_5678);
+        assert_eq!(out.state.gpr[Register::Rcx as usize], 0xFFFF_FFFF);
+        // The store reached no RAM and no table entry (the leaf has accessed and dirty set).
+        assert_eq!(out.writes.len(), 1, "{:?}", out.writes);
+    }
+
+    #[test]
+    fn a_read_just_past_the_ecam_region_keeps_the_old_error() {
+        // GPA ECAM_BASE + 1 MiB is not in the board's region: the walker keeps the typed
+        // physical-address error it gave before the ECAM was served by the set loop.
+        let gpa = crate::PCI_ECAM_DESCRIPTOR.base + crate::PCI_ECAM_DESCRIPTOR.size;
+        let code = ecam_program(0, 0, &[0x8B, 0x03]);
+        let out = run_ecam_program(&[gpa], &code);
+        assert!(
+            matches!(
+                out.report.memory_error,
+                Some(crate::TrackedAccessError::OperandPhysical { address, .. })
+                    if address.get() == gpa
+            ),
+            "{:?}",
+            out.report
+        );
+        assert_ne!(out.report.exit, PagedCpl0SetExit::Run(RunExit::Halted));
+    }
 }

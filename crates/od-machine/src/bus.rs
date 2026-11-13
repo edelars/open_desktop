@@ -8,6 +8,7 @@ use od_isa::{
     PortIo,
     memory::{AccessContext, AccessKind, AccessOrigin},
 };
+use std::cell::RefCell;
 use std::fmt;
 
 // Must match the bounded 36-bit physical-address format accepted by
@@ -235,6 +236,9 @@ pub struct MachineBus {
     memory: PhysicalMemory,
     devices: Vec<Box<dyn BusDevice>>,
     mmio: Vec<MmioBinding>,
+    /// Byte length of the region of each `mmio` binding (same order), for the set-step MMIO
+    /// dispatch, which must not look at `memory` while the page walk holds it (S4-38L9s).
+    mmio_lens: Vec<u64>,
     ports: Vec<PortRegionBinding>,
 }
 
@@ -472,7 +476,188 @@ pub(crate) struct MachineBusPortIo<'a> {
     ports: &'a [PortRegionBinding],
 }
 
+/// The device and port halves of one set-loop instruction (S4-38L9s). The CPU core takes the
+/// memory (which routes MMIO data accesses) and the port view in the same call, and both reach the
+/// same device table (the PCI device is bound to ECAM MMIO and to the conf1 ports), so the table
+/// sits in a `RefCell`. One instruction makes its accesses one after another, so the cell is never
+/// borrowed twice; if it ever is, that is a typed `Busy` error and not a panic.
+pub(crate) struct MachineBusSetStepIo<'a> {
+    devices: RefCell<&'a mut [Box<dyn BusDevice>]>,
+    ports: &'a [PortRegionBinding],
+    mmio: &'a [MmioBinding],
+    mmio_lens: &'a [u64],
+}
+
+/// The port view of [`MachineBusSetStepIo`].
+pub(crate) struct SetStepPortIo<'a, 'b>(&'b MachineBusSetStepIo<'a>);
+
+/// MMIO dispatch of one tracked data access, for the page walker of the set loop.
+pub(crate) trait SetStepMmio {
+    fn dispatch(
+        &self,
+        address: GuestPhysicalAddress,
+        width: u8,
+        operation: RamAccessOperation,
+    ) -> Result<u64, crate::page_walk::MmioDispatchError>;
+}
+
+impl<'a> MachineBusSetStepIo<'a> {
+    pub(crate) fn port_io(&self) -> SetStepPortIo<'a, '_> {
+        SetStepPortIo(self)
+    }
+}
+
+impl SetStepMmio for MachineBusSetStepIo<'_> {
+    fn dispatch(
+        &self,
+        address: GuestPhysicalAddress,
+        width: u8,
+        operation: RamAccessOperation,
+    ) -> Result<u64, crate::page_walk::MmioDispatchError> {
+        use crate::page_walk::MmioDispatchError::Backend;
+        let width = match width {
+            8 => AccessWidth::Qword,
+            4 => AccessWidth::Dword,
+            2 => AccessWidth::Word,
+            1 => AccessWidth::Byte,
+            _ => return Err(Backend(format!("unsupported MMIO width {width}"))),
+        };
+        let len = u64::from(width.bytes());
+        let (binding, _) = self
+            .mmio
+            .iter()
+            .zip(self.mmio_lens)
+            .find(|(binding, region_len)| {
+                binding.region_start <= address
+                    && u128::from(address.get()) + u128::from(len)
+                        <= u128::from(binding.region_start.get()) + u128::from(**region_len)
+            })
+            .ok_or_else(|| {
+                Backend("MMIO range is not wholly inside one device region".to_owned())
+            })?;
+        let access = DeviceAccess {
+            space: IoSpace::Mmio,
+            offset: address.get() - binding.region_start.get(),
+            width,
+        };
+        let mut devices = self
+            .devices
+            .try_borrow_mut()
+            .map_err(|_| Backend("the device table is already borrowed".to_owned()))?;
+        let device = &mut devices[binding.device_index];
+        match operation {
+            RamAccessOperation::Read { .. } => device
+                .read(access)
+                .map(|value| value & width.mask())
+                .map_err(|error| {
+                    Backend(format!(
+                        "MMIO device {} read failed: {error:?}",
+                        binding.device_index
+                    ))
+                }),
+            RamAccessOperation::Write { value, .. } => device
+                .write(access, value & width.mask())
+                .map(|()| 0)
+                .map_err(|error| {
+                    Backend(format!(
+                        "MMIO device {} write failed: {error:?}",
+                        binding.device_index
+                    ))
+                }),
+            RamAccessOperation::Fetch => Err(Backend(
+                "instruction fetch from MMIO is unsupported".to_owned(),
+            )),
+            RamAccessOperation::ReadPseudoDescriptor => {
+                Err(Backend("pseudo-descriptor reads are RAM-only".to_owned()))
+            }
+        }
+    }
+}
+
+impl<'a, 'b> SetStepPortIo<'a, 'b> {
+    fn devices(
+        &self,
+    ) -> Result<std::cell::RefMut<'b, &'a mut [Box<dyn BusDevice>]>, BusAccessError> {
+        self.0
+            .devices
+            .try_borrow_mut()
+            .map_err(|_| BusAccessError::Device {
+                device_index: usize::MAX,
+                source: DeviceError::Busy,
+            })
+    }
+}
+
+impl PortIo for SetStepPortIo<'_, '_> {
+    type Error = BusAccessError;
+
+    fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
+        let mut devices = self.devices()?;
+        read_port_from(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Byte,
+        )
+        .map(|value| value as u8)
+    }
+
+    fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
+        let mut devices = self.devices()?;
+        write_port_to(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Byte,
+            u32::from(value),
+        )
+    }
+
+    fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
+        let mut devices = self.devices()?;
+        read_port_from(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Word,
+        )
+        .map(|value| value as u16)
+    }
+
+    fn write_u16(&mut self, port: u16, value: u16) -> Result<(), Self::Error> {
+        let mut devices = self.devices()?;
+        write_port_to(
+            &mut devices,
+            self.0.ports,
+            PortAddress::new(port),
+            AccessWidth::Word,
+            u32::from(value),
+        )
+    }
+}
+
 impl MachineBus {
+    /// Memory, ports and MMIO of one set-loop instruction (S4-38L9s); the cell inside the
+    /// returned value lets the port view and the MMIO dispatch share the device table.
+    pub(crate) fn split_for_set_step(&mut self) -> (&mut PhysicalMemory, MachineBusSetStepIo<'_>) {
+        let Self {
+            memory,
+            devices,
+            mmio,
+            mmio_lens,
+            ports,
+        } = self;
+        (
+            memory,
+            MachineBusSetStepIo {
+                devices: RefCell::new(devices.as_mut_slice()),
+                ports,
+                mmio,
+                mmio_lens,
+            },
+        )
+    }
+
     pub(crate) fn split_for_pio_step(&mut self) -> (&mut PhysicalMemory, MachineBusPortIo<'_>) {
         let Self {
             memory,
@@ -791,11 +976,24 @@ impl MachineBus {
                 ));
             }
         }
+        let mmio_lens = mmio
+            .iter()
+            .map(|binding| {
+                map.regions()
+                    .iter()
+                    .find(|region| {
+                        region.kind == MemoryRegionKind::Mmio
+                            && region.range.start() == binding.region_start
+                    })
+                    .map_or(0, |region| region.range.len())
+            })
+            .collect();
         let memory = PhysicalMemory::new(&map, ram_limits).map_err(BusBuildError::Memory)?;
         Ok(Self {
             memory,
             devices,
             mmio,
+            mmio_lens,
             ports,
         })
     }

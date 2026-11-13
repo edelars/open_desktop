@@ -1080,6 +1080,28 @@ pub(crate) fn access_long64_4k_with_mmio(
     )
 }
 
+/// S4-38L9s: [`access_long64_2m_ram`] whose MMIO operands go to `mmio` instead of failing
+/// (the set loop's data path). The walk, accessed/dirty bits and every check are those of the
+/// 2 MiB RAM walk; only an operand landing in an MMIO region is dispatched, with the dirty bit set
+/// first like [`access_long64_4k_with_mmio`].
+pub(crate) fn access_long64_2m_with_mmio(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
+) -> TrackedAccessReport {
+    access_long64_4k_internal(
+        memory,
+        paging,
+        request,
+        committed_write,
+        true,
+        Some(&mut mmio),
+        true,
+    )
+}
+
 fn access_long64_4k_internal(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
