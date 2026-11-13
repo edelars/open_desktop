@@ -117,6 +117,12 @@ The check fails if either feature leaks into the normal profile, if the normal h
 
 ## 5. Exhaustive schedules, seeds, and run budgets
 
+### Gate ownership
+
+The numeric ceilings and run budgets below are candidate planning values, not calibration results and not acceptance gates for this methodology document (S6-01). S6-01 is complete when the evidence levels, fixture format, outcome derivations, concrete initial numeric candidates with their arithmetic derivations and runtime estimates, schedule/seed rules, and task-owned calibration points are documented and reviewed. Each owning task must measure and record its own numeric gate before that task is accepted.
+
+In particular, S6-05 may start after S6-01 and S6-04 are accepted. It must measure the enumerator at the candidate 1,000,000-schedule ceiling and lock the exhaustive threshold and seed range before accepting its corpus. That measurement is an S6-05 gate; it does not retroactively block S6-01. S6-19 consumes the accepted threshold and seed range for exhaustive interleaving runs. The parallel-mode run budget belongs to S6-36. The same ownership rule applies to the native/physical, STOP, save/restore, and Linux soak gates listed below.
+
 ### Interleaving scheduler
 
 If there are `n_i` shared-memory instructions in thread `i`, the number of order-preserving schedules is
@@ -146,7 +152,7 @@ The following test budgets are deliberately not invented before their harnesses 
 |---|---|---|
 | S6-05 | Enumerator cost at the candidate 1,000,000-schedule ceiling; accepted exhaustive threshold and seed range | S6-05 measures state/time cost and records the accepted threshold and seed range before corpus acceptance. |
 | S6-08/S6-09 | Native and physical x86 rounds/test, process repetitions, actual throughput, total runtime, and the SB extended-run outcome | Each task records actual rates and accepted iteration counts; the x86 gate cannot pass before the SB interesting outcome is observed. |
-| S6-19/S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
+| S6-36 | Parallel-mode rounds/test/configuration and runtime (candidate values above) | S6-36 records rates on both applicable vCPU configurations and locks the numeric gate before parallel corpus acceptance. |
 | S6-34 | Repeated STOP/kick/HLT races, participant timeout, and bounded completion time | S6-34 records repetitions, timeout, and race-window coverage from its test harness. |
 | S6-35 | Save/restore cycles, pending-event variants, and failure-injection repetitions | S6-35 records an exact matrix and expected runtime before parallel save/load acceptance. |
 | S6-37 | Linux boot repetitions, workload duration, and soak duration | S6-37 records counts/duration from a measured run budget; a short run cannot stand in for soak. |
