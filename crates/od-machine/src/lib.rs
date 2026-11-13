@@ -13,6 +13,7 @@ mod firmware_board;
 mod identity_memory_adapter;
 mod interrupt_pump;
 mod io_apic;
+mod irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_direct;
@@ -34,6 +35,7 @@ mod physical_memory;
 mod pic_8259;
 mod pio_step;
 mod pit_8254;
+mod pit_ioapic_irq_source;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
@@ -86,10 +88,11 @@ pub use bus::{
     TrackedCodeSnapshotError,
 };
 pub use pic_8259::{
-    ISA_IRQ_VECTOR_BASE, PIC_ICW1_ACCEPTED, PIC_ICW4_ACCEPTED, PIC_ICW4_MASTER_AEOI,
+    ISA_IRQ_VECTOR_BASE, PIC_ELCR_BASE_PORT, PIC_ELCR_MASTER_MASK, PIC_ELCR_PORT_BYTES,
+    PIC_ELCR_SLAVE_MASK, PIC_ICW1_ACCEPTED, PIC_ICW4_ACCEPTED, PIC_ICW4_MASTER_AEOI,
     PIC_MASTER_BASE_PORT, PIC_MASTER_ICW3, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIC_SLAVE_ICW3,
-    Pic8259, Pic8259Handle, Pic8259InitPhase, Pic8259Pair, Pic8259Role, Pic8259Snapshot,
-    isa_irq_vector,
+    Pic8259, Pic8259Elcr, Pic8259ElcrHandle, Pic8259Handle, Pic8259InitPhase, Pic8259Pair,
+    Pic8259Role, Pic8259Snapshot, isa_irq_vector,
 };
 
 pub use pit_8254::{

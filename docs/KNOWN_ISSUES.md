@@ -2171,3 +2171,22 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** под Linux x86_64 крейт `od-x86-runner` не собирается с `E0063` (missing fields `cr2`, `fs_unusable`, `gs_unusable` и др. в инициализаторе `LongModeState`): поля добавлены позже, чем последний раз менялся этот модуль (2026-11-05). Поэтому `native_v2::admission` не запускается ни на одной платформе; на macOS `od-x86-runner` проходит только за счёт `cfg(target_os = "linux")`. Срезы S4-38L7ai…ap проверяли admission только по чтению кода.
 - **Основание:** `cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --tests` (агент S4-38L7ai, ревью Opus S4-38L7ai).
 - **Следующий шаг:** в отдельном срезе обновить тестовый конструктор `state` под текущие поля `LongModeState` и прогнать `native_v2` admission на Linux x86_64. До этого не считать admission проверенным для новых операций.
+
+<a id="issue-077-kernel-gs-base-two-stores"></a>
+### ISSUE-077 — значение IA32_KERNEL_GS_BASE хранится в двух местах
+
+- **Дата обнаружения:** 2026-11-12.
+- **Компонент:** `od-isa` (`state.kernel_gs_base`, профиль `KernelGsBaseV1`, SWAPGS-профиль) и набор CPL0 / плата (`GuestMsrCells::kernel_gs_base`, `guest_kernel_gs_base`), срез S4-38L7au.
+- **Статус:** открыта; архитектурный долг, не влияет на текущий прогон (SWAPGS в наборе не реализован).
+- **Суть и последствия:** член набора `msr_kernel_gs_base` пишет в собственную ячейку, а профиль `KernelGsBaseV1` (RDMSR/WRMSR/SWAPGS) — в `state.kernel_gs_base`. При выбранном профиле член не действует (профиль побеждает), поэтому два хранилища не расходятся сегодня. Но SWAPGS в наборе CPL0, реализованный без объединения, сделает значение двоящимся: SWAPGS будет читать и менять `state.kernel_gs_base`, а гостевой WRMSR — ячейку.
+- **Основание:** ревью Opus S4-38L7au; постановка срезов S4-38L7aq…au (ячейки по образцу STAR/LSTAR).
+- **Следующий шаг:** при реализации SWAPGS в наборе CPL0 связать ячейку члена с `state.kernel_gs_base` (или сделать ячейку единственным хранилищем набора), покрыть тестом цепочку WRMSR → SWAPGS → RDMSR на одной плате.
+
+### ISSUE-078 — PIT отказывает в команде read-back (`0xC2` на порт `0x43`), прогон Linux останавливается
+
+- **Дата обнаружения:** 2026-11-12.
+- **Компонент:** `crates/od-machine/src/pit_8254.rs` (`write_control`, `UnsupportedConfiguration`); порт `0x43` в плате Linux (`device_index` 6, `firmware_board.rs`).
+- **Статус:** открыта; блокирует продвижение Linux-загрузки после S4-38L7bk. Не ошибка CPU: инструкция `out %al, $0x43` исполняется.
+- **Суть и последствия:** ядро 7.0.0-38 по RIP `0xffffffff8271ea4c` пишет в порт `0x43` управляющее слово `0xC2` (биты 7:6 = `11`, команда read-back), затем читает `0x40`. Модель PIT отказывает в read-back до любых изменений состояния, поэтому прогон останавливается на `PortIo(Device { … UnsupportedConfiguration })`. Семантику (какие байты состояния и счётчика возвращаются, защёлка, порядок чтений) по таблицам по памяти определить нельзя; без решения её не реализовать.
+- **Основание:** диагностический прогон S4-38L7bk (`docs/reports/data/stage4/s4-38l7bk-diagnostic-run.json`, `diagnostic_not_counted`); ревью Opus S4-38L7bk.
+- **Следующий шаг:** решение владельца этапа по семантике read-back; затем отдельный срез устройства в `pit_8254.rs` с тестами и без правок CPU-набора.

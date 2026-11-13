@@ -1,6 +1,7 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::fetch_translation_cache::{FetchCacheStats, FetchTranslationCache};
+use crate::irq_source::IrqBoundaryHook;
 use crate::page_walk::translate_long64_2m_ram_read_only_with_tables;
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
@@ -24,8 +25,9 @@ use od_isa::memory::{
     AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
 };
 use od_isa::{
+    Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
     Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_page_fault_cpl0_set,
+    deliver_external_interrupt_cpl0_set, deliver_page_fault_cpl0_set,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -462,6 +464,30 @@ pub(crate) enum PagedCpl0SetExit {
         fault: ArchitecturalFault,
         failure: PagedCpl0ExceptionFailure,
     },
+    /// An external interrupt of the board source (S4-38L8b) could not be delivered, although the
+    /// loop had checked IF and the STI shadow first: a refusal other than
+    /// `InterruptsMasked`/`StiShadowActive` (a broken gate, a missing IDT, and also
+    /// `ActivityOutsideProfile`: the CPU activity is checked by
+    /// `deliver_external_interrupt_cpl0_set`, not by the loop, so with IF = 1, a `Clear` shadow
+    /// and an activity other than `Running` the refusal ends here) or a failed memory access of
+    /// the delivery. The run stops with an error (`run_failed` on the board), never as a quiet
+    /// skip; nothing was acknowledged. RIP is on the instruction that was about to run.
+    IrqDeliveryFailed {
+        vector: u8,
+        failure: IrqDeliveryFailure,
+    },
+}
+
+/// Why an external interrupt of the board was not delivered (S4-38L8b).
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum IrqDeliveryFailure {
+    /// The delivery was refused before any write (see `Cpl0ExternalInterruptRefusal`).
+    Refused(Cpl0ExternalInterruptRefusal),
+    /// A memory access of the delivery failed; the CPU state is unchanged.
+    Aborted {
+        phase: Cpl0ExternalInterruptPhase,
+        cause: MemoryError,
+    },
 }
 
 /// Why a `#PF` of the guest was not delivered (S4-38L5c).
@@ -658,6 +684,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
         committed_write,
         false,
         false,
+        None,
     )
 }
 
@@ -667,6 +694,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram(
 /// ([`is_cpuid_divergence_leaf`]) ends the run as `CpuidDivergence` without executing it. This
 /// is an honest stop, not an answer: nothing is substituted for the leaf and the state is left
 /// exactly as before the instruction. Other leaves go to the set as usual.
+///
+/// With `irq` (S4-38L8b) each instruction boundary first asks the board source for a pending
+/// external vector, after the stop and budget checks and before the CPUID check; see
+/// [`deliver_pending_irq`]. Without it, or with a source that never has a vector, the loop is
+/// what it was.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     state: &mut LongModeState,
@@ -682,6 +714,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     mut committed_write: impl FnMut(GuestPhysicalRange),
     cpuid_boundary: bool,
     fetch_cache: bool,
+    mut irq: Option<IrqBoundaryHook<'_>>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -722,8 +755,20 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
     let mut delivered_exceptions = 0u64;
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
     let mut deliveries_without_retirement = 0u64;
+    // S4-38L8b: a retired guest write to a PIT port ends the quantum (only when the source
+    // depends on the PIT), so that the board asks the source for its deadline again.
+    let pit_write_ends_quantum = irq
+        .as_ref()
+        .is_some_and(|hook| hook.source.pit_write_ends_quantum());
+    let mut pit_write_pending = false;
     let (exit, page_fault, memory_error) = loop {
         if stop() {
+            break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
+        }
+        if pit_write_pending {
+            if let Some(hook) = irq.as_mut() {
+                hook.counters.pit_write_quantum_ends += 1;
+            }
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
         }
         if instructions_executed >= instruction_budget {
@@ -732,6 +777,19 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 None,
                 None,
             );
+        }
+        if let Some(hook) = irq.as_mut()
+            && let Some(failed) = deliver_pending_irq(
+                hook,
+                state,
+                bus,
+                &paging,
+                context,
+                &mut watch,
+                cache.as_ref(),
+            )
+        {
+            break failed;
         }
         if cpuid_boundary
             && let Some(leaf) = cpuid_leaf_at_rip(state, bus, &paging, context, cache.as_ref())
@@ -747,34 +805,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         let resume_flag_before = state.rflags & RFLAGS_RF != 0;
         let clear_resume_flag =
             resume_flag_before && !iretq_at_rip(state, bus, &paging, context, cache.as_ref());
-        let (ram, mut port) = bus.split_for_pio_step();
-        let mut memory = PagedMovMemoryAdapter {
-            bus: AdapterBus::Ram(ram),
-            paging,
-            instruction_rip,
-            committed_write: &mut watch,
-            page_fault: None,
-            memory_error: None,
-            access_error: None,
-            committed_ad_updates: None,
-            committed_writes: None,
-            capture_effects: false,
-            dword_read_profile: false,
-            word_read_profile: false,
-            ram_only: true,
-            reject_crossing_qword: false,
-            read_only_qword: false,
-            large_ram_profile: true,
-            dword_write_profile: false,
-            cpl0_set_dword_read: true,
-            cpl0_set_byte_read: true,
-            cpl0_set_word_read: true,
-            cpl0_set_narrow_write: true,
-            cpl0_set_cross_page_fetch: true,
-            cpl0_set_cross_page_store: true,
-            cpl0_set_cross_page_read: true,
-            fetch_cache: cache.as_ref(),
+        let (ram, port) = bus.split_for_pio_step();
+        let mut port = PitWriteWatch {
+            inner: port,
+            pit_written: false,
         };
+        let mut memory = set_loop_adapter(ram, paging, instruction_rip, &mut watch, cache.as_ref());
         let result = run_with_cpl0_profile_set_and_pio(
             state,
             &mut memory,
@@ -791,6 +827,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             &mut port,
             || false,
         );
+        if pit_write_ends_quantum && port.pit_written {
+            pit_write_pending = true;
+        }
         if let Ok(done) = &result {
             if done.instructions_executed > 0 {
                 deliveries_without_retirement = 0;
@@ -882,6 +921,135 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         delivered_exceptions,
         fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
     }
+}
+
+/// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
+/// whole CPL0 set read and write widths, the optional fetch cache.
+fn set_loop_adapter<'a>(
+    ram: &'a mut crate::PhysicalMemory,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    fetch_cache: Option<&'a FetchTranslationCache>,
+) -> PagedMovMemoryAdapter<'a> {
+    PagedMovMemoryAdapter {
+        bus: AdapterBus::Ram(ram),
+        paging,
+        instruction_rip,
+        committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+        large_ram_profile: true,
+        dword_write_profile: false,
+        cpl0_set_dword_read: true,
+        cpl0_set_byte_read: true,
+        cpl0_set_word_read: true,
+        cpl0_set_narrow_write: true,
+        cpl0_set_cross_page_fetch: true,
+        cpl0_set_cross_page_store: true,
+        cpl0_set_cross_page_read: true,
+        fetch_cache,
+    }
+}
+
+/// The port view of one set call that notes a retired write to the PIT ports `0x40..=0x43`
+/// (S4-38L8b). Reads and every other port pass through untouched.
+struct PitWriteWatch<P> {
+    inner: P,
+    pit_written: bool,
+}
+
+impl<P: od_isa::PortIo> od_isa::PortIo for PitWriteWatch<P> {
+    type Error = P::Error;
+
+    fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
+        self.inner.read_u8(port)
+    }
+
+    fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
+        let result = self.inner.write_u8(port, value);
+        if result.is_ok() && (0x40..=0x43).contains(&port) {
+            self.pit_written = true;
+        }
+        result
+    }
+}
+
+/// RFLAGS.IF, bit 9.
+const RFLAGS_IF: u64 = 1 << 9;
+
+/// The interrupt check of one instruction boundary (S4-38L8b), after the stop and budget checks
+/// and before the CPUID check; `Some(exit)` ends the run.
+///
+/// Order: 1) the first boundary of a call that resumes a partial REP is skipped (the REP is in
+/// the middle; the flag is cleared); 2) `pending_vector` is asked once (no vector: nothing else
+/// runs); 3) RFLAGS.IF = 0 counts `irq_refused_masked`, an STI shadow that is not `Clear` counts
+/// `irq_refused_shadow` (the vector stays pending, nothing is acknowledged, and the IDT is not
+/// read); 4) otherwise `deliver_external_interrupt_cpl0_set`: `Delivered` acknowledges the
+/// vector and counts `irqs_delivered`; a refusal of IF or shadow (not expected after 3) counts
+/// like 3; any other refusal, and `Aborted`, end the run as `IrqDeliveryFailed`, never silently.
+fn deliver_pending_irq(
+    hook: &mut IrqBoundaryHook<'_>,
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    watch: &mut dyn FnMut(GuestPhysicalRange),
+    cache: Option<&FetchTranslationCache>,
+) -> Option<(
+    PagedCpl0SetExit,
+    Option<PageFaultRecord>,
+    Option<TrackedAccessError>,
+)> {
+    if hook.skip_first_boundary {
+        hook.skip_first_boundary = false;
+        return None;
+    }
+    let vector = hook.source.pending_vector()?;
+    if state.rflags & RFLAGS_IF == 0 {
+        hook.counters.irq_refused_masked += 1;
+        return None;
+    }
+    if state.sti_shadow != Some(od_isa::StiShadow::Clear) {
+        hook.counters.irq_refused_shadow += 1;
+        return None;
+    }
+    let (ram, _port) = bus.split_for_pio_step();
+    let mut memory = set_loop_adapter(ram, *paging, state.rip, watch, cache);
+    let delivery = deliver_external_interrupt_cpl0_set(state, &mut memory, vector, context);
+    let failure = match delivery {
+        Cpl0ExternalInterruptDelivery::Delivered { .. } => {
+            hook.source.acknowledge(vector);
+            hook.counters.irqs_delivered += 1;
+            return None;
+        }
+        Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::InterruptsMasked) => {
+            hook.counters.irq_refused_masked += 1;
+            return None;
+        }
+        Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::StiShadowActive) => {
+            hook.counters.irq_refused_shadow += 1;
+            return None;
+        }
+        Cpl0ExternalInterruptDelivery::Refused(reason) => IrqDeliveryFailure::Refused(reason),
+        Cpl0ExternalInterruptDelivery::Aborted { phase, cause } => {
+            IrqDeliveryFailure::Aborted { phase, cause }
+        }
+    };
+    Some((
+        PagedCpl0SetExit::IrqDeliveryFailed { vector, failure },
+        memory.page_fault,
+        memory.memory_error,
+    ))
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next

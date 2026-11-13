@@ -6,11 +6,13 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSource};
 use crate::page_walk::translate_long64_2m_ram_read_only;
 use crate::paged_memory_adapter::{
-    PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
+    IrqDeliveryFailure, PagedCpl0SetExit, run_cpl0_set_paged_2m_ram_with_cpuid_boundary,
 };
 use crate::paged_probe::run_paged_probe_2m_ram;
+use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, DISPLAY_FRAMEBUFFER_BASE,
@@ -21,14 +23,14 @@ use crate::{
     MachineBus, MachineMemoryMap, MachineStopReason, MemoryAccessError, MemoryRegionKind,
     MemoryRegionSpec, MmioBinding, NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeConfig, NvmeConfigError,
     NvmeDevice, NvmeHandle, PCI_CONF1_BASE_PORT, PCI_CONF1_PORT_BYTES, PCI_ECAM_DESCRIPTOR,
-    PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B,
-    PIT_PORT_B_BYTES, PIT_PORT_BYTES, PagedProbeExit, PagedProbeIntegrationError,
-    PagedProbeQuantumReport, PagedProbeRejection, PciEcam, Pic8259Pair, Pit8254Devices,
-    Pit8254Handle, PortAddress, PortRange, PortRegionBinding, RamLimits, TrackedAccessError,
-    Uart16550Handle, Uart16550PollingTx, VirtualClock, VirtualClockError, VirtualClockHandle,
-    run_paged_probe, run_paged_probe_with_rdtsc,
+    PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, PIC_MASTER_BASE_PORT, PIC_PORT_BYTES,
+    PIC_SLAVE_BASE_PORT, PIT_BASE_PORT, PIT_PORT_B, PIT_PORT_B_BYTES, PIT_PORT_BYTES,
+    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
+    PciEcam, Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange, PortRegionBinding,
+    RamLimits, TrackedAccessError, Uart16550Handle, Uart16550PollingTx, VirtualClock,
+    VirtualClockError, VirtualClockHandle, run_paged_probe, run_paged_probe_with_rdtsc,
 };
-use od_isa::execute::{Cpl0ProfileSet, RunExit, TranslationContextChange};
+use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
@@ -856,6 +858,9 @@ pub(crate) struct LinuxSetRunReport {
     /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
+    /// What the interrupt hook counted in this call (S4-38L8b); all zero without a source or
+    /// without the hook.
+    pub(crate) irq: IrqCounters,
 }
 
 /// Whether the CPL0 set loop calls the set again after a quantum that ended on `exit` (S4-38L4b).
@@ -883,6 +888,27 @@ fn resumes_set_exit(
             PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted) => true,
             _ => false,
         }
+}
+
+/// Whether the CPL0 set loop calls the set again after a quantum the board cut to the deadline
+/// of the interrupt source (S4-38L8b): the quantum ran its shortened budget out
+/// (`InstructionBudgetExhausted`) after retiring something, the run was not stopped by the guest
+/// and the run budget is not spent.
+fn resumes_deadline_cut(
+    exit: &PagedCpl0SetExit,
+    cut_by_deadline: bool,
+    stop_requested: bool,
+    remaining: u64,
+    instructions_executed: u64,
+) -> bool {
+    cut_by_deadline
+        && !stop_requested
+        && remaining > 0
+        && instructions_executed > 0
+        && matches!(
+            exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted)
+        )
 }
 
 /// Expresses the final exit of the CPL0 set loop as a `PagedProbeExit`, together with its own
@@ -948,6 +974,19 @@ fn set_exit_to_probe_exit(
         PagedCpl0SetExit::CpuidDivergence { .. } => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
             return Err("the CPL0 set returned an exit variant the board does not know");
+        }
+        // S4-38L8b: an interrupt of the board source that could not be delivered is an error of
+        // the run, never a quiet stop; the vector and the reason are in the `Debug` text of the
+        // set exit.
+        PagedCpl0SetExit::IrqDeliveryFailed { failure, .. } => {
+            return Err(match failure {
+                IrqDeliveryFailure::Refused(_) => {
+                    "an external interrupt of the board source was refused by the CPU delivery"
+                }
+                IrqDeliveryFailure::Aborted { .. } => {
+                    "an external interrupt of the board source aborted on a memory access"
+                }
+            });
         }
     };
     Ok((mapped, detail))
@@ -1021,12 +1060,28 @@ pub struct LoadedFirmwareBoard {
     /// The guest `IA32_SYSENTER_EIP` (S4-38L7as): `0` until a guest `WRMSR` of it through the CPL0
     /// set. The full 64-bit value written. Only stored; nothing consumes it.
     guest_sysenter_eip: u64,
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at): `0` until a guest `WRMSR` of it through the CPL0
+    /// set. The full 64-bit value written (the flag-clearing behaviour of the real FMASK is not
+    /// modelled). Only stored; nothing consumes it.
+    guest_syscall_mask: u64,
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au): `0` until a guest `WRMSR` of it through the
+    /// CPL0 set. The full 64-bit value written (no canonical check; `SWAPGS` is not modelled).
+    /// Only stored; nothing consumes it.
+    guest_kernel_gs_base: u64,
+    /// The guest FP state of the CPL0 set's FP member (S4-38L9d): x87 environment and registers,
+    /// MXCSR and XMM. `GuestFpState::initial()` (FCW `0x037F`, MXCSR `0x1F80`, everything else
+    /// zero) until a run with the member changes it; carried between runs like the MSR cells.
+    guest_fp: GuestFpState,
     /// COM1 bytes recorded by the latest `run_boot`, kept even when it fails.
     com1_log: Vec<u8>,
     /// Pending-tick flag of the guest `RDTSC` (S4-37a6b); `Some` only under
     /// `linux_profile`, where `run` hands the CPU a time source. The source sets
     /// it, the `run_boot` stop predicate reads it and `run_boot` clears it.
     rdtsc_tick: Option<Arc<AtomicBool>>,
+    /// The source of maskable external interrupts (S4-38L8b). [`NoIrqSource`] (never a vector,
+    /// never a deadline) until a later slice gives the board a controller; consulted only by the
+    /// CPL0-set loop and only when the run asks for the hook (`irq` member).
+    irq_source: Box<dyn BoardIrqSource>,
     /// Test injection (S4-37a2): `run_boot` drops the queued PM timer ticks
     /// instead of applying them. Never set in production code.
     #[cfg(test)]
@@ -1073,6 +1128,34 @@ impl LoadedFirmwareBoard {
     /// Handle of the NVMe controller; `None` unless `FirmwareBoardConfig::nvme` was set.
     pub fn nvme(&self) -> Option<NvmeHandle> {
         self.nvme.clone()
+    }
+
+    /// Replaces the board's interrupt source (S4-38L8b). Nothing in production code calls it
+    /// yet: the board has [`NoIrqSource`] by default and the runner has no flag for a source
+    /// (S4-38L8c).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_irq_source(&mut self, source: Box<dyn BoardIrqSource>) {
+        self.irq_source = source;
+    }
+
+    /// A source of the PIT channel 0 line through the IOAPIC INTIN2 and the Local APIC of this
+    /// board (S4-38L8c), on the board clock; `None` without the Linux profile (no PIT). It is not
+    /// installed: the caller gives it to [`Self::set_irq_source`] (a clone of it stays a handle
+    /// for the counters). The board does this for no run today: the Linux board has no APIC in
+    /// CPUID, and a synthetic guest or a test installs the source itself.
+    ///
+    /// The IOAPIC handle is made from the Local APIC handle the way `assemble_board` makes the
+    /// IOAPIC device: both views share one pair state.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn pit_ioapic_irq_source(&self) -> Option<PitIoapicIrqSource> {
+        let pit = self.pit.clone()?;
+        let io_apic = IoApic::new(self.lapic.clone()).handle();
+        Some(PitIoapicIrqSource::new(
+            pit,
+            io_apic,
+            self.lapic.clone(),
+            self.clock.clone(),
+        ))
     }
 
     /// True under `linux_profile`: the RDTSC time source (and with it the tick) exists only
@@ -1181,6 +1264,39 @@ impl LoadedFirmwareBoard {
     /// Stores the SYSENTER_EIP a CPL0-set run left (S4-38L7as).
     pub(crate) fn set_guest_sysenter_eip(&mut self, value: u64) {
         self.guest_sysenter_eip = value;
+    }
+
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at); `0` until a guest `WRMSR` of it. The full 64-bit
+    /// value written. Not readable by the guest: `RDMSR` of SYSCALL_MASK stays refused.
+    pub const fn guest_syscall_mask(&self) -> u64 {
+        self.guest_syscall_mask
+    }
+
+    /// Stores the SYSCALL_MASK a CPL0-set run left (S4-38L7at).
+    pub(crate) fn set_guest_syscall_mask(&mut self, value: u64) {
+        self.guest_syscall_mask = value;
+    }
+
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au); `0` until a guest `WRMSR` of it. The full
+    /// 64-bit value written. Not readable by the guest: `RDMSR` of KERNEL_GS_BASE stays refused.
+    pub const fn guest_kernel_gs_base(&self) -> u64 {
+        self.guest_kernel_gs_base
+    }
+
+    /// Stores the KERNEL_GS_BASE a CPL0-set run left (S4-38L7au).
+    pub(crate) fn set_guest_kernel_gs_base(&mut self, value: u64) {
+        self.guest_kernel_gs_base = value;
+    }
+
+    /// The guest FP state of the CPL0 set's FP member (S4-38L9d); the initial state until a run
+    /// with the member changed it.
+    pub const fn guest_fp(&self) -> &GuestFpState {
+        &self.guest_fp
+    }
+
+    /// Stores the FP state a CPL0-set run left (S4-38L9d).
+    pub(crate) fn set_guest_fp(&mut self, value: GuestFpState) {
+        self.guest_fp = value;
     }
 
     /// The exact bytes written to RAM at [`FIRMWARE_HANDOFF_GPA`]. Empty for a Linux board
@@ -1413,12 +1529,20 @@ impl LoadedFirmwareBoard {
     /// With `fetch_cache` (S4-13) each call of the set loop keeps an opt-in translation cache for
     /// the instruction fetch (see `fetch_translation_cache`); results are identical to the run
     /// without it, only the number of page walks differs.
+    ///
+    /// With `irq_hook` (S4-38L8b, the `irq` member) the board source is consulted on every
+    /// instruction boundary (`deliver_pending_irq` of the loop), a quantum is never longer than
+    /// the instructions left until the source's `next_deadline_ns` (at least one; each cut is
+    /// counted and resumed), a guest write to the PIT ports ends the quantum when the source asks
+    /// for it, and the counters of the report are filled. The board has [`NoIrqSource`] unless a
+    /// test installs another, so the hook changes no result today.
     pub(crate) fn run_linux_boot_cpl0_set(
         &mut self,
         instruction_budget: u64,
         set: &Cpl0ProfileSet<'_>,
         cpuid_boundary: bool,
         fetch_cache: bool,
+        irq_hook: bool,
     ) -> Result<LinuxSetRunReport, LinuxRunFailure> {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -1448,6 +1572,9 @@ impl LoadedFirmwareBoard {
             nvme.service(&mut self.bus, |_| {});
         }
         self.state.cr3 = Some(self.page_table_root);
+        let mut irq_counters = IrqCounters::default();
+        // The next call resumes a partial REP: its first boundary is inside the REP.
+        let mut partial_rep = false;
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
         // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
         // entry), the CR2 the guest left is kept in `guest_cr2` and fed back on entry,
@@ -1480,13 +1607,27 @@ impl LoadedFirmwareBoard {
                         .as_ref()
                         .is_some_and(|flag| flag.load(Ordering::Relaxed))
             };
+            // S4-38L8b: the quantum ends at the next edge of the source; the clock moves only
+            // after the quantum (one instruction is one ns), so the limit is the time left.
+            let mut quantum_budget = remaining;
+            let mut cut_by_deadline = false;
+            if irq_hook && let Some(deadline) = self.irq_source.next_deadline_ns() {
+                let limit = deadline
+                    .saturating_sub(self.clock.snapshot().now_ns())
+                    .max(1);
+                if limit < remaining {
+                    quantum_budget = limit;
+                    cut_by_deadline = true;
+                    irq_counters.quantum_cut_by_deadline += 1;
+                }
+            }
             let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 &mut self.state,
                 &mut self.bus,
                 self.page_table_root,
                 FIRMWARE_EFER,
                 context,
-                remaining,
+                quantum_budget,
                 INTEGER_FLAGS,
                 set,
                 source
@@ -1496,8 +1637,17 @@ impl LoadedFirmwareBoard {
                 |_| {},
                 cpuid_boundary,
                 fetch_cache,
+                irq_hook.then(|| IrqBoundaryHook {
+                    source: &mut *self.irq_source,
+                    counters: &mut irq_counters,
+                    skip_first_boundary: partial_rep,
+                }),
             );
             quanta += 1;
+            partial_rep = matches!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted)
+            );
             // The walker of the next quantum starts from the CR3 the guest left.
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
@@ -1553,6 +1703,12 @@ impl LoadedFirmwareBoard {
                 stop_reason.is_some(),
                 remaining,
                 report.instructions_executed,
+            ) || resumes_deadline_cut(
+                &report.exit,
+                cut_by_deadline,
+                stop_reason.is_some(),
+                remaining,
+                report.instructions_executed,
             ) {
                 continue;
             }
@@ -1590,12 +1746,14 @@ impl LoadedFirmwareBoard {
         self.guest_cr2 = self.state.cr2;
         self.state.cr2 = prior_cr2;
         let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
+        irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
             run,
             translation_context_changes: changes,
             set_exit_detail,
             cpuid_divergence_leaf,
             exceptions_delivered,
+            irq: irq_counters,
         })
     }
 
@@ -1912,6 +2070,7 @@ pub(crate) fn assemble_board(
         let pair = Pic8259Pair::new();
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
+        bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
         for region in [
             AbsentPortRegion::Cmos,
             AbsentPortRegion::IoDelay,
@@ -2047,8 +2206,12 @@ impl AssembledBoard {
             guest_sysenter_cs: 0,
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
+            guest_syscall_mask: 0,
+            guest_kernel_gs_base: 0,
+            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
+            irq_source: Box::new(NoIrqSource),
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -2108,8 +2271,12 @@ impl AssembledBoard {
             guest_sysenter_cs: 0,
             guest_sysenter_esp: 0,
             guest_sysenter_eip: 0,
+            guest_syscall_mask: 0,
+            guest_kernel_gs_base: 0,
+            guest_fp: GuestFpState::initial(),
             com1_log: Vec::new(),
             rdtsc_tick,
+            irq_source: Box::new(NoIrqSource),
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
@@ -4090,8 +4257,9 @@ mod tests {
     }
 
     /// Ports the profile binds (or, without the flag, leaves as a trap).
-    const LINUX_PROFILE_PORTS: [u16; 15] = [
+    const LINUX_PROFILE_PORTS: [u16; 17] = [
         0x40, 0x41, 0x42, 0x43, 0x61, 0x20, 0x21, 0xA0, 0xA1, 0x70, 0x71, 0xED, 0x80, 0x60, 0x64,
+        0x4D0, 0x4D1,
     ];
 
     #[test]
@@ -4109,6 +4277,11 @@ mod tests {
                 Err(BusAccessError::UnmappedPort(io_port(port))),
                 "write {port:#x}"
             );
+        }
+        // With the profile the PIC ELCR ports (S4-38L7bs) are mapped and read 0.
+        let mut linux = linux_board();
+        for port in [0x4D0u16, 0x4D1] {
+            assert_eq!(inb(&mut linux, port), Ok(0), "linux read {port:#x}");
         }
         // The default board is unchanged byte for byte.
         let mut default = load(&hlt_image());
@@ -4374,6 +4547,13 @@ mod tests {
         assert_eq!(report.exit, PagedProbeExit::Halted);
         assert_eq!(report.virtual_ns, 1);
         assert_eq!(board.clock().now_ns(), 1);
+    }
+
+    #[test]
+    fn the_pit_ioapic_irq_source_exists_only_with_the_linux_profile_pit() {
+        // S4-38L8c: no PIT, no source; the board's own source stays the empty one.
+        assert!(load(&hlt_image()).pit_ioapic_irq_source().is_none());
+        assert!(linux_board().pit_ioapic_irq_source().is_some());
     }
 
     #[test]
@@ -4876,6 +5056,36 @@ mod tests {
                 "CpuidDivergence { leaf: 1 }".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn irq_delivery_failure_is_an_error_of_the_run_and_a_deadline_cut_resumes() {
+        use crate::paged_memory_adapter::IrqDeliveryFailure;
+        use od_isa::Cpl0ExternalInterruptRefusal;
+        assert!(
+            set_exit_to_probe_exit(PagedCpl0SetExit::IrqDeliveryFailed {
+                vector: 0x30,
+                failure: IrqDeliveryFailure::Refused(Cpl0ExternalInterruptRefusal::GateNotPresent),
+            })
+            .is_err()
+        );
+        let budget = PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted);
+        assert!(resumes_deadline_cut(&budget, true, false, 5, 3));
+        assert!(!resumes_deadline_cut(&budget, false, false, 5, 3), "no cut");
+        assert!(
+            !resumes_deadline_cut(&budget, true, true, 5, 3),
+            "guest stop"
+        );
+        assert!(
+            !resumes_deadline_cut(&budget, true, false, 0, 3),
+            "no budget"
+        );
+        assert!(
+            !resumes_deadline_cut(&budget, true, false, 5, 0),
+            "no progress"
+        );
+        let tick = PagedCpl0SetExit::Run(RunExit::StopRequested);
+        assert!(!resumes_deadline_cut(&tick, true, false, 5, 3));
     }
 
     #[test]

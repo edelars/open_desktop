@@ -715,6 +715,37 @@ fn lock_add_register_source_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn lock_dword_xadd_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ay belongs to the CPL0 set only; this profile refuses the LOCK dword form (and the
+    // register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+    for bytes in [
+        &[0xf0, 0x0f, 0xc1, 0x43, 0x58][..],
+        &[0xf0, 0x44, 0x0f, 0xc1, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        &[0xf0, 0x48, 0x0f, 0xc1, 0xc3][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xc1 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn lock_and_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7ag belongs to the CPL0 set only; this profile refuses the forms without mutation.
     for bytes in [
@@ -736,6 +767,36 @@ fn lock_and_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!(
             result.exit,
             PagedProbeExit::Unsupported { opcode: 0x80 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn lock_bts_imm_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bi belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0xf0, 0x49, 0x0f, 0xba, 0x2c, 0x24, 0x00][..],
+        &[0xf0, 0x48, 0x0f, 0xba, 0x2b, 0x05][..],
+        &[0xf0, 0x0f, 0xba, 0x2d, 0x34, 0x12, 0x00, 0x00, 0x1f][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xba },
             "{bytes:02x?}"
         );
         assert_eq!(result.instructions_executed, 0);
@@ -775,6 +836,163 @@ fn fs_gs_cmp_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn fs_gs_or_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7az belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x09, 0x15, 0x68, 0xcf, 0xf0, 0x02][..],
+        &[0x64, 0x48, 0x09, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x4c, 0x09, 0x43, 0x08][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x09 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_add_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bc belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x48, 0x01, 0x05, 0x36, 0x26, 0xc0, 0x02][..],
+        &[0x64, 0x48, 0x01, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x4c, 0x01, 0x43, 0x08][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x01 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_add_load_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bd belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x48, 0x03, 0x1d, 0x7f, 0x61, 0xbe, 0x02][..],
+        &[0x64, 0x48, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x03, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x4c, 0x03, 0x43, 0x08][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x03 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_cmp_load_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7be belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x3b, 0x35, 0x22, 0xc5, 0xbf, 0x02][..],
+        &[0x64, 0x48, 0x3b, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+        &[0x65, 0x4c, 0x3b, 0x43, 0x08][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x3b },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_cmov_load_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bj belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for (bytes, opcode) in [
+        (
+            &[0x65, 0x0f, 0x44, 0x3d, 0x60, 0x95, 0x08, 0x03][..],
+            0x44u8,
+        ),
+        (
+            &[0x64, 0x48, 0x0f, 0x45, 0x15, 0x34, 0x12, 0x00, 0x00][..],
+            0x45,
+        ),
+        (&[0x65, 0x4c, 0x0f, 0x4f, 0x43, 0x08][..], 0x4f),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile() {
     // S4-38L7ah belongs to the CPL0 set only; this profile refuses the forms without mutation.
     for bytes in [
@@ -802,6 +1020,59 @@ fn fs_gs_cmp_imm8_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
+}
+
+#[test]
+fn fs_gs_add_imm32_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9f belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[
+            0x65, 0x81, 0x05, 0x84, 0x37, 0xcf, 0x01, 0x00, 0x00, 0x11, 0x00,
+        ][..],
+        &[
+            0x64, 0x48, 0x81, 0x05, 0x34, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+        ][..],
+        &[0x65, 0x81, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x81 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn pause_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9b belongs to the CPL0 set only; this profile refuses `F3 90` without mutation.
+    let mut memory = Memory::new(&[0xf3, 0x90]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x90 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
 }
 
 #[test]
@@ -867,6 +1138,76 @@ fn ltr_register_form_stays_unsupported_in_the_paged_probe_profile() {
         assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));
         assert!(cpu.tr.is_none());
+    }
+}
+
+#[test]
+fn lldt_register_form_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7aw belongs to the CPL0 set only; this profile refuses `LLDT r/m16` without mutation
+    // (null selector included; the bounded paged LTR entry point does not take it either).
+    for bytes in [
+        &[0x0f, 0x00, 0xd6][..],
+        &[0x41, 0x0f, 0x00, 0xd7][..],
+        &[0x40, 0x0f, 0x00, 0xd0][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gdtr = Some(od_isa::state::Gdtr {
+            base: 0xffff_fe00_0000_1000,
+            limit: 0x7f,
+        });
+        cpu.gpr[Register::Rsi as usize] = 0;
+        cpu.gpr[Register::Rax as usize] = 0;
+        cpu.gpr[Register::Rdi as usize] = 0;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x00 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(cpu.ldtr_null_selector.is_none());
+    }
+}
+
+#[test]
+fn mov_drn_write_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ax belongs to the CPL0 set only; this profile refuses `MOV DRn, r64` without mutation.
+    for bytes in [
+        &[0x0f, 0x23, 0xfe][..],
+        &[0x41, 0x0f, 0x23, 0xfe][..],
+        &[0x48, 0x0f, 0x23, 0xc0][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsi as usize] = 0x400;
+        cpu.gpr[Register::Rax as usize] = 0x400;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x23 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert_eq!(cpu.debug_registers, [None; 8]);
     }
 }
 
@@ -1088,13 +1429,17 @@ fn fs_gs_mov_imm32_stays_unsupported_in_the_paged_probe_profile() {
 
 #[test]
 fn fs_gs_mov_store_stays_unsupported_in_the_paged_probe_profile() {
-    // S4-38L7an (and S4-38L7g) belong to the CPL0 set only; this profile refuses the forms
+    // S4-38L7an and S4-38L7av (and S4-38L7g) belong to the CPL0 set only; this profile refuses the forms
     // without mutation.
     for bytes in [
         &[0x65, 0x89, 0x05, 0xe0, 0x0f, 0x07, 0x03][..],
         &[0x64, 0x89, 0x03][..],
         &[0x65, 0x44, 0x89, 0x0b][..],
         &[0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+        // S4-38L7av: the word forms (`66`, no REX.W).
+        &[0x65, 0x66, 0x89, 0x05, 0xad, 0xaa, 0x01, 0x03][..],
+        &[0x65, 0x66, 0x89, 0x15, 0xa7, 0xaa, 0x01, 0x03][..],
+        &[0x64, 0x66, 0x44, 0x89, 0x0b][..],
     ] {
         let mut memory = Memory::new(bytes);
         let mut cpu = state();
@@ -1825,6 +2170,174 @@ fn fs_gs_movsxd_stays_unsupported_in_the_paged_probe_profile() {
 }
 
 #[test]
+fn fs_gs_movsx_byte_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7ba belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x48, 0x0f, 0xbe, 0x01][..],
+        &[0x65, 0x4c, 0x0f, 0xbe, 0x42, 0x0c][..],
+        &[0x65, 0x0f, 0xbe, 0x01][..],
+        &[0x64, 0x48, 0x0f, 0xbe, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xbe },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_movzx_byte_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bf belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x0f, 0xb6, 0x07][..],
+        &[0x65, 0x48, 0x0f, 0xb6, 0x01][..],
+        &[0x65, 0x4c, 0x0f, 0xb6, 0x42, 0x0c][..],
+        &[0x64, 0x48, 0x0f, 0xb6, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        cpu.gpr[Register::Rdi as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xb6 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_byte_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bg belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x0f, 0xb0, 0x0f][..],
+        &[0x64, 0x0f, 0xb0, 0x0f][..],
+        &[0x65, 0x4c, 0x0f, 0xb0, 0x42, 0x0c][..],
+        &[0x64, 0x0f, 0xb0, 0x0d, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        cpu.gpr[Register::Rdi as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xb0 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_cmpxchg_wide_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bo belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x48, 0x0f, 0xb1, 0x35, 0xcc, 0x16, 0xc1, 0x02][..],
+        &[0x64, 0x0f, 0xb1, 0x0f][..],
+        &[0x65, 0x48, 0x0f, 0xb1, 0x0f][..],
+        &[0x64, 0x4c, 0x0f, 0xb1, 0x42, 0x0c][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        cpu.gpr[Register::Rdi as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0xb1 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
+fn fs_gs_mov_byte_store_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L7bb belongs to the CPL0 set only; this profile refuses the forms without mutation.
+    for bytes in [
+        &[0x65, 0x88, 0x01][..],
+        &[0x64, 0x88, 0x01][..],
+        &[0x65, 0x40, 0x88, 0x31][..],
+        &[0x64, 0x88, 0x05, 0x34, 0x12, 0x00, 0x00][..],
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        cpu.gpr[Register::Rcx as usize] = DATA;
+        cpu.gpr[Register::Rdx as usize] = DATA;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode: 0x88 },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+}
+
+#[test]
 fn paged_probe_profiles_keep_wrmsr_ia32_star_unsupported_and_pure() {
     // S4-38L7ao: the IA32_STAR write belongs to the CPL0 set only. Every paged probe profile
     // keeps `WRMSR` (ECX = 0xC000_0081, EDX:EAX = 0x0023_0010:0) refused with the opcode 0x30.
@@ -2180,4 +2693,220 @@ fn paged_probe_profiles_keep_wrmsr_ia32_sysenter_esp_and_eip_unsupported_and_pur
         assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
         assert_eq!(cpu, before);
     }
+}
+
+#[test]
+fn paged_probe_profiles_keep_wrmsr_ia32_syscall_mask_unsupported_and_pure() {
+    // S4-38L7at: the IA32_SYSCALL_MASK write belongs to the CPL0 set only. Every paged probe
+    // profile keeps `WRMSR` (ECX = 0xc0000084, EDX:EAX = 0:0x257fd5) refused with 0x30. The paged
+    // probe profiles take no MSR profile.
+    fn mask_state(cr3: Option<u64>) -> LongModeState {
+        let mut cpu = state();
+        cpu.cr3 = cr3;
+        cpu.gpr[Register::Rcx as usize] = 0xc000_0084;
+        cpu.gpr[Register::Rax as usize] = 0x25_7fd5;
+        cpu.gpr[Register::Rdx as usize] = 0;
+        cpu
+    }
+    let wrmsr = [0x0f, 0x30];
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = mask_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, rdtsc_ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = mask_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_stack_probe(
+        PagedCpl0StackProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = mask_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr3_probe(
+        PagedCpl0Cr3ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = mask_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr0_wp_probe(
+        PagedCpl0Cr0WpProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+}
+
+#[test]
+fn paged_probe_profiles_keep_wrmsr_ia32_kernel_gs_base_unsupported_and_pure() {
+    // S4-38L7au: the IA32_KERNEL_GS_BASE write belongs to the CPL0 set only. Every paged probe
+    // profile keeps `WRMSR` (ECX = 0xc0000102, EDX:EAX = 0xffff8880:0x12345678) refused with
+    // 0x30. The paged probe profiles take no MSR profile.
+    fn kgs_state(cr3: Option<u64>) -> LongModeState {
+        let mut cpu = state();
+        cpu.cr3 = cr3;
+        cpu.gpr[Register::Rcx as usize] = 0xc000_0102;
+        cpu.gpr[Register::Rax as usize] = 0x1234_5678;
+        cpu.gpr[Register::Rdx as usize] = 0xffff_8880;
+        cpu
+    }
+    let wrmsr = [0x0f, 0x30];
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = kgs_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(&mut cpu, &mut memory, &mut pio, rdtsc_ring0());
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = kgs_state(None);
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_stack_probe(
+        PagedCpl0StackProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = kgs_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr3_probe(
+        PagedCpl0Cr3ProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+
+    let mut memory = Memory::new(&wrmsr);
+    let mut cpu = kgs_state(Some(0x1000));
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = execute::step_paged_cr0_wp_probe(
+        PagedCpl0Cr0WpProbeV1,
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        rdtsc_ring0(),
+        0xd00,
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x30 });
+    assert_eq!(cpu, before);
+}
+
+#[test]
+fn out_in_imm8_stay_unsupported_in_the_paged_probe_profiles() {
+    // S4-38L7bk belongs to the CPL0 set only (member `pio_u8`); the paged probe profiles refuse
+    // `E6 ib` / `E4 ib` with their own opcode, without a port access and without mutation.
+    for (bytes, opcode) in [
+        (&[0xe6, 0x43][..], 0xe6u8),
+        (&[0xe4, 0x40][..], 0xe4),
+        (&[0xe6, 0x00][..], 0xe6),
+        (&[0xe4, 0xff][..], 0xe4),
+    ] {
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+        assert!(pio.reads.is_empty());
+        assert!(pio.writes.is_empty());
+
+        let mut memory = Memory::new(bytes);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+        let result = execute::step_paged_stack_probe(
+            PagedCpl0StackProbeV1,
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{bytes:02x?}"
+        );
+        assert_eq!(cpu, before);
+        assert!(pio.reads.is_empty() && pio.writes.is_empty());
+    }
+}
+
+#[test]
+fn int3_stays_unsupported_in_the_paged_probe_profile() {
+    // S4-38L9e belongs to the CPL0 set only; this profile refuses `CC` without mutation.
+    let mut memory = Memory::new(&[0xcc, 0x90]);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let mut pio = Pio::default();
+    let result = step(
+        &mut cpu,
+        &mut memory,
+        &mut pio,
+        context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xcc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
 }

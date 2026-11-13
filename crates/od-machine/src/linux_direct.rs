@@ -41,6 +41,7 @@ use crate::acpi_blob::{
     AcpiBlobError, AcpiManifestHash, ValidatedAcpiBlob, sha256, validate_acpi_blob,
 };
 use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwareBoard};
+use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
@@ -51,8 +52,8 @@ use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
 };
 use od_isa::msr::MsrProfile;
-use od_isa::{CliProfile, HaltProfile, Register};
-use std::cell::Cell;
+use od_isa::{CliProfile, HaltProfile, Register, StiProfile};
+use std::cell::{Cell, RefCell};
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
 const OFF_ACPI_RSDP_ADDR: usize = 0x070;
@@ -493,6 +494,14 @@ pub struct LinuxStopRecord {
     /// The guest `IA32_SYSENTER_EIP` (S4-38L7as) after the run; `0` when never written. The full
     /// 64-bit value written. Write-only for the guest (`RDMSR` of SYSENTER_EIP is refused).
     pub guest_sysenter_eip: u64,
+    /// The guest `IA32_SYSCALL_MASK` (S4-38L7at) after the run; `0` when never written. The full
+    /// 64-bit value written (the flag clearing of the real FMASK is not modelled). Write-only for
+    /// the guest (`RDMSR` of SYSCALL_MASK is refused).
+    pub guest_syscall_mask: u64,
+    /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au) after the run; `0` when never written. The full
+    /// 64-bit value written (no canonical check, `SWAPGS` not modelled). Write-only for the guest
+    /// (`RDMSR` of KERNEL_GS_BASE is refused).
+    pub guest_kernel_gs_base: u64,
     pub rflags: u64,
     /// RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8..R15 (the order of `od_isa::Register`).
     pub gpr: [u64; 16],
@@ -533,6 +542,17 @@ pub struct LinuxStopRecord {
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
+    /// S4-38L8b: external interrupts the CPL0 set board delivered through the guest IDT in this
+    /// run. `0` while the board has no interrupt source (and on the `paged_probe` path).
+    pub irqs_delivered: u64,
+    /// S4-38L8b: IRQ 0 edges the board source reported; `0` while there is no source.
+    pub irq0_edges: u64,
+    /// S4-38L8b: instruction boundaries at which a pending vector was held back by RFLAGS.IF = 0.
+    pub irq_refused_masked: u64,
+    /// S4-38L8b: the same because of the one-instruction STI shadow.
+    pub irq_refused_shadow: u64,
+    /// S4-38L8b: quanta the board shortened to the deadline of the interrupt source.
+    pub quantum_cut_by_deadline: u64,
     /// S4-38L7: the run was made with the diagnostic mode past C7
     /// ([`LinuxCpl0SetMembers::diagnostic_past_c7`]): the CPUID boundary was off, so the result is
     /// diagnostic only and is NOT counted. `false` on every other run.
@@ -586,6 +606,7 @@ pub fn run_linux_direct_board(
             changes: &[],
             cpuid_divergence_leaf: None,
             exceptions_delivered: 0,
+            irq: IrqCounters::default(),
             diagnostic_past_c7: false,
         },
     ))
@@ -599,6 +620,7 @@ struct SetExtras<'a> {
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
     exceptions_delivered: u64,
+    irq: IrqCounters,
     diagnostic_past_c7: bool,
 }
 
@@ -643,6 +665,8 @@ fn stop_record(
         guest_sysenter_cs: boot.board.guest_sysenter_cs(),
         guest_sysenter_esp: boot.board.guest_sysenter_esp(),
         guest_sysenter_eip: boot.board.guest_sysenter_eip(),
+        guest_syscall_mask: boot.board.guest_syscall_mask(),
+        guest_kernel_gs_base: boot.board.guest_kernel_gs_base(),
         rflags: state.rflags,
         gpr: state.gpr,
         retired: report.retired,
@@ -666,6 +690,11 @@ fn stop_record(
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
         exceptions_delivered: extras.exceptions_delivered,
+        irqs_delivered: extras.irq.irqs_delivered,
+        irq0_edges: extras.irq.irq0_edges,
+        irq_refused_masked: extras.irq.irq_refused_masked,
+        irq_refused_shadow: extras.irq.irq_refused_shadow,
+        quantum_cut_by_deadline: extras.irq.quantum_cut_by_deadline,
         diagnostic_past_c7: extras.diagnostic_past_c7,
         cr3_changes: extras.changes.len() as u64,
         // The set loop records `MOV CR3` only; anything else it stops on as an integration error.
@@ -691,10 +720,19 @@ pub struct LinuxCpl0SetMembers {
     /// handed to the CPU either way; without this member the set refuses the state
     /// (`Cr3NotAdmitted`, a negative control).
     pub cpu_owned_cr3: bool,
-    /// `with_cpuid(DiagnosticV1)`: only what that profile declares, nothing more. With this
-    /// member the run also stops before a `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`,
-    /// S4-38L4): the profile does not answer the feature leaves of the target.
+    /// `with_cpuid(<profile>)` (the profile is [`Self::cpuid_profile`]): only what that profile
+    /// declares, nothing more. With the default profile `DiagnosticV1` the run also stops before a
+    /// `CPUID` of leaf 1 or 0x8000_0001 (`cpuid_divergence`, S4-38L4): that profile does not answer
+    /// the feature leaves of the target. With `X8664V1Stage4A` there is no such stop (see
+    /// [`Self::cpuid_profile`]).
     pub cpuid: bool,
+    /// The CPUID profile of the `cpuid` member (S4-38L9a). [`CpuidProfile::DiagnosticV1`] (the
+    /// default of [`Self::minimal`] and [`Self::linux_default`]) keeps the C7 boundary above.
+    /// [`CpuidProfile::X8664V1Stage4A`] is the declared subset of the target (TSC, since S4-38L9d also FPU and FXSR): it
+    /// answers leaf 1 and 0x8000_0001 honestly for that subset, so the C7 boundary is OFF for it
+    /// (nothing made-up to stop on) and the result is still not counted as the target CPU. Has no
+    /// effect without `cpuid`. Not a separate set member: it names the `cpuid:<profile>` member.
+    pub cpuid_profile: CpuidProfile,
     /// `with_rdtsc`: the source is the board clock, which also queues the 1 us RDTSC tick like
     /// `run_boot`; admitted only under the board's Linux profile.
     pub rdtsc: bool,
@@ -736,8 +774,48 @@ pub struct LinuxCpl0SetMembers {
     /// profile the member would have no effect (the profile's `#GP(0)` wins); the board set uses
     /// `EferReadOnlyV1`.
     pub msr_sysenter_stack: bool,
+    /// `with_msr_syscall_mask_write` (S4-38L7at): `WRMSR` of IA32_SYSCALL_MASK (`0xC000_0084`) at
+    /// CPL0 stores `EDX:EAX` (the full 64-bit value, no bit semantics) in the board
+    /// (`guest_syscall_mask` of the stop record). Write-only: `RDMSR` of it and every other MSR
+    /// stay `Unsupported`; `SYSCALL`/`SYSRET` are not modelled. Independent of [`Self::msr`], the
+    /// other MSR members. No MSR profile covers the index today, so nothing overrides the member.
+    pub msr_syscall_mask: bool,
+    /// `with_msr_kernel_gs_base_write` (S4-38L7au): `WRMSR` of IA32_KERNEL_GS_BASE (`0xC000_0102`)
+    /// at CPL0 stores `EDX:EAX` (the full 64-bit value, no canonical check) in the board
+    /// (`guest_kernel_gs_base` of the stop record). Write-only: `RDMSR` of it and every other MSR
+    /// stay `Unsupported`; `SWAPGS` is not modelled. Independent of [`Self::msr`], the other MSR
+    /// members and the FS/GS base member (which covers `0xC000_0100`/`0xC000_0101` only). The board
+    /// set's MSR profile is `EferReadOnlyV1`, which does not handle the index.
+    pub msr_kernel_gs_base: bool,
+    /// `with_msr_tdx_keyid_partitioning_read` (S4-38L9c): `RDMSR` of IA32_MKTME_KEYID_PARTITIONING
+    /// (`0x87`) at CPL0 returns `EDX:EAX = 0:0` (no MKTME and no TDX private KeyIDs; the kernel's
+    /// `tdx_init` then leaves TDX off, as it does on a CPU where the MSR gives `#GP`). No cell, no
+    /// `WRMSR`; every other MSR keeps its refusal. `false` in [`Self::minimal`] and in
+    /// [`Self::linux_default`] (so a default run is unchanged); the runner turns it on only with
+    /// `--cpuid-profile stage4a`. Independent of [`Self::msr`] and the other MSR members.
+    pub msr_tdx_keyid_partitioning_read: bool,
+    /// `with_fp_state` (S4-38L9d): the FP member of the set: `FNINIT`, the plain RIP-relative
+    /// `FXSAVE` and `MOV CR0, RDI` (the `fpu__init_system` path of the kernel), with the guest FP
+    /// state kept in the board between runs (`guest_fp`). It needs a CPUID profile that declares
+    /// FPU and FXSR (`X8664V1Stage4A`; with `DiagnosticV1` the set refuses the run). `false` in
+    /// [`Self::minimal`] and in [`Self::linux_default`] (so a default run is unchanged); the
+    /// runner turns it on only with `--cpuid-profile stage4a`.
+    pub fp_state: bool,
+    /// `with_int3` (S4-38L9e): the bare `INT3` (`CC`) delivered as `#BP` (vector 3) through the
+    /// guest IDT gate (the kernel installs an interrupt gate, type 0xE, DPL 3, IST 0), with the
+    /// five-qword frame holding the address after the `INT3`, and the instruction retires; the
+    /// kernel's `int3_selftest` needs it. `false` in [`Self::minimal`] and in
+    /// [`Self::linux_default`] (so a default run, its member list included, is unchanged); the
+    /// runner turns it on only with `--cpuid-profile stage4a`, like `fp_state`. Independent of
+    /// the other members. A missing IDTR/GDTR, a gate that is not deliverable and a shadow that
+    /// is not `Clear` make the `INT3` itself `Unsupported` (opcode `0xcc`) with no write.
+    pub int3: bool,
     /// `with_halt`.
     pub halt: bool,
+    /// `with_sti` (S4-38L7bp): the bare `STI` (`FB`): IF := 1 and the one-instruction shadow. The
+    /// board delivers no interrupt (IRQ delivery is S4-38, ISSUE-069); the member models the
+    /// instruction only. `false` in [`Self::minimal`], `true` in [`Self::linux_default`].
+    pub sti: bool,
     /// `with_pio_u8`: `IN AL, DX` / `OUT DX, AL` through the machine bus: every port bound on the
     /// board bus (COM1, PM block with the timer, and with the Linux profile PIT, port B, PIC,
     /// CMOS, `0xED`, `0x80`, and the byte accesses to PCI conf1 `0xCF8..=0xCFF`).
@@ -765,6 +843,18 @@ pub struct LinuxCpl0SetMembers {
     /// (`diagnostic_past_c7`). Not a member of the CPU profile and not in `set_members`. `false` in
     /// [`Self::minimal`] and [`Self::linux_default`]. Has no effect without `cpuid`.
     pub diagnostic_past_c7: bool,
+    /// S4-38L8b: the interrupt hook of the CPL0 set loop. With it each instruction boundary asks
+    /// the board's interrupt source for a pending vector and delivers it through the guest IDT
+    /// when RFLAGS.IF = 1 and the STI shadow is `Clear` (the loop holds the vector back
+    /// otherwise, and counts it). The CPU activity is checked by the delivery itself: with
+    /// IF = 1, a `Clear` shadow and an activity other than `Running` it refuses
+    /// (`ActivityOutsideProfile`) and the run stops with `run_failed`, not a quiet skip. A quantum is cut to
+    /// the source's next deadline and a guest write to the PIT ports ends the quantum when the
+    /// source asks for it. The board has no source yet (an empty one that never gives a vector),
+    /// so with or without the member a run is the same. Not a CPU instruction, but a member of
+    /// the board set: it is listed in `set_members` as `irq`. `false` in [`Self::minimal`], `true`
+    /// in [`Self::linux_default`].
+    pub irq: bool,
 }
 
 impl LinuxCpl0SetMembers {
@@ -773,6 +863,7 @@ impl LinuxCpl0SetMembers {
         Self {
             cpu_owned_cr3: true,
             cpuid: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
             rdtsc: false,
             msr: false,
             msr_fs_gs_base: false,
@@ -781,17 +872,25 @@ impl LinuxCpl0SetMembers {
             msr_cstar: false,
             msr_sysenter_cs: false,
             msr_sysenter_stack: false,
+            msr_syscall_mask: false,
+            msr_kernel_gs_base: false,
+            msr_tdx_keyid_partitioning_read: false,
+            fp_state: false,
+            int3: false,
             halt: false,
+            sti: false,
             pio_u8: false,
             popf_cpl0: false,
             pci_config: false,
             fetch_cache: false,
             diagnostic_past_c7: false,
+            irq: false,
         }
     }
 
     /// The set of the Linux board run (`--set-cpl0`): CLI, the CPU-owned CR3, CPUID
-    /// (DiagnosticV1 with the divergence boundary, S4-38L4), the qword `POPFQ` (S2-50), the FS/GS
+    /// (DiagnosticV1 with the divergence boundary, S4-38L4), RDTSC from the board clock (S4-38L7bh),
+    /// the qword `POPFQ` (S2-50), the FS/GS
     /// base MSRs (S4-38L6b), the read-only EFER (S4-38L7e), the PCI configuration ports
     /// (S4-38L7w) and the byte PIO (S4-38L7x: `pio_u8`, all ports bound on the board bus; a default
     /// decision that may be revisited: without COM1 and the timer the kernel does not go further).
@@ -801,7 +900,9 @@ impl LinuxCpl0SetMembers {
     pub const fn linux_default() -> Self {
         Self {
             cpuid: true,
+            rdtsc: true,
             popf_cpl0: true,
+            sti: true,
             pio_u8: true,
             pci_config: true,
             msr: true,
@@ -811,8 +912,14 @@ impl LinuxCpl0SetMembers {
             msr_cstar: true,
             msr_sysenter_cs: true,
             msr_sysenter_stack: true,
+            msr_syscall_mask: true,
+            msr_kernel_gs_base: true,
+            msr_tdx_keyid_partitioning_read: false,
+            fp_state: false,
+            int3: false,
             fetch_cache: true,
             diagnostic_past_c7: false,
+            irq: true,
             ..Self::minimal()
         }
     }
@@ -827,9 +934,10 @@ impl LinuxCpl0SetMembers {
 /// Nothing is executed that the set does not admit: the first inadmissible instruction is the
 /// stop (`Unsupported`), and the segment caches the loader left are not touched.
 ///
-/// CPUID boundary (S4-38L4, checkpoint C7): with `members.cpuid` the run stops BEFORE retiring a
-/// `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`, `cpuid_divergence_leaf`
-/// set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
+/// CPUID boundary (S4-38L4, checkpoint C7), for the `DiagnosticV1` profile only (the default; for
+/// `X8664V1Stage4A` see the profile paragraph below): with `members.cpuid` the run stops BEFORE
+/// retiring a `CPUID` whose EAX is 1 or 0x8000_0001 (`exit_kind` `cpuid_divergence`,
+/// `cpuid_divergence_leaf` set). The board does not answer those leaves with the DiagnosticV1 values (a made-up feature
 /// word would steer the kernel) and does not patch the kernel: the run ends at the honest edge.
 /// Other leaves (0, 0x8000_0000, ...) are answered by DiagnosticV1 as the set does. Results past
 /// the edge are diagnostic only. Without the member `CPUID` stays `Unsupported` (0xa2).
@@ -837,6 +945,11 @@ impl LinuxCpl0SetMembers {
 /// Diagnostic mode (S4-38L7, `members.diagnostic_past_c7`): the boundary is off. Leaf 1 and
 /// 0x8000_0001 are answered by DiagnosticV1 as every other leaf and the run goes on; the record
 /// carries `diagnostic_past_c7: true` and the result is NOT counted.
+///
+/// CPUID profile (S4-38L9a, `members.cpuid_profile`): the boundary above belongs to
+/// `DiagnosticV1`. With `X8664V1Stage4A` (the declared subset: TSC, FPU, FXSR) the boundary is off even
+/// without `diagnostic_past_c7`: leaf 1 and 0x8000_0001 are answered for what the subset declares
+/// and the member is named `cpuid:X8664V1Stage4A`.
 pub fn run_linux_direct_board_set(
     boot: &mut LinuxDirectBoot,
     input: &LinuxDirectInput<'_>,
@@ -844,7 +957,7 @@ pub fn run_linux_direct_board_set(
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
     let cli = CliProfile::NonPviLong64V1;
-    let cpuid = CpuidProfile::DiagnosticV1;
+    let cpuid = members.cpuid_profile;
     // The profile only names the member and seeds nothing under the cell, so it carries the
     // constant board EFER: `set_members` keeps `msr:EferReadOnlyV1(3328)` on every run.
     let msr = MsrProfile::EferReadOnlyV1(boot.board.efer());
@@ -863,6 +976,12 @@ pub fn run_linux_direct_board_set(
     // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP, kept by the board between runs.
     let sysenter_esp_cell = Cell::new(boot.board.guest_sysenter_esp());
     let sysenter_eip_cell = Cell::new(boot.board.guest_sysenter_eip());
+    // S4-38L7at: the guest IA32_SYSCALL_MASK, kept by the board between runs.
+    let syscall_mask_cell = Cell::new(boot.board.guest_syscall_mask());
+    // S4-38L7au: the guest IA32_KERNEL_GS_BASE, kept by the board between runs.
+    let kernel_gs_base_cell = Cell::new(boot.board.guest_kernel_gs_base());
+    // S4-38L9d: the guest FP state, kept by the board between runs.
+    let fp_cell = RefCell::new(boot.board.guest_fp().clone());
     let halt = HaltProfile::Long64V1;
     let mut names = vec!["cli".to_string()];
     let mut set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&cli);
@@ -872,7 +991,7 @@ pub fn run_linux_direct_board_set(
     }
     if members.cpuid {
         set = set.with_cpuid(&cpuid);
-        names.push("cpuid:DiagnosticV1".into());
+        names.push(format!("cpuid:{cpuid:?}"));
     }
     if members.rdtsc {
         set = set.with_rdtsc();
@@ -906,6 +1025,26 @@ pub fn run_linux_direct_board_set(
         set = set.with_msr_sysenter_stack_write(&sysenter_esp_cell, &sysenter_eip_cell);
         names.push("msr:sysenter_stack_write".into());
     }
+    if members.msr_syscall_mask {
+        set = set.with_msr_syscall_mask_write(&syscall_mask_cell);
+        names.push("msr:syscall_mask_write".into());
+    }
+    if members.msr_kernel_gs_base {
+        set = set.with_msr_kernel_gs_base_write(&kernel_gs_base_cell);
+        names.push("msr:kernel_gs_base_write".into());
+    }
+    if members.msr_tdx_keyid_partitioning_read {
+        set = set.with_msr_tdx_keyid_partitioning_read();
+        names.push("msr:tdx_keyid_partitioning_read".into());
+    }
+    if members.fp_state {
+        set = set.with_fp_state(&fp_cell);
+        names.push("fp_state".into());
+    }
+    if members.int3 {
+        set = set.with_int3();
+        names.push("int3".into());
+    }
     if members.halt {
         set = set.with_halt(&halt);
         names.push("halt".into());
@@ -913,6 +1052,11 @@ pub fn run_linux_direct_board_set(
     if members.pio_u8 {
         set = set.with_pio_u8();
         names.push("pio_u8".into());
+    }
+    let sti = StiProfile::NonPviLong64V1;
+    if members.sti {
+        set = set.with_sti(&sti);
+        names.push("sti".into());
     }
     if members.popf_cpl0 {
         set = set.with_popf_cpl0();
@@ -922,11 +1066,17 @@ pub fn run_linux_direct_board_set(
         set = set.with_pci_config(&pci_cell);
         names.push("pci_config".into());
     }
+    if members.irq {
+        names.push("irq".into());
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
-        members.cpuid && !members.diagnostic_past_c7,
+        // The C7 boundary exists for the made-up DiagnosticV1 identity only (S4-38L9a): a
+        // subset profile answers leaves 1 and 0x8000_0001 for what it declares.
+        members.cpuid && !members.diagnostic_past_c7 && cpuid == CpuidProfile::DiagnosticV1,
         members.fetch_cache,
+        members.irq,
     );
     // The EFER the guest left stays whatever way the run ended.
     boot.board.set_guest_efer(efer_cell.get());
@@ -937,6 +1087,10 @@ pub fn run_linux_direct_board_set(
     boot.board.set_guest_sysenter_cs(sysenter_cs_cell.get());
     boot.board.set_guest_sysenter_esp(sysenter_esp_cell.get());
     boot.board.set_guest_sysenter_eip(sysenter_eip_cell.get());
+    boot.board.set_guest_syscall_mask(syscall_mask_cell.get());
+    boot.board
+        .set_guest_kernel_gs_base(kernel_gs_base_cell.get());
+    boot.board.set_guest_fp(fp_cell.into_inner());
     let report = result.map_err(|failure| {
         let mut error = LinuxDirectError::new("run_failed", "run", failure.error);
         error.retired = Some(failure.retired);
@@ -953,6 +1107,7 @@ pub fn run_linux_direct_board_set(
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
             exceptions_delivered: report.exceptions_delivered,
+            irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
     ))
@@ -2989,6 +3144,110 @@ mod tests {
         );
     }
 
+    fn host_read_port(boot: &mut LinuxDirectBoot, port: u16) -> u32 {
+        boot.board
+            .bus_mut()
+            .read_port(crate::PortAddress::new(port), crate::AccessWidth::Byte)
+            .expect("host port read")
+    }
+
+    #[test]
+    fn set_facade_out_imm8_al_programs_pit_channel_2_through_the_bus() {
+        // S4-38L7bk. CLI; MOV AL,0x01; OUT 0x61,AL (gate high); MOV AL,0xA0; OUT 0x43,AL
+        // (channel 2, MSB only, mode 0); MOV AL,0x10; OUT 0x42,AL (reload 0x1000); HLT. The same
+        // programming by the host gives the reference: the guest reaches the PIT only through
+        // the three `E6 ib` writes (RDX stays 0, so no DX form is involved).
+        let code = [
+            0xFA, 0xB0, 0x01, 0xE6, 0x61, 0xB0, 0xA0, 0xE6, 0x43, 0xB0, 0x10, 0xE6, 0x42, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 8, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 14, "after the HLT");
+        assert_eq!(record.gpr[Register::Rax as usize] & 0xFF, 0x10);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        // Port B bit 0 (the gate) was written through port 0x61.
+        assert_eq!(host_read_port(&mut boot, 0x61) & 1, 1);
+        // The channel 2 counter answers now (MSB-only mode 0, reload 0x1000): its MSB is the
+        // value the host programming gives on a twin board.
+        let guest_counter = host_read_port(&mut boot, 0x42);
+        let (mut twin, _) = boot_with_entry(&code);
+        program_pit_channel_2(&mut twin);
+        assert_eq!(guest_counter, host_read_port(&mut twin, 0x42));
+        assert_eq!(guest_counter, 0x10, "reload 0x1000, MSB only");
+    }
+
+    #[test]
+    fn set_facade_in_al_imm8_reads_the_pit_through_the_bus_and_ticks_once() {
+        // S4-38L7bk. MOV EAX,0x123456AB; IN AL,0x42; HLT with channel 2 programmed by the host:
+        // AL is the byte the board gives (the same as `IN AL,DX` with DX = 0x42), RAX[63:8] is
+        // kept and RDX is not touched. The PIT read ticks the board clock once, like the DX form.
+        let mut code = vec![0xFA];
+        code.extend(mov_eax(0x1234_56AB));
+        code.extend([0xE4, 0x42, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        program_pit_channel_2(&mut boot);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 1 + 5 + 2 + 1);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rax as usize] & !0xFF, 0x1234_5600);
+        assert_eq!(record.virtual_ns, 4 + 1_000, "one timer read, 1 us");
+        // The DX form on a twin board reads the same byte.
+        let mut dx_code = vec![0xFA];
+        dx_code.extend(mov_eax(0x1234_56AB));
+        dx_code.extend(mov_edx(0x42));
+        dx_code.extend([0xEC, 0xF4]);
+        let (mut twin, twin_file) = boot_with_entry(&dx_code);
+        program_pit_channel_2(&mut twin);
+        let twin_record = run_set_facade(&mut twin, &twin_file, 64, halting_default());
+        assert_eq!(twin_record.exit, PagedProbeExit::Halted, "{twin_record:?}");
+        assert_eq!(
+            record.gpr[Register::Rax as usize],
+            twin_record.gpr[Register::Rax as usize]
+        );
+    }
+
+    #[test]
+    fn set_facade_out_in_imm8_are_unsupported_without_the_pio_member() {
+        for (code, opcode) in [
+            (vec![0xFA, 0xB0, 0x01, 0xE6, 0x61, 0xF4], 0xE6u8),
+            (vec![0xFA, 0xB0, 0x01, 0xE4, 0x61, 0xF4], 0xE4),
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                64,
+                LinuxCpl0SetMembers {
+                    pio_u8: false,
+                    ..halting_default()
+                },
+            );
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!((record.retired, record.rip), (2, ENTRY + 3));
+            assert_eq!(record.gpr[Register::Rax as usize] & 0xFF, 0x01);
+            assert_eq!(record.virtual_ns, 2, "no port access, no tick");
+            assert_eq!(host_read_port(&mut boot, 0x61) & 1, 0, "port B untouched");
+        }
+    }
+
+    #[test]
+    fn set_facade_out_imm8_to_an_unmapped_port_is_the_port_io_exit_with_rip_on_the_instruction() {
+        // CLI; MOV AL,1; OUT 0x44,AL; HLT. Nothing is bound at 0x44 (the PIT owns 0x40..=0x43).
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xB0, 0x01, 0xE6, 0x44, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, halting_default());
+        let error = crate::BusAccessError::UnmappedPort(crate::PortAddress::new(0x44));
+        assert_eq!(record.exit, PagedProbeExit::PortIo(error), "{record:?}");
+        assert_eq!((record.retired, record.rip), (2, ENTRY + 3));
+    }
+
     #[test]
     fn set_facade_mov_rax_cr3_returns_the_board_cr3_under_the_owned_cr3_member() {
         // S4-38L4c: CLI; MOV RAX, CR3; HLT (and the REX.W spelling). `cpu_owned_cr3` is part of
@@ -3111,6 +3370,67 @@ mod tests {
             PagedProbeExit::Unsupported { opcode: 0x31 },
             "{record:?}"
         );
+    }
+
+    // ---- S4-38L7bh: RDTSC in the Linux board set ----
+
+    #[test]
+    fn rdtsc_runs_through_the_linux_board_set_and_ticks_the_virtual_clock() {
+        // RDTSC; MOV RBX, RAX; RDTSC; MOV RCX, RAX; RDTSC; HLT, through the board set of the
+        // runner (`linux_default`, plus `halt` for the stop). Each RDTSC ends its quantum after
+        // one instruction; the clock moves 1 ns per retired instruction and 1000 ns per RDTSC
+        // (the tick is applied after the quantum, the read is at its start). tsc_hz is 1 GHz,
+        // so the TSC value is the clock in ns:
+        //   q1: RDTSC reads 0                         -> clock 1 + 1000 = 1001
+        //   q2: MOV, RDTSC reads 1001                 -> clock 1001 + 2 + 1000 = 2003
+        //   q3: MOV, RDTSC reads 2003                 -> clock 2003 + 2 + 1000 = 3005
+        //   q4: HLT                                   -> clock 3006
+        let code = [
+            0x0F, 0x31, 0x48, 0x89, 0xC3, 0x0F, 0x31, 0x48, 0x89, 0xC1, 0x0F, 0x31, 0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert!(record.set_members.contains(&"rdtsc".to_string()));
+        assert_eq!((record.retired, record.quanta), (6, 4));
+        assert_eq!(record.virtual_ns, 3_006);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 1_001);
+        assert_eq!(record.gpr[Register::Rax as usize], 2_003);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.tsc_hz, 1_000_000_000);
+    }
+
+    #[test]
+    fn rdtsc_stays_refused_with_0x31_when_the_member_is_off() {
+        // The board set without the member: the bare RDTSC is the stop, nothing retired, the
+        // clock does not tick for it.
+        let (mut boot, file) = boot_with_entry(&[0x0F, 0x31, 0xF4]);
+        let members = LinuxCpl0SetMembers {
+            rdtsc: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{record:?}"
+        );
+        assert_eq!((record.retired, record.virtual_ns), (0, 0));
+        assert!(!record.set_members.contains(&"rdtsc".to_string()));
+        // The minimal set refuses it as well.
+        let (mut boot, file) = boot_with_entry(&[0x0F, 0x31, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::minimal());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x31 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0);
     }
 
     // ---- S4-38L6b: WRMSR/RDMSR IA32_GS_BASE through the board facade ----
@@ -3527,6 +3847,588 @@ mod tests {
         );
     }
 
+    // ---- S4-38L7az: FS/GS-based OR m32, r32 and m64, r64 through the board facade ----
+
+    #[test]
+    fn gs_or_dword_after_wrmsr_gs_base_ors_edx_into_guest_memory_at_the_boundary_form() {
+        const BASE: u64 = 0x0200_0000;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,cell;
+        // MOV [BASE+0x10],RAX (plain); MOV EDX,0xf; OR %edx,%gs:disp(%rip) landing on effective
+        // address 0x10 (`65 09 15`, the S4-38L7ay Linux boundary form); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(0xdead_beef_0000_00f0));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0xBA, 0x0F, 0x00, 0x00, 0x00]);
+        let next_rip = ENTRY + code.len() as u64 + 7;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x09, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store, MOV edx, OR, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let cell = guest_qword(&mut boot, BASE + 0x10);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x0f,
+            "source kept"
+        );
+        // 0xf0 | 0xf = 0xff in the low dword; the upper dword is not touched.
+        assert_eq!(
+            cell, 0xdead_beef_0000_00ff,
+            "only the low dword is rewritten"
+        );
+        // 0xff: PF only (CF, OF, SF, ZF cleared).
+        assert_eq!(state.rflags & 0x8c5, 1 << 2, "{:#x}", state.rflags);
+    }
+
+    #[test]
+    fn fs_or_qword_after_wrmsr_fs_base_ors_rdx_into_guest_memory() {
+        const BASE: u64 = 0x0200_0000;
+        // As above with the FS base (MSR 0xC0000100) and `64 48 09 15` (OR %rdx,%fs:disp(%rip)).
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(0x8000_0000_0000_0001));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0xBA]);
+        code.extend(2u64.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x64, 0x48, 0x09, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 10, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let cell = guest_qword(&mut boot, BASE + 0x10);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 2, "source kept");
+        assert_eq!(cell, 0x8000_0000_0000_0003);
+        // 0x8000_0000_0000_0003: SF and PF (two ones in the low byte).
+        assert_eq!(
+            state.rflags & 0x8c5,
+            (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    // ---- S4-38L7bc: FS/GS-based ADD m32, r32 and m64, r64 through the board facade ----
+
+    /// CLI; WRMSR `msr` = `BASE` (the used base) and the other base MSR = `DISTRACTOR`; guest
+    /// qwords `before`/`cell`/`after` at `BASE + 0x8`/`0x10`/`0x18`; MOV RAX,`addend`; `opcode`
+    /// (`65 48 01 05`, ...) with a disp32 landing on `BASE + 0x10`; HLT. Returns the board, the run
+    /// record and the number of instructions up to and including the HLT.
+    fn run_segment_add(
+        used_msr: u32,
+        other_msr: u32,
+        opcode: &[u8],
+        guest: [u64; 3],
+        addend: u64,
+    ) -> (LinuxDirectBoot, LinuxStopRecord, u64) {
+        const BASE: u64 = 0x0200_0000;
+        const DISTRACTOR: u32 = 0x0300_0000;
+        let mut code = vec![0xFA, 0xB9];
+        code.extend(used_msr.to_le_bytes());
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9]);
+        code.extend(other_msr.to_le_bytes());
+        code.extend(mov_eax(DISTRACTOR));
+        code.extend([0x0F, 0x30]);
+        for (offset, value) in [(0x8u8, guest[0]), (0x10, guest[1]), (0x18, guest[2])] {
+            code.extend(mov_rax_imm64(value));
+            code.extend([0x48, 0x89, 0x04, 0x25, offset, 0x00, 0x00, 0x02]);
+        }
+        code.extend(mov_rax_imm64(addend));
+        // ADD: the prefix bytes of `opcode` (all but the trailing ModRM 0x05) + ModRM + disp32.
+        let next_rip = ENTRY + code.len() as u64 + opcode.len() as u64 + 4;
+        let disp = (0x10u64.wrapping_sub(next_rip)) as u32;
+        code.extend(opcode);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        // CLI, MOV ECX, MOV EAX, XOR, WRMSR, MOV ECX, MOV EAX, WRMSR, 3 x (MOV RAX, store),
+        // MOV RAX, ADD, HLT.
+        (boot, record, 8 + 6 + 1 + 1 + 1)
+    }
+
+    #[test]
+    fn gs_add_qword_after_wrmsr_gs_base_adds_rax_into_guest_memory_at_the_boundary_form() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 01 05 disp32` = `addq %rax, %gs:disp(%rip)` (the S4-38L7bb Linux boundary form),
+        // GS base = BASE and a distractor FS base. 0x7fff_ffff_ffff_fff0 + 0x10 overflows to the
+        // sign bit.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x01, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x7fff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0x8000_0000_0000_0000);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x10,
+            "source kept"
+        );
+        // 0x8000_0000_0000_0000: OF, SF and PF (zero low byte); no CF, AF, ZF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_add_dword_after_wrmsr_fs_base_wraps_the_low_dword_and_keeps_the_upper_half() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 01 05 disp32` = `addl %eax, %fs:disp(%rip)`, FS base = BASE and a distractor GS
+        // base. The low dword 0xffff_fff0 + 0x20 wraps to 0x10 with CF; the upper dword stays.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x01, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xdead_beef_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0xaaaa_bbbb_0000_0020,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10), 0xdead_beef_0000_0010);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xaaaa_bbbb_0000_0020,
+            "source kept"
+        );
+        // 0x10: CF only (one bit set, so no PF; no AF, ZF, SF, OF).
+        assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
+    }
+
+    // ---- S4-38L7bd: FS/GS-based ADD r32, m32 and r64, m64 through the board facade ----
+    // The destination is RAX (`run_segment_add` loads RAX last); the memory qword is only read.
+
+    #[test]
+    fn gs_add_load_qword_after_wrmsr_gs_base_adds_guest_memory_into_rax_and_leaves_it_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 03 05 disp32` = `add %gs:disp(%rip), %rax` (the S4-38L7bc Linux boundary form
+        // with RAX as the destination), GS base = BASE and a distractor FS base.
+        // RAX 0x10 + 0x7fff_ffff_ffff_fff0 overflows to the sign bit.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x03, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x7fff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x7fff_ffff_ffff_fff0,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8000_0000_0000_0000
+        );
+        // 0x8000_0000_0000_0000: OF, SF and PF (zero low byte); no CF, AF, ZF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_add_load_dword_after_wrmsr_fs_base_zero_extends_into_rax_and_leaves_memory_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 03 05 disp32` = `add %fs:disp(%rip), %eax`, FS base = BASE and a distractor GS
+        // base. EAX 0xffff_fff0 + the low dword 0x20 of the memory qword wraps to 0x10 with CF;
+        // the upper half of RAX is dropped (zero-extension).
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x03, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_0000_0020,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_ffff_fff0,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_0000_0020,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x10);
+        // 0x10: CF only (one bit set, so no PF; no AF, ZF, SF, OF).
+        assert_eq!(state.rflags & 0x8d5, 1, "{:#x}", state.rflags);
+    }
+
+    // ---- S4-38L7be: FS/GS-based CMP r32, m32 and r64, m64 through the board facade ----
+    // Reuses `run_segment_add` (the same code layout, `3B` instead of `03`): RAX is the register
+    // operand, the memory qword is only read, nothing is written and RAX does not change.
+
+    #[test]
+    fn gs_cmp_load_qword_after_wrmsr_gs_base_sets_flags_and_changes_nothing_else() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 3b 05 disp32` = `cmp %gs:disp(%rip), %rax`, GS base = BASE and a distractor FS
+        // base. RAX 0x7fff_ffff_ffff_ffff - 0xffff_ffff_ffff_fff0 (a borrow, and a signed
+        // overflow: positive minus negative gives a negative) = 0x8000_0000_0000_000f: CF, OF,
+        // SF and PF (four bits in the low byte); no AF, ZF.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x3b, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xffff_ffff_ffff_fff0,
+                0x2222_2222_2222_2222,
+            ],
+            0x7fff_ffff_ffff_ffff,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xffff_ffff_ffff_fff0,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x7fff_ffff_ffff_ffff,
+            "CMP does not write the register"
+        );
+        assert_eq!(
+            state.rflags & 0x8d5,
+            1 | (1 << 11) | (1 << 7) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn fs_cmp_load_dword_after_wrmsr_fs_base_compares_the_low_dwords_only() {
+        const BASE: u64 = 0x0200_0000;
+        // `64 3b 05 disp32` = `cmp %fs:disp(%rip), %eax`, FS base = BASE and a distractor GS
+        // base. The low dwords are 5 and 0x20 (the upper halves differ and are ignored):
+        // 5 - 0x20 = 0xffff_ffe5 with a borrow: CF and SF only (five bits in the low byte, so no
+        // PF; no AF, ZF, OF). RAX is not modified, upper half included.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x64, 0x3b, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_0000_0020,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0005,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_0000_0020,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xdead_beef_0000_0005
+        );
+        assert_eq!(state.rflags & 0x8d5, 1 | (1 << 7), "{:#x}", state.rflags);
+    }
+
+    // ---- S4-38L7bj: FS/GS-based CMOVcc r32, m32 and r64, m64 through the board facade ----
+    // Reuses `run_segment_add`: RAX is the destination, the memory qword is only read. The helper's
+    // `XOR EDX,EDX` leaves ZF = 1 (and PF = 1) for the CMOVE; the not-taken cases put a
+    // `TEST RAX,RAX` (`48 85 c0`, one more retired instruction) in front, which clears ZF.
+
+    #[test]
+    fn gs_cmove_qword_with_zf_set_after_wrmsr_gs_base_loads_rax_and_leaves_memory_unchanged() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 48 0f 44 05 disp32` = `cmove %gs:disp(%rip), %rax`, GS base = BASE and a distractor
+        // FS base; ZF = 1 from the helper's XOR, so the qword is moved.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x48, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x8765_4321_0fed_cba9,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8765_4321_0fed_cba9,
+            "memory unchanged"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x8), 0x1111_1111_1111_1111);
+        assert_eq!(guest_qword(&mut boot, BASE + 0x18), 0x2222_2222_2222_2222);
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        assert_eq!(
+            state.fs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8765_4321_0fed_cba9
+        );
+        // CMOVE keeps the flags of the XOR: ZF and PF.
+        assert_eq!(
+            state.rflags & 0x8d5,
+            (1 << 6) | (1 << 2),
+            "{:#x}",
+            state.rflags
+        );
+    }
+
+    #[test]
+    fn gs_cmove_dword_with_zf_set_zero_extends_the_loaded_dword_into_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `65 0f 44 05 disp32` = `cmove %gs:disp(%rip), %eax` (the boundary form with EAX).
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0101,
+            0xC000_0100,
+            &[0x65, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_1122_3344,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0010,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_1122_3344,
+            "memory unchanged"
+        );
+        let state = boot.board.state();
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x0000_0000_1122_3344
+        );
+        assert_eq!(state.rflags & 0x8d5, (1 << 6) | (1 << 2));
+    }
+
+    #[test]
+    fn fs_cmove_dword_with_zf_clear_still_zeroes_the_upper_half_of_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `48 85 c0` = `test %rax,%rax` (RAX non-zero: ZF = 0, PF = 0 for the low byte 0x10,
+        // SF = 1 from bit 63 of 0xdead_beef_0000_0010, CF = OF = 0), then `64 0f 44 05 disp32` = `cmove %fs:disp(%rip), %eax` with FS
+        // base = BASE and a distractor GS base. The move is not taken: EAX keeps 0x10, bits 63:32
+        // are zeroed; the memory is read (not written) and nothing else changes.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x48, 0x85, 0xc0, 0x64, 0x0f, 0x44, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0xaaaa_bbbb_1122_3344,
+                0x2222_2222_2222_2222,
+            ],
+            0xdead_beef_0000_0010,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired + 1, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0xaaaa_bbbb_1122_3344,
+            "memory unchanged"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.fs_base, BASE);
+        assert_eq!(
+            state.gs_base, 0x0300_0000,
+            "the distractor base is not used"
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x10);
+        assert_eq!(state.rflags & 0x8d5, 1 << 7, "{:#x}", state.rflags);
+    }
+
+    #[test]
+    fn fs_cmovne_qword_with_zf_clear_after_wrmsr_fs_base_loads_rax() {
+        const BASE: u64 = 0x0200_0000;
+        // `48 85 c0` clears ZF; `64 48 0f 45 05 disp32` = `cmovne %fs:disp(%rip), %rax` moves.
+        let (mut boot, record, retired) = run_segment_add(
+            0xC000_0100,
+            0xC000_0101,
+            &[0x48, 0x85, 0xc0, 0x64, 0x48, 0x0f, 0x45, 0x05],
+            [
+                0x1111_1111_1111_1111,
+                0x8765_4321_0fed_cba9,
+                0x2222_2222_2222_2222,
+            ],
+            0x10,
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, retired + 1, "{record:?}");
+        let state = boot.board.state();
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0x8765_4321_0fed_cba9
+        );
+        assert_eq!(
+            guest_qword(&mut boot, BASE + 0x10),
+            0x8765_4321_0fed_cba9,
+            "memory unchanged"
+        );
+    }
+
     // ---- S4-38L7ah: FS/GS-based CMP m32/m64, imm8 through the board facade ----
 
     /// CLI; WRMSR `msr` (base chosen so that `base + next_rip + disp` lands on `BASE + 0x10`, the
@@ -3822,6 +4724,110 @@ mod tests {
         assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x77);
         assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x77);
         assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+    }
+
+    // ---- S4-38L7ay: LOCK XADD m64, r64 and m32, r32 through the board facade ----
+
+    #[test]
+    fn lock_xadd_qword_adds_to_guest_memory_and_returns_the_old_value_at_the_boundary_form() {
+        // MOV RDI,0x0200_0040; MOV RAX,5; MOV [RDI],RAX; MOV RAX,-1;
+        // LOCK XADD [RDI],RAX (f0 48 0f c1 07: the S4-38L7ax boundary bytes; the board adapter
+        // has no atomic fetch-add, so this path used to end in a backend error);
+        // MOV RCX,[RDI]; HLT.
+        let mut code = vec![0x48, 0xBF];
+        code.extend(0x0200_0040u64.to_le_bytes());
+        code.extend(mov_rax_imm64(5));
+        code.extend([0x48, 0x89, 0x07]);
+        code.extend(mov_rax_imm64(u64::MAX));
+        code.extend([0xF0, 0x48, 0x0F, 0xC1, 0x07]);
+        code.extend([0x48, 0x8B, 0x0F]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // [m] = 5 + (-1) = 4; RAX receives the old value 5; the sum 5 + (-1) carries (CF) and has
+        // the low nibble carry (AF).
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 4);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 5);
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.rflags & (1 << 4), 1 << 4, "AF");
+        assert_eq!(state.rflags & (1 << 6), 0, "ZF");
+    }
+
+    #[test]
+    fn lock_xadd_dword_adds_to_guest_memory_and_zero_extends_the_old_value() {
+        // MOV RBX,0x0200_0000; MOV RAX,0x7fffffff; MOV [RBX+0x58],EAX; MOV RAX,0x1_0000_0001;
+        // LOCK XADD [RBX+0x58],EAX (f0 0f c1 43 58); MOV ECX,[RBX+0x58]; HLT.
+        let mut code = vec![0x48, 0xBB];
+        code.extend(0x0200_0000u64.to_le_bytes());
+        code.extend(mov_rax_imm64(0x7fff_ffff));
+        code.extend([0x89, 0x43, 0x58]);
+        code.extend(mov_rax_imm64(0x1_0000_0001));
+        code.extend([0xF0, 0x0F, 0xC1, 0x43, 0x58]);
+        code.extend([0x8B, 0x4B, 0x58]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 7, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        // 0x7fff_ffff + 1 = 0x8000_0000 (OF, SF, AF, PF); EAX = old value, zero-extended.
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x8000_0000);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x7fff_ffff);
+        assert_eq!(state.rflags & (1 << 11), 1 << 11, "OF");
+        assert_eq!(state.rflags & (1 << 7), 1 << 7, "SF");
+    }
+
+    #[test]
+    fn plain_xadd_memory_form_without_lock_is_refused_in_the_cpl0_set() {
+        // The set models only the LOCK form; the plain `48 0F C1 /r` memory form is refused
+        // through the facade with opcode 0xC1 after the one preceding MOV retired.
+        let mut code = mov_rax_imm64(5);
+        code.extend([0x48, 0x0F, 0xC1, 0x14, 0x25, 0x20, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0xC1 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        assert_eq!(boot.board.state().gpr[od_isa::Register::Rax as usize], 5);
     }
 
     // ---- S4-38L7z: LOCK ADD m32, imm8 on an RSP base through the board facade ----
@@ -4276,6 +5282,391 @@ mod tests {
         assert_eq!(guest_qword(&mut boot, 0x0200_00F8), next);
     }
 
+    // ---- S4-38L7ba: FS/GS-based MOVSX r32/r64, m8 through the board facade ----
+
+    #[test]
+    fn gs_movsx_byte_after_wrmsr_gs_base_sign_extends_into_rax_r8_and_ebx_ignoring_the_fs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE;
+        // plain byte stores: [BASE+0x10] = 0x80, [BASE+0x11] = 0x7f, [FS_DISTRACTOR+0x10] = 0x11;
+        // SUB DL,1 (0 - 1 borrows: CF = 1); markers in RAX, R8 and RBX;
+        // MOV ECX,0x10; MOVSX RAX,%gs:(%rcx) (`65 48 0f be 01`, the S4-38L7az boundary form);
+        // MOV EDX,5; MOVSX R8,%gs:0xc(%rdx) (`65 4c 0f be 42 0c`, the next instruction of the
+        // boundary; effective address 0x11); MOVSX EBX,%gs:0x10 (`65 0f be 1c 25 disp32`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x80]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0x7F]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x11]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB8]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x48, 0xBB]);
+        code.extend(0x7777_7777_7777_7777u64.to_le_bytes());
+        code.extend([0xB9, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x48, 0x0F, 0xBE, 0x01]);
+        code.extend([0xBA, 0x05, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x4C, 0x0F, 0xBE, 0x42, 0x0C]);
+        code.extend([0x65, 0x0F, 0xBE, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 22, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10) & 0xFFFF, 0x7F80);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        // The FS distractor holds 0x11: a result of 0x11 would mean the wrong base was used.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            0xFFFF_FFFF_FFFF_FF80
+        );
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 0x7F);
+        assert_eq!(state.gpr[od_isa::Register::Rbx as usize], 0xFFFF_FF80);
+        // Nothing else changed: CF set by SUB DL,1 survives and the index registers keep their values.
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x10);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 5);
+    }
+
+    #[test]
+    fn fs_movsx_byte_after_wrmsr_fs_base_loads_r9_and_eax_ignoring_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const GS_DISTRACTOR: u64 = 0x0300_0000;
+        // As above with the roles swapped: IA32_FS_BASE = BASE (MSR 0xC0000100) and the GS base
+        // as the distractor; `64 4d 0f be 4b 03` = MOVSX R9,%fs:3(%r11) (REX.W, REX.R, REX.B) and
+        // `64 41 0f be 02` = MOVSX EAX,%fs:(%r10) (REX.B, no REX.W).
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(GS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x00, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0xFF]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x22]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB9]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x41, 0xBB, 0x0D, 0x00, 0x00, 0x00]);
+        code.extend([0x41, 0xBA, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x64, 0x4D, 0x0F, 0xBE, 0x4B, 0x03]);
+        code.extend([0x64, 0x41, 0x0F, 0xBE, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 18, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!((state.fs_base, state.gs_base), (BASE, GS_DISTRACTOR));
+        assert_eq!(
+            state.gpr[od_isa::Register::R9 as usize],
+            0xFFFF_FFFF_FFFF_FFFF
+        );
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0xFFFF_FFFF);
+    }
+
+    // ---- S4-38L7bf: FS/GS-based MOVZX r32/r64, m8 through the board facade ----
+
+    #[test]
+    fn gs_movzx_byte_after_wrmsr_gs_base_zero_extends_into_eax_r8_and_ebx_ignoring_the_fs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE;
+        // plain byte stores: [BASE+0x10] = 0x80, [BASE+0x11] = 0xFF, [FS_DISTRACTOR+0x10] = 0x11;
+        // SUB DL,1 (0 - 1 borrows: CF = 1); markers in RAX, R8 and RBX;
+        // MOV EDI,0x10; MOVZX EAX,%gs:(%rdi) (`65 0f b6 07`, the S4-38L7be boundary form);
+        // MOV EDX,5; MOVZX R8,%gs:0xc(%rdx) (`65 4c 0f b6 42 0c`, effective address 0x11);
+        // MOVZX EBX,%gs:0x10 (`65 0f b6 1c 25 disp32`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x80]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xFF]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x11]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB8]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x48, 0xBB]);
+        code.extend(0x7777_7777_7777_7777u64.to_le_bytes());
+        code.extend([0xBF, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB6, 0x07]);
+        code.extend([0xBA, 0x05, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x4C, 0x0F, 0xB6, 0x42, 0x0C]);
+        code.extend([0x65, 0x0F, 0xB6, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x00]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 22, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // The neighbouring guest bytes are unchanged (nothing is written by the loads).
+        assert_eq!(guest_qword(&mut boot, BASE + 0x10) & 0xFFFF, 0xFF80);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        // The FS distractor holds 0x11: a result of 0x11 would mean the wrong base was used; the
+        // upper halves of the RAX/RBX markers are zeroed, R8 is a full 64-bit zero-extension.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x80);
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::Rbx as usize], 0x80);
+        // Nothing else changed: CF set by SUB DL,1 survives and the index registers keep their values.
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], 0x10);
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 5);
+    }
+
+    #[test]
+    fn fs_movzx_byte_after_wrmsr_fs_base_loads_r9_and_eax_ignoring_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const GS_DISTRACTOR: u64 = 0x0300_0000;
+        // As above with the roles swapped: IA32_FS_BASE = BASE (MSR 0xC0000100) and the GS base
+        // as the distractor; `64 4d 0f b6 4b 03` = MOVZX R9,%fs:3(%r11) (REX.W, REX.R, REX.B) and
+        // `64 41 0f b6 02` = MOVZX EAX,%fs:(%r10) (REX.B, no REX.W).
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(GS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x00, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0xFF]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x22]);
+        code.extend(mov_rax_imm64(0x5555_5555_5555_5555));
+        code.extend([0x49, 0xB9]);
+        code.extend(0x6666_6666_6666_6666u64.to_le_bytes());
+        code.extend([0x41, 0xBB, 0x0D, 0x00, 0x00, 0x00]);
+        code.extend([0x41, 0xBA, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x64, 0x4D, 0x0F, 0xB6, 0x4B, 0x03]);
+        code.extend([0x64, 0x41, 0x0F, 0xB6, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 18, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!((state.fs_base, state.gs_base), (BASE, GS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::R9 as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0xFF);
+        assert_eq!(state.gpr[od_isa::Register::R10 as usize], 0x10);
+        assert_eq!(state.gpr[od_isa::Register::R11 as usize], 0x0D);
+    }
+
+    // ---- S4-38L7bg: FS/GS-based CMPXCHG r/m8, r8 through the board facade ----
+
+    #[test]
+    fn gs_cmpxchg_byte_after_wrmsr_gs_base_stores_cl_on_equal_and_loads_al_on_not_equal() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE; plain byte stores:
+        // [BASE+0xf] = 0xAA, [BASE+0x10] = 0x42, [BASE+0x11] = 0xBB, [FS_DISTRACTOR+0x10] = 0x42;
+        // MOV EAX,0x42; MOV ECX,0x99; MOV EDI,0x10; CMPXCHG %cl,%gs:(%rdi) (`65 0f b0 0f`, the
+        // S4-38L7bf boundary form; equal: the byte becomes CL, ZF = 1, AL kept);
+        // MOV EAX,0x55555544; MOV EDI,0x11; CMPXCHG %cl,%gs:(%rdi) (0x44 vs 0xBB: not equal, AL
+        // becomes 0xBB with the upper RAX bytes kept, the byte is written back; CF/SF/AF/OF = 1,
+        // ZF/PF = 0); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x0F, 0x00, 0x00, 0x02, 0xAA]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x42]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xBB]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x42]);
+        code.extend(mov_eax(0x42));
+        code.extend([0xB9, 0x99, 0x00, 0x00, 0x00]);
+        code.extend([0xBF, 0x10, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB0, 0x0F]);
+        code.extend(mov_eax(0x5555_5544));
+        code.extend([0xBF, 0x11, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x0F, 0xB0, 0x0F]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 21, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // [BASE+0xf..=0x11]: the neighbours are unchanged, the equal compare stored CL (0x99), the
+        // failed one wrote the old byte (0xBB) back. The FS distractor byte is untouched.
+        assert_eq!(guest_qword(&mut boot, BASE + 0x0F) & 0xFF_FFFF, 0xBB_99AA);
+        assert_eq!(guest_qword(&mut boot, FS_DISTRACTOR + 0x10) & 0xFF, 0x42);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x5555_55BB);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x99);
+        assert_eq!(state.gpr[od_isa::Register::Rdi as usize], 0x11);
+        // 0x44 - 0xBB = 0x89: CF, AF, SF, OF set; ZF and PF clear.
+        assert_eq!(state.rflags & 0x8D5, 0x1 | 0x10 | 0x80 | 0x800);
+    }
+
+    #[test]
+    fn fs_cmpxchg_byte_after_wrmsr_fs_base_stores_r9b_ignoring_the_gs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const GS_DISTRACTOR: u64 = 0x0300_0000;
+        // As above with the roles swapped; `64 44 0f b0 0a` = CMPXCHG %r9b,%fs:(%rdx) (REX.R).
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(GS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x00, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x20, 0x00, 0x00, 0x02, 0x42]);
+        code.extend([0xC6, 0x04, 0x25, 0x20, 0x00, 0x00, 0x03, 0x42]);
+        code.extend(mov_eax(0x42));
+        code.extend([0x41, 0xB9, 0x66, 0x77, 0x00, 0x00]);
+        code.extend([0xBA, 0x20, 0x00, 0x00, 0x00]);
+        code.extend([0x64, 0x44, 0x0F, 0xB0, 0x0A]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 16, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE + 0x20) & 0xFF, 0x66);
+        assert_eq!(guest_qword(&mut boot, GS_DISTRACTOR + 0x20) & 0xFF, 0x42);
+        let state = boot.board.state();
+        assert_eq!((state.fs_base, state.gs_base), (BASE, GS_DISTRACTOR));
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x42);
+        assert_eq!(state.gpr[od_isa::Register::R9 as usize], 0x7766);
+        // Equal: ZF and PF set, everything else clear.
+        assert_eq!(state.rflags & 0x8D5, 0x40 | 0x4);
+    }
+
+    // ---- S4-38L7bb: FS/GS-based MOV r/m8, r8 through the board facade ----
+
+    #[test]
+    fn gs_movb_store_after_wrmsr_gs_base_stores_al_and_r8b_ignoring_the_fs_base() {
+        const BASE: u64 = 0x0200_0000;
+        const FS_DISTRACTOR: u64 = 0x0300_0000;
+        // CLI; WRMSR IA32_FS_BASE = FS_DISTRACTOR; WRMSR IA32_GS_BASE = BASE;
+        // plain byte stores: [BASE+0xf] = 0xAA, [BASE+0x10] = 0x00, [BASE+0x11] = 0xBB,
+        // [FS_DISTRACTOR+0x10] = 0x22; SUB DL,1 (0 - 1 borrows: CF = 1);
+        // MOV ECX,0x10; MOV EAX,0x5A; MOVB %al,%gs:(%rcx) (`65 88 01`, the S4-38L7ba boundary
+        // form); MOV R8D,0x7E; MOVB %r8b,%gs:2(%rcx) (`65 44 88 41 02`); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x00, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(FS_DISTRACTOR as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xB9, 0x01, 0x01, 0x00, 0xC0]);
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend([0xC6, 0x04, 0x25, 0x0F, 0x00, 0x00, 0x02, 0xAA]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02, 0x00]);
+        code.extend([0xC6, 0x04, 0x25, 0x11, 0x00, 0x00, 0x02, 0xBB]);
+        code.extend([0xC6, 0x04, 0x25, 0x10, 0x00, 0x00, 0x03, 0x22]);
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0xB9, 0x10, 0x00, 0x00, 0x00]);
+        code.extend(mov_eax(0x5A));
+        code.extend([0x65, 0x88, 0x01]);
+        code.extend([0x41, 0xB8, 0x7E, 0x00, 0x00, 0x00]);
+        code.extend([0x65, 0x44, 0x88, 0x41, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 20, "{record:?}");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        // Bytes BASE+0xf..: AA (kept), 5A (new), BB (kept), 7E (new), then zeros.
+        assert_eq!(guest_qword(&mut boot, BASE + 0x0F), 0x7EBB_5AAA);
+        // The FS distractor byte is untouched: a store through the wrong base would change it.
+        assert_eq!(guest_qword(&mut boot, FS_DISTRACTOR + 0x10) & 0xFF, 0x22);
+        let state = boot.board.state();
+        assert_eq!((state.gs_base, state.fs_base), (BASE, FS_DISTRACTOR));
+        // Nothing else changed: CF set by SUB DL,1 survives and the sources keep their values.
+        assert_eq!(state.rflags & 1, 1, "CF");
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], 0x5A);
+        assert_eq!(state.gpr[od_isa::Register::R8 as usize], 0x7E);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x10);
+    }
+
     // ---- S4-38L7ak: FS/GS-based MOVSXD r64, m32 through the board facade ----
 
     #[test]
@@ -4519,6 +5910,149 @@ mod tests {
         assert!(boot.board.state().tr.is_none());
     }
 
+    // ---- S4-38L7aw: LLDT r/m16 (register form, null selector) through the board facade ----
+
+    #[test]
+    fn lldt_si_with_a_null_selector_marks_ldtr_unusable_through_the_board() {
+        // XOR ESI,ESI; LLDT SI (`0f 00 d6`, the S4-38L7av boundary bytes); INC EAX (`ff c0`) to
+        // show that execution continues after the LLDT; HLT.
+        let code = [0x31, 0xF6, 0x0F, 0x00, 0xD6, 0xFF, 0xC0, 0xF4];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(
+            boot.board.state().ldtr_null_selector,
+            None,
+            "the board entry state has no LDTR value"
+        );
+        let rax_before = boot.board.state().gpr[od_isa::Register::Rax as usize];
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "XOR, LLDT, INC, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.ldtr_null_selector, Some(0));
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            rax_before.wrapping_add(1) & 0xffff_ffff
+        );
+        // The GDTR is the board entry GDTR; TR is still not modeled. The stop record carries no
+        // LDTR field: the state is read through the board.
+        let gdtr = state.gdtr.expect("the board models a GDTR");
+        assert_eq!((gdtr.base, gdtr.limit), (0x12_0000, 31));
+        assert!(state.tr.is_none());
+    }
+
+    #[test]
+    fn lldt_si_with_a_non_null_selector_is_refused_with_opcode_0x00_through_the_board() {
+        // MOV ESI,8; LLDT SI; HLT: the non-null load (GDT read, LDT descriptor checks) is not in
+        // the slice, so the facade stops on the LLDT with `Unsupported { opcode: 0x00 }`.
+        let mut code = vec![0xBE];
+        code.extend(8u32.to_le_bytes());
+        code.extend([0x0F, 0x00, 0xD6, 0xF4]);
+        let lldt_offset = code.len() as u64 - 4;
+        let (mut boot, file) = boot_with_entry(&code);
+        let lldt_rip = boot.board.state().rip + lldt_offset;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x00 },
+            "{record:?}"
+        );
+        assert_eq!(record.exit_kind, "unsupported");
+        assert_eq!(record.retired, 1, "only the MOV ESI retired: {record:?}");
+        assert_eq!(record.rip, lldt_rip, "{record:?}");
+        assert_eq!(record.rip_bytes[..3], [0x0F, 0x00, 0xD6], "{record:?}");
+        assert_eq!(boot.board.state().ldtr_null_selector, None);
+    }
+
+    // ---- S4-38L7ax: MOV DRn, r64 (register form, write only) through the board facade ----
+
+    #[test]
+    fn mov_dr7_rsi_stores_the_value_readable_through_the_board_state() {
+        // MOV ESI,0x400; MOV DR7,RSI (`0f 23 fe`, the S4-38L7aw boundary bytes); XOR ESI,ESI;
+        // MOV DR1,RSI (`0f 23 ce`); INC EAX to show execution continues; HLT.
+        let mut code = vec![0xBE];
+        code.extend(0x400u32.to_le_bytes());
+        code.extend([
+            0x0F, 0x23, 0xFE, 0x31, 0xF6, 0x0F, 0x23, 0xCE, 0xFF, 0xC0, 0xF4,
+        ]);
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(
+            boot.board.state().debug_registers,
+            [None; 8],
+            "the board entry state has no debug register value"
+        );
+        let rax_before = boot.board.state().gpr[od_isa::Register::Rax as usize];
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "MOV, MOV DR7, XOR, MOV DR1, INC, HLT");
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        let mut expected = [None; 8];
+        expected[7] = Some(0x400);
+        expected[1] = Some(0);
+        assert_eq!(state.debug_registers, expected);
+        assert_eq!(
+            state.gpr[od_isa::Register::Rax as usize],
+            rax_before.wrapping_add(1) & 0xffff_ffff
+        );
+    }
+
+    #[test]
+    fn mov_dr4_is_refused_with_opcode_0x23_through_the_board() {
+        // MOV DR4,RAX (`0f 23 e0`): the CR4.DE rule is not modeled, so the facade stops on it.
+        let code = [0x0F, 0x23, 0xE0, 0xF4];
+        let (mut boot, file) = boot_with_entry(&code);
+        let rip = boot.board.state().rip;
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x23 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0, "{record:?}");
+        assert_eq!(record.rip, rip, "{record:?}");
+        assert_eq!(record.rip_bytes[..3], [0x0F, 0x23, 0xE0], "{record:?}");
+        assert_eq!(boot.board.state().debug_registers, [None; 8]);
+    }
+
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
 
     #[test]
@@ -4658,6 +6192,85 @@ mod tests {
         // The qword store and its read back through the same GS base.
         assert_eq!(state.gpr[od_isa::Register::Rdx as usize], VALUE);
         assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE, "RAX kept");
+        // MOV changes no flag: the CF set by SUB DL,1 is still set.
+        assert_eq!(state.rflags & 1, 1, "CF");
+    }
+
+    // ---- S4-38L7av: FS/GS-based MOV m16, r16 through the board facade ----
+
+    #[test]
+    fn gs_mov_store_r16_after_wrmsr_gs_base_writes_two_bytes_and_keeps_the_neighbours() {
+        const BASE: u64 = 0x0200_0000;
+        const PATTERN: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+        const VALUE: u64 = 0x0123_4567_89AB_CDEF;
+        // CLI; MOV ECX,0xC0000101; MOV EAX,BASE; XOR EDX,EDX; WRMSR; MOV RAX,PATTERN;
+        // MOV [BASE+0x10],RAX; MOV [BASE+0x18],RAX (plain); MOV RAX,VALUE;
+        // SUB DL,1 (0 - 1 borrows: CF = 1); MOV EDX,0x55667788;
+        // MOV %ax,%gs:disp(%rip) (`65 66 89 05 disp32`, effective address 0x12: the S4-38L7au
+        // boundary shape, the next RIP is after the 8 bytes: only the two bytes 0x12..0x14
+        // change); MOV %dx,%gs:disp(%rip) (`65 66 89 15 disp32`, effective address 0x14);
+        // MOV RBX,[BASE+0x10] and MOV RCX,[BASE+0x18] (plain); HLT.
+        let mut code = vec![0xFA, 0xB9, 0x01, 0x01, 0x00, 0xC0];
+        code.extend(mov_eax(BASE as u32));
+        code.extend([0x31, 0xD2, 0x0F, 0x30]);
+        code.extend(mov_rax_imm64(PATTERN));
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x89, 0x04, 0x25, 0x18, 0x00, 0x00, 0x02]);
+        code.extend(mov_rax_imm64(VALUE));
+        code.extend([0x80, 0xEA, 0x01]);
+        code.extend([0xBA, 0x88, 0x77, 0x66, 0x55]);
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x12u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x66, 0x89, 0x05]);
+        code.extend(disp.to_le_bytes());
+        let next_rip = ENTRY + code.len() as u64 + 8;
+        let disp = (0x14u64.wrapping_sub(next_rip)) as u32;
+        code.extend([0x65, 0x66, 0x89, 0x15]);
+        code.extend(disp.to_le_bytes());
+        code.extend([0x48, 0x8B, 0x1C, 0x25, 0x10, 0x00, 0x00, 0x02]);
+        code.extend([0x48, 0x8B, 0x0C, 0x25, 0x18, 0x00, 0x00, 0x02]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 16,
+            "CLI, MOV, MOV, XOR, WRMSR, MOV, store x2, MOV, SUB, MOV EDX, GS word store x2, \
+             load x2, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        let state = boot.board.state();
+        assert_eq!(state.gs_base, BASE);
+        // Only the words at 0x12 (AX = 0xCDEF) and 0x14 (DX = 0x7788) changed; the bytes around
+        // them and the qword above stayed.
+        assert_eq!(
+            state.gpr[od_isa::Register::Rbx as usize],
+            0xAAAA_7788_CDEF_AAAA,
+            "bytes 0x10..0x18"
+        );
+        assert_eq!(
+            state.gpr[od_isa::Register::Rcx as usize],
+            PATTERN,
+            "bytes 0x18..0x20"
+        );
+        // The source registers are unchanged.
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], VALUE, "RAX kept");
+        assert_eq!(
+            state.gpr[od_isa::Register::Rdx as usize],
+            0x5566_7788,
+            "RDX kept"
+        );
         // MOV changes no flag: the CF set by SUB DL,1 is still set.
         assert_eq!(state.rflags & 1, 1, "CF");
     }
@@ -5030,6 +6643,60 @@ mod tests {
         assert_eq!(state.gpr[od_isa::Register::R8 as usize], 1 << 63);
         // Both bits were clear: CF = 0.
         assert_eq!(state.rflags & 1, 0);
+    }
+
+    // ---- S4-38L7bi: LOCK BTS m32/m64, imm8 through the board facade ----
+
+    #[test]
+    fn lock_bts_imm_sets_bits_in_guest_memory_and_leaves_neighbours_alone() {
+        const BASE: u64 = 0x0200_0100;
+        // MOV R12,BASE; MOV RDI,0x1100; MOV [R12],RDI; MOV [R12+8],RDI; MOV [R12-8],RDI;
+        // LOCK BTS $0,(%r12) (the S4-38L7bh boundary: qword bit 0 was clear, CF = 0, 0x1101);
+        // LOCK BTS $0x45,(%r12) without REX.W (dword bit 0x45 % 32 = 5, 0x1121);
+        // LOCK BTS $0,(%r12) again (bit already set: CF = 1, the value stays 0x1121);
+        // MOV RDX,[R12]; MOV RCX,[R12+8]; MOV RSI,[R12-8]; HLT.
+        let mut code = vec![0x49, 0xBC];
+        code.extend(BASE.to_le_bytes());
+        code.extend([0x48, 0xBF]);
+        code.extend(0x1100u64.to_le_bytes());
+        code.extend([0x49, 0x89, 0x3C, 0x24]);
+        code.extend([0x49, 0x89, 0x7C, 0x24, 0x08]);
+        code.extend([0x49, 0x89, 0x7C, 0x24, 0xF8]);
+        code.extend([0xF0, 0x49, 0x0F, 0xBA, 0x2C, 0x24, 0x00]);
+        code.extend([0xF0, 0x41, 0x0F, 0xBA, 0x2C, 0x24, 0x45]);
+        code.extend([0xF0, 0x49, 0x0F, 0xBA, 0x2C, 0x24, 0x00]);
+        code.extend([0x49, 0x8B, 0x14, 0x24]);
+        code.extend([0x49, 0x8B, 0x4C, 0x24, 0x08]);
+        code.extend([0x49, 0x8B, 0x74, 0x24, 0xF8]);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 12,
+            "2 MOV, 3 stores, 3 LOCK BTS, 3 loads, HLT"
+        );
+        assert!(
+            record.page_fault.is_none() && record.memory_error.is_none(),
+            "{record:?}"
+        );
+        assert_eq!(guest_qword(&mut boot, BASE), 0x1121);
+        assert_eq!(guest_qword(&mut boot, BASE + 8), 0x1100);
+        assert_eq!(guest_qword(&mut boot, BASE - 8), 0x1100);
+        let state = boot.board.state();
+        assert_eq!(state.gpr[od_isa::Register::Rdx as usize], 0x1121);
+        assert_eq!(state.gpr[od_isa::Register::Rcx as usize], 0x1100);
+        assert_eq!(state.gpr[od_isa::Register::Rsi as usize], 0x1100);
+        // The last LOCK BTS found its bit already set: CF = 1.
+        assert_eq!(state.rflags & 1, 1);
     }
 
     // ---- S4-38L7t: LOCK BTR m64, r64 through the board facade ----
@@ -5506,13 +7173,18 @@ mod tests {
         assert_eq!(record.retired, 4);
         assert_eq!(record.guest_star, 0x0023_0010_0000_0000);
 
-        // WRMSR of SYSCALL_MASK (0xC0000084) with the same values stays the stop, STAR untouched
-        // (LSTAR is a member since S4-38L7ap and CSTAR since S4-38L7aq; SYSCALL_MASK is not).
+        // WRMSR of SYSCALL_MASK (0xC0000084) with the same values is the stop when the S4-38L7at
+        // member is off, STAR untouched (LSTAR is a member since S4-38L7ap and CSTAR since
+        // S4-38L7aq; SYSCALL_MASK since S4-38L7at).
         let mask = [
             0xB9, 0x84, 0x00, 0x00, 0xC0, 0x31, 0xC0, 0xBA, 0x10, 0x00, 0x23, 0x00, 0x0F, 0x30,
         ];
         let (mut boot, file) = boot_with_entry(&mask);
-        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        let members = LinuxCpl0SetMembers {
+            msr_syscall_mask: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(
             record.exit,
             PagedProbeExit::Unsupported { opcode: 0x30 },
@@ -5522,6 +7194,7 @@ mod tests {
         assert_eq!(record.guest_star, 0);
         assert_eq!(record.guest_lstar, 0);
         assert_eq!(record.guest_cstar, 0);
+        assert_eq!(record.guest_syscall_mask, 0);
     }
 
     // ---- S4-38L7ap: WRMSR IA32_LSTAR through the board facade (write-only) ----
@@ -5734,12 +7407,17 @@ mod tests {
             assert_eq!(record.guest_cstar, 0xFFFF_FFFF_8100_1AB0);
         }
 
-        // WRMSR of SYSCALL_MASK (0xC0000084) stays the stop with all three members; nothing moved.
+        // WRMSR of SYSCALL_MASK (0xC0000084) is the stop when the S4-38L7at member is off; nothing
+        // moved.
         let mask = [
             0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0x00, 0x77, 0x04, 0x00, 0x31, 0xD2, 0x0F, 0x30,
         ];
         let (mut boot, file) = boot_with_entry(&mask);
-        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        let members = LinuxCpl0SetMembers {
+            msr_syscall_mask: false,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(
             record.exit,
             PagedProbeExit::Unsupported { opcode: 0x30 },
@@ -5750,6 +7428,7 @@ mod tests {
             (record.guest_star, record.guest_lstar, record.guest_cstar),
             (0, 0, 0)
         );
+        assert_eq!(record.guest_syscall_mask, 0);
     }
 
     // ---- S4-38L7ar: WRMSR IA32_SYSENTER_CS through the board facade (write-only) ----
@@ -6258,13 +7937,375 @@ mod tests {
         }
     }
 
+    // ---- S4-38L7at: WRMSR IA32_SYSCALL_MASK through the board facade (write-only) ----
+
+    /// MOV ECX,0xC0000084; MOV EAX,0x257FD5; XOR EDX,EDX; WRMSR: the boundary bytes `0F 30` of
+    /// the diagnostic run (EDX:EAX = 0:0x257FD5).
+    const SYSCALL_MASK_CODE: [u8; 14] = [
+        0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0xD5, 0x7F, 0x25, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+    ];
+
+    #[test]
+    fn wrmsr_syscall_mask_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // Two writes in one program: the first is the boundary one; the second (MOV EAX,0x81001AB0;
+        // MOV EDX,0xFFFFFFFF; WRMSR) replaces it with a value that has all 64 bits set.
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code.extend_from_slice(&[
+            0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x30, 0xF4,
+        ]);
+        let first = 0x25_7FD5u64;
+        let second = 0xFFFF_FFFF_8100_1AB0u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_syscall_mask(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 8,
+            "MOV, MOV, XOR, WRMSR, MOV, MOV, WRMSR, HLT"
+        );
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0084);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8100_1AB0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0xFFFF_FFFF);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; the
+        // other cells and the EFER did not move.
+        assert_eq!(record.guest_syscall_mask, second);
+        assert_eq!(boot.board.guest_syscall_mask(), second);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                record.guest_sysenter_cs,
+                record.guest_sysenter_esp,
+                record.guest_sysenter_eip
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(
+            record
+                .set_members
+                .contains(&"msr:syscall_mask_write".to_string())
+        );
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_syscall_mask(first);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_syscall_mask, first);
+
+        // A real chain on one board: run 1 stops by budget right after the first write, run 2 on
+        // the same `boot` retires the rest (MOV, MOV, WRMSR, HLT) and reports the replaced value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let run1 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run1.retired, 4, "{run1:?}");
+        assert_eq!(run1.guest_syscall_mask, first);
+        assert_eq!(boot.board.guest_syscall_mask(), first);
+        let run2 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run2.exit, PagedProbeExit::Halted, "{run2:?}");
+        assert_eq!(run2.retired, 4, "MOV, MOV, WRMSR, HLT");
+        assert_eq!(run2.guest_syscall_mask, second);
+        assert_eq!(boot.board.guest_syscall_mask(), second);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, XOR) and the cell stays 0; the
+        // other MSR members do not admit SYSCALL_MASK.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_star: true,
+                msr_lstar: true,
+                msr_cstar: true,
+                msr_sysenter_cs: true,
+                msr_sysenter_stack: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_syscall_mask: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_syscall_mask, 0);
+            assert_eq!(boot.board.guest_syscall_mask(), 0);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:syscall_mask_write".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn rdmsr_syscall_and_sysenter_stay_the_stop_after_the_syscall_mask_write_through_the_board_set()
+    {
+        // The write is retired, the next instruction is the stop (RDMSR: not readable; SYSCALL,
+        // SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record.
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x05], 0x05),
+            (&[0x0F, 0x07], 0x07),
+            (&[0x0F, 0x34], 0x34),
+            (&[0x0F, 0x35], 0x35),
+        ] {
+            let mut code = SYSCALL_MASK_CODE.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_syscall_mask, 0x25_7FD5);
+        }
+
+        // The neighbours 0xC0000083 (CSTAR) and 0xC0000085 write their own cell only; 0xC0000085
+        // is no member and is the stop with SYSCALL_MASK untouched.
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code[1] = 0x85;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 3);
+        assert_eq!(record.guest_syscall_mask, 0);
+        let mut code = SYSCALL_MASK_CODE.to_vec();
+        code[1] = 0x83;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_cstar, 0x25_7FD5);
+        assert_eq!(record.guest_syscall_mask, 0);
+    }
+
+    // ---- S4-38L7au: WRMSR IA32_KERNEL_GS_BASE through the board facade (write-only) ----
+
+    /// MOV ECX,0xC0000102; MOV EAX,0x12345678; MOV EDX,0xFFFF8880; WRMSR: a write of a
+    /// kernel-pointer-like value (EDX:EAX = 0xFFFF8880:0x12345678). The boundary bytes of the
+    /// diagnostic run are the same `0F 30` with EDX:EAX = 0:0 (see the zero-write test).
+    const KERNEL_GS_BASE_CODE: [u8; 17] = [
+        0xB9, 0x02, 0x01, 0x00, 0xC0, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x80, 0x88, 0xFF, 0xFF,
+        0x0F, 0x30,
+    ];
+
+    #[test]
+    fn wrmsr_kernel_gs_base_runs_through_the_board_set_and_the_board_keeps_the_value() {
+        // Two writes in one program: the first is KERNEL_GS_BASE_CODE; the second (MOV
+        // EAX,0x81001AB0; MOV EDX,0xFFFFFFFF; WRMSR) replaces it with a value that has all 64 bits
+        // set in the upper half.
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code.extend_from_slice(&[
+            0xB8, 0xB0, 0x1A, 0x00, 0x81, 0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x30, 0xF4,
+        ]);
+        let first = 0xFFFF_8880_1234_5678u64;
+        let second = 0xFFFF_FFFF_8100_1AB0u64;
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 8,
+            "MOV, MOV, MOV, WRMSR, MOV, MOV, WRMSR, HLT"
+        );
+        assert_eq!(record.gpr[Register::Rcx as usize], 0xC000_0102);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x8100_1AB0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0xFFFF_FFFF);
+        // The value is exactly EDX << 32 | EAX, observable through the record and the board; the
+        // other cells and the EFER did not move.
+        assert_eq!(record.guest_kernel_gs_base, second);
+        assert_eq!(boot.board.guest_kernel_gs_base(), second);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                record.guest_sysenter_cs,
+                record.guest_sysenter_esp,
+                record.guest_sysenter_eip,
+                record.guest_syscall_mask
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(record.efer, 0xD00);
+        assert!(
+            record
+                .set_members
+                .contains(&"msr:kernel_gs_base_write".to_string())
+        );
+
+        // The value survives into the next run of the same board (no write in it).
+        let (mut boot, file) = boot_with_entry(&[0xF4]);
+        boot.board.set_guest_kernel_gs_base(first);
+        let record = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_kernel_gs_base, first);
+
+        // A real chain on one board: run 1 stops by budget right after the first write (MOV, MOV,
+        // MOV, WRMSR), run 2 on the same `boot` retires the rest (MOV, MOV, WRMSR, HLT) and
+        // reports the replaced value.
+        let (mut boot, file) = boot_with_entry(&code);
+        let run1 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run1.retired, 4, "{run1:?}");
+        assert_eq!(run1.guest_kernel_gs_base, first);
+        assert_eq!(boot.board.guest_kernel_gs_base(), first);
+        let run2 = run_set_facade(&mut boot, &file, 4, members);
+        assert_eq!(run2.exit, PagedProbeExit::Halted, "{run2:?}");
+        assert_eq!(run2.retired, 4, "MOV, MOV, WRMSR, HLT");
+        assert_eq!(run2.guest_kernel_gs_base, second);
+        assert_eq!(boot.board.guest_kernel_gs_base(), second);
+
+        // Without the member the WRMSR is the stop (after MOV, MOV, MOV) and the cell stays 0; the
+        // other MSR members do not admit KERNEL_GS_BASE.
+        for members in [
+            LinuxCpl0SetMembers::minimal(),
+            LinuxCpl0SetMembers {
+                msr_fs_gs_base: true,
+                msr_star: true,
+                msr_lstar: true,
+                msr_cstar: true,
+                msr_sysenter_cs: true,
+                msr_sysenter_stack: true,
+                msr_syscall_mask: true,
+                ..LinuxCpl0SetMembers::minimal()
+            },
+            LinuxCpl0SetMembers {
+                msr_kernel_gs_base: false,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        ] {
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_kernel_gs_base, 0);
+            assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:kernel_gs_base_write".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn wrmsr_kernel_gs_base_of_zero_is_a_write_through_the_board_set() {
+        // The boundary of the diagnostic run: MOV ECX,0xC0000102; XOR EAX,EAX; XOR EDX,EDX; WRMSR
+        // (EDX:EAX = 0:0), here after a non-zero value, so that the zero is observable as a write.
+        let code = [
+            0xB9, 0x02, 0x01, 0x00, 0xC0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30, 0xF4,
+        ];
+        let members = LinuxCpl0SetMembers {
+            halt: true,
+            ..LinuxCpl0SetMembers::linux_default()
+        };
+        let (mut boot, file) = boot_with_entry(&code);
+        boot.board.set_guest_kernel_gs_base(0xFFFF_8880_1234_5678);
+        let record = run_set_facade(&mut boot, &file, 16, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 5, "MOV, XOR, XOR, WRMSR, HLT");
+        assert_eq!(record.guest_kernel_gs_base, 0);
+        assert_eq!(boot.board.guest_kernel_gs_base(), 0);
+    }
+
+    #[test]
+    fn rdmsr_swapgs_syscall_and_sysenter_stay_the_stop_after_the_kernel_gs_base_write_through_the_board_set()
+     {
+        // The write is retired, the next instruction is the stop (RDMSR: not readable; SWAPGS,
+        // SYSCALL, SYSRET, SYSENTER, SYSEXIT: not modelled); the value is in the record.
+        for (tail, opcode) in [
+            (&[0x0F, 0x32][..], 0x32u8),
+            (&[0x0F, 0x01, 0xF8], 0x01),
+            (&[0x0F, 0x05], 0x05),
+            (&[0x0F, 0x07], 0x07),
+            (&[0x0F, 0x34], 0x34),
+            (&[0x0F, 0x35], 0x35),
+        ] {
+            let mut code = KERNEL_GS_BASE_CODE.to_vec();
+            code.extend_from_slice(tail);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode },
+                "{tail:02X?} {record:?}"
+            );
+            assert_eq!(record.retired, 4);
+            assert_eq!(record.guest_kernel_gs_base, 0xFFFF_8880_1234_5678);
+        }
+
+        // The neighbours 0xC0000103, 0xC0010102 and 0xC0000002 are no member and are the stop with
+        // KERNEL_GS_BASE untouched (patching the ECX immediate: bytes 1..=4 of the first MOV).
+        for ecx in [
+            [0x03, 0x01, 0x00, 0xC0],
+            [0x02, 0x01, 0x01, 0xC0],
+            [0x02, 0x00, 0x00, 0xC0],
+        ] {
+            let mut code = KERNEL_GS_BASE_CODE.to_vec();
+            code[1..5].copy_from_slice(&ecx);
+            let (mut boot, file) = boot_with_entry(&code);
+            let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x30 },
+                "{ecx:02X?} {record:?}"
+            );
+            assert_eq!(record.retired, 3);
+            assert_eq!(record.guest_kernel_gs_base, 0);
+        }
+        // The neighbours 0xC0000101 (GS base, its own member) and 0xC0000084 (SYSCALL_MASK, its
+        // own member) retire their write and leave KERNEL_GS_BASE untouched.
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code[1] = 0x01;
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_kernel_gs_base, 0);
+        let mut code = KERNEL_GS_BASE_CODE.to_vec();
+        code[1..3].copy_from_slice(&[0x84, 0x00]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.guest_syscall_mask, 0xFFFF_8880_1234_5678);
+        assert_eq!(record.guest_kernel_gs_base, 0);
+    }
+
     #[test]
     fn linux_default_set_is_cli_cr3_cpuid_and_popf() {
         assert_eq!(
             LinuxCpl0SetMembers::linux_default(),
             LinuxCpl0SetMembers {
                 cpuid: true,
+                rdtsc: true,
                 popf_cpl0: true,
+                sti: true,
                 pio_u8: true,
                 pci_config: true,
                 msr: true,
@@ -6274,11 +8315,15 @@ mod tests {
                 msr_cstar: true,
                 msr_sysenter_cs: true,
                 msr_sysenter_stack: true,
+                msr_syscall_mask: true,
+                msr_kernel_gs_base: true,
                 fetch_cache: true,
+                irq: true,
                 ..LinuxCpl0SetMembers::minimal()
             }
         );
         assert!(!LinuxCpl0SetMembers::minimal().fetch_cache);
+        assert!(!LinuxCpl0SetMembers::minimal().irq);
         assert!(LinuxCpl0SetMembers::linux_default().pio_u8);
         assert!(!LinuxCpl0SetMembers::minimal().pio_u8);
         let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
@@ -6289,6 +8334,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -6296,12 +8342,35 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
         assert_eq!(record.cpuid_divergence_leaf, None);
+    }
+
+    #[test]
+    fn linux_default_runs_sti_and_minimal_does_not() {
+        // S4-38L7bp: `STI; NOP; HLT`. With the default set STI and NOP retire (IF = 1, no
+        // interrupt is delivered) and the run stops at the HLT, which the default set lacks.
+        assert!(LinuxCpl0SetMembers::linux_default().sti);
+        assert!(!LinuxCpl0SetMembers::minimal().sti);
+        let (mut boot, file) = boot_with_entry(&[0xFB, 0x90, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+        assert_eq!(record.exit_kind, "unsupported", "{record:?}");
+        assert_eq!(record.unsupported_opcode, Some(0xF4), "{record:?}");
+        assert_eq!((record.retired, record.rip), (2, ENTRY + 2), "{record:?}");
+        assert_eq!(record.rflags & (1 << 9), 1 << 9, "{record:?}");
+        // The minimal set stops at the STI itself.
+        let (mut boot, file) = boot_with_entry(&[0xFB, 0x90, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.unsupported_opcode, Some(0xFB), "{record:?}");
+        assert_eq!((record.retired, record.rip), (0, ENTRY), "{record:?}");
     }
 
     #[test]
@@ -6381,6 +8450,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -6388,10 +8458,14 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
         assert_eq!(boot.board.state().cr3, None);
@@ -6557,6 +8631,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -6564,10 +8639,14 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "halt",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ]
         );
     }
@@ -6585,6 +8664,529 @@ mod tests {
         let record = run_set_facade(&mut boot, &file, 64, members);
         assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA2 });
         assert!(record.diagnostic_past_c7);
+    }
+
+    // ---- S4-38L9a: the CPUID subset profile X8664V1Stage4A ----
+
+    /// The halting default set with the L9a subset profile, no `diagnostic_past_c7`.
+    fn stage4a_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4A,
+            ..halting_default()
+        }
+    }
+
+    #[test]
+    fn cpuid_profile_defaults_to_diagnostic_v1() {
+        assert_eq!(
+            LinuxCpl0SetMembers::minimal().cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+        assert_eq!(
+            LinuxCpl0SetMembers::linux_default().cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+    }
+
+    #[test]
+    fn stage4a_leaf_1_runs_without_the_c7_stop_and_gives_fpu_tsc_fxsr() {
+        // CLI; MOV EBX, 0x1234; MOV EAX, 1; CPUID; HLT, with no `diagnostic_past_c7`: the C7
+        // boundary does not fire for the subset profile.
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.exit_kind, "halted");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert!(!record.diagnostic_past_c7);
+        assert_eq!(record.retired, 5, "CLI, MOV, MOV, CPUID, HLT");
+        // Oracle from the contract table: EAX 0x600, EBX 0x100, ECX 0, EDX bits 0 (FPU), 4 (TSC)
+        // and 24 (FXSR) since S4-38L9d.
+        assert_eq!(record.gpr[Register::Rax as usize], 0x600);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x0100_0011);
+        assert!(
+            record
+                .set_members
+                .contains(&"cpuid:X8664V1Stage4A".to_string()),
+            "{:?}",
+            record.set_members
+        );
+        assert!(!record.set_members.iter().any(|m| m == "cpuid:DiagnosticV1"));
+    }
+
+    #[test]
+    fn stage4a_leaf_0x80000001_runs_without_the_c7_stop_and_gives_zeros() {
+        let mut code = vec![
+            0xFA, 0xB9, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x21, 0x43, 0x65, 0x07,
+        ];
+        code.extend(mov_eax(0x8000_0001));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert_eq!(record.retired, 6, "CLI, three MOVs, CPUID, HLT");
+        for register in [Register::Rax, Register::Rbx, Register::Rcx, Register::Rdx] {
+            assert_eq!(record.gpr[register as usize], 0, "{register:?}");
+        }
+    }
+
+    #[test]
+    fn stage4a_leaf_1_ignores_ecx_on_the_board() {
+        // CLI; MOV ECX, 0x12345678; MOV EAX, 1; CPUID; HLT: the same tuple as with ECX = 0.
+        let mut code = vec![0xFA, 0xB9, 0x78, 0x56, 0x34, 0x12];
+        code.extend(mov_eax(1));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.gpr[Register::Rax as usize], 0x600);
+        assert_eq!(record.gpr[Register::Rbx as usize], 0x100);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0x0100_0011);
+    }
+
+    #[test]
+    fn stage4a_unclaimed_leaves_give_zeros_on_the_board() {
+        for leaf in [2u32, 7, 0x8000_0002, 0x8000_0007, 0x21] {
+            let (mut boot, file) = boot_with_entry(&divergence_program(&[], leaf));
+            let record = run_set_facade(&mut boot, &file, 64, stage4a_default());
+            assert_eq!(record.exit, PagedProbeExit::Halted, "{leaf:#x}: {record:?}");
+            for register in [Register::Rax, Register::Rcx, Register::Rdx] {
+                assert_eq!(record.gpr[register as usize], 0, "{leaf:#x} {register:?}");
+            }
+            // EBX is seeded with 0x1234 by the program and the CPUID overwrote it with zero.
+            assert_eq!(record.gpr[Register::Rbx as usize], 0, "{leaf:#x}");
+        }
+    }
+
+    #[test]
+    fn stage4a_changes_only_the_cpuid_member_name_of_the_set() {
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
+        let old = run_set_facade(&mut boot, &file, 8, halting_default());
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xF4]);
+        let new = run_set_facade(&mut boot, &file, 8, stage4a_default());
+        let renamed: Vec<String> = old
+            .set_members
+            .iter()
+            .map(|name| {
+                if name == "cpuid:DiagnosticV1" {
+                    "cpuid:X8664V1Stage4A".to_string()
+                } else {
+                    name.clone()
+                }
+            })
+            .collect();
+        assert_eq!(new.set_members, renamed);
+    }
+
+    #[test]
+    fn stage4a_without_cpuid_member_stays_unsupported() {
+        let mut code = vec![0xFA];
+        code.extend(mov_eax(1));
+        code.extend([0x0F, 0xA2, 0xF4]);
+        let (mut boot, file) = boot_with_entry(&code);
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::X8664V1Stage4A,
+            ..LinuxCpl0SetMembers::minimal()
+        };
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Unsupported { opcode: 0xA2 });
+    }
+
+    #[test]
+    fn diagnostic_v1_boundary_is_unchanged_with_the_explicit_profile_field() {
+        // The explicit DiagnosticV1 profile behaves exactly like the default: C7 stop.
+        let members = LinuxCpl0SetMembers {
+            cpuid_profile: CpuidProfile::DiagnosticV1,
+            ..halting_default()
+        };
+        let (mut boot, file) = boot_with_entry(&divergence_program(&[], 1));
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit_kind, "cpuid_divergence", "{record:?}");
+        assert_eq!(record.cpuid_divergence_leaf, Some(1));
+    }
+
+    // ---- S4-38L9c: RDMSR 0x87 (IA32_MKTME_KEYID_PARTITIONING) on the board ----
+
+    /// MOV ECX,0x87; MOV EAX,0x55; MOV EDX,0x66; RDMSR; HLT: the boundary of the stage4a run
+    /// (ECX = 0x87, `0F 32`) with garbage in EAX/EDX.
+    const RDMSR_0X87_CODE: [u8; 17] = [
+        0xB9, 0x87, 0x00, 0x00, 0x00, 0xB8, 0x55, 0x00, 0x00, 0x00, 0xBA, 0x66, 0x00, 0x00, 0x00,
+        0x0F, 0x32,
+    ];
+
+    fn tdx_read_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            msr_tdx_keyid_partitioning_read: true,
+            ..stage4a_default()
+        }
+    }
+
+    #[test]
+    fn rdmsr_0x87_is_off_in_the_default_members_and_the_default_set_names_do_not_change() {
+        assert!(!LinuxCpl0SetMembers::minimal().msr_tdx_keyid_partitioning_read);
+        assert!(!LinuxCpl0SetMembers::linux_default().msr_tdx_keyid_partitioning_read);
+        // Without the member the read is the stop it was (0x32), RAX/RDX as written by the MOVs.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = boot_with_entry(&RDMSR_0X87_CODE);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0x32 },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 3, "MOV, MOV, MOV; the RDMSR is the stop");
+            assert_eq!(record.gpr[Register::Rcx as usize], 0x87);
+            assert_eq!(record.gpr[Register::Rax as usize], 0x55);
+            assert!(
+                !record
+                    .set_members
+                    .contains(&"msr:tdx_keyid_partitioning_read".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn rdmsr_0x87_returns_zero_through_the_board_set() {
+        let mut code = vec![0xFA];
+        code.extend(RDMSR_0X87_CODE);
+        code.push(0xF4);
+        let (mut boot, file) = boot_with_entry(&code);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 6, "CLI, MOV, MOV, MOV, RDMSR, HLT");
+        // Oracle: EDX:EAX = 0:0 (kernel tdx_init treats no TDX KeyIDs as TDX off); RCX kept.
+        assert_eq!(record.gpr[Register::Rax as usize], 0);
+        assert_eq!(record.gpr[Register::Rdx as usize], 0);
+        assert_eq!(record.gpr[Register::Rcx as usize], 0x87);
+        // The member is named, last of the MSR members, and no cell or EFER moved.
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "msr:tdx_keyid_partitioning_read")
+            .expect("member named");
+        assert_eq!(names[position - 1], "msr:kernel_gs_base_write");
+        assert_eq!(record.guest_efer, 0xD00);
+        assert_eq!(
+            (record.guest_star, record.guest_lstar, record.guest_cstar),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn rdmsr_other_indexes_and_wrmsr_0x87_stay_the_stop_with_the_member() {
+        // MOV ECX,0x88; RDMSR: the neighbour is refused.
+        let (mut boot, file) = boot_with_entry(&[0xB9, 0x88, 0x00, 0x00, 0x00, 0x0F, 0x32]);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+        // MOV ECX,0x87; WRMSR: the write of 0x87 is refused.
+        let (mut boot, file) = boot_with_entry(&[0xB9, 0x87, 0x00, 0x00, 0x00, 0x0F, 0x30]);
+        let record = run_set_facade(&mut boot, &file, 64, tdx_read_default());
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 1);
+    }
+
+    // ---- S4-38L9d: FP state (FNINIT, FXSAVE, MOV CR0, RDI) on the board ----
+
+    /// The members of the stage4a run: the CPUID subset that declares FPU and FXSR, the FP member
+    /// and HLT (so that a test can end on a retired HLT).
+    fn fp_default() -> LinuxCpl0SetMembers {
+        LinuxCpl0SetMembers {
+            fp_state: true,
+            ..stage4a_default()
+        }
+    }
+
+    /// GPA of the entry (`startup_64`): the kernel at 16 MiB plus 0x200.
+    const FP_ENTRY_GPA: u64 = 0x0100_0200;
+    /// The FXSAVE target inside the kernel zone of the board RAM, 16-byte aligned.
+    const FP_AREA_GPA: u64 = 0x0100_0600;
+
+    /// `CLI; MOV RAX,CR0; AND RAX,-13; MOV RDI,RAX; MOV CR0,RDI; MOV EDI,0x620; MOV CR4,RDI; FNINIT;
+    /// FXSAVE [RIP+disp] -> FP_AREA_GPA; HLT`: the `fpu__init_system` sequence of the kernel.
+    fn fp_kernel_sequence() -> Vec<u8> {
+        let mut code = vec![
+            0xFA, 0x0F, 0x20, 0xC0, 0x48, 0x83, 0xE0, 0xF3, 0x48, 0x89, 0xC7, 0x0F, 0x22, 0xC7,
+            0xBF, 0x20, 0x06, 0x00, 0x00, 0x0F, 0x22, 0xE7, 0xDB, 0xE3,
+        ];
+        let next = FP_ENTRY_GPA + code.len() as u64 + 7;
+        let disp = (FP_AREA_GPA as i64 - next as i64) as i32;
+        code.extend([0x0F, 0xAE, 0x05]);
+        code.extend(disp.to_le_bytes());
+        code.push(0xF4);
+        code
+    }
+
+    fn read_area(boot: &mut LinuxDirectBoot) -> [u8; 512] {
+        let mut area = [0u8; 512];
+        read(&mut boot.board, FP_AREA_GPA, &mut area).expect("reads");
+        area
+    }
+
+    #[test]
+    fn fp_state_is_off_in_the_default_members_and_the_default_runs_stay_as_they_were() {
+        assert!(!LinuxCpl0SetMembers::minimal().fp_state);
+        assert!(!LinuxCpl0SetMembers::linux_default().fp_state);
+        // Without the member `FNINIT` is the stop it was (0xdb) and nothing is named.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = boot_with_entry(&[0xFA, 0xDB, 0xE3, 0xF4]);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xdb },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 1, "CLI; FNINIT is the stop");
+            assert!(!record.set_members.contains(&"fp_state".to_string()));
+        }
+    }
+
+    #[test]
+    fn the_kernel_fpu_init_sequence_runs_through_the_board_set_and_writes_the_image() {
+        let (mut boot, file) = boot_with_entry(&fp_kernel_sequence());
+        let before = read_area(&mut boot);
+        let record = run_set_facade(&mut boot, &file, 64, fp_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(
+            record.retired, 10,
+            "CLI, six CR/ALU/MOV, FNINIT, FXSAVE, HLT: {record:?}"
+        );
+        // CR0 lost TS/EM only (the entry value has neither: it stays), CR4 holds the two FP bits.
+        assert_eq!(record.cr0.expect("cr0") & 0xc, 0);
+        assert_eq!(record.cr4.expect("cr4") & 0x600, 0x600);
+        // Oracle (SDM FXSAVE layout): FCW 0x037F, FSW 0, abridged FTW 0, FOP/FIP/FCS/FDP/FDS 0,
+        // MXCSR 0x1F80, MXCSR_MASK 0xFFBF, registers and XMM zero; the holes are untouched.
+        let after = read_area(&mut boot);
+        let mut expected = before;
+        expected[0..2].copy_from_slice(&[0x7F, 0x03]);
+        expected[2..4].copy_from_slice(&[0, 0]);
+        expected[4] = 0;
+        expected[6..8].copy_from_slice(&[0, 0]);
+        expected[8..14].copy_from_slice(&[0; 6]);
+        expected[16..22].copy_from_slice(&[0; 6]);
+        expected[24..28].copy_from_slice(&[0x80, 0x1F, 0, 0]);
+        expected[28..32].copy_from_slice(&[0xBF, 0xFF, 0, 0]);
+        for slot in 0..8 {
+            expected[32 + 16 * slot..42 + 16 * slot].copy_from_slice(&[0; 10]);
+        }
+        expected[160..416].copy_from_slice(&[0; 256]);
+        assert_eq!(after, expected);
+        // The member is named after the MSR members (the tdx read is off in this member set).
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "fp_state")
+            .expect("member named");
+        assert_eq!(names[position - 1], "msr:kernel_gs_base_write");
+        assert_eq!(names[position + 1], "halt");
+        assert_eq!(boot.board.guest_fp(), &od_isa::GuestFpState::initial());
+    }
+
+    #[test]
+    fn the_board_keeps_the_guest_fp_state_between_runs_and_fninit_resets_the_environment() {
+        let (mut boot, file) = boot_with_entry(&fp_kernel_sequence());
+        let mut dirty = od_isa::GuestFpState::initial();
+        dirty.x87.control_word = 0x027F;
+        dirty.x87.status_word = 0x3805;
+        dirty.x87.tag_word = 0x1BE4;
+        dirty.x87.instruction_pointer = 0x1234;
+        dirty.x87.registers[3] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        dirty.x87.instruction_selector = Some(0x2B);
+        dirty.sse.mxcsr = 0x1FA0;
+        dirty.sse.xmm[15] = [0xEE; 16];
+        boot.board.set_guest_fp(dirty.clone());
+        let record = run_set_facade(&mut boot, &file, 64, fp_default());
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        let left = boot.board.guest_fp().clone();
+        assert_eq!(left.x87.control_word, 0x037F);
+        assert_eq!(left.x87.status_word, 0);
+        assert_eq!(left.x87.tag_word, 0xFFFF);
+        assert_eq!(left.x87.instruction_pointer, 0);
+        assert_eq!(left.x87.instruction_selector, Some(0));
+        // Payloads, XMM and MXCSR survive FNINIT.
+        assert_eq!(left.x87.registers, dirty.x87.registers);
+        assert_eq!(left.sse, dirty.sse);
+        // The image carries MXCSR and XMM15 of the carried state.
+        let area = read_area(&mut boot);
+        assert_eq!(&area[24..28], &[0xA0, 0x1F, 0, 0]);
+        assert_eq!(&area[160 + 15 * 16..160 + 16 * 16], &[0xEE; 16]);
+        assert_eq!(
+            &area[32 + 3 * 16..32 + 3 * 16 + 10],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
+    }
+
+    #[test]
+    fn the_fp_member_needs_a_cpuid_profile_that_declares_fpu_and_fxsr() {
+        // The DiagnosticV1 profile declares nothing: the set refuses the run before any fetch.
+        let members = LinuxCpl0SetMembers {
+            fp_state: true,
+            ..halting_default()
+        };
+        let (mut boot, file) = boot_with_entry(&[0xFA, 0xDB, 0xE3, 0xF4]);
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Rejected(crate::PagedProbeRejection::Cpl0Set(
+                od_isa::Cpl0ProfileSetInputError::FpFeaturesNotDeclared
+            )),
+            "{record:?}"
+        );
+        assert_eq!(record.retired, 0);
+    }
+
+    // ---- S4-38L9e: INT3 (#BP) through the guest IDT on the board ----
+
+    /// A board that runs `code` at the entry. IDT gate 3 (CS 0x10, `attributes`) leads to a
+    /// handler that is one `IRETQ`; IF = 1 in the entry flags.
+    fn int3_board(attributes: u8, code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = boot_with_entry(code);
+        write_phys(&mut boot, PF_HANDLER_AT, &[0x48, 0xCF]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(PF_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = attributes;
+        gate[6..8].copy_from_slice(&((PF_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, PF_IDT_AT + 3 * 16, &gate);
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: PF_IDT_AT,
+            limit: 0xFF,
+        });
+        state.rflags = 2 | (1 << 9) | 1;
+        (boot, file)
+    }
+
+    #[test]
+    fn int3_member_is_off_in_the_default_member_sets() {
+        assert!(!LinuxCpl0SetMembers::minimal().int3);
+        assert!(!LinuxCpl0SetMembers::linux_default().int3);
+        // Without the member the `INT3` is the stop it was (0xcc) and nothing is named.
+        for members in [halting_default(), stage4a_default()] {
+            let (mut boot, file) = int3_board(0x8E, &[0xFA, 0xCC, 0xF4]);
+            let record = run_set_facade(&mut boot, &file, 64, members);
+            assert_eq!(
+                record.exit,
+                PagedProbeExit::Unsupported { opcode: 0xcc },
+                "{record:?}"
+            );
+            assert_eq!(record.retired, 1, "CLI; INT3 is the stop");
+            assert_eq!(record.rip, ENTRY + 1);
+            assert!(!record.set_members.contains(&"int3".to_string()));
+        }
+    }
+
+    #[test]
+    fn int3_through_the_board_set_delivers_the_frame_and_the_handler_returns_after_it() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        // One instruction: the INT3 retires into the handler with IF cleared (interrupt gate).
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli).with_int3());
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 1);
+        assert_eq!((report.page_fault, report.memory_error), (None, None));
+        assert_eq!(
+            report.delivered_exceptions, 0,
+            "not a board-delivered fault"
+        );
+        assert_eq!(state.rip, PF_HANDLER_AT);
+        assert_eq!(state.cs_selector, Some(0x10));
+        let frame = rsp & !15;
+        assert_eq!(state.gpr[Register::Rsp as usize], frame - 40);
+        assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+        // Hand-computed frame: SS 0x18, old RSP, RFLAGS 0x203 (IF kept, RF clear), CS 0x10 and the
+        // address after the INT3.
+        assert_eq!(read_qword(&mut boot, frame - 8), 0x18);
+        assert_eq!(read_qword(&mut boot, frame - 16), rsp);
+        assert_eq!(read_qword(&mut boot, frame - 24), 0x203);
+        assert_eq!(read_qword(&mut boot, frame - 32), 0x10);
+        assert_eq!(read_qword(&mut boot, frame - 40), ENTRY + 1);
+        // Two instructions: the handler's IRETQ returns to the NOP after the INT3.
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli).with_int3());
+        assert_eq!(report.instructions_executed, 2, "{report:?}");
+        assert_eq!(state.rip, ENTRY + 1);
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_ne!(state.rflags & (1 << 9), 0, "IF back from the frame");
+        assert_eq!(state.cs_selector, Some(0x10));
+    }
+
+    #[test]
+    fn int3_through_a_trap_gate_keeps_if_on_the_board() {
+        let cli = CliProfile::NonPviLong64V1;
+        let (mut boot, _) = int3_board(0x8F, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli).with_int3());
+        assert_eq!(report.instructions_executed, 1, "{report:?}");
+        assert_eq!(state.rip, PF_HANDLER_AT);
+        assert_ne!(state.rflags & (1 << 9), 0, "a trap gate keeps IF");
+    }
+
+    #[test]
+    fn int3_stays_the_stop_on_the_board_set_without_the_member_or_with_a_bad_gate() {
+        let cli = CliProfile::NonPviLong64V1;
+        // Without the member: no write, the stop is the INT3.
+        let (mut boot, _) = int3_board(0xEE, &[0xCC, 0x90]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0xcc }),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(read_qword(&mut boot, (rsp & !15) - 40), 0);
+        // With the member but a gate that is not present: the same stop, still no write.
+        let (mut boot, _) = int3_board(0x0E, &[0xCC, 0x90]);
+        let (state, report) = run_set(&mut boot, true, 2, &minimal_set(&cli).with_int3());
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Unsupported { opcode: 0xcc }),
+            "{report:?}"
+        );
+        assert_eq!(report.instructions_executed, 0);
+        assert_eq!(state.rip, ENTRY);
+        assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+        assert_eq!(read_qword(&mut boot, (rsp & !15) - 40), 0);
+    }
+
+    #[test]
+    fn int3_member_runs_through_the_board_facade_and_is_named_after_fp_state() {
+        let members = LinuxCpl0SetMembers {
+            int3: true,
+            ..fp_default()
+        };
+        // CLI; INT3; HLT with the IRETQ handler: CLI, INT3, IRETQ and HLT retire.
+        let (mut boot, file) = int3_board(0xEE, &[0xFA, 0xCC, 0xF4]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize];
+        let record = run_set_facade(&mut boot, &file, 64, members);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 4, "{record:?}");
+        assert_eq!(record.rip, ENTRY + 3, "RIP after the HLT");
+        assert_eq!(record.gpr[Register::Rsp as usize], rsp);
+        let names = &record.set_members;
+        let position = names
+            .iter()
+            .position(|name| name == "int3")
+            .expect("member named");
+        assert_eq!(names[position - 1], "fp_state");
+        assert_eq!(names[position + 1], "halt");
     }
 
     // ---- S4-38L4e: instruction fetch across a 4 KiB page boundary in the set ----
@@ -8002,6 +10604,7 @@ mod tests {
             |range| writes.push((range.start().get(), range.len())),
             true,
             cache,
+            None,
         );
         let mut memory = Vec::new();
         for (start, len) in [
@@ -8566,5 +11169,827 @@ mod tests {
         }
         assert_eq!(runs[0].0, runs[1].0, "stop records differ");
         assert_eq!(runs[0].1, runs[1].1, "guest RAM differs");
+    }
+
+    // ---- S4-38L8b: the interrupt source hook of the CPL0 set board ----
+
+    mod irq_hook {
+        use super::*;
+        use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters};
+        use crate::paged_memory_adapter::IrqDeliveryFailure;
+        use od_isa::{Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal, StiShadow};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        /// What the scripted source does, shared with the test that owns it.
+        #[derive(Default)]
+        struct Script {
+            pending: Option<u8>,
+            /// Stays pending after the acknowledge (a level line).
+            keep_pending: bool,
+            acked: Vec<u8>,
+            deadline: Option<u64>,
+            pit_ends: bool,
+            polls: u64,
+        }
+
+        #[derive(Clone, Default)]
+        struct ScriptedSource(Rc<RefCell<Script>>);
+
+        impl BoardIrqSource for ScriptedSource {
+            fn pending_vector(&self) -> Option<u8> {
+                self.0.borrow().pending
+            }
+            fn acknowledge(&mut self, vector: u8) {
+                let mut script = self.0.borrow_mut();
+                script.acked.push(vector);
+                if !script.keep_pending {
+                    script.pending = None;
+                }
+            }
+            fn next_deadline_ns(&self) -> Option<u64> {
+                let mut script = self.0.borrow_mut();
+                script.polls += 1;
+                script.deadline
+            }
+            fn pit_write_ends_quantum(&self) -> bool {
+                self.0.borrow().pit_ends
+            }
+        }
+
+        pub(super) const IRQ_IDT_AT: u64 = DATA + 0x2000;
+        pub(super) const IRQ_HANDLER_AT: u64 = ENTRY + 0x100;
+        pub(super) const IRQ_VECTOR: u8 = 0x30;
+        /// `CLD`: a one-byte instruction the minimal set retires.
+        pub(super) const CLD: u8 = 0xFC;
+
+        /// A board whose entry is `code`, with an IDT whose gate `IRQ_VECTOR` is an interrupt gate
+        /// to a handler of `CLD`s, IF = 1, the loader's `Clear` shadow and `Running` activity.
+        pub(super) fn irq_board(code: &[u8]) -> (LinuxDirectBoot, Vec<u8>) {
+            let (mut boot, file) = boot_with_entry(code);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &[CLD; 8]);
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(IRQ_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((IRQ_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16, &gate);
+            let state = boot.board.state_mut();
+            state.idtr = Some(od_isa::state::Idtr {
+                base: IRQ_IDT_AT,
+                limit: 0xFFF,
+            });
+            state.rflags = 2 | (1 << 9);
+            assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+            assert_eq!(state.activity, Some(CpuActivity::Running));
+            (boot, file)
+        }
+
+        /// One call of the set loop with the hook (the CPUID boundary off, no fetch cache).
+        fn run_hook(
+            boot: &mut LinuxDirectBoot,
+            budget: u64,
+            source: &mut dyn BoardIrqSource,
+            counters: &mut IrqCounters,
+            skip_first_boundary: bool,
+        ) -> (LongModeState, PagedCpl0SetReport) {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = minimal_set(&cli).with_pio_u8().with_sti(&sti);
+            let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+            let mut state = boot.board.state().clone();
+            state.cr3 = Some(cr3);
+            let report = run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
+                &mut state,
+                boot.board.bus_mut(),
+                cr3,
+                efer,
+                long64(),
+                budget,
+                INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+                |_| {},
+                false,
+                false,
+                Some(IrqBoundaryHook {
+                    source,
+                    counters,
+                    skip_first_boundary,
+                }),
+            );
+            (state, report)
+        }
+
+        #[test]
+        fn members_irq_is_on_in_linux_default_off_in_minimal_and_listed_last() {
+            assert!(LinuxCpl0SetMembers::linux_default().irq);
+            assert!(!LinuxCpl0SetMembers::minimal().irq);
+            let (mut boot, file) = boot_with_entry(&[CLD]);
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.set_members.last().map(String::as_str), Some("irq"));
+            let (mut boot, file) = boot_with_entry(&[CLD]);
+            let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+            assert!(!record.set_members.iter().any(|name| name == "irq"));
+        }
+
+        #[test]
+        fn the_empty_source_changes_nothing_and_the_counters_are_zero() {
+            let program = com1_program(b'X');
+            let mut runs = Vec::new();
+            for irq in [false, true] {
+                let (mut boot, file) = boot_with_entry(&program);
+                let record = run_set_facade(
+                    &mut boot,
+                    &file,
+                    64,
+                    LinuxCpl0SetMembers {
+                        irq,
+                        ..LinuxCpl0SetMembers::linux_default()
+                    },
+                );
+                assert_eq!(record.com1, b"X");
+                assert_eq!(
+                    (
+                        record.irqs_delivered,
+                        record.irq0_edges,
+                        record.irq_refused_masked,
+                        record.irq_refused_shadow,
+                        record.quantum_cut_by_deadline
+                    ),
+                    (0, 0, 0, 0, 0)
+                );
+                runs.push((
+                    record.exit,
+                    record.exit_detail,
+                    record.set_exit_detail,
+                    record.retired,
+                    record.quanta,
+                    record.rip,
+                    record.rflags,
+                    record.gpr,
+                    record.virtual_ns,
+                    record.com1,
+                    record.cr3,
+                ));
+            }
+            assert_eq!(runs[0], runs[1]);
+        }
+
+        #[test]
+        fn a_pending_vector_is_delivered_at_the_boundary_and_acknowledged_after() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // The delivery retires nothing; the budget of 1 is the handler's first `CLD`.
+            let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 1, "{report:?}");
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+            assert_eq!(state.rflags & (1 << 9), 0, "an interrupt gate clears IF");
+            assert_eq!(state.gpr[Register::Rsp as usize], (rsp & !15) - 40);
+            // The frame: RIP = the interrupted instruction, CS, RFLAGS with IF, old RSP, SS.
+            let frame = state.gpr[Register::Rsp as usize];
+            assert_eq!(read_qword(&mut boot, frame), ENTRY);
+            assert_eq!(read_qword(&mut boot, frame + 8), 0x10);
+            assert_ne!(read_qword(&mut boot, frame + 16) & (1 << 9), 0);
+            assert_eq!(read_qword(&mut boot, frame + 24), rsp);
+        }
+
+        #[test]
+        fn an_empty_boundary_asks_once_and_changes_nothing() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let rip_before = boot.board.state().rip;
+            let script = ScriptedSource::default();
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 3);
+            assert_eq!(state.rip, rip_before + 3);
+            assert_eq!(counters, IrqCounters::default());
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn interrupts_masked_refuses_without_acknowledge_and_counts_every_boundary() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().rflags = 2;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (state, report) = run_hook(&mut boot, 3, &mut source, &mut counters, false);
+            // Boundaries 0, 1 and 2; the budget check precedes the interrupt check at 3.
+            assert_eq!(report.instructions_executed, 3);
+            assert_eq!(counters.irq_refused_masked, 3);
+            assert_eq!(counters.irq_refused_shadow, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(script.0.borrow().pending, Some(IRQ_VECTOR), "still pending");
+            assert_eq!(state.rip, ENTRY + 3);
+        }
+
+        #[test]
+        fn the_sti_shadow_refuses_once_then_the_vector_is_delivered() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().sti_shadow = Some(StiShadow::Blocking);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // Boundary 0: shadow, refused; `CLD` retires and ends the shadow; boundary 1:
+            // delivered; the second retired instruction is the handler's first.
+            let (state, report) = run_hook(&mut boot, 2, &mut source, &mut counters, false);
+            assert_eq!(report.instructions_executed, 2, "{report:?}");
+            assert_eq!(counters.irq_refused_shadow, 1);
+            assert_eq!(counters.irq_refused_masked, 0);
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+        }
+
+        #[test]
+        fn an_unknown_shadow_refuses_like_a_shadow() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            boot.board.state_mut().sti_shadow = None;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (_, _report) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(counters.irq_refused_shadow, 1);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn the_first_boundary_of_a_resumed_partial_rep_is_skipped() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            {
+                let mut script = script.0.borrow_mut();
+                script.pending = Some(IRQ_VECTOR);
+                script.keep_pending = true;
+            }
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            // Boundary 0 is skipped: `CLD` retires and the budget ends the call.
+            let (state, report) = run_hook(&mut boot, 1, &mut source, &mut counters, true);
+            assert_eq!(report.instructions_executed, 1);
+            assert_eq!(state.rip, ENTRY + 1);
+            assert_eq!(counters, IrqCounters::default());
+            assert!(script.0.borrow().acked.is_empty());
+            // Without the skip the same pending vector is delivered at once.
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            let mut counters = IrqCounters::default();
+            let (state, _) = run_hook(&mut boot, 1, &mut source, &mut counters, false);
+            assert_eq!(counters.irqs_delivered, 1);
+            assert_eq!(state.rip, IRQ_HANDLER_AT + 1);
+        }
+
+        #[test]
+        fn a_gate_that_cannot_deliver_stops_with_an_error_and_acknowledges_nothing() {
+            // No gate written for the vector: P = 0.
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            write_phys(
+                &mut boot,
+                IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16,
+                &[0u8; 16],
+            );
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let before = boot.board.state().clone();
+            let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::IrqDeliveryFailed {
+                    vector: IRQ_VECTOR,
+                    failure: IrqDeliveryFailure::Refused(
+                        Cpl0ExternalInterruptRefusal::GateNotPresent
+                    ),
+                },
+                "{report:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(
+                (state.rip, state.gpr, state.rflags),
+                (before.rip, before.gpr, before.rflags)
+            );
+        }
+
+        #[test]
+        fn a_failed_idt_read_is_aborted_not_silent() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            // The IDT lies in an unmapped page: the gate read faults.
+            boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+                base: PF_VA,
+                limit: 0xFFF,
+            });
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let (_, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
+                panic!("{report:?}");
+            };
+            assert_eq!(*vector, IRQ_VECTOR);
+            assert!(
+                matches!(
+                    failure,
+                    IrqDeliveryFailure::Aborted {
+                        phase: Cpl0ExternalInterruptPhase::IdtGateRead,
+                        ..
+                    }
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert!(script.0.borrow().acked.is_empty());
+        }
+
+        #[test]
+        fn a_failed_frame_store_is_aborted_and_leaves_the_cpu_state_unchanged() {
+            let (mut boot, _) = irq_board(&[CLD; 8]);
+            // The stack lies in an unmapped page: the first frame store faults.
+            boot.board.state_mut().gpr[Register::Rsp as usize] = PF_VA + 0x1000;
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+            let before = boot.board.state().clone();
+            let (state, report) = run_hook(&mut boot, 4, &mut source, &mut counters, false);
+            let PagedCpl0SetExit::IrqDeliveryFailed { vector, failure } = &report.exit else {
+                panic!("{report:?}");
+            };
+            assert_eq!(*vector, IRQ_VECTOR);
+            assert!(
+                matches!(
+                    failure,
+                    IrqDeliveryFailure::Aborted {
+                        phase: Cpl0ExternalInterruptPhase::StackWrite { .. },
+                        ..
+                    }
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(report.instructions_executed, 0);
+            assert_eq!(counters.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(
+                (state.rip, state.gpr, state.rflags),
+                (before.rip, before.gpr, before.rflags)
+            );
+        }
+
+        #[test]
+        fn the_board_reports_a_failed_delivery_as_a_run_error() {
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            write_phys(
+                &mut boot,
+                IRQ_IDT_AT + u64::from(IRQ_VECTOR) * 16,
+                &[0u8; 16],
+            );
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let error = run_linux_direct_board_set(
+                &mut boot,
+                &input(&file, &[], BLOB, board_hash()),
+                8,
+                LinuxCpl0SetMembers::linux_default(),
+            )
+            .expect_err("the delivery is refused");
+            assert_eq!(error.code, "run_failed");
+            assert!(error.detail.contains("external interrupt"), "{error:?}");
+            assert!(script.0.borrow().acked.is_empty());
+            // Without the `irq` member the same source is never asked.
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                2,
+                LinuxCpl0SetMembers {
+                    irq: false,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+            );
+            assert_eq!(record.irqs_delivered, 0);
+            assert!(script.0.borrow().acked.is_empty());
+            assert_eq!(script.0.borrow().polls, 0);
+        }
+
+        #[test]
+        fn the_board_delivers_and_counts_through_the_facade() {
+            let (mut boot, file) = irq_board(&[CLD; 8]);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pending = Some(IRQ_VECTOR);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 3, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.irqs_delivered, 1);
+            assert_eq!(script.0.borrow().acked, [IRQ_VECTOR]);
+            assert_eq!(record.rip, IRQ_HANDLER_AT + 3);
+            assert_eq!(record.retired, 3);
+        }
+
+        #[test]
+        fn a_deadline_shortens_the_quantum_and_the_run_resumes_to_the_budget() {
+            let program = [CLD; 12];
+            // Without a deadline the whole budget is one quantum.
+            let (mut boot, file) = boot_with_entry(&program);
+            let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+            assert_eq!((record.retired, record.quanta), (8, 1));
+            assert_eq!(record.quantum_cut_by_deadline, 0);
+            // A deadline 5 ns ahead: 5 instructions, then the time is up and every quantum is
+            // one instruction (the minimum) until the budget is spent.
+            let (mut boot, file) = boot_with_entry(&program);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!(record.retired, 8);
+            // Quanta of 5, 1, 1 (each cut) and the last 1 that is the whole rest (not a cut).
+            assert_eq!((record.quanta, record.quantum_cut_by_deadline), (4, 3));
+            assert_eq!(record.rip, ENTRY + 8);
+            // The deadline is not consulted without the member.
+            let (mut boot, file) = boot_with_entry(&program);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().deadline = Some(boot.board.clock().now_ns() + 5);
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(
+                &mut boot,
+                &file,
+                8,
+                LinuxCpl0SetMembers {
+                    irq: false,
+                    ..LinuxCpl0SetMembers::linux_default()
+                },
+            );
+            assert_eq!((record.quanta, record.quantum_cut_by_deadline), (1, 0));
+            assert_eq!(script.0.borrow().polls, 0);
+        }
+
+        /// `MOV AL, 0x34; MOV DX, 0x43; OUT DX, AL; CLD; CLD; CLD; CLD`.
+        const PIT_WRITE_PROGRAM: [u8; 11] =
+            [0xB0, 0x34, 0x66, 0xBA, 0x43, 0x00, 0xEE, CLD, CLD, CLD, CLD];
+
+        #[test]
+        fn a_pit_write_ends_the_quantum_only_for_a_source_that_asks() {
+            let mut exits = Vec::new();
+            for pit_ends in [false, true] {
+                let (mut boot, _) = irq_board(&PIT_WRITE_PROGRAM);
+                let script = ScriptedSource::default();
+                script.0.borrow_mut().pit_ends = pit_ends;
+                let (mut source, mut counters) = (script.clone(), IrqCounters::default());
+                let (state, report) = run_hook(&mut boot, 20, &mut source, &mut counters, false);
+                exits.push((
+                    report.exit,
+                    report.instructions_executed,
+                    state.rip,
+                    counters,
+                ));
+            }
+            // Without the request the loop runs on past the OUT to the filler after the code.
+            assert!(
+                matches!(
+                    &exits[0].0,
+                    PagedCpl0SetExit::Run(RunExit::Unsupported { .. })
+                ),
+                "{:?}",
+                exits[0]
+            );
+            assert_eq!(exits[0].3.pit_write_quantum_ends, 0);
+            // With it the quantum ends right after the OUT (three retired instructions).
+            assert_eq!(
+                exits[1].0,
+                PagedCpl0SetExit::Run(RunExit::StopRequested),
+                "{:?}",
+                exits[1]
+            );
+            assert_eq!((exits[1].1, exits[1].2), (3, ENTRY + 7));
+            assert_eq!(exits[1].3.pit_write_quantum_ends, 1);
+        }
+
+        #[test]
+        fn a_pit_write_quantum_end_is_resumed_by_the_board_and_deadline_is_asked_again() {
+            let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
+            let script = ScriptedSource::default();
+            script.0.borrow_mut().pit_ends = true;
+            boot.board.set_irq_source(Box::new(script.clone()));
+            let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
+            assert_eq!(record.exit, PagedProbeExit::BudgetExhausted, "{record:?}");
+            assert_eq!((record.retired, record.rip), (6, ENTRY + 10));
+            // The OUT ended the first quantum; the rest is the second.
+            assert_eq!(record.quanta, 2);
+            // One question before each quantum.
+            assert_eq!(script.0.borrow().polls, 2);
+            // The same program without the request is one quantum.
+            let (mut boot, file) = boot_with_entry(&PIT_WRITE_PROGRAM);
+            let record = run_set_facade(&mut boot, &file, 6, LinuxCpl0SetMembers::linux_default());
+            assert_eq!((record.retired, record.quanta), (6, 1));
+        }
+    }
+
+    // ---- S4-38L8c: the PIT -> IOAPIC INTIN2 source on a synthetic guest ----
+
+    /// The source of the board (PIT OUT0 -> IOAPIC INTIN2 -> Local APIC) driven by a flat guest
+    /// that programs the PIT with its own `OUT`s and idles in `JMP $`. The guest cannot touch the
+    /// Local APIC or the IOAPIC (the set loop has RAM and ports only), so the host writes entry 2
+    /// and SVR before the run and the EOI between the chunks of the run, through the same device
+    /// registers a guest store would reach.
+    mod irq_pit_source {
+        use super::irq_hook::{CLD, IRQ_HANDLER_AT, IRQ_VECTOR, irq_board};
+        use super::*;
+        use crate::irq_source::BoardIrqSource;
+        use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
+        use crate::{AccessWidth, IO_APIC_MMIO_BASE, LOCAL_APIC_MMIO_BASE, pit_ticks};
+        use od_isa::StiProfile;
+
+        const PIT_HZ: u64 = 1_193_182;
+        const MASKED: u64 = 1 << 16;
+        /// `IRETQ`.
+        const IRETQ: [u8; 2] = [0x48, 0xCF];
+        /// `JMP $`.
+        const SPIN: [u8; 2] = [0xEB, 0xFE];
+        /// Instructions per call of the board loop; one instruction is one ns, so the chunk is
+        /// far inside one PIT period of the tests (the EOI latency of the host).
+        const CHUNK: u64 = 500;
+
+        /// The deadline of the PIT tick, by hand: `ceil(tick * 1e9 / 1_193_182)`.
+        fn deadline(tick: u64) -> u64 {
+            (tick * 1_000_000_000).div_ceil(PIT_HZ)
+        }
+
+        /// `MOV AL, control; MOV DX, 0x43; OUT DX, AL; MOV AL, lo; MOV DX, 0x40; OUT DX, AL;
+        /// MOV AL, hi; OUT DX, AL`.
+        fn program(control: u8, n: u16) -> Vec<u8> {
+            vec![
+                0xB0,
+                control,
+                0x66,
+                0xBA,
+                0x43,
+                0x00,
+                0xEE,
+                0xB0,
+                n as u8,
+                0x66,
+                0xBA,
+                0x40,
+                0x00,
+                0xEE,
+                0xB0,
+                (n >> 8) as u8,
+                0xEE,
+            ]
+        }
+
+        /// `MOV AL, 0x30; MOV DX, 0x43; OUT DX, AL`: channel 0 mode 0 without a count.
+        const SHUTDOWN: [u8; 7] = [0xB0, 0x30, 0x66, 0xBA, 0x43, 0x00, 0xEE];
+
+        fn mmio_write(boot: &mut LinuxDirectBoot, address: u64, value: u64) {
+            boot.board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .expect("the register accepts the write");
+        }
+
+        /// The board of `irq_board` with an `IRETQ` handler, the source installed, SVR enabled and
+        /// entry 2 (`entry2`) in the IOAPIC.
+        fn pit_board(code: &[u8], entry2: u64) -> (LinuxDirectBoot, PitIoapicIrqSource) {
+            let (mut boot, _) = irq_board(code);
+            write_phys(&mut boot, IRQ_HANDLER_AT, &IRETQ);
+            let source = boot
+                .board
+                .pit_ioapic_irq_source()
+                .expect("the Linux board has a PIT");
+            boot.board.set_irq_source(Box::new(source.clone()));
+            mmio_write(&mut boot, LOCAL_APIC_MMIO_BASE + 0xF0, 0x1ff);
+            mmio_write(&mut boot, IO_APIC_MMIO_BASE, 0x14);
+            mmio_write(&mut boot, IO_APIC_MMIO_BASE + 0x10, entry2);
+            (boot, source)
+        }
+
+        fn vector_state(boot: &LinuxDirectBoot) -> (bool, bool) {
+            boot.board.local_apic().vector_state(IRQ_VECTOR)
+        }
+
+        #[derive(Debug, Default)]
+        struct Totals {
+            delivered: u64,
+            refused_masked: u64,
+            cut_by_deadline: u64,
+            quanta: u64,
+        }
+
+        /// Runs the board loop in chunks until the clock is at `until_ns`; with `eoi` the host
+        /// writes the Local APIC EOI register after each chunk that left a vector in service.
+        fn run_until(boot: &mut LinuxDirectBoot, until_ns: u64, eoi: bool) -> Totals {
+            let cli = CliProfile::NonPviLong64V1;
+            let sti = StiProfile::NonPviLong64V1;
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_sti(&sti);
+            let mut totals = Totals::default();
+            while boot.board.clock().now_ns() < until_ns {
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(CHUNK, &set, false, false, true)
+                    .expect("runs");
+                assert_eq!(
+                    report.run.exit,
+                    PagedProbeExit::BudgetExhausted,
+                    "{report:?}"
+                );
+                totals.delivered += report.irq.irqs_delivered;
+                totals.refused_masked += report.irq.irq_refused_masked;
+                totals.cut_by_deadline += report.irq.quantum_cut_by_deadline;
+                totals.quanta += report.run.quanta;
+                if eoi && vector_state(boot).1 {
+                    mmio_write(boot, LOCAL_APIC_MMIO_BASE + 0xB0, 0);
+                }
+            }
+            totals
+        }
+
+        /// Edges of a mode 2 count of `n` ticks loaded at `t0` whose deadline is `<= now`.
+        fn edges_due(t0: u64, n: u64, now: u64) -> u64 {
+            (1..).take_while(|k| deadline(t0 + k * n) <= now).count() as u64
+        }
+
+        #[test]
+        fn the_helper_formula_matches_the_model_tick_function() {
+            for tick in [1, 4, 10, 1003, 1_000_000] {
+                assert_eq!(pit_ticks(deadline(tick)), tick);
+                assert!(pit_ticks(deadline(tick) - 1) < tick);
+            }
+        }
+
+        #[test]
+        fn the_board_gives_a_source_because_it_has_the_linux_profile_pit() {
+            let (boot, _) = boot_with_entry(&[CLD]);
+            assert!(boot.board.pit_ioapic_irq_source().is_some());
+        }
+
+        #[test]
+        fn a_thousand_periods_give_a_thousand_vectors_with_an_eoi_and_an_iretq_each() {
+            let n = 4u16;
+            let mut code = program(0x34, n);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let rsp = boot.board.state().gpr[Register::Rsp as usize];
+            // The count is loaded by the guest's own OUTs in the first microseconds.
+            let mut totals = run_until(&mut boot, 1000, true);
+            let run = source.channel0_run().expect("loaded by the guest");
+            assert_eq!(run.reload, u32::from(n));
+            let t0 = run.start_tick;
+            let until = deadline(t0 + 1000 * u64::from(n)) + 1000;
+            let rest = run_until(&mut boot, until, true);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 1000, "{totals:?} {rest:?}");
+            let stats = source.stats();
+            assert_eq!(stats.edges, 1000);
+            assert_eq!(stats.acknowledged, 1000);
+            assert_eq!(
+                (stats.edges_refused, stats.ack_refused, stats.queue_faults),
+                (0, 0, 0)
+            );
+            // The IRETQ circle is balanced: stack, IF and the spin loop are as before.
+            let state = boot.board.state();
+            assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+            assert_ne!(state.rflags & (1 << 9), 0, "IRETQ restored IF");
+            assert!(
+                state.rip == IRQ_HANDLER_AT
+                    || (ENTRY..ENTRY + code.len() as u64).contains(&state.rip),
+                "rip {:#x}",
+                state.rip
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+            assert!(rest.cut_by_deadline >= 990, "{rest:?}");
+            assert_eq!(rest.refused_masked, 0);
+        }
+
+        #[test]
+        fn without_an_eoi_the_second_irq_is_not_delivered() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, false);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 40) + 1000, false);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 1, "{totals:?}");
+            // Four edges happened; the vector is in service and one request waits in IRR.
+            assert_eq!(source.stats().edges, 4);
+            assert_eq!(vector_state(&boot), (true, true));
+            // The EOI delivers exactly the one coalesced request.
+            mmio_write(&mut boot, LOCAL_APIC_MMIO_BASE + 0xB0, 0);
+            let now = boot.board.clock().now_ns();
+            let rest = run_until(&mut boot, now + 100, false);
+            assert_eq!(rest.delivered, 1, "{rest:?}");
+        }
+
+        #[test]
+        fn a_masked_entry_delivers_nothing_and_the_edges_are_lost() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, MASKED | u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 40) + 1000, true);
+            totals.delivered += rest.delivered;
+            assert_eq!(totals.delivered, 0);
+            assert_eq!(totals.refused_masked + rest.refused_masked, 0);
+            assert_eq!(
+                source.stats().edges,
+                4,
+                "the edges are presented and lost at the IOAPIC"
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+        }
+
+        #[test]
+        fn a_pit_shutdown_leaves_no_event_and_no_delivery() {
+            let mut code = program(0x34, 10);
+            code.extend_from_slice(&SHUTDOWN);
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let totals = run_until(&mut boot, 300_000, true);
+            assert_eq!(totals.delivered, 0);
+            assert_eq!(source.next_deadline_ns(), None);
+            assert_eq!(source.queued(), 0);
+            assert_eq!(source.channel0_run(), None);
+            let stats = source.stats();
+            // Control word (mode, no count), the loaded count, then the shutdown word.
+            assert_eq!(
+                (stats.edges, stats.cancelled, stats.generation_changes),
+                (0, 1, 3)
+            );
+            assert_eq!(vector_state(&boot), (false, false));
+        }
+
+        #[test]
+        fn a_reprogram_cancels_the_old_generation_and_the_new_period_gives_the_edges() {
+            let mut code = program(0x34, 1003);
+            code.extend_from_slice(&program(0x34, 10));
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let run = source.channel0_run().expect("the new count");
+            assert_eq!(run.reload, 10);
+            let t0 = run.start_tick;
+            // Past the first edge of the old count (about t0 + 1003 ticks, 840 us).
+            let rest = run_until(&mut boot, deadline(t0 + 1010) + 1000, true);
+            totals.delivered += rest.delivered;
+            let now = boot.board.clock().now_ns();
+            assert!(now > deadline(t0 + 1004), "the old first edge is behind");
+            // The question applies the last due edge, as the loop would at its next boundary.
+            let _ = source.next_deadline_ns();
+            let expected = edges_due(t0, 10, now);
+            assert!(expected >= 100);
+            let stats = source.stats();
+            assert_eq!(stats.edges, expected, "only the new period gives edges");
+            assert!(stats.cancelled >= 1);
+            // Every edge but the last (applied after the final chunk) was delivered once.
+            assert!(totals.delivered + 1 >= expected, "{totals:?}");
+            assert!(totals.delivered <= expected, "{totals:?}");
+        }
+
+        #[test]
+        fn with_if_clear_the_vector_is_refused_and_the_deadline_never_falls_behind() {
+            let mut code = program(0x34, 10);
+            code.push(0xFA); // CLI
+            code.extend_from_slice(&SPIN);
+            let (mut boot, source) = pit_board(&code, u64::from(IRQ_VECTOR));
+            let mut totals = run_until(&mut boot, 1000, true);
+            let t0 = source.channel0_run().unwrap().start_tick;
+            let rest = run_until(&mut boot, deadline(t0 + 200) + 1000, true);
+            totals.delivered += rest.delivered;
+            totals.quanta += rest.quanta;
+            assert_eq!(totals.delivered, 0);
+            assert!(rest.refused_masked > 0, "{rest:?}");
+            assert_eq!(boot.board.state().rflags & (1 << 9), 0);
+            assert_eq!(vector_state(&boot), (true, false), "waiting in IRR");
+            // About one quantum per edge (plus the PIT writes and the chunk ends): a deadline in
+            // the past would cut every quantum to one instruction.
+            let chunks = boot.board.clock().now_ns() / CHUNK + 1;
+            assert!(
+                totals.quanta <= source.stats().edges + chunks + 8,
+                "{totals:?}"
+            );
+            let next = source.next_deadline_ns().expect("the next edge");
+            assert!(next > boot.board.clock().now_ns());
+        }
     }
 }

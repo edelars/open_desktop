@@ -66,6 +66,7 @@
 //! too (there is no file to write it to). Every `refused` and `loaded` result is printed and
 //! written to `--out`.
 
+use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
     MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
@@ -80,7 +81,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -113,6 +114,9 @@ struct Options {
     set_cpl0: bool,
     /// `--diagnostic-past-c7` (S4-38L7): CPUID boundary off, result diagnostic and not counted.
     diagnostic_past_c7: bool,
+    /// `--cpuid-profile diagnostic|stage4a` (S4-38L9a, only with `--set-cpl0`): the CPUID profile
+    /// of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
+    cpuid_profile: CpuidProfile,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -158,7 +162,11 @@ fn evaluate(options: &Options) -> (Value, u8) {
         "nonce": options.nonce,
         "ram_mib": options.ram_mib,
     });
-    mark_acceptance(&mut evidence, options.diagnostic_past_c7);
+    mark_acceptance(
+        &mut evidence,
+        options.diagnostic_past_c7,
+        options.cpuid_profile,
+    );
     let io_failure = |evidence: Value, stage: &str, detail: String| {
         (refusal("invalid_input", stage, detail, evidence), 3)
     };
@@ -268,6 +276,20 @@ fn evaluate(options: &Options) -> (Value, u8) {
                             // translation cache (same results, more page walks).
                             fetch_cache: std::env::var_os("OD_NO_FETCH_CACHE").is_none(),
                             diagnostic_past_c7: options.diagnostic_past_c7,
+                            cpuid_profile: options.cpuid_profile,
+                            // S4-38L9c: with the TSC-only subset the kernel's `tdx_init` reads
+                            // MSR 0x87 (MKTME KeyID partitioning); the member answers 0:0. Off for
+                            // the DiagnosticV1 default, whose run does not get there.
+                            msr_tdx_keyid_partitioning_read: options.cpuid_profile
+                                == CpuidProfile::X8664V1Stage4A,
+                            // S4-38L9d: with the subset that declares FPU and FXSR the kernel's
+                            // `fpu__init_system` runs `FNINIT` and `FXSAVE`; the FP member
+                            // implements them. Off for the DiagnosticV1 default.
+                            fp_state: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
+                            // S4-38L9e: the kernel's `int3_selftest` executes `INT3` and waits for
+                            // `#BP` through the IDT; the INT3 member delivers it. Off for the
+                            // DiagnosticV1 default (its member list stays as it was).
+                            int3: options.cpuid_profile == CpuidProfile::X8664V1Stage4A,
                             ..LinuxCpl0SetMembers::linux_default()
                         },
                     )
@@ -300,18 +322,42 @@ fn evaluate(options: &Options) -> (Value, u8) {
 /// present: `acceptance` is `counted` without `--diagnostic-past-c7` and `diagnostic_not_counted`
 /// with it (CPUID boundary off, DiagnosticV1 answers leaf 1 and 0x80000001, result NOT counted).
 /// The marker follows the request of the flag, not its effect.
-fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool) {
+///
+/// S4-38L9a: with `--cpuid-profile stage4a` the CPUID boundary is off by the profile (it declares
+/// a subset of the target: TSC, since S4-38L9d also FPU and FXSR) and the result is not counted either: `acceptance` is
+/// `diagnostic_not_counted` and `cpuid_profile` says `X8664V1Stage4A` (the key is absent for the
+/// default profile, so its evidence is unchanged). `diagnostic_past_c7` still follows its flag.
+fn mark_acceptance(evidence: &mut Value, diagnostic_past_c7: bool, cpuid_profile: CpuidProfile) {
+    let subset = cpuid_profile != CpuidProfile::DiagnosticV1;
     evidence["diagnostic_past_c7"] = json!(diagnostic_past_c7);
-    evidence["acceptance"] = json!(if diagnostic_past_c7 {
+    evidence["acceptance"] = json!(if diagnostic_past_c7 || subset {
         "diagnostic_not_counted"
     } else {
         "counted"
     });
-    if diagnostic_past_c7 {
-        evidence["diagnostic_note"] = json!(
-            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); \
-             not a profile of the target CPU, the result is NOT counted"
+    if subset {
+        evidence["cpuid_profile"] = json!(format!("{cpuid_profile:?}"));
+    }
+    // With both flags the note carries both explanations (subset and C7).
+    let mut parts = Vec::new();
+    if subset {
+        parts.push(
+            "CPUID profile X8664V1Stage4A declares a subset of the target (TSC, FPU and FXSR; \
+             checkpoint C7 boundary off by the profile)",
         );
+    }
+    if diagnostic_past_c7 {
+        parts.push(if subset {
+            "--diagnostic-past-c7 also turns the checkpoint C7 boundary off by itself, so this run \
+             does not show that the profile alone avoids it"
+        } else {
+            "DiagnosticV1 answers CPUID leaf 1 and 0x80000001 (checkpoint C7 boundary off); not a \
+             profile of the target CPU"
+        });
+    }
+    if !parts.is_empty() {
+        evidence["diagnostic_note"] =
+            json!(format!("{}; the result is NOT counted", parts.join("; ")));
     }
 }
 
@@ -576,6 +622,12 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
+    stop["irqs_delivered"] = json!(record.irqs_delivered);
+    stop["irq0_edges"] = json!(record.irq0_edges);
+    stop["irq_refused_masked"] = json!(record.irq_refused_masked);
+    stop["irq_refused_shadow"] = json!(record.irq_refused_shadow);
+    stop["quantum_cut_by_deadline"] = json!(record.quantum_cut_by_deadline);
     // S4-38L7f: the guest-visible IA32_EFER (`efer` is the walker's); set apart from the
     // literal above to stay under the `json!` macro recursion limit.
     stop["guest_efer"] = json!(hex64(record.guest_efer));
@@ -592,6 +644,10 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     // S4-38L7as: the guest IA32_SYSENTER_ESP and IA32_SYSENTER_EIP (write-only for the guest).
     stop["guest_sysenter_esp"] = json!(hex64(record.guest_sysenter_esp));
     stop["guest_sysenter_eip"] = json!(hex64(record.guest_sysenter_eip));
+    // S4-38L7at: the guest IA32_SYSCALL_MASK (write-only for the guest; the full 64-bit value).
+    stop["guest_syscall_mask"] = json!(hex64(record.guest_syscall_mask));
+    // S4-38L7au: the guest IA32_KERNEL_GS_BASE (write-only for the guest; the full 64-bit value).
+    stop["guest_kernel_gs_base"] = json!(hex64(record.guest_kernel_gs_base));
     stop
 }
 
@@ -624,6 +680,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
     let mut budget = None;
+    let mut cpuid_profile_text: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -667,6 +724,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--ram-mib" => &mut ram_mib,
             "--out" => &mut out,
             "--budget" => &mut budget,
+            "--cpuid-profile" => &mut cpuid_profile_text,
             other => {
                 return Err(format!("unexpected option {other}; usage: {USAGE}"));
             }
@@ -699,6 +757,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--diagnostic-past-c7 needs --run and --set-cpl0; usage: {USAGE}"
         ));
     }
+    if cpuid_profile_text.is_some() && !set_cpl0 {
+        return Err(format!(
+            "--cpuid-profile needs --run and --set-cpl0; usage: {USAGE}"
+        ));
+    }
+    let cpuid_profile = match cpuid_profile_text.as_deref() {
+        None | Some("diagnostic") => CpuidProfile::DiagnosticV1,
+        Some("stage4a") => CpuidProfile::X8664V1Stage4A,
+        Some(other) => {
+            return Err(format!(
+                "invalid --cpuid-profile '{other}': diagnostic or stage4a; usage: {USAGE}"
+            ));
+        }
+    };
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -745,6 +817,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         budget,
         set_cpl0,
         diagnostic_past_c7,
+        cpuid_profile,
     })
 }
 
@@ -867,6 +940,7 @@ mod tests {
                 budget: None,
                 set_cpl0: false,
                 diagnostic_past_c7: false,
+                cpuid_profile: CpuidProfile::DiagnosticV1,
             };
             Self { dir, options }
         }
@@ -1483,6 +1557,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -1490,12 +1565,26 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        // S4-38L8b: the interrupt hook counters are in the record and zero (no source yet).
+        for counter in [
+            "irqs_delivered",
+            "irq0_edges",
+            "irq_refused_masked",
+            "irq_refused_shadow",
+            "quantum_cut_by_deadline",
+        ] {
+            assert_eq!(stop[counter], 0, "{counter}");
+        }
         // Since S2-46 the null `MOV DS, AX` retires over the loader's segment descriptor caches
         // (four instructions in all); the stop is the REX-prefix filler after the code, whose
         // 15-byte window has no opcode: #GP(0).
@@ -1660,6 +1749,68 @@ mod tests {
     }
 
     #[test]
+    fn set_cpl0_reports_the_guest_syscall_mask_after_its_wrmsr() {
+        // MOV ECX,0xC0000084; MOV EAX,0x257FD5; XOR EDX,EDX; WRMSR (S4-38L7at).
+        let code = [
+            0xB9, 0x84, 0x00, 0x00, 0xC0, 0xB8, 0xD5, 0x7F, 0x25, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-syscall-mask",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_syscall_mask"], "0x257fd5");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_sysenter_esp"], "0x0");
+        assert_eq!(stop["guest_sysenter_eip"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes it.
+        let value = run_case("syscall-mask-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_syscall_mask"], "0x0");
+    }
+
+    #[test]
+    fn set_cpl0_reports_the_guest_kernel_gs_base_after_its_wrmsr() {
+        // MOV ECX,0xC0000102; MOV EAX,0x12345678; MOV EDX,0xFFFF8880; WRMSR (S4-38L7au).
+        let code = [
+            0xB9, 0x02, 0x01, 0x00, 0xC0, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xBA, 0x80, 0x88, 0xFF,
+            0xFF, 0x0F, 0x30,
+        ];
+        let mut case = Case::new(
+            "set-kernel-gs-base",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(4);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["retired"], 4, "{value:#}");
+        assert_eq!(stop["guest_kernel_gs_base"], "0xffff888012345678");
+        assert_eq!(stop["guest_syscall_mask"], "0x0");
+        assert_eq!(stop["guest_sysenter_cs"], "0x0");
+        assert_eq!(stop["guest_sysenter_esp"], "0x0");
+        assert_eq!(stop["guest_sysenter_eip"], "0x0");
+        assert_eq!(stop["guest_star"], "0x0");
+        assert_eq!(stop["guest_lstar"], "0x0");
+        assert_eq!(stop["guest_cstar"], "0x0");
+        // Without the set nothing writes it.
+        let value = run_case("kernel-gs-base-control", &[0xF4], 10);
+        assert_eq!(value["stop"]["guest_kernel_gs_base"], "0x0");
+    }
+
+    #[test]
     fn set_cpl0_reports_the_pci_config_address_after_an_out_to_0xcf8() {
         // MOV EAX,0x80001000; MOV EDX,0xCF8; OUT DX,EAX (S4-38L7w).
         let code = [
@@ -1743,6 +1894,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -1750,9 +1902,13 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         // Leaf 0x80000001 as well.
@@ -1795,7 +1951,7 @@ mod tests {
         };
         for (flag, acceptance) in [(true, "diagnostic_not_counted"), (false, "counted")] {
             let mut base = json!({"retired": 0, "guest_started": false, "nonce": "n"});
-            mark_acceptance(&mut base, flag);
+            mark_acceptance(&mut base, flag, CpuidProfile::DiagnosticV1);
             let value = run_failure(&error, base);
             assert_eq!(value["status"], "refused");
             assert_eq!(value["diagnostic_past_c7"], flag, "{value:#}");
@@ -1891,6 +2047,311 @@ mod tests {
         }
     }
 
+    // ---- S4-38L9a: --cpuid-profile ----
+
+    fn parse_base(extra: &[&str]) -> Result<Options, String> {
+        let mut args: Vec<String> = [
+            "--vmlinuz",
+            "k",
+            "--initramfs",
+            "i",
+            "--acpi-blob",
+            "a",
+            "--nonce",
+            "n",
+            "--expected-vmlinuz-sha256",
+            &"0".repeat(64),
+            "--expected-acpi-manifest-hash",
+            &"0".repeat(64),
+            "--expected-initramfs-sha256",
+            &"0".repeat(64),
+            "--ram-mib",
+            "128",
+            "--out",
+            "o",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        args.extend(extra.iter().map(|s| s.to_string()));
+        parse(&args)
+    }
+
+    #[test]
+    fn cpuid_profile_flag_parses_and_defaults_to_diagnostic_v1() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let with = |tail: &[&str]| parse_base(&[&run[..], tail].concat());
+        assert_eq!(with(&[]).unwrap().cpuid_profile, CpuidProfile::DiagnosticV1);
+        assert_eq!(
+            with(&["--cpuid-profile", "diagnostic"])
+                .unwrap()
+                .cpuid_profile,
+            CpuidProfile::DiagnosticV1
+        );
+        assert_eq!(
+            with(&["--cpuid-profile", "stage4a"]).unwrap().cpuid_profile,
+            CpuidProfile::X8664V1Stage4A
+        );
+        assert!(with(&["--cpuid-profile", "stage4a", "--diagnostic-past-c7"]).is_ok());
+        for bad in [
+            vec!["--cpuid-profile", "full"],
+            vec!["--cpuid-profile"],
+            vec!["--cpuid-profile", "stage4a", "--cpuid-profile", "stage4a"],
+        ] {
+            assert!(with(&bad).is_err(), "{bad:?}");
+        }
+        // Needs --run and --set-cpl0.
+        assert!(parse_base(&["--cpuid-profile", "stage4a"]).is_err());
+        assert!(parse_base(&["--run", "--budget", "1", "--cpuid-profile", "stage4a"]).is_err());
+    }
+
+    #[test]
+    fn stage4a_runs_leaf_1_without_the_c7_stop_and_marks_the_result_not_counted() {
+        // CLI; MOV EAX, 1; CPUID; HLT, no --diagnostic-past-c7.
+        let code = [0xFA, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
+        let mut case = Case::new(
+            "stage4a-leaf1",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4A;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_ne!(stop["exit_kind"], "cpuid_divergence", "{value:#}");
+        assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        // Oracle from the contract table (SDM bit positions): EDX has FPU (bit 0), TSC (bit 4)
+        // and FXSR (bit 24) since S4-38L9d, and not SSE/SSE2.
+        assert_eq!(stop["gpr"]["rax"], "0x600");
+        assert_eq!(stop["gpr"]["rbx"], "0x100");
+        assert_eq!(stop["gpr"]["rcx"], "0x0");
+        assert_eq!(stop["gpr"]["rdx"], "0x1000011");
+        assert_eq!(
+            stop["retired"], 3,
+            "CLI, MOV, CPUID; HLT is outside the set"
+        );
+        // The profile is a subset of the target: not counted; the flag itself follows the request.
+        assert_eq!(value["acceptance"], "diagnostic_not_counted", "{value:#}");
+        assert_eq!(value["cpuid_profile"], "X8664V1Stage4A");
+        assert_eq!(value["diagnostic_past_c7"], false);
+        assert_eq!(stop["diagnostic_past_c7"], false);
+        assert_eq!(
+            stop["set_members"],
+            json!([
+                "cli",
+                "cpu_owned_cr3",
+                "cpuid:X8664V1Stage4A",
+                "rdtsc",
+                "msr:EferReadOnlyV1(3328)",
+                "msr:fs_gs_base",
+                "msr:star_write",
+                "msr:lstar_write",
+                "msr:cstar_write",
+                "msr:sysenter_cs_write",
+                "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
+                "msr:tdx_keyid_partitioning_read",
+                "fp_state",
+                "int3",
+                "pio_u8",
+                "sti",
+                "popf_cpl0",
+                "pci_config",
+                "irq"
+            ])
+        );
+    }
+
+    #[test]
+    fn stage4a_runs_fninit_and_fxsave_and_the_default_profile_does_not() {
+        // CLI; MOV RAX,CR0; AND RAX,-13; MOV RDI,RAX; MOV CR0,RDI; MOV EDI,0x620; MOV CR4,RDI;
+        // FNINIT; HLT: the `fpu__init_cpu_generic` sequence of the kernel (HLT is outside the set).
+        let code = [
+            0xFA, 0x0F, 0x20, 0xC0, 0x48, 0x83, 0xE0, 0xF3, 0x48, 0x89, 0xC7, 0x0F, 0x22, 0xC7,
+            0xBF, 0x20, 0x06, 0x00, 0x00, 0x0F, 0x22, 0xE7, 0xDB, 0xE3, 0xF4,
+        ];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-fp",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            (value, exit)
+        };
+        let (on, exit) = run(CpuidProfile::X8664V1Stage4A);
+        assert_eq!(exit, 0, "{on:#}");
+        let stop = &on["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{on:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xf4", "{on:#}");
+        assert_eq!(stop["retired"], 8, "CLI .. FNINIT retire; HLT is the stop");
+        assert!(
+            stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("fp_state")),
+            "{on:#}"
+        );
+        // CR4 got OSFXSR and OSXMMEXCPT (bits 9 and 10).
+        let cr4 = u64::from_str_radix(
+            stop["cr4"].as_str().expect("cr4").trim_start_matches("0x"),
+            16,
+        )
+        .expect("hex");
+        assert_eq!(cr4 & 0x600, 0x600, "{on:#}");
+        // DiagnosticV1: no FP member, so the run stops earlier, at `MOV CR0, RDI` (opcode 0x22), after
+        // CLI, MOV RAX,CR0, AND and MOV RDI,RAX; it never reaches FNINIT or HLT.
+        let (off, exit) = run(CpuidProfile::DiagnosticV1);
+        assert_eq!(exit, 0, "{off:#}");
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x22", "{off:#}");
+        assert!(
+            !stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("fp_state")),
+            "{off:#}"
+        );
+    }
+
+    #[test]
+    fn stage4a_delivers_int3_through_the_guest_idt_and_the_default_profile_does_not() {
+        // CLI; LIDT [RIP+0x1f8]; INT3; HLT. Handler at +0x100 is IRETQ; the pseudo-descriptor is
+        // at +0x200 (limit 0xff, base entry+0x300); gate 3 (+0x300+48) is an interrupt gate with
+        // DPL 3 (0xEE, what Linux installs), selector 0x10, to the handler.
+        const ENTRY: u64 = 0x0100_0200;
+        let mut code = vec![0u8; 0x400];
+        code[..9].copy_from_slice(&[0xFA, 0x0F, 0x01, 0x1D, 0xF8, 0x01, 0x00, 0x00, 0xCC]);
+        code[9] = 0xF4;
+        code[0x100..0x102].copy_from_slice(&[0x48, 0xCF]);
+        code[0x200..0x202].copy_from_slice(&0xFFu16.to_le_bytes());
+        code[0x202..0x20A].copy_from_slice(&(ENTRY + 0x300).to_le_bytes());
+        let handler = ENTRY + 0x100;
+        let gate = 0x300 + 3 * 16;
+        code[gate..gate + 2].copy_from_slice(&(handler as u16).to_le_bytes());
+        code[gate + 2..gate + 4].copy_from_slice(&0x10u16.to_le_bytes());
+        code[gate + 5] = 0xEE;
+        code[gate + 6..gate + 8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        code[gate + 8..gate + 12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-int3",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let on = run(CpuidProfile::X8664V1Stage4A);
+        let stop = &on["stop"];
+        // CLI, LIDT, INT3, IRETQ retire; HLT (outside the set) is the stop after the INT3.
+        assert_eq!(stop["exit_kind"], "unsupported", "{on:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xf4", "{on:#}");
+        assert_eq!(stop["retired"], 4, "{on:#}");
+        assert!(
+            stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("int3")),
+            "{on:#}"
+        );
+        // DiagnosticV1: no INT3 member, the stop is the INT3 itself after CLI and LIDT.
+        let off = run(CpuidProfile::DiagnosticV1);
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0xcc", "{off:#}");
+        assert_eq!(stop["retired"], 2, "{off:#}");
+        assert!(
+            !stop["set_members"]
+                .as_array()
+                .expect("members")
+                .contains(&json!("int3")),
+            "{off:#}"
+        );
+    }
+
+    #[test]
+    fn stage4a_answers_rdmsr_0x87_with_zero_and_the_default_profile_does_not() {
+        // CLI; MOV ECX, 0x87; MOV EAX, 0x55; MOV EDX, 0x66; RDMSR; HLT.
+        let code = [
+            0xFA, 0xB9, 0x87, 0x00, 0x00, 0x00, 0xB8, 0x55, 0x00, 0x00, 0x00, 0xBA, 0x66, 0x00,
+            0x00, 0x00, 0x0F, 0x32, 0xF4,
+        ];
+        let run = |profile: CpuidProfile| {
+            let mut case = Case::new(
+                "stage4a-rdmsr-87",
+                &bzimage_with_entry(&code),
+                &[0xAB; 4688],
+                BLOB,
+            );
+            case.options.budget = Some(64);
+            case.options.set_cpl0 = true;
+            case.options.cpuid_profile = profile;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        let on = run(CpuidProfile::X8664V1Stage4A);
+        let stop = &on["stop"];
+        // Oracle: the kernel's tdx_init reads 0 as "no TDX KeyIDs" (arch/x86/virt/vmx/tdx/tdx.c).
+        assert_eq!(stop["gpr"]["rax"], "0x0", "{on:#}");
+        assert_eq!(stop["gpr"]["rdx"], "0x0", "{on:#}");
+        assert_eq!(stop["gpr"]["rcx"], "0x87", "{on:#}");
+        assert_eq!(
+            stop["retired"], 5,
+            "CLI, 3 MOV, RDMSR; HLT is outside the set"
+        );
+        let off = run(CpuidProfile::DiagnosticV1);
+        let stop = &off["stop"];
+        assert_eq!(stop["exit_kind"], "unsupported", "{off:#}");
+        assert_eq!(stop["unsupported_opcode"], "0x32", "{off:#}");
+        assert_eq!(stop["retired"], 4, "{off:#}");
+        assert_eq!(stop["gpr"]["rax"], "0x55", "{off:#}");
+    }
+
+    #[test]
+    fn diagnostic_note_has_both_explanations_with_both_flags() {
+        let note = |past_c7: bool, profile: CpuidProfile| {
+            let mut evidence = json!({});
+            mark_acceptance(&mut evidence, past_c7, profile);
+            evidence
+                .get("diagnostic_note")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let both = note(true, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(both.contains("X8664V1Stage4A declares a subset"), "{both}");
+        assert!(both.contains("--diagnostic-past-c7"), "{both}");
+        assert!(both.contains("NOT counted"), "{both}");
+        let subset = note(false, CpuidProfile::X8664V1Stage4A).expect("note");
+        assert!(subset.contains("subset") && !subset.contains("--diagnostic-past-c7"));
+        let diag = note(true, CpuidProfile::DiagnosticV1).expect("note");
+        assert!(diag.contains("DiagnosticV1 answers CPUID leaf 1"), "{diag}");
+        assert_eq!(note(false, CpuidProfile::DiagnosticV1), None);
+    }
+
+    #[test]
+    fn default_profile_evidence_has_no_cpuid_profile_key() {
+        let (value, _) = cpuid_leaf_case("default-profile-evidence", 1, false);
+        assert!(value.get("cpuid_profile").is_none(), "{value:#}");
+        assert_eq!(value["acceptance"], "counted");
+        assert_eq!(value["stop"]["exit_kind"], "cpuid_divergence");
+    }
+
     /// Real artifacts of S4-35/S4-36/S4-31g (outside Git): the kernel is loaded and no guest
     /// instruction runs. Run with `-- --ignored` on a machine that has `work/stage4`.
     #[test]
@@ -1913,6 +2374,7 @@ mod tests {
             budget: None,
             set_cpl0: false,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -1954,6 +2416,7 @@ mod tests {
             budget: Some(1000),
             set_cpl0: false,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2002,6 +2465,7 @@ mod tests {
             budget: Some(30_000_000),
             set_cpl0: true,
             diagnostic_past_c7: false,
+            cpuid_profile: CpuidProfile::DiagnosticV1,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
@@ -2035,6 +2499,7 @@ mod tests {
                 "cli",
                 "cpu_owned_cr3",
                 "cpuid:DiagnosticV1",
+                "rdtsc",
                 "msr:EferReadOnlyV1(3328)",
                 "msr:fs_gs_base",
                 "msr:star_write",
@@ -2042,9 +2507,13 @@ mod tests {
                 "msr:cstar_write",
                 "msr:sysenter_cs_write",
                 "msr:sysenter_stack_write",
+                "msr:syscall_mask_write",
+                "msr:kernel_gs_base_write",
                 "pio_u8",
+                "sti",
                 "popf_cpl0",
-                "pci_config"
+                "pci_config",
+                "irq"
             ])
         );
         // S2-46: the null MOV DS/ES/SS/FS/GS and LEA RBP retire. S4-38L3: the set's adapter

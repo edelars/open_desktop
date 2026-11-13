@@ -1801,6 +1801,10 @@ const fn efer_write_decision(current: u64, value: u64) -> EferWrite {
 /// CPL3 accesses together with EFLAGS.AC; the model has no alignment checks, so AM alone changes
 /// nothing observable.
 const CR0_AM: u64 = 1 << 18;
+/// CPUID.1:EDX bit 0 (FPU) and bit 24 (FXSR), the features the `with_fp_state` member needs
+/// declared (bit positions from the Intel SDM, from memory).
+const FP_FEATURE_FPU: u32 = 1 << 0;
+const FP_FEATURE_FXSR: u32 = 1 << 24;
 /// CR4.PSE (bit 4), added to the CPL0 set policy in S4-38L7c.
 const CR4_PSE: u64 = 1 << 4;
 /// CR4.PGE (bit 7), added to the CPL0 set policy in S4-38L7d.
@@ -1906,11 +1910,17 @@ pub struct Cpl0ProfileSet<'a> {
     msr_cstar: Option<&'a Cell<u64>>,
     msr_sysenter_cs: Option<&'a Cell<u64>>,
     msr_sysenter_stack: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
+    msr_syscall_mask: Option<&'a Cell<u64>>,
+    msr_kernel_gs_base: Option<&'a Cell<u64>>,
+    msr_tdx_keyid_partitioning_read: bool,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
     pci_config: Option<&'a Cell<u32>>,
     popf_cpl0: bool,
+    sti: Option<&'a crate::StiProfile>,
+    fp_state: Option<&'a RefCell<GuestFpState>>,
+    int3: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1928,17 +1938,38 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_cstar: None,
             msr_sysenter_cs: None,
             msr_sysenter_stack: None,
+            msr_syscall_mask: None,
+            msr_kernel_gs_base: None,
+            msr_tdx_keyid_partitioning_read: false,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
             pci_config: None,
             popf_cpl0: false,
+            sti: None,
+            fp_state: None,
+            int3: false,
         }
     }
 
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
     pub const fn with_cli(mut self, profile: &'a crate::CliProfile) -> Self {
         self.cli = Some(profile);
+        self
+    }
+
+    /// S4-38L7bp: admit the exact bare `STI` (`FB`) at CPL0 under its non-PVI Long64 profile,
+    /// with the CLI policy (no prefix, no REX, `CPL <= IOPL`; CR0.PE = 1 and CR4.PVI = 0 are
+    /// checked at entry). `STI` sets only RFLAGS.IF and, when IF was 0, arms the one-instruction
+    /// interrupt shadow (`StiShadow::Blocking`), which the run loop clears after the next retired
+    /// instruction. The set delivers no interrupt (it never did): the member models the
+    /// instruction, not the delivery. A shadow left armed by a run that ends right after the
+    /// `STI` is carried into the next run (admission accepts `Blocking` with IF = 1 only under
+    /// this member). `STI` while a shadow is already armed stays `Unsupported` (opcode `0xfb`).
+    /// Independent of [`Self::with_cli`] and [`Self::with_halt`]. Without this call `STI` stays
+    /// `Unsupported` in the set, as before.
+    pub const fn with_sti(mut self, profile: &'a crate::StiProfile) -> Self {
+        self.sti = Some(profile);
         self
     }
 
@@ -2062,8 +2093,91 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// S4-38L7at: admit `WRMSR` of IA32_SYSCALL_MASK (`0xC000_0084`, FMASK) at CPL0 under Long64,
+    /// with exactly the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the
+    /// caller's guest SYSCALL_MASK and receives `EDX:EAX` exactly (full 64-bit value; the flag
+    /// clearing behaviour of the real FMASK is NOT modelled, no canonical check, no other state
+    /// change). Only the bare two-byte form `0F 30` is admitted, `RDMSR` of SYSCALL_MASK stays
+    /// `Unsupported`, and `SYSCALL`/`SYSRET` are not modelled, so nothing in the set consumes the
+    /// value.
+    ///
+    /// Precedence: an MSR profile that handles the index would keep it, as for `0x174..=0x176`;
+    /// today no [`MsrProfile`] covers `0xC000_0084`, so the member is never overridden.
+    pub const fn with_msr_syscall_mask_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_syscall_mask = Some(cell);
+        self
+    }
+
+    /// S4-38L7au: admit `WRMSR` of IA32_KERNEL_GS_BASE (`0xC000_0102`) at CPL0 under Long64, with
+    /// exactly the conditions and semantics of [`Self::with_msr_star_write`]: `cell` is the
+    /// caller's guest KERNEL_GS_BASE and receives `EDX:EAX` exactly (full 64-bit value; no
+    /// canonical check, no other state change). Only the bare two-byte form `0F 30` is admitted,
+    /// `RDMSR` of KERNEL_GS_BASE stays `Unsupported`, and `SWAPGS` is not modelled by the member,
+    /// so nothing in the set consumes the value. The member is separate from
+    /// [`Self::with_msr_bases`], which covers IA32_FS_BASE and IA32_GS_BASE only.
+    ///
+    /// Precedence: [`MsrProfile::KernelGsBaseV1`] handles `0xC000_0102`; a set whose MSR profile
+    /// handles the index keeps it (as for `0x174..=0x176`), so the member never overrides it.
+    pub const fn with_msr_kernel_gs_base_write(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_kernel_gs_base = Some(cell);
+        self
+    }
+
+    /// S4-38L9c: admit `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) at CPL0 under Long64.
+    /// The value is the constant `EDX:EAX = 0:0` (no MKTME and no TDX private KeyIDs, the
+    /// "TDX not enabled by the BIOS" reading; the kernel's `tdx_init` treats it exactly like the
+    /// `#GP(0)` of a CPU without the MSR, see CPU_CONTRACT S4-38L9c). There is no cell and no
+    /// `WRMSR`: only the bare two-byte form `0F 32` (no prefix, no REX) is admitted, `WRMSR` of
+    /// `0x87`, any other form and any other index keep their refusal (`Unsupported`).
+    ///
+    /// Precedence: an MSR profile that handles the index would keep it; today no [`MsrProfile`]
+    /// covers `0x87`, so the member is never overridden.
+    pub const fn with_msr_tdx_keyid_partitioning_read(mut self) -> Self {
+        self.msr_tdx_keyid_partitioning_read = true;
+        self
+    }
+
+    /// S4-38L9d: admit the FP-state instructions the Linux kernel runs in `fpu__init_system`:
+    /// the bare `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`, no prefix,
+    /// no REX), together with the exact `MOV CR0, RDI` (`0F 22 C7`) of `native_write_cr0`. `cell`
+    /// holds the caller's guest FP state (x87 environment and registers, MXCSR, XMM) between runs;
+    /// it is NOT part of `LongModeState` (whose `x87`/`sse` stay `None` under the set, so every
+    /// other x87/SSE/MMX form keeps its refusal with its exact opcode). `FNINIT` applies the
+    /// architectural reset of the x87 environment (FCW `0x037F`, FSW 0, FTW `0xFFFF`, FIP/FDP/FOP
+    /// and the selectors 0; register payloads survive). `FXSAVE` writes the 512-byte image through
+    /// the set's memory with the S2-39c layout (16-byte alignment else `#GP(0)`; MXCSR_MASK
+    /// `TARGET_FXSAVE_MXCSR_MASK`; reserved bytes untouched), the 13 defined fields in ascending
+    /// order, each stored as 8/4/2/1-byte `write` calls (the widths of the board's paged adapter;
+    /// not a transaction: a fault in a later piece leaves the earlier ones written). Both fault with `#NM` when
+    /// CR0.EM or CR0.TS is set; `FXSAVE` is `Unsupported` (`0xAE`) with CR4.OSFXSR clear. The
+    /// member requires a CPUID profile with the FPU (EDX bit 0) and FXSR (EDX bit 24) bits
+    /// declared (`Cpl0ProfileSetInputError::FpFeaturesNotDeclared` otherwise) and a cell whose FCS/FDS
+    /// selectors are known (`FpStateNotAdmitted`). Without this call all of the above stay
+    /// `Unsupported` in the set, as before.
+    pub const fn with_fp_state(mut self, cell: &'a RefCell<GuestFpState>) -> Self {
+        self.fp_state = Some(cell);
+        self
+    }
+
+    /// S4-38L9e: admit the bare `INT3` (`CC`, no prefix, no REX) at CPL0 under Long64: the software
+    /// breakpoint `#BP` (vector 3) is delivered through the IDT gate of vector 3 with the frame of
+    /// the other IA-32e entries (SS, RSP, RFLAGS, CS and the address of the NEXT instruction, five
+    /// qwords, no error code) and the `INT3` retires. The gate may be an interrupt gate (0xE, IF
+    /// cleared on entry; what Linux installs) or a trap gate (0xF, IF kept); a gate that is not
+    /// present, of another type, with IST != 0, or an unreadable IDT/GDT/stack stops the run with
+    /// `Unsupported` (opcode `0xcc`) and no write, except that a memory fault of the delivery is
+    /// reported as the fault of the `INT3` (state unchanged). The STI shadow must be `Clear`.
+    /// Needs a modeled IDTR, GDTR and CS/SS (as the other IDT deliveries of the set). Without this
+    /// call `INT3` stays `Unsupported` (opcode `0xcc`) in the set and outside it. See
+    /// [`crate::deliver_int3_cpl0_set`].
+    pub const fn with_int3(mut self) -> Self {
+        self.int3 = true;
+        self
+    }
+
     /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
-    /// STI stays outside the set (ISSUE-069), so HLT cannot resume itself.
+    /// the set delivers no interrupt (STI exists only under [`Self::with_sti`], S4-38L7bp, and
+    /// models the instruction, not the delivery), so HLT cannot resume itself.
     pub const fn with_halt(mut self, profile: &'a crate::HaltProfile) -> Self {
         self.halt = Some(profile);
         self
@@ -2082,7 +2196,9 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
-    /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms.
+    /// Admit the exact bare `IN AL, DX` (`EC`) and `OUT DX, AL` (`EE`) forms and, since S4-38L7bk,
+    /// the exact bare `IN AL, imm8` (`E4 ib`) and `OUT imm8, AL` (`E6 ib`) forms (port = the
+    /// zero-extended immediate; same port callback and port-error behaviour).
     /// They execute only through [`run_with_cpl0_profile_set_and_pio`]; any
     /// other entry point, and a set built without this call, leaves them
     /// `Unsupported` without touching a port.
@@ -2118,6 +2234,40 @@ impl<'a> Cpl0ProfileSet<'a> {
     pub const fn with_popf_cpl0(mut self) -> Self {
         self.popf_cpl0 = true;
         self
+    }
+}
+
+/// S4-38L9d: the FP state the CPL0 set owns through [`Cpl0ProfileSet::with_fp_state`]: the x87
+/// environment and registers and the SSE state (XMM and MXCSR), in the model of `X87State` and
+/// `SseState` that the S2-39 profiles use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuestFpState {
+    pub x87: crate::state::X87State,
+    pub sse: crate::state::SseState,
+}
+
+impl GuestFpState {
+    /// The state after `FNINIT` with zeroed registers: FCW `0x037F`, FSW 0, FTW `0xFFFF` (all
+    /// empty), FIP/FDP/FOP 0, FCS/FDS known and 0, ST0-7 and XMM0-15 zero, MXCSR `0x1F80`
+    /// (Intel SDM Vol. 1 Table 8-1 and §10.2.3, from memory).
+    pub const fn initial() -> Self {
+        Self {
+            x87: crate::state::X87State {
+                registers: [[0; 10]; 8],
+                control_word: 0x037f,
+                status_word: 0,
+                tag_word: 0xffff,
+                instruction_pointer: 0,
+                data_pointer: 0,
+                instruction_selector: Some(0),
+                data_selector: Some(0),
+                last_opcode: 0,
+            },
+            sse: crate::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            },
+        }
     }
 }
 
@@ -2173,6 +2323,10 @@ pub enum Cpl0ProfileSetInputError {
         value: u64,
     },
     FpStateNotAdmitted,
+    /// S4-38L9d: `with_fp_state` was selected but the set has no CPUID profile that declares
+    /// both FPU (CPUID.1:EDX bit 0) and FXSR (bit 24): the FP instructions of the member must
+    /// not run on a CPU that says it has no FPU/FXSAVE.
+    FpFeaturesNotDeclared,
     ActivityMissing,
     NotRunning,
     StiShadowMissing,
@@ -2237,8 +2391,9 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
-/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: the guest-owned write-only MSR cells of a
-/// set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR) and IA32_SYSENTER_CS, _ESP and _EIP.
+/// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: the guest-owned write-only
+/// MSR cells of a set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSCALL_MASK),
+/// IA32_SYSENTER_CS, _ESP and _EIP, and IA32_KERNEL_GS_BASE.
 /// One optional bundle, so that adding such an MSR does not touch every `ExecutionProfiles`
 /// literal. The SYSENTER cells are only carried here; in the set, the board and the stop record
 /// they are separate cells, not SYSCALL ones.
@@ -2250,6 +2405,10 @@ struct GuestMsrCells<'a> {
     sysenter_cs: Option<&'a Cell<u64>>,
     sysenter_esp: Option<&'a Cell<u64>>,
     sysenter_eip: Option<&'a Cell<u64>>,
+    syscall_mask: Option<&'a Cell<u64>>,
+    kernel_gs_base: Option<&'a Cell<u64>>,
+    /// S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns `0:0`; no cell.
+    tdx_keyid_partitioning_read: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2259,7 +2418,8 @@ struct ExecutionProfiles<'a> {
     msr_bases: bool,
     msr_efer: Option<&'a Cell<u64>>,
     /// The set's write-only guest MSR cells (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSENTER_CS,
-    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP); `None` outside a set or when the set has none.
+    /// IA32_SYSENTER_ESP, IA32_SYSENTER_EIP, IA32_SYSCALL_MASK, IA32_KERNEL_GS_BASE); `None`
+    /// outside a set or when the set has none.
     guest_msrs: Option<GuestMsrCells<'a>>,
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
@@ -2390,6 +2550,10 @@ struct ExecutionProfiles<'a> {
     cr4: Option<Cr4Profile>,
     mov_cr3: Option<MovCr3Long64V1>,
     control_policy: Option<ControlRegisterPolicy>,
+    /// S4-38L9d: the FP state of the CPL0 set (`FNINIT`, plain `FXSAVE`), set only by a
+    /// `Cpl0ProfileSet` built with `with_fp_state`. `LongModeState.x87/sse` stay `None`
+    /// under a policy, so every other x87/SSE form keeps its refusal.
+    fp_cpl0: Option<&'a RefCell<GuestFpState>>,
     /// CPU-owned CR3 under a control-register policy. The cell receives the
     /// translation-context effect of a retired `MOV CR3, RAX`, which makes the
     /// run loop stop at the following instruction boundary.
@@ -2401,6 +2565,13 @@ struct ExecutionProfiles<'a> {
     /// S2-50: `POPFQ` (`9D`, `48 9D`) with the CPL0 IOPL/IF rule. Set only by a
     /// `Cpl0ProfileSet` built with `with_popf_cpl0`.
     popf_cpl0: bool,
+    /// S4-38L7bp: `STI` (`FB`) under a control-register policy, set only by a `Cpl0ProfileSet`
+    /// built with `with_sti`. Distinct from `sti`, whose bounded NOP/STI/CLI/HLT sequence the
+    /// set does not use.
+    sti_cpl0: bool,
+    /// S4-38L9e: the bare `INT3` (`CC`) delivered through the IDT gate of vector 3, set only by a
+    /// `Cpl0ProfileSet` built with `with_int3`.
+    int3_cpl0: bool,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3531,9 +3702,12 @@ pub fn run_with_maxss_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3689,9 +3863,12 @@ pub fn run_with_minsd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -3847,9 +4024,12 @@ pub fn run_with_maxsd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4005,9 +4185,12 @@ pub fn run_with_minpd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4163,9 +4346,12 @@ pub fn run_with_minps_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4321,9 +4507,12 @@ pub fn run_with_maxps_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4479,9 +4668,12 @@ pub fn run_with_maxpd_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4637,9 +4829,12 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4795,9 +4990,12 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -4953,9 +5151,12 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5111,9 +5312,12 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5269,9 +5473,12 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5427,9 +5634,12 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5585,9 +5795,12 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5743,9 +5956,12 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -5901,9 +6117,12 @@ pub fn run_with_cvtss2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6059,9 +6278,12 @@ pub fn run_with_cvttss2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6216,9 +6438,12 @@ pub fn run_with_cvtsd2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6407,9 +6632,12 @@ fn run_with_cvtsd2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6565,9 +6793,12 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6758,9 +6989,12 @@ fn run_with_cvttsd2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -6920,9 +7154,12 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7111,9 +7348,12 @@ fn run_with_cvtss2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7269,9 +7509,12 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7427,9 +7670,12 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7618,9 +7864,12 @@ fn run_with_cvttss2si_r32_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7777,9 +8026,12 @@ pub fn run_with_cvttsd2si_registers_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -7935,9 +8187,12 @@ pub fn run_with_cvtdq2pd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8093,9 +8348,12 @@ pub fn run_with_cvtdq2pd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8250,9 +8508,12 @@ pub fn run_with_cvtdq2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8408,9 +8669,12 @@ pub fn run_with_cvtdq2ps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8599,9 +8863,12 @@ fn run_with_cvtdq2ps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8757,9 +9024,12 @@ pub fn run_with_cvtps2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -8915,9 +9185,12 @@ pub fn run_with_cvttps2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9106,9 +9379,12 @@ fn run_with_cvtps2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9297,9 +9573,12 @@ fn run_with_cvttps2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9488,9 +9767,12 @@ fn run_with_cvttpd2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9679,9 +9961,12 @@ fn run_with_cvtpd2dq_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9837,9 +10122,12 @@ pub fn run_with_cvtpd2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -9995,9 +10283,12 @@ pub fn run_with_cvtpd2ps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10153,9 +10444,12 @@ pub fn run_with_cvttpd2dq_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10311,9 +10605,12 @@ pub fn run_with_cvtss2sd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10469,9 +10766,12 @@ pub fn run_with_cvtpi2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10663,9 +10963,12 @@ fn run_with_cvtpi2ps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -10988,9 +11291,12 @@ pub fn run_with_cvtsd2ss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11146,9 +11452,12 @@ pub fn run_with_cvtps2pd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11304,9 +11613,12 @@ pub fn run_with_cvtps2pd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11462,9 +11774,12 @@ pub fn run_with_cvtss2sd_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11619,9 +11934,12 @@ pub fn run_with_cvtsd2ss_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11777,9 +12095,12 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -11993,9 +12314,12 @@ fn run_with_cmpss_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12151,9 +12475,12 @@ pub fn run_with_cmpsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12309,9 +12636,12 @@ pub fn run_with_cmppd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12466,9 +12796,12 @@ pub fn run_with_cmppd_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12623,9 +12956,12 @@ pub fn run_with_cmpps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12803,9 +13139,12 @@ fn run_with_minsd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -12961,9 +13300,12 @@ pub fn run_with_maxsd_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13146,9 +13488,12 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13316,9 +13661,12 @@ fn run_with_minpd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13509,9 +13857,12 @@ fn run_with_minps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13667,9 +14018,12 @@ pub fn run_with_rcpps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13825,9 +14179,12 @@ pub fn run_with_rcpss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -13982,9 +14339,12 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14139,9 +14499,12 @@ pub fn run_with_sqrtss_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14296,9 +14659,12 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14486,9 +14852,12 @@ fn run_with_sqrtps_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14643,9 +15012,12 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -14832,9 +15204,12 @@ fn run_with_sqrtpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15021,9 +15396,12 @@ fn run_with_sqrtsd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15217,9 +15595,12 @@ fn run_with_maxpd_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15413,9 +15794,12 @@ fn run_with_maxps_memory_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15623,9 +16007,12 @@ fn run_minss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15823,9 +16210,12 @@ fn run_maxss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -15980,9 +16370,12 @@ pub fn run_with_cmpps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16138,9 +16531,12 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cr0: Some(Cr0Profile::FpInitLong64V1),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -16349,9 +16745,12 @@ pub fn run_with_efer_rdmsr_profile(
             cr0: Some(Cr0Profile::EferReadOnlyLong64V1),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -16752,9 +17151,12 @@ pub fn run_with_cr0_profile(
             cr0: Some(profile),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -16969,9 +17371,12 @@ fn run_with_cr4_profile_and_rflags_defined(
             }),
             mov_cr3: mov_cr3_profile,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -19751,6 +20156,40 @@ fn commit_pio_u8<P: crate::PortIo + ?Sized>(
     PioU8Commit::Retired
 }
 
+/// S4-38L7bk: commit of the exact bare `IN AL, imm8` (`E4 ib`) / `OUT imm8, AL` (`E6 ib`) forms.
+/// The port is the zero-extended immediate (length 2, no prefix); the byte access is the same as in
+/// [`commit_pio_u8`]. The port callback runs before any state change, so a failure leaves RIP and
+/// AL untouched. Flags are not touched.
+fn commit_pio_u8_imm<P: crate::PortIo + ?Sized>(
+    state: &mut LongModeState,
+    instruction: &long_decode::Instruction,
+    pio: &mut P,
+) -> PioU8Commit<P::Error> {
+    let opcode = instruction.opcode.byte;
+    if instruction.length != 2 || instruction.prefixes != Prefixes::default() {
+        return PioU8Commit::Unsupported { opcode };
+    }
+    match instruction.operation {
+        Operation::InAlImm8 { port } => match pio.read_u8(u16::from(port)) {
+            Ok(value) => state.write(
+                RegisterView::low(Register::Rax, OperandSize::Byte),
+                u64::from(value),
+            ),
+            Err(error) => return PioU8Commit::PortIo { opcode, error },
+        },
+        Operation::OutImm8Al { port } => {
+            if let Err(error) =
+                pio.write_u8(u16::from(port), state.gpr[Register::Rax as usize] as u8)
+            {
+                return PioU8Commit::PortIo { opcode, error };
+            }
+        }
+        _ => return PioU8Commit::Unsupported { opcode },
+    }
+    state.rip = state.rip.wrapping_add(u64::from(instruction.length));
+    PioU8Commit::Retired
+}
+
 /// Continue an execution while carrying the caller's explicit RFLAGS
 /// definedness snapshot. Use the `rflags_defined` value returned by the prior
 /// call; this function does not infer execution history from guest state.
@@ -20133,9 +20572,12 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -20155,9 +20597,10 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
 /// integer flags, CR0/CR4 modeled inside the policy, x87/SSE unmodeled, CR3
 /// unmodeled unless the set owns it (`with_cpu_owned_cr3`, then modeled within
 /// 36 bits), RFLAGS.VM=0 and RFLAGS bit 1 set (always 1 in IA-32e mode),
-/// `Running` activity and an STI shadow that is `Clear`, or `Blocking` only with
-/// IF=0 (the shadow a MOV SS leaves; STI stays outside, ISSUE-069), and, with
-/// CLI, CR0.PE=1 and CR4.PVI=0. Null segment loads over loaded hidden caches
+/// `Running` activity and an STI shadow that is `Clear`, or `Blocking` with
+/// IF=0 (the shadow a MOV SS leaves), or `Blocking` with IF=1 only when the set
+/// was built with `with_sti` (S4-38L7bp: the shadow of a retired STI carried
+/// across a run boundary), and, with CLI or STI, CR0.PE=1 and CR4.PVI=0. Null segment loads over loaded hidden caches
 /// are handled by the set (S2-46). `rdtsc_source` feeds RDTSC only when the set
 /// was built with `with_rdtsc`; otherwise it is never called. `IN`/`OUT` stay
 /// `Unsupported` here even for a set built with `with_pio_u8`.
@@ -20307,6 +20750,26 @@ fn run_cpl0_profile_set_inner(
     if state.x87.is_some() || state.sse.is_some() {
         return Err(Error::FpStateNotAdmitted);
     }
+    if let Some(cell) = set.fp_state {
+        // S4-38L9d: the FP instructions of the member run only on a CPU that declares them.
+        let declared = set.cpuid.is_some_and(|profile| {
+            let edx = profile.query(1, 0).edx;
+            edx & FP_FEATURE_FPU != 0 && edx & FP_FEATURE_FXSR != 0
+        });
+        if !declared {
+            return Err(Error::FpFeaturesNotDeclared);
+        }
+        // The plain FXSAVE image carries FCS/FDS: both selectors must be represented. The step
+        // takes `borrow_mut()` (FNINIT) and `borrow()` (FXSAVE): a cell the caller still holds
+        // borrowed would panic mid-run, so the entry refuses it (`try_borrow_mut` succeeds only
+        // when there is no outstanding borrow at all).
+        let selectors_known = cell.try_borrow_mut().is_ok_and(|fp| {
+            fp.x87.instruction_selector.is_some() && fp.x87.data_selector.is_some()
+        });
+        if !selectors_known {
+            return Err(Error::FpStateNotAdmitted);
+        }
+    }
     match state.activity {
         None => return Err(Error::ActivityMissing),
         Some(crate::CpuActivity::Running) => {}
@@ -20316,9 +20779,11 @@ fn run_cpl0_profile_set_inner(
         None => return Err(Error::StiShadowMissing),
         Some(crate::StiShadow::Clear) => {}
         // A MOV SS shadow can outlive a one-instruction run only with IF = 0, where it is
-        // not observable through maskable interrupts; with IF = 1 it could come from STI
-        // (ISSUE-069), which stays outside the set.
-        Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 => {}
+        // not observable through maskable interrupts. With IF = 1 the shadow can only come
+        // from STI, which exists in the set only under `with_sti` (S4-38L7bp; ISSUE-069 is
+        // about delivery, which the set does not model): such a run may end right after a
+        // retired `STI`, so `Blocking` with IF = 1 is carried into the next run.
+        Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 || set.sti.is_some() => {}
         Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
     }
     // RFLAGS.VM and bit 1 are checked for every set: IA-32e has no virtual-8086
@@ -20330,7 +20795,7 @@ fn run_cpl0_profile_set_inner(
         return Err(Error::RflagsReservedBitClear);
     }
     // CR0.PE and CR4.PVI are the non-PVI Long64 CLI preconditions.
-    if set.cli.is_some() && (cr0 & 1 == 0 || cr4 & (1 << 1) != 0) {
+    if (set.cli.is_some() || set.sti.is_some()) && (cr0 & 1 == 0 || cr4 & (1 << 1) != 0) {
         return Err(Error::CliPreconditionFailed);
     }
     let cr3_effect = Cell::new(None);
@@ -20358,6 +20823,9 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_cstar.is_some()
                 || set.msr_sysenter_cs.is_some()
                 || set.msr_sysenter_stack.is_some()
+                || set.msr_syscall_mask.is_some()
+                || set.msr_kernel_gs_base.is_some()
+                || set.msr_tdx_keyid_partitioning_read
             {
                 Some(GuestMsrCells {
                     star: set.msr_star,
@@ -20366,6 +20834,9 @@ fn run_cpl0_profile_set_inner(
                     sysenter_cs: set.msr_sysenter_cs,
                     sysenter_esp: set.msr_sysenter_stack.map(|(esp, _)| esp),
                     sysenter_eip: set.msr_sysenter_stack.map(|(_, eip)| eip),
+                    syscall_mask: set.msr_syscall_mask,
+                    kernel_gs_base: set.msr_kernel_gs_base,
+                    tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
                 })
             } else {
                 None
@@ -20501,6 +20972,7 @@ fn run_cpl0_profile_set_inner(
             cr0: None,
             mov_cr3: None,
             control_policy: Some(set.policy),
+            fp_cpl0: set.fp_state,
             cpu_owned_cr3: set.cpu_owned_cr3.then_some(&cr3_effect),
             pio_u8: pio_cell
                 .as_ref()
@@ -20511,6 +20983,8 @@ fn run_cpl0_profile_set_inner(
                     pci_config: set.pci_config,
                 }),
             popf_cpl0: set.popf_cpl0,
+            sti_cpl0: set.sti.is_some(),
+            int3_cpl0: set.int3,
             cr4: None,
         },
         StepRuntime {
@@ -20705,11 +21179,12 @@ fn run_configured(
             rflags_defined,
         };
     }
-    // Under the CPL0 set a MOV SS shadow may be carried across run boundaries, but only
-    // with IF = 0 (see the matching entry admission).
+    // Under the CPL0 set a shadow may be carried across run boundaries: a MOV SS shadow
+    // with IF = 0, and, under `with_sti` (`sti_cpl0`), the shadow of a retired STI with
+    // IF = 1 (see the matching entry admission).
     if sti_profile.is_none()
         && state.sti_shadow == Some(crate::StiShadow::Blocking)
-        && !(control_policy.is_some() && state.rflags & (1 << 9) == 0)
+        && !(control_policy.is_some() && (state.rflags & (1 << 9) == 0 || profiles.sti_cpl0))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0xfb },
@@ -20765,7 +21240,8 @@ fn run_configured(
             };
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
-                    // The CPL0 profile set has no STI; its only shadow source is MOV SS.
+                    // The CPL0 profile set's shadow sources are MOV SS and, under
+                    // `with_sti` (S4-38L7bp), STI; the shadow lasts one retired instruction.
                     if (sti_profile.is_some() || control_policy.is_some())
                         && old_shadow == Some(crate::StiShadow::Blocking)
                     {
@@ -20966,9 +21442,12 @@ pub fn step_with_cr0_profile(
             cr0: Some(profile),
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21367,9 +21846,12 @@ fn step_tracked_with_profiles_and_rdtsc(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21525,9 +22007,12 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -21907,9 +22392,12 @@ fn run_with_comparison_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22067,9 +22555,12 @@ pub fn run_with_sqrtss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22225,9 +22716,12 @@ pub fn run_with_sqrtsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22383,9 +22877,12 @@ pub fn run_with_sqrtps_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22541,9 +23038,12 @@ pub fn run_with_sqrtpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22704,9 +23204,12 @@ fn run_with_subpd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -22917,9 +23420,12 @@ pub fn run_with_mulpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23078,9 +23584,12 @@ fn run_with_addpd_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23269,9 +23778,12 @@ fn run_with_mulpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23482,9 +23994,12 @@ pub fn run_with_addsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23640,9 +24155,12 @@ pub fn run_with_divpd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23831,9 +24349,12 @@ fn run_with_divpd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -23989,9 +24510,12 @@ pub fn run_with_addss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24181,9 +24705,12 @@ fn run_with_addss_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24372,9 +24899,12 @@ fn run_with_addsd_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24566,9 +25096,12 @@ fn run_with_addps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24724,9 +25257,12 @@ pub fn run_with_divsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -24918,9 +25454,12 @@ fn run_with_divps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25076,9 +25615,12 @@ pub fn run_with_divss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25234,9 +25776,12 @@ pub fn run_with_mulsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25392,9 +25937,12 @@ pub fn run_with_mulss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25586,9 +26134,12 @@ fn run_with_mulps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25744,9 +26295,12 @@ pub fn run_with_subsd_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -25902,9 +26456,12 @@ pub fn run_with_subss_register_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26060,9 +26617,12 @@ fn run_with_scalar_float_memory_rax_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26462,9 +27022,12 @@ fn run_with_subps_profile(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -26619,9 +27182,12 @@ pub fn run_with_cvtpd2ps_memory_controls(
             cr0: None,
             mov_cr3: None,
             control_policy: None,
+            fp_cpl0: None,
             cpu_owned_cr3: None,
             pio_u8: None,
             popf_cpl0: false,
+            sti_cpl0: false,
+            int3_cpl0: false,
             cr4: None,
         },
         StepRuntime {
@@ -27075,9 +27641,12 @@ fn step_configured(
         cr0: cr0_profile,
         mov_cr3: mov_cr3_profile,
         control_policy,
+        fp_cpl0,
         cpu_owned_cr3,
         pio_u8,
         popf_cpl0,
+        sti_cpl0,
+        int3_cpl0,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -27232,8 +27801,9 @@ fn step_configured(
     if state.activity == Some(crate::CpuActivity::Halted) {
         return Ok(StepOutcome::Halted);
     }
-    // S2-46: the CPL0 profile set carries a MOV SS shadow only with IF = 0.
-    let mov_ss_shadow = control_policy.is_some() && state.rflags & (1 << 9) == 0;
+    // S2-46: the CPL0 profile set carries a MOV SS shadow with IF = 0.
+    // S4-38L7bp: under `with_sti` the shadow of a retired `STI` (IF = 1) is carried as well.
+    let mov_ss_shadow = control_policy.is_some() && (state.rflags & (1 << 9) == 0 || sti_cpl0);
     if state.sti_shadow == Some(crate::StiShadow::Blocking)
         && sti_profile.is_none()
         && halt_profile.is_none()
@@ -27543,6 +28113,7 @@ fn step_configured(
                 instruction.operation,
                 Operation::ReadCr0
                     | Operation::WriteCr0
+                    | Operation::WriteCr0Rdi
                     | Operation::ReadCr4
                     | Operation::ReadCr4Into(_)
                     | Operation::WriteCr4
@@ -32792,6 +33363,17 @@ fn step_configured(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    // S4-38L9d: the FP member of the CPL0 set owns `FNINIT` and the plain `FXSAVE`; its state lives
+    // in the member's cell, so these two never reach the `state.x87`/`state.sse` paths below.
+    if let Some(fp_cell) = fp_cpl0
+        && control_policy.is_some()
+        && matches!(
+            instruction.operation,
+            Operation::Fninit | Operation::FxsaveRipRelative(_)
+        )
+    {
+        return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
+    }
     match instruction.operation {
         Operation::ReadCr0 if cr0_profile.is_some() => {
             let value = state.cr0.expect("CR0 profile state was prevalidated");
@@ -32947,6 +33529,28 @@ fn step_configured(
             } else {
                 state.cr4 = Some(value);
             }
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        Operation::WriteCr0Rdi if control_policy.is_some() && fp_cpl0.is_some() => {
+            // S4-38L9d: `0F 22 C7` MOV CR0, RDI, the `native_write_cr0` form. The decoder admits
+            // only the prefix-free three-byte encoding; the executor re-checks the shape. CPL > 0
+            // was already refused with #GP(0) above. The value follows the CPL0 set policy
+            // exactly like `MOV CR0, RAX`: an out-of-policy value is `Unsupported`, no state
+            // change.
+            let policy = control_policy.expect("guarded by the match arm");
+            let exact_form = instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x22
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default()
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword;
+            let value = state.gpr[Register::Rdi as usize];
+            if !exact_form || !policy.accepts_cr0(value) {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            state.cr0 = Some(value);
             state.rip = next_rip;
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
@@ -33111,6 +33715,19 @@ fn step_configured(
                 },
             );
         }
+        Operation::InAlImm8 { .. } | Operation::OutImm8Al { .. }
+            if pio_u8.is_some_and(|bridge| bridge.byte) =>
+        {
+            let bridge = pio_u8.expect("guarded by the match arm").port;
+            return Ok(
+                match commit_pio_u8_imm(state, &instruction, &mut **bridge.borrow_mut()) {
+                    PioU8Commit::Retired => StepOutcome::Advanced,
+                    PioU8Commit::Unsupported { opcode } | PioU8Commit::PortIo { opcode, .. } => {
+                        StepOutcome::Unsupported { opcode }
+                    }
+                },
+            );
+        }
         _ => {}
     }
     if instruction.operation == Operation::Hlt {
@@ -33134,15 +33751,39 @@ fn step_configured(
         }
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::Int3 {
+        // S4-38L9e: the bare `CC` is delivered through the IDT gate of vector 3 inside the CPL0
+        // profile set under its INT3 member only; everywhere else (bare `run`/`step`, the paged
+        // probes, a set without the member, a shadow that is not `Clear`) it is the stop it was.
+        // The decoder has already refused every prefixed form.
+        if !(int3_cpl0
+            && control_policy.is_some()
+            && instruction.prefixes == Prefixes::default()
+            && instruction.length == 1
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode == InstructionMode::Long64)
+        {
+            return Ok(StepOutcome::Unsupported { opcode: 0xcc });
+        }
+        return match crate::interrupt::deliver_int3_cpl0_set(state, memory, next_rip, context) {
+            crate::interrupt::Cpl0Int3Delivery::Delivered { .. } => Ok(StepOutcome::Branched),
+            crate::interrupt::Cpl0Int3Delivery::Refused(_) => {
+                Ok(StepOutcome::Unsupported { opcode: 0xcc })
+            }
+            crate::interrupt::Cpl0Int3Delivery::Aborted { cause, .. } => report_memory_error(cause),
+        };
+    }
     if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
         let has_cli = cli_profile.is_some() || sti_profile.is_some();
-        if !has_cli {
+        let is_sti = instruction.operation == Operation::Sti;
+        // S4-38L7bp: `sti_cpl0` admits STI (only) in the CPL0 set; it does not admit CLI.
+        let has_set_sti = is_sti && sti_cpl0 && control_policy.is_some();
+        if !has_cli && !has_set_sti {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
         }
-        let is_sti = instruction.operation == Operation::Sti;
-        if is_sti && sti_profile.is_none() {
+        if is_sti && sti_profile.is_none() && !has_set_sti {
             return Ok(StepOutcome::Unsupported { opcode: 0xfb });
         }
         if instruction.prefixes.group1 == Some(0xf0) && instruction.length == 2 {
@@ -33170,6 +33811,12 @@ fn step_configured(
                 error_code: Some(0),
                 linear_address: None,
             }));
+        }
+        // S4-38L7bp: the set re-arms nothing inside a running shadow (the run loop would clear
+        // it again after this instruction): STI under a `Blocking` shadow is refused.
+        if has_set_sti && sti_profile.is_none() && state.sti_shadow != Some(crate::StiShadow::Clear)
+        {
+            return Ok(StepOutcome::Unsupported { opcode: 0xfb });
         }
         let was_enabled = state.rflags & (1 << 9) != 0;
         if is_sti {
@@ -33256,8 +33903,9 @@ fn step_configured(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
-        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as: `WRMSR` of IA32_STAR / IA32_LSTAR /
-        // IA32_CSTAR / IA32_SYSENTER_CS / IA32_SYSENTER_ESP / IA32_SYSENTER_EIP stores EDX:EAX in
+        // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: `WRMSR` of
+        // IA32_STAR / IA32_LSTAR / IA32_CSTAR / IA32_SYSCALL_MASK / IA32_SYSENTER_CS /
+        // IA32_SYSENTER_ESP / IA32_SYSENTER_EIP / IA32_KERNEL_GS_BASE stores EDX:EAX in
         // the set's cell for that index. An MSR profile that handles the index (`handles_index`;
         // today `SysenterProbeV1` for 0x174..=0x176) wins for its own index, so every other form
         // (RDMSR, a prefix, CPL > 0, a set without the member, any other index) falls through to
@@ -33280,6 +33928,19 @@ fn step_configured(
                 0x176 if !msr_profile.is_some_and(|profile| profile.handles_index(0x176)) => {
                     cells.sysenter_eip
                 }
+                // S4-38L7at: IA32_SYSCALL_MASK, same precedence (no MSR profile covers it today).
+                0xc000_0084
+                    if !msr_profile.is_some_and(|profile| profile.handles_index(0xc000_0084)) =>
+                {
+                    cells.syscall_mask
+                }
+                // S4-38L7au: IA32_KERNEL_GS_BASE, same precedence: `MsrProfile::KernelGsBaseV1`
+                // handles the index and keeps it.
+                0xc000_0102
+                    if !msr_profile.is_some_and(|profile| profile.handles_index(0xc000_0102)) =>
+                {
+                    cells.kernel_gs_base
+                }
                 _ => None,
             }
             && control_policy.is_some()
@@ -33292,6 +33953,26 @@ fn step_configured(
                 (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
                     | u64::from(state.gpr[Register::Rax as usize] as u32),
             );
+            state.rip = next_rip;
+            return Ok(StepOutcome::Advanced);
+        }
+        // S4-38L9c: `RDMSR` of IA32_MKTME_KEYID_PARTITIONING (`0x87`) returns EDX:EAX = 0:0 in the
+        // set that has the member (the kernel's `tdx_init` reads it unconditionally and treats
+        // "no TDX KeyIDs" as "TDX off"). Same conditions as the write cells; an MSR profile that
+        // handles the index keeps it; `WRMSR`, a prefix, CPL > 0 and any other index fall
+        // through to the existing refusal.
+        if instruction.operation == Operation::ReadMsr
+            && msr_index == 0x87
+            && guest_msr_cells.is_some_and(|cells| cells.tdx_keyid_partitioning_read)
+            && !msr_profile.is_some_and(|profile| profile.handles_index(0x87))
+            && control_policy.is_some()
+            && context.privilege == PrivilegeLevel::Ring0
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+        {
+            state.gpr[Register::Rax as usize] = 0;
+            state.gpr[Register::Rdx as usize] = 0;
             state.rip = next_rip;
             return Ok(StepOutcome::Advanced);
         }
@@ -35125,8 +35806,12 @@ fn step_configured(
         | Operation::Hlt
         | Operation::InAlDx
         | Operation::OutDxAl
+        | Operation::InAlImm8 { .. }
+        | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
-        | Operation::OutDx { .. } => false,
+        | Operation::OutDx { .. }
+        // S4-38L9e: INT3 commits in its own gated path before this point.
+        | Operation::Int3 => false,
         Operation::Swapgs => true,
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
@@ -35143,6 +35828,10 @@ fn step_configured(
         // S4-38L7ak: and for the FS/GS-based MOVSXD r64, m32.
         | Operation::MovsxdFsLoad { .. }
         | Operation::MovsxdGsLoad { .. }
+        | Operation::MovsxFsLoadB { .. }
+        | Operation::MovsxGsLoadB { .. }
+        | Operation::MovzxFsLoadB { .. }
+        | Operation::MovzxGsLoadB { .. }
         // S4-38L7ae: and for the FS/GS-based MOV m8, imm8.
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
@@ -35151,10 +35840,28 @@ fn step_configured(
         // S4-38L7j: and for the FS/GS-based qword SUB.
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
+        // S4-38L7bc: and for the FS/GS-based ADD m32/m64, r.
+        | Operation::AddFsMem { .. }
+        | Operation::AddGsMem { .. }
+        // S4-38L7bd: and for the FS/GS-based ADD r32/r64, m.
+        | Operation::AddFsLoad { .. }
+        | Operation::AddGsLoad { .. }
+        // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        | Operation::CmpFsLoad { .. }
+        | Operation::CmpGsLoad { .. }
+        // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
+        | Operation::CmovFsLoad { .. }
+        | Operation::CmovGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
+        | Operation::AddFsMemImm { .. }
+        | Operation::AddGsMemImm { .. }
+        // S4-38L7az: and for the FS/GS-based OR m32/m64, r.
+        | Operation::OrFsMem { .. }
+        | Operation::OrGsMem { .. }
         // S4-38L7o: and for the FS/GS-based TEST m8, imm8.
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
@@ -35165,10 +35872,18 @@ fn step_configured(
         // S4-38L7p/S4-38L7q: and for the FS/GS-based INC/DEC m32/m64.
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
+        // S4-38L7bg: and for the FS/GS-based CMPXCHG m8, r8.
+        | Operation::CmpxchgFsMemByte { .. }
+        | Operation::CmpxchgGsMemByte { .. }
+        // S4-38L7bo: and for the FS/GS-based CMPXCHG m32/m64, r32/r64.
+        | Operation::CmpxchgFsMem { .. }
+        | Operation::CmpxchgGsMem { .. }
         // S4-38L7k: and for LOCK CMPXCHG m64, r64.
         | Operation::LockCmpxchgMem { .. }
         // S4-38L7l: and for LOCK INC m32/m64.
         | Operation::LockIncMem { .. }
+        // S4-38L7bn: and for LOCK DEC m32/m64.
+        | Operation::LockDecMem { .. }
         // S4-38L7s: and for LOCK OR m8/m32/m64, imm.
         | Operation::LockOrMem { .. }
         // S4-38L7z: and for LOCK ADD m8/m32/m64, imm.
@@ -35178,7 +35893,9 @@ fn step_configured(
         // S4-38L7ag: and for LOCK AND m8, imm8.
         | Operation::LockAndMem { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
-        | Operation::LockBitMem { .. } => {
+        | Operation::LockBitMem { .. }
+        // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
+        | Operation::LockBtsMemImm { .. } => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
@@ -35199,6 +35916,8 @@ fn step_configured(
         Operation::WriteCr3 => mov_cr3_profile.is_some() || cpu_owned_cr3.is_some(),
         Operation::WriteCr3From(_) => cpu_owned_cr3.is_some(),
         Operation::ReadCr4Into(_) | Operation::WriteCr4From(_) => control_policy.is_some(),
+        // S4-38L9d: `MOV CR0, RDI` exists only in the CPL0 set built with the FP member.
+        Operation::WriteCr0Rdi => control_policy.is_some() && fp_cpl0.is_some(),
         Operation::ReadCr3 | Operation::ReadCr2 | Operation::ReadCr2Into(_) => {
             cpu_owned_cr3.is_some()
         }
@@ -36141,13 +36860,35 @@ fn step_configured(
                 && destination.size == OperandSize::Qword
                 && source.size() == OperandSize::Qword
                 && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                && instruction
-                    .prefixes
-                    .group1
-                    .is_none_or(|prefix| prefix == 0xf0)
+                && instruction.prefixes.group1.is_none()
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
                 && instruction.prefixes.segment.is_none()
+                // S4-38L7ay: the CPL0 set models only the LOCK form (`LockXaddMem`); the board
+                // adapters have no atomic fetch-add, so the bare memory form is refused there.
+                && control_policy.is_none()
+        }
+        // S4-38L7ay: LOCK XADD m32/m64. In the CPL0 set (Ring0) it is read -> write on the single
+        // vCPU; the decoder has already validated the prefixes. Outside the set only the S2-21f
+        // qword form exists (one atomic fetch-add call); the dword form is refused there.
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } => {
+            if control_policy.is_some() {
+                context.privilege == PrivilegeLevel::Ring0
+            } else {
+                instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc1
+                    && instruction.operand_size == OperandSize::Qword
+                    && destination.size == OperandSize::Qword
+                    && source.size() == OperandSize::Qword
+                    && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                    && instruction.prefixes.group1 == Some(0xf0)
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.segment.is_none()
+            }
         }
         Operation::CmpxchgMemory {
             destination,
@@ -36220,6 +36961,9 @@ fn step_configured(
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
+        // S4-38L9b: `F3 90` (PAUSE) is a NOP hint; admitted only inside the CPL0 profile set
+        // (outside it the previous `Unsupported { opcode: 0x90 }` is kept).
+        Operation::Pause => control_policy.is_some(),
         // S4-38L4d: `0F 1F /0` is a NOP that never touches its operand; admitted only inside
         // the CPL0 profile set, like ENDBR64.
         Operation::NopModrm => control_policy.is_some(),
@@ -36246,6 +36990,20 @@ fn step_configured(
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
+        }
+        // S4-38L7aw: LLDT r/m16 (register form) executes the null-selector load only, with no
+        // GDT access, inside the CPL0 profile set at CPL0 in Long64 (no LDTR value is invented).
+        Operation::LoadLdt { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
+        // S4-38L7ax: MOV DRn, r64 (register form) executes only inside the CPL0 profile set, at
+        // CPL0 in Long64 (the DR index is checked at execution; no DR value is invented).
+        Operation::WriteDebugRegister { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
         }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
         // S4-38L6d: LEAVE executes only inside the CPL0 profile set, at CPL0 in Long64.
@@ -36778,7 +37536,18 @@ fn step_configured(
     }
     if let Operation::FxsaveRipRelative(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
-        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Plain) {
+        let (Some(x87), Some(sse)) = (state.x87.as_ref(), state.sse.as_ref()) else {
+            unreachable!("FXSAVE x87/SSE state was prevalidated");
+        };
+        if let Err(error) = fxsave(
+            x87,
+            sse,
+            memory,
+            context,
+            address,
+            FxsaveLayout::Plain,
+            false,
+        ) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -36786,7 +37555,18 @@ fn step_configured(
     }
     if let Operation::Fxsave64RaxDisp8(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
-        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Long64) {
+        let (Some(x87), Some(sse)) = (state.x87.as_ref(), state.sse.as_ref()) else {
+            unreachable!("FXSAVE64 x87/SSE state was prevalidated");
+        };
+        if let Err(error) = fxsave(
+            x87,
+            sse,
+            memory,
+            context,
+            address,
+            FxsaveLayout::Long64,
+            false,
+        ) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -37441,13 +38221,17 @@ fn step_configured(
     match instruction.operation {
         Operation::InAlDx
         | Operation::OutDxAl
+        | Operation::InAlImm8 { .. }
+        | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
         | Operation::OutDx { .. } => {
             unreachable!("PIO operations are rejected outside the explicit PIO entry")
         }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
+        Operation::Int3 => unreachable!("INT3 commits in its profile-gated state path"),
         Operation::ReadCr0
         | Operation::WriteCr0
+        | Operation::WriteCr0Rdi
         | Operation::ReadCr4
         | Operation::ReadCr4Into(_)
         | Operation::WriteCr4
@@ -48930,6 +49714,17 @@ fn step_configured(
             x87.status_word = (x87.status_word & !(7 << 11)) | (u16::from(new_top) << 11);
             x87.instruction_pointer = state.rip;
         }
+        // S4-38L7ay: outside the CPL0 set the LOCK form keeps the S2-21f path (one atomic call).
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } if control_policy.is_none() => {
+            if let Err(error) =
+                xadd_memory_atomic(state, memory, context, next_rip, destination, source)
+            {
+                return report_memory_error(error);
+            }
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -48944,16 +49739,35 @@ fn step_configured(
         | Operation::MovzxGsLoadW { .. }
         | Operation::MovsxdFsLoad { .. }
         | Operation::MovsxdGsLoad { .. }
+        | Operation::MovsxFsLoadB { .. }
+        | Operation::MovsxGsLoadB { .. }
+        | Operation::MovzxFsLoadB { .. }
+        | Operation::MovzxGsLoadB { .. }
         | Operation::MovFsMemByteImm { .. }
         | Operation::MovGsMemByteImm { .. }
         | Operation::MovFsMemImm { .. }
         | Operation::MovGsMemImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::SubGsMem { .. }
+        | Operation::AddFsMem { .. }
+        | Operation::AddGsMem { .. }
+        | Operation::AddFsLoad { .. }
+        | Operation::AddGsLoad { .. }
+        // S4-38L7be: and for the FS/GS-based CMP r32/r64, m.
+        | Operation::CmpFsLoad { .. }
+        | Operation::CmpGsLoad { .. }
+        // S4-38L7bj: and for the FS/GS-based CMOVcc r32/r64, m.
+        | Operation::CmovFsLoad { .. }
+        | Operation::CmovGsLoad { .. }
         | Operation::CmpFsMem { .. }
         | Operation::CmpGsMem { .. }
         | Operation::CmpFsMemImm { .. }
         | Operation::CmpGsMemImm { .. }
+        // S4-38L9f: and for the FS/GS-based ADD m32/m64, imm32.
+        | Operation::AddFsMemImm { .. }
+        | Operation::AddGsMemImm { .. }
+        | Operation::OrFsMem { .. }
+        | Operation::OrGsMem { .. }
         | Operation::TestFsMemByte { .. }
         | Operation::TestGsMemByte { .. }
         | Operation::TestFsMemWord { .. }
@@ -48962,13 +49776,20 @@ fn step_configured(
         | Operation::TestGsMemWide { .. }
         | Operation::IncDecFsMem { .. }
         | Operation::IncDecGsMem { .. }
+        | Operation::CmpxchgFsMemByte { .. }
+        | Operation::CmpxchgGsMemByte { .. }
+        | Operation::CmpxchgFsMem { .. }
+        | Operation::CmpxchgGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::LockIncMem { .. }
+        | Operation::LockDecMem { .. }
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
         | Operation::LockAddMemReg { .. }
+        | Operation::LockXaddMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockBitMem { .. }
+        | Operation::LockBtsMemImm { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
@@ -49139,6 +49960,39 @@ fn step_configured(
                 }
                 Err(error) => return report_memory_error(error),
             }
+        }
+        Operation::LoadLdt { source } => {
+            // S4-38L7aw: only the null selector (0..=3) is executed: LDTR becomes unusable, no
+            // descriptor is read and nothing but RIP changes. A non-null selector (GDT read and
+            // LDT descriptor checks) is refused with the opcode, without mutation.
+            let selector = state.gpr[source as usize] as u16;
+            if selector & !3 != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            state.ldtr_null_selector = Some(selector);
+        }
+        Operation::WriteDebugRegister { index, source } => {
+            // S4-38L7ax: DR0..DR3 store the full 64-bit source value (addresses have no effect
+            // while no breakpoint is enabled); DR6 and DR7 are narrowed to the modeled values:
+            // a one in the upper 32 bits is #GP(0) on hardware (SDM from memory) and DR7 bits
+            // L0..G3 (0xff) and GD (bit 13) enable breakpoints / #DB, which are not modeled, so
+            // those writes are refused. Only RIP and the stored slot change. DR4/DR5 depend on
+            // CR4.DE (alias of DR6/DR7 or #UD). Every refusal carries the opcode, no mutation.
+            let value = state.gpr[source as usize];
+            let refused = match index {
+                4 | 5 => true,
+                6 => value >> 32 != 0,
+                7 => value >> 32 != 0 || value & 0x20ff != 0,
+                _ => false,
+            };
+            if refused {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            state.debug_registers[index as usize] = Some(value);
         }
         Operation::LoadFsSelector if state.gpr[Register::Rax as usize] as u16 == 0 => {
             // Null load (admitted by the CPL0 set only). The visible selector becomes 0 and
@@ -50114,28 +50968,11 @@ fn step_configured(
             destination,
             source,
         } => {
-            // Save the register input before resolving or mutating anything;
-            // it may also provide the memory base or index.
-            let addend = state.read(source);
-            let address = match destination.access_address_48(state, next_rip) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let old =
-                match memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)
-                {
-                    Ok(old) => old,
-                    Err(error) => return report_memory_error(error),
-                };
-            let (_, flags) = arithmetic_result(
-                OperandSize::Qword,
-                ArithmeticKind::Add,
-                old,
-                addend,
-                state.rflags,
-            );
-            state.write(source, old);
-            state.rflags = flags;
+            if let Err(error) =
+                xadd_memory_atomic(state, memory, context, next_rip, destination, source)
+            {
+                return report_memory_error(error);
+            }
         }
         Operation::Cmpxchg {
             destination,
@@ -50400,7 +51237,7 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
-        Operation::Endbr64Nop | Operation::NopModrm | Operation::Invlpg => {}
+        Operation::Endbr64Nop | Operation::Pause | Operation::NopModrm | Operation::Invlpg => {}
         Operation::Leave => {
             // S4-38L6d: `RSP <- RBP; RBP <- POP qword` (Intel SDM Vol.2 LEAVE, 64-bit mode;
             // from memory). The qword at [RBP] is read first (#SS(0) for a non-canonical
@@ -53478,6 +54315,16 @@ fn read_gdt_descriptor(
     }))
 }
 
+/// S4-38L7ba: sign-extends a loaded byte to the dword (REX.W absent) or qword destination width.
+fn sign_extend_byte_load(dst: RegisterView, value: u64) -> u64 {
+    let byte = value as u8 as i8;
+    if dst.size() == OperandSize::Qword {
+        i64::from(byte) as u64
+    } else {
+        i32::from(byte) as u32 as u64
+    }
+}
+
 fn sign_extend_accumulator(state: &mut LongModeState, size: OperandSize, double_width: bool) {
     let width = operand_width(size);
     let accumulator = state.read(RegisterView::low(Register::Rax, size));
@@ -53875,6 +54722,33 @@ fn push_stack_value(
     Ok(())
 }
 
+/// S2-21d/S2-21f (and `LockXaddMem` outside the CPL0 set, S4-38L7ay): the qword memory XADD
+/// through one `GuestMemory::atomic_fetch_add_integer` call. The register input is saved before
+/// anything is resolved or mutated (it may also provide the memory base or index); the source
+/// register and the flags are committed only after the atomic call succeeded.
+fn xadd_memory_atomic(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: MemoryOperand,
+    source: RegisterView,
+) -> Result<(), MemoryError> {
+    let addend = state.read(source);
+    let address = destination.access_address_48(state, next_rip)?;
+    let old = memory.atomic_fetch_add_integer(address, context, OperandSize::Qword, addend)?;
+    let (_, flags) = arithmetic_result(
+        OperandSize::Qword,
+        ArithmeticKind::Add,
+        old,
+        addend,
+        state.rflags,
+    );
+    state.write(source, old);
+    state.rflags = flags;
+    Ok(())
+}
+
 fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
     match error {
         MemoryError::Architectural(fault) => Ok(StepOutcome::Fault(fault)),
@@ -53891,6 +54765,98 @@ enum FxsaveLayout {
     Long64,
 }
 
+/// S4-38L9d: `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
+/// set under `with_fp_state`. The caller guarantees the operation, a control-register policy and
+/// the admitted CR0/CR4 (both modeled). Order of the checks: exact encoding (else `Unsupported`
+/// with the opcode byte), then for `FXSAVE` CR4.OSFXSR = 0 (`Unsupported`, the S2-39 convention:
+/// the architecture leaves it implementation-dependent), then CR0.EM or CR0.TS (`#NM`, the S2-39
+/// convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
+/// `#GP(0)`, a page fault is the memory's own fault) before anything commits. The FP cell is
+/// changed only by `FNINIT`; the CPU state changes only by the RIP.
+fn step_cpl0_fp(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+) -> Result<StepOutcome, MemoryError> {
+    let unsupported = Ok(StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    });
+    let (Some(cr0), Some(cr4)) = (state.cr0, state.cr4) else {
+        return unsupported;
+    };
+    let device_not_available = Ok(StepOutcome::Fault(ArchitecturalFault {
+        vector: 7,
+        error_code: None,
+        linear_address: None,
+    }));
+    match instruction.operation {
+        Operation::Fninit => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0xdb
+                || instruction.length != 2
+                || instruction.prefixes != Prefixes::default()
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let mut fp = cell.borrow_mut();
+            fp.x87.fninit();
+            // FNINIT also clears the selectors the model represents (SDM Vol. 1 Table 8-1,
+            // from memory); `Some(0)` stays known.
+            let x87 = &mut fp.x87;
+            for selector in [&mut x87.instruction_selector, &mut x87.data_selector] {
+                if selector.is_some() {
+                    *selector = Some(0);
+                }
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::FxsaveRipRelative(area) => {
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 7
+                || instruction.prefixes != Prefixes::default()
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::NextRip
+                || area.index.is_some()
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let fp = cell.borrow();
+            if fp.x87.instruction_selector.is_none() || fp.x87.data_selector.is_none() {
+                return unsupported;
+            }
+            let address = area.effective_address(state, next_rip);
+            if let Err(error) = fxsave(
+                &fp.x87,
+                &fp.sse,
+                memory,
+                context,
+                address,
+                FxsaveLayout::Plain,
+                // The paged adapter of the board stores 1/2/4/8 bytes per call.
+                true,
+            ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        _ => unsupported,
+    }
+}
+
 #[cfg(test)]
 fn fxsave_rip_relative(
     state: &LongModeState,
@@ -53898,23 +54864,6 @@ fn fxsave_rip_relative(
     context: AccessContext,
     address: u64,
 ) -> Result<(), MemoryError> {
-    fxsave(state, memory, context, address, FxsaveLayout::Plain)
-}
-
-fn fxsave(
-    state: &LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    address: u64,
-    layout: FxsaveLayout,
-) -> Result<(), MemoryError> {
-    const IMAGE_BYTES: u64 = 512;
-
-    let last = address.checked_add(IMAGE_BYTES - 1);
-    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
-        return Err(general_protection().into());
-    }
-
     let x87 = state
         .x87
         .as_ref()
@@ -53923,6 +54872,35 @@ fn fxsave(
         .sse
         .as_ref()
         .expect("FXSAVE SSE state was prevalidated");
+    fxsave(
+        x87,
+        sse,
+        memory,
+        context,
+        address,
+        FxsaveLayout::Plain,
+        false,
+    )
+}
+
+/// The FXSAVE image store shared by the S2-39 profiles (state in `LongModeState`) and the CPL0
+/// set member of S4-38L9d (state in its `GuestFpState` cell).
+fn fxsave(
+    x87: &crate::state::X87State,
+    sse: &crate::state::SseState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    layout: FxsaveLayout,
+    narrow_stores: bool,
+) -> Result<(), MemoryError> {
+    const IMAGE_BYTES: u64 = 512;
+
+    let last = address.checked_add(IMAGE_BYTES - 1);
+    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        return Err(general_protection().into());
+    }
+
     let mut environment_0 = [0u8; 5];
     environment_0[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
     environment_0[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
@@ -53974,24 +54952,60 @@ fn fxsave(
         xmm[register * 16..(register + 1) * 16].copy_from_slice(bytes);
     }
 
-    // These are exactly the 13 ascending writes required by this local
-    // profile. Reserved and software-available bytes remain untouched.
-    memory.write(address, context, &environment_0)?;
+    // These are exactly the 13 ascending field stores required by this local profile (each one
+    // `GuestMemory::write` call, or, with `narrow_stores`, a run of 8/4/2/1-byte calls over the same
+    // bytes in the same ascending order). Reserved and software-available bytes remain untouched.
+    let mut store = |at: u64, bytes: &[u8]| {
+        if narrow_stores {
+            write_narrow(memory, context, at, bytes)
+        } else {
+            memory.write(at, context, bytes)
+        }
+    };
+    store(address, &environment_0)?;
     match layout {
         FxsaveLayout::Plain => {
-            memory.write(address + 6, context, &environment_1[..8])?;
-            memory.write(address + 16, context, &environment_2[..6])?;
+            store(address + 6, &environment_1[..8])?;
+            store(address + 16, &environment_2[..6])?;
         }
         FxsaveLayout::Long64 => {
-            memory.write(address + 6, context, &environment_1)?;
-            memory.write(address + 16, context, &environment_2)?;
+            store(address + 6, &environment_1)?;
+            store(address + 16, &environment_2)?;
         }
     }
-    memory.write(address + 24, context, &mxcsr_fields)?;
+    store(address + 24, &mxcsr_fields)?;
     for (logical, slot) in x87_stack.iter().enumerate() {
-        memory.write(address + 32 + (logical as u64) * 16, context, slot)?;
+        store(address + 32 + (logical as u64) * 16, slot)?;
     }
-    memory.write(address + 160, context, &xmm)?;
+    store(address + 160, &xmm)?;
+    Ok(())
+}
+
+/// S4-38L9d: store `bytes` ascending as 8-, 4-, 2- and 1-byte `GuestMemory::write` calls (greedy,
+/// widest first). The paged adapter of the Linux board writes only these widths, and the CPL0 set
+/// has no wider store; the FXSAVE fields (5, 6, 8, 10 and 256 bytes) are therefore stored in pieces.
+/// A failing piece leaves the earlier ones written (the FXSAVE stores are not a transaction).
+fn write_narrow(
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    bytes: &[u8],
+) -> Result<(), MemoryError> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let width = match bytes.len() - offset {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        memory.write(
+            address.wrapping_add(offset as u64),
+            context,
+            &bytes[offset..offset + width],
+        )?;
+        offset += width;
+    }
     Ok(())
 }
 
@@ -54081,6 +55095,35 @@ fn classify_fxsave_x87_value(raw: &[u8; 10]) -> X87Tag {
     } else {
         X87Tag::Special
     }
+}
+
+/// S4-38L7bg/S4-38L7bo: the CMPXCHG shared by the FS and GS forms (byte, dword, qword).
+/// `address` is already resolved. The accumulator (AL/EAX/RAX by `size`) and the source are read
+/// before the access; the accumulator and the flags commit only after the destination write
+/// succeeded. The destination is written on both branches (equal: the source; otherwise the
+/// observed value). The accumulator is written only on inequality (a byte write keeps the rest of
+/// RAX; a dword write zero-extends into RAX); on equality RAX is not touched.
+fn cmpxchg_at(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    size: OperandSize,
+    source: RegisterView,
+) -> Result<(), MemoryError> {
+    let accumulator = RegisterView::low(Register::Rax, size);
+    let expected = state.read(accumulator);
+    let replacement = state.read(source);
+    let observed = memory.read_integer(address, context, size)?;
+    let equal = expected == observed;
+    let stored = if equal { replacement } else { observed };
+    memory.write_integer(address, context, size, stored)?;
+    let (_, flags) = arithmetic_result(size, ArithmeticKind::Cmp, expected, observed, state.rflags);
+    if !equal {
+        state.write(accumulator, observed);
+    }
+    state.rflags = flags;
+    Ok(())
 }
 
 fn transfer(
@@ -54183,6 +55226,38 @@ fn transfer(
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value as u32 as i32 as i64 as u64);
+        }
+        Operation::MovsxFsLoadB { dst, src } => {
+            // S4-38L7ba: base + effective address; a non-canonical address (one byte: first and
+            // last byte coincide) is #GP(0) before the read. The byte is sign-extended explicitly
+            // to the destination width (a dword result zeroes the upper 32 bits); flags are
+            // untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, sign_extend_byte_load(dst, value));
+        }
+        Operation::MovsxGsLoadB { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, sign_extend_byte_load(dst, value));
+        }
+        Operation::MovzxFsLoadB { dst, src } => {
+            // S4-38L7bf: base + effective address; a non-canonical address (one byte: first and
+            // last byte coincide) is #GP(0) before the read. `read_integer` of a byte is already
+            // zero-extended; `state.write` of the dword (upper 32 bits zeroed) or qword view
+            // keeps it so. Flags are untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
+        }
+        Operation::MovzxGsLoadB { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            state.write(dst, value);
         }
         Operation::MovFsMemByteImm { dst, immediate } => {
             // S4-38L7ae: base + effective address (RIP-relative is relative to the end of the
@@ -54292,6 +55367,209 @@ fn transfer(
                 arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
             state.rflags = flags;
         }
+        Operation::AddFsMemImm { dst, immediate } => {
+            // S4-38L9f: as AddFsMem with the imm32 (zero-extended for a dword, sign-extended for a
+            // qword; `arithmetic_result` masks it to the operand width) as the addend. Base +
+            // effective address (RIP-relative is relative to the end of the instruction, imm32
+            // included, as `next_rip` is); a non-canonical start or last byte is #GP(0) before any
+            // access. read -> write; the sum is written back even for a zero addend and the flags
+            // commit only after the write succeeded, so a faulting read or write leaves memory
+            // and flags untouched. Nothing is written to a register.
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddGsMemImm { dst, immediate } => {
+            let address =
+                dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, dst.size)?;
+            let (result, flags) =
+                arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
+            memory.write_integer(address, context, dst.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::OrFsMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7az: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before any access. The
+            // source register is read before the access. read -> write through the shared
+            // `logic_result` of the non-prefixed OR (CF = OF = 0, SF/ZF from the top bit, PF from
+            // the low byte of the result, AF kept); the result is written back even when it
+            // equals the old value and the flags commit only after the write succeeded, so a
+            // faulting write leaves memory and flags untouched. Nothing is written to a register.
+            let value = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::OrGsMem {
+            destination,
+            source,
+        } => {
+            let value = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddFsMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7bc: as OrFsMem, through the shared `arithmetic_result` of the non-prefixed
+            // ADD (the same function as LockAddMemReg): base + effective address (RIP-relative is
+            // relative to the end of the instruction); a non-canonical start or last byte is
+            // #GP(0) before any access. The source register is read before the access, masked to
+            // the operand width by its view. read -> write; the sum is written back even for a
+            // zero addend and the flags commit only after the write succeeded, so a faulting
+            // write leaves memory and flags untouched. Nothing is written to a register.
+            let addend = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = arithmetic_result(
+                destination.size,
+                ArithmeticKind::Add,
+                old,
+                addend,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddGsMem {
+            destination,
+            source,
+        } => {
+            let addend = state.read(source);
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) = arithmetic_result(
+                destination.size,
+                ArithmeticKind::Add,
+                old,
+                addend,
+                state.rflags,
+            );
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::AddFsLoad { dst, src } => {
+            // S4-38L7bd: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before the read, so
+            // before any register or flag write. The qword/dword is read once, added to the
+            // destination through the shared `arithmetic_result` of the non-prefixed ADD at the
+            // destination width, and `state.write` masks and (for a dword) zero-extends it.
+            // Memory is not written.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Add,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::AddGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (result, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Add,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.write(dst, result);
+            state.rflags = flags;
+        }
+        Operation::CmpFsLoad { dst, src } => {
+            // S4-38L7be: base + effective address (RIP-relative is relative to the end of the
+            // instruction); a non-canonical start or last byte is #GP(0) before the read, so
+            // before any flag write. The dword/qword is read once and compared with the register
+            // (`reg - mem`) through the shared `arithmetic_result` of the non-prefixed CMP at the
+            // register width. Only the flags change: no register and no memory write.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Cmp,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+        }
+        Operation::CmpGsLoad { dst, src } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let rhs = memory.read_integer(address, context, src.size)?;
+            let (_, flags) = arithmetic_result(
+                dst.size(),
+                ArithmeticKind::Cmp,
+                state.read(dst),
+                rhs,
+                state.rflags,
+            );
+            state.rflags = flags;
+        }
+        Operation::CmovFsLoad {
+            condition,
+            dst,
+            src,
+        } => {
+            // S4-38L7bj: base + effective address; a non-canonical start or last byte is #GP(0)
+            // before the read. As the plain CMOVcc the source is read regardless of the
+            // condition (a read fault changes nothing); the condition is the shared
+            // `ConditionCode::evaluate`. When it holds the value is written; otherwise a dword
+            // destination is rewritten with its own low dword, which zeroes the upper 32 bits (the
+            // 64-bit-mode rule of the plain CMOVcc), a qword destination stays. Flags are
+            // untouched and nothing is written to memory.
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            if condition.evaluate(state.rflags) {
+                state.write(dst, value);
+            } else if dst.size() == OperandSize::Dword {
+                let old_low_dword = state.read(dst);
+                state.write(dst, old_low_dword);
+            }
+        }
+        Operation::CmovGsLoad {
+            condition,
+            dst,
+            src,
+        } => {
+            let address =
+                src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            let value = memory.read_integer(address, context, src.size)?;
+            if condition.evaluate(state.rflags) {
+                state.write(dst, value);
+            } else if dst.size() == OperandSize::Dword {
+                let old_low_dword = state.read(dst);
+                state.write(dst, old_low_dword);
+            }
+        }
         Operation::TestFsMemByte { src, immediate } => {
             // S4-38L7o: base + effective address; a non-canonical address (a single byte is read)
             // is #GP(0) before the read. The byte is ANDed with the immediate: nothing is written
@@ -54394,6 +55672,55 @@ fn transfer(
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
+        Operation::CmpxchgFsMemByte {
+            destination,
+            source,
+        } => {
+            // S4-38L7bg: the S4-38L7k read-compare-write at byte width with the FS base: AL is the
+            // accumulator, `source` a byte view (AL..BL / AH..BH / SPL..DIL / r8b..r15b). The base
+            // + effective address (RIP-relative is relative to the end of the instruction) is
+            // resolved before any access: a non-canonical address is #GP(0). The destination is
+            // written on both branches (equal: the source byte; otherwise the observed byte), so a
+            // faulting read or write leaves memory, AL and flags untouched. AL is written only on
+            // inequality (a byte write keeps the rest of RAX); the flags are the CMP of AL with
+            // the destination byte (all six arithmetic flags).
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            cmpxchg_at(state, memory, context, address, OperandSize::Byte, source)?;
+        }
+        Operation::CmpxchgGsMemByte {
+            destination,
+            source,
+        } => {
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            cmpxchg_at(state, memory, context, address, OperandSize::Byte, source)?;
+        }
+        Operation::CmpxchgFsMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7bo: the S4-38L7bg/S4-38L7y read-compare-write at the destination width
+            // (dword: EAX and a dword source; qword: RAX) with the FS base. The base + effective
+            // address (RIP-relative is relative to the end of the instruction) is resolved before
+            // any access: a non-canonical start or last byte is #GP(0); RSP/RBP bases follow the
+            // shared FS/GS policy. The destination is written on both branches (SDM: a failed
+            // compare writes the old value back), so a faulting read or write leaves memory, RAX
+            // and the flags untouched. On inequality EAX is written through the dword register
+            // write, which zero-extends into RAX; on equality RAX is not touched. The flags are
+            // the CMP of the accumulator with the destination (all six arithmetic flags).
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            cmpxchg_at(state, memory, context, address, destination.size, source)?;
+        }
+        Operation::CmpxchgGsMem {
+            destination,
+            source,
+        } => {
+            let address =
+                destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            cmpxchg_at(state, memory, context, address, destination.size, source)?;
+        }
         Operation::LockCmpxchgMem {
             destination,
             source,
@@ -54431,6 +55758,20 @@ fn transfer(
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) =
                 arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, state.rflags);
+            memory.write_integer(address, context, destination.size, result)?;
+            state.rflags = flags;
+        }
+        Operation::LockDecMem { destination } => {
+            // S4-38L7bn: as LockIncMem with the shared DEC (`arithmetic_result` with
+            // `ArithmeticKind::Dec`: OF/SF/ZF/AF/PF from the result, CF kept). One vCPU, so
+            // read -> write needs no bus lock. The address (non-canonical start or last byte is
+            // #GP(0), RSP/RBP bases #SS(0)) is resolved before any access; the result is written
+            // back always; the flags commit only after the write succeeded, so a faulting write
+            // leaves memory and flags untouched.
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, destination.size)?;
+            let (result, flags) =
+                arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, state.rflags);
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
@@ -54504,6 +55845,27 @@ fn transfer(
             memory.write_integer(address, context, destination.size, result)?;
             state.rflags = flags;
         }
+        Operation::LockXaddMem {
+            destination,
+            source,
+        } => {
+            // S4-38L7ay: as LockAddMemReg, plus the exchange. One vCPU, so read -> write needs no
+            // bus lock. The addend is read before the access (it may also be the base or index
+            // register); the address (non-canonical start or last byte is #GP(0), RSP/RBP bases
+            // #SS(0)) is resolved before any access. The sum is written back through one write
+            // (a read-only page faults), and the old value goes to the source register and the
+            // flags commit only after that write succeeded, so a faulting write leaves memory,
+            // register and flags untouched.
+            let size = destination.size;
+            let addend = state.read(source);
+            let address = destination.access_address_48(state, next_rip)?;
+            let old = memory.read_integer(address, context, size)?;
+            let (result, flags) =
+                arithmetic_result(size, ArithmeticKind::Add, old, addend, state.rflags);
+            memory.write_integer(address, context, size, result)?;
+            state.write(source, old);
+            state.rflags = flags;
+        }
         Operation::LockAndMem {
             destination,
             immediate,
@@ -54553,6 +55915,24 @@ fn transfer(
                 }
             };
             memory.write_integer(address, context, element.size, new)?;
+            state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
+        }
+        Operation::LockBtsMemImm { destination, bit } => {
+            // S4-38L7bi: one vCPU, so read -> write needs no bus lock. The immediate is a bit
+            // index inside the operand, not a bit-string offset: it is taken modulo the operand
+            // width (Intel SDM Vol.2A, BTS: an imm8 offset on a memory operand addresses a bit
+            // inside the operand itself, the register form of the offset alone reaches adjacent
+            // elements; the same rule as the plain `Operation::Bit` immediate). The address (non-canonical start or last byte is #GP(0),
+            // RSP/RBP bases #SS(0)) is resolved before any access; a RIP-relative operand is
+            // relative to the end of the instruction, immediate included. The destination is
+            // written back even when the bit was already set (a read-only page faults), and CF
+            // commits only after that write succeeded; OF/SF/AF/PF are undefined and ZF is not
+            // affected, so the flags other than CF stay as they are.
+            let address = destination.access_address_48(state, next_rip)?;
+            let width = destination.size.bytes() * 8;
+            let mask = 1u64 << (u64::from(bit) % width as u64);
+            let old = memory.read_integer(address, context, destination.size)?;
+            memory.write_integer(address, context, destination.size, old | mask)?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
         Operation::MovFsStore { dst, src } => {
@@ -56954,6 +58334,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57046,6 +58428,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57105,6 +58489,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57169,6 +58555,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57219,6 +58607,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57293,6 +58683,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57376,6 +58768,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57429,6 +58823,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57487,6 +58883,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57554,6 +58952,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57677,6 +59077,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57735,6 +59137,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57796,6 +59200,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57851,6 +59257,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57913,6 +59321,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57968,6 +59378,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58055,6 +59467,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58102,6 +59516,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58168,6 +59584,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58216,6 +59634,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58305,6 +59725,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58370,6 +59792,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58476,6 +59900,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58529,6 +59955,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58582,6 +60010,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58641,6 +60071,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58696,6 +60128,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58782,6 +60216,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58837,6 +60273,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58915,6 +60353,8 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -59007,6 +60447,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59087,6 +60529,8 @@ mod tests {
                     syscall: None,
                     cr2: None,
                     tr: None,
+                    ldtr_null_selector: None,
+                    debug_registers: [None; 8],
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -59171,6 +60615,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59320,6 +60766,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -59472,6 +60920,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59525,6 +60975,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59577,6 +61029,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59639,6 +61093,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59691,6 +61147,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59772,6 +61230,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -59876,6 +61336,8 @@ mod tests {
                     syscall: None,
                     cr2: None,
                     tr: None,
+                    ldtr_null_selector: None,
+                    debug_registers: [None; 8],
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -60030,6 +61492,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60131,6 +61595,8 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -60230,6 +61696,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60314,6 +61782,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60372,6 +61842,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60441,6 +61913,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60496,6 +61970,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -60574,6 +62050,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60648,6 +62126,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -60723,6 +62203,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60798,6 +62280,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -60873,6 +62357,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -60948,6 +62434,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -61023,6 +62511,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -61098,6 +62588,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -61162,6 +62654,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -61225,6 +62719,8 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -61304,6 +62800,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -61530,6 +63028,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -61630,6 +63130,8 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -61709,6 +63211,8 @@ mod tests {
                         syscall: None,
                         cr2: None,
                         tr: None,
+                        ldtr_null_selector: None,
+                        debug_registers: [None; 8],
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -61891,6 +63395,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -61941,6 +63447,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62002,6 +63510,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62068,6 +63578,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62134,6 +63646,8 @@ mod tests {
                     syscall: None,
                     cr2: None,
                     tr: None,
+                    ldtr_null_selector: None,
+                    debug_registers: [None; 8],
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -62193,6 +63707,8 @@ mod tests {
                     syscall: None,
                     cr2: None,
                     tr: None,
+                    ldtr_null_selector: None,
+                    debug_registers: [None; 8],
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -62274,6 +63790,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62357,6 +63875,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62419,6 +63939,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62477,6 +63999,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62535,6 +64059,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62593,6 +64119,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62642,6 +64170,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62700,6 +64230,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62752,6 +64284,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62811,6 +64345,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -62870,6 +64406,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -62927,6 +64465,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -63065,6 +64605,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -63289,6 +64831,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -64124,6 +65668,8 @@ mod tests {
                 syscall: None,
                 cr2: None,
                 tr: None,
+                ldtr_null_selector: None,
+                debug_registers: [None; 8],
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -64200,6 +65746,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -64253,6 +65801,8 @@ mod tests {
             syscall: None,
             cr2: None,
             tr: None,
+            ldtr_null_selector: None,
+            debug_registers: [None; 8],
             cr3: None,
             cr4: None,
             cr0: None,
@@ -155559,6 +157109,39 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn lock_dword_xadd_stays_unsupported_in_the_mov_cr3_profile() {
+        // S4-38L7ay: the LOCK dword form exists in the CPL0 set only; this profile refuses it (and
+        // the register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+        for bytes in [
+            &[0xf0, 0x0f, 0xc1, 0x13][..],
+            &[0xf0, 0x44, 0x0f, 0xc1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            &[0xf0, 0x48, 0x0f, 0xc1, 0xd3][..],
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Unsupported { opcode: 0xc1 },
+                "{bytes:02x?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+            assert_eq!(state, before, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn lock_bts_stays_unsupported_in_the_mov_cr3_profile() {
         // S4-38L7n belongs to the CPL0 set only; this profile refuses the form without mutation.
         for bytes in [
@@ -158781,6 +160364,33 @@ mod paged_mov_profile_tests {
             )
             .unwrap();
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xb1 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_profile_keeps_lock_dword_xadd_unsupported() {
+        // S4-38L7ay: the LOCK dword form exists in the CPL0 set only; this profile refuses it (and
+        // the register form with LOCK) without mutation. The S2-21f qword form is unchanged.
+        for code in [
+            &[0xf0, 0x0f, 0xc1, 0x13][..],
+            &[0xf0, 0x44, 0x0f, 0xc1, 0x25, 0x34, 0x12, 0x00, 0x00][..],
+            &[0xf0, 0x48, 0x0f, 0xc1, 0xd3][..],
+        ] {
+            let mut state = state_with_control_registers();
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc1 });
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

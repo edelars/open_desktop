@@ -30,23 +30,26 @@ pub mod x87;
 pub use cli::CliProfile;
 pub use execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
-    Cpl0ProfileSetResult, Cr0Profile, FlatLidtLong64V1, InvlpgExit, InvlpgLong64V1, InvlpgResult,
-    InvlpgWpLong64V1, MovCr0WpLong64V1, MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result,
-    MovCr3WpLong64V1, PagedCpl0Cr0WpMovV1, PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1,
-    PagedCpl0PageTableRepairMovV1, PagedHltLong64V1, PagedLgdtLong64V1, PagedLidtLong64V1,
-    PagedMovDwordStoreLong64V1, PagedProbeExit, PagedProbeRejection, PagedProbeResult,
-    PagedStiLong64V1, TranslationContextChange, TranslationInvalidation, step_flat_lidt,
-    step_invlpg, step_invlpg_wp, step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp,
+    Cpl0ProfileSetResult, Cr0Profile, FlatLidtLong64V1, GuestFpState, InvlpgExit, InvlpgLong64V1,
+    InvlpgResult, InvlpgWpLong64V1, MovCr0WpLong64V1, MovCr3Exit, MovCr3InputError, MovCr3Long64V1,
+    MovCr3Result, MovCr3WpLong64V1, PagedCpl0Cr0WpMovV1, PagedCpl0Cr0WpProbeV1,
+    PagedCpl0Cr3ProbeV1, PagedCpl0PageTableRepairMovV1, PagedHltLong64V1, PagedLgdtLong64V1,
+    PagedLidtLong64V1, PagedMovDwordStoreLong64V1, PagedProbeExit, PagedProbeRejection,
+    PagedProbeResult, PagedStiLong64V1, TranslationContextChange, TranslationInvalidation,
+    step_flat_lidt, step_invlpg, step_invlpg_wp, step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp,
     step_paged_cr0_wp_mov, step_paged_cr0_wp_page_table_repair_mov, step_paged_cr0_wp_probe,
     step_paged_cr3_probe, step_paged_hlt, step_paged_lgdt, step_paged_lidt,
     step_paged_mov_dword_store, step_paged_sti,
 };
 pub use hlt::HaltProfile;
 pub use interrupt::{
-    Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
+    Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
+    Cpl0Int3Delivery, Cpl0Int3Phase, Cpl0Int3Refusal, Cpl0PageFaultDelivery,
+    Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal, InterruptDeliveryPhase,
+    InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     PageFaultDeliveryOutsideProfile, PageFaultDeliveryPhase, PageFaultDeliveryResult,
-    PageFaultFrameSlot, deliver_double_fault, deliver_maskable_interrupt, deliver_page_fault,
+    PageFaultFrameSlot, deliver_double_fault, deliver_external_interrupt_cpl0_set,
+    deliver_int3_cpl0_set, deliver_maskable_interrupt, deliver_page_fault,
     deliver_page_fault_cpl0_set, deliver_paged_maskable_interrupt,
 };
 pub use iretq::{
