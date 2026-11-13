@@ -50881,7 +50881,7 @@ fn bare_and_ds_xadd_dword_forms_ignore_the_fs_and_gs_bases_next_to_the_segment_f
 // set. Only the null selectors 0..=3 execute: the visible selector takes the source's low 16 bits,
 // the register is marked unusable, and the FS/GS base and any modeled cache stay as they were
 // (SDM Vol.3 "Segment Loading Instructions in IA-32e Mode", from memory, not re-checked against the
-// text: in 64-bit mode a null selector load into FS/GS does not clear the base; the base comes from
+// text: for FS/GS a null selector load is vendor-dependent (Intel clears the base, AMD keeps it; the model keeps it); the base comes from
 // the MSRs or WRFSBASE/WRGSBASE). ----
 
 const MOV_EDI_GS: [u8; 2] = [0x8e, 0xef];
