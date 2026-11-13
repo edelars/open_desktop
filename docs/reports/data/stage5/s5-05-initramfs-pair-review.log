@@ -1,0 +1,92 @@
+test_pair_is_reproducible_and_ignores_extra_cached_debs (__main__.Stage5InitramfsBuildTest.test_pair_is_reproducible_and_ignores_extra_cached_debs) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 4.626s
+
+OK
+CONFIG_BLK_DEV_NVME=m
+CONFIG_EXT4_FS=y
+kernel/fs/ext4/ext4.ko
+builtin ext4
+init
+mount -t ext4 /dev/nvme0n1 /newroot || fail 'root ext4 mount failed'
+/bin/busybox mount -o move /proc /newroot/proc || fail 'proc mount handoff failed'
+/bin/busybox mount -o move /sys /newroot/sys || fail 'sysfs mount handoff failed'
+/bin/busybox mount -o move /dev /newroot/dev || fail 'devtmpfs handoff failed'
+exec </newroot/dev/console >/newroot/dev/console 2>&1
+lib/modules/7.0.0-38-generic/kernel/crypto/hkdf.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-auth.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-keyring.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme-core.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme.ko
+.
+bin
+bin/busybox
+bin/insmod
+bin/mkdir
+bin/mount
+bin/sh
+bin/sleep
+bin/switch_root
+init
+lib
+lib/modules
+lib/modules/7.0.0-38-generic
+lib/modules/7.0.0-38-generic/kernel
+lib/modules/7.0.0-38-generic/kernel/crypto
+lib/modules/7.0.0-38-generic/kernel/crypto/hkdf.ko
+lib/modules/7.0.0-38-generic/kernel/drivers
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-auth.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-keyring.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme-core.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme.ko
+kmod version 34.2
+*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***
+cpio (GNU cpio) 2.15
+CONFIG_BLK_DEV_NVME=m
+CONFIG_EXT4_FS=y
+kernel/fs/ext4/ext4.ko
+builtin ext4
+init
+mount -t ext4 /dev/nvme0n1 /newroot || fail 'root ext4 mount failed'
+/bin/busybox mount -o move /proc /newroot/proc || fail 'proc mount handoff failed'
+/bin/busybox mount -o move /sys /newroot/sys || fail 'sysfs mount handoff failed'
+/bin/busybox mount -o move /dev /newroot/dev || fail 'devtmpfs handoff failed'
+exec </newroot/dev/console >/newroot/dev/console 2>&1
+lib/modules/7.0.0-38-generic/kernel/crypto/hkdf.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-auth.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-keyring.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme-core.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme.ko
+.
+bin
+bin/busybox
+bin/insmod
+bin/mkdir
+bin/mount
+bin/sh
+bin/sleep
+bin/switch_root
+init
+lib
+lib/modules
+lib/modules/7.0.0-38-generic
+lib/modules/7.0.0-38-generic/kernel
+lib/modules/7.0.0-38-generic/kernel/crypto
+lib/modules/7.0.0-38-generic/kernel/crypto/hkdf.ko
+lib/modules/7.0.0-38-generic/kernel/drivers
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-auth.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/common/nvme-keyring.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme-core.ko
+lib/modules/7.0.0-38-generic/kernel/drivers/nvme/host/nvme.ko
+kmod version 34.2
+*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***
+cpio (GNU cpio) 2.15
+stage5_initramfs_sha256=17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1
+stage5_kernel_sha256=9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e

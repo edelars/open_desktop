@@ -1,12 +1,17 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 mod display;
+#[cfg(unix)]
+pub mod persistent_nvme;
 #[cfg(all(unix, test))]
 mod raw_file_tests;
 pub mod session;
 mod session_abi_v1;
 #[cfg(target_os = "macos")]
 mod storage_abi_v1;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use storage_abi_v1::create_raw_for_image_tool;
 #[cfg(unix)]
 pub mod storage_io;
 #[cfg(unix)]

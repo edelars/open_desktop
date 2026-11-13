@@ -8,6 +8,8 @@ use od_isa::{CpuState, ExecutionResult, interpret};
 mod diagnostic;
 mod firmware_boot;
 mod linux_direct;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod s5_nvme_stand;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cross_page_probe;
@@ -102,6 +104,8 @@ fn main() -> ExitCode {
         Some("--stage4-uart-irq-probe") => return stage4_uart_irq_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         Some("boot-firmware") => return firmware_boot::run(&args[1..]),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        Some("s5-nvme-stand") => return s5_nvme_stand::run(&args[1..]),
         Some("linux-direct") => return linux_direct::run(&args[1..]),
         _ => {}
     }

@@ -1,0 +1,1304 @@
+#!/usr/bin/env python3
+"""Tests for Stage 5 normalized ISA evidence aggregation."""
+
+from __future__ import annotations
+
+import importlib.util
+import gzip
+import hashlib
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+MODULE_PATH = Path(__file__).with_name("export_stage5_isa_evidence.py")
+SPEC = importlib.util.spec_from_file_location("export_stage5_isa_evidence", MODULE_PATH)
+assert SPEC and SPEC.loader
+exporter = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(exporter)
+ANALYZER_SPEC = importlib.util.spec_from_file_location("analyze_stage5_isa", Path(__file__).with_name("analyze_stage5_isa.py"))
+assert ANALYZER_SPEC and ANALYZER_SPEC.loader
+analyzer = importlib.util.module_from_spec(ANALYZER_SPEC)
+ANALYZER_SPEC.loader.exec_module(analyzer)
+ANNOTATOR_SPEC = importlib.util.spec_from_file_location("annotate_stage5_cpl0_candidates", Path(__file__).with_name("annotate_stage5_cpl0_candidates.py"))
+assert ANNOTATOR_SPEC and ANNOTATOR_SPEC.loader
+annotator = importlib.util.module_from_spec(ANNOTATOR_SPEC)
+ANNOTATOR_SPEC.loader.exec_module(annotator)
+
+
+def exact_form(prefix, modrm, address, count, binary, classification):
+    return {
+        "dimensions": {
+            "prefix_bytes": prefix,
+            "opcode_bytes": ["8B"],
+            "modrm": {"raw": modrm, "mod": 0, "reg": 0, "rm": 0},
+            "address": address,
+            "operand_signature": "mov r64,mem64",
+        },
+        "count": count,
+        "binary_frequencies": {binary: count},
+        "classification_frequencies": {classification: count},
+        "evidence_scope_frequencies": {"local_interpreter_profile": count} if classification == "proven_supported" else {},
+        "profile_match_frequencies": {},
+        "conditional_candidate_frequencies": {},
+    }
+
+
+class NormalizedFormTests(unittest.TestCase):
+    def test_cpl0_candidate_annotation_roundtrips_head_compacts_and_binary_maps(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        cases = (
+            ("docs/reports/data/stage5/s5-21-isa-inventory.json.gz", "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2"),
+            ("docs/reports/data/stage5/s5-21-isa-inventory-e-static.json.gz", "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239"),
+        )
+        expected_binary_counts = {
+            "S4-38L9b-PAUSE-exact-F3-90": {"gcc-cc1": 2, "gcc-collect2": 2, "gcc-driver": 2},
+            "S4-38L6d-LEAVE-bare-C9": {
+                "bash": 868, "dash": 58, "gcc-as": 88, "gcc-cc1": 285,
+                "gcc-collect2": 262, "gcc-driver": 262, "gcc-ld-bfd": 54, "tar": 128,
+            },
+            "S4-38L4g-REP-BSF-register-BMI1-clear": {
+                "gcc-as": 5, "gcc-cc1": 391, "gcc-driver": 1, "gcc-ld-bfd": 1,
+            },
+            "S4-38L7ay-LOCK-XADD-m32-r32-base-only": {
+                "gcc-cc1": 12, "gcc-collect2": 12, "gcc-driver": 12,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for relative, expected_sha in cases:
+                base = subprocess.run(
+                    ["git", "show", f"HEAD:{relative}"], cwd=repo_root,
+                    check=True, capture_output=True,
+                ).stdout
+                target = Path(tmp) / Path(relative).name
+                target.write_bytes(base)
+                annotator.annotate(target)
+                self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), expected_sha)
+                result = json.loads(gzip.decompress(target.read_bytes()))
+                for candidate, binary_counts in expected_binary_counts.items():
+                    observed = {
+                        name: record["conditional_cpl0_candidate_frequencies"][candidate]
+                        for name, record in result["binaries"].items()
+                        if candidate in record.get("conditional_cpl0_candidate_frequencies", {})
+                    }
+                    self.assertEqual(observed, binary_counts)
+                for record in result["exact_encoding_forms"]:
+                    if record["conditional_candidate_frequencies"].keys() & expected_binary_counts.keys():
+                        self.assertEqual(record["classification_frequencies"], {"unclassified": record["count"]})
+                        self.assertEqual(record["evidence_scope_frequencies"], {})
+
+    def test_saved_inventory_manifests_distinguish_coarse_and_normalized_forms(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        data_root = repo_root / "docs/reports/data/stage5"
+        pairs = (
+            (
+                "s5-21-repeatability.json",
+                "s5-21-isa-inventory.json.gz",
+                "full_inventory",
+                "compact_evidence",
+            ),
+            (
+                "s5-21-e-static-build-pair.json",
+                "s5-21-isa-inventory-e-static.json.gz",
+                None,
+                "static_analysis",
+            ),
+        )
+        e_compact_snapshot = json.loads(
+            gzip.decompress((data_root / "s5-21-isa-inventory-e-static.json.gz").read_bytes())
+        )
+        for manifest_name, compact_name, full_key, compact_key in pairs:
+            with self.subTest(manifest=manifest_name):
+                manifest_path = data_root / manifest_name
+                compact_path = data_root / compact_name
+                manifest = json.loads(manifest_path.read_text())
+                compact = json.loads(gzip.decompress(compact_path.read_bytes()))
+                fields = manifest[full_key] if full_key else manifest[compact_key]
+                compact_fields = manifest[compact_key] if full_key else fields
+                compact_sha = compact_fields.get("sha256", fields.get("compact_inventory_sha256"))
+                repeat_sha = compact_fields.get("repeat_sha256", compact_fields.get("compact_repeat_sha256"))
+                self.assertEqual(repeat_sha, compact_sha)
+                annotation = manifest["candidate_annotation_lineage"]
+                self.assertEqual(annotation["baseline_commit"], "45401a1fcb5487fa83b12b3c26abda4dd137711e")
+                self.assertEqual(annotation["added_candidate"]["candidate_id"], "S4-38L7ay-LOCK-XADD-m32-r32-base-only")
+                self.assertEqual(annotation["added_candidate"]["rows"], 36)
+                self.assertEqual(annotation["added_candidate"]["exact_encoding_keys"], 6)
+                self.assertIn("Long64", annotation["added_candidate"]["condition"])
+                self.assertIn("Long64", annotation["added_candidate"]["condition"])
+                self.assertEqual(annotation["latest_compact_sha256"], compact_sha)
+                self.assertEqual(annotation["compact_payload_repeat_sha256"], compact_sha)
+                self.assertFalse(annotation["raw_analyzer_rerun"])
+                self.assertEqual(compact["conditional_local_state_gated_candidate_rows"], 508)
+                cvtsd_rows = [
+                    item for item in compact["exact_encoding_forms"]
+                    if item["dimensions"]["operand_signature"] == "cvtsd2ss xmm,xmm"
+                    and item["dimensions"]["prefix_bytes"] == ["F2"]
+                    and item["dimensions"]["opcode_bytes"] == ["0F", "5A"]
+                    and item["dimensions"]["modrm"]["raw"] == "F1"
+                ]
+                self.assertEqual(len(cvtsd_rows), 1)
+                self.assertEqual(cvtsd_rows[0]["binary_frequencies"], {"gcc-cc1": 1})
+                self.assertEqual(cvtsd_rows[0]["conditional_local_candidate_frequencies"], {
+                    "S2-37be-CVTSD2SS-register-state-gated": 1,
+                })
+                self.assertEqual(cvtsd_rows[0]["classification_frequencies"], {"unclassified": 1})
+                self.assertEqual(cvtsd_rows[0]["evidence_scope_frequencies"], {})
+                raw_source = fields.get("preserved_raw_path") or manifest["runs"][0]["output"]
+                generation_command = compact_fields.get("generation_command", compact_fields.get("compact_generation_command"))
+                self.assertIn(raw_source, generation_command)
+                issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
+                issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
+                self.assertIn(compact_sha, issue_section)
+                self.assertIn("no new bytewise raw rerun is claimed", issue_section)
+
+                self.assertEqual(compact["normalized_instruction_form_count"], 1269)
+                self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
+                self.assertEqual(fields["normalized_instruction_forms"], 1269)
+                self.assertEqual(fields["coarse_operand_signatures"], 560)
+                forms = compact["normalized_instruction_forms"]
+                classified_forms = sum(
+                    1
+                    for form in forms
+                    if form["classification_frequencies"].get("proven_supported", 0) > 0
+                    and form["classification_frequencies"].get("unclassified", 0) == 0
+                )
+                unclassified_forms = sum(
+                    1 for form in forms if form["classification_frequencies"].get("unclassified", 0) > 0
+                )
+                self.assertEqual(fields["classified_normalized_forms"], classified_forms)
+                self.assertEqual(fields["unclassified_normalized_forms"], unclassified_forms)
+                self.assertEqual(fields["classified_normalized_forms"], 1064)
+                self.assertEqual(fields["unclassified_normalized_forms"], 205)
+                self.assertEqual(fields["movsd_rax_memory_load_rows"], 3)
+                self.assertEqual(fields["movsd_rax_memory_load_encoding_forms"], 1)
+                self.assertEqual(fields["movsd_rax_memory_load_rows_by_binary"], {"gcc-cc1": 1, "gcc-collect2": 1, "gcc-driver": 1})
+                self.assertIn("static evidence does not infer runtime RAX/data/read success", fields["movsd_rax_memory_load_scope"])
+                self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
+                expected_rows = 6510400 if full_key else 6510745
+                expected_supported_rows = 6296422 if full_key else 6296706
+                expected_unclassified_rows = 213978 if full_key else 214039
+                self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
+                self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
+                self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
+                self.assertEqual(fields["conditional_local_state_gated_candidate_rows"], 508)
+                self.assertEqual(fields["conditional_local_state_gated_candidate_frequencies"], {
+                    "S2-37ad-CVTTSS2SI-register-state-gated": 8,
+                    "S2-37ae-CVTTSD2SI-register-state-gated": 28,
+                    "S2-37ap-SUBSD-register-state-gated": 16,
+                    "S2-37at-MULSD-register-state-gated": 31,
+                    "S2-37au-MULSS-register-state-gated": 6,
+                    "S2-37ax-DIVSD-register-state-gated": 59,
+                    "S2-37ay-DIVSS-register-state-gated": 13,
+                    "S2-37bb-ADDSD-register-state-gated": 46,
+                    "S2-37bc-ADDSS-register-state-gated": 15,
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                    "S2-37q-CVTSI2SD-register-state-gated": 168,
+                    "S2-37r-CVTSI2SS-register-state-gated": 50,
+                    "S2-37t-CVTSS2SD-register-state-gated": 19,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 10,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 34,
+                    "S2-37be-CVTSD2SS-register-state-gated": 1,
+                })
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 116114 if full_key else 116174)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 116191 if full_key else 116251)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 115683 if full_key else 115743)
+                self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
+                self.assertEqual(fields["scenario_candidate_summaries"], {
+                    name: {
+                        key: compact["scenarios"][name][key]
+                        for key in ("conditional_candidate_frequencies", "conditional_local_candidate_frequencies", "conditional_candidate_instruction_rows")
+                    }
+                    for name in ("C", "D")
+                })
+                expected_by_binary = {
+                    "bash": {"S2-37q-CVTSI2SD-register-state-gated": 1},
+                    "dash": {"S2-37q-CVTSI2SD-register-state-gated": 6, "S2-37ae-CVTTSD2SI-register-state-gated": 4},
+                    "tar": {
+                        "S2-37q-CVTSI2SD-register-state-gated": 16,
+                        "S2-37r-CVTSI2SS-register-state-gated": 10,
+                        "S2-37v-COMISS-UCOMISS-register-state-gated": 8,
+                        "S2-37w-COMISD-UCOMISD-register-state-gated": 11,
+                        "S2-37ad-CVTTSS2SI-register-state-gated": 6,
+                        "S2-37ae-CVTTSD2SI-register-state-gated": 6,
+                    },
+                    "gcc-driver": {"S2-37q-CVTSI2SD-register-state-gated": 17, "S2-37w-COMISD-UCOMISD-register-state-gated": 2},
+                    "gcc-cc1": {
+                        "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                        "S2-37q-CVTSI2SD-register-state-gated": 123,
+                        "S2-37r-CVTSI2SS-register-state-gated": 40,
+                        "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
+                        "S2-37w-COMISD-UCOMISD-register-state-gated": 21,
+                        "S2-37t-CVTSS2SD-register-state-gated": 19,
+                        "S2-37ad-CVTTSS2SI-register-state-gated": 2,
+                        "S2-37ae-CVTTSD2SI-register-state-gated": 18,
+                        "S2-37be-CVTSD2SS-register-state-gated": 1,
+                    },
+                    "gcc-collect2": {"S2-37q-CVTSI2SD-register-state-gated": 1},
+                    "gcc-ld-bfd": {"S2-37q-CVTSI2SD-register-state-gated": 4},
+                }
+                expected_by_binary["dash"].update({
+                    "S2-37ap-SUBSD-register-state-gated": 4,
+                    "S2-37at-MULSD-register-state-gated": 4,
+                    "S2-37ax-DIVSD-register-state-gated": 8,
+                })
+                expected_by_binary["tar"].update({
+                    "S2-37ap-SUBSD-register-state-gated": 4,
+                    "S2-37au-MULSS-register-state-gated": 5,
+                    "S2-37ax-DIVSD-register-state-gated": 1,
+                    "S2-37bb-ADDSD-register-state-gated": 7,
+                    "S2-37bc-ADDSS-register-state-gated": 5,
+                })
+                expected_by_binary["gcc-driver"].update({
+                    "S2-37ax-DIVSD-register-state-gated": 4,
+                    "S2-37bb-ADDSD-register-state-gated": 14,
+                })
+                expected_by_binary["gcc-cc1"].update({
+                    "S2-37ap-SUBSD-register-state-gated": 8,
+                    "S2-37at-MULSD-register-state-gated": 27,
+                    "S2-37au-MULSS-register-state-gated": 1,
+                    "S2-37ax-DIVSD-register-state-gated": 45,
+                    "S2-37ay-DIVSS-register-state-gated": 13,
+                    "S2-37bb-ADDSD-register-state-gated": 23,
+                    "S2-37bc-ADDSS-register-state-gated": 10,
+                    "S2-37be-CVTSD2SS-register-state-gated": 1,
+                })
+                expected_by_binary["gcc-ld-bfd"].update({
+                    "S2-37ax-DIVSD-register-state-gated": 1,
+                    "S2-37bb-ADDSD-register-state-gated": 2,
+                })
+                self.assertEqual({name: item["conditional_local_state_gated_candidate_frequencies"]
+                                  for name, item in compact["binaries"].items()
+                                  if item["conditional_local_state_gated_candidate_frequencies"]}, expected_by_binary)
+                if "conditional_local_state_gated_candidate_rows_by_binary" in fields:
+                    self.assertEqual(fields["conditional_local_state_gated_candidate_rows_by_binary"], {
+                        "bash": 1, "dash": 26, "gcc-cc1": 357, "gcc-collect2": 1,
+                        "gcc-driver": 37, "gcc-ld-bfd": 7, "tar": 79,
+                    })
+                self.assertEqual(compact["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                    "S2-37q-CVTSI2SD-register-state-gated": 152,
+                    "S2-37r-CVTSI2SS-register-state-gated": 40,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 2,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 23,
+                    "S2-37t-CVTSS2SD-register-state-gated": 19,
+                    "S2-37ad-CVTTSS2SI-register-state-gated": 2,
+                    "S2-37ae-CVTTSD2SI-register-state-gated": 22,
+                    "S2-37be-CVTSD2SS-register-state-gated": 1,
+                    "S2-37ap-SUBSD-register-state-gated": 12,
+                    "S2-37at-MULSD-register-state-gated": 31,
+                    "S2-37au-MULSS-register-state-gated": 1,
+                    "S2-37ax-DIVSD-register-state-gated": 58,
+                    "S2-37ay-DIVSS-register-state-gated": 13,
+                    "S2-37bb-ADDSD-register-state-gated": 39,
+                    "S2-37bc-ADDSS-register-state-gated": 10,
+                })
+                self.assertEqual(compact["scenarios"]["C"]["conditional_local_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 0,
+                    "S2-37q-CVTSI2SD-register-state-gated": 23,
+                    "S2-37r-CVTSI2SS-register-state-gated": 10,
+                    "S2-37t-CVTSS2SD-register-state-gated": 0,
+                    "S2-37v-COMISS-UCOMISS-register-state-gated": 8,
+                    "S2-37w-COMISD-UCOMISD-register-state-gated": 11,
+                    "S2-37ad-CVTTSS2SI-register-state-gated": 6,
+                    "S2-37ae-CVTTSD2SI-register-state-gated": 10,
+                    "S2-37ap-SUBSD-register-state-gated": 8,
+                    "S2-37at-MULSD-register-state-gated": 4,
+                    "S2-37au-MULSS-register-state-gated": 5,
+                    "S2-37ax-DIVSD-register-state-gated": 9,
+                    "S2-37ay-DIVSS-register-state-gated": 0,
+                    "S2-37bb-ADDSD-register-state-gated": 7,
+                    "S2-37bc-ADDSS-register-state-gated": 5,
+                    "S2-37be-CVTSD2SS-register-state-gated": 0,
+                })
+                self.assertEqual(sum(compact["conditional_local_state_gated_candidate_frequencies"].values()), 508)
+                conditional_signatures = {"cvtsi2sd xmm,r32", "cvtsi2sd xmm,r64", "cvtsi2ss xmm,r32",
+                                          "cvtsi2ss xmm,r64", "comiss xmm,xmm", "comisd xmm,xmm", "ucomisd xmm,xmm",
+                                          "cvtss2sd xmm,xmm", "cvttss2si r32,xmm", "cvttss2si r64,xmm",
+                                          "cvttsd2si r32,xmm", "cvttsd2si r64,xmm",
+                                          "subsd xmm,xmm", "mulsd xmm,xmm", "mulss xmm,xmm", "divsd xmm,xmm",
+                                          "divss xmm,xmm", "addsd xmm,xmm", "addss xmm,xmm"}
+                for form in compact["normalized_instruction_forms"]:
+                    if form["instruction_form"]["operand_signature"] in conditional_signatures:
+                        candidate_total = sum(form["conditional_local_candidate_frequencies"].values())
+                        if candidate_total:
+                            self.assertEqual(form["classification_frequencies"], {"unclassified": form["count"]})
+                            self.assertEqual(form["evidence_scope_frequencies"], {})
+                cvt_candidates = {
+                    "S2-37t-CVTSS2SD-register-state-gated",
+                    "S2-37ad-CVTTSS2SI-register-state-gated",
+                    "S2-37ae-CVTTSD2SI-register-state-gated",
+                }
+                cvt_forms = [form for form in compact["normalized_instruction_forms"]
+                             if cvt_candidates & set(form["conditional_local_candidate_frequencies"])]
+                cvt_exact = [form for form in compact["exact_encoding_forms"]
+                             if cvt_candidates & set(form["conditional_local_candidate_frequencies"])]
+                self.assertEqual(sum(form["count"] for form in cvt_forms), 55)
+                self.assertEqual(len(cvt_forms), 6)
+                self.assertEqual(len(cvt_exact), 24)
+                self.assertEqual({candidate: sum(form["conditional_local_candidate_frequencies"].get(candidate, 0)
+                                                 for form in cvt_forms)
+                                  for candidate in cvt_candidates}, {
+                    "S2-37t-CVTSS2SD-register-state-gated": 19,
+                    "S2-37ad-CVTTSS2SI-register-state-gated": 8,
+                    "S2-37ae-CVTTSD2SI-register-state-gated": 28,
+                })
+                arithmetic_candidates = {
+                    "S2-37ap-SUBSD-register-state-gated": 16,
+                    "S2-37at-MULSD-register-state-gated": 31,
+                    "S2-37au-MULSS-register-state-gated": 6,
+                    "S2-37ax-DIVSD-register-state-gated": 59,
+                    "S2-37ay-DIVSS-register-state-gated": 13,
+                    "S2-37bb-ADDSD-register-state-gated": 46,
+                    "S2-37bc-ADDSS-register-state-gated": 15,
+                }
+                arithmetic_forms = [form for form in compact["normalized_instruction_forms"]
+                                    if set(arithmetic_candidates) & set(form["conditional_local_candidate_frequencies"])]
+                arithmetic_exact = [form for form in compact["exact_encoding_forms"]
+                                    if set(arithmetic_candidates) & set(form["conditional_local_candidate_frequencies"])]
+                self.assertEqual(sum(form["count"] for form in arithmetic_forms), 186)
+                self.assertEqual(len(arithmetic_forms), 8)
+                self.assertEqual(len(arithmetic_exact), 72)
+                self.assertEqual({candidate: sum(form["conditional_local_candidate_frequencies"].get(candidate, 0)
+                                                 for form in arithmetic_forms)
+                                  for candidate in arithmetic_candidates}, arithmetic_candidates)
+                self.assertEqual({name: sum(item.get("conditional_local_state_gated_candidate_frequencies", {}).get(candidate, 0)
+                                            for candidate in arithmetic_candidates)
+                                  for name, item in compact["binaries"].items()
+                                  if any(item.get("conditional_local_state_gated_candidate_frequencies", {}).get(candidate, 0)
+                                         for candidate in arithmetic_candidates)},
+                                 {"dash": 16, "gcc-cc1": 127, "gcc-driver": 18, "gcc-ld-bfd": 3, "tar": 22})
+                sd_r32 = [form for form in cvt_forms
+                          if form["instruction_form"]["operand_signature"] == "cvttsd2si r32,xmm"]
+                self.assertEqual(sorted((form["instruction_form"]["semantic_prefixes"], form["count"]) for form in sd_r32),
+                                 [(["repne"], 10), (["repne", "rex"], 8)])
+                self.assertTrue(all(form["classification_frequencies"] == {"unclassified": form["count"]}
+                                    and form["evidence_scope_frequencies"] == {} for form in cvt_forms))
+                self.assertEqual({name: sum(item.get("conditional_local_state_gated_candidate_frequencies", {}).get(candidate, 0)
+                                            for candidate in cvt_candidates)
+                                  for name, item in compact["binaries"].items()
+                                  if any(item.get("conditional_local_state_gated_candidate_frequencies", {}).get(candidate, 0)
+                                         for candidate in cvt_candidates)},
+                                 {"dash": 4, "gcc-cc1": 39, "tar": 12})
+                self.assertEqual(fields["local_simd_logic_rows"], 2162)
+                self.assertEqual(fields["local_simd_logic_normalized_forms"], 10)
+                self.assertEqual(sum(fields["local_simd_logic_rows_by_profile"].values()), 2162)
+                self.assertEqual(fields["local_simd_logic_rows_by_profile"]["S2-35.49-PAND-XMM-register-register"], 304)
+                self.assertEqual(fields["pand_unreviewed_unclassified_rows"], 0)
+                self.assertEqual(fields["pand_unreviewed_unclassified_forms"], 0)
+                self.assertEqual(fields["memory_logic_unclassified_rows"], 179)
+                self.assertEqual(fields["memory_logic_unclassified_by_signature"]["pand xmm,mem128"], 52)
+                self.assertIn("179 SIMD logic memory rows remain unclassified, including 52 PAND memory rows", fields["local_simd_logic_scope"])
+                for classification in ("proven_supported", "unclassified"):
+                    self.assertEqual(
+                        sum(binary["classification_frequencies"].get(classification, 0) for binary in compact["binaries"].values()),
+                        compact["classification_frequencies"][classification],
+                    )
+                if "local_interpreter_profile_rows" in fields:
+                    self.assertEqual(
+                        fields["local_interpreter_profile_rows"],
+                        fields["evidence_scope_frequencies"]["local_interpreter_profile"],
+                    )
+                    self.assertEqual(
+                        fields["machine_cpl3_profile_rows"],
+                        fields["evidence_scope_frequencies"]["machine_cpl3_profile"],
+                    )
+                scenario_totals = {}
+                for scenario in ("C", "D"):
+                    totals = {"proven_supported": 0, "unclassified": 0}
+                    for binary in compact["scenarios"][scenario]["binaries"]:
+                        frequencies = compact["binaries"][binary]["classification_frequencies"]
+                        for classification in totals:
+                            totals[classification] += frequencies.get(classification, 0)
+                    scenario_totals[scenario] = totals
+                self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
+                for scope_key in (
+                    "pcmpgtb_scope", "pcmpeqb_scope", "psubq_scope", "movapd_scope",
+                    "packuswb_scope", "pcmpgtd_scope", "movaps_scope", "pmuludq_scope", "psubd_scope", "paddq_scope", "paddd_scope",
+                ):
+                    self.assertNotIn("PCMPEQD", fields[scope_key])
+                    self.assertNotIn("PMOVMSKB", fields[scope_key])
+                report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
+                local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
+                unclassified_scope_line = next(line for line in report_lines if line.startswith("| `unclassified` |"))
+                unclassified_cells = [cell.strip() for cell in unclassified_scope_line.split("|")]
+                self.assertEqual(
+                    int(unclassified_cells[2].replace(" ", "")),
+                    e_compact_snapshot["classification_frequencies"]["unclassified"],
+                )
+                report_status = next(line for line in report_lines if line.startswith("S5-21 сейчас **blocked**"))
+                self.assertIn("205 из 1 269 normalized forms (213 978 rootfs-only rows; 214 039 rows с E ELF)", report_status)
+                self.assertIn("6 294 355", local_scope_line)
+                self.assertIn("6 294 071", local_scope_line)
+                conditional_line = next(line for line in report_lines if line.startswith("| Local state-gated conditional candidate |"))
+                self.assertIn("16 profile families / 25 normalized instruction-form keys / 192 exact keys", conditional_line)
+                self.assertIn("MINSD S2-37i contributes 4 unclassified rows", conditional_line)
+                self.assertIn("both raw x87 and SSE state are required", conditional_line)
+                self.assertIn("For q/r/v/w only", conditional_line)
+                self.assertIn("Rootfs generic conditional hits/unique rows are 113 740/113 663", conditional_line)
+                self.assertIn("E-inclusive 113 800/113 723", conditional_line)
+                self.assertIn("S2-37t/ad/ae add 55 rows in 6 normalized instruction-form keys (5 operand signatures) /24 exact keys", conditional_line)
+                self.assertIn("No runtime CPU/MXCSR state is inferred", conditional_line)
+                self.assertEqual(
+                    sum("Conditional candidate follow-up (2026-11-13): S2-37q/r/v/w" in line for line in report_lines),
+                    1,
+                )
+                movsd_memory_report = next(line for line in report_lines if line.startswith("The accepted local-only S2-34.9c"))
+                self.assertIn("three bounded local-profile matches and 85 rows remain unclassified", movsd_memory_report)
+                self.assertIn("six-profile accepted local SIMD logic group of 1 858 rows plus PAND 304 rows (2 162 / 10 forms total)", local_scope_line)
+                historical_logic = next(line for line in report_lines if line.startswith("Historical snapshot before the 2026-11-12 fresh PAND review:"))
+                self.assertIn("At that earlier snapshot, PAND S2-35.49 was pending independent review", historical_logic)
+                self.assertIn("179 SIMD logic memory rows remain unclassified in the current inventory, including 52 PAND memory rows", historical_logic)
+                scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
+                c_totals = fields["scenario_classification_frequencies"]["C"]
+                d_totals = fields["scenario_classification_frequencies"]["D"]
+                c_supported = f"{c_totals['proven_supported']:,}".replace(",", " ")
+                c_unclassified = f"{c_totals['unclassified']:,}".replace(",", " ")
+                d_supported = f"{d_totals['proven_supported']:,}".replace(",", " ")
+                d_unclassified = f"{d_totals['unclassified']:,}".replace(",", " ")
+                self.assertIn(
+                    f"({c_supported} profile-classified, {c_unclassified} unclassified)",
+                    scenario_summary,
+                )
+                self.assertIn(
+                    f"({d_supported} profile-classified, {d_unclassified} unclassified)",
+                    scenario_summary,
+                )
+                issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
+                issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
+                self.assertIn(
+                    "205 normalized forms / 213 978 rootfs-only rows (214 039 с E ELF)",
+                    issue_section,
+                )
+                self.assertIn("7 PMOVMSKB rows", issue_section)
+                self.assertIn("Both x87 and SSE state are required", issue_section)
+                self.assertIn("8 PMULUDQ rows", issue_section)
+                self.assertIn("MOVSS S2-34.8a adds 15 rows", issue_section)
+                self.assertIn("MOVSS S2-34.8c adds three tar rows in two exact encodings", issue_section)
+                self.assertIn("PSUBD S2-35.15 adds 24 gcc-cc1 rows", issue_section)
+                self.assertIn("S2-35.16 PADDQ adds 77 rows", issue_section)
+                self.assertIn("PADDD S2-35.14 adds 132 register-register rows", issue_section)
+                self.assertIn("PAND S2-35.49 now has fresh bounded local-only evidence", issue_section)
+                self.assertIn("PAND S2-35.49 now has fresh bounded local-only evidence", issue_section)
+                self.assertNotIn("PAND S2-35.49 ожидает независимое ревью и не засчитан", issue_section)
+                self.assertIn("2 162 register-register rows / 10 forms", issue_section)
+                self.assertIn("179 SIMD memory-logic rows остаются unclassified из-за отсутствия подходящего принятого профиля, включая 52 PAND memory rows", issue_section)
+                self.assertIn("MOVSD S2-34.9c adds three exact `F2 0F 10 00` `[RAX]` m64 load rows", issue_section)
+                self.assertIn("3 supported and 85 unclassified", issue_section)
+                self.assertIn("four ISA checks (three load_rax plus decoder), one schema test and one fixture", issue_section)
+                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json", issue_section)
+                if not full_key:
+                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-scalar-arith-e-pass1.json")
+                stage2_plan = (repo_root / "docs/plans/STAGE_2.md").read_text()
+                self.assertIn("Independent review was pending at this implementation check", stage2_plan)
+                self.assertIn("fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture", stage2_plan)
+                self.assertIn("gcc-cc1 (63), gcc-collect2 (5), gcc-driver (5), gcc-ld.bfd (1), and tar (3)", issue_section)
+                self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
+                self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
+                raw_sha = manifest["runs"][0]["sha256"] if full_key else fields["raw_inventory_sha256"]
+                for digest in (raw_sha, compact_sha):
+                    self.assertIn(digest, issue_section)
+                self.assertIn("6 296 422 bounded-profile evidence, 213 978 unclassified", issue_section)
+                self.assertIn("6 296 706 evidence, 214 039 unclassified", issue_section)
+                self.assertIn("1 064 из 1 269 normalized forms имеют bounded evidence, 205 остаётся unclassified", issue_section)
+                aggregate_summary = next(line for line in report_lines if line.startswith("The paired rootfs inventory contains 6,510,400 instruction rows:"))
+                self.assertIn("6,296,422 `proven_supported` and 213,978 `unclassified`", aggregate_summary)
+                self.assertIn("6,296,706 supported and 214,039 unclassified", aggregate_summary)
+                report_binary_rows = {}
+                for line in report_lines:
+                    cells = [cell.strip() for cell in line.split("|")]
+                    if len(cells) >= 6 and cells[1].startswith("`") and "`" in cells[1][1:]:
+                        name = cells[1][1:].split("`", 1)[0]
+                        if name == "gcc-ld.bfd":
+                            name = "gcc-ld-bfd"
+                        if name in compact["binaries"]:
+                            report_binary_rows[name] = int(cells[5].replace(" ", ""))
+                for name, binary in compact["binaries"].items():
+                    self.assertEqual(
+                        report_binary_rows[name],
+                        binary["classification_frequencies"].get("unclassified", 0),
+                    )
+                pshufd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["operand_signature"] == "pshufd xmm,xmm,imm"
+                ]
+                self.assertEqual(len(pshufd_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.35-PSHUFD-XMM-register-register", 0) for row in pshufd_forms),
+                    805,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pshufd_forms),
+                    805,
+                )
+                pshufd_memory = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["operand_signature"] == "pshufd xmm,mem128,imm"
+                ]
+                self.assertEqual(len(pshufd_memory), 1)
+                self.assertEqual(pshufd_memory[0]["classification_frequencies"], {"unclassified": 1})
+                psrldq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "73"]
+                    and row["instruction_form"]["operand_signature"] == "psrldq xmm,imm"
+                ]
+                self.assertEqual(len(psrldq_forms), 2)
+                self.assertEqual(sum(row["count"] for row in psrldq_forms), 355)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.47-PSRLDQ-XMM-immediate-register", 0) for row in psrldq_forms),
+                    355,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrldq_forms),
+                    355,
+                )
+                pslld_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "72"]
+                    and row["instruction_form"]["operand_signature"] == "pslld xmm,imm"
+                ]
+                self.assertEqual(len(pslld_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pslld_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.41-PSLLD-XMM-immediate-register", 0) for row in pslld_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pslld_forms),
+                    2,
+                )
+                psrlq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "73"]
+                    and row["instruction_form"]["operand_signature"] == "psrlq xmm,imm"
+                ]
+                self.assertEqual(len(psrlq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psrlq_forms), 5)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.45-PSRLQ-XMM-immediate-register", 0) for row in psrlq_forms),
+                    5,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrlq_forms),
+                    5,
+                )
+                psraw_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "71"]
+                    and row["instruction_form"]["operand_signature"] == "psraw xmm,imm"
+                ]
+                self.assertEqual(len(psraw_forms), 2)
+                self.assertEqual(sum(row["count"] for row in psraw_forms), 6)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.39-PSRAW-XMM-immediate-register", 0) for row in psraw_forms),
+                    6,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psraw_forms),
+                    6,
+                )
+                prefix_counts = {
+                    prefix: sum(row["count"] for row in psraw_forms if row["instruction_form"]["semantic_prefixes"] == semantic)
+                    for prefix, semantic in (("operand_size", ["operand_size"]), ("operand_size+rex", ["operand_size", "rex"]))
+                }
+                self.assertEqual(prefix_counts, {"operand_size": 5, "operand_size+rex": 1})
+                psrld_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "72"]
+                    and row["instruction_form"]["operand_signature"] == "psrld xmm,imm"
+                ]
+                self.assertEqual(len(psrld_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psrld_forms), 11)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.42-PSRLD-XMM-immediate-register", 0) for row in psrld_forms),
+                    11,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrld_forms),
+                    11,
+                )
+                psrad_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "72"]
+                    and row["instruction_form"]["operand_signature"] == "psrad xmm,imm"
+                ]
+                self.assertEqual(len(psrad_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psrad_forms), 12)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.43-PSRAD-XMM-immediate-register", 0) for row in psrad_forms),
+                    12,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psrad_forms),
+                    12,
+                )
+                psubw_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "F9"]
+                    and row["instruction_form"]["operand_signature"] == "psubw xmm,xmm"
+                ]
+                self.assertEqual(len(psubw_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psubw_forms), 1)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.7-PSUBW-XMM-register-register", 0) for row in psubw_forms),
+                    1,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psubw_forms),
+                    1,
+                )
+                psubq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FB"]
+                    and row["instruction_form"]["operand_signature"] == "psubq xmm,xmm"
+                ]
+                self.assertEqual(len(psubq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psubq_forms), 12)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.17-PSUBQ-XMM-register-register", 0) for row in psubq_forms),
+                    12,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in psubq_forms),
+                    12,
+                )
+                movapd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "28"]
+                    and row["instruction_form"]["operand_signature"] == "movapd xmm,xmm"
+                ]
+                self.assertEqual(len(movapd_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movapd_forms), 14)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-34.13-MOVAPD-XMM-register-register", 0) for row in movapd_forms),
+                    14,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in movapd_forms),
+                    14,
+                )
+                movapd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "28"]
+                    and row["dimensions"]["operand_signature"] == "movapd xmm,xmm"
+                ]
+                self.assertEqual(len(movapd_encodings), 7)
+                self.assertEqual(sum(row["count"] for row in movapd_encodings), 14)
+                self.assertEqual(
+                    {row["dimensions"]["modrm"]["raw"] for row in movapd_encodings},
+                    {"C8", "D0", "C1", "D8", "D1", "DA", "EB"},
+                )
+                packuswb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "67"]
+                    and row["instruction_form"]["operand_signature"] == "packuswb xmm,xmm"
+                ]
+                self.assertEqual(len(packuswb_forms), 2)
+                self.assertEqual(sum(row["count"] for row in packuswb_forms), 16)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.33-PACKUSWB-XMM-register-register", 0) for row in packuswb_forms),
+                    16,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in packuswb_forms),
+                    16,
+                )
+                packuswb_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "67"]
+                    and row["dimensions"]["operand_signature"] == "packuswb xmm,xmm"
+                ]
+                self.assertEqual(len(packuswb_encodings), 7)
+                self.assertEqual(sum(row["count"] for row in packuswb_encodings), 16)
+                movaps_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "28"]
+                    and row["instruction_form"]["operand_signature"] == "movaps xmm,xmm"
+                ]
+                self.assertEqual(len(movaps_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movaps_forms), 98)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-34.11-MOVAPS-XMM-register-register", 0) for row in movaps_forms),
+                    98,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in movaps_forms),
+                    98,
+                )
+                movaps_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "28"]
+                    and row["dimensions"]["operand_signature"] == "movaps xmm,xmm"
+                ]
+                self.assertEqual(len(movaps_encodings), 12)
+                self.assertEqual(sum(row["count"] for row in movaps_encodings), 98)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in movaps_encodings))
+                pcmpeqd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "76"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpeqd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqd_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpeqd_forms), 126)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.20-PCMPEQD-XMM-register-register", 0) for row in pcmpeqd_forms),
+                    126,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpeqd_forms),
+                    126,
+                )
+                pcmpeqd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "76"]
+                    and row["dimensions"]["operand_signature"] == "pcmpeqd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqd_encodings), 18)
+                self.assertEqual(sum(row["count"] for row in pcmpeqd_encodings), 126)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pcmpeqd_encodings))
+                pmovmskb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "D7"]
+                    and row["instruction_form"]["operand_signature"] == "pmovmskb r32,xmm"
+                ]
+                self.assertEqual(len(pmovmskb_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pmovmskb_forms), 7)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.61-PMOVMSKB-XMM-source-GPR32-destination", 0) for row in pmovmskb_forms), 7)
+                pmovmskb_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "D7"]
+                    and row["dimensions"]["operand_signature"] == "pmovmskb r32,xmm"
+                ]
+                self.assertEqual(len(pmovmskb_encodings), 3)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in pmovmskb_encodings}, {"C0": 3, "C9": 3, "C8": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pmovmskb_encodings))
+                self.assertTrue(all(row["binary_frequencies"] == {"gcc-cc1": row["count"]} for row in pmovmskb_encodings))
+                self.assertEqual(fields["pmovmskb_register_rows"], 7)
+                self.assertEqual(fields["pmovmskb_register_normalized_forms"], 1)
+                self.assertEqual(fields["pmovmskb_register_encoding_forms"], 3)
+                self.assertIn("both x87 and SSE state", fields["pmovmskb_scope"])
+                self.assertIn("fresh independent review", fields["pmovmskb_scope"])
+                pmuludq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "F4"]
+                    and row["instruction_form"]["operand_signature"] == "pmuludq xmm,xmm"
+                ]
+                self.assertEqual(len(pmuludq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pmuludq_forms), 8)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.62-PMULUDQ-XMM-register-register", 0) for row in pmuludq_forms), 8)
+                pmuludq_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "F4"]
+                    and row["dimensions"]["operand_signature"] == "pmuludq xmm,xmm"
+                ]
+                self.assertEqual(len(pmuludq_encodings), 2)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in pmuludq_encodings}, {"C3": 4, "E9": 4})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pmuludq_encodings))
+                self.assertTrue(all(row["binary_frequencies"] == {"gcc-cc1": row["count"]} for row in pmuludq_encodings))
+                self.assertEqual(fields["pmuludq_register_rows"], 8)
+                self.assertEqual(fields["pmuludq_register_normalized_forms"], 1)
+                self.assertEqual(fields["pmuludq_register_encoding_forms"], 2)
+                self.assertIn("both x87 and SSE state", fields["pmuludq_scope"])
+                self.assertIn("fresh independent review", fields["pmuludq_scope"])
+                movss_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movss xmm,xmm"
+                ]
+                self.assertEqual(len(movss_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movss_forms), 15)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-34.8a-MOVSS-XMM-register-register", 0) for row in movss_forms), 15)
+                movss_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "10"]
+                    and row["dimensions"]["operand_signature"] == "movss xmm,xmm"
+                ]
+                self.assertEqual(len(movss_encodings), 5)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in movss_encodings}, {"CA": 7, "C1": 3, "D0": 3, "C5": 1, "C6": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in movss_encodings))
+                self.assertEqual(
+                    {row["dimensions"]["modrm"]["raw"]: row["binary_frequencies"] for row in movss_encodings},
+                    {"CA": {"bash": 1, "gcc-cc1": 6}, "C1": {"bash": 1, "gcc-cc1": 2}, "D0": {"gcc-cc1": 1, "gcc-collect2": 1, "gcc-driver": 1}, "C5": {"gcc-cc1": 1}, "C6": {"gcc-cc1": 1}},
+                )
+                self.assertEqual(fields["movss_register_rows"], 15)
+                self.assertEqual(fields["movss_register_normalized_forms"], 1)
+                self.assertEqual(fields["movss_register_encoding_forms"], 5)
+                self.assertIn("both x87 and SSE state", fields["movss_scope"])
+                self.assertIn("fresh independent review", fields["movss_scope"])
+                movss_memory_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movss xmm,mem32"
+                    and row["instruction_form"]["semantic_prefixes"] == ["rep"]
+                    and row["instruction_form"]["modrm_mode"] == "memory"
+                    and row["instruction_form"]["address"]["form"] == "base_only"
+                ]
+                self.assertEqual(len(movss_memory_forms), 1)
+                self.assertEqual(movss_memory_forms[0]["count"], 14)
+                self.assertEqual(movss_memory_forms[0]["classification_frequencies"], {"proven_supported": 3, "unclassified": 11})
+                self.assertEqual(movss_memory_forms[0]["profile_match_frequencies"], {"S2-34.8c-MOVSS-XMM-memory-RAX-load": 3})
+                movss_memory_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "10"]
+                    and row["dimensions"]["prefix_bytes"] == ["F3"]
+                    and row["dimensions"]["operand_signature"] == "movss xmm,mem32"
+                    and row["dimensions"]["modrm"] is not None
+                    and row["dimensions"]["modrm"]["mod"] == 0
+                    and row["dimensions"]["modrm"]["rm"] == 0
+                ]
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in movss_memory_encodings}, {"10": 2, "08": 1})
+                self.assertTrue(all(row["binary_frequencies"] == {"tar": row["count"]} for row in movss_memory_encodings))
+                self.assertTrue(all(row["profile_match_frequencies"] == {"S2-34.8c-MOVSS-XMM-memory-RAX-load": row["count"]} for row in movss_memory_encodings))
+                self.assertEqual(fields["movss_rax_memory_load_rows"], 3)
+                self.assertEqual(fields["movss_rax_memory_load_normalized_forms"], 1)
+                self.assertEqual(fields["movss_rax_memory_load_encoding_forms"], 2)
+                self.assertEqual(fields["movss_rax_memory_load_rows_by_binary"], {"tar": 3})
+                self.assertIn("with no SSE2 claim", fields["movss_rax_memory_load_scope"])
+                psubd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FA"]
+                    and row["instruction_form"]["operand_signature"] == "psubd xmm,xmm"
+                ]
+                self.assertEqual(len(psubd_forms), 1)
+                self.assertEqual(sum(row["count"] for row in psubd_forms), 24)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.15-PSUBD-XMM-register-register", 0) for row in psubd_forms), 24)
+                psubd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "FA"]
+                    and row["dimensions"]["operand_signature"] == "psubd xmm,xmm"
+                ]
+                self.assertEqual(len(psubd_encodings), 8)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in psubd_encodings}, {"C8": 7, "F5": 6, "C1": 5, "F4": 2, "CD": 1, "D5": 1, "DD": 1, "EA": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in psubd_encodings))
+                self.assertTrue(all(row["binary_frequencies"] == {"gcc-cc1": row["count"]} for row in psubd_encodings))
+                self.assertEqual(fields["psubd_register_rows"], 24)
+                self.assertEqual(fields["psubd_register_normalized_forms"], 1)
+                self.assertEqual(fields["psubd_register_encoding_forms"], 8)
+                self.assertIn("both x87 and SSE state", fields["psubd_scope"])
+                self.assertIn("Linux-gated assertion was compiled but not run on this Mac host", fields["psubd_scope"])
+                paddq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "D4"]
+                    and row["instruction_form"]["operand_signature"] == "paddq xmm,xmm"
+                ]
+                self.assertEqual(len(paddq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddq_forms), 77)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.16-PADDQ-XMM-register-register", 0) for row in paddq_forms), 77)
+                paddq_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "D4"]
+                    and row["dimensions"]["operand_signature"] == "paddq xmm,xmm"
+                ]
+                self.assertEqual(len(paddq_encodings), 8)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in paddq_encodings}, {"C1": 48, "C8": 11, "C2": 6, "C3": 6, "CA": 2, "D4": 2, "C5": 1, "D1": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in paddq_encodings))
+                self.assertEqual(
+                    {row["dimensions"]["modrm"]["raw"]: row["binary_frequencies"] for row in paddq_encodings},
+                    {"C1": {"gcc-cc1": 36, "gcc-collect2": 5, "gcc-driver": 5, "gcc-ld-bfd": 1, "tar": 1}, "C8": {"gcc-cc1": 11}, "C2": {"gcc-cc1": 5, "tar": 1}, "C3": {"gcc-cc1": 5, "tar": 1}, "CA": {"gcc-cc1": 2}, "D4": {"gcc-cc1": 2}, "C5": {"gcc-cc1": 1}, "D1": {"gcc-cc1": 1}},
+                )
+                self.assertEqual(fields["paddq_register_rows"], 77)
+                self.assertEqual(fields["paddq_register_normalized_forms"], 1)
+                self.assertEqual(fields["paddq_register_encoding_forms"], 8)
+                self.assertIn("CPU_CONTRACT has no PADDQ entry", fields["paddq_scope"])
+                self.assertIn("od-testkit schema test", fields["paddq_scope"])
+                self.assertIn("Linux-gated assertion compiled but not run on Mac", fields["paddq_scope"])
+                paddd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FE"]
+                    and row["instruction_form"]["operand_signature"] == "paddd xmm,xmm"
+                ]
+                self.assertEqual(len(paddd_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddd_forms), 132)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.14-PADDD-XMM-register-register", 0) for row in paddd_forms), 132)
+                paddd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "FE"]
+                    and row["dimensions"]["operand_signature"] == "paddd xmm,xmm"
+                ]
+                self.assertEqual(len(paddd_encodings), 21)
+                self.assertEqual(sum(row["count"] for row in paddd_encodings), 132)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in paddd_encodings))
+                self.assertEqual(
+                    {binary: sum(row["binary_frequencies"].get(binary, 0) for row in paddd_encodings) for binary in ("gcc-cc1", "tar", "gcc-as", "gcc-ld-bfd")},
+                    {"gcc-cc1": 109, "tar": 18, "gcc-as": 3, "gcc-ld-bfd": 2},
+                )
+                self.assertEqual(fields["paddd_register_rows"], 132)
+                self.assertEqual(fields["paddd_register_normalized_forms"], 1)
+                self.assertEqual(fields["paddd_register_encoding_forms"], 21)
+                self.assertIn("Stage 2 report has no PADDD-specific entry", fields["paddd_scope"])
+                pand_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "DB"]
+                    and row["instruction_form"]["operand_signature"] == "pand xmm,xmm"
+                ]
+                self.assertEqual(len(pand_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pand_forms), 304)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.49-PAND-XMM-register-register", 0) for row in pand_forms), 304)
+                pand_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "DB"]
+                    and row["dimensions"]["operand_signature"] == "pand xmm,xmm"
+                ]
+                self.assertEqual(len(pand_encodings), 38)
+                self.assertEqual(sum(row["count"] for row in pand_encodings), 304)
+                prefix_counts = {}
+                for row in pand_encodings:
+                    prefix = tuple(row["dimensions"]["prefix_bytes"])
+                    prefix_counts[prefix] = prefix_counts.get(prefix, 0) + row["count"]
+                self.assertEqual(prefix_counts, {("66",): 271, ("66", "41"): 1, ("66", "44"): 30, ("66", "45"): 2})
+                self.assertEqual(fields["pand_register_rows"], 304)
+                self.assertEqual(fields["pand_register_normalized_forms"], 2)
+                self.assertEqual(fields["pand_register_encoding_forms"], 38)
+                self.assertIn("Fresh PAND-only", fields["pand_scope"])
+                self.assertIn("does not imply historical acceptance", fields["pand_scope"])
+                pcmpgtd_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpgtd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtd_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pcmpgtd_forms), 40)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.23-PCMPGTD-XMM-register-register", 0) for row in pcmpgtd_forms),
+                    40,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpgtd_forms),
+                    40,
+                )
+                pcmpgtd_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "66"]
+                    and row["dimensions"]["operand_signature"] == "pcmpgtd xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtd_encodings), 18)
+                self.assertEqual(sum(row["count"] for row in pcmpgtd_encodings), 40)
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in pcmpgtd_encodings))
+                paddb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FC"]
+                    and row["instruction_form"]["operand_signature"] == "paddb xmm,xmm"
+                ]
+                self.assertEqual(len(paddb_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddb_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.2-PADDB-XMM-register-register", 0) for row in paddb_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in paddb_forms),
+                    2,
+                )
+                paddw_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "FD"]
+                    and row["instruction_form"]["operand_signature"] == "paddw xmm,xmm"
+                ]
+                self.assertEqual(len(paddw_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddw_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.6-PADDW-XMM-register-register", 0) for row in paddw_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in paddw_forms),
+                    2,
+                )
+                movsd_register_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movsd xmm,xmm"
+                ]
+                self.assertEqual(len(movsd_register_forms), 1)
+                self.assertEqual(sum(row["count"] for row in movsd_register_forms), 2)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-34.9a-MOVSD-XMM-register-register", 0) for row in movsd_register_forms),
+                    2,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in movsd_register_forms),
+                    2,
+                )
+                movsd_rax_base_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "10"]
+                    and row["instruction_form"]["operand_signature"] == "movsd xmm,mem64"
+                    and row["instruction_form"]["semantic_prefixes"] == ["repne"]
+                    and row["instruction_form"]["modrm_mode"] == "memory"
+                    and row["instruction_form"]["address"]["form"] == "base_only"
+                ]
+                self.assertEqual(len(movsd_rax_base_forms), 1)
+                movsd_rax_base = movsd_rax_base_forms[0]
+                self.assertEqual(movsd_rax_base["count"], 88)
+                self.assertEqual(movsd_rax_base["classification_frequencies"], {"proven_supported": 3, "unclassified": 85})
+                self.assertEqual(
+                    movsd_rax_base["profile_match_frequencies"],
+                    {"S2-34.9c-MOVSD-XMM-memory-RAX-load": 3},
+                )
+                self.assertEqual(
+                    movsd_rax_base["binary_classification_frequencies"],
+                    {
+                        "bash": {"unclassified": 4},
+                        "dash": {"unclassified": 1},
+                        "gcc-cc1": {"proven_supported": 1, "unclassified": 71},
+                        "gcc-collect2": {"proven_supported": 1},
+                        "gcc-driver": {"proven_supported": 1, "unclassified": 2},
+                        "tar": {"unclassified": 7},
+                    },
+                )
+                pcmpgtb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "64"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpgtb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpgtb_forms), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpgtb_forms), 3)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.21-PCMPGTB-XMM-register-register", 0) for row in pcmpgtb_forms),
+                    3,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpgtb_forms),
+                    3,
+                )
+                pcmpeqb_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "74"]
+                    and row["instruction_form"]["operand_signature"] == "pcmpeqb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqb_forms), 1)
+                self.assertEqual(sum(row["count"] for row in pcmpeqb_forms), 6)
+                self.assertEqual(
+                    sum(row["profile_match_frequencies"].get("S2-35.18-PCMPEQB-XMM-register-register", 0) for row in pcmpeqb_forms),
+                    6,
+                )
+                self.assertEqual(
+                    sum(row["classification_frequencies"].get("proven_supported", 0) for row in pcmpeqb_forms),
+                    6,
+                )
+                pcmpeqb_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "74"]
+                    and row["dimensions"]["operand_signature"] == "pcmpeqb xmm,xmm"
+                ]
+                self.assertEqual(len(pcmpeqb_encodings), 2)
+                self.assertEqual(sum(row["count"] for row in pcmpeqb_encodings), 6)
+                self.assertEqual(
+                    compact_fields.get("sha256", compact_fields.get("compact_inventory_sha256")),
+                    hashlib.sha256(compact_path.read_bytes()).hexdigest(),
+                )
+                raw_sha = fields["raw_inventory_sha256"]
+                self.assertEqual(len(raw_sha), 64)
+                self.assertTrue(all(character in "0123456789abcdef" for character in raw_sha))
+                if full_key:
+                    self.assertEqual(raw_sha, manifest["runs"][0]["sha256"])
+
+    def test_normalizes_register_encoding_but_preserves_semantic_prefix_and_address(self) -> None:
+        plain_a = exporter.normalized_instruction_form({
+            "prefix_bytes": ["48"], "opcode_bytes": ["8B"],
+            "modrm": {"raw": "00", "mod": 0, "reg": 0, "rm": 0},
+            "operand_signature": "mov r64,mem64",
+            "address": {"form": "base_only", "size": 64, "segment": None},
+        })
+        plain_b = exporter.normalized_instruction_form({
+            "prefix_bytes": ["48"], "opcode_bytes": ["8B"],
+            "modrm": {"raw": "03", "mod": 0, "reg": 0, "rm": 3},
+            "operand_signature": "mov r64,mem64",
+            "address": {"form": "base_only", "size": 64, "segment": None},
+        })
+        fs = dict(plain_a, semantic_prefixes=["fs", "rex_w"], address={"form": "base_only", "size": 64, "segment": "fs"})
+        self.assertEqual(plain_a, plain_b)
+        self.assertNotEqual(plain_a, fs)
+
+    def test_preserves_fs_gs_lock_width_and_addressing_but_not_literal_values(self) -> None:
+        base = {
+            "prefix_bytes": ["48"], "opcode_bytes": ["83"],
+            "modrm": {"raw": "00", "mod": 0, "reg": 0, "rm": 0},
+            "operand_signature": "add mem64,imm",
+            "address": {"form": "base_only", "size": 64, "segment": None},
+        }
+        def form(prefix, address, signature=None):
+            return exporter.normalized_instruction_form({
+                **base, "prefix_bytes": prefix, "address": address,
+                "operand_signature": signature or base["operand_signature"],
+            })
+        ordinary = form(["48"], {"form": "base_only", "size": 64, "segment": None})
+        self.assertNotEqual(ordinary, form(["64", "48"], {"form": "base_only", "size": 64, "segment": "fs"}))
+        self.assertNotEqual(ordinary, form(["65", "48"], {"form": "base_only", "size": 64, "segment": "gs"}))
+        self.assertNotEqual(ordinary, form(["F0", "48"], {"form": "base_only", "size": 64, "segment": None}))
+        self.assertNotEqual(ordinary, form(["66", "48"], {"form": "base_only", "size": 64, "segment": None}, "add mem16,imm"))
+        self.assertNotEqual(ordinary, form(["48"], {"form": "scaled_index", "size": 64, "segment": None}))
+        # The input has no literal immediate/displacement bytes; equivalent
+        # register-number or literal-value changes therefore share one form.
+        self.assertEqual(ordinary, form(["48"], {"form": "base_only", "size": 64, "segment": None}))
+
+        add_one = analyzer.parse_row("  401000: 48 83 c0 01 add rax,0x1")
+        add_seven = analyzer.parse_row("  401004: 48 83 c0 07 add rax,0x7")
+        load_one = analyzer.parse_row("  401008: 48 8b 40 01 mov rax,QWORD PTR [rax+0x1]")
+        load_four = analyzer.parse_row("  40100c: 48 8b 40 04 mov rax,QWORD PTR [rax+0x4]")
+        self.assertEqual(
+            exporter.normalized_instruction_form(analyzer.instruction_dimensions(add_one)),
+            exporter.normalized_instruction_form(analyzer.instruction_dimensions(add_seven)),
+        )
+        self.assertEqual(
+            exporter.normalized_instruction_form(analyzer.instruction_dimensions(load_one)),
+            exporter.normalized_instruction_form(analyzer.instruction_dimensions(load_four)),
+        )
+
+    def test_normalizes_register_embedded_opcode_bits_but_keeps_exact_keys(self) -> None:
+        push_rax = analyzer.parse_row("  401000: 50 push rax")
+        push_rcx = analyzer.parse_row("  401001: 51 push rcx")
+        mov_rax = analyzer.parse_row("  401002: 48 b8 01 00 00 00 00 00 00 00 movabs rax,0x1")
+        mov_rcx = analyzer.parse_row("  40100c: 48 b9 01 00 00 00 00 00 00 00 movabs rcx,0x1")
+        push_a_dims = analyzer.instruction_dimensions(push_rax)
+        push_b_dims = analyzer.instruction_dimensions(push_rcx)
+        mov_a_dims = analyzer.instruction_dimensions(mov_rax)
+        mov_b_dims = analyzer.instruction_dimensions(mov_rcx)
+        self.assertNotEqual(push_a_dims["encoding_key"], push_b_dims["encoding_key"])
+        self.assertNotEqual(mov_a_dims["encoding_key"], mov_b_dims["encoding_key"])
+        self.assertEqual(exporter.normalized_instruction_form(push_a_dims), exporter.normalized_instruction_form(push_b_dims))
+        self.assertEqual(exporter.normalized_instruction_form(mov_a_dims), exporter.normalized_instruction_form(mov_b_dims))
+
+        bswap_eax = analyzer.parse_row("  401010: 0f c8 bswap eax")
+        bswap_edi = analyzer.parse_row("  401012: 0f cf bswap edi")
+        bswap_a = analyzer.instruction_dimensions(bswap_eax)
+        bswap_b = analyzer.instruction_dimensions(bswap_edi)
+        self.assertNotEqual(bswap_a["encoding_key"], bswap_b["encoding_key"])
+        self.assertEqual(exporter.normalized_instruction_form(bswap_a), exporter.normalized_instruction_form(bswap_b))
+
+    def test_aggregates_exact_variants_and_unclassified_counts_per_binary(self) -> None:
+        supported = exact_form(["48"], "00", {"form": "base_only", "size": 64, "segment": None}, 3, "bash", "proven_supported")
+        unknown = exact_form(["48"], "03", {"form": "base_only", "size": 64, "segment": None}, 2, "bash", "unclassified")
+        report = {
+            "source_image": {"sha256": "image-hash"},
+            "disassembler": {}, "profile_comparison": {},
+            "inventory": {
+                "encoding_forms": [supported, unknown],
+                "instruction_count": 5, "classification_frequencies": {"proven_supported": 3, "unclassified": 2},
+                "evidence_scope_frequencies": {"local_interpreter_profile": 3},
+                "conditional_cpl0_candidate_frequencies": {},
+            },
+            "conditional_candidates": {"supported_overlap_rows": 0},
+            "binaries": [{
+                "name": "bash", "image_path": "/usr/bin/bash", "size_bytes": 100,
+                "sha256": "elf-hash", "elf_machine": "Advanced Micro Devices X86-64",
+                "build_id": "build-id", "instruction_count": 5,
+                "classification_frequencies": {"proven_supported": 3, "unclassified": 2},
+            }],
+        }
+        result = exporter.aggregate(report)
+        self.assertEqual(result["normalized_instruction_form_count"], 1)
+        self.assertEqual(result["normalized_instruction_forms"][0]["count"], 5)
+        self.assertEqual(result["binaries"]["bash"]["top_unclassified_forms"][0]["count"], 2)
+        self.assertEqual(result["scenarios"]["C"]["unclassified_instruction_rows"], 2)
+        self.assertEqual(result["scenarios"]["D"]["unclassified_instruction_rows"], 2)
+        self.assertEqual(result["scenarios"]["C"]["conditional_candidate_instruction_rows"], 0)
+        self.assertEqual(result["exact_instruction_rows_with_any_conditional_candidate"], 0)
+        self.assertEqual(result["conditional_candidate_supported_overlap_rows"], 0)
+        self.assertIn("bash", result["scenarios"]["C"]["binaries"])
+        self.assertIn("bash", result["scenarios"]["D"]["binaries"])
+
+    def test_local_state_gated_candidate_is_separate_from_cpl0_candidate_counts(self) -> None:
+        candidate = exact_form([], "C8", {"form": "none", "size": None, "segment": None}, 4, "gcc-cc1", "unclassified")
+        candidate["dimensions"].update({
+            "opcode_bytes": ["0F", "5D"],
+            "modrm": {"raw": "C8", "mod": 3, "reg": 1, "rm": 0},
+            "operand_signature": "minsd xmm,xmm",
+        })
+        candidate["conditional_local_candidate_frequencies"] = {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        }
+        report = {
+            "source_image": {"sha256": "image-hash"},
+            "disassembler": {}, "profile_comparison": {},
+            "inventory": {
+                "encoding_forms": [candidate],
+                "instruction_count": 4,
+                "classification_frequencies": {"unclassified": 4},
+                "evidence_scope_frequencies": {},
+                "conditional_cpl0_candidate_frequencies": {"old-cpl0-candidate": 2},
+                "conditional_local_state_gated_candidate_frequencies": {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                },
+            },
+            "conditional_candidates": {"supported_overlap_rows": 40},
+            "binaries": [{
+                "name": "gcc-cc1", "image_path": "/usr/bin/cc1", "size_bytes": 100,
+                "sha256": "elf-hash", "elf_machine": "Advanced Micro Devices X86-64",
+                "build_id": "build-id", "instruction_count": 4,
+                "classification_frequencies": {"unclassified": 4},
+                "conditional_candidate_frequencies": {},
+                "conditional_local_candidate_frequencies": {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                },
+            }],
+        }
+        result = exporter.aggregate(report)
+        self.assertEqual(result["classification_frequencies"], {"unclassified": 4})
+        self.assertEqual(result["conditional_local_state_gated_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
+        self.assertEqual(result["conditional_cpl0_candidate_hit_count"], 2)
+        self.assertEqual(result["conditional_candidate_hit_count"], 6)
+        self.assertEqual(result["conditional_candidate_supported_overlap_rows"], 40)
+        self.assertEqual(result["conditional_local_state_gated_candidate_rows"], 4)
+        self.assertEqual(result["exact_instruction_rows_with_any_conditional_candidate"], 4)
+        self.assertEqual(result["binaries"]["gcc-cc1"]["conditional_local_state_gated_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
+        self.assertEqual(result["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
+
+    def test_local_state_gated_candidates_cannot_be_supported_or_scoped(self) -> None:
+        candidate = exact_form([], "C8", {"form": "none", "size": None, "segment": None}, 1, "gcc-cc1", "proven_supported")
+        candidate["conditional_local_candidate_frequencies"] = {"S2-37q-CVTSI2SD-register-state-gated": 1}
+        report = {"inventory": {"encoding_forms": [candidate]}}
+        with self.assertRaisesRegex(ValueError, "must remain unclassified and outside evidence scopes"):
+            exporter.aggregate(report)
+
+        candidate["classification_frequencies"] = {"unclassified": 1}
+        candidate["evidence_scope_frequencies"] = {"local_interpreter_profile": 1}
+        with self.assertRaisesRegex(ValueError, "must remain unclassified and outside evidence scopes"):
+            exporter.aggregate(report)
+
+    def test_e_static_inventory_is_separate_from_runtime_generated_code(self) -> None:
+        exact = exact_form(["48"], "00", {"form": "base_only", "size": 64, "segment": None}, 7, "stage5-e-static", "unclassified")
+        inventory = {
+            "source_image": {"sha256": "accepted-rootfs"},
+            "disassembler": {},
+            "profile_comparison": {"registry_complete": False},
+            "external_inputs": [{
+                "name": "stage5-e-static",
+                "path": "work/stage5/s5-21/stage5-e-static.elf",
+                "sha256": "static-elf-hash",
+                "source_c_sha256": "source-hash",
+            }],
+            "inventory": {
+                "encoding_forms": [exact],
+                "instruction_count": 7,
+                "classification_frequencies": {"unclassified": 7},
+                "evidence_scope_frequencies": {},
+                "conditional_cpl0_candidate_frequencies": {},
+            },
+            "conditional_candidates": {"supported_overlap_rows": 0},
+            "binaries": [{
+                "name": "stage5-e-static", "image_path": "external:stage5-e-static.elf", "size_bytes": 100,
+                "sha256": "static-elf-hash", "elf_machine": "Advanced Micro Devices X86-64",
+                "build_id": "", "instruction_count": 7,
+                "classification_frequencies": {"unclassified": 7},
+            }],
+        }
+        result = exporter.aggregate(inventory)
+        e = result["scenarios"]["E"]
+        self.assertEqual(e["status"], "static_executable_only")
+        self.assertEqual(e["static_executable"]["sha256"], "static-elf-hash")
+        self.assertEqual(e["static_executable"]["unclassified_instruction_rows"], 7)
+        self.assertEqual(e["runtime_generated_code"]["status"], "not_inferred")
+        self.assertEqual(e["runtime_generated_code"]["frequency"], "not_inferred")
+        self.assertNotIn("stage5-e-static", result["scenarios"]["C"]["binaries"])
+        self.assertNotIn("stage5-e-static", result["scenarios"]["D"]["binaries"])
+
+
+if __name__ == "__main__":
+    unittest.main()

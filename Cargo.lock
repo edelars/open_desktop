@@ -386,6 +386,7 @@ dependencies = [
  "od-jit",
  "od-machine",
  "od-testkit",
+ "serde",
  "serde_json",
 ]
 

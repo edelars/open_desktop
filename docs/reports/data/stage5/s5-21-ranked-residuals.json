@@ -1,0 +1,1547 @@
+{
+  "e_delta": {
+    "exact_keys": 0,
+    "normalized_forms": 0,
+    "rows": 1,
+    "scenarios": {
+      "C": {
+        "exact_keys": 0,
+        "normalized_forms": 0,
+        "rows": 0
+      },
+      "D": {
+        "exact_keys": 0,
+        "normalized_forms": 0,
+        "rows": 0
+      }
+    }
+  },
+  "e_inclusive": {
+    "compact_sha256": "40dae558902d1713b6aef259cf99d7646957c13a1c7e8ca3e38c4012a727c239",
+    "residual_filter": {
+      "classification": "unclassified-only",
+      "normalized_form_excluded_if_any_exact_key_has_profile_or_evidence": true,
+      "requires_empty_maps": [
+        "conditional_candidate_frequencies",
+        "conditional_local_candidate_frequencies",
+        "evidence_scope_frequencies",
+        "profile_match_frequencies"
+      ]
+    },
+    "scenarios": {
+      "C": {
+        "binaries": [
+          "bash",
+          "dash",
+          "tar"
+        ],
+        "exact_keys": 322,
+        "normalized_forms": 61,
+        "rows": 2213,
+        "top_exact_shapes": [
+          {
+            "binary_frequencies": {
+              "bash": 247,
+              "dash": 3,
+              "tar": 18
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 268,
+            "shape": "66 | 0F 6F | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 208,
+              "dash": 3,
+              "tar": 26
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":7,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 237,
+            "shape": "(none) | 0F 29 | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 93,
+              "dash": 7,
+              "tar": 63
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":7,\"modrm\":{\"mod\":2,\"raw\":\"85\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 163,
+            "shape": "(none) | 0F 29 | mod=2,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 77,
+              "dash": 1,
+              "tar": 31
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":2,\"raw\":\"85\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 109,
+            "shape": "66 | 0F 6F | mod=2,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 59,
+              "dash": 17,
+              "tar": 22
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":3,\"modrm\":{\"mod\":3,\"raw\":\"E0\",\"reg\":4,\"rm\":0},\"opcode_bytes\":[\"FF\"],\"operand_signature\":\"notrack jmp r64\",\"prefix_bytes\":[\"3E\"],\"sib\":null}",
+            "rows": 98,
+            "shape": "3E | FF | mod=3,reg=4,rm=0 | none/aNone"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 53,
+              "dash": 13,
+              "tar": 21
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":1,\"raw\":\"45\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 87,
+            "shape": "(none) | 0F 29 | mod=1,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 37,
+              "tar": 12
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":1,\"raw\":\"45\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 49,
+            "shape": "66 | 0F 6F | mod=1,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 30,
+              "dash": 6,
+              "tar": 5
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":null}",
+            "rows": 41,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 22,
+              "dash": 7,
+              "tar": 7
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":1,\"raw\":\"7D\",\"reg\":7,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 36,
+            "shape": "(none) | 0F 29 | mod=1,reg=7,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 11,
+              "dash": 10,
+              "tar": 14
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C0\",\"reg\":0,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 35,
+            "shape": "66 48 | 0F 6E | mod=3,reg=0,rm=0 | none/aNone"
+          }
+        ],
+        "top_normalized_forms": [
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 306,
+              "dash": 70,
+              "tar": 158
+            },
+            "exact_keys": 19,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 534,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 248,
+              "dash": 3,
+              "tar": 18
+            },
+            "exact_keys": 2,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 269,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 217,
+              "dash": 3,
+              "tar": 26
+            },
+            "exact_keys": 8,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 246,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 158,
+              "dash": 1,
+              "tar": 59
+            },
+            "exact_keys": 16,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 218,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 46,
+              "dash": 14,
+              "tar": 52
+            },
+            "exact_keys": 35,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movq xmm,r64",
+            "rows": 112,
+            "semantic_prefixes": [
+              "operand_size",
+              "rex_w"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 61,
+              "dash": 23,
+              "tar": 26
+            },
+            "exact_keys": 3,
+            "group_extension": 4,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "FF"
+            ],
+            "operand_signature": "notrack jmp r64",
+            "rows": 110,
+            "semantic_prefixes": [
+              "ds"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 26,
+              "dash": 1,
+              "tar": 49
+            },
+            "exact_keys": 21,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqu xmm,mem128",
+            "rows": 76,
+            "semantic_prefixes": [
+              "rep",
+              "rex"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 35,
+              "dash": 5,
+              "tar": 21
+            },
+            "exact_keys": 16,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "D6"
+            ],
+            "operand_signature": "movq mem64,xmm",
+            "rows": 61,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 50,
+              "dash": 6,
+              "tar": 5
+            },
+            "exact_keys": 6,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "7E"
+            ],
+            "operand_signature": "movq xmm,mem64",
+            "rows": 61,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 45,
+              "dash": 4,
+              "tar": 8
+            },
+            "exact_keys": 19,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movd xmm,r32",
+            "rows": 57,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          }
+        ]
+      },
+      "D": {
+        "binaries": [
+          "bash",
+          "dash",
+          "gcc-as",
+          "gcc-cc1",
+          "gcc-collect2",
+          "gcc-driver",
+          "gcc-ld-bfd"
+        ],
+        "exact_keys": 1937,
+        "normalized_forms": 149,
+        "rows": 97152,
+        "top_exact_shapes": [
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 5758,
+              "gcc-collect2": 7,
+              "gcc-driver": 16
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 5781,
+            "shape": "(none) | 0F 29 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 5031,
+              "gcc-collect2": 1,
+              "gcc-driver": 6
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"28\"],\"operand_signature\":\"movaps xmm,mem128\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 5038,
+            "shape": "(none) | 0F 28 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 3652,
+              "gcc-collect2": 30,
+              "gcc-driver": 39
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":2,\"raw\":\"84\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 3721,
+            "shape": "(none) | 0F 29 | mod=2,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 2,
+              "gcc-as": 2,
+              "gcc-cc1": 3256,
+              "gcc-collect2": 4,
+              "gcc-driver": 6,
+              "gcc-ld-bfd": 6
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C8\",\"reg\":1,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 3276,
+            "shape": "66 48 | 0F 6E | mod=3,reg=1,rm=0 | none/aNone"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 3170,
+              "gcc-collect2": 18,
+              "gcc-driver": 30
+            },
+            "encoding_key": "{\"address\":{\"form\":\"scaled_index\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"24\",\"reg\":4,\"rm\":4},\"opcode_bytes\":[\"FF\"],\"operand_signature\":\"notrack jmp mem64\",\"prefix_bytes\":[\"3E\"],\"sib\":\"C5\"}",
+            "rows": 3218,
+            "shape": "3E | FF | mod=0,reg=4,rm=4 | scaled_index/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2980,
+              "gcc-collect2": 28,
+              "gcc-driver": 55
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":1,\"raw\":\"44\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 3063,
+            "shape": "(none) | 0F 29 | mod=1,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-as": 1,
+              "gcc-cc1": 2731,
+              "gcc-ld-bfd": 1
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"03\",\"reg\":0,\"rm\":3},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":null}",
+            "rows": 2733,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=3 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2691,
+              "gcc-driver": 1
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":\"24\"}",
+            "rows": 2692,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2596,
+              "gcc-collect2": 1,
+              "gcc-driver": 2
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"D6\"],\"operand_signature\":\"movq mem64,xmm\",\"prefix_bytes\":[\"66\"],\"sib\":\"24\"}",
+            "rows": 2599,
+            "shape": "66 | 0F D6 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 11,
+              "dash": 10,
+              "gcc-as": 33,
+              "gcc-cc1": 2014,
+              "gcc-collect2": 14,
+              "gcc-driver": 55,
+              "gcc-ld-bfd": 29
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C0\",\"reg\":0,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 2166,
+            "shape": "66 48 | 0F 6E | mod=3,reg=0,rm=0 | none/aNone"
+          }
+        ],
+        "top_normalized_forms": [
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 306,
+              "dash": 70,
+              "gcc-as": 152,
+              "gcc-cc1": 22403,
+              "gcc-collect2": 304,
+              "gcc-driver": 406,
+              "gcc-ld-bfd": 148
+            },
+            "exact_keys": 51,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 23789,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 46,
+              "dash": 14,
+              "gcc-as": 73,
+              "gcc-cc1": 14038,
+              "gcc-collect2": 83,
+              "gcc-driver": 181,
+              "gcc-ld-bfd": 91
+            },
+            "exact_keys": 113,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movq xmm,r64",
+            "rows": 14526,
+            "semantic_prefixes": [
+              "operand_size",
+              "rex_w"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 19,
+              "dash": 3,
+              "gcc-as": 8,
+              "gcc-cc1": 10626,
+              "gcc-collect2": 33,
+              "gcc-driver": 35,
+              "gcc-ld-bfd": 4
+            },
+            "exact_keys": 68,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "7E"
+            ],
+            "operand_signature": "movq xmm,mem64",
+            "rows": 10728,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "gcc-as": 1,
+              "gcc-cc1": 9059,
+              "gcc-collect2": 41,
+              "gcc-driver": 59,
+              "gcc-ld-bfd": 4
+            },
+            "exact_keys": 32,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "28"
+            ],
+            "operand_signature": "movaps xmm,mem128",
+            "rows": 9164,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 158,
+              "dash": 1,
+              "gcc-as": 33,
+              "gcc-cc1": 7783,
+              "gcc-collect2": 84,
+              "gcc-driver": 101,
+              "gcc-ld-bfd": 52
+            },
+            "exact_keys": 50,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 8212,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 35,
+              "dash": 5,
+              "gcc-as": 15,
+              "gcc-cc1": 6979,
+              "gcc-collect2": 26,
+              "gcc-driver": 36,
+              "gcc-ld-bfd": 6
+            },
+            "exact_keys": 57,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "D6"
+            ],
+            "operand_signature": "movq mem64,xmm",
+            "rows": 7102,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "scaled_index",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "gcc-cc1": 3718,
+              "gcc-collect2": 31,
+              "gcc-driver": 54
+            },
+            "exact_keys": 7,
+            "group_extension": 4,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "FF"
+            ],
+            "operand_signature": "notrack jmp mem64",
+            "rows": 3803,
+            "semantic_prefixes": [
+              "ds"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 19,
+              "dash": 1,
+              "gcc-as": 34,
+              "gcc-cc1": 3174,
+              "gcc-collect2": 70,
+              "gcc-driver": 73,
+              "gcc-ld-bfd": 35
+            },
+            "exact_keys": 121,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqu xmm,mem128",
+            "rows": 3406,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 4,
+              "dash": 2,
+              "gcc-as": 3,
+              "gcc-cc1": 1970,
+              "gcc-collect2": 16,
+              "gcc-driver": 20,
+              "gcc-ld-bfd": 9
+            },
+            "exact_keys": 54,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "16"
+            ],
+            "operand_signature": "movhps xmm,mem64",
+            "rows": 2024,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 45,
+              "dash": 4,
+              "gcc-as": 13,
+              "gcc-cc1": 1478,
+              "gcc-collect2": 5,
+              "gcc-driver": 6,
+              "gcc-ld-bfd": 10
+            },
+            "exact_keys": 45,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movd xmm,r32",
+            "rows": 1561,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          }
+        ]
+      }
+    },
+    "source": "s5-21-isa-inventory-e-static.json.gz",
+    "totals": {
+      "exact_keys": 1973,
+      "normalized_forms": 157,
+      "rows": 97809
+    }
+  },
+  "ranking_basis": "static instruction-row coverage opportunity; not runtime frequency, speedup, or implementation-cost estimate",
+  "rootfs": {
+    "compact_sha256": "5b688b74a78417bab072e2e4c3f749cb187feb7aa6fc259f3ae07edb118079f2",
+    "residual_filter": {
+      "classification": "unclassified-only",
+      "normalized_form_excluded_if_any_exact_key_has_profile_or_evidence": true,
+      "requires_empty_maps": [
+        "conditional_candidate_frequencies",
+        "conditional_local_candidate_frequencies",
+        "evidence_scope_frequencies",
+        "profile_match_frequencies"
+      ]
+    },
+    "scenarios": {
+      "C": {
+        "binaries": [
+          "bash",
+          "dash",
+          "tar"
+        ],
+        "exact_keys": 322,
+        "normalized_forms": 61,
+        "rows": 2213,
+        "top_exact_shapes": [
+          {
+            "binary_frequencies": {
+              "bash": 247,
+              "dash": 3,
+              "tar": 18
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 268,
+            "shape": "66 | 0F 6F | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 208,
+              "dash": 3,
+              "tar": 26
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":7,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 237,
+            "shape": "(none) | 0F 29 | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 93,
+              "dash": 7,
+              "tar": 63
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":7,\"modrm\":{\"mod\":2,\"raw\":\"85\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 163,
+            "shape": "(none) | 0F 29 | mod=2,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 77,
+              "dash": 1,
+              "tar": 31
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":2,\"raw\":\"85\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 109,
+            "shape": "66 | 0F 6F | mod=2,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 59,
+              "dash": 17,
+              "tar": 22
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":3,\"modrm\":{\"mod\":3,\"raw\":\"E0\",\"reg\":4,\"rm\":0},\"opcode_bytes\":[\"FF\"],\"operand_signature\":\"notrack jmp r64\",\"prefix_bytes\":[\"3E\"],\"sib\":null}",
+            "rows": 98,
+            "shape": "3E | FF | mod=3,reg=4,rm=0 | none/aNone"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 53,
+              "dash": 13,
+              "tar": 21
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":1,\"raw\":\"45\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 87,
+            "shape": "(none) | 0F 29 | mod=1,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 37,
+              "tar": 12
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":1,\"raw\":\"45\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"6F\"],\"operand_signature\":\"movdqa xmm,mem128\",\"prefix_bytes\":[\"66\"],\"sib\":null}",
+            "rows": 49,
+            "shape": "66 | 0F 6F | mod=1,reg=0,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 30,
+              "dash": 6,
+              "tar": 5
+            },
+            "encoding_key": "{\"address\":{\"form\":\"rip_relative\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"05\",\"reg\":0,\"rm\":5},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":null}",
+            "rows": 41,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=5 | rip_relative/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 22,
+              "dash": 7,
+              "tar": 7
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":1,\"raw\":\"7D\",\"reg\":7,\"rm\":5},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":null}",
+            "rows": 36,
+            "shape": "(none) | 0F 29 | mod=1,reg=7,rm=5 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 11,
+              "dash": 10,
+              "tar": 14
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C0\",\"reg\":0,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 35,
+            "shape": "66 48 | 0F 6E | mod=3,reg=0,rm=0 | none/aNone"
+          }
+        ],
+        "top_normalized_forms": [
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 306,
+              "dash": 70,
+              "tar": 158
+            },
+            "exact_keys": 19,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 534,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 248,
+              "dash": 3,
+              "tar": 18
+            },
+            "exact_keys": 2,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 269,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 217,
+              "dash": 3,
+              "tar": 26
+            },
+            "exact_keys": 8,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 246,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 158,
+              "dash": 1,
+              "tar": 59
+            },
+            "exact_keys": 16,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 218,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 46,
+              "dash": 14,
+              "tar": 52
+            },
+            "exact_keys": 35,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movq xmm,r64",
+            "rows": 112,
+            "semantic_prefixes": [
+              "operand_size",
+              "rex_w"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 61,
+              "dash": 23,
+              "tar": 26
+            },
+            "exact_keys": 3,
+            "group_extension": 4,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "FF"
+            ],
+            "operand_signature": "notrack jmp r64",
+            "rows": 110,
+            "semantic_prefixes": [
+              "ds"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 26,
+              "dash": 1,
+              "tar": 49
+            },
+            "exact_keys": 21,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqu xmm,mem128",
+            "rows": 76,
+            "semantic_prefixes": [
+              "rep",
+              "rex"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 35,
+              "dash": 5,
+              "tar": 21
+            },
+            "exact_keys": 16,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "D6"
+            ],
+            "operand_signature": "movq mem64,xmm",
+            "rows": 61,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "rip_relative",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 50,
+              "dash": 6,
+              "tar": 5
+            },
+            "exact_keys": 6,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "7E"
+            ],
+            "operand_signature": "movq xmm,mem64",
+            "rows": 61,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 45,
+              "dash": 4,
+              "tar": 8
+            },
+            "exact_keys": 19,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movd xmm,r32",
+            "rows": 57,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          }
+        ]
+      },
+      "D": {
+        "binaries": [
+          "bash",
+          "dash",
+          "gcc-as",
+          "gcc-cc1",
+          "gcc-collect2",
+          "gcc-driver",
+          "gcc-ld-bfd"
+        ],
+        "exact_keys": 1937,
+        "normalized_forms": 149,
+        "rows": 97152,
+        "top_exact_shapes": [
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 5758,
+              "gcc-collect2": 7,
+              "gcc-driver": 16
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 5781,
+            "shape": "(none) | 0F 29 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 5031,
+              "gcc-collect2": 1,
+              "gcc-driver": 6
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"28\"],\"operand_signature\":\"movaps xmm,mem128\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 5038,
+            "shape": "(none) | 0F 28 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 3652,
+              "gcc-collect2": 30,
+              "gcc-driver": 39
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":2,\"raw\":\"84\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 3721,
+            "shape": "(none) | 0F 29 | mod=2,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 2,
+              "gcc-as": 2,
+              "gcc-cc1": 3256,
+              "gcc-collect2": 4,
+              "gcc-driver": 6,
+              "gcc-ld-bfd": 6
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C8\",\"reg\":1,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 3276,
+            "shape": "66 48 | 0F 6E | mod=3,reg=1,rm=0 | none/aNone"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 3170,
+              "gcc-collect2": 18,
+              "gcc-driver": 30
+            },
+            "encoding_key": "{\"address\":{\"form\":\"scaled_index\",\"segment\":null,\"size\":64},\"instruction_length\":8,\"modrm\":{\"mod\":0,\"raw\":\"24\",\"reg\":4,\"rm\":4},\"opcode_bytes\":[\"FF\"],\"operand_signature\":\"notrack jmp mem64\",\"prefix_bytes\":[\"3E\"],\"sib\":\"C5\"}",
+            "rows": 3218,
+            "shape": "3E | FF | mod=0,reg=4,rm=4 | scaled_index/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2980,
+              "gcc-collect2": 28,
+              "gcc-driver": 55
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":1,\"raw\":\"44\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"29\"],\"operand_signature\":\"movaps mem128,xmm\",\"prefix_bytes\":[],\"sib\":\"24\"}",
+            "rows": 3063,
+            "shape": "(none) | 0F 29 | mod=1,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-as": 1,
+              "gcc-cc1": 2731,
+              "gcc-ld-bfd": 1
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":4,\"modrm\":{\"mod\":0,\"raw\":\"03\",\"reg\":0,\"rm\":3},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":null}",
+            "rows": 2733,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=3 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2691,
+              "gcc-driver": 1
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"7E\"],\"operand_signature\":\"movq xmm,mem64\",\"prefix_bytes\":[\"F3\"],\"sib\":\"24\"}",
+            "rows": 2692,
+            "shape": "F3 | 0F 7E | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "gcc-cc1": 2596,
+              "gcc-collect2": 1,
+              "gcc-driver": 2
+            },
+            "encoding_key": "{\"address\":{\"form\":\"base_only\",\"segment\":null,\"size\":64},\"instruction_length\":5,\"modrm\":{\"mod\":0,\"raw\":\"04\",\"reg\":0,\"rm\":4},\"opcode_bytes\":[\"0F\",\"D6\"],\"operand_signature\":\"movq mem64,xmm\",\"prefix_bytes\":[\"66\"],\"sib\":\"24\"}",
+            "rows": 2599,
+            "shape": "66 | 0F D6 | mod=0,reg=0,rm=4 | base_only/a64"
+          },
+          {
+            "binary_frequencies": {
+              "bash": 11,
+              "dash": 10,
+              "gcc-as": 33,
+              "gcc-cc1": 2014,
+              "gcc-collect2": 14,
+              "gcc-driver": 55,
+              "gcc-ld-bfd": 29
+            },
+            "encoding_key": "{\"address\":{\"form\":\"none\",\"segment\":null,\"size\":null},\"instruction_length\":5,\"modrm\":{\"mod\":3,\"raw\":\"C0\",\"reg\":0,\"rm\":0},\"opcode_bytes\":[\"0F\",\"6E\"],\"operand_signature\":\"movq xmm,r64\",\"prefix_bytes\":[\"66\",\"48\"],\"sib\":null}",
+            "rows": 2166,
+            "shape": "66 48 | 0F 6E | mod=3,reg=0,rm=0 | none/aNone"
+          }
+        ],
+        "top_normalized_forms": [
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 306,
+              "dash": 70,
+              "gcc-as": 152,
+              "gcc-cc1": 22403,
+              "gcc-collect2": 304,
+              "gcc-driver": 406,
+              "gcc-ld-bfd": 148
+            },
+            "exact_keys": 51,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "29"
+            ],
+            "operand_signature": "movaps mem128,xmm",
+            "rows": 23789,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 46,
+              "dash": 14,
+              "gcc-as": 73,
+              "gcc-cc1": 14038,
+              "gcc-collect2": 83,
+              "gcc-driver": 181,
+              "gcc-ld-bfd": 91
+            },
+            "exact_keys": 113,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movq xmm,r64",
+            "rows": 14526,
+            "semantic_prefixes": [
+              "operand_size",
+              "rex_w"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 19,
+              "dash": 3,
+              "gcc-as": 8,
+              "gcc-cc1": 10626,
+              "gcc-collect2": 33,
+              "gcc-driver": 35,
+              "gcc-ld-bfd": 4
+            },
+            "exact_keys": 68,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "7E"
+            ],
+            "operand_signature": "movq xmm,mem64",
+            "rows": 10728,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "gcc-as": 1,
+              "gcc-cc1": 9059,
+              "gcc-collect2": 41,
+              "gcc-driver": 59,
+              "gcc-ld-bfd": 4
+            },
+            "exact_keys": 32,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "28"
+            ],
+            "operand_signature": "movaps xmm,mem128",
+            "rows": 9164,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 158,
+              "dash": 1,
+              "gcc-as": 33,
+              "gcc-cc1": 7783,
+              "gcc-collect2": 84,
+              "gcc-driver": 101,
+              "gcc-ld-bfd": 52
+            },
+            "exact_keys": 50,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqa xmm,mem128",
+            "rows": 8212,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 35,
+              "dash": 5,
+              "gcc-as": 15,
+              "gcc-cc1": 6979,
+              "gcc-collect2": 26,
+              "gcc-driver": 36,
+              "gcc-ld-bfd": 6
+            },
+            "exact_keys": 57,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "D6"
+            ],
+            "operand_signature": "movq mem64,xmm",
+            "rows": 7102,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          },
+          {
+            "address": {
+              "form": "scaled_index",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "gcc-cc1": 3718,
+              "gcc-collect2": 31,
+              "gcc-driver": 54
+            },
+            "exact_keys": 7,
+            "group_extension": 4,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "FF"
+            ],
+            "operand_signature": "notrack jmp mem64",
+            "rows": 3803,
+            "semantic_prefixes": [
+              "ds"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 19,
+              "dash": 1,
+              "gcc-as": 34,
+              "gcc-cc1": 3174,
+              "gcc-collect2": 70,
+              "gcc-driver": 73,
+              "gcc-ld-bfd": 35
+            },
+            "exact_keys": 121,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "6F"
+            ],
+            "operand_signature": "movdqu xmm,mem128",
+            "rows": 3406,
+            "semantic_prefixes": [
+              "rep"
+            ]
+          },
+          {
+            "address": {
+              "form": "base_only",
+              "segment": null,
+              "size": 64
+            },
+            "binary_frequencies": {
+              "bash": 4,
+              "dash": 2,
+              "gcc-as": 3,
+              "gcc-cc1": 1970,
+              "gcc-collect2": 16,
+              "gcc-driver": 20,
+              "gcc-ld-bfd": 9
+            },
+            "exact_keys": 54,
+            "group_extension": null,
+            "modrm_mode": "memory",
+            "opcode_bytes": [
+              "0F",
+              "16"
+            ],
+            "operand_signature": "movhps xmm,mem64",
+            "rows": 2024,
+            "semantic_prefixes": []
+          },
+          {
+            "address": {
+              "form": "none",
+              "segment": null,
+              "size": null
+            },
+            "binary_frequencies": {
+              "bash": 45,
+              "dash": 4,
+              "gcc-as": 13,
+              "gcc-cc1": 1478,
+              "gcc-collect2": 5,
+              "gcc-driver": 6,
+              "gcc-ld-bfd": 10
+            },
+            "exact_keys": 45,
+            "group_extension": null,
+            "modrm_mode": "register",
+            "opcode_bytes": [
+              "0F",
+              "6E"
+            ],
+            "operand_signature": "movd xmm,r32",
+            "rows": 1561,
+            "semantic_prefixes": [
+              "operand_size"
+            ]
+          }
+        ]
+      }
+    },
+    "source": "s5-21-isa-inventory.json.gz",
+    "totals": {
+      "exact_keys": 1973,
+      "normalized_forms": 157,
+      "rows": 97808
+    }
+  },
+  "schema_version": 1
+}

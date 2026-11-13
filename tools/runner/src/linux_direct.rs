@@ -69,13 +69,15 @@
 use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
-    load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
+    MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
+
+pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
@@ -118,6 +120,9 @@ struct Options {
 }
 
 pub fn run(args: &[String]) -> ExitCode {
+    if args.iter().any(|argument| argument == "--test-runs") {
+        return series::run(args);
+    }
     let options = match parse(args) {
         Ok(options) => options,
         Err(detail) => {
@@ -616,6 +621,7 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
                 inputs.initrd_sha256_in_memory.as_ref().map(|hash| hex(hash)),
         },
     });
+    stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
     // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
     stop["irqs_delivered"] = json!(record.irqs_delivered);
     stop["irq0_edges"] = json!(record.irq0_edges);
@@ -643,6 +649,14 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
     // S4-38L7au: the guest IA32_KERNEL_GS_BASE (write-only for the guest; the full 64-bit value).
     stop["guest_kernel_gs_base"] = json!(hex64(record.guest_kernel_gs_base));
     stop
+}
+
+fn machine_stop_reason_json(reason: Option<MachineStopReason>) -> Value {
+    match reason {
+        Some(MachineStopReason::Reset) => json!("reset"),
+        Some(MachineStopReason::Shutdown) => json!("shutdown"),
+        None => Value::Null,
+    }
 }
 
 /// The protected-mode code of the bzImage file: the bytes the loader copies to the kernel zone.
@@ -1410,6 +1424,7 @@ mod tests {
         assert_eq!(value["retired"], 0);
         let stop = &value["stop"];
         assert_eq!(stop["exit_kind"], "unsupported");
+        assert_eq!(stop["machine_stop_reason"], Value::Null);
         assert_eq!(stop["unsupported_opcode"], "0xfc");
         assert_eq!(stop["rip"], "0x1000200");
         assert_eq!(stop["rip_gpa"], "0x1000200");
@@ -1457,6 +1472,38 @@ mod tests {
         assert_eq!(value["stop"]["com1_text"], "X");
         assert_eq!(value["stop"]["com1_hex"], "58");
         assert_eq!(value["retired"], 4);
+    }
+
+    #[test]
+    fn linux_direct_json_preserves_shutdown_reason_separately_from_exit_kind() {
+        let run_pm_case = |name: &str, code: &[u8]| {
+            let mut case = Case::new(name, &bzimage_with_entry(code), &[0xAB; 4688], BLOB);
+            case.options.budget = Some(100);
+            case.options.set_cpl0 = true;
+            let (value, exit) = evaluate(&case.options);
+            assert_eq!(exit, 0, "{value:#}");
+            value
+        };
+        // PM1_CNT SLP_TYP=S5 and SLP_EN. Both PM paths keep the established `stopped` exit kind;
+        // the shutdown reason is additive evidence and does not change scenario acceptance.
+        let shutdown = run_pm_case(
+            "run-shutdown-reason",
+            &[0x66, 0xBA, 0x05, 0x06, 0xB0, 0x34, 0xEE, 0xF4],
+        );
+        assert_eq!(shutdown["stop"]["exit_kind"], "stopped");
+        assert_eq!(shutdown["stop"]["machine_stop_reason"], "shutdown");
+
+        let halt = run_case("run-no-pm-reason", &[0xF4], 100);
+        assert_eq!(halt["stop"]["exit_kind"], "halted");
+        assert_eq!(halt["stop"]["machine_stop_reason"], Value::Null);
+
+        // The serializer mapping covers Reset, but this Linux-direct instruction profile does
+        // not admit the reset register's byte-width OUT form, so this is not guest reset evidence.
+        assert_eq!(
+            machine_stop_reason_json(Some(MachineStopReason::Reset)),
+            "reset"
+        );
+        assert_eq!(machine_stop_reason_json(None), Value::Null);
     }
 
     #[test]

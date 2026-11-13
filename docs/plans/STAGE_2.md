@@ -582,7 +582,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37cr | Local-only legacy Long64 UCOMISS XMM0,m32 `[RAX]` exact memory profile; raw binary32 relation flags, SNaN IE, QNaN quiet behavior and NaN-before-DE priority; SSE bit25 gates; native/JIT closed | Focused decoder 1/1, direct ISA 2/2, testkit raw-bit oracle 1/1, runner 1/1 with 288 comparisons, native classifier 3 passed; full suites passed: ISA 1,674, testkit 453, runner 112+474, x86-runner 8+4; workspace check, fmt, layout, Graphify 10,595/22,730/311, diff and 13 anchors passed; independent code/schema and final docs/evidence reviews passed |
 | [x] | S2-37cs | Local-only legacy Long64 CMPSS XMM0,m32 `[RAX]`,imm8 exact memory profile; eight predicate relations, Q/SNaN and denormal priority, XMM0.low32 result with other state/RFLAGS preserved; SSE bit25 gates; native/JIT closed | Focused decoder 1/1, direct ISA 3/3, runner 1/1 with 1,072 raw-bit oracle comparisons, native-local-only classifier 1/1; full suites passed: od-isa 1,678, od-testkit 453, od-runner 112+475, od-x86-runner 8+4; workspace all-target check, fmt, layout, Graphify 10,615/22,791/311, diff and 13 anchors passed; independent code/schema and docs/evidence reviews passed; no physical x86 acceptance |
 | [x] | S2-37ct | Local-only legacy Long64 CMPSD XMM0,m64 `[RAX]`,imm8 exact memory profile; eight predicate relations, binary64 Q/SNaN and denormal priority, XMM0.low64 result with other state/RFLAGS preserved; SSE2 bit26 gates; native/JIT closed | Focused decoder 1/1, direct ISA 1/1 with 4,096 predicate/relation/control cases, runner 1/1 with 1,080 raw-bit oracle comparisons, native-local-only classifier 1/1; full suites passed: od-isa 1,680, od-testkit 453, od-runner 112+476, od-x86-runner 8+4; workspace all-target check, fmt, layout, Graphify 10,632/22,836/310, diff and 13 anchors passed; independent code/schema and final evidence reviews passed; no physical x86 acceptance |
-| [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
+| [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; summary records independent Sol-medium review clean; report body says pending (ISSUE-082) |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37w | Local-only canonical Long64 COMISD/UCOMISD XMM register-pair profile; raw binary64 relation, NaN-priority IE/DE, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after oracle metadata fix |
@@ -7334,6 +7334,12 @@ hardware checks stay in the combined final substage. Sources: Intel SDM Rev.093
 Vol.2A CVTSI2SD pp.3-236–3-237, Type 3 Table 2-20 p.2-28, Vol.1 §§11.5.2.6,
 11.5.3, REX §2.2.1.2/Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
 
+Fresh independent review follow-up (2026-11-13): the q conditional-candidate
+boundary was rechecked with 7 focused ISA tests, 1 testkit test, and the runner
+matrix for all 512 forms plus literal cases. This follow-up confirms the cited
+bounded contract only; it does not change the historical acceptance scope or
+establish runtime MXCSR/CPU state.
+
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD status subset
 
 Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i/j/k/l are implemented.
@@ -7388,6 +7394,12 @@ and Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199))
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 [report](../reports/STAGE_2_REPORT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
+
+Fresh independent review follow-up (2026-11-13): the r conditional-candidate
+boundary was rechecked with 104 focused ISA tests, 2 testkit tests, and the
+runner matrix for all 512 forms plus literal cases. This follow-up confirms the
+cited bounded contract only; it does not change the historical acceptance
+scope or establish runtime MXCSR/CPU state.
 
 #### S2-37s — canonical Long64 CVTDQ2PS XMM register pairs
 
@@ -14632,7 +14644,7 @@ semantics, schema-v2 fixture and fail-closed JIT/native boundaries are in place.
 Workspace format/check, Linux-target x86-runner test compilation, Graphify
 update and `git diff --check` passed. The Linux-only native-denial test was
 compile-checked but not executed on this Darwin host; physical SSE2 remains
-`not_run`. Independent review is pending. Parent S2-35/S2-34 remain open.
+`not_run`. Independent review was pending at this implementation check. A fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture. This follow-up review covers the bounded PAND profile only and does not claim a historical review result. Parent S2-35/S2-34 remain open.
 See the [report](../reports/STAGE_2_REPORT.md#s2-3549--local-pand-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).

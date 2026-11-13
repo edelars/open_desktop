@@ -1,0 +1,17 @@
+S5-05 pinned-container extraction diagnostic
+Date: 2026-11-11
+Archive: Ubuntu Base 26.04.1, amd64, ubuntu-base-26.04.1-base-amd64.tar.gz
+Archive URL: https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-amd64.tar.gz
+Archive SHA256: a496a960472ce474a59590b8987d3a1135d3cbef1991f3b1abe8cacfea8bf85a
+Image: ubuntu@sha256:157dc3d6e4a3e4f2c68d12df9df9ed6e808b59af6d4c3757b432b4f519916725 (linux/amd64 manifest)
+Command:
+  docker run --rm --platform linux/amd64 \
+    -v "$PWD/work/stage5/sources/ubuntu-base-26.04.1/ubuntu-base-26.04.1-base-amd64.tar.gz:/input/base.tar.gz:ro" \
+    ubuntu@sha256:157dc3d6e4a3e4f2c68d12df9df9ed6e808b59af6d4c3757b432b4f519916725 \
+    bash -ec 'mkdir /tmp/rootfs && tar -xzf /input/base.tar.gz -C /tmp/rootfs'
+Result: exit 2. Extraction target was container-native /tmp/rootfs; input archive was a read-only bind mount.
+First errors:
+  tar: etc/.pwd.lock: Cannot open: Function not implemented
+  tar: etc/alternatives: Cannot mkdir: Function not implemented
+  tar: etc/alternatives/README: Cannot open: Function not implemented
+The complete ignored diagnostic is work/stage5/diagnostics/docker-base-extract.log (6,551 lines); 6,550 lines contain “Function not implemented”. Final tar output: “tar: Exiting with failure status due to previous errors”.

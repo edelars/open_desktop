@@ -84,6 +84,9 @@ pub enum WriteFault {
 /// Fault for a `flush_file_durable` call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlushFault {
+    /// The backend explicitly refuses file-data durability before performing
+    /// the flush; pending bytes and acknowledgement state are unchanged.
+    Unsupported,
     /// I/O error; nothing became durable (`pending` is unchanged).
     IoNotDurable,
     /// Lost acknowledgement: everything became durable, then an I/O error is
@@ -452,6 +455,12 @@ impl StorageBackend for FaultBackend {
         let (ordinal, fault) = Self::begin(&mut st);
         let (make_durable, result) = match fault {
             None => (true, Ok(())),
+            Some(Fault::Flush(FlushFault::Unsupported)) => (
+                false,
+                Err(BackendError::DurabilityUnsupported {
+                    scope: crate::io::DurabilityScope::File,
+                }),
+            ),
             Some(Fault::Flush(FlushFault::IoNotDurable)) => {
                 (false, Err(io_error(ErrorKind::Other)))
             }

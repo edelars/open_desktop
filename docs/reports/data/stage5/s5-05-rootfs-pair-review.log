@@ -1,0 +1,25 @@
+test_pair_is_reproducible_and_ignores_extra_cached_deb (__main__.Stage5RootfsBuildTest.test_pair_is_reproducible_and_ignores_extra_cached_deb) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 16.542s
+
+OK
+mke2fs 1.47.2 (1-Jan-2025)
+debugfs 1.47.2 (1-Jan-2025)
+2.43-2ubuntu2.3
+stage5-c-smoke-ok
+gcc-15 (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+modprobe
+tar (GNU tar) 1.35
+sha256sum
+Pass 5: Checking group summary information
+mke2fs 1.47.2 (1-Jan-2025)
+debugfs 1.47.2 (1-Jan-2025)
+2.43-2ubuntu2.3
+stage5-c-smoke-ok
+gcc-15 (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+modprobe
+tar (GNU tar) 1.35
+sha256sum
+Pass 5: Checking group summary information
+stage5_rootfs_sha256=c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895

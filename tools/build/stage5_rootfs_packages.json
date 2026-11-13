@@ -1,0 +1,254 @@
+[
+  {
+    "filename": "binutils-common_2.46-3ubuntu2_amd64.deb",
+    "package": "binutils-common",
+    "sha256": "3c846f001d87b16e5038a3919ca975276808a2db17459308a9d0f965c1cddac5",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/binutils-common_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "binutils-x86-64-linux-gnu_2.46-3ubuntu2_amd64.deb",
+    "package": "binutils-x86-64-linux-gnu",
+    "sha256": "91fa094c31783f7ccf0f0df8ed06447655c40476ba61fc95dbd245a313f8171e",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/binutils-x86-64-linux-gnu_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "binutils_2.46-3ubuntu2_amd64.deb",
+    "package": "binutils",
+    "sha256": "d14fc7bf644b495083f77c99ff168f1a2215c8b3b7ad5202e0345dc1092002b0",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/binutils_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "busybox-static_1%3a1.37.0-7ubuntu1_amd64.deb",
+    "package": "busybox-static",
+    "sha256": "fd605342f62268753076aa7d9321ff098b36ba53e47434145a9aedc28fd141a4",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/busybox/busybox-static_1.37.0-7ubuntu1_amd64.deb",
+    "version": "1:1.37.0-7ubuntu1"
+  },
+  {
+    "filename": "cpp-15-x86-64-linux-gnu_15.2.0-16ubuntu1_amd64.deb",
+    "package": "cpp-15-x86-64-linux-gnu",
+    "sha256": "1649aa71c45b047feda5b9ca303c94799bdba5befa5c9de9735cbfc59c3ef93f",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/cpp-15-x86-64-linux-gnu_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "cpp-15_15.2.0-16ubuntu1_amd64.deb",
+    "package": "cpp-15",
+    "sha256": "baacc9086e17c8cadc3603365e660f907bca483de4446e56e6f1bc25da4c02be",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/cpp-15_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "gcc-15-base_15.2.0-16ubuntu1_amd64.deb",
+    "package": "gcc-15-base",
+    "sha256": "5a302d705d562fb7e150415b00651c00fed58b633faadff0b332eac1b73fadb3",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/gcc-15-base_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "gcc-15-x86-64-linux-gnu_15.2.0-16ubuntu1_amd64.deb",
+    "package": "gcc-15-x86-64-linux-gnu",
+    "sha256": "df0e5375c9e981b18e396c2e9ec1e359f226576a9b94a311bf07603f3ca6023a",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/gcc-15-x86-64-linux-gnu_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "gcc-15_15.2.0-16ubuntu1_amd64.deb",
+    "package": "gcc-15",
+    "sha256": "28da225c111d3ce9d230209cca24db46ec645f631f593f188bef718d8a1e4711",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/gcc-15_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "libasan8_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libasan8",
+    "sha256": "d59b3a851c0b58759e9f940fa407f68a6ef46401381e5389c74e5ded5419262d",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libasan8_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libatomic1_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libatomic1",
+    "sha256": "82fa61135e7154d7958feaa91ec1808a688eb1e0e06822ab35e99e2480feb148",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libatomic1_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libbinutils_2.46-3ubuntu2_amd64.deb",
+    "package": "libbinutils",
+    "sha256": "1376a5e49c8dc2ba938fadc15fce40dd01c7fbf1adf2d506a2a7cf7148e347c8",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/libbinutils_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "libcc1-0_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libcc1-0",
+    "sha256": "484ac5fd30a19bfade8db336fe70f3c046beccd1c9a9ac327fcd89d29dd5a125",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libcc1-0_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libctf-nobfd0_2.46-3ubuntu2_amd64.deb",
+    "package": "libctf-nobfd0",
+    "sha256": "5ca038ae110ddf65e190b9fe88822592abd45cecba5001f3e4ce7692ca1f31be",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/libctf-nobfd0_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "libctf0_2.46-3ubuntu2_amd64.deb",
+    "package": "libctf0",
+    "sha256": "34b1757ce619720541c7e1e8d8f3aa506cb327731374e284ffb6ec872a2c566f",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/libctf0_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "libgcc-15-dev_15.2.0-16ubuntu1_amd64.deb",
+    "package": "libgcc-15-dev",
+    "sha256": "32fa5bde1891f46fd4f422e466c863fb78e834b634e1aa08211c8eea68870af5",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-15/libgcc-15-dev_15.2.0-16ubuntu1_amd64.deb",
+    "version": "15.2.0-16ubuntu1"
+  },
+  {
+    "filename": "libgomp1_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libgomp1",
+    "sha256": "add19738c63794d2aa9ac529d3b8aebe2e88980faecb6c1c59f07aefd6c3c314",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libgomp1_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libgprofng0_2.46-3ubuntu2_amd64.deb",
+    "package": "libgprofng0",
+    "sha256": "6b066ab912300b2c6a965a9a8045da45c237a52b76c2c11d8f2ceaf7aabfacbb",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/libgprofng0_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "libhwasan0_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libhwasan0",
+    "sha256": "6bd25c936289463c6472290d3b4377edf8dd4f5e3a07f356fb0adf2de04a8055",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libhwasan0_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libisl23_0.27-1build1_amd64.deb",
+    "package": "libisl23",
+    "sha256": "02ea5de2ab6ddba978606ad58647bf6371ea68c0ed63aa5d6d0d3b8c1fe77ea3",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/i/isl/libisl23_0.27-1build1_amd64.deb",
+    "version": "0.27-1build1"
+  },
+  {
+    "filename": "libitm1_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libitm1",
+    "sha256": "ef841c269b5e9f324e38b1069f712a13c29237051f037847d1de79441dc3a9a2",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libitm1_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libjansson4_2.14-2build4_amd64.deb",
+    "package": "libjansson4",
+    "sha256": "1dc986ac3cf112384919d1a339a952e8a86bede9890a4489c016fdc266a036ca",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/j/jansson/libjansson4_2.14-2build4_amd64.deb",
+    "version": "2.14-2build4"
+  },
+  {
+    "filename": "liblsan0_16-20260322-1ubuntu1_amd64.deb",
+    "package": "liblsan0",
+    "sha256": "c90895d3b6cd164fcb54def68c7dff74419f869c837fa607e3f54c1a0e742263",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/liblsan0_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libmpc3_1.3.1-3_amd64.deb",
+    "package": "libmpc3",
+    "sha256": "a95c75b486f26fe8b140a632fd9e2883b7e2efc21f7586e155d27d2d2ff0ddc0",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/m/mpclib3/libmpc3_1.3.1-3_amd64.deb",
+    "version": "1.3.1-3"
+  },
+  {
+    "filename": "libmpfr6_4.2.2-3_amd64.deb",
+    "package": "libmpfr6",
+    "sha256": "74defa71b7f81d66b103afccfce750ad356976696b40c96c846ddc956fcfe937",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/m/mpfr4/libmpfr6_4.2.2-3_amd64.deb",
+    "version": "4.2.2-3"
+  },
+  {
+    "filename": "libquadmath0_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libquadmath0",
+    "sha256": "420e777fef436f397a85ddedde53fbb44f92c7ca8e87d581f9d86573859e1aa4",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libquadmath0_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libsframe3_2.46-3ubuntu2_amd64.deb",
+    "package": "libsframe3",
+    "sha256": "05541ea1edb19e54bea297a21a9c33d0b99ca2cfe2e86d4a67335e6640667cfc",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/b/binutils/libsframe3_2.46-3ubuntu2_amd64.deb",
+    "version": "2.46-3ubuntu2"
+  },
+  {
+    "filename": "libtsan2_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libtsan2",
+    "sha256": "95b7a9b63096840cb960562d190a802a541055366eb4bc756c763d7de6e174d8",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libtsan2_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "libubsan1_16-20260322-1ubuntu1_amd64.deb",
+    "package": "libubsan1",
+    "sha256": "cde09806b1b60d0ab8ab96033177cb21a0290333a946f25572de8f72b4403695",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/g/gcc-16/libubsan1_16-20260322-1ubuntu1_amd64.deb",
+    "version": "16-20260322-1ubuntu1"
+  },
+  {
+    "filename": "make_4.4.1-3_amd64.deb",
+    "package": "make",
+    "sha256": "a86f39d57a32b7c919c0ad721fc2f17ab533a42fda348c8d81a4eea1577a014f",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/m/make-dfsg/make_4.4.1-3_amd64.deb",
+    "version": "4.4.1-3"
+  },
+  {
+    "filename": "xz-utils_5.8.3-1ubuntu0.1_amd64.deb",
+    "package": "xz-utils",
+    "sha256": "5a1532b0f903040ba44a7459d20abb9163e300e081cf233eecc9cdfec33a6cd8",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/x/xz-utils/xz-utils_5.8.3-1ubuntu0.1_amd64.deb",
+    "version": "5.8.3-1ubuntu0.1"
+  },
+  {
+    "filename": "zstd_1.5.7+dfsg-3_amd64.deb",
+    "package": "zstd",
+    "sha256": "032bf3699c23d653caeadf1d97521af9cc09401035164637e64ad79997947d6a",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/libz/libzstd/zstd_1.5.7+dfsg-3_amd64.deb",
+    "version": "1.5.7+dfsg-3"
+  },
+  {
+    "filename": "libc-dev-bin_2.43-2ubuntu2.3_amd64.deb",
+    "package": "libc-dev-bin",
+    "sha256": "c3a76666e9831f02dcd594a8edb0105126a8e780889fb9659ab0610525844a4a",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/g/glibc/libc-dev-bin_2.43-2ubuntu2.3_amd64.deb",
+    "version": "2.43-2ubuntu2.3"
+  },
+  {
+    "filename": "libc6-dev_2.43-2ubuntu2.3_amd64.deb",
+    "package": "libc6-dev",
+    "sha256": "f48da8b7bae5c05106034d54bf6c8ea2a54654f52e11bd75dc2b991d2ef24a49",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/g/glibc/libc6-dev_2.43-2ubuntu2.3_amd64.deb",
+    "version": "2.43-2ubuntu2.3"
+  },
+  {
+    "filename": "linux-libc-dev_7.0.0-38.38_amd64.deb",
+    "package": "linux-libc-dev",
+    "sha256": "0498bc9510149ef06abd6c09b8932e43c5bc71b68634b4b8f84488b2e0a20e82",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261010T000000Z/pool/main/l/linux/linux-libc-dev_7.0.0-38.38_amd64.deb",
+    "version": "7.0.0-38.38"
+  },
+  {
+    "filename": "rpcsvc-proto_1.4.3-1build1_amd64.deb",
+    "package": "rpcsvc-proto",
+    "sha256": "d7102b9d3fd35fd7a66d94ba0765a9c8e87b2b80e3633ef4af401dd0c952bafd",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20261111T000000Z/pool/main/r/rpcsvc-proto/rpcsvc-proto_1.4.3-1build1_amd64.deb",
+    "version": "1.4.3-1build1"
+  }
+]

@@ -1,0 +1,2269 @@
+{
+  "schema_version": 2,
+  "registry_complete": false,
+  "scope": "Candidate registry for S5-21. It separates local interpreter profiles from composed CPL0 and exact machine CPL3 evidence. No guest-userland support is inferred from local fixture results. The registry is incomplete; unmatched rows remain unclassified.",
+  "classification_policy": {
+    "categories": [
+      "proven_supported",
+      "proven_missing",
+      "unclassified"
+    ],
+    "supported_requires": "an exact accepted form and its mode/CPL, prefix, width, operand, addressing, state, and feature gates to match the observed instruction row; the evidence_scope is retained and never merged across scopes",
+    "missing_requires": "an explicit plan or contract statement that the exact observed form is unsupported or remains open; absence from this candidate registry is not missing evidence",
+    "default": "unclassified"
+  },
+  "profiles": [
+    {
+      "task": "S2-08..14",
+      "evidence_scope": "local_interpreter_profile",
+      "execution_mode": "Long64 interpreter fixture; no machine CPL is asserted",
+      "status": "accepted_local_core_families",
+      "common_gates": "bounded synchronous GuestMemory; canonical48 memory accesses; documented 66/67/REX normalization; FS/GS data overrides, LOCK, and REP are excluded except where a separate exact profile says otherwise",
+      "families": [
+        {
+          "task": "S2-08",
+          "encoding": "B0-BF; 88-8B /r",
+          "operands": "immediate/register and register/r/m MOV; widths 8/16/32/64; 16 GPR; high-byte aliases only without effective REX",
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms and bounded faults",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:1320-1346",
+            "docs/reports/STAGE_2_REPORT.md:2556-2636"
+          ]
+        },
+        {
+          "task": "S2-10",
+          "encoding": "C6/C7 /0; A0-A3; 0F BE/BF; 0F B6/B7; 63 /r; 8D /r; 86/87 /r; 90+r",
+          "operands": "moffs, immediate MOV, MOVSX/MOVSXD/MOVZX, LEA, register XCHG and NOP; exact widths and address forms are bounded by CPU contract",
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms; LEA register-source #UD is fault-only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:1347-1371",
+            "docs/reports/STAGE_2_REPORT.md:2637-2690"
+          ]
+        },
+        {
+          "task": "S2-11",
+          "encoding": "00-03,10-13,18-1B,28-2B,38-3B; 04/05,14/15,1C/1D,2C/2D,3C/3D; 80/81/83 /0,/2,/3,/5,/7; FE/FF /0,/1; F6/F7 /3",
+          "operands": "ADD/ADC/SBB/SUB/CMP and INC/DEC/NEG; register/rm, accumulator/immediate and group/immediate forms; imm8/imm32 sign extension as specified",
+          "operand_bits": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms and bounded faults",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2177-2227",
+            "docs/reports/STAGE_2_REPORT.md:2691-2737"
+          ]
+        },
+        {
+          "task": "S2-12",
+          "encoding": "20-23,08-0B,30-33; 24/25,0C/0D,34/35; 80/81/83 /1,/4,/6; 84/85; A8/A9; F6/F7 /0,/2",
+          "operands": "AND/OR/XOR, TEST, NOT; register/rm, accumulator/immediate, group/immediate; TEST has no destination write",
+          "operand_bits": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms and bounded faults",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2228-2267",
+            "docs/reports/STAGE_2_REPORT.md:2738-2781"
+          ]
+        },
+        {
+          "task": "S2-13",
+          "encoding": "D0-D3,C0/C1 /0,/1,/2,/3,/4,/5,/7; 0F A4/A5/AC/AD",
+          "operands": "single shifts/rotates and SHLD/SHRD; register/memory; immediate, 1, or CL count",
+          "operand_bits": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms; undefined count/flag outputs excluded from exact comparison",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2268-2305",
+            "docs/reports/STAGE_2_REPORT.md:2782-2835"
+          ]
+        },
+        {
+          "task": "S2-14",
+          "encoding": "F6/F7 /4,/5,/6,/7; 0F AF; 69/6B",
+          "operands": "MUL/IMUL/DIV/IDIV r/m and bounded IMUL register/immediate forms",
+          "operand_bits": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "address_bits": [
+            32,
+            64
+          ],
+          "outcome": "successful forms physically verified; #DE behavior local-only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2306-2335",
+            "docs/reports/STAGE_2_REPORT.md:2836-2907"
+          ]
+        }
+      ]
+    },
+    {
+      "task": "S2-22a/b",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64",
+      "cpl": null,
+      "accepted_bytes": [
+        "64 48 8B 00",
+        "65 48 8B 00"
+      ],
+      "gate": "exact MOV RAX,[RAX] with FS or GS base; canonical48 qword range; local fixture memory; native fail-closed",
+      "outcome": "success and bounded local faults",
+      "source": [
+        "docs/plans/STAGE_2.md:172-173",
+        "docs/reports/STAGE_2_REPORT.md:4389-4421"
+      ]
+    },
+    {
+      "task": "S2-22c/d",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64",
+      "cpl": null,
+      "accepted_bytes": [
+        "48 8C E0",
+        "48 8C E8"
+      ],
+      "gate": "exact FS/GS selector read into RAX; selector state only; descriptor lookup/privilege semantics excluded",
+      "outcome": "success",
+      "source": [
+        "docs/plans/STAGE_2.md:174-175",
+        "docs/reports/STAGE_2_REPORT.md:4422-4490"
+      ]
+    },
+    {
+      "task": "S2-22e",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "0F 00 E8"
+      ],
+      "gate": "GDT-only selector; canonical48 base/range; explicit GDTR; TI=0",
+      "outcome": "VERW computes ZF; no segment load",
+      "source": [
+        "docs/plans/STAGE_2.md:176",
+        "docs/reports/STAGE_2_REPORT.md:2066",
+        "docs/specs/CPU_CONTRACT.md:1617-1664"
+      ]
+    },
+    {
+      "task": "S2-22f/g",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only_partial",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "8E E0"
+      ],
+      "gate": "GDT-only; explicit FS selector/base/cache/GDTR; AX source; no prefixes; accessed-bit update bounded by private synchronous RAM",
+      "outcome": "success and bounded selector #GP/#NP; other forms unsupported",
+      "source": [
+        "docs/plans/STAGE_2.md:177-178",
+        "docs/reports/STAGE_2_REPORT.md:2111",
+        "docs/specs/CPU_CONTRACT.md:1665-1745"
+      ]
+    },
+    {
+      "task": "S2-22h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_only",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "8E E8"
+      ],
+      "gate": "GDT-only; non-null TI=0 selector; explicit GS cache/base/GDTR; no prefixes",
+      "outcome": "success and bounded selector #GP/#NP",
+      "source": [
+        "docs/plans/STAGE_2.md:179",
+        "docs/reports/STAGE_2_REPORT.md:2228",
+        "docs/specs/CPU_CONTRACT.md:1746-1778"
+      ]
+    },
+    {
+      "task": "S2-22i/j exact composition",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_one_program_composition",
+      "mode": "Long64",
+      "cpl": null,
+      "accepted_bytes": [
+        "8E E8 65 48 8B 00",
+        "8E E0 64 48 8B 00"
+      ],
+      "gate": "literal two-instruction selector load + matching single GS/FS qword load; exact program only",
+      "outcome": "success composition; does not generalize prefix or address forms",
+      "source": [
+        "docs/plans/STAGE_2.md:180-181",
+        "docs/reports/STAGE_2_REPORT.md:2265-2313"
+      ]
+    },
+    {
+      "task": "S4-20b/d exact load",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "48 8B 03"
+      ],
+      "gate": "CPU-owned CR3/CS context; canonical48; physical36; four-level 4KiB paging; exact RAX,[RBX]; fetch/data each within one page; S4-20d entry TF/RF/AC=0",
+      "outcome": "success and bounded #PF gates",
+      "source": [
+        "docs/plans/STAGE_4.md:1074-1093",
+        "docs/plans/STAGE_4.md:1150-1175"
+      ]
+    },
+    {
+      "task": "S4-20d exact store",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "48 89 0B"
+      ],
+      "gate": "Same bounded S4-20d paged profile; exact [RBX],RCX; reject other stores before operand",
+      "outcome": "success and RO/supervisor #PF",
+      "source": [
+        "docs/plans/STAGE_4.md:1150-1175"
+      ]
+    },
+    {
+      "task": "S4-20c syscall",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_machine_profile",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "0F 05"
+      ],
+      "gate": "Exact EFER/STAR/LSTAR/FMASK bundle; canonical48/physical36/4KiB; CR0=80010033, CR4=20; TF/RF=0; no async events",
+      "outcome": "successful transition; SCE=0 is #UD",
+      "source": [
+        "docs/plans/STAGE_4.md:1099-1138"
+      ]
+    },
+    {
+      "task": "S4-20c kernel tail",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_machine_sequence",
+      "mode": "Long64",
+      "cpl": 0,
+      "accepted_bytes": [
+        "4C 89 17",
+        "48 0F 07"
+      ],
+      "gate": "Same S4-20c sequence; SYSRETQ requires R11.TF=0 and canonical RCX",
+      "outcome": "kernel store and SYSRETQ success; not ordinary CPL3 support",
+      "source": [
+        "docs/plans/STAGE_4.md:1107-1128"
+      ]
+    },
+    {
+      "task": "S2-48 ENDBR64 no-op",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64",
+      "cpl": 0,
+      "accepted_bytes": [
+        "F3 0F 1E FA"
+      ],
+      "gate": "ENDBR64 behaves as NOP only when CET_IBT is not enabled",
+      "outcome": "success bounded no-op",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:20952-20973"
+      ]
+    },
+    {
+      "task": "S2-50 CPL0 POPFQ",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64",
+      "cpl": 0,
+      "accepted_bytes": [
+        "9D",
+        "48 9D"
+      ],
+      "gate": "selected CPL0 POPF flags policy and checked stack memory",
+      "outcome": "success only within selected mask",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:20429"
+      ]
+    },
+    {
+      "task": "S2-22k null DS/ES selector",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_cpl0_profile",
+      "mode": "Long64",
+      "cpl": 0,
+      "accepted_bytes": [
+        "8E D8",
+        "8E C0"
+      ],
+      "gate": "AX=0; selector/unusable-state update only; no descriptor lookup",
+      "outcome": "success narrow profile",
+      "source": [
+        "docs/plans/STAGE_2.md:182"
+      ]
+    },
+    {
+      "task": "S4-20e CR0 denial",
+      "evidence_scope": "machine_cpl3_profile",
+      "status": "accepted_bounded_negative_machine_profile",
+      "mode": "Long64",
+      "cpl": 3,
+      "accepted_bytes": [
+        "0F 22 C0"
+      ],
+      "gate": "Exact CPL3 MOV CR0,RAX candidate",
+      "outcome": "fault-only #GP(0); LOCK prefix #UD",
+      "source": [
+        "docs/plans/STAGE_4.md:1196-1208"
+      ]
+    },
+    {
+      "task": "S2-15a..h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_checked_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-15a",
+          "encoding": "98,99",
+          "gate": "66=16, default=32, effective REX.W=64; implicit accumulator/pair; no memory",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:2908"
+        },
+        {
+          "task": "S2-15b",
+          "encoding": "0F C8+rd",
+          "gate": "register32/64 only; REX register extension; 16-bit not claimed",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:2936"
+        },
+        {
+          "task": "S2-15c/f",
+          "encoding": "0F A3/AB/B3/BB register; 0F BA /4..7 ib register",
+          "gate": "bits16/32/64; no LOCK; index wraps modulo operand width",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:2965"
+        },
+        {
+          "task": "S2-15d/e",
+          "encoding": "0F BC/BD /r",
+          "gate": "ordinary register/memory16/32/64; no F3 LZCNT/TZCNT; FS/GS memory unsupported; inert register segment prefixes allowed",
+          "outcome": "success; zero source leaves destination undefined",
+          "source": "docs/reports/STAGE_2_REPORT.md:2999"
+        },
+        {
+          "task": "S2-15g",
+          "encoding": "0F BA /4..7 ib memory",
+          "gate": "16/32/64; non-LOCK; immediate bit selection; bounded ordinary addressing",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3099"
+        },
+        {
+          "task": "S2-15h",
+          "encoding": "0F A3/AB/B3/BB memory",
+          "gate": "16/32/64; non-LOCK; signed bit index adjusts memory word floor(i/width), in-word Euclidean modulo",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3127"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:164",
+        "docs/specs/CPU_CONTRACT.md:2383-2402"
+      ]
+    },
+    {
+      "task": "S2-16a..e",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_reviewed_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-16a",
+          "encoding": "70-7F; 0F 80-8F; EB/E9",
+          "gate": "all 16 conditions; short/near relative target canonicality",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3163"
+        },
+        {
+          "task": "S2-16b",
+          "encoding": "0F 90-9F /r",
+          "gate": "SETcc r/m8; exact REX/high-byte aliases",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3188"
+        },
+        {
+          "task": "S2-16c",
+          "encoding": "0F 40-4F /r",
+          "gate": "CMOVcc register destination, r/m16/32/64 source; memory source read even when condition false",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3213"
+        },
+        {
+          "task": "S2-16d/e",
+          "encoding": "FF /4",
+          "gate": "near JMP register64 or ordinary memory qword target; canonical target; far forms excluded",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3228-3261"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:165",
+        "docs/reports/STAGE_2_REPORT.md:3163-3261"
+      ]
+    },
+    {
+      "task": "S2-17a..t",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "local_reviewed_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-17a/b",
+          "encoding": "50-5F; 6A ib; 68 id",
+          "gate": "qword GPR push/pop; REX.B; sign-extended immediate; canonical transactional stack",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3262-3293"
+        },
+        {
+          "task": "S2-17c/d/e",
+          "encoding": "E8 rel32; FF /2 register64 or ordinary memory64",
+          "gate": "near CALL; push next RIP; canonical target/stack; RSP addressing order as documented",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3294-3352"
+        },
+        {
+          "task": "S2-17f",
+          "encoding": "C2 iw",
+          "gate": "near RET64 plus unsigned imm16 stack adjustment",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3353-3367"
+        },
+        {
+          "task": "S2-17g/h",
+          "encoding": "66 50-5F; 66 6A ib; 66 68 iw",
+          "gate": "word stack width; REX.B; effective REX.W precedence only in separate n/m slices",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3368-3399"
+        },
+        {
+          "task": "S2-17i/j",
+          "encoding": "FF /6 mem64; 8F /0 mem64",
+          "gate": "ordinary qword memory; POP destination effective address uses updated RSP; 66 excluded",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3400-3431"
+        },
+        {
+          "task": "S2-17k/l",
+          "encoding": "66 FF /6 mem16; 66 8F /0 mem16",
+          "gate": "address32/64; REX.B; word stack effects; effective REX.W separate",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3432-3456"
+        },
+        {
+          "task": "S2-17m/n",
+          "encoding": "66 + effective REX.W FF /6, 8F /0, 50-5F",
+          "gate": "qword width; prefix order and effective final REX required",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3457-3519"
+        },
+        {
+          "task": "S2-17o/r",
+          "encoding": "9D; 66 9D",
+          "gate": "explicit local CPL3/IOPL0; masks privileged flags; other CPL/IOPL unsupported",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3520-3643"
+        },
+        {
+          "task": "S2-17p/q",
+          "encoding": "9C; 66 9C",
+          "gate": "PUSHFQ/PUSHFW; exact 64/16 source flag masks",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3547-3603"
+        },
+        {
+          "task": "S2-17s/t",
+          "encoding": "66 + effective REX.W 9C/9D; 66 C3; 48 66 C3; 66 48 C3",
+          "gate": "exact prefix order; POPF remains local CPL3/IOPL0",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3644-3659"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:166",
+        "docs/reports/STAGE_2_REPORT.md:3262-3659"
+      ]
+    },
+    {
+      "task": "S2-18a..o",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-18a..i",
+          "encoding": "A4/A5 MOVS; AA/AB STOS; AC/AD LODS; AE/AF SCAS; A6/A7 CMPS",
+          "gate": "one non-REP iteration; addr64; B/W/D/Q encodings; implicit flat DS/ES, DF delta; no LOCK/REP/FS/GS",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:3660-3967"
+        },
+        {
+          "task": "S2-18j",
+          "encoding": "FC; FD",
+          "gate": "bare CLD/STD only",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:13206"
+        },
+        {
+          "task": "S2-18k..o",
+          "encoding": "67 + LODS/STOS/SCAS/CMPS/MOVS",
+          "gate": "non-REP addr32; ESI/EDI updates zero-extend; exact prefix order per subtask",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:13226-13360"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:167",
+        "docs/reports/STAGE_2_REPORT.md:3660-3967",
+        "docs/reports/STAGE_2_REPORT.md:13206-13360"
+      ]
+    },
+    {
+      "task": "S2-19a..t",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-19a..d",
+          "encoding": "F3 AA/AB; F3 AC/AD; F3 A4/A5",
+          "gate": "bounded REP STOS/LODS/MOVS addr64; RCX count; work limit/continuation; B/W/D/Q by encoding",
+          "outcome": "success and partial continuation",
+          "source": "docs/reports/STAGE_2_REPORT.md:3968-4014; 12917-13008"
+        },
+        {
+          "task": "S2-19e..h",
+          "encoding": "F3 AE/AF; F3 A6/A7",
+          "gate": "bounded REPE SCAS/CMPS addr64; B/W/D/Q; RCX/ZF continuation; no blanket F2",
+          "outcome": "success and partial continuation",
+          "source": "docs/reports/STAGE_2_REPORT.md:13051-13205"
+        },
+        {
+          "task": "S2-19j..p",
+          "encoding": "F3 + 67 LODS/STOS/MOVS/REPE SCAS/CMPS",
+          "gate": "addr32 ECX count; ESI/EDI zero-extend; effective prefix order",
+          "outcome": "success and partial continuation",
+          "source": "docs/reports/STAGE_2_REPORT.md:13394-13648"
+        },
+        {
+          "task": "S2-19q..t",
+          "encoding": "F2 + 67 AE/AF,A6/A7",
+          "gate": "REPNE SCAS/CMPS addr32 only; ECX/ZF and effective prefixes",
+          "outcome": "success and partial continuation",
+          "source": "docs/reports/STAGE_2_REPORT.md:13649-13772"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:168",
+        "docs/reports/STAGE_2_REPORT.md:3968-4014",
+        "docs/reports/STAGE_2_REPORT.md:12917-13772"
+      ]
+    },
+    {
+      "task": "S2-20a..d",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "fault_only_local_slices_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-20b/d",
+          "encoding": "0F 0B",
+          "gate": "complete UD2, fetch truncation precedence",
+          "outcome": "fault-only #UD; not successful instruction support",
+          "source": "docs/reports/STAGE_2_REPORT.md:4040-4118"
+        },
+        {
+          "task": "S2-20a/c",
+          "encoding": "DIV/IDIV exact exception vectors; S2-20c exact 48 F7 F9",
+          "gate": "zero divisor or quotient overflow",
+          "outcome": "fault-only local #DE; no hardware delivery claim",
+          "source": "docs/reports/STAGE_2_REPORT.md:4015-4039; 4059-4118"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:169",
+        "docs/reports/STAGE_2_REPORT.md:4015-4118"
+      ]
+    },
+    {
+      "task": "S2-21a..h",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "bounded_local_slices_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "families": [
+        {
+          "task": "S2-21a",
+          "encoding": "effective REX.W 87 /r memory",
+          "gate": "bare qword XCHG; single atomic_exchange_integer callback; no LOCK",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:4155"
+        },
+        {
+          "task": "S2-21b/c",
+          "encoding": "effective REX.W 0F C1/0F B1 /r register",
+          "gate": "bare qword register XADD/CMPXCHG",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:4185-4240"
+        },
+        {
+          "task": "S2-21d/e",
+          "encoding": "effective REX.W 0F C1/0F B1 /r memory",
+          "gate": "bare qword; single atomic backend operation; no LOCK",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:4241-4298"
+        },
+        {
+          "task": "S2-21f/h",
+          "encoding": "F0 + effective REX.W 0F C1/87 /r memory",
+          "gate": "qword; explicit private serial synchronous RAM opt-in; no broader prefixes/addressing implied",
+          "outcome": "success",
+          "source": "docs/reports/STAGE_2_REPORT.md:4299-4388"
+        },
+        {
+          "task": "S2-21g",
+          "encoding": "0F AE F0",
+          "gate": "bare MFENCE; explicit private synchronous RAM opt-in",
+          "outcome": "success bounded no-op barrier",
+          "source": "docs/reports/STAGE_2_REPORT.md:4320-4347"
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:170",
+        "docs/reports/STAGE_2_REPORT.md:4155-4388"
+      ]
+    },
+    {
+      "task": "S2-45 / Stage 2 CPL0 composed profile",
+      "evidence_scope": "composed_cpl0_profile",
+      "status": "accepted_bounded_extensions",
+      "mode": "Long64",
+      "cpl": 0,
+      "families": [
+        {
+          "task": "S2-45",
+          "encoding": "FA; 0F 20/22 C0/E0; 0F A2; 0F 31; 0F 30/32; F4; 0F 22 D8; EC/EE",
+          "gate": "Cpl0ProfileSet member, selected CR0/CR4/MSR/CPUID/RDTSC/PIO policy, Running/activity and STI-shadow conditions",
+          "outcome": "success; only configured forms",
+          "source": "docs/specs/CPU_CONTRACT.md:20178-20220; docs/plans/STAGE_2.md:20707-20712"
+        },
+        {
+          "task": "S2-46",
+          "encoding": "null MOV DS/ES/SS/FS/GS selector forms",
+          "gate": "null selector and SS shadow rules",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20327"
+        },
+        {
+          "task": "S2-47a/49",
+          "encoding": "0F 01 /2 memory LGDT; 0F 01 /3 memory LIDT",
+          "gate": "memory descriptor operand and CPL0",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20362; 20394"
+        },
+        {
+          "task": "S2-50",
+          "encoding": "9D; 48 9D",
+          "gate": "selected CPL0 POPF policy",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20429"
+        },
+        {
+          "task": "S2-22k",
+          "encoding": "8E D8; 8E C0",
+          "gate": "Long64 CPL0; AX=0; selector/unusable state only; no descriptor lookup",
+          "outcome": "success",
+          "source": "docs/plans/STAGE_2.md:182"
+        },
+        {
+          "task": "S4-38L4c/d/f/g",
+          "encoding": "0F 20 D8 CR3 read; 0F 1F /0 memory NOP; 0F B7 memory MOVZX; F3 0F BC /r BSF",
+          "gate": "CPL0; source registers, width and memory gates per individual reports",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20511-20655"
+        },
+        {
+          "task": "S4-38L5a/b",
+          "encoding": "0F 20 /2 CR2 read; 48 CF IRETQ",
+          "gate": "CPL0, selected GPR and bounded same-CPL frame",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20695-20787"
+        },
+        {
+          "task": "S2-47b/48",
+          "encoding": "48 CB LRETQ; F3 0F 1E FA ENDBR64",
+          "gate": "GDT CS validation; ENDBR64 NOP only without CET_IBT",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:20911-20973"
+        },
+        {
+          "task": "S4-38L6a-d",
+          "encoding": "0F 18 /0..7; RDMSR/WRMSR FS_BASE/GS_BASE; MOV Sreg,AX; C9",
+          "gate": "CPL0, supported MSR indexes and GDT/cache policy",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:21066-21218"
+        },
+        {
+          "task": "S4-38L7b-h",
+          "encoding": "0F 20/22 /4 CR4; 0F 22 /3 CR3; RDMSR EFER; 0F 30 WRMSR with dynamic ECX index; 64/65+REX.W 89 /r",
+          "gate": "CPL0 state and policy; WRMSR index is not encoded in the instruction and remains unresolved from static disassembly",
+          "outcome": "success",
+          "source": "docs/specs/CPU_CONTRACT.md:21219-21492"
+        },
+        {
+          "task": "S4-38L7i-w",
+          "encoding": "64/65+REX.W 8B; 64/65+REX.W 2B; F0 REX.W 0F B1; F0 FF /0; F0 0F AB; F6 /0; FF /0,/1; F7 /0; F0/80/81/83 /1; F0 0F B3; 8C /r; ED/EF and optional 66",
+          "gate": "CPL0 state and exact width/address/prefix/PIO-config gates per S4-38L7 review sections; no merge with CPL3",
+          "outcome": "success only for specifically admitted forms",
+          "source": "docs/specs/CPU_CONTRACT.md:21493-22451; docs/plans/STAGE_4.md:2074"
+        },
+        {
+          "task": "S4-38L7x",
+          "encoding": "EC IN AL,DX; EE OUT DX,AL",
+          "gate": "PIO member in LinuxCpl0SetMembers::linux_default; port/PortIo state is dynamic",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22509-22547"
+        },
+        {
+          "task": "S4-38L7y",
+          "encoding": "F0 [REX without W] 0F B1 /r memory CMPXCHG dword",
+          "gate": "CPL0; memory; prefix F0 then optional final REX 40..47; rejects 66/67/F2/F3/repeated LOCK/segments/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22548-22586"
+        },
+        {
+          "task": "S4-38L7z",
+          "encoding": "F0 [REX] 80|81|83 /0 memory ADD immediate",
+          "gate": "CPL0; memory /0; prefix F0 then optional final REX; rejects other groups and 66/67/F2/F3/repeated LOCK/segments/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22587-22635"
+        },
+        {
+          "task": "S4-38L7aa",
+          "encoding": "[FS|GS] [REX] 39 /r memory CMP (memory destination)",
+          "gate": "CPL0; only opcode 39; memory destination; width 32/64; one FS/GS then optional final REX; rejects 3B, 66/67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22636-22687"
+        },
+        {
+          "task": "S4-38L7ab",
+          "encoding": "0F 01 /7 memory INVLPG; optional single non-W REX and/or one FS/GS",
+          "gate": "CPL0; group /7; memory; prefixes only empty, one 40..47 REX, one FS/GS, or FS/GS then non-W REX; rejects W/66/67/LOCK/REP/CS/DS/ES/SS/duplicates/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22688-22730"
+        },
+        {
+          "task": "S4-38L7ac",
+          "encoding": "[FS|GS] [REX] F7 /0 memory TEST dword/qword immediate",
+          "gate": "CPL0; memory /0; width 32/64; one FS/GS then optional final REX; rejects 66+W, 67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22731-22799"
+        },
+        {
+          "task": "S4-38L7ad",
+          "encoding": "[FS|GS] [REX] 0F B7 /r memory MOVZX word",
+          "gate": "CPL0; memory source 16-bit; destination 32/64-bit; one FS/GS then optional final REX; rejects 66/67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22800-22861"
+        },
+        {
+          "task": "S4-38L7ae",
+          "encoding": "[FS|GS] [REX] C6 /0 ib memory MOV byte immediate",
+          "gate": "CPL0; memory /0 byte destination; one FS/GS then optional final REX; rejects other groups/mod=11/66/67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22862-22916"
+        },
+        {
+          "task": "S4-38L7af",
+          "encoding": "2E|3E|26|36 E8 rel32 CALL",
+          "gate": "CPL0; exactly one accepted CS/DS/ES/SS prefix",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22917-22968"
+        },
+        {
+          "task": "S4-38L7ag",
+          "encoding": "F0 [REX] 80 /4 ib memory LOCK AND byte immediate",
+          "gate": "CPL0; memory /4 byte only; F0 then optional final REX; rejects 81/83/other groups/mod=11 and 66/67/REP/repeated LOCK/segments/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:22969-23024"
+        },
+        {
+          "task": "S4-38L7ah",
+          "encoding": "[FS|GS] [REX] 83 /7 ib memory CMP dword/qword immediate",
+          "gate": "CPL0; only 83 /7 memory width 32/64; one FS/GS then optional final REX; rejects 80/81/other groups/mod=11 and 66/67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23025-23086"
+        },
+        {
+          "task": "S4-38L7ai",
+          "encoding": "F0 [REX] 01 /r memory-destination LOCK ADD register source",
+          "gate": "CPL0; memory destination width 32/64; F0 then optional final REX; rejects byte/reverse/register forms, 66/67/REP/repeated LOCK/segments/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23087-23150"
+        },
+        {
+          "task": "S4-38L7aj",
+          "encoding": "[FS|GS] [REX] C7 /0 id memory MOV dword/qword immediate",
+          "gate": "CPL0; memory /0 width 32/64; one FS/GS then optional final REX; rejects other groups/mod=11/66/67/LOCK/REP/second segment/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23151-23216"
+        },
+        {
+          "task": "S4-38L7ak",
+          "encoding": "[FS|GS] REX.W 63 /r memory MOVSXD",
+          "gate": "CPL0; exactly FS/GS then final REX.W; memory dword source, qword destination; rejects missing W/66/67/LOCK/REP/duplicates/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23217-23277"
+        },
+        {
+          "task": "S4-38L7al",
+          "encoding": "0F 01 /0 memory SGDT; optional single non-W REX and/or one FS/GS",
+          "gate": "CPL0; group /0; memory; prefixes only empty, one 40..47 REX, one FS/GS, or FS/GS then non-W REX; rejects W/66/67/LOCK/REP/CS/DS/ES/SS/duplicates/stale REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23278-23332"
+        },
+        {
+          "task": "S4-38L7am",
+          "encoding": "[REX.B] 0F 00 /3 register LTR r/m16",
+          "gate": "CPL0; group /3; register operand and GDT/TSS state",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23333-23376"
+        },
+        {
+          "task": "S4-38L7an",
+          "encoding": "[FS|GS] [REX] 89 /r memory MOV dword/qword store",
+          "gate": "CPL0; memory width 32/64; one FS/GS then optional final REX; documented [early REX, FS/GS, final REX.W] qword exception only; rejects 66/67/LOCK/REP/duplicate segments and stale dword REX",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23377-23411"
+        },
+        {
+          "task": "S4-38L7ao",
+          "encoding": "0F 30 WRMSR; target IA32_STAR 0xC0000081",
+          "gate": "ECX index dynamic and not present in opcode bytes; do not assign this index from static disassembly",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23412-23439"
+        },
+        {
+          "task": "S4-38L7ap",
+          "encoding": "0F 30 WRMSR; target IA32_LSTAR 0xC0000082",
+          "gate": "ECX index dynamic and not present in opcode bytes; do not assign this index from static disassembly",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23440-23462"
+        },
+        {
+          "task": "S4-38L7aq",
+          "encoding": "0F 30 WRMSR; target IA32_CSTAR 0xC0000083",
+          "gate": "ECX index dynamic and not present in opcode bytes; do not assign this index from static disassembly",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23463-23487"
+        },
+        {
+          "task": "S4-38L7ar",
+          "encoding": "0F 30 WRMSR; target IA32_SYSENTER_CS 0x174",
+          "gate": "ECX index dynamic and not present in opcode bytes; do not assign this index from static disassembly",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23488-23512"
+        },
+        {
+          "task": "S4-38L7as",
+          "encoding": "0F 30 WRMSR; target IA32_SYSENTER_ESP/EIP 0x175/0x176",
+          "gate": "ECX index dynamic and not present in opcode bytes; do not assign this index from static disassembly",
+          "outcome": "bounded CPL0 candidate only; no CPL3 inference",
+          "source": "docs/specs/CPU_CONTRACT.md:23513-23545"
+        }
+      ],
+      "qualifications_without_new_instruction_encoding": [
+        {
+          "task": "S4-38L4b",
+          "qualification": "REP continuation semantics; no new generic encoding",
+          "source": "docs/specs/CPU_CONTRACT.md:20471"
+        },
+        {
+          "task": "S4-38L4e",
+          "qualification": "cross-page fetch gate extension",
+          "source": "docs/specs/CPU_CONTRACT.md:20572"
+        },
+        {
+          "task": "S4-38L4h",
+          "qualification": "cross-page store gate extension",
+          "source": "docs/specs/CPU_CONTRACT.md:20655"
+        },
+        {
+          "task": "S4-38L5c",
+          "qualification": "#PF delivery event path; event behavior, not successful ordinary opcode",
+          "source": "docs/specs/CPU_CONTRACT.md:20788"
+        },
+        {
+          "task": "S4-38L5e",
+          "qualification": "cross-page dword/qword read gate extension",
+          "source": "docs/specs/CPU_CONTRACT.md:20974"
+        },
+        {
+          "task": "S4-38L7d",
+          "qualification": "CR4.PGE policy extension; no new encoding",
+          "source": "docs/specs/CPU_CONTRACT.md:21289"
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:20178-22451",
+        "docs/plans/STAGE_2.md:20707-20748",
+        "docs/plans/STAGE_4.md:2074"
+      ]
+    },
+    {
+      "task": "S2-34.4/.5/.6a/.6b/.6c MOVUPS",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Assume SSE available, CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; interpreter-local bounded GuestMemory only; no native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-34.4",
+          "encoding": "0F 10 /r, ModRM mod00/rm000 [RAX], memory source, XMM destination; bare or one REX.R only",
+          "gate": "Reject REX.B/X/W, SIB/displacement, and all legacy prefixes.",
+          "outcome": "local interpreter load only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2525-2559",
+            "docs/reports/STAGE_2_REPORT.md:13916-13953"
+          ]
+        },
+        {
+          "task": "S2-34.5",
+          "encoding": "0F 11 /r, ModRM mod00/rm000 [RAX], memory destination, XMM source; bare or one effective REX.R only",
+          "gate": "Reject other prefixes and addressing forms.",
+          "outcome": "local interpreter store only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2560-2678",
+            "docs/reports/STAGE_2_REPORT.md:13954-13978"
+          ]
+        },
+        {
+          "task": "S2-34.6a",
+          "encoding": "0F 10/11 /r, ModRM memory modes 00/01/10; GPR base, no SIB, no RIP-relative; disp8/disp32 as encoded",
+          "gate": "REX.R/B allowed; reject REX.X/W, address-size32, legacy prefixes.",
+          "outcome": "local interpreter load/store only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2679-2709",
+            "docs/reports/STAGE_2_REPORT.md:13979-14023"
+          ]
+        },
+        {
+          "task": "S2-34.6b",
+          "encoding": "0F 10/11 /r, ModRM mod00/rm101 RIP-relative disp32",
+          "gate": "REX.R allowed; REX.B/X/W, legacy prefixes and address-size32 rejected.",
+          "outcome": "local interpreter load/store only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2710-2732",
+            "docs/reports/STAGE_2_REPORT.md:14024-14059"
+          ]
+        },
+        {
+          "task": "S2-34.6c",
+          "encoding": "0F 10/11 /r, memory SIB addressing in ModRM modes 00/01/10",
+          "gate": "Long64 SIB semantics; REX.R/B/X allowed; reject REX.W, legacy prefixes and address-size32.",
+          "outcome": "local interpreter load/store only",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:2733-2779",
+            "docs/reports/STAGE_2_REPORT.md:14060-14107"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:5558-5635"
+      ]
+    },
+    {
+      "task": "S2-35.1 PXOR XMM register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profile_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Assume SSE2 available, CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; exact mandatory 66, at most one immediately following REX.R/B, ModR/M.mod=3 and no data-memory callback; no CPUID, no native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-35.1",
+          "encoding": "66 [one optional REX.R/B] 0F EF /r; ModR/M.mod=3; ModR/M.reg=XMM destination and r/m=XMM source (XMM0-XMM15)",
+          "gate": "Mandatory 66 selects XMM/SSE2; bare 0F EF is MMX. Reject memory ModR/M, extra/duplicate or reordered prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter XOR of 128 raw XMM bits; unrelated CPU state preserved; no memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11730-11751",
+            "docs/reports/STAGE_2_REPORT.md:14513-14538"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11730-11751",
+        "docs/reports/STAGE_2_REPORT.md:14513-14538"
+      ]
+    },
+    {
+      "task": "S2-35.24–.31 PUNPCK XMM register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires the S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode slices. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only; no CPUID, exception-delivery, native/JIT, physical-execution, or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-35.24",
+          "encoding": "66 [one optional REX.R/B] 0F 60 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKLBW (low byte interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13933-13971",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.25",
+          "encoding": "66 [one optional REX.R/B] 0F 68 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKHBW (high byte interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13972-14015",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.26",
+          "encoding": "66 [one optional REX.R/B] 0F 61 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKLWD (low word interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14016-14042",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.27",
+          "encoding": "66 [one optional REX.R/B] 0F 69 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKHWD (high word interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14064-14085",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.28",
+          "encoding": "66 [one optional REX.R/B] 0F 62 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKLDQ (low dword interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14086-14108",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.29",
+          "encoding": "66 [one optional REX.R/B] 0F 6A /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKHDQ (high dword interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14043-14063",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345",
+            "docs/specs/CPU_CONTRACT.md:12152-12177"
+          ]
+        },
+        {
+          "task": "S2-35.30",
+          "encoding": "66 [one optional REX.R/B] 0F 6C /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKLQDQ (low qword interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14109-14133",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345"
+          ]
+        },
+        {
+          "task": "S2-35.31",
+          "encoding": "66 [one optional REX.R/B] 0F 6D /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy XMM register-register form only: mandatory 66, optional single REX byte limited to 40/41/44/45 immediately after 66, and ModR/M.mod=3. Reject bare MMX, memory operands, extra/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PUNPCKHQDQ (high qword interleave); complete register form with no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14134-14152",
+            "docs/reports/STAGE_2_REPORT.md:15062-15345",
+            "docs/specs/CPU_CONTRACT.md:12152-12177"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13933-14152",
+        "docs/reports/STAGE_2_REPORT.md:15062-15345"
+      ]
+    },
+    {
+      "task": "S2-34.7a–.7d legacy XMM register logic",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 raw x87/SSE snapshots; SSE availability and CR0/CR4 prerequisites are assumed only. Exact no-mandatory-prefix legacy forms with ModR/M.mod=3 and at most one effective REX.R/B byte; no memory callback. No native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-34.7a",
+          "encoding": "NP 0F 57 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter XORPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5640-5658",
+            "docs/specs/CPU_CONTRACT.md:2596-2616",
+            "docs/reports/STAGE_2_REPORT.md:14101-14129"
+          ]
+        },
+        {
+          "task": "S2-34.7b",
+          "encoding": "NP 0F 54 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ANDPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5659-5678",
+            "docs/specs/CPU_CONTRACT.md:2618-2638",
+            "docs/reports/STAGE_2_REPORT.md:14130-14163"
+          ]
+        },
+        {
+          "task": "S2-34.7c",
+          "encoding": "NP 0F 56 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ORPS over 128 raw destination/source bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5679-5697",
+            "docs/specs/CPU_CONTRACT.md:2639-2657",
+            "docs/reports/STAGE_2_REPORT.md:14164-14203"
+          ]
+        },
+        {
+          "task": "S2-34.7d",
+          "encoding": "NP 0F 55 /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Bare or one effective REX byte from 40/41/44/45; no mandatory 66, other legacy prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter ANDNPS as (~old DEST) & SRC over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:5698-5718",
+            "docs/specs/CPU_CONTRACT.md:2658-2678",
+            "docs/reports/STAGE_2_REPORT.md:14204-14243"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:5640-5718",
+        "docs/specs/CPU_CONTRACT.md:2596-2678",
+        "docs/reports/STAGE_2_REPORT.md:14101-14243"
+      ]
+    },
+    {
+      "task": "S2-35.50/.51 XMM register PANDN/POR",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 raw x87/SSE snapshots and mandatory-66 XMM/SSE2 decode; SSE2 and CR0/CR4 prerequisites are assumptions only. Exact ModR/M.mod=3 register form; no memory callback. No native/JIT/physical or machine-CPL evidence. S2-35.49 PAND is explicitly omitted while independent review is pending.",
+      "families": [
+        {
+          "task": "S2-35.50",
+          "encoding": "66 [one optional REX.R/B] 0F DF /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Mandatory 66; optional single REX from 40/41/44/45 immediately after 66. Reject bare MMX, other/duplicate/reordered prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter PANDN over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14640-14674",
+            "docs/specs/CPU_CONTRACT.md:12196-12213",
+            "docs/reports/STAGE_2_REPORT.md:15806-15832"
+          ]
+        },
+        {
+          "task": "S2-35.51",
+          "encoding": "66 [one optional REX.R/B] 0F EB /r; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Mandatory 66; optional single REX from 40/41/44/45 immediately after 66. Reject bare MMX, other/duplicate/reordered prefixes, REX.W/X, memory, VEX/EVEX.",
+          "outcome": "local interpreter POR over 128 raw bits; unrelated state preserved; no memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14675-14701",
+            "docs/specs/CPU_CONTRACT.md:12214-12231",
+            "docs/reports/STAGE_2_REPORT.md:15833-15868"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14640-14701",
+        "docs/specs/CPU_CONTRACT.md:12196-12231",
+        "docs/reports/STAGE_2_REPORT.md:15806-15868"
+      ]
+    },
+    {
+      "task": "S2-35.35 PSHUFD XMM register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact register-only ModR/M.mod=3 form, no data-memory callback; no native/JIT/physical or machine-CPL evidence.",
+      "families": [
+        {
+          "task": "S2-35.35",
+          "encoding": "66 [one optional REX.R/B] 0F 70 /r ib; ModR/M.mod=3; ModR/M.reg=XMM destination, r/m=XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PSHUFD XMM register-register form only: mandatory 66; optional single REX byte limited to 40/41/44/45 immediately after 66; ModR/M.mod=3; any imm8. Reject bare MMX, memory operands, other/reordered/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter PSHUFD; each destination dword selects one of the original source dwords using its corresponding 2-bit imm8 field; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14181-14200",
+            "docs/specs/CPU_CONTRACT.md:11792-11809",
+            "docs/reports/STAGE_2_REPORT.md:15447-15473"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14181-14200",
+        "docs/specs/CPU_CONTRACT.md:11792-11809",
+        "docs/reports/STAGE_2_REPORT.md:15447-15473"
+      ]
+    },
+    {
+      "task": "S2-35.47 PSRLDQ XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3, ModR/M.reg=/3 register form, no data-memory callback; no CPL3/native/JIT/physical evidence.",
+      "families": [
+        {
+          "task": "S2-35.47",
+          "encoding": "66 [no REX or optional 41] 0F 73 /3 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSRLDQ XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/3; any unsigned imm8. Reject bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, memory/MMX, VEX/EVEX.",
+          "outcome": "local interpreter PSRLDQ with unmasked unsigned byte count; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14393-14404",
+            "docs/specs/CPU_CONTRACT.md:11875-11888",
+            "docs/reports/STAGE_2_REPORT.md:15752-15778"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14393-14404",
+        "docs/specs/CPU_CONTRACT.md:11875-11888",
+        "docs/reports/STAGE_2_REPORT.md:15752-15778"
+      ]
+    },
+    {
+      "task": "S2-35.41 PSLLD XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/6 register form, no data-memory callback; CPL3/native/JIT/physical evidence is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.41",
+          "encoding": "66 [no REX or optional 41] 0F 72 /6 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSLLD XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/6; any unsigned imm8. Reject /2, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSLLD with unmasked unsigned dword shift count; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14269-14283",
+            "docs/specs/CPU_CONTRACT.md:11822-11836",
+            "docs/reports/STAGE_2_REPORT.md:15564-15595"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14269-14283",
+        "docs/specs/CPU_CONTRACT.md:11822-11836",
+        "docs/reports/STAGE_2_REPORT.md:15564-15595"
+      ]
+    },
+    {
+      "task": "S2-35.42 PSRLD XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/2 register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.42",
+          "encoding": "66 [no REX or optional 41] 0F 72 /2 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSRLD XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/2; any unsigned imm8. Reject /6, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSRLD with unmasked unsigned dword shift count; counts >=32 clear each lane; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14416-14437",
+            "docs/specs/CPU_CONTRACT.md:11890-11902",
+            "docs/reports/STAGE_2_REPORT.md:15597-15627"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14416-14437",
+        "docs/specs/CPU_CONTRACT.md:11890-11902",
+        "docs/reports/STAGE_2_REPORT.md:15597-15627"
+      ]
+    },
+    {
+      "task": "S2-35.43 PSRAD XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/4 register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.43",
+          "encoding": "66 [no REX or optional 41] 0F 72 /4 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSRAD XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/4; any unsigned imm8. Reject /2 and /6, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSRAD arithmetic-right-shifts signed i32 lanes; unsigned imm8 counts >=32 sign-fill negative lanes and clear nonnegative lanes; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14469-14488",
+            "docs/specs/CPU_CONTRACT.md:11932-11945",
+            "docs/reports/STAGE_2_REPORT.md:15629-15665"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14469-14488",
+        "docs/specs/CPU_CONTRACT.md:11932-11945",
+        "docs/reports/STAGE_2_REPORT.md:15629-15665"
+      ]
+    },
+    {
+      "task": "S2-35.45 PSRLQ XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/2 register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.45",
+          "encoding": "66 [no REX or optional 41] 0F 73 /2 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSRLQ XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/2; any unsigned imm8. Reject /3 and /6, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSRLQ with unmasked unsigned qword shift count; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14302-14335",
+            "docs/specs/CPU_CONTRACT.md:11835-11850",
+            "docs/reports/STAGE_2_REPORT.md:15667-15688"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14302-14335",
+        "docs/specs/CPU_CONTRACT.md:11835-11850",
+        "docs/reports/STAGE_2_REPORT.md:15667-15688"
+      ]
+    },
+    {
+      "task": "S2-35.39 PSRAW XMM immediate register-only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 and ModR/M.reg=/4 register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.39",
+          "encoding": "66 [no REX or optional 41] 0F 71 /4 ib; ModR/M.mod=3; ModR/M.r/m selects destination XMM0-XMM15 (REX.B extends XMM8-XMM15)",
+          "gate": "Exact legacy PSRAW XMM register immediate form only: mandatory 66; no REX or one 41 immediately after 66; ModR/M.mod=3 and ModR/M.reg=/4; any unsigned imm8. Reject /2 and /6, memory/MMX, bare REX 40, REX.R/X/W, other/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter PSRAW arithmetic-right-shifts signed i16 lanes; unsigned imm8 counts >=16 sign-fill negative lanes and clear nonnegative lanes; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14246-14270",
+            "docs/specs/CPU_CONTRACT.md:11916-11930",
+            "docs/reports/STAGE_2_REPORT.md:15529-15560"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14246-14270",
+        "docs/specs/CPU_CONTRACT.md:11916-11930",
+        "docs/reports/STAGE_2_REPORT.md:15529-15560"
+      ]
+    },
+    {
+      "task": "S2-35.7 PSUBW XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode, plus reviewed word-lane semantics. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.7",
+          "encoding": "66 [one optional REX.R/B] 0F F9 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PSUBW XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, REX.W/X, extra/reordered/duplicate prefixes, VEX/EVEX.",
+          "outcome": "local interpreter eight independent little-endian u16 lanes compute (DEST-SRC) mod 65536; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13464-13484",
+            "docs/specs/CPU_CONTRACT.md:11976-11993",
+            "docs/reports/STAGE_2_REPORT.md:14597-14626"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13464-13484",
+        "docs/specs/CPU_CONTRACT.md:11976-11993",
+        "docs/reports/STAGE_2_REPORT.md:14597-14626"
+      ]
+    },
+    {
+      "task": "S2-35.2 PADDB XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.2",
+          "encoding": "66 [one optional REX.R/B] 0F FC /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PADDB XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, other packed-add widths, saturating forms, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter sixteen independent byte lanes compute (DEST+SRC) mod 256; no carry between lanes, no saturation and no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13397-13410",
+            "docs/specs/CPU_CONTRACT.md:11750-11768",
+            "docs/reports/STAGE_2_REPORT.md:4071-4105"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13397-13410",
+        "docs/specs/CPU_CONTRACT.md:11750-11768",
+        "docs/reports/STAGE_2_REPORT.md:4071-4105"
+      ]
+    },
+    {
+      "task": "S2-35.6 PADDW XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.6",
+          "encoding": "66 [one optional REX.R/B] 0F FD /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PADDW XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, other packed-add widths, saturating forms, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter eight independent little-endian u16 lanes compute (DEST+SRC) mod 65536; carry does not cross lanes and no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13447-13464",
+            "docs/specs/CPU_CONTRACT.md:11971-11978",
+            "docs/reports/STAGE_2_REPORT.md:14578-14616"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13447-13464",
+        "docs/specs/CPU_CONTRACT.md:11971-11978",
+        "docs/reports/STAGE_2_REPORT.md:14578-14616"
+      ]
+    },
+    {
+      "task": "S2-34.9a MOVSD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-34.8d architectural preconditions; SSE2/state gates are assumptions only. Exact ModR/M.mod=3 XMM register form, no data-memory callback; no CPL3/native/JIT/physical claim. F2 is the mandatory opcode prefix, not REPNE.",
+      "families": [
+        {
+          "task": "S2-34.9a",
+          "encoding": "F2 [no REX or one REX.R/B] 0F 10 /r; ModR/M.mod=3; ModR/M.reg selects destination XMM0-XMM15 and ModR/M.r/m selects source XMM0-XMM15",
+          "gate": "Exact legacy MOVSD scalar-double XMM register form only: F2 is mandatory and is not REPNE; no REX or one REX.R/B byte (40/41/44/45) immediately after F2 and before 0F; ModR/M.mod=3; reg=destination, r/m=source. Reject memory, reverse 0F 11, REX.W/X, extra/reordered prefixes, VEX/EVEX and string opcode A5.",
+          "outcome": "local interpreter copies raw SRC[63:0] to DEST[63:0], preserves DEST[127:64] and unrelated state, and makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13252-13277",
+            "docs/specs/CPU_CONTRACT.md:11601-11623",
+            "docs/reports/STAGE_2_REPORT.md:14359-14398"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13252-13277",
+        "docs/specs/CPU_CONTRACT.md:11601-11623",
+        "docs/reports/STAGE_2_REPORT.md:14359-14398"
+      ]
+    },
+    {
+      "task": "S2-35.21 PCMPGTB XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.21",
+          "encoding": "66 [one optional REX.R/B] 0F 64 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PCMPGTB XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, other packed compare widths, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter compares sixteen signed i8 lanes; each destination lane becomes FF iff DEST>SRC, otherwise 00; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13823-13854",
+            "docs/specs/CPU_CONTRACT.md:12129-12146",
+            "docs/reports/STAGE_2_REPORT.md:14959-14985"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13823-13854",
+        "docs/specs/CPU_CONTRACT.md:12129-12146",
+        "docs/reports/STAGE_2_REPORT.md:14959-14985"
+      ]
+    },
+    {
+      "task": "S2-35.18 PCMPEQB XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-35.18",
+          "encoding": "66 [one optional REX.R/B] 0F 74 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PCMPEQB XMM register-register form only: mandatory 66 selects XMM/SSE2, not bare MMX; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject memory, PCMPEQW/D/Q, PCMPGT*, PCMPEQQ, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter compares sixteen independent byte lanes; each destination lane becomes FF for equality and 00 otherwise; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13740-13767",
+            "docs/specs/CPU_CONTRACT.md:12109-12126",
+            "docs/reports/STAGE_2_REPORT.md:14872-14898"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13740-13767",
+        "docs/specs/CPU_CONTRACT.md:12109-12126",
+        "docs/reports/STAGE_2_REPORT.md:14872-14898"
+      ]
+    },
+    {
+      "task": "S2-35.17 PSUBQ XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decode. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. CPU_CONTRACT has no PSUBQ entry; this registry slice relies only on the accepted Stage 2 plan and report.",
+      "families": [
+        {
+          "task": "S2-35.17",
+          "encoding": "66 [one optional REX.R/B] 0F FB /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PSUBQ XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, other packed integer operations, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter independently computes two little-endian u64 lanes as (DEST-SRC) modulo 2^64; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13707-13739",
+            "docs/reports/STAGE_2_REPORT.md:14828-14871"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13707-13739",
+        "docs/reports/STAGE_2_REPORT.md:14828-14871"
+      ]
+    },
+    {
+      "task": "S2-34.13 MOVAPD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-34.8 architectural preconditions. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 forward register form, no data-memory callback; CPL3/native/JIT/physical behavior is unsupported.",
+      "families": [
+        {
+          "task": "S2-34.13",
+          "encoding": "66 [one optional REX.R/B] 0F 28 /r; ModR/M.mod=3; ModR/M.reg plus REX.R is XMM destination and ModR/M.r/m plus REX.B is source (XMM0-XMM15)",
+          "gate": "Exact forward-direction legacy MOVAPD XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. Reject reverse 0F 29, MOVUPD 0F 10, memory, other legacy prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter copies the raw 128-bit source to the destination XMM; updates destination XMM and advances RIP on success, preserving all other state; makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14753-14770",
+            "docs/specs/CPU_CONTRACT.md:12279-12297",
+            "docs/reports/STAGE_2_REPORT.md:15922-15955"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14753-14770",
+        "docs/specs/CPU_CONTRACT.md:12279-12297",
+        "docs/reports/STAGE_2_REPORT.md:15922-15955"
+      ]
+    },
+    {
+      "task": "S2-35.33 PACKUSWB XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and bounded XMM local-interpreter prerequisites. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. CPU_CONTRACT has no PACKUSWB entry; this registry slice cites only the accepted Stage 2 plan and report.",
+      "families": [
+        {
+          "task": "S2-35.33",
+          "encoding": "66 [one optional REX.R/B] 0F 67 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PACKUSWB XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, PACKSSWB and other pack/shuffle/shift operations, extra prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter reads signed little-endian i16 words from the original destination then source, clamps each independently to [0,255], and writes destination bytes 0-7 then source bytes 8-15; aliases read original state first; preserves all state except destination XMM and RIP, advances RIP on success, and makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14505-14529",
+            "docs/reports/STAGE_2_REPORT.md:15384-15420"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14505-14529",
+        "docs/reports/STAGE_2_REPORT.md:15384-15420"
+      ]
+    },
+    {
+      "task": "S2-35.23 PCMPGTD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 XMM state and S2-35.1 mandatory-66 XMM decoding. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register-register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. CPU_CONTRACT has no PCMPGTD entry; this bounded registry slice cites only the accepted plan and report.",
+      "families": [
+        {
+          "task": "S2-35.23",
+          "encoding": "66 [one optional REX.R/B] 0F 66 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15); second 66 is opcode",
+          "gate": "Exact legacy PCMPGTD XMM register-register form only: first 66 is mandatory prefix; the second 66 after 0F is opcode; no REX or one REX.R/B byte (40/41/44/45) immediately after the mandatory prefix; ModR/M.mod=3; any register pair. Reject bare MMX, memory, PCMPGTB/W/Q and other comparisons, extra prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter compares four signed little-endian i32 lanes; each destination lane becomes FFFFFFFF iff DEST>SRC, otherwise 00000000; updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13892-13931",
+            "docs/reports/STAGE_2_REPORT.md:15026-15060"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13892-13931",
+        "docs/reports/STAGE_2_REPORT.md:15026-15060"
+      ]
+    },
+    {
+      "task": "S2-34.11 MOVAPS forward XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted local XMM state. CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register-register form with no data-memory callback; memory alignment/fault behavior, real #UD/#NM gates, JIT/native/physical behavior are unsupported.",
+      "families": [
+        {
+          "task": "S2-34.11",
+          "encoding": "[one optional REX.R/B] 0F 28 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact forward MOVAPS XMM register-register form only in Long64: no prefix or one REX.R/B byte (40/41/44/45); ModR/M.mod=3; any register pair. Reject memory, reverse 0F 29, mandatory-66 MOVAPD, F2/F3, segment/address/LOCK/duplicate prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter copies all raw 128 source bits to destination, supports aliases, preserves all CPU state except destination XMM and RIP, advances RIP on success, and performs no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:14716-14731",
+            "docs/specs/CPU_CONTRACT.md:12253-12257",
+            "docs/reports/STAGE_2_REPORT.md:15874-15880"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:14716-14731",
+        "docs/specs/CPU_CONTRACT.md:12253-12257",
+        "docs/reports/STAGE_2_REPORT.md:15874-15880"
+      ]
+    },
+    {
+      "task": "S2-35.20 PCMPEQD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires accepted S2-34.1 raw XMM state and S2-35.1 mandatory-66 XMM decoding. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register-register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. CPU_CONTRACT has no PCMPEQD entry; this bounded registry slice cites only the accepted plan and report.",
+      "families": [
+        {
+          "task": "S2-35.20",
+          "encoding": "66 [one optional REX.R/B] 0F 76 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is source (XMM0-XMM15)",
+          "gate": "Exact legacy PCMPEQD XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3; any register pair. Reject bare MMX, memory, PCMPEQQ/PCMPGT*, extra prefixes, REX.W/X, VEX/EVEX.",
+          "outcome": "local interpreter compares four independent little-endian u32 lanes; each destination lane becomes FFFFFFFF iff the full dword values are equal, otherwise 00000000; updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13806-13821",
+            "docs/reports/STAGE_2_REPORT.md:14929-14957"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13806-13821",
+        "docs/reports/STAGE_2_REPORT.md:14929-14957"
+      ]
+    },
+    {
+      "task": "S2-35.61 PMOVMSKB XMM source to GPR32 register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice reviewed the existing decoder/executor/testkit and reran the focused suites; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-35.61",
+          "encoding": "66 [one optional REX.R/B] 0F D7 /r; ModR/M.mod=3; ModR/M.reg selects a GPR32 destination and ModR/M.r/m selects XMM0-XMM15 source",
+          "gate": "Exact legacy XMM-source PMOVMSKB register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends the GPR32 destination, REX.B extends the XMM source. Reject REX.W/X, memory, MMX source, extra prefixes and VEX/EVEX.",
+          "outcome": "local interpreter copies source byte bits 7 into the low 16 mask bits in byte order; the 32-bit GPR destination write zero-extends into GPR64; on success the destination GPR changes and RIP advances, while all other state is preserved; makes no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12492-12494",
+            "docs/plans/STAGE_2.md:14965-14967",
+            "docs/reports/STAGE_2_REPORT.md:16231-16233"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12492-12494",
+        "docs/plans/STAGE_2.md:14965-14967",
+        "docs/reports/STAGE_2_REPORT.md:16231-16233"
+      ]
+    },
+    {
+      "task": "S2-35.62 PMULUDQ XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2 and CR0/CR4 preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; CPL3/native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice approved the existing decoder/schema/state/semantic gates and reran focused ISA, testkit, and fixture checks; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-35.62",
+          "encoding": "66 [one optional REX.R/B] 0F F4 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PMULUDQ XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends the destination XMM and REX.B extends the source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "local interpreter multiplies unsigned dword lanes 0 and 2 of the original destination and source into two full 64-bit products in destination lanes 0 and 1; ignores source lanes 1 and 3; source/destination aliasing is valid; updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12496-12498",
+            "docs/plans/STAGE_2.md:14969-14971",
+            "docs/reports/STAGE_2_REPORT.md:16235-16237"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12496-12498",
+        "docs/plans/STAGE_2.md:14969-14971",
+        "docs/reports/STAGE_2_REPORT.md:16235-16237"
+      ]
+    },
+    {
+      "task": "S2-34.8a MOVSS XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE state setup and MMX/SSE transition preconditions are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback; native/JIT/physical behavior is unsupported. A fresh independent review for this bounded inventory slice approved the existing decoder/schema/state/semantic gates and reran focused ISA, testkit, and fixture checks; this is new inventory-slice review evidence, not a historical review claim.",
+      "families": [
+        {
+          "task": "S2-34.8a",
+          "encoding": "F3 [one optional REX.R/B] 0F 10 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSS XMM register-register form only: mandatory F3; no REX or one REX.R/B byte (40/41/44/45) immediately after F3; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "local interpreter copies raw SRC[31:0] to DEST[31:0], preserves old DEST[127:32], updates destination XMM and RIP on success, preserves all other state, and makes no data-memory callback; no floating-point operation, MXCSR, or flags change is implied",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11515-11529",
+            "docs/plans/STAGE_2.md:13161-13179",
+            "docs/reports/STAGE_2_REPORT.md:14237-14248"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11515-11529",
+        "docs/plans/STAGE_2.md:13161-13179",
+        "docs/reports/STAGE_2_REPORT.md:14237-14248"
+      ]
+    },
+    {
+      "task": "S2-34.8c MOVSS XMM m32 load from RAX only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing either state refuses atomically. SSE state setup and CR0/CR4 preconditions are assumptions only; this profile does not claim an SSE2 prerequisite. It credits only the exact base-only [RAX] m32 load and assumes a successful canonical48 [RAX..RAX+3] range check plus one four-byte read. Static inventory does not infer runtime RAX values, mapped/readable data, or guest read success. Local execution uses a temporary and updates XMM/RIP only after successful read; failure does not commit CPU state. A fresh S2-34.8c reviewer passed two ISA checks (executor and decoder), one schema test and one fixture; this is bounded profile evidence, not native/JIT/physical or CPL3 acceptance.",
+      "families": [
+        {
+          "task": "S2-34.8c",
+          "encoding": "F3 [one optional REX byte 40 or 44] 0F 10 /r; ModR/M.mod=00 and r/m=000 ([RAX]); ModR/M.reg selects XMM destination (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSS m32 load from base-only [RAX]: mandatory F3; optional single REX byte only 40 or 44 immediately after F3; ModR/M.mod=00/rm=000, any reg. REX.R extends destination to XMM8-XMM15; 40 is neutral. Reject REX.B/X/W, other bases, SIB, displacement, other/duplicate/reordered prefixes, reverse 0F 11, VEX/EVEX and string A5.",
+          "outcome": "Local execution checks the full canonical48 [RAX..RAX+3] span, reads exactly four bytes into a temporary, then copies low32, clears destination bits 127:32 and advances RIP. A static match is bounded profile evidence only and makes no inference about runtime RAX or mapped/readable data.",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11551-11574",
+            "docs/plans/STAGE_2.md:13208-13226",
+            "docs/reports/STAGE_2_REPORT.md:14291-14317"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11551-11574",
+        "docs/plans/STAGE_2.md:13208-13226",
+        "docs/reports/STAGE_2_REPORT.md:14291-14317"
+      ]
+    },
+    {
+      "task": "S2-35.15 PSUBD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. Fresh independent review for this bounded inventory slice passed focused ISA, schema and fixture checks; this is new inventory-slice review evidence. The prior S2-35.16 review corrected the early local-only native guard; its Linux-gated assertion was compiled but not run on this Mac host. Native/JIT/physical acceptance remains unclaimed.",
+      "families": [
+        {
+          "task": "S2-35.15",
+          "encoding": "66 [one optional REX.R/B] 0F FA /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PSUBD XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "four independent little-endian u32 lanes compute (DEST-SRC) modulo 2^32, with no borrow crossing lane boundaries; updates destination XMM and RIP on success and preserves all other state; no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12097-12108",
+            "docs/plans/STAGE_2.md:13641-13672",
+            "docs/reports/STAGE_2_REPORT.md:14781-14796"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12097-12108",
+        "docs/plans/STAGE_2.md:13641-13672",
+        "docs/reports/STAGE_2_REPORT.md:14781-14796"
+      ]
+    },
+    {
+      "task": "S2-35.16 PADDQ XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. The fresh independent review for this bounded inventory slice passed focused ISA and fixture checks; od-testkit has no PADDQ schema test (0 tests), and none is claimed. CPU_CONTRACT has no PADDQ entry, so only accepted Stage 2 plan/report scope is credited. The native runner has an early local-only guard; its Linux-gated assertion was compiled but not run on this Mac. Native/JIT/physical acceptance remains unclaimed.",
+      "families": [
+        {
+          "task": "S2-35.16",
+          "encoding": "66 [one optional REX.R/B] 0F D4 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PADDQ XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64; carry cannot cross between lanes; updates destination XMM and RIP on success and preserves all other state; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13674-13705",
+            "docs/reports/STAGE_2_REPORT.md:14798-14826"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13674-13705",
+        "docs/reports/STAGE_2_REPORT.md:14798-14826"
+      ]
+    },
+    {
+      "task": "S2-35.14 PADDD XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. A fresh independent review passed three ISA tests, one schema test and one fixture; this is new inventory-slice evidence, not historical review. Stage 2 report does not contain a PADDD entry, so only CPU_CONTRACT and accepted plan evidence are cited; no report history is implied. Native runner has an early local-only guard; Linux-gated assertion was compiled but not run on this Mac. Native/JIT/physical acceptance remains unclaimed.",
+      "families": [
+        {
+          "task": "S2-35.14",
+          "encoding": "66 [one optional REX.R/B] 0F FE /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PADDD XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "four independent little-endian u32 lanes compute (DEST+SRC) modulo 2^32, with carry confined to its dword; updates destination XMM and RIP on success and preserves all other state; no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12085-12095",
+            "docs/plans/STAGE_2.md:13611-13639"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12085-12095",
+        "docs/plans/STAGE_2.md:13611-13639"
+      ]
+    },
+    {
+      "task": "S2-35.49 XMM register PAND",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. A fresh PAND-only independent review passed three ISA checks, two testkit tests and one fixture; this is new bounded-review evidence, not a historical clean-review claim. The Stage 2 plan had recorded review as pending. No machine-CPL evidence, CPL3/native/JIT/physical support is inferred.",
+      "families": [
+        {
+          "task": "S2-35.49",
+          "encoding": "66 [one optional REX.R/B] 0F DB /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PAND XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject bare MMX, memory, REX.W/X, extra prefixes, VEX and EVEX.",
+          "outcome": "snapshot original source and compute raw 128-bit DEST = original_DEST & original_SRC; updates destination XMM and RIP on success, preserves all other state; no data-memory callback",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:12179-12194",
+            "docs/plans/STAGE_2.md:14606-14625",
+            "docs/reports/STAGE_2_REPORT.md:15780-15789"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:12179-12194",
+        "docs/plans/STAGE_2.md:14606-14625",
+        "docs/reports/STAGE_2_REPORT.md:15780-15789"
+      ]
+    },
+    {
+      "task": "S2-34.9c MOVSD XMM m64 load from RAX only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing either state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are architectural assumptions only. The static inventory credits only the exact base-only [RAX] m64 load candidate and assumes a successful canonical48 [RAX..RAX+7] range check plus one 8-byte read; it does not infer runtime RAX values, mapped/readable data, or guest success. Local semantic evidence covers temporary buffering, low-qword copy, high-qword clear and RIP update only after successful read; failed fetch/read/range does not commit CPU state. It makes no guest fault-priority/delivery, CPL3/native/JIT/physical claim.",
+      "families": [
+        {
+          "task": "S2-34.9c",
+          "encoding": "F2 [optional one REX.R byte, 40 or 44] 0F 10 /r; ModR/M.mod=00 and r/m=000 ([RAX]); ModR/M.reg selects XMM destination (XMM0-XMM15)",
+          "gate": "Exact legacy MOVSD m64 load from base-only [RAX]: mandatory F2; optional single immediate REX byte only 40 or 44; ModR/M.mod=00, r/m=000, any reg. Reject other bases, SIB, any displacement, REX.B/X/W, other/duplicate/reordered prefixes, reverse 0F 11, VEX/EVEX and string A5.",
+          "outcome": "Local execution checks the full canonical48 [RAX..RAX+7] span, reads exactly eight bytes into a temporary, then copies low64, clears destination high64 and advances RIP. A static match is only bounded profile evidence; it does not claim the observed process actually used RAX or successfully read mapped bytes.",
+          "source": [
+            "docs/specs/CPU_CONTRACT.md:11646-11670",
+            "docs/plans/STAGE_2.md:13299-13333",
+            "docs/reports/STAGE_2_REPORT.md:14438-14484"
+          ]
+        }
+      ],
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:11646-11670",
+        "docs/plans/STAGE_2.md:13299-13333",
+        "docs/reports/STAGE_2_REPORT.md:14438-14484"
+      ]
+    }
+  ],
+  "conditional_local_state_gated_candidates": [
+    {
+      "task": "S2-37i MINSD masked register candidate",
+      "candidate_id": "S2-37i-MINSD-XMM-register-masked-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Exact register bytes only: F2 [optional one adjacent REX.R/B byte 40/41/44/45] 0F 5D /r, ModR/M.mod=3, XMM0-XMM15. Requires both raw x87 and SSE state for interpreter entry; the profile additionally requires SSE present and MXCSR predicate (mxcsr & 0xffff9fc0)==0x1f80 (equivalently all six exception masks set, DAZ/FTZ clear, reserved bits16-31 zero; rounding-control and existing sticky flags arbitrary). Runtime MXCSR is unmeasured; do not infer default 0x1f80.",
+      "outcome": "Candidate metadata only. Keep all matching rows unclassified and out of evidence_scope/proven_supported until state and profile disposition are accepted.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:13219-13235",
+        "docs/reports/STAGE_2_REPORT.md:16415-16462"
+      ]
+    },
+    {
+      "task": "S2-37q CVTSI2SD register state-gated candidate",
+      "candidate_id": "S2-37q-CVTSI2SD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": true,
+      "x87_payload_allowed_by_schema": false,
+      "x87_payload_restriction_is_architectural": false,
+      "control_gate": "CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are normal execution assumptions; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked exception. Runtime values are unmeasured.",
+      "gate": "Exact F2 0F 2A /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when B/R bits extend the encoded GPR/XMM indices; r64 requires one canonical W REX (48/49/4C/4D). Redundant 40, X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX are excluded. Requires SSE2 ISA availability and an SSE interpreter payload; ordinary execution also assumes CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1. The schema rejects an x87 snapshot, which is a fixture-format restriction and not an architectural x87 prohibition. Requires (mxcsr & 0xffff0040)==0: DAZ and reserved bits clear; exception masks, precision-mask, RC, FTZ, and sticky bits arbitrary. OSXMMEXCPT selects #XM versus SIMD-generated #UD for a new unmasked exception. Runtime state is unmeasured; do not infer defaults.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported until profile disposition is accepted; static inventory does not infer runtime MXCSR, control state, or guest execution. Fresh q/r review follow-up is recorded in the Stage 2 plan; it is not a new acceptance result.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:13470-13505",
+        "docs/plans/STAGE_2.md:7309-7335",
+        "docs/plans/STAGE_2.md:7337-7341",
+        "docs/reports/STAGE_2_REPORT.md:18671-18702"
+      ]
+    },
+    {
+      "task": "S2-37r CVTSI2SS register state-gated candidate",
+      "candidate_id": "S2-37r-CVTSI2SS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_allowed_by_schema": false,
+      "x87_payload_restriction_is_architectural": false,
+      "control_gate": "CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are normal execution assumptions; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked exception. Runtime values are unmeasured.",
+      "gate": "Exact F3 0F 2A /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when B/R bits extend the encoded GPR/XMM indices; r64 requires one canonical W REX (48/49/4C/4D). Redundant 40, X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX are excluded. Requires SSE ISA availability and an SSE interpreter payload; ordinary execution also assumes CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1. The schema rejects an x87 snapshot, which is a fixture-format restriction and not an architectural x87 prohibition. Requires (mxcsr & 0xffff0040)==0: DAZ and reserved bits clear; exception masks, precision-mask, RC, FTZ, and sticky bits arbitrary. OSXMMEXCPT selects #XM versus SIMD-generated #UD for a new unmasked exception. Runtime state is unmeasured; do not infer defaults.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported until profile disposition is accepted; static inventory does not infer runtime MXCSR, control state, or guest execution. Fresh q/r review follow-up is recorded in the Stage 2 plan; it is not a new acceptance result.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:13506-13539",
+        "docs/plans/STAGE_2.md:7350-7390",
+        "docs/plans/STAGE_2.md:7398-7402",
+        "docs/reports/STAGE_2_REPORT.md:18703-18752"
+      ]
+    },
+    {
+      "task": "S2-37v COMISS/UCOMISS register state-gated candidate",
+      "candidate_id": "S2-37v-COMISS-UCOMISS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_allowed_by_schema": false,
+      "x87_payload_restriction_is_architectural": false,
+      "control_gate": "CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are normal execution assumptions; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked exception. Runtime values are unmeasured.",
+      "gate": "Exact bare 0F 2F /r COMISS or 0F 2E /r UCOMISS, ModR/M.mod=3, all XMM pairs; optional REX only when canonical R or B extension is needed (41/44/45). No neutral 40, W/X, other prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE ISA availability and an SSE interpreter payload; ordinary execution also assumes CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1. Schema rejects an x87 snapshot as a fixture-format rule, not as an architectural x87 prohibition. Requires (mxcsr & 0xffff0040)==0; DAZ/reserved bits clear while masks/PM, RC, FTZ and sticky status may vary. OSXMMEXCPT selects #XM versus SIMD-generated #UD for a new unmasked exception. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported; this static match does not observe runtime state or imply guest execution. The historical v-profile review remains separately recorded in Stage 2 evidence.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14643-14680",
+        "docs/plans/STAGE_2.md:15342-15373",
+        "docs/reports/STAGE_2_REPORT.md:18888-18940"
+      ]
+    },
+    {
+      "task": "S2-37w COMISD/UCOMISD register state-gated candidate",
+      "candidate_id": "S2-37w-COMISD-UCOMISD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": true,
+      "x87_payload_allowed_by_schema": false,
+      "x87_payload_restriction_is_architectural": false,
+      "control_gate": "CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are normal execution assumptions; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked exception. Runtime values are unmeasured.",
+      "gate": "Exact 66 0F 2F /r COMISD or 66 0F 2E /r UCOMISD, ModR/M.mod=3, all XMM pairs; optional REX only when canonical R or B extension is needed (41/44/45), after 66. No neutral 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE2 ISA availability and an SSE interpreter payload; ordinary execution also assumes CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1. Schema rejects an x87 snapshot as a fixture-format rule, not as an architectural x87 prohibition. Requires (mxcsr & 0xffff0040)==0; DAZ/reserved bits clear while masks/PM, RC, FTZ and sticky status may vary. OSXMMEXCPT selects #XM versus SIMD-generated #UD for a new unmasked exception. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported; this static match does not observe runtime state or imply guest execution. The historical w-profile review remains separately recorded in Stage 2 evidence.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14681-14713",
+        "docs/plans/STAGE_2.md:15374-15403",
+        "docs/reports/STAGE_2_REPORT.md:18941-18980"
+      ]
+    },
+    {
+      "task": "S2-37t CVTSS2SD register state-gated candidate",
+      "candidate_id": "S2-37t-CVTSS2SD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for a newly unmasked IE/DE event. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F3 0F 5A /r ModR/M.mod=3 XMM register pairs. Low selectors use F3 0F 5A /r; extended selectors permit exactly one canonical 41/44/45 REX.R/B byte after F3. Reject bare 40, REX.W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime payload/control state is not inferred.",
+      "review_status": "2026-11-13 read-only independent semantic review at HEAD 9d5fb75 confirms conditional-candidate eligibility only; Stage 2 plan/report historical code-review status discrepancy remains unresolved",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. This static match does not infer runtime state or guest success and makes no CPL3/native/JIT/physical claim.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14552-14588",
+        "docs/plans/STAGE_2.md:15290-15330",
+        "docs/reports/STAGE_2_REPORT.md:18802-18834"
+      ]
+    },
+    {
+      "task": "S2-37ad CVTTSS2SI register state-gated candidate",
+      "candidate_id": "S2-37ad-CVTTSS2SI-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for newly unmasked IE/PE. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F3 0F 2C /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when destination GPR or source XMM selectors are extended; r64 requires exactly one canonical W REX (48/49/4C/4D). Reject REX.X, redundant 40, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. Static matches do not imply CPL3/native/JIT/physical execution or guest success.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14930-14951",
+        "docs/plans/STAGE_2.md:15590-15620",
+        "docs/reports/STAGE_2_REPORT.md:19265-19295"
+      ]
+    },
+    {
+      "task": "S2-37ae CVTTSD2SI register state-gated candidate",
+      "candidate_id": "S2-37ae-CVTTSD2SI-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are required for ordinary architectural execution; OSXMMEXCPT selects #XM versus SIMD-generated #UD for newly unmasked IE/PE. The fixture includes the SSE payload only; runtime values are unmeasured.",
+      "gate": "Exact F2 0F 2C /r ModR/M.mod=3 register forms only. r32 permits no REX or exactly canonical 41/44/45 when destination GPR or source XMM selectors are extended; r64 requires exactly one canonical W REX (48/49/4C/4D). Reject REX.X, redundant 40, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires the SSE payload and (mxcsr & ~0x0000ffbf)==0; DAZ and reserved bits must be clear while masks, RC, FTZ and sticky status may vary. Runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. All matching rows remain unclassified and outside evidence_scope/proven_supported. Static matches do not imply CPL3/native/JIT/physical execution or guest success.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:14953-14976",
+        "docs/plans/STAGE_2.md:15621-15655",
+        "docs/reports/STAGE_2_REPORT.md:19297-19325"
+      ]
+    },
+    {
+      "task": "S2-37ap SUBSD register state-gated candidate",
+      "candidate_id": "S2-37ap-SUBSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register SUBSD only: F2 0F 5C /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted by this profile; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review confirms conditional-candidate eligibility only; execution results remain dated 2026-10-30",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime MXCSR, guest execution, CPL3/native/JIT/physical acceptance, or full unmasked exception support.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15347-15385",
+        "docs/reports/STAGE_2_REPORT.md:19702-19730",
+        "docs/plans/STAGE_2.md:14500-14530"
+      ]
+    },
+    {
+      "task": "S2-37at MULSD register state-gated candidate",
+      "candidate_id": "S2-37at-MULSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register MULSD only: F2 0F 59 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15478-15529",
+        "docs/reports/STAGE_2_REPORT.md:19830-19858"
+      ]
+    },
+    {
+      "task": "S2-37au MULSS register state-gated candidate",
+      "candidate_id": "S2-37au-MULSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register MULSS only: F3 0F 59 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15530-15579",
+        "docs/reports/STAGE_2_REPORT.md:19871-19904"
+      ]
+    },
+    {
+      "task": "S2-37ax DIVSD register state-gated candidate",
+      "candidate_id": "S2-37ax-DIVSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register DIVSD only: F2 0F 5E /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15676-15710",
+        "docs/reports/STAGE_2_REPORT.md:20011-20042"
+      ]
+    },
+    {
+      "task": "S2-37ay DIVSS register state-gated candidate",
+      "candidate_id": "S2-37ay-DIVSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register DIVSS only: F3 0F 5E /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review at HEAD 4ffd54f confirms conditional-candidate eligibility only; execution results remain dated 2026-10-30",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state, guest execution, or full unmasked OE/UE or physical acceptance.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15711-15752",
+        "docs/reports/STAGE_2_REPORT.md:20042-20070"
+      ]
+    },
+    {
+      "task": "S2-37bb ADDSD register state-gated candidate",
+      "candidate_id": "S2-37bb-ADDSD-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register ADDSD only: F2 0F 58 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15872-15916",
+        "docs/reports/STAGE_2_REPORT.md:20166-20202"
+      ]
+    },
+    {
+      "task": "S2-37bc ADDSS register state-gated candidate",
+      "candidate_id": "S2-37bc-ADDSS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": true,
+      "sse2_isa_required": false,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register ADDSS only: F3 0F 58 /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F3 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. No raw x87 state is asserted; runtime state is unmeasured.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state or guest execution.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:15917-15967",
+        "docs/reports/STAGE_2_REPORT.md:20202-20236"
+      ]
+    },
+    {
+      "task": "S2-37be CVTSD2SS register state-gated candidate",
+      "candidate_id": "S2-37be-CVTSD2SS-register-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "sse_payload_required": true,
+      "sse_isa_required": false,
+      "sse2_isa_required": true,
+      "x87_payload_in_fixture": false,
+      "control_gate": "SSE2 and ordinary CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1 assumptions; runtime values are unmeasured.",
+      "gate": "Exact legacy register-register CVTSD2SS only: F2 0F 5A /r, ModR/M.mod=3, XMM destination/source. Optional REX is exactly one canonical 41/44/45 byte after F2 when R/B extension is needed; reject redundant 40, W/X, other/duplicate/reordered prefixes, memory, trailing bytes, VEX/EVEX. Requires SSE payload and `(mxcsr & ~0x0000ffbf)==0 && (mxcsr & 0x00000c00)==0x00000c00`: DAZ/reserved bits clear and OM/UM set; RC, FTZ, IM/DM/ZM/PM and sticky flags are arbitrary. Raw x87 snapshot is excluded from this fixture profile; runtime state is unmeasured.",
+      "review_status": "2026-11-13 independent read-only semantic review at HEAD f44a5ff confirms conditional-candidate eligibility only; tests were inspected, not rerun. Historical full code review status is not established by this review.",
+      "outcome": "Candidate metadata only. Keep matching rows unclassified and outside evidence_scope/proven_supported; static matches do not imply runtime state, guest execution, backend/JIT/native behavior, or physical acceptance.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:16010-16018",
+        "docs/plans/STAGE_2.md:16629-16637",
+        "docs/reports/STAGE_2_REPORT.md:20291-20303"
+      ]
+    }
+  ],
+  "explicit_profile_exclusions": [],
+  "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles through S4-38L7as, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."
+}

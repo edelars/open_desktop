@@ -16,6 +16,8 @@ use std::fs::File;
 use std::io;
 use std::mem::{align_of, offset_of, size_of};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 const ABI_VERSION: u32 = 0x0001_0000;
 
@@ -111,6 +113,34 @@ impl Failure {
 #[unsafe(no_mangle)]
 pub extern "C" fn od_storage_abi_version() -> u32 {
     ABI_VERSION
+}
+
+/// Narrow Rust entry point for `od-image-tool create-raw`.
+///
+/// The creation policy remains private in this module and is shared with the
+/// C ABI entry point below. This is not a second disk-format implementation;
+/// it lets the repository build tool use the same create-new, free-space and
+/// identity-checked rollback path without loading a C ABI library dynamically.
+#[doc(hidden)]
+pub fn create_raw_for_image_tool(
+    directory: &Path,
+    name: &[u8],
+    capacity_bytes: u64,
+) -> Result<(), u32> {
+    // O_DIRECTORY makes this atomic with path resolution and fails on FIFOs
+    // without waiting for a writer; O_NOFOLLOW rejects a symlink at the final
+    // component. Do not metadata-check then open, which would race replacement.
+    const O_NONBLOCK_MACOS: i32 = 0x0004;
+    const O_NOFOLLOW_MACOS: i32 = 0x0100;
+    const O_DIRECTORY_MACOS: i32 = 0x0010_0000;
+    const O_CLOEXEC_MACOS: i32 = 0x0100_0000;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK_MACOS | O_NOFOLLOW_MACOS | O_DIRECTORY_MACOS | O_CLOEXEC_MACOS)
+        .open(directory)
+        .map_err(|_| IO_ERROR)?;
+    create_raw(directory.as_raw_fd(), name, capacity_bytes, &host_available_bytes)
+        .map_err(|failure| failure.status)
 }
 
 /// # Safety

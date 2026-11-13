@@ -173,7 +173,7 @@ pub fn check_file(path: &Path, parents: &[(u64, PathBuf)]) -> InspectReport {
     inspect_file(path, InspectMode::Check, parents)
 }
 
-const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n";
+const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n";
 
 /// Result of one invocation: the status and what to print.
 #[derive(Debug, Eq, PartialEq)]
@@ -197,6 +197,7 @@ enum Command {
     Check,
     Export,
     Salvage,
+    CreateRaw,
 }
 
 impl Command {
@@ -204,12 +205,12 @@ impl Command {
         match self {
             Self::Info | Self::Check => 1,
             Self::Export => 2,
-            Self::Salvage => 3,
+            Self::Salvage | Self::CreateRaw => 3,
         }
     }
 
     fn takes_parent(self) -> bool {
-        self != Self::Info
+        matches!(self, Self::Check | Self::Export | Self::Salvage)
     }
 
     fn takes_snapshot(self) -> bool {
@@ -234,6 +235,8 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         "check" => Command::Check,
         "export" => Command::Export,
         "salvage" => Command::Salvage,
+        #[cfg(target_os = "macos")]
+        "create-raw" => Command::CreateRaw,
         _ => return Err(usage("unknown command")),
     };
     let mut parsed = Parsed {
@@ -287,6 +290,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
             Command::Info | Command::Check => "missing image path",
             Command::Export => "export needs an image and an output path",
             Command::Salvage => "salvage needs an image, a new image path and a report path",
+            Command::CreateRaw => "create-raw needs a directory, name and capacity-bytes",
         }));
     }
     Ok(parsed)
@@ -326,7 +330,37 @@ pub fn run(args: &[OsString]) -> Run {
             &parsed.parents,
             parsed.accept_partial,
         ),
+        #[cfg(target_os = "macos")]
+        (Command::CreateRaw, [directory, name, capacity]) => {
+            create_raw_file(Path::new(directory), name, capacity)
+        }
         _ => usage("missing path"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn create_raw_file(directory: &Path, name: &OsString, capacity: &OsString) -> Run {
+    let Some(name) = name.to_str() else {
+        return usage("RAW name must be UTF-8");
+    };
+    let Some(capacity) = capacity.to_str().and_then(|s| s.parse::<u64>().ok()) else {
+        return usage("capacity-bytes must be an unsigned integer");
+    };
+    match od_host::create_raw_for_image_tool(directory, name.as_bytes(), capacity) {
+        Ok(()) => Run {
+            exit: Exit::Ok,
+            stdout: format!("created=1\ncapacity_bytes={capacity}\n"),
+            stderr: String::new(),
+        },
+        Err(status) => Run {
+            exit: match status {
+                7 => Exit::Busy,
+                1 | 2 => Exit::Usage,
+                _ => Exit::Io,
+            },
+            stdout: String::new(),
+            stderr: format!("create_failed=status_{status}\n"),
+        },
     }
 }
 

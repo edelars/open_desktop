@@ -211,7 +211,7 @@ UUID и серийный номер задаёт конфигурация VM н�
 | 1 | COM1, UART 16550 polling profile | `PRESENT\|PIO`, `base = 0x3F8`, `length = 8`, `gsi = 4`, edge/high (IRQ4 по `VIRTUAL_BOARD.md`; доставки IRQ4 нет, прошивка опрашивает), `param0 = 1` (номер COM) |
 | 2 | Local APIC | `PRESENT`, `0xFEE0_0000`, `0x1000`, `param0` = APIC ID (`0`) |
 | 3 | IOAPIC | `PRESENT`, `0xFEC0_0000`, `0x1000`, `param0` = GSI base (`0`); ID и число входов в MADT — константы прошивки (ID = 1, входов 24); будущий регистр модели должен отдавать ID = 1 и Version с MRE = 23, иначе Linux получит другой диапазон GSI или ошибку шины (требование S4-26 и S4-38) |
-| 4 | Дисплей | `PRESENT`, регистры `0xFC00_0000`, `0x1000`; framebuffer-регионы — в таблице регионов с `owner_device` = индекс этой записи |
+| 4 | Дисплей | В штатном профиле `PRESENT`, регистры `0xFC00_0000`, `0x1000`; framebuffer-регионы — в таблице регионов с `owner_device` = индекс этой записи. Headless профили могут выставить `FirmwareBoardConfig::display_enabled = false`: код 4 остаётся в таблице один раз с `PRESENT = 0` и нулевыми адресами, а регистры/framebuffer не отображаются в bus или карте памяти. Это не меняет версии handoff или индексы других кодов. |
 | 5 | NVRAM | `PRESENT = 0` до S7-10; затем `0xFF00_0000`, `0x0004_1000`; раскладку регистров задаёт `NVRAM_DEVICE.md` (S7-10) |
 | 6 | TPM CRB | `PRESENT = 0` до S7-22; затем `0xFED4_0000`, `0x5000` |
 | 7 | PCIe ECAM | `PRESENT = 0` по умолчанию; с opt-in флагом платы `pci_ecam` (S4-30c, `FirmwareBoardConfig::pci_ecam`) — `PRESENT`, MMIO, `base = 0xFC10_0000`, `length = 0x10_0000`, `gsi = 0xFFFF_FFFF`, `param0` = сегмент (`0`), `param1` = `start_bus \| end_bus << 8` (`0`, шины 0–0) |

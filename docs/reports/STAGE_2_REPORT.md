@@ -18828,6 +18828,15 @@ test and canonical decoder test passed. `cargo test -p od-testkit --offline` pas
 pending. This local profile leaves memory operands, other forms/modes, full
 S2-34/38, Stage 4, JIT/native/physical acceptance open.
 
+S5-21 candidate follow-up (2026-11-13, reviewed HEAD `9d5fb75`): an independent
+read-only semantic-eligibility review confirmed that the bounded CVTSS2SD
+register profile may be represented as a conditional-local candidate only.
+No tests were rerun for this review, and it does not promote static rows to
+`proven_supported` or establish runtime state. The historical review status
+remains inconsistent: the Stage 2 plan summary says the independent Sol review
+is clean, while this report body says it is pending. This provenance issue is
+tracked as [ISSUE-082](../KNOWN_ISSUES.md#issue-082-s2-37t-review-status-provenance-disagrees).
+
 Sources: Intel SDM Rev. 093 Vol. 1 Table D-11, Table 11-1, §§11.5.2.2,
 11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436); Vol. 2A
 CVTSS2SD pp. 3-240–3-241, Tables 2-15 and 2-20
