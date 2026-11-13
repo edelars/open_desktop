@@ -70,12 +70,12 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
                 self.assertEqual(fields["normalized_instruction_forms"], 1269)
                 self.assertEqual(fields["coarse_operand_signatures"], 560)
-                self.assertEqual(fields["classified_normalized_forms"], 1060)
-                self.assertEqual(fields["unclassified_normalized_forms"], 209)
+                self.assertEqual(fields["classified_normalized_forms"], 1061)
+                self.assertEqual(fields["unclassified_normalized_forms"], 208)
                 self.assertFalse(fields.get("registry_complete", manifest.get("tool", {}).get("registry_complete", True)))
                 expected_rows = 6510400 if full_key else 6510745
-                expected_supported_rows = 6295903 if full_key else 6296187
-                expected_unclassified_rows = 214497 if full_key else 214558
+                expected_supported_rows = 6295980 if full_key else 6296264
+                expected_unclassified_rows = 214420 if full_key else 214481
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
@@ -104,16 +104,16 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["scenario_classification_frequencies"], scenario_totals)
                 for scope_key in (
                     "pcmpgtb_scope", "pcmpeqb_scope", "psubq_scope", "movapd_scope",
-                    "packuswb_scope", "pcmpgtd_scope", "movaps_scope", "pmuludq_scope", "psubd_scope",
+                    "packuswb_scope", "pcmpgtd_scope", "movaps_scope", "pmuludq_scope", "psubd_scope", "paddq_scope",
                 ):
                     self.assertNotIn("PCMPEQD", fields[scope_key])
                     self.assertNotIn("PMOVMSKB", fields[scope_key])
                 report_lines = (repo_root / "docs/reports/STAGE_5_REPORT.md").read_text().splitlines()
                 local_scope_line = next(line for line in report_lines if line.startswith("| `local_interpreter_profile` |"))
                 report_status = next(line for line in report_lines if line.startswith("S5-21 сейчас **blocked**"))
-                self.assertIn("209 из 1 269 normalized forms (214 497 rootfs-only rows; 214 558 rows с E ELF)", report_status)
-                self.assertIn("6 293 836", local_scope_line)
-                self.assertIn("6 293 552", local_scope_line)
+                self.assertIn("208 из 1 269 normalized forms (214 420 rootfs-only rows; 214 481 rows с E ELF)", report_status)
+                self.assertIn("6 293 913", local_scope_line)
+                self.assertIn("6 293 629", local_scope_line)
                 scenario_summary = next(line for line in report_lines if line.startswith("C содержит 346 149 статических rows"))
                 c_totals = fields["scenario_classification_frequencies"]["C"]
                 d_totals = fields["scenario_classification_frequencies"]["D"]
@@ -132,7 +132,7 @@ class NormalizedFormTests(unittest.TestCase):
                 issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
                 issue_section = issue_text.split("### ISSUE-079", 1)[1].split("\n### ", 1)[0]
                 self.assertIn(
-                    "209 normalized forms / 214 497 rootfs-only rows (214 558 с E ELF)",
+                    "208 normalized forms / 214 420 rootfs-only rows (214 481 с E ELF)",
                     issue_section,
                 )
                 self.assertIn("7 PMOVMSKB rows", issue_section)
@@ -140,20 +140,23 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("8 PMULUDQ rows", issue_section)
                 self.assertIn("MOVSS S2-34.8a adds 15 rows", issue_section)
                 self.assertIn("PSUBD S2-35.15 adds 24 gcc-cc1 rows", issue_section)
-                self.assertIn("Linux-gated assertion was compiled but not run on this Mac", issue_section)
+                self.assertIn("S2-35.16 PADDQ adds 77 rows", issue_section)
+                self.assertIn("gcc-cc1 (63), gcc-collect2 (5), gcc-driver (5), gcc-ld.bfd (1), and tar (3)", issue_section)
+                self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
+                self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
                 for digest in (
-                    "6b49ea4bed09aaf18003d0572f9931b2e758bc803618d12ed82f7b67ae68a816",
-                    "a6703ed2c8854eb7bf7671ceeca4e3d9efb07090472ed47f5cd8d2caa9515d08",
-                    "16bcbec3e3aabc28f16bada40d89e1a0118a4396ebc3f10a53a8de9730298904",
-                    "1d2feb00ab5de262e51e21df7639daae03c2c60e3d937d34daf4c8f6f151c707",
+                    "53934834a54fe21e97ac02d50b862cf7bcf58a9f885d9c899fe9c8a9d776c24f",
+                    "96462874e73eeb9038cc46f7ac533763920b54a8972759017a0168b73f034f2c",
+                    "18ebf39ad1d01c9bda111a926d60fb17999ec428a571e188f6663310ceddb219",
+                    "efb9a04cf529ca2c7d1f543932ae8bf5c8f239a5c4107a5f725c3a4962b53cc0",
                 ):
                     self.assertIn(digest, issue_section)
-                self.assertIn("6 295 903 bounded-profile evidence, 214 497 unclassified", issue_section)
-                self.assertIn("6 296 187 evidence, 214 558 unclassified", issue_section)
-                self.assertIn("1 060 из 1 269 normalized forms имеют bounded evidence, 209 остаётся unclassified", issue_section)
+                self.assertIn("6 295 980 bounded-profile evidence, 214 420 unclassified", issue_section)
+                self.assertIn("6 296 264 evidence, 214 481 unclassified", issue_section)
+                self.assertIn("1 061 из 1 269 normalized forms имеют bounded evidence, 208 остаётся unclassified", issue_section)
                 aggregate_summary = next(line for line in report_lines if line.startswith("The paired rootfs inventory contains 6,510,400 instruction rows:"))
-                self.assertIn("6,295,903 `proven_supported` and 214,497 `unclassified`", aggregate_summary)
-                self.assertIn("6,296,187 supported and 214,558 unclassified", aggregate_summary)
+                self.assertIn("6,295,980 `proven_supported` and 214,420 `unclassified`", aggregate_summary)
+                self.assertIn("6,296,264 supported and 214,481 unclassified", aggregate_summary)
                 report_binary_rows = {}
                 for line in report_lines:
                     cells = [cell.strip() for cell in line.split("|")]
@@ -497,6 +500,32 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields["psubd_register_encoding_forms"], 8)
                 self.assertIn("both x87 and SSE state", fields["psubd_scope"])
                 self.assertIn("Linux-gated assertion was compiled but not run on this Mac host", fields["psubd_scope"])
+                paddq_forms = [
+                    row for row in compact["normalized_instruction_forms"]
+                    if row["instruction_form"]["opcode_bytes"] == ["0F", "D4"]
+                    and row["instruction_form"]["operand_signature"] == "paddq xmm,xmm"
+                ]
+                self.assertEqual(len(paddq_forms), 1)
+                self.assertEqual(sum(row["count"] for row in paddq_forms), 77)
+                self.assertEqual(sum(row["profile_match_frequencies"].get("S2-35.16-PADDQ-XMM-register-register", 0) for row in paddq_forms), 77)
+                paddq_encodings = [
+                    row for row in compact["exact_encoding_forms"]
+                    if row["dimensions"]["opcode_bytes"] == ["0F", "D4"]
+                    and row["dimensions"]["operand_signature"] == "paddq xmm,xmm"
+                ]
+                self.assertEqual(len(paddq_encodings), 8)
+                self.assertEqual({row["dimensions"]["modrm"]["raw"]: row["count"] for row in paddq_encodings}, {"C1": 48, "C8": 11, "C2": 6, "C3": 6, "CA": 2, "D4": 2, "C5": 1, "D1": 1})
+                self.assertTrue(all(row["dimensions"]["modrm"]["mod"] == 3 for row in paddq_encodings))
+                self.assertEqual(
+                    {row["dimensions"]["modrm"]["raw"]: row["binary_frequencies"] for row in paddq_encodings},
+                    {"C1": {"gcc-cc1": 36, "gcc-collect2": 5, "gcc-driver": 5, "gcc-ld-bfd": 1, "tar": 1}, "C8": {"gcc-cc1": 11}, "C2": {"gcc-cc1": 5, "tar": 1}, "C3": {"gcc-cc1": 5, "tar": 1}, "CA": {"gcc-cc1": 2}, "D4": {"gcc-cc1": 2}, "C5": {"gcc-cc1": 1}, "D1": {"gcc-cc1": 1}},
+                )
+                self.assertEqual(fields["paddq_register_rows"], 77)
+                self.assertEqual(fields["paddq_register_normalized_forms"], 1)
+                self.assertEqual(fields["paddq_register_encoding_forms"], 8)
+                self.assertIn("CPU_CONTRACT has no PADDQ entry", fields["paddq_scope"])
+                self.assertIn("od-testkit schema test", fields["paddq_scope"])
+                self.assertIn("Linux-gated assertion compiled but not run on Mac", fields["paddq_scope"])
                 pcmpgtd_forms = [
                     row for row in compact["normalized_instruction_forms"]
                     if row["instruction_form"]["opcode_bytes"] == ["0F", "66"]

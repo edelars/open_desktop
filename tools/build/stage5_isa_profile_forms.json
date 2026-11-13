@@ -1832,6 +1832,30 @@
         "docs/plans/STAGE_2.md:13641-13672",
         "docs/reports/STAGE_2_REPORT.md:14781-14796"
       ]
+    },
+    {
+      "task": "S2-35.16 PADDQ XMM register-register only",
+      "evidence_scope": "local_interpreter_profile",
+      "status": "accepted_local_bounded_profiles_parent_open",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Requires both raw x87 and SSE state; missing state refuses atomically. SSE2, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only. Exact ModR/M.mod=3 register form with no data-memory callback. The fresh independent review for this bounded inventory slice passed focused ISA and fixture checks; od-testkit has no PADDQ schema test (0 tests), and none is claimed. CPU_CONTRACT has no PADDQ entry, so only accepted Stage 2 plan/report scope is credited. The native runner has an early local-only guard; its Linux-gated assertion was compiled but not run on this Mac. Native/JIT/physical acceptance remains unclaimed.",
+      "families": [
+        {
+          "task": "S2-35.16",
+          "encoding": "66 [one optional REX.R/B] 0F D4 /r; ModR/M.mod=3; ModR/M.reg is XMM destination and ModR/M.r/m is XMM source (XMM0-XMM15)",
+          "gate": "Exact legacy PADDQ XMM register-register form only: mandatory 66; no REX or one REX.R/B byte (40/41/44/45) immediately after 66; ModR/M.mod=3. REX.R extends destination XMM and REX.B extends source XMM. Reject REX.W/X, memory, MMX, extra prefixes, VEX and EVEX.",
+          "outcome": "two independent little-endian u64 lanes compute (DEST+SRC) modulo 2^64; carry cannot cross between lanes; updates destination XMM and RIP on success and preserves all other state; no data-memory callback",
+          "source": [
+            "docs/plans/STAGE_2.md:13674-13705",
+            "docs/reports/STAGE_2_REPORT.md:14798-14826"
+          ]
+        }
+      ],
+      "source": [
+        "docs/plans/STAGE_2.md:13674-13705",
+        "docs/reports/STAGE_2_REPORT.md:14798-14826"
+      ]
     }
   ],
   "explicit_profile_exclusions": [],
