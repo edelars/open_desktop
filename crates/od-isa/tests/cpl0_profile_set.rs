@@ -20787,8 +20787,10 @@ fn segment_cmp_forms_outside_the_slice_are_refused_without_mutation() {
     // forms with a FS/GS memory operand refuse with their own opcode.
     let cases: [(&[u8], u8); 14] = [
         // 0x66 (word), in both orders, and 0x67.
-        (&[0x66, 0x65, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
-        (&[0x65, 0x66, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
+        // S4-38L9t: the word forms (`66 65 39`, `65 66 39`) became execution (see the
+        // `*_word_*` tests); `66` with REX.W stays refused, in both prefix orders.
+        (&[0x66, 0x65, 0x48, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
+        (&[0x65, 0x66, 0x48, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
         (&[0x65, 0x67, 0x48, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
         // LOCK, REP, REPNE.
         (&[0xf0, 0x65, 0x48, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
@@ -31833,8 +31835,10 @@ fn segment_or_forms_outside_the_slice_are_refused_without_mutation() {
     // forms with a FS/GS memory operand refuse with their own opcode.
     let cases: [(&[u8], u8); 19] = [
         // 0x66 (word), in both orders, and 0x67.
-        (&[0x66, 0x65, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
-        (&[0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        // S4-38L9t: the word forms (`66 65 09`, `65 66 09`) became execution (see the
+        // `*_word_*` tests); `66` with REX.W stays refused, in both prefix orders.
+        (&[0x66, 0x65, 0x48, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0x65, 0x66, 0x48, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
         (&[0x64, 0x66, 0x48, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
         (&[0x65, 0x67, 0x48, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
         (&[0x67, 0x64, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
@@ -33922,8 +33926,10 @@ fn segment_add_forms_outside_the_slice_are_refused_without_mutation() {
     // S4-38L7be: `3B` moved to its own tests too, `3A` stands in).
     let cases: [(&[u8], u8); 22] = [
         // 0x66 (word), in both orders, and 0x67.
-        (&[0x66, 0x65, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
-        (&[0x65, 0x66, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        // S4-38L9t: the word forms (`66 65 01`, `65 66 01`) became execution (see the
+        // `*_word_*` tests); `66` with REX.W stays refused, in both prefix orders.
+        (&[0x66, 0x65, 0x48, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        (&[0x65, 0x66, 0x48, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
         (&[0x64, 0x66, 0x48, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
         (&[0x65, 0x67, 0x48, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
         (&[0x67, 0x64, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
@@ -48629,4 +48635,565 @@ fn word_in_out_is_not_reachable_from_cpl3_in_the_set() {
     assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
     assert_eq!(state, before);
     assert!(pio.word_reads.is_empty() && pio.byte_calls == 0);
+}
+
+// ---- S4-38L9t: word-width FS/GS `OR/ADD/CMP r/m16, r16` (`[64|65] 66 09|01|39 /r`, memory operand;
+// SDM Vol.2 OR/ADD/CMP: 16-bit operands with the 0x66 prefix, flags from the 16-bit result; from
+// memory, not re-checked against the SDM text). OR/ADD read two bytes at base + effective address,
+// compute and write two bytes back (always, also when the value does not change); CMP only reads.
+// The source is the 16-bit ModRM reg register (REX.R extends it; the upper register bits are not
+// part of the operand). The flags commit after the write. ----
+
+/// `orw %ax, %gs:0x2fcea3e(%rip)` (the S4-38L9s diagnostic boundary bytes), then `leave; xor %eax,%eax`.
+const GS_ORW_AX_BOUNDARY: [u8; 11] = [
+    0x65, 0x66, 0x09, 0x05, 0x3e, 0xea, 0xfc, 0x02, 0xc9, 0x31, 0xc0,
+];
+/// `orw %dx, %gs|fs:0x1234(%rip)`, `addw %dx, ...`, `cmpw %dx, ...` (the 0x66 byte after the segment).
+const GS_ORW_DX_RIP: [u8; 8] = [0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0x00, 0x00];
+const FS_ORW_DX_RIP: [u8; 8] = [0x64, 0x66, 0x09, 0x15, 0x34, 0x12, 0x00, 0x00];
+const GS_ADDW_DX_RIP: [u8; 8] = [0x65, 0x66, 0x01, 0x15, 0x34, 0x12, 0x00, 0x00];
+const FS_ADDW_DX_RIP: [u8; 8] = [0x64, 0x66, 0x01, 0x15, 0x34, 0x12, 0x00, 0x00];
+const GS_CMPW_DX_RIP: [u8; 8] = [0x65, 0x66, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00];
+const FS_CMPW_DX_RIP: [u8; 8] = [0x64, 0x66, 0x39, 0x15, 0x34, 0x12, 0x00, 0x00];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum WordOp {
+    Or,
+    Add,
+    Cmp,
+}
+
+/// The 16-bit memory value after `old <op> rhs` and the flags from the `initial` flags, computed
+/// with host integers independently of the interpreter: OR gives CF = OF = 0, ADD/CMP the textbook
+/// carry, overflow and nibble carry; SF/ZF/PF from the 16-bit result; AF is kept for OR (as the
+/// plain OR here) and defined for ADD/CMP. CMP leaves the memory value unchanged.
+fn word_oracle(op: WordOp, old: u16, rhs: u16, initial: u64) -> (u16, u64) {
+    let (result, cf, of, af) = match op {
+        WordOp::Or => (old | rhs, false, false, initial & FLAG_AF != 0),
+        WordOp::Add => {
+            let wide = u32::from(old) + u32::from(rhs);
+            let result = wide as u16;
+            (
+                result,
+                wide > 0xffff,
+                (old ^ result) & (rhs ^ result) & 0x8000 != 0,
+                (old ^ rhs ^ result) & 0x10 != 0,
+            )
+        }
+        WordOp::Cmp => {
+            let result = old.wrapping_sub(rhs);
+            (
+                result,
+                old < rhs,
+                (old ^ rhs) & (old ^ result) & 0x8000 != 0,
+                (old ^ rhs ^ result) & 0x10 != 0,
+            )
+        }
+    };
+    let mut flags = initial & !ARITH;
+    for (set, bit) in [
+        (cf, FLAG_CF),
+        (of, FLAG_OF),
+        (af, FLAG_AF),
+        (result == 0, FLAG_ZF),
+        (result & 0x8000 != 0, FLAG_SF),
+        ((result as u8).count_ones() % 2 == 0, FLAG_PF),
+    ] {
+        if set {
+            flags |= bit;
+        }
+    }
+    (if op == WordOp::Cmp { old } else { result }, flags)
+}
+
+fn word_op_codes() -> [(&'static [u8], WordOp, bool); 6] {
+    [
+        (&GS_ORW_DX_RIP[..], WordOp::Or, true),
+        (&FS_ORW_DX_RIP[..], WordOp::Or, false),
+        (&GS_ADDW_DX_RIP[..], WordOp::Add, true),
+        (&FS_ADDW_DX_RIP[..], WordOp::Add, false),
+        (&GS_CMPW_DX_RIP[..], WordOp::Cmp, true),
+        (&FS_CMPW_DX_RIP[..], WordOp::Cmp, false),
+    ]
+}
+
+#[test]
+fn gs_orw_boundary_form_ors_ax_into_the_word_and_touches_nothing_else() {
+    // The S4-38L9s boundary `65 66 09 05 3e ea fc 02`: next RIP (RIP + 8, the whole instruction
+    // with both prefixes; the bytes after it do not matter) + disp32 + the GS base.
+    let gs_base = 0xffff_8880_1234_0000u64;
+    let at = gs_base + RIP + 8 + 0x02fc_ea3e;
+    let mut memory = BitsMemory::new(&GS_ORW_AX_BOUNDARY);
+    memory.set_qword(at - 8, 0x7777_8888_9999_aaaa);
+    memory.set_qword(at, 0x1111_2222_3333_12f0);
+    memory.set_qword(at + 8, 0x3333_4444_5555_6666);
+    let mut state = board_state();
+    state.gs_base = gs_base;
+    state.fs_base = 0xffff_8880_9999_0000;
+    // Only AX is the source: the rest of RAX is garbage that must not leak in or change.
+    state.gpr[Register::Rax as usize] = 0xfeed_face_cafe_000f;
+    state.rflags |= FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_AF;
+    let mut expected = state.clone();
+    let result = run_bts_set(&mut state, &mut memory).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.reads, vec![(at, 2)]);
+    assert_eq!(memory.writes, vec![(at, 0x12ffu16.to_le_bytes().to_vec())]);
+    assert_eq!(memory.qword(at - 8), 0x7777_8888_9999_aaaa);
+    assert_eq!(memory.qword(at), 0x1111_2222_3333_12ff, "only the low word");
+    assert_eq!(memory.qword(at + 8), 0x3333_4444_5555_6666);
+    expected.rip += 8;
+    // 0x12ff: low byte 0xff has eight ones (PF), no SF/ZF; CF/OF cleared, AF kept.
+    expected.rflags = (expected.rflags & !(FLAG_CF | FLAG_OF | FLAG_ZF)) | FLAG_PF;
+    assert_eq!(
+        state, expected,
+        "only RIP and the flags change; RAX is unchanged"
+    );
+}
+
+#[test]
+fn fs_and_gs_word_alu_use_their_own_base_and_ignore_the_other() {
+    for (code, op, gs) in word_op_codes() {
+        let used = 0xffff_8880_4321_0000u64;
+        let other = 0xffff_8880_9999_0000u64;
+        let mut state = board_state();
+        state.fs_base = if gs { other } else { used };
+        state.gs_base = if gs { used } else { other };
+        state.gpr[Register::Rdx as usize] = 0x0f0f;
+        let mut memory = BitsMemory::new(code);
+        let at = used + RIP + code.len() as u64 + 0x1234;
+        memory.set_qword(at, 0x1122_3344_5566_f0f0);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(at, 2)], "{code:02x?}");
+        let (word, _) = word_oracle(op, 0xf0f0, 0x0f0f, 2 | IF);
+        let expected = (0x1122_3344_5566_0000u64) | u64::from(word);
+        assert_eq!(memory.qword(at), expected, "{code:02x?}");
+        if op == WordOp::Cmp {
+            assert!(memory.writes.is_empty(), "{code:02x?}: CMP does not write");
+        } else {
+            assert_eq!(
+                memory.writes,
+                vec![(at, word.to_le_bytes().to_vec())],
+                "{code:02x?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_word_alu_with_a_zero_base_use_the_effective_address() {
+    for (code, _, _) in word_op_codes() {
+        let mut state = board_state();
+        assert_eq!((state.gs_base, state.fs_base), (0, 0));
+        state.gpr[Register::Rdx as usize] = 3;
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(RIP + 8 + 0x1234, 2)], "{code:02x?}");
+    }
+}
+
+#[test]
+fn word_alu_hand_oracles_for_the_boundary_values() {
+    // (op, old, rhs, expected memory word, expected arithmetic flags), written by hand from the SDM.
+    let cases: [(WordOp, u16, u16, u16, u64); 8] = [
+        // 0x7fff | 0x8000 = 0xffff: SF, PF (low byte 0xff); CF = OF = 0.
+        (WordOp::Or, 0x7fff, 0x8000, 0xffff, FLAG_SF | FLAG_PF),
+        // 0 | 0 = 0: ZF, PF.
+        (WordOp::Or, 0, 0, 0, FLAG_ZF | FLAG_PF),
+        // 0x7fff + 1 = 0x8000: OF, SF, AF (0xf + 1 carries out of the low nibble), PF (0x00).
+        (
+            WordOp::Add,
+            0x7fff,
+            1,
+            0x8000,
+            FLAG_OF | FLAG_SF | FLAG_AF | FLAG_PF,
+        ),
+        // 0xffff + 1 = 0: CF, ZF, AF, PF.
+        (
+            WordOp::Add,
+            0xffff,
+            1,
+            0,
+            FLAG_CF | FLAG_ZF | FLAG_AF | FLAG_PF,
+        ),
+        // CMP 0x8000, 1 (0x8000 - 1 = 0x7fff): OF, AF (borrow from bit 4), PF (0xff); no CF/SF;
+        // the memory word is unchanged.
+        (WordOp::Cmp, 0x8000, 1, 0x8000, FLAG_OF | FLAG_AF | FLAG_PF),
+        // CMP 0, 1 (0 - 1 = 0xffff): CF, SF, AF, PF.
+        (WordOp::Cmp, 0, 1, 0, FLAG_CF | FLAG_SF | FLAG_AF | FLAG_PF),
+        // CMP 5, 5: ZF, PF.
+        (WordOp::Cmp, 5, 5, 5, FLAG_ZF | FLAG_PF),
+        // The upper byte does not enter PF: 0x0100 | 0x0001 = 0x0101, low byte 0x01 (odd): no PF.
+        (WordOp::Or, 0x0100, 0x0001, 0x0101, 0),
+    ];
+    for (op, old, rhs, result, flags) in cases {
+        for (code, code_op, _) in word_op_codes() {
+            if code_op != op {
+                continue;
+            }
+            let mut state = board_state();
+            state.gpr[Register::Rdx as usize] = 0xdead_beef_0000_0000 | u64::from(rhs);
+            state.rflags |= FLAG_CF | FLAG_OF | FLAG_SF | FLAG_ZF | FLAG_PF;
+            if op == WordOp::Or {
+                // AF is kept by OR: start it clear so the oracle value is exact.
+                state.rflags &= !FLAG_AF;
+            }
+            let mut memory = BitsMemory::new(code);
+            let at = RIP + 8 + 0x1234;
+            memory.set_qword(at, 0xa5a5_a5a5_a5a5_0000 | u64::from(old));
+            let run = run_bts_set(&mut state, &mut memory).unwrap();
+            let label = format!("{code:02x?} {op:?} {old:#x} {rhs:#x}");
+            assert_eq!(run.instructions_executed, 1, "{label}");
+            assert_eq!(state.rflags & ARITH, flags, "{label}");
+            assert_eq!(state.rflags & !ARITH, 2 | IF, "{label}");
+            assert_eq!(
+                memory.qword(at),
+                0xa5a5_a5a5_a5a5_0000 | u64::from(result),
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fs_and_gs_word_alu_results_and_flags_follow_the_host_oracle() {
+    let values: [u16; 12] = [
+        0, 1, 0x0f, 0x10, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0x8001, 0xfff0, 0xffff,
+    ];
+    for (code, op, _) in word_op_codes() {
+        for old in values {
+            for rhs in values {
+                for initial in [2 | IF, 2 | IF | ARITH | (1 << 10)] {
+                    let (result, flags) = word_oracle(op, old, rhs, initial);
+                    let mut state = board_state();
+                    state.rflags = initial;
+                    // The bits above the low word of the source are ignored.
+                    state.gpr[Register::Rdx as usize] = 0xabcd_ef01_2345_0000 | u64::from(rhs);
+                    let mut expected = state.clone();
+                    let mut memory = BitsMemory::new(code);
+                    let at = RIP + 8 + 0x1234;
+                    memory.set_qword(at, 0x0102_0304_0506_0000 | u64::from(old));
+                    let run = run_bts_set(&mut state, &mut memory).unwrap();
+                    let label = format!("{code:02x?} {op:?} {old:#x} {rhs:#x} from {initial:#x}");
+                    assert_eq!(run.instructions_executed, 1, "{label}");
+                    assert_eq!(memory.reads, vec![(at, 2)], "{label}");
+                    if op == WordOp::Cmp {
+                        assert!(memory.writes.is_empty(), "{label}");
+                    } else {
+                        assert_eq!(
+                            memory.writes,
+                            vec![(at, result.to_le_bytes().to_vec())],
+                            "{label}: the result is written even when it equals the old value"
+                        );
+                    }
+                    assert_eq!(
+                        memory.qword(at),
+                        0x0102_0304_0506_0000 | u64::from(result),
+                        "{label}: only the low word of the memory changes"
+                    );
+                    expected.rip += 8;
+                    expected.rflags = flags;
+                    assert_eq!(state, expected, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn word_alu_with_rex_b_base_and_rex_r_source() {
+    // `addw %r8w, %gs:(%r12)` = 65 66 45 01 04 24, `orw %r8w, %fs:(%r12)` = 64 66 45 09 04 24 and
+    // `cmpw %r8w, %gs:(%r12)` = 65 66 45 39 04 24: the base is R12 (REX.B), the source R8W (REX.R).
+    for (code, op, uses_gs) in [
+        (
+            &[0x65u8, 0x66, 0x45, 0x01, 0x04, 0x24][..],
+            WordOp::Add,
+            true,
+        ),
+        (
+            &[0x64u8, 0x66, 0x45, 0x09, 0x04, 0x24][..],
+            WordOp::Or,
+            false,
+        ),
+        (
+            &[0x65u8, 0x66, 0x45, 0x39, 0x04, 0x24][..],
+            WordOp::Cmp,
+            true,
+        ),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0100_0000;
+        state.fs_base = 0xffff_8880_0200_0000;
+        state.gpr[Register::R12 as usize] = 0x2000;
+        state.gpr[Register::R8 as usize] = 0x1111_0000_0000_00f1;
+        // RDX must not be mistaken for the source or the base.
+        state.gpr[Register::Rdx as usize] = 0x7777;
+        let base = if uses_gs {
+            state.gs_base
+        } else {
+            state.fs_base
+        };
+        let at = base + 0x2000;
+        let mut memory = BitsMemory::new(code);
+        memory.set_qword(at, 0xffff_ffff_ffff_0f0f);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(at, 2)], "{code:02x?}");
+        let (word, flags) = word_oracle(op, 0x0f0f, 0x00f1, 2 | IF);
+        assert_eq!(memory.qword(at), 0xffff_ffff_ffff_0000 | u64::from(word));
+        assert_eq!(state.rflags, flags, "{code:02x?}");
+        assert_eq!(state.gpr[Register::R8 as usize], 0x1111_0000_0000_00f1);
+    }
+}
+
+#[test]
+fn word_alu_non_canonical_address_is_gp0_without_mutation_or_access() {
+    for (code, _, _) in word_op_codes() {
+        // The start is canonical but the second byte (address + 1) crosses into the hole, and a
+        // start inside the hole.
+        for address in [0x0000_7fff_ffff_ffffu64, 0x0000_8000_0000_0000] {
+            let mut state = board_state();
+            state.gs_base = address - 0x1234 - 8 - RIP;
+            state.fs_base = address - 0x1234 - 8 - RIP;
+            state.gpr[Register::Rdx as usize] = 1;
+            state.rflags |= FLAG_CF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(GP0),
+                "{code:02x?} {address:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "{code:02x?} {address:#x}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+        // The last canonical word (0x7fff_ffff_fffe, last byte 0x7fff_ffff_ffff) is accepted.
+        let mut state = board_state();
+        state.gs_base = 0x0000_7fff_ffff_fffe - 0x1234 - 8 - RIP;
+        state.fs_base = state.gs_base;
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+    }
+}
+
+#[test]
+fn word_alu_through_rsp_or_rbp_base_is_gp0_not_ss_when_non_canonical() {
+    // `orw %dx, %gs:(%rsp)` = 65 66 09 14 24, `addw %dx, %fs:0x0(%rbp)` = 64 66 01 55 00 and
+    // `cmpw %dx, %gs:(%rsp)` = 65 66 39 14 24.
+    for (code, register) in [
+        (&[0x65u8, 0x66, 0x09, 0x14, 0x24][..], Register::Rsp),
+        (&[0x64u8, 0x66, 0x01, 0x55, 0x00][..], Register::Rbp),
+        (&[0x65u8, 0x66, 0x39, 0x14, 0x24][..], Register::Rsp),
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0x0000_8000_0000_0000;
+        state.fs_base = 0x0000_8000_0000_0000;
+        state.gpr[register as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn word_alu_write_fault_leaves_memory_registers_flags_and_rip_unchanged() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x3),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for (code, op, _) in word_op_codes() {
+        if op == WordOp::Cmp {
+            continue;
+        }
+        // A zero source: the always-performed write still faults.
+        for rdx in [0u64, 0x0f] {
+            let mut state = board_state();
+            state.gpr[Register::Rdx as usize] = rdx;
+            state.rflags |= FLAG_CF | FLAG_OF;
+            let before = state.clone();
+            let mut memory = BitsMemory::new(code);
+            let at = RIP + 8 + 0x1234;
+            memory.set_qword(at, 0x1122_3344_5566_00f0);
+            memory.write_fault = Some(fault.clone());
+            let result = run_bts_set(&mut state, &mut memory).unwrap();
+            assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+            assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+            assert_eq!(state, before, "{code:02x?} rdx {rdx:#x}");
+            assert_eq!(memory.qword(at), 0x1122_3344_5566_00f0, "{code:02x?}");
+            assert!(memory.writes.is_empty(), "{code:02x?}");
+        }
+    }
+}
+
+#[test]
+fn word_alu_read_fault_changes_nothing() {
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x0),
+        linear_address: Some(0xffff_8880_0000_1234),
+    };
+    for (code, _, _) in word_op_codes() {
+        let mut state = board_state();
+        state.rflags |= FLAG_CF | FLAG_OF;
+        state.gpr[Register::Rdx as usize] = 9;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let at = RIP + 8 + 0x1234;
+        memory.set_qword(at, 0x1122_3344_5566_0001);
+        memory.read_fault = Some(fault.clone());
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(fault.clone()), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty());
+        assert_eq!(memory.qword(at), 0x1122_3344_5566_0001);
+    }
+}
+
+#[test]
+fn word_alu_forms_outside_the_slice_are_refused_without_mutation() {
+    // (code, expected refused opcode). The word forms of the other ALU opcodes with a FS/GS memory
+    // operand, 0x66 with REX.W, LOCK/REP, 0x67, a second segment prefix and a REX byte not directly
+    // before the opcode keep the refusal with their own opcode.
+    let cases: [(&[u8], u8); 24] = [
+        // The word OR r16, m16, the byte ALU forms and the reversed ADD/CMP.
+        (&[0x65, 0x66, 0x0b, 0x15, 0x34, 0x12, 0, 0], 0x0b),
+        (&[0x65, 0x66, 0x0a, 0x15, 0x34, 0x12, 0, 0], 0x0a),
+        (&[0x65, 0x66, 0x08, 0x15, 0x34, 0x12, 0, 0], 0x08),
+        (&[0x64, 0x66, 0x00, 0x15, 0x34, 0x12, 0, 0], 0x00),
+        (&[0x64, 0x66, 0x38, 0x15, 0x34, 0x12, 0, 0], 0x38),
+        (&[0x65, 0x66, 0x03, 0x15, 0x34, 0x12, 0, 0], 0x03),
+        (&[0x64, 0x66, 0x3b, 0x15, 0x34, 0x12, 0, 0], 0x3b),
+        // The word SUB/AND/XOR m16, r16 have no dword/qword FS/GS form either.
+        (&[0x65, 0x66, 0x29, 0x15, 0x34, 0x12, 0, 0], 0x29),
+        (&[0x65, 0x66, 0x21, 0x15, 0x34, 0x12, 0, 0], 0x21),
+        (&[0x64, 0x66, 0x31, 0x15, 0x34, 0x12, 0, 0], 0x31),
+        // 0x66 with REX.W, in both orders.
+        (&[0x66, 0x65, 0x48, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0x65, 0x66, 0x48, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        (&[0x64, 0x66, 0x48, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
+        // LOCK with 0x66 and the segment, REP, REPNE, 0x67.
+        (&[0xf0, 0x66, 0x65, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        (&[0xf0, 0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0xf3, 0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0xf2, 0x64, 0x66, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
+        (&[0x65, 0x66, 0x67, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0x67, 0x64, 0x66, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        // A second or a CS/DS/ES/SS segment prefix next to FS/GS.
+        (&[0x64, 0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0x2e, 0x65, 0x66, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+        (&[0x36, 0x64, 0x66, 0x39, 0x15, 0x34, 0x12, 0, 0], 0x39),
+        // REX not directly before the opcode.
+        (&[0x45, 0x65, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0], 0x09),
+        (&[0x65, 0x45, 0x66, 0x01, 0x15, 0x34, 0x12, 0, 0], 0x01),
+    ];
+    for (code, opcode) in cases {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode },
+            "{code:02x?}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_prefixed_word_register_alu_is_unchanged_and_ignores_the_prefix() {
+    // The register form (mod = 11) with 0x66 and FS/GS keeps the existing policy: the prefix is
+    // ignored, the plain word operation runs, no memory access.
+    let cases: [(&[u8], &[u8]); 3] = [
+        (&[0x65, 0x66, 0x09, 0xd0], &[0x66, 0x09, 0xd0]),
+        (&[0x64, 0x66, 0x01, 0xd0], &[0x66, 0x01, 0xd0]),
+        (&[0x65, 0x66, 0x39, 0xc2], &[0x66, 0x39, 0xc2]),
+    ];
+    for (prefixed, plain) in cases {
+        for (rax, rdx) in [(5u64, 0x70u64), (0, 0), (0xffff, 1), (0x8000, 0x8000)] {
+            let seed = |code: &[u8]| {
+                let mut state = board_state();
+                state.gpr[Register::Rax as usize] = rax;
+                state.gpr[Register::Rdx as usize] = rdx;
+                let mut memory = BitsMemory::new(code);
+                let result = run_bts_set(&mut state, &mut memory).unwrap();
+                (state, memory, result)
+            };
+            let (state, memory, result) = seed(prefixed);
+            let (plain_state, _, plain_result) = seed(plain);
+            assert_eq!(result.instructions_executed, 1, "{prefixed:02x?}");
+            assert_eq!(plain_result.instructions_executed, 1, "{plain:02x?}");
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            assert_eq!(state.gpr, plain_state.gpr, "{prefixed:02x?}");
+            assert_eq!(state.rflags, plain_state.rflags, "{prefixed:02x?}");
+            assert_eq!(state.rip, RIP + prefixed.len() as u64, "{prefixed:02x?}");
+        }
+    }
+}
+
+#[test]
+fn plain_word_alu_memory_still_works_at_the_effective_address_ignoring_other_bases() {
+    // Regression: `orw %dx, 0x1234(%rip)` without a segment prefix and with a CS/DS/ES/SS override
+    // ignore the FS/GS bases and use the effective address.
+    for code in [
+        &[0x66u8, 0x09, 0x15, 0x34, 0x12, 0, 0][..],
+        &[0x2e, 0x66, 0x09, 0x15, 0x34, 0x12, 0, 0][..],
+        &[0x66, 0x3e, 0x09, 0x15, 0x34, 0x12, 0, 0][..],
+    ] {
+        let mut state = board_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        state.gpr[Register::Rdx as usize] = 0x0f;
+        let mut memory = BitsMemory::new(code);
+        let at = RIP + code.len() as u64 + 0x1234;
+        memory.set_qword(at, 0x1111_0000_0000_00f0);
+        let result = run_bts_set(&mut state, &mut memory).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(memory.reads, vec![(at, 2)], "{code:02x?}");
+        assert_eq!(memory.qword(at), 0x1111_0000_0000_00ff, "{code:02x?}");
+    }
+}
+
+#[test]
+fn segment_word_alu_stays_unsupported_outside_the_set() {
+    // No control policy (legacy state, bare `run`): the FS/GS word forms are refused without
+    // mutation, with their own opcode.
+    for (code, opcode) in [
+        (&GS_ORW_AX_BOUNDARY[..], 0x09u8),
+        (&FS_ORW_DX_RIP[..], 0x09),
+        (&GS_ADDW_DX_RIP[..], 0x01),
+        (&FS_CMPW_DX_RIP[..], 0x39),
+    ] {
+        let mut state = legacy_state();
+        state.gs_base = 0xffff_8880_0000_0000;
+        state.fs_base = 0xffff_8880_0000_0000;
+        let before = state.clone();
+        let mut memory = CasMemory::new(code, 1);
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    }
 }

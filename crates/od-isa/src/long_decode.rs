@@ -697,7 +697,8 @@ pub enum Operation {
     },
     /// S4-38L7aa: `64 [REX] 39 /r` (CMP m32, r32, or m64, r64 with REX.W, with the FS base),
     /// memory destination only. The operand is read and only the flags change (no write).
-    /// Executed only in the CPL0 set.
+    /// Executed only in the CPL0 set. S4-38L9t: also the word form `64 66 39 /r` (`dst.size` is
+    /// `Word`, two bytes are read).
     CmpFsMem {
         dst: MemoryOperand,
         src: RegisterView,
@@ -711,6 +712,7 @@ pub enum Operation {
     /// S4-38L7az: `64 [REX] 09 /r` (OR m32, r32, or m64, r64 with REX.W, with the FS base),
     /// memory destination only. The operand is read, ORed with the register and written back
     /// (one read, one write); the source register is unchanged. Executed only in the CPL0 set.
+    /// S4-38L9t: also the word form `64 66 09 /r` (`destination.size` is `Word`, two bytes).
     OrFsMem {
         destination: MemoryOperand,
         source: RegisterView,
@@ -724,6 +726,7 @@ pub enum Operation {
     /// S4-38L7bc: `64 [REX] 01 /r` (ADD m32, r32, or m64, r64 with REX.W, with the FS base),
     /// memory destination only. The operand is read, added to the register and written back
     /// (one read, one write); the source register is unchanged. Executed only in the CPL0 set.
+    /// S4-38L9t: also the word form `64 66 01 /r` (`destination.size` is `Word`, two bytes).
     AddFsMem {
         destination: MemoryOperand,
         source: RegisterView,
@@ -8986,16 +8989,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         // and written back (`OrFsMem`/`OrGsMem`). The register form (mod = 11) is
                         // not touched:
                         // it takes the plain `binary_operation` path below, the prefix ignored.
-                        // LOCK/REP, 0x66 (word) and 0x67 stay refused, as does a REX byte that
-                        // is not immediately before the opcode (the dword rule of S4-38L7m).
+                        // LOCK/REP and 0x67 stay refused, as does a REX byte that is not
+                        // immediately before the opcode (the dword rule of S4-38L7m). S4-38L9t
+                        // admits 0x66 (word, without REX.W) for these three opcodes only.
                         let stale_rex = prefix_bytes[..prefix_count]
                             .iter()
                             .enumerate()
                             .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                        // S4-38L9t: the word form (`[64|65] 66 01|09|39 /r`, OR/ADD/CMP m16,
+                        // r16) is taken when 0x66 is present without REX.W (`size` is `Word`);
+                        // 0x66 with REX.W, and a dword/qword size with 0x66, stay refused.
+                        let width_ok = if prefixes.operand_override {
+                            size == OperandSize::Word
+                        } else {
+                            matches!(size, OperandSize::Qword | OperandSize::Dword)
+                        };
                         if stale_rex
-                            || !matches!(size, OperandSize::Qword | OperandSize::Dword)
+                            || !width_ok
                             || prefixes.group1.is_some()
-                            || prefixes.operand_override
                             || prefixes.address_override
                         {
                             return Err(self.unsupported(opcode));
@@ -26643,7 +26654,11 @@ mod tests {
         for (bytes, refused_opcode) in [
             // 0x66, 0x67, LOCK, REP, REPNE.
             (&[0x66, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
-            (&[0x65, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            // S4-38L9t: `65 66 39 /r` (word) is decoded now; `66` with REX.W and LOCK with
+            // `66` stay refused.
+            (&[0x65, 0x66, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x64, 0x48, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0xf0, 0x65, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
             (&[0x65, 0x67, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
             (&[0xf0, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
             (&[0xf3, 0x65, 0x48, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
@@ -26720,7 +26735,11 @@ mod tests {
         for (bytes, refused_opcode) in [
             // 0x66, 0x67, LOCK, REP, REPNE.
             (&[0x66, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
-            (&[0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            // S4-38L9t: `65 66 09 /r` (word) is decoded now; `66` with REX.W and LOCK with
+            // `66` stay refused.
+            (&[0x65, 0x66, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x64, 0x48, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf0, 0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
             (&[0x65, 0x67, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
             (&[0xf0, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
             (&[0xf3, 0x65, 0x48, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
@@ -26795,7 +26814,11 @@ mod tests {
         for (bytes, refused_opcode) in [
             // 0x66, 0x67, LOCK, REP, REPNE.
             (&[0x66, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
-            (&[0x65, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            // S4-38L9t: `65 66 01 /r` (word) is decoded now; `66` with REX.W and LOCK with
+            // `66` stay refused.
+            (&[0x65, 0x66, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x64, 0x48, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0xf0, 0x65, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
             (&[0x65, 0x67, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
             (&[0xf0, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
             (&[0xf3, 0x65, 0x48, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
@@ -26809,6 +26832,97 @@ mod tests {
             // The neighbouring forms stay outside the slice.
             (&[0x65, 0x48, 0x13, 0x15, 1, 0, 0, 0][..], 0x13),
             (&[0x65, 0x48, 0x00, 0x15, 1, 0, 0, 0][..], 0x00),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let result = memory.decode();
+            assert!(
+                matches!(&result, Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == refused_opcode),
+                "{bytes:02x?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_word_alu_memory_destination_decodes_fs_gs_forms_only() {
+        // S4-38L9t: `[64|65] 66 01|09|39 /r` (ADD/OR/CMP m16, r16) with a memory operand.
+        let dx = RegisterView::low(Register::Rdx, OperandSize::Word);
+        // The S4-38L9s diagnostic boundary bytes: `orw %ax, %gs:0x2fcea3e(%rip)`.
+        let mut memory = Memory::new(&[0x65, 0x66, 0x09, 0x05, 0x3e, 0xea, 0xfc, 0x02]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 8);
+        assert!(matches!(
+            decoded.operation,
+            Operation::OrGsMem { destination, source }
+                if source == RegisterView::low(Register::Rax, OperandSize::Word)
+                    && destination.size == OperandSize::Word
+                    && destination.base == AddressBase::NextRip
+                    && destination.displacement == 0x02fc_ea3e
+        ));
+        // The prefix order does not matter (`66` before the segment), REX.R and REX.B.
+        let mut memory = Memory::new(&[0x66, 0x64, 0x09, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::OrFsMem { destination, source }
+                if source == dx && destination.size == OperandSize::Word
+        ));
+        let mut memory = Memory::new(&[0x66, 0x65, 0x45, 0x01, 0x04, 0x24]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::AddGsMem { destination, source }
+                if source == RegisterView::low(Register::R8, OperandSize::Word)
+                    && destination.size == OperandSize::Word
+                    && destination.base == AddressBase::Register(Register::R12)
+        ));
+        let mut memory = Memory::new(&[0x64, 0x66, 0x01, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::AddFsMem { destination, source }
+                if source == dx && destination.size == OperandSize::Word
+        ));
+        let mut memory = Memory::new(&[0x64, 0x66, 0x39, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpFsMem { dst, src } if src == dx && dst.size == OperandSize::Word
+        ));
+        let mut memory = Memory::new(&[0x65, 0x66, 0x39, 0x15, 1, 0, 0, 0]);
+        assert!(matches!(
+            memory.decode().unwrap().operation,
+            Operation::CmpGsMem { dst, src } if src == dx && dst.size == OperandSize::Word
+        ));
+        // The register form (mod = 11) with 0x66 is not touched: the plain word operation.
+        for bytes in [&[0x65, 0x66, 0x09, 0xd0][..], &[0x64, 0x66, 0x01, 0xd0][..]] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Logic { .. } | Operation::Arithmetic { .. }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // Not taken: the other word forms and opcodes, 0x67, LOCK/REP, a second segment
+        // prefix, REX not directly before the opcode.
+        for (bytes, refused_opcode) in [
+            (&[0x65, 0x66, 0x0b, 0x15, 1, 0, 0, 0][..], 0x0b),
+            (&[0x65, 0x66, 0x0a, 0x15, 1, 0, 0, 0][..], 0x0a),
+            (&[0x65, 0x66, 0x08, 0x15, 1, 0, 0, 0][..], 0x08),
+            (&[0x65, 0x66, 0x3b, 0x15, 1, 0, 0, 0][..], 0x3b),
+            (&[0x65, 0x66, 0x03, 0x15, 1, 0, 0, 0][..], 0x03),
+            (&[0x65, 0x66, 0x29, 0x15, 1, 0, 0, 0][..], 0x29),
+            (&[0x65, 0x66, 0x21, 0x15, 1, 0, 0, 0][..], 0x21),
+            (&[0x65, 0x66, 0x31, 0x15, 1, 0, 0, 0][..], 0x31),
+            (&[0x64, 0x66, 0x38, 0x15, 1, 0, 0, 0][..], 0x38),
+            (&[0x65, 0x66, 0x67, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf3, 0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf2, 0x64, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x64, 0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x2e, 0x65, 0x66, 0x01, 0x15, 1, 0, 0, 0][..], 0x01),
+            (&[0x26, 0x64, 0x66, 0x39, 0x15, 1, 0, 0, 0][..], 0x39),
+            (&[0x45, 0x65, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0x65, 0x45, 0x66, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
+            (&[0xf0, 0x66, 0x65, 0x09, 0x15, 1, 0, 0, 0][..], 0x09),
         ] {
             let mut memory = Memory::new(bytes);
             let result = memory.decode();
@@ -28865,9 +28979,9 @@ mod tests {
             &[0xf0, 0x48, 0x29, 0x03],
             &[0xf0, 0x48, 0x01, 0xc8],
             &[0xf3, 0x48, 0x01, 0xc8],
-            // S4-38L7bc decodes `[64|65] [REX] 01 /r` with a memory destination; the word form
-            // with a segment prefix stays refused.
-            &[0x64, 0x66, 0x01, 0x03],
+            // S4-38L7bc decodes `[64|65] [REX] 01 /r` with a memory destination; S4-38L9t
+            // decodes its word form (`64 66 01 03`); `66` with REX.W stays refused.
+            &[0x64, 0x66, 0x48, 0x01, 0x03],
             // S4-38L7bd decodes `[64|65] [REX] 03 /r` with a memory source; here the reversed
             // ADC (`13`) stays refused.
             &[0x65, 0x48, 0x13, 0x03],
