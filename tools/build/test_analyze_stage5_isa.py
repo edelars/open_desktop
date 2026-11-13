@@ -19,6 +19,58 @@ SPEC.loader.exec_module(analyzer)
 
 
 class ParseObjdumpTests(unittest.TestCase):
+    def test_minsd_masked_register_local_candidate_is_exact_and_state_gated(self) -> None:
+        for dest in range(16):
+            for src in range(16):
+                ext = (0x04 if dest >= 8 else 0) | (0x01 if src >= 8 else 0)
+                rexes = [0x40 | ext]
+                if ext == 0:
+                    rexes.insert(0, None)
+                for rex in rexes:
+                    modrm = 0xC0 | ((dest & 7) << 3) | (src & 7)
+                    data = [0xF2] + ([] if rex is None else [rex]) + [0x0F, 0x5D, modrm]
+                    encoded = " ".join(f"{byte:02x}" for byte in data)
+                    row = analyzer.parse_row(f"  401000: {encoded} minsd xmm{dest},xmm{src}")
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row["signature"], "minsd xmm,xmm")
+                    self.assertEqual(analyzer.minsd_masked_register_local_candidate(row),
+                                     "S2-37i-MINSD-XMM-register-masked-state-gated")
+
+        rejected = [
+            "f2 48 0f 5d c8 minsd xmm1,xmm0",
+            "f2 42 0f 5d c8 minsd xmm1,xmm0",
+            "f2 46 0f 5d c8 minsd xmm1,xmm0",
+            "40 f2 0f 5d c8 minsd xmm1,xmm0",
+            "f2 f2 0f 5d c8 minsd xmm1,xmm0",
+            "66 f2 0f 5d c8 minsd xmm1,xmm0",
+            "f2 0f 5d 08 minsd xmm1,QWORD PTR [rax]",
+            "f2 0f 5d c8 minsd mm1,mm0",
+            "f2 0f 5c c8 minsd xmm1,xmm0",
+            "f2 0f 5d c8 90 minsd xmm1,xmm0",
+        ]
+        for sample in rejected:
+            encoded, text = sample.rsplit(" minsd ", 1)
+            row = analyzer.parse_row(f"  401000: {encoded} minsd {text}")
+            if row is not None:
+                self.assertIsNone(analyzer.minsd_masked_register_local_candidate(row), sample)
+
+        for byte_values in ([0x0F, 0x5D, 0xC8], [0xF2, 0x0F, 0x5D],
+                            [0xC5, 0xFB, 0x5D, 0xC8],
+                            [0x62, 0xF1, 0x7F, 0x08, 0x5D, 0xC8]):
+            row = {"mnemonic": "minsd", "signature": "minsd xmm,xmm", "byte_values": byte_values}
+            self.assertIsNone(analyzer.minsd_masked_register_local_candidate(row), byte_values)
+
+        registry = analyzer.json.loads(analyzer.PROFILE_PATH.read_text())
+        candidates = registry["conditional_local_state_gated_candidates"]
+        self.assertEqual(len(candidates), 1)
+        gate = candidates[0]["gate"]
+        self.assertIn("0xffff9fc0)==0x1f80", gate)
+        self.assertIn("both raw x87 and SSE state", gate)
+        self.assertIn("Runtime MXCSR is unmeasured", gate)
+        self.assertEqual(candidates[0]["status"], "conditional_candidate_only_unclassified")
+        self.assertFalse(registry["registry_complete"])
+        self.assertNotIn(candidates[0]["candidate_id"], {profile["task"] for profile in registry["profiles"]})
+
     def test_register_and_memory_forms_keep_operand_width(self) -> None:
         mov = analyzer.parse_row("  401000: 48 89 e5 mov rbp,rsp")
         self.assertIsNotNone(mov)

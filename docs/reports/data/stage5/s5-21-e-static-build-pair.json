@@ -11,7 +11,7 @@
     "stage5_e_static_elf_executed": false
   },
   "builder_image": "ubuntu@sha256:86eb1bc1059720a19a777ba5a109e9ee3690d5dfe3e319871a6d6beb86fb7f85",
-  "command": "python3 tools/build/test_build_stage5_e_static.py",
+  "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json",
   "date": "2026-11-12",
   "guest_compiler": "GCC 15.2.0-16ubuntu1, amd64, invoked as /usr/bin/gcc-15 inside chroot; -std=c11 -O2 -Wall -Wextra -Werror -fno-ident -Wl,--build-id=none",
   "paired_builds": [
@@ -33,16 +33,16 @@
   },
   "static_analysis": {
     "analysis_target_elfs_executed": false,
-    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass1.json",
-    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --tool-cache work/stage5/s5-21/tool-cache-pshufd --output work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass2.json",
-    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass1.json",
-    "compact_inventory_sha256": "1cea0cc94e27d4ab65d10c4588ae10c504a0b7a00c56895082936366a80e1081",
+    "command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json",
+    "repeat_command": "python3 tools/build/analyze_stage5_isa.py --image work/stage5/s5-21/stage5-rootfs.raw --tool-cache work/stage5/s5-21/tool-cache-pshufd --stage5-e-static-elf work/stage5/s5-21/stage5-e-static.elf --output work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass2.json",
+    "preserved_raw_path": "work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json",
+    "compact_inventory_sha256": "a5b18254790f90edbffcb51c75590253eea3fd042871412cfda4b6fc49182ba9",
     "disassembler_command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel",
     "e_static_instruction_rows": 345,
     "e_static_unclassified_rows": 61,
     "input_binary_count": 9,
     "instruction_rows": 6510745,
-    "raw_inventory_sha256": "70ad4fd8ec2496ddcc5abdcceba71b90cd662024028c97c8e575524bfc244ed3",
+    "raw_inventory_sha256": "55a26120a8d637a0503166f8a45602984e9f34607f342f3970d0f7e98e0b1a95",
     "rootfs_builder_executed_guest_gcc": true,
     "rootfs_builder_executed_separate_c_smoke": true,
     "rootfs_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
@@ -67,12 +67,12 @@
       "machine_cpl3_profile": 2351
     },
     "conditional_cpl0_candidate_hits": 113292,
-    "unique_instruction_rows_with_any_conditional_candidate": 113215,
+    "unique_instruction_rows_with_any_conditional_candidate": 113219,
     "conditional_candidate_supported_overlap_rows": 40,
     "normalized_instruction_forms": 1269,
-    "compact_repeat_sha256": "1cea0cc94e27d4ab65d10c4588ae10c504a0b7a00c56895082936366a80e1081",
+    "compact_repeat_sha256": "a5b18254790f90edbffcb51c75590253eea3fd042871412cfda4b6fc49182ba9",
     "compact_repeat_cmp_exit_code": 0,
-    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-movss8c-e-pass1.json.gz",
+    "compact_generation_command": "python3 tools/build/export_stage5_isa_evidence.py work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json work/stage5/s5-21/s5-21-isa-evidence-minsd37i-e-verified-pass1.json.gz",
     "punpck_register_rows": 11723,
     "punpck_local_profile_normalized_forms": 14,
     "punpck_register_rows_by_profile": {
@@ -346,7 +346,15 @@
     "movss_rax_memory_load_rows_by_binary": {
       "tar": 3
     },
-    "movss_rax_memory_load_scope": "Accepted local-only S2-34.8c MOVSS m32 load candidate: exact F3, optional one REX byte 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE state and CR0/CR4 are assumptions only, with no SSE2 claim. Assumes successful canonical48 [RAX..RAX+3] validation and one four-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior."
+    "movss_rax_memory_load_scope": "Accepted local-only S2-34.8c MOVSS m32 load candidate: exact F3, optional one REX byte 40/44 only, 0F 10 /r ModR/M.mod=00/rm=000 ([RAX]). Both x87 and SSE state are required; SSE state and CR0/CR4 are assumptions only, with no SSE2 claim. Assumes successful canonical48 [RAX..RAX+3] validation and one four-byte read; static evidence does not infer runtime RAX/data/read success, CPL3/native/JIT/physical behavior.",
+    "conditional_candidate_hit_count": 113296,
+    "conditional_local_state_gated_candidate_rows": 4,
+    "conditional_local_state_gated_candidate_frequencies": {
+      "S2-37i-MINSD-XMM-register-masked-state-gated": 4
+    },
+    "conditional_local_state_gated_candidate_rows_by_binary": {
+      "gcc-cc1": 4
+    }
   },
   "unchanged_rootfs_binary_inputs": true
 }

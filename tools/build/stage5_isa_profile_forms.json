@@ -1960,6 +1960,21 @@
       ]
     }
   ],
+  "conditional_local_state_gated_candidates": [
+    {
+      "task": "S2-37i MINSD masked register candidate",
+      "candidate_id": "S2-37i-MINSD-XMM-register-masked-state-gated",
+      "status": "conditional_candidate_only_unclassified",
+      "mode": "Long64",
+      "cpl": null,
+      "gate": "Exact register bytes only: F2 [optional one adjacent REX.R/B byte 40/41/44/45] 0F 5D /r, ModR/M.mod=3, XMM0-XMM15. Requires both raw x87 and SSE state for interpreter entry; the profile additionally requires SSE present and MXCSR predicate (mxcsr & 0xffff9fc0)==0x1f80 (equivalently all six exception masks set, DAZ/FTZ clear, reserved bits16-31 zero; rounding-control and existing sticky flags arbitrary). Runtime MXCSR is unmeasured; do not infer default 0x1f80.",
+      "outcome": "Candidate metadata only. Keep all matching rows unclassified and out of evidence_scope/proven_supported until state and profile disposition are accepted.",
+      "source": [
+        "docs/specs/CPU_CONTRACT.md:13219-13235",
+        "docs/reports/STAGE_2_REPORT.md:16415-16462"
+      ]
+    }
+  ],
   "explicit_profile_exclusions": [],
   "known_limit": "This candidate registry covers S2-08..21 local slices and selected CPL0/CPL3 profiles through S4-38L7as, but it is not a complete OS-userland allowlist or an exhaustive byte matcher. Some parent tasks remain open; local checks and physical mini-fixtures are not machine Linux userland acceptance. Exact unverified prefix/addressing/state gates remain unclassified. Nonmatches are never implied missing or unsupported."
 }

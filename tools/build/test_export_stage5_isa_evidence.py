@@ -74,6 +74,10 @@ class NormalizedFormTests(unittest.TestCase):
                 raw_source = fields.get("preserved_raw_path") or manifest["runs"][0]["output"]
                 generation_command = compact_fields.get("generation_command", compact_fields.get("compact_generation_command"))
                 self.assertIn(raw_source, generation_command)
+                issue_text = (repo_root / "docs/KNOWN_ISSUES.md").read_text()
+                self.assertIn(compact_sha, issue_text.splitlines()[44])
+                if full_key:
+                    self.assertIn("work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json", issue_text.splitlines()[45])
 
                 self.assertEqual(compact["normalized_instruction_form_count"], 1269)
                 self.assertEqual(len(compact["normalized_instruction_forms"]), 1269)
@@ -92,6 +96,23 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertEqual(fields.get("instructions", fields.get("instruction_rows")), expected_rows)
                 self.assertEqual(fields["classification_frequencies"]["proven_supported"], expected_supported_rows)
                 self.assertEqual(fields["classification_frequencies"]["unclassified"], expected_unclassified_rows)
+                self.assertEqual(fields["conditional_local_state_gated_candidate_rows"], 4)
+                self.assertEqual(fields["conditional_local_state_gated_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                })
+                self.assertEqual(fields["unique_instruction_rows_with_any_conditional_candidate"], 113159 if full_key else 113219)
+                self.assertEqual(fields["conditional_candidate_hit_count"], 113236 if full_key else 113296)
+                self.assertEqual(fields["conditional_cpl0_candidate_hits"], 113232 if full_key else 113292)
+                self.assertEqual(fields["conditional_candidate_supported_overlap_rows"], 40)
+                self.assertEqual(compact["binaries"]["gcc-cc1"]["conditional_local_state_gated_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                })
+                self.assertEqual(compact["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                })
+                self.assertEqual(compact["scenarios"]["C"]["conditional_local_candidate_frequencies"], {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 0,
+                })
                 self.assertEqual(fields["local_simd_logic_rows"], 2162)
                 self.assertEqual(fields["local_simd_logic_normalized_forms"], 10)
                 self.assertEqual(sum(fields["local_simd_logic_rows_by_profile"].values()), 2162)
@@ -142,6 +163,10 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("205 из 1 269 normalized forms (213 978 rootfs-only rows; 214 039 rows с E ELF)", report_status)
                 self.assertIn("6 294 355", local_scope_line)
                 self.assertIn("6 294 071", local_scope_line)
+                conditional_line = next(line for line in report_lines if line.startswith("| Local state-gated conditional candidate |"))
+                self.assertIn("4 MINSD register rows", conditional_line)
+                self.assertIn("113 296 hits / 113 219 unique rows", conditional_line)
+                self.assertIn("runtime MXCSR was not measured", conditional_line)
                 movsd_memory_report = next(line for line in report_lines if line.startswith("The accepted local-only S2-34.9c"))
                 self.assertIn("three bounded local-profile matches and 85 rows remain unclassified", movsd_memory_report)
                 self.assertIn("six-profile accepted local SIMD logic group of 1 858 rows plus PAND 304 rows (2 162 / 10 forms total)", local_scope_line)
@@ -185,9 +210,9 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("MOVSD S2-34.9c adds three exact `F2 0F 10 00` `[RAX]` m64 load rows", issue_section)
                 self.assertIn("3 supported and 85 unclassified", issue_section)
                 self.assertIn("four ISA checks (three load_rax plus decoder), one schema test and one fixture", issue_section)
-                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass1.json", issue_section)
+                self.assertIn("../work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json", issue_section)
                 if not full_key:
-                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-movss8c-e-pass1.json")
+                    self.assertEqual(fields.get("preserved_raw_path"), "work/stage5/s5-21/s5-21-isa-inventory-minsd37i-e-pass1.json")
                 stage2_plan = (repo_root / "docs/plans/STAGE_2.md").read_text()
                 self.assertIn("Independent review was pending at this implementation check", stage2_plan)
                 self.assertIn("fresh PAND-only independent review on 2026-11-12 passed three ISA checks, two testkit tests, and one fixture", stage2_plan)
@@ -195,10 +220,10 @@ class NormalizedFormTests(unittest.TestCase):
                 self.assertIn("there is no od-testkit PADDQ schema test (0 tests)", issue_section)
                 self.assertIn("Linux-gated assertion compiled but was not run on this Mac", issue_section)
                 for digest in (
-                    "958b8e4afa1224e222df278a4f48e59b2146d8bc4119f106fa419e5e1c91b6ef",
-                    "5d793a504b97e5160ab70f0085de4becdd9d1059a763ecf8e685abdb719d0525",
-                    "70ad4fd8ec2496ddcc5abdcceba71b90cd662024028c97c8e575524bfc244ed3",
-                    "1cea0cc94e27d4ab65d10c4588ae10c504a0b7a00c56895082936366a80e1081",
+                    "1975a4a61e67629866b2e73b4628b4f1db97bae26e27fc6d4273ae59386a9f05",
+                    "57f4a7212d9ba787b558020fb8e82d1b8d8681a2c6a922aa5020e48d1a683834",
+                    "55a26120a8d637a0503166f8a45602984e9f34607f342f3970d0f7e98e0b1a95",
+                    "a5b18254790f90edbffcb51c75590253eea3fd042871412cfda4b6fc49182ba9",
                 ):
                     self.assertIn(digest, issue_section)
                 self.assertIn("6 296 422 bounded-profile evidence, 213 978 unclassified", issue_section)
@@ -900,6 +925,58 @@ class NormalizedFormTests(unittest.TestCase):
         self.assertEqual(result["conditional_candidate_supported_overlap_rows"], 0)
         self.assertIn("bash", result["scenarios"]["C"]["binaries"])
         self.assertIn("bash", result["scenarios"]["D"]["binaries"])
+
+    def test_local_state_gated_candidate_is_separate_from_cpl0_candidate_counts(self) -> None:
+        candidate = exact_form([], "C8", {"form": "none", "size": None, "segment": None}, 4, "gcc-cc1", "unclassified")
+        candidate["dimensions"].update({
+            "opcode_bytes": ["0F", "5D"],
+            "modrm": {"raw": "C8", "mod": 3, "reg": 1, "rm": 0},
+            "operand_signature": "minsd xmm,xmm",
+        })
+        candidate["conditional_local_candidate_frequencies"] = {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        }
+        report = {
+            "source_image": {"sha256": "image-hash"},
+            "disassembler": {}, "profile_comparison": {},
+            "inventory": {
+                "encoding_forms": [candidate],
+                "instruction_count": 4,
+                "classification_frequencies": {"unclassified": 4},
+                "evidence_scope_frequencies": {},
+                "conditional_cpl0_candidate_frequencies": {"old-cpl0-candidate": 2},
+                "conditional_local_state_gated_candidate_frequencies": {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                },
+            },
+            "conditional_candidates": {"supported_overlap_rows": 40},
+            "binaries": [{
+                "name": "gcc-cc1", "image_path": "/usr/bin/cc1", "size_bytes": 100,
+                "sha256": "elf-hash", "elf_machine": "Advanced Micro Devices X86-64",
+                "build_id": "build-id", "instruction_count": 4,
+                "classification_frequencies": {"unclassified": 4},
+                "conditional_candidate_frequencies": {},
+                "conditional_local_candidate_frequencies": {
+                    "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+                },
+            }],
+        }
+        result = exporter.aggregate(report)
+        self.assertEqual(result["classification_frequencies"], {"unclassified": 4})
+        self.assertEqual(result["conditional_local_state_gated_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
+        self.assertEqual(result["conditional_cpl0_candidate_hit_count"], 2)
+        self.assertEqual(result["conditional_candidate_hit_count"], 6)
+        self.assertEqual(result["conditional_candidate_supported_overlap_rows"], 40)
+        self.assertEqual(result["conditional_local_state_gated_candidate_rows"], 4)
+        self.assertEqual(result["exact_instruction_rows_with_any_conditional_candidate"], 4)
+        self.assertEqual(result["binaries"]["gcc-cc1"]["conditional_local_state_gated_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
+        self.assertEqual(result["scenarios"]["D"]["conditional_local_candidate_frequencies"], {
+            "S2-37i-MINSD-XMM-register-masked-state-gated": 4,
+        })
 
     def test_e_static_inventory_is_separate_from_runtime_generated_code(self) -> None:
         exact = exact_form(["48"], "00", {"form": "base_only", "size": 64, "segment": None}, 7, "stage5-e-static", "unclassified")

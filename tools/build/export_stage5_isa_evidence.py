@@ -77,6 +77,7 @@ def aggregate(inventory: dict) -> dict:
             "evidence_scope_frequencies": Counter(),
             "profile_match_frequencies": Counter(),
             "conditional_candidate_frequencies": Counter(),
+            "conditional_local_candidate_frequencies": Counter(),
         })
         target["count"] += exact["count"]
         target["binary_frequencies"].update(exact["binary_frequencies"])
@@ -91,6 +92,7 @@ def aggregate(inventory: dict) -> dict:
         target["evidence_scope_frequencies"].update(exact["evidence_scope_frequencies"])
         target["profile_match_frequencies"].update(exact["profile_match_frequencies"])
         target["conditional_candidate_frequencies"].update(exact["conditional_candidate_frequencies"])
+        target["conditional_local_candidate_frequencies"].update(exact.get("conditional_local_candidate_frequencies", {}))
     normalized_forms = []
     for key, item in sorted(groups.items(), key=lambda pair: (-pair[1]["count"], pair[0])):
         normalized_forms.append({
@@ -105,6 +107,7 @@ def aggregate(inventory: dict) -> dict:
             "evidence_scope_frequencies": dict(sorted(item["evidence_scope_frequencies"].items())),
             "profile_match_frequencies": dict(sorted(item["profile_match_frequencies"].items())),
             "conditional_candidate_frequencies": dict(sorted(item["conditional_candidate_frequencies"].items())),
+            "conditional_local_candidate_frequencies": dict(sorted(item["conditional_local_candidate_frequencies"].items())),
         })
     by_binary = {}
     for binary in inventory["binaries"]:
@@ -122,6 +125,8 @@ def aggregate(inventory: dict) -> dict:
             "build_id": binary["build_id"],
             "instruction_count": binary["instruction_count"],
             "classification_frequencies": binary["classification_frequencies"],
+            "conditional_cpl0_candidate_frequencies": binary.get("conditional_candidate_frequencies", {}),
+            "conditional_local_state_gated_candidate_frequencies": binary.get("conditional_local_candidate_frequencies", {}),
             "unique_exact_encoding_forms": sum(binary["name"] in row["binary_frequencies"] for row in exact_forms),
             "unique_normalized_instruction_forms": len(records),
             "top_unclassified_forms": [
@@ -147,7 +152,7 @@ def aggregate(inventory: dict) -> dict:
             "conditional_candidate_instruction_rows": sum(
                 form["binary_frequencies"].get(name, 0)
                 for form in exact_forms
-                if form["conditional_candidate_frequencies"]
+                if form["conditional_candidate_frequencies"] or form.get("conditional_local_candidate_frequencies")
                 for name in names
             ),
             "conditional_candidate_frequencies": {
@@ -159,6 +164,17 @@ def aggregate(inventory: dict) -> dict:
                 )
                 for candidate in sorted({
                     key for form in exact_forms for key in form["conditional_candidate_frequencies"]
+                })
+            },
+            "conditional_local_candidate_frequencies": {
+                candidate: sum(
+                    form["binary_frequencies"].get(name, 0)
+                    for form in exact_forms
+                    if candidate in form.get("conditional_local_candidate_frequencies", {})
+                    for name in names
+                )
+                for candidate in sorted({
+                    key for form in exact_forms for key in form.get("conditional_local_candidate_frequencies", {})
                 })
             },
             "top_unclassified_forms": [{"instruction_form": form, "count": count} for form, count in rows[:25]],
@@ -205,10 +221,13 @@ def aggregate(inventory: dict) -> dict:
         "classification_frequencies": inventory["inventory"]["classification_frequencies"],
         "evidence_scope_frequencies": inventory["inventory"]["evidence_scope_frequencies"],
         "exact_instruction_rows_with_any_conditional_candidate": sum(
-            item["count"] for item in exact_forms if item["conditional_candidate_frequencies"]
+            item["count"] for item in exact_forms if item["conditional_candidate_frequencies"] or item.get("conditional_local_candidate_frequencies")
         ),
         "conditional_cpl0_candidate_frequencies": inventory["inventory"]["conditional_cpl0_candidate_frequencies"],
-        "conditional_candidate_hit_count": sum(inventory["inventory"]["conditional_cpl0_candidate_frequencies"].values()),
+        "conditional_local_state_gated_candidate_frequencies": inventory["inventory"].get("conditional_local_state_gated_candidate_frequencies", {}),
+        "conditional_candidate_hit_count": sum(inventory["inventory"]["conditional_cpl0_candidate_frequencies"].values()) + sum(inventory["inventory"].get("conditional_local_state_gated_candidate_frequencies", {}).values()),
+        "conditional_cpl0_candidate_hit_count": sum(inventory["inventory"]["conditional_cpl0_candidate_frequencies"].values()),
+        "conditional_local_state_gated_candidate_rows": sum(inventory["inventory"].get("conditional_local_state_gated_candidate_frequencies", {}).values()),
         "conditional_candidate_supported_overlap_rows": inventory.get("conditional_candidates", {}).get("supported_overlap_rows"),
         "exact_encoding_forms": [
             {
@@ -219,6 +238,7 @@ def aggregate(inventory: dict) -> dict:
                 "evidence_scope_frequencies": item["evidence_scope_frequencies"],
                 "profile_match_frequencies": item["profile_match_frequencies"],
                 "conditional_candidate_frequencies": item["conditional_candidate_frequencies"],
+                "conditional_local_candidate_frequencies": item.get("conditional_local_candidate_frequencies", {}),
             }
             for item in exact_forms
         ],

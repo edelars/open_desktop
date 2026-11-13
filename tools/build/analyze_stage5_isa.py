@@ -1216,6 +1216,22 @@ def cpl0_encoding_candidate(row: dict) -> str | None:
     return None
 
 
+def minsd_masked_register_local_candidate(row: dict) -> str | None:
+    """Recognize MINSD register bytes with a separately recorded MXCSR gate."""
+    if row["mnemonic"] != "minsd" or row["signature"] != "minsd xmm,xmm":
+        return None
+    view = opcode_view(row)
+    prefixes = tuple(view["prefixes"])
+    modrm = view["modrm"]
+    raw = row["byte_values"]
+    allowed_prefixes = {(0xF2,), (0xF2, 0x40), (0xF2, 0x41), (0xF2, 0x44), (0xF2, 0x45)}
+    if prefixes not in allowed_prefixes or view["opcode"] != (0x0F, 0x5D):
+        return None
+    if modrm is None or modrm >> 6 != 3 or len(raw) != len(prefixes) + 3:
+        return None
+    return "S2-37i-MINSD-XMM-register-masked-state-gated"
+
+
 def cpl0_l7_candidates(row: dict) -> list[str]:
     """Return exact opcode/prefix/operand candidate IDs for bounded S4-38L7 forms."""
     v = opcode_view(row)
@@ -1499,6 +1515,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
     mnemonics: Counter = Counter()
     conditional_candidate_unique_rows = 0
     conditional_candidate_supported_overlap_rows = 0
+    local_conditional_candidate_unique_rows = 0
     current = None
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert process.stdout is not None
@@ -1508,7 +1525,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
             if record["name"] == "stage5-e-static" and record["sha256"] != STAGE5_E_STATIC_SHA256:
                 raise RuntimeError("copied Stage 5 E ELF hash differs from the pinned static input")
             meta[i] = record
-            per_binary[i] = {"count": 0, "nondecoded_byte_rows": 0, "nondecoded_samples": [], "forms": Counter(), "mnemonics": Counter(), "classifications": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter()}
+            per_binary[i] = {"count": 0, "nondecoded_byte_rows": 0, "nondecoded_samples": [], "forms": Counter(), "mnemonics": Counter(), "classifications": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter(), "local_conditional_candidates": Counter()}
         elif line.startswith("S5BEGIN\t"):
             current = int(line.split("\t", 1)[1])
         elif line.startswith("S5END\t"):
@@ -1532,6 +1549,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
             cpl0_candidate = cpl0_encoding_candidate(row)
             l7_candidates = cpl0_l7_candidates(row)
             misc_cpl0_candidates = cpl0_misc_candidates(row)
+            local_conditional_candidate = minsd_masked_register_local_candidate(row)
             dimensions = instruction_dimensions(row)
             encoding_key = dimensions["encoding_key"]
             machine_matches = [item for item in exact_candidates if item["evidence_scope"] == "machine_cpl3_profile"]
@@ -1553,12 +1571,15 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
                 classification = "unclassified"
                 evidence_scope = None
                 reason = "no exact accepted profile match"
-            has_conditional_candidate = bool(cpl0_candidate or l7_candidates or misc_cpl0_candidates or composed_exact)
+            has_cpl0_candidate = bool(cpl0_candidate or l7_candidates or misc_cpl0_candidates or composed_exact)
+            has_conditional_candidate = has_cpl0_candidate or local_conditional_candidate is not None
             if has_conditional_candidate:
                 conditional_candidate_unique_rows += 1
                 if classification == "proven_supported":
                     conditional_candidate_supported_overlap_rows += 1
-            form = forms.setdefault(row["signature"], {"count": 0, "binaries": Counter(), "samples": [], "classification_counts": Counter(), "evidence_scopes": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter(), "reasons": Counter()})
+            if local_conditional_candidate:
+                local_conditional_candidate_unique_rows += 1
+            form = forms.setdefault(row["signature"], {"count": 0, "binaries": Counter(), "samples": [], "classification_counts": Counter(), "evidence_scopes": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter(), "local_conditional_candidates": Counter(), "reasons": Counter()})
             form["count"] += 1
             form["binaries"][meta[current]["name"]] += 1
             form["classification_counts"][classification] += 1
@@ -1586,7 +1607,10 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
                 entry["conditional_candidates"][candidate] += 1
                 form["profile_matches"][match["task"]] += 1
                 entry["profile_matches"][match["task"]] += 1
-            encoded = encoding_forms.setdefault(encoding_key, {"dimensions": dimensions, "count": 0, "binaries": Counter(), "classification_counts": Counter(), "evidence_scopes": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter(), "samples": []})
+            if local_conditional_candidate:
+                form["local_conditional_candidates"][local_conditional_candidate] += 1
+                entry["local_conditional_candidates"][local_conditional_candidate] += 1
+            encoded = encoding_forms.setdefault(encoding_key, {"dimensions": dimensions, "count": 0, "binaries": Counter(), "classification_counts": Counter(), "evidence_scopes": Counter(), "profile_matches": Counter(), "conditional_candidates": Counter(), "local_conditional_candidates": Counter(), "samples": []})
             encoded["count"] += 1
             encoded["binaries"][meta[current]["name"]] += 1
             encoded["classification_counts"][classification] += 1
@@ -1602,6 +1626,8 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
                 encoded["conditional_candidates"][candidate] += 1
             for match in composed_exact:
                 encoded["conditional_candidates"][f"{match['task']} (CPL0 gate conditional)"] += 1
+            if local_conditional_candidate:
+                encoded["local_conditional_candidates"][local_conditional_candidate] += 1
             if len(encoded["samples"]) < 3:
                 encoded["samples"].append({"binary": meta[current]["name"], "address": row["address"], "bytes": row["bytes"], "assembly": row["mnemonic"] + (" " + row["operands"] if row["operands"] else "")})
             if len(form["samples"]) < 4:
@@ -1616,7 +1642,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
             summary_class = next(iter(counts))
         else:
             summary_class = "mixed"
-        all_forms.append({"signature": signature, "count": data["count"], "binary_frequencies": dict(sorted(data["binaries"].items())), "classification": summary_class, "classification_frequencies": counts, "evidence_scope_frequencies": dict(sorted(data["evidence_scopes"].items())), "profile_match_frequencies": dict(sorted(data["profile_matches"].items())), "conditional_candidate_frequencies": dict(sorted(data["conditional_candidates"].items())), "classification_reasons": dict(data["reasons"]), "sample_raw_rows": data["samples"]})
+        all_forms.append({"signature": signature, "count": data["count"], "binary_frequencies": dict(sorted(data["binaries"].items())), "classification": summary_class, "classification_frequencies": counts, "evidence_scope_frequencies": dict(sorted(data["evidence_scopes"].items())), "profile_match_frequencies": dict(sorted(data["profile_matches"].items())), "conditional_candidate_frequencies": dict(sorted(data["conditional_candidates"].items())), "conditional_local_candidate_frequencies": dict(sorted(data["local_conditional_candidates"].items())), "classification_reasons": dict(data["reasons"]), "sample_raw_rows": data["samples"]})
     all_encoding_forms = []
     for key, data in sorted(encoding_forms.items(), key=lambda pair: (-pair[1]["count"], pair[0])):
         all_encoding_forms.append({
@@ -1628,6 +1654,7 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
             "evidence_scope_frequencies": dict(sorted(data["evidence_scopes"].items())),
             "profile_match_frequencies": dict(sorted(data["profile_matches"].items())),
             "conditional_candidate_frequencies": dict(sorted(data["conditional_candidates"].items())),
+            "conditional_local_candidate_frequencies": dict(sorted(data["local_conditional_candidates"].items())),
             "sample_raw_rows": data["samples"],
         })
     binaries = []
@@ -1643,15 +1670,18 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
         item["classification_frequencies"] = dict(sorted(per_binary[i]["classifications"].items()))
         item["profile_match_frequencies"] = dict(sorted(per_binary[i]["profile_matches"].items()))
         item["conditional_candidate_frequencies"] = dict(sorted(per_binary[i]["conditional_candidates"].items()))
+        item["conditional_local_candidate_frequencies"] = dict(sorted(per_binary[i]["local_conditional_candidates"].items()))
         binaries.append(item)
     count = sum(item["instruction_count"] for item in binaries)
     classification_totals = Counter()
     evidence_scope_totals = Counter()
     conditional_totals = Counter()
+    local_conditional_totals = Counter()
     for data in forms.values():
         classification_totals.update(data["classification_counts"])
         evidence_scope_totals.update(data["evidence_scopes"])
         conditional_totals.update(data["conditional_candidates"])
+        local_conditional_totals.update(data["local_conditional_candidates"])
     return {
         "schema_version": 2,
         "analysis": "GNU objdump disassembles each target executable statically; this analyzer does not execute any target ELF.",
@@ -1659,10 +1689,10 @@ def analyze(image: Path, cache: Path, lock: dict, stage5_e_static_elf: Path | No
         "external_inputs": [] if stage5_e_static_elf is None else [{"name": "stage5-e-static", "path": stage5_e_static_elf.relative_to(ROOT).as_posix(), "sha256": digest(stage5_e_static_elf), "source_c_path": "tests/fixtures/guest/stage5/stage5_e.c", "source_c_sha256": STAGE5_E_SOURCE_SHA256, "build": "pinned Stage 5 guest rootfs GCC 15.2.0-16ubuntu1; ELF is statically disassembled only, not executed"}],
         "disassembler": {"binary": "x86_64-linux-gnu-objdump", "version": lock["tool_version"], "host": "linux/arm64", "builder_image": BUILDER, "command": "x86_64-linux-gnu-objdump -d --insn-width=16 -M intel <debugfs-dumped-ELF-or-mounted-external-ELF>"},
         "profile_comparison": {"accepted_profile_file": str(PROFILE_PATH.relative_to(ROOT)), "registry_complete": registry["registry_complete"], "policy": registry["classification_policy"], "scopes": ["local_interpreter_profile", "composed_cpl0_profile", "machine_cpl3_profile"], "scope_labels_are_nonexclusive": True, "conditional_candidates_can_overlap_supported_rows": True, "limitation": registry["known_limit"]},
-        "conditional_candidates": {"unique_instruction_rows": conditional_candidate_unique_rows, "supported_overlap_rows": conditional_candidate_supported_overlap_rows, "hit_count": sum(conditional_totals.values()), "candidate_labels_are_nonexclusive": True},
+        "conditional_candidates": {"unique_instruction_rows": conditional_candidate_unique_rows, "supported_overlap_rows": conditional_candidate_supported_overlap_rows, "hit_count": sum(conditional_totals.values()) + sum(local_conditional_totals.values()), "candidate_labels_are_nonexclusive": True, "local_state_gated_unique_instruction_rows": local_conditional_candidate_unique_rows},
         "binaries": binaries,
         "scenario_inventory": scenario_summaries(binaries),
-        "inventory": {"instruction_count": count, "unique_mnemonics": len(mnemonics), "unique_form_signatures": len(forms), "unique_encoding_forms": len(encoding_forms), "classification_frequencies": dict(sorted(classification_totals.items())), "evidence_scope_frequencies": dict(sorted(evidence_scope_totals.items())), "conditional_cpl0_candidate_frequencies": dict(sorted(conditional_totals.items())), "mnemonic_frequencies": dict(sorted(mnemonics.items(), key=lambda p: (-p[1], p[0]))), "forms": all_forms, "encoding_forms": all_encoding_forms},
+        "inventory": {"instruction_count": count, "unique_mnemonics": len(mnemonics), "unique_form_signatures": len(forms), "unique_encoding_forms": len(encoding_forms), "classification_frequencies": dict(sorted(classification_totals.items())), "evidence_scope_frequencies": dict(sorted(evidence_scope_totals.items())), "conditional_cpl0_candidate_frequencies": dict(sorted(conditional_totals.items())), "conditional_local_state_gated_candidate_frequencies": dict(sorted(local_conditional_totals.items())), "mnemonic_frequencies": dict(sorted(mnemonics.items(), key=lambda p: (-p[1], p[0]))), "forms": all_forms, "encoding_forms": all_encoding_forms},
     }
 
 
