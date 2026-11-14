@@ -2200,6 +2200,13 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// S4-39c: whether the set was built [`Self::with_user_mode`]. The board reads it to decide
+    /// whether a committed return to CPL3 ([`Cpl0ProfileSetExit::UserModeEntered`]) continues
+    /// with the CPL3 entry.
+    pub const fn has_user_mode(&self) -> bool {
+        self.user_mode
+    }
+
     /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
     /// the set delivers no interrupt (STI exists only under [`Self::with_sti`], S4-38L7bp, and
     /// models the instruction, not the delivery), so HLT cannot resume itself.
@@ -21171,6 +21178,13 @@ fn run_cpl0_profile_set_inner(
         return Err(Error::WrongMode);
     }
     if config.context.privilege != required_privilege {
+        return Err(Error::WrongPrivilege);
+    }
+    // S4-39c (review S4-39b, note 3): a CPL0 entry never runs a state whose CS selector has
+    // RPL 3 (the state a committed `IRETQ` to CPL3 leaves): user code would execute in Ring0.
+    if required_privilege == PrivilegeLevel::Ring0
+        && state.cs_selector.is_some_and(|selector| selector & 3 == 3)
+    {
         return Err(Error::WrongPrivilege);
     }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
@@ -54607,6 +54621,12 @@ fn iretq_cpl0(
             rsp: new_rsp,
             ss: ss_selector,
         }));
+    }
+    // S4-39c (review S4-39b, note 2): a committed return must leave a state the CPL3 entry
+    // admits, which needs a CS cache with DPL 3. A conforming CS with DPL < 3 passes the
+    // outer-level check above (DPL <= RPL) but is refused here, before any write.
+    if user && cs_dpl != 3 {
+        return Ok(IretqCpl0::NotModeled);
     }
     if user && !user_return_data_segments_admitted(state) {
         return Ok(IretqCpl0::NotModeled);

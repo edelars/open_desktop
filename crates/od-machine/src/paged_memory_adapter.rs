@@ -9,10 +9,10 @@ use crate::{
     TrackedAccessRequest,
 };
 use od_isa::execute::{
-    Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, InvlpgExit, InvlpgLong64V1,
-    InvlpgResult, RunConfig, RunExit, RunInputError, RunResult, TranslationContextChange,
-    run_with_cpl0_profile_set_and_pio, step_invlpg as cpu_step_invlpg,
-    step_paged_mov as cpu_step_paged_mov,
+    Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, Cpl0ProfileSetResult, InvlpgExit,
+    InvlpgLong64V1, InvlpgResult, RunConfig, RunExit, RunInputError, RunResult,
+    TranslationContextChange, run_with_cpl0_profile_set_and_pio, run_with_cpl3_profile_set,
+    step_invlpg as cpu_step_invlpg, step_paged_mov as cpu_step_paged_mov,
 };
 use od_isa::execute::{
     PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordFetchLong64V1,
@@ -650,6 +650,9 @@ pub(crate) struct PagedCpl0SetReport {
     pub(crate) delivered_exceptions: u64,
     /// S4-13: the counters of the call's fetch translation cache (`None` without one).
     pub(crate) fetch_cache_stats: Option<FetchCacheStats>,
+    /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
+    /// call; part of `instructions_executed`. Always 0 unless the set is `with_user_mode`.
+    pub(crate) cpl3_retired: u64,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -757,10 +760,15 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 cr3,
                 delivered_exceptions: 0,
                 fetch_cache_stats: None,
+                cpl3_retired: 0,
             };
         }
     };
     let mut instructions_executed = 0u64;
+    let mut cpl3_retired = 0u64;
+    // S4-39c: under `with_user_mode` a committed `IRETQ` to CPL3 does not end the run: the loop
+    // continues with the CPL3 entry on the same state. Without the member there is no CPL3 state.
+    let user_mode = set.has_user_mode();
     let mut current_rflags_defined = rflags_defined;
     let mut changes = Vec::new();
     // CR3 of the last retired MOV CR3 (the initial root before any), independent of
@@ -792,6 +800,27 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 None,
             );
         }
+        // S4-39c: the entry follows the CPL of the state (the RPL of the CS selector). RPL 3 is
+        // the CPL3 entry under `with_user_mode`; without it a CS with RPL 3 is refused before
+        // anything runs, so user code never executes through the CPL0 entry (review S4-39b, 3).
+        // Everything below (IRQ delivery, peeks, fault delivery) uses the privilege of the entry:
+        // delivery from CPL3 is refused by the set (`NotRing0Long64`, S4-39d/g).
+        let cpl3 = state.cs_selector.is_some_and(|selector| selector & 3 == 3);
+        if cpl3 && !user_mode {
+            break (
+                PagedCpl0SetExit::Rejected(Cpl0ProfileSetInputError::WrongPrivilege),
+                None,
+                None,
+            );
+        }
+        let context = if cpl3 {
+            AccessContext {
+                privilege: od_isa::memory::PrivilegeLevel::Ring3,
+                ..context
+            }
+        } else {
+            context
+        };
         if let Some(hook) = irq.as_mut()
             && let Some(failed) = deliver_pending_irq(
                 hook,
@@ -832,22 +861,46 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             &mut watch,
             cache.as_ref(),
         );
-        let result = run_with_cpl0_profile_set_and_pio(
-            state,
-            &mut memory,
-            RunConfig {
-                instruction_budget: 1,
-                stop_rip: None,
-                context,
-            },
-            current_rflags_defined,
-            set,
-            rdtsc
-                .as_mut()
-                .map(|source| &mut **source as &mut dyn FnMut() -> u64),
-            &mut port,
-            || false,
-        );
+        let run_config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        };
+        let rdtsc_source = rdtsc
+            .as_mut()
+            .map(|source| &mut **source as &mut dyn FnMut() -> u64);
+        let result = if cpl3 {
+            // The CPL3 entry has no port and only ever returns `Run` (S4-39a).
+            run_with_cpl3_profile_set(
+                state,
+                &mut memory,
+                run_config,
+                current_rflags_defined,
+                set,
+                rdtsc_source,
+                || false,
+            )
+            .map(|done| Cpl0ProfileSetResult {
+                exit: match done.exit {
+                    Cpl0ProfileSetExit::Run(run) => Cpl0ProfileSetExit::Run(run),
+                    // Not reachable (the entry never returns another exit); an honest stop.
+                    _ => Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x0f }),
+                },
+                instructions_executed: done.instructions_executed,
+                rflags_defined: done.rflags_defined,
+            })
+        } else {
+            run_with_cpl0_profile_set_and_pio(
+                state,
+                &mut memory,
+                run_config,
+                current_rflags_defined,
+                set,
+                rdtsc_source,
+                &mut port,
+                || false,
+            )
+        };
         if pit_write_ends_quantum && port.pit_written {
             pit_write_pending = true;
         }
@@ -954,6 +1007,9 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             Err(error) => break (PagedCpl0SetExit::Rejected(error), page_fault, memory_error),
         };
         instructions_executed += result.instructions_executed;
+        if cpl3 {
+            cpl3_retired += result.instructions_executed;
+        }
         current_rflags_defined = result.rflags_defined;
         // S4-13: a retired `MOV CR3` (or any other translation context change) invalidates
         // every cached fetch translation.
@@ -984,6 +1040,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         cr3: reported_cr3,
         delivered_exceptions,
         fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
+        cpl3_retired,
     }
 }
 
@@ -1199,6 +1256,10 @@ fn handle_set_exit(
         Cpl0ProfileSetExit::Run(exit) => Some(PagedCpl0SetExit::Run(exit)),
         Cpl0ProfileSetExit::PortIo(error) => Some(PagedCpl0SetExit::PortIo(error)),
         Cpl0ProfileSetExit::UserEntry(entry) => Some(PagedCpl0SetExit::UserEntry(entry)),
+        // S4-39c: the committed `IRETQ` retired and left a CPL3 state; the loop goes on with the
+        // CPL3 entry. The exit only exists for a set `with_user_mode`, which is also what
+        // lets the loop take the CPL3 branch (otherwise the next boundary refuses the state).
+        Cpl0ProfileSetExit::UserModeEntered(_) => None,
         // `Cpl0ProfileSetExit` is `#[non_exhaustive]`: an exit this board does not know
         // cannot be resumed from, so it ends the run as unhandled.
         _ => Some(PagedCpl0SetExit::UnknownSetExit),
