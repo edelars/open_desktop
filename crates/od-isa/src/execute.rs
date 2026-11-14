@@ -21131,6 +21131,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// (`movq $-0x64, %rdi`) of `/init` after its second `SYSCALL`. `C7 /0` without REX.W (MOV r/m32,
 /// imm32), a memory operand and `C6 /0` (MOV r/m8, imm8) stay outside.
 ///
+/// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
+/// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
+/// its `read` `SYSCALL`. `85` without REX.W (TEST r/m32, r32), a memory operand, `84`
+/// (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
@@ -21173,6 +21178,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
                 src: Operand::Register(_),
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0x85,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.base == AddressBase::NextRip

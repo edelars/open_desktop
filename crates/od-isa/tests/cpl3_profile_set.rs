@@ -411,6 +411,57 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("repne xor eax, eax", &[0xf2, 0x31, 0xc0], 0x31),
         ("rep xor eax, eax", &[0xf3, 0x31, 0xc0], 0x31),
         ("lock xor eax, eax (register)", &[0xf0, 0x31, 0xc0], 0x31),
+        // S4-39f4: `REX.W 85 /r` in the register form is allowed; the variants below stay outside.
+        ("test eax, eax (85 /r, no REX.W)", &[0x85, 0xc0], 0x85),
+        (
+            "test r8d, r9d (85 /r, REX.RB without W)",
+            &[0x45, 0x85, 0xc8],
+            0x85,
+        ),
+        ("test [rax], eax (85 /r, memory)", &[0x85, 0x00], 0x85),
+        (
+            "test [rax], rax (REX.W 85 /r, memory)",
+            &[0x48, 0x85, 0x00],
+            0x85,
+        ),
+        (
+            "test [rip+0], rax (REX.W 85 /r, RIP-relative)",
+            &[0x48, 0x85, 0x05, 0, 0, 0, 0],
+            0x85,
+        ),
+        (
+            "test ax, ax (66 REX.W 85 /r)",
+            &[0x66, 0x48, 0x85, 0xc0],
+            0x85,
+        ),
+        ("lock test rax, rax", &[0xf0, 0x48, 0x85, 0xc0], 0x85),
+        ("fs test rax, rax", &[0x64, 0x48, 0x85, 0xc0], 0x85),
+        ("addr32 test rax, rax", &[0x67, 0x48, 0x85, 0xc0], 0x85),
+        ("repne test rax, rax", &[0xf2, 0x48, 0x85, 0xc0], 0x85),
+        ("rep test rax, rax", &[0xf3, 0x48, 0x85, 0xc0], 0x85),
+        ("test al, al (84 /r)", &[0x84, 0xc0], 0x84),
+        ("test eax, imm32 (A9)", &[0xa9, 1, 0, 0, 0], 0xa9),
+        (
+            "test rax, imm32 (REX.W A9)",
+            &[0x48, 0xa9, 1, 0, 0, 0],
+            0xa9,
+        ),
+        // S4-39f3 review gap: C7 /0 with the remaining prefixes stays outside.
+        (
+            "gs mov rdi, imm32 (65 REX.W C7 /0)",
+            &[0x65, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "repne mov rdi, imm32 (F2 REX.W C7 /0)",
+            &[0xf2, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
+        (
+            "lock mov rdi, imm32 (F0 REX.W C7 /0)",
+            &[0xf0, 0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00],
+            0xc7,
+        ),
         ("mov rbx, rax", &[0x48, 0x89, 0xc3], 0x89),
         // Prefixed variants of the allowed forms and a different operand size.
         (
@@ -843,6 +894,13 @@ fn mov_r64_imm32_sign_extends_and_leaves_everything_else_unchanged() {
             15,
             0x0000_0000_1234_5678,
         ),
+        // S4-39f3 review gap: REX.W + REX.X with mod = 11 (X is ignored without a SIB byte).
+        (
+            "4a c7 c0 imm32 (REX.WX, rax)",
+            &[0x4a, 0xc7, 0xc0, 0x9c, 0xff, 0xff, 0xff],
+            0,
+            0xffff_ffff_ffff_ff9c,
+        ),
         // REX.W + REX.R (ignored by /0: ModRM.reg is the opcode extension) + REX.B.
         (
             "4d c7 c2 imm32 (REX.WRB, r10)",
@@ -920,5 +978,129 @@ fn init_path_after_mount_runs_in_ring3_up_to_the_openat_syscall() {
     assert_eq!(state.gpr[Register::Rax as usize], 0x101);
     assert_eq!(state.rflags & (CF | OF | SF), 0);
     assert_eq!(state.rflags & (ZF | PF), ZF | PF);
+    assert_eq!(memory.accesses, 0);
+}
+
+// ---- S4-39f4: `REX.W 85 /r` (TEST r/m64, r64), register form ----
+
+#[test]
+fn test_r64_register_form_sets_flags_and_writes_no_result() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, first register index, its value, second register index, its value, flags)
+    // The flags are those of `first & second`; CF = OF = 0.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, usize, u64, u64)] = &[
+        // `/init` at 0x4000ff: testq %rax, %rax with a negative value (read returned -errno).
+        (
+            "48 85 c0 negative",
+            &[0x48, 0x85, 0xc0],
+            0,
+            0xffff_ffff_ffff_fff2,
+            0,
+            0xffff_ffff_ffff_fff2,
+            SF,
+        ),
+        // Zero: ZF and PF.
+        ("48 85 c0 zero", &[0x48, 0x85, 0xc0], 0, 0, 0, 0, ZF | PF),
+        // Positive with an odd number of bits in the low byte: no flag.
+        ("48 85 c0 positive", &[0x48, 0x85, 0xc0], 0, 1, 0, 1, 0),
+        // The high half decides SF and ZF (a 32-bit test would see zero here).
+        (
+            "48 85 c0 high half only",
+            &[0x48, 0x85, 0xc0],
+            0,
+            0x8000_0000_0000_0000,
+            0,
+            0x8000_0000_0000_0000,
+            SF | PF,
+        ),
+        (
+            "48 85 c0 bit 32 only",
+            &[0x48, 0x85, 0xc0],
+            0,
+            0x1_0000_0000,
+            0,
+            0x1_0000_0000,
+            PF,
+        ),
+        // testq %rbx, %rcx with disjoint bits: ZF, PF.
+        (
+            "48 85 d9 disjoint",
+            &[0x48, 0x85, 0xd9],
+            1,
+            0xf0f0_f0f0_f0f0_f0f0,
+            3,
+            0x0f0f_0f0f_0f0f_0f0f,
+            ZF | PF,
+        ),
+        // REX.WRB: testq %r9, %r10 (4d 85 ca): rm = r10, reg = r9.
+        (
+            "4d 85 ca REX.WRB",
+            &[0x4d, 0x85, 0xca],
+            10,
+            0x8000_0000_0000_0003,
+            9,
+            0xc000_0000_0000_0001,
+            SF,
+        ),
+        // REX.WR only: testq %r8, %rax (4c 85 c0): rm = rax, reg = r8.
+        ("4c 85 c0 REX.WR", &[0x4c, 0x85, 0xc0], 0, 0x7, 8, 0x6, PF),
+        // REX.WB only: testq %rax, %r15 (49 85 c7): rm = r15, reg = rax.
+        (
+            "49 85 c7 REX.WB",
+            &[0x49, 0x85, 0xc7],
+            15,
+            0x100,
+            0,
+            0x100,
+            // The low byte of 0x100 is zero (even parity: PF), SF and ZF clear.
+            PF,
+        ),
+    ];
+    for (name, bytes, a, a_value, b, b_value, flags) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        state.gpr[*a] = *a_value;
+        state.gpr[*b] = *b_value;
+        // CF, OF, SF, ZF, PF, AF all set before: TEST clears CF/OF and recomputes SF/ZF/PF.
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        expected.rip = RIP + bytes.len() as u64;
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        // No register changes (the result is not written), RIP advances by the length.
+        assert_eq!(state.gpr, expected.gpr, "{name}");
+        assert_eq!(state.rip, expected.rip, "{name}");
+        let arithmetic = state.rflags & ARITH;
+        assert_eq!(arithmetic & (CF | OF), 0, "{name}");
+        assert_eq!(arithmetic & (SF | ZF | PF), *flags, "{name}");
+        // The non-arithmetic flags (IF, the reserved bit 1) stay.
+        assert_eq!(state.rflags & !ARITH, expected.rflags & !ARITH, "{name}");
+        // AF is undefined after TEST (SDM, from memory): it leaves the defined set, like XOR.
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !AF, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn test_r64_allowed_then_forbidden_form_keeps_the_retired_state() {
+    // `testq %rax, %rax` retires, `js rel32` (`0f 88`, a conditional jump) stops the run.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0xffff_ffff_ffff_fff2;
+    let mut memory = Memory::code(&[0x48, 0x85, 0xc0, 0x0f, 0x88, 0x0c, 0x01, 0x00, 0x00]);
+    let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x88 });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.rflags & (SF | ZF | CF | OF), SF);
     assert_eq!(memory.accesses, 0);
 }
