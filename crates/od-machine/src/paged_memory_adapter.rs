@@ -631,6 +631,52 @@ fn iretq_at_rip(
     byte_at(0) == Some(0x48) && byte_at(1) == Some(0xCF)
 }
 
+/// S4-39f: whether the instruction at `rip` is exactly `SYSRETQ` (`48 0F 07`). The same read-only
+/// walk as [`iretq_at_rip`] (no accessed/dirty bit, RAM only, `rip` is the instruction RIP); an
+/// untranslatable byte is `false`. Called only after a committed return to CPL3, to tell the
+/// SYSRET of a system call from an `IRETQ`.
+fn sysretq_at(
+    rip: u64,
+    bus: &mut MachineBus,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    cache: Option<&FetchTranslationCache>,
+) -> bool {
+    let (memory, _) = bus.split_for_pio_step();
+    let mut byte_at = |offset: u64| -> Option<u8> {
+        let linear = rip.wrapping_add(offset);
+        if let Some(byte) = cache
+            .and_then(|cache| cache.lookup(linear, paging, context))
+            .and_then(|frame| memory.read_ram_frame_u8(frame, linear))
+        {
+            return Some(byte);
+        }
+        let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            rip,
+            GuestLinearAddress::new(linear),
+            context,
+            od_isa::memory::AccessKind::Fetch,
+        )
+        .ok()?;
+        memory.read_u8(physical).ok()
+    };
+    byte_at(0) == Some(0x48) && byte_at(1) == Some(0x0F) && byte_at(2) == Some(0x07)
+}
+
+/// S4-39f: what the board loop saw of a system call: the `SYSCALL` that entered the kernel (RAX
+/// is the number, RCX the return address) and the `SYSRETQ` that returned (RAX the result).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SyscallEvent {
+    Enter { nr: u64, rip: u64 },
+    Exit { rax: u64 },
+}
+
+/// The events one call of the set loop keeps at most (the oldest are dropped; the board journal
+/// is a ring too).
+const SYSCALL_EVENTS_PER_CALL: usize = 64;
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PagedCpl0SetReport {
     pub(crate) exit: PagedCpl0SetExit,
@@ -653,6 +699,8 @@ pub(crate) struct PagedCpl0SetReport {
     /// S4-39c: instructions retired through the CPL3 entry (`run_with_cpl3_profile_set`) in this
     /// call; part of `instructions_executed`. Always 0 unless the set is `with_user_mode`.
     pub(crate) cpl3_retired: u64,
+    /// S4-39f: the `SYSCALL` / `SYSRETQ` pairs of this call, in order (only with `with_user_mode`).
+    pub(crate) syscall_events: Vec<SyscallEvent>,
 }
 
 /// Run the CPL0 profile set through the RAM-only 4 KiB/2 MiB tracked walker,
@@ -761,9 +809,11 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
                 delivered_exceptions: 0,
                 fetch_cache_stats: None,
                 cpl3_retired: 0,
+                syscall_events: Vec::new(),
             };
         }
     };
+    let mut syscall_events = std::collections::VecDeque::new();
     let mut instructions_executed = 0u64;
     let mut cpl3_retired = 0u64;
     // S4-39c: under `with_user_mode` a committed `IRETQ` to CPL3 does not end the run: the loop
@@ -873,6 +923,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         let rdtsc_source = rdtsc
             .as_mut()
             .map(|source| &mut **source as &mut dyn FnMut() -> u64);
+        let rax_before = state.gpr[od_isa::Register::Rax as usize];
         let result = if cpl3 {
             // The CPL3 entry has no port and only ever returns `Run` (S4-39a).
             run_with_cpl3_profile_set(
@@ -1010,6 +1061,35 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
             Ok(result) => result,
             Err(error) => break (PagedCpl0SetExit::Rejected(error), page_fault, memory_error),
         };
+        // S4-39f: the syscall journal. A retired instruction of the CPL3 entry that left CPL3 is
+        // the `SYSCALL` (the only form of the allow-list that changes the CPL); a committed
+        // return to CPL3 from the CPL0 entry is a `SYSRETQ` when the instruction is one (an
+        // `IRETQ` return is not a system call).
+        if user_mode && result.instructions_executed == 1 {
+            let event = if cpl3 {
+                state
+                    .cs_selector
+                    .is_some_and(|selector| selector & 3 != 3)
+                    .then_some(SyscallEvent::Enter {
+                        nr: rax_before,
+                        rip: state.gpr[od_isa::Register::Rcx as usize],
+                    })
+            } else if matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_))
+                && sysretq_at(instruction_rip, bus, &paging, context, cache.as_ref())
+            {
+                Some(SyscallEvent::Exit {
+                    rax: state.gpr[od_isa::Register::Rax as usize],
+                })
+            } else {
+                None
+            };
+            if let Some(event) = event {
+                if syscall_events.len() == SYSCALL_EVENTS_PER_CALL {
+                    syscall_events.pop_front();
+                }
+                syscall_events.push_back(event);
+            }
+        }
         instructions_executed += result.instructions_executed;
         if cpl3 {
             cpl3_retired += result.instructions_executed;
@@ -1045,6 +1125,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cpuid_boundary(
         delivered_exceptions,
         fetch_cache_stats: cache.as_ref().map(FetchTranslationCache::stats),
         cpl3_retired,
+        syscall_events: syscall_events.into_iter().collect(),
     }
 }
 

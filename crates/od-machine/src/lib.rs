@@ -144,7 +144,8 @@ pub use linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_h
 pub use linux_direct::{
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone, LinuxStopInputs,
-    LinuxStopRecord, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
+    LinuxStopRecord, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
+    load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_user_mode,
 };
 

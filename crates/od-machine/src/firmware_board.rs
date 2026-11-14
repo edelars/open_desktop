@@ -863,6 +863,9 @@ pub(crate) struct LinuxSetRunReport {
     /// Instructions retired through the CPL3 entry in this call (S4-39c, `with_user_mode`); part
     /// of `run.retired`. `0` for a set without the member.
     pub(crate) cpl3_retired: u64,
+    /// The system calls of this call (S4-39f, `with_user_mode`): `SYSCALL` entries and `SYSRETQ`
+    /// returns, as a ring of the last entries. Empty for a set without the member.
+    pub(crate) syscall_journal: crate::linux_direct::SyscallJournal,
     /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
@@ -1566,6 +1569,7 @@ impl LoadedFirmwareBoard {
         let mut changes: Vec<TranslationContextChange> = Vec::new();
         let mut exceptions_delivered = 0u64;
         let mut cpl3_retired = 0u64;
+        let mut syscall_journal = crate::linux_direct::SyscallJournal::default();
         self.com1_log.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
@@ -1665,6 +1669,9 @@ impl LoadedFirmwareBoard {
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
             cpl3_retired += report.cpl3_retired;
+            for event in &report.syscall_events {
+                syscall_journal.record(*event);
+            }
             if let Some(nvme) = &nvme {
                 nvme.service(&mut self.bus, |_| {});
             }
@@ -1772,6 +1779,7 @@ impl LoadedFirmwareBoard {
             cpuid_divergence_leaf,
             user_entry,
             cpl3_retired,
+            syscall_journal,
             exceptions_delivered,
             irq: irq_counters,
         })

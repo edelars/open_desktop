@@ -21005,6 +21005,10 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// executes nothing. The run uses single-instruction steps of the CPL0 loop, so the STOP
 /// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
 /// `IRETQ` boundary are never reached because they are not allow-listed.
+///
+/// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
+/// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
+/// entry on the same state.
 pub fn run_with_cpl3_profile_set(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -21070,12 +21074,23 @@ pub fn run_with_cpl3_profile_set(
         };
         retired += result.instructions_executed;
         rflags_defined = result.rflags_defined;
-        let exit = if cr3_effect.is_some() || user_entry.is_some() {
+        let mut exit = if cr3_effect.is_some() || user_entry.is_some() {
             // Unreachable: MOV CR3 and IRETQ are not allow-listed (S4-39b: not committed either).
             RunExit::Unsupported { opcode: 0x0f }
         } else {
             result.exit
         };
+        // S4-39f (ISSUE-087): a retired instruction that left CPL3 (`SYSCALL` enters the kernel
+        // with CS RPL 0) ends the run right there, before the next fetch: the following
+        // instructions belong to the CPL0 entry, never to Ring3. The exit is `StopAddress`, like
+        // the stop after a committed `IRETQ` to CPL3; with the budget spent it stays the budget.
+        if exit == RunExit::InstructionBudgetExhausted
+            && retired < config.instruction_budget
+            && (state.cs_selector.is_none_or(|selector| selector & 3 != 3)
+                || !ring3_state_admitted(state))
+        {
+            exit = RunExit::StopAddress;
+        }
         if exit != RunExit::InstructionBudgetExhausted || retired >= config.instruction_budget {
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(exit),
@@ -28164,6 +28179,115 @@ fn execute_syscall(
     StepOutcome::Advanced
 }
 
+/// S4-39f: `SYSRETQ` (`48 0F 07`) from CPL0 back to CPL3, the pair of [`execute_syscall`]. All
+/// semantics here are from memory of the SDM (no copy in the repository; see CPU_CONTRACT S4-39f).
+///
+/// Admitted under the same member as `SYSCALL` (`with_syscall`: the STAR, LSTAR, SYSCALL_MASK and
+/// EFER cells are all present, and the set owns the committed-return cell), under a
+/// control-register policy, in Long64 at CPL0 (Ring0 context over a CS selector with RPL 0), with
+/// the exact three-byte form. Anything else keeps the refusal of the form (`Unsupported`, opcode
+/// `0x07`) with no change; that includes CPL3, a set without the member and the 32-bit `0F 07`.
+///
+/// With EFER.SCE = 0 the instruction is `#UD` (vector 6), no change. A non-canonical RCX is
+/// `#GP(0)` (Intel SDM, from memory), no change. Before any write: STAR[63:48] + 16 must not
+/// overflow the selector, and R11 must not carry TF, VM, VIF or VIP (not modelled, as for
+/// `IRETQ`/`POPFQ`; a refusal, `Unsupported`). The commit is one block, state last: RIP = RCX, RFLAGS
+/// = (R11 and `POPFQ_CPL0_FLAGS`) or 2 (the SDM mask `0x3C7FD7` less the unmodelled TF, VIF, VIP;
+/// RF and VM are cleared), CS = (STAR[63:48] + 16) or 3 with a flat 64-bit DPL 3 code cache (base
+/// 0, limit 4 GiB - 1, access 0xfb, flags 0xa), SS = (STAR[63:48] + 8) or 3 with a flat DPL 3 data
+/// cache (access 0xf3, flags 0xc). RSP, RCX, R11, the other registers, DS/ES/FS/GS, the GDT and
+/// memory are not touched. The retired instruction stops the run like a committed `IRETQ` to
+/// CPL3 ([`Cpl0ProfileSetExit::UserModeEntered`]); the caller continues with the CPL3 entry.
+#[allow(clippy::too_many_arguments)]
+fn execute_sysret(
+    state: &mut LongModeState,
+    context: AccessContext,
+    instruction: long_decode::Instruction,
+    rflags_defined: &mut u64,
+    control_policy: bool,
+    efer: Option<&Cell<u64>>,
+    cells: Option<GuestMsrCells<'_>>,
+    boundary: Option<&IretqUserBoundary>,
+) -> StepOutcome {
+    const SYSRET_UNMODELED_FLAGS: u64 = IRETQ_UNMODELED_FLAGS;
+    let refused = StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    };
+    let (Some(cells), Some(efer), Some(boundary)) = (cells, efer, boundary) else {
+        return refused;
+    };
+    let (Some(star), Some(_), Some(_)) = (cells.star, cells.lstar, cells.syscall_mask) else {
+        return refused;
+    };
+    if !cells.syscall
+        || !control_policy
+        || context.privilege != PrivilegeLevel::Ring0
+        || !context.mode.eq(&InstructionMode::Long64)
+        || instruction.length != 3
+        || instruction.operand_size != OperandSize::Qword
+        || instruction.prefixes
+            != (Prefixes {
+                rex: Some(0x48),
+                ..Prefixes::default()
+            })
+        || state.cs_selector.is_none_or(|selector| selector & 3 != 0)
+    {
+        return refused;
+    }
+    if efer.get() & 1 == 0 {
+        return StepOutcome::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        });
+    }
+    let target = state.gpr[Register::Rcx as usize];
+    if !canonical(target) {
+        return StepOutcome::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        });
+    }
+    let r11 = state.gpr[Register::R11 as usize];
+    let base = (star.get() >> 48) as u16;
+    let (Some(cs), Some(ss)) = (base.checked_add(16), base.checked_add(8)) else {
+        return refused;
+    };
+    if r11 & SYSRET_UNMODELED_FLAGS != 0 {
+        return refused;
+    }
+    let (cs, ss) = (cs | 3, ss | 3);
+    let rflags = (r11 & POPFQ_CPL0_FLAGS) | 2;
+    *rflags_defined |= crate::POPFQ_INTEGER_FLAGS;
+    state.rflags = rflags;
+    state.cs_selector = Some(cs);
+    state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xfb,
+        flags: 0xa,
+    });
+    state.ss_selector = Some(ss);
+    state.ss_cache = Some(crate::state::DataSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xf3,
+        flags: 0xc,
+    });
+    state.ss_unusable = false;
+    state.rip = target;
+    boundary.entry.set(Some(IretqUserEntry {
+        rip: target,
+        cs,
+        rflags,
+        rsp: state.gpr[Register::Rsp as usize],
+        ss,
+    }));
+    boundary.committed.set(true);
+    StepOutcome::Advanced
+}
+
 fn step_configured(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -34632,6 +34756,18 @@ fn step_configured(
             guest_msr_cells,
         ));
     }
+    if instruction.operation == Operation::Sysret {
+        return Ok(execute_sysret(
+            state,
+            context,
+            instruction,
+            rflags_defined,
+            control_policy.is_some(),
+            msr_efer_cell,
+            guest_msr_cells,
+            iretq_user_entry,
+        ));
+    }
     if matches!(
         instruction.operation,
         Operation::Sysenter | Operation::Sysexit
@@ -36702,6 +36838,8 @@ fn step_configured(
         Operation::Sysenter | Operation::Sysexit => false,
         // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
         Operation::Syscall => false,
+        // S4-39f: SYSRETQ likewise.
+        Operation::Sysret => false,
         Operation::ReadCr0 | Operation::WriteCr0 => {
             cr0_profile.is_some() || control_policy.is_some()
         }
@@ -39164,6 +39302,7 @@ fn step_configured(
         Operation::Sti => unreachable!("STI commits in its profile-gated state path"),
         Operation::Swapgs => unreachable!("SWAPGS commits in its profile-gated state path"),
         Operation::Syscall => unreachable!("SYSCALL commits in its profile-gated state path"),
+        Operation::Sysret => unreachable!("SYSRET commits in its profile-gated state path"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
         }

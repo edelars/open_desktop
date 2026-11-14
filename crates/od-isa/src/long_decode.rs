@@ -408,6 +408,8 @@ pub enum Operation {
     /// profile set executes it from CPL3 under its syscall member, every other entry keeps the
     /// refusal (`Unsupported`, opcode `0x05`).
     Syscall,
+    /// S4-39f: `REX.W 0F 07` (SYSRETQ), the return from the kernel to CPL3 after `SYSCALL`.
+    Sysret,
     /// Exact bare `EC` (`IN AL, DX`); execution requires an explicit PIO profile.
     InAlDx,
     /// Exact bare `EE` (`OUT DX, AL`); execution requires an explicit PIO profile.
@@ -2961,9 +2963,30 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x34) => Some(Operation::Sysenter),
             (OpcodeMap::Escape0f, 0x35) => Some(Operation::Sysexit),
             (OpcodeMap::Escape0f, 0x05) => Some(Operation::Syscall),
+            (OpcodeMap::Escape0f, 0x07) => Some(Operation::Sysret),
             _ => None,
         };
         if let Some(operation) = modeled_system_operation {
+            // S4-39f: only the exact `48 0F 07` (SYSRETQ) decodes; the bare `0F 07` (the 32-bit
+            // SYSRETL) and every other prefix combination stay the decoder's `Unsupported`.
+            if operation == Operation::Sysret {
+                if prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                {
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Qword,
+                        address_size: OperandSize::Qword,
+                        operation,
+                    });
+                }
+                return Err(self.unsupported(opcode));
+            }
             if prefixes == Prefixes::default() {
                 return Ok(Instruction {
                     length: self.length,
@@ -2982,7 +3005,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && self.length == 3
                 && !matches!(
                     operation,
-                    Operation::Sysenter | Operation::Sysexit | Operation::Syscall
+                    Operation::Sysenter
+                        | Operation::Sysexit
+                        | Operation::Syscall
+                        | Operation::Sysret
                 )
             {
                 return Err(DecodeError::Invalid {
