@@ -1921,6 +1921,7 @@ pub struct Cpl0ProfileSet<'a> {
     sti: Option<&'a crate::StiProfile>,
     fp_state: Option<&'a RefCell<GuestFpState>>,
     int3: bool,
+    user_mode: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -1949,6 +1950,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             sti: None,
             fp_state: None,
             int3: false,
+            user_mode: false,
         }
     }
 
@@ -2181,6 +2183,23 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// S4-39b: let the validated `IRETQ` to CPL3 (S4-38L9H) COMMIT instead of stopping at the
+    /// boundary. With the member, an `IRETQ` (`48 CF`) whose frame passes every check of the
+    /// return to user mode retires: CS and SS (selectors and caches, from the checked GDT
+    /// descriptors, accessed bits written), RSP and RIP come from the frame, RFLAGS take the
+    /// frame's `POPFQ_CPL0_FLAGS` bits with RF cleared and bit 1 set (see CPU_CONTRACT S4-39b),
+    /// and the run stops right after the retired instruction, before any further fetch, with
+    /// [`Cpl0ProfileSetExit::UserModeEntered`]. The set never runs the CPL3 code that follows:
+    /// the caller continues with [`run_with_cpl3_profile_set`] on the same state. A non-null
+    /// DS/ES/FS/GS selector whose cache is not DPL 3 (or not modeled) refuses the commit
+    /// (`Unsupported`, opcode `0xcf`, no change); so does every form the return to user mode
+    /// refused before (null SS, RPL 1/2, ...). Without this call the return to CPL3 stays the
+    /// `UserEntry` boundary, as before.
+    pub const fn with_user_mode(mut self) -> Self {
+        self.user_mode = true;
+        self
+    }
+
     /// Admit exact bare HLT under the halt profile. HLT is autonomous here:
     /// the set delivers no interrupt (STI exists only under [`Self::with_sti`], S4-38L7bp, and
     /// models the instruction, not the delivery), so HLT cannot resume itself.
@@ -2307,6 +2326,14 @@ pub enum Cpl0ProfileSetExit<E = std::convert::Infallible> {
     /// `instructions_executed` counts only the earlier instructions. The frame is the one the
     /// guest would have been returned to.
     UserEntry(IretqUserEntry),
+    /// S4-39b: under [`Cpl0ProfileSet::with_user_mode`] the `IRETQ` to CPL3 RETIRED (it is
+    /// included in `instructions_executed`). The run stopped at the following boundary before
+    /// any further fetch; this exit takes precedence over STOP address, stop request and budget
+    /// exits that would apply at that boundary. The state is the CPL3 state of the return
+    /// (CS/SS, RSP and RIP of the frame, masked RFLAGS); `IretqUserEntry` carries the values
+    /// actually loaded (`rflags` after the mask). Nothing at CPL3 ran: continue with
+    /// [`run_with_cpl3_profile_set`].
+    UserModeEntered(IretqUserEntry),
 }
 
 /// The validated frame of an `IRETQ` to CPL3 that the CPL0 set stops at (S4-38L9H).
@@ -2328,6 +2355,18 @@ enum IretqCpl0 {
     NotModeled,
     /// A fully validated return to CPL3; nothing was committed.
     UserEntry(IretqUserEntry),
+    /// S4-39b: a fully validated return to CPL3 that was committed (`with_user_mode`); the
+    /// entry holds the loaded values.
+    UserCommitted(IretqUserEntry),
+}
+
+/// S4-39b: the `IRETQ`-to-CPL3 cell of a set run: the boundary frame (without the member), the
+/// commit switch (`with_user_mode`) and the flag that a committed return stopped the run.
+#[derive(Debug)]
+struct IretqUserBoundary {
+    entry: Cell<Option<IretqUserEntry>>,
+    commit: bool,
+    committed: Cell<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2615,7 +2654,7 @@ struct ExecutionProfiles<'a> {
     /// S4-38L9H: the cell that receives the validated frame of an `IRETQ` to CPL3 inside the
     /// CPL0 set. Only a `Cpl0ProfileSet` run sets it; the step then returns an `Unsupported`
     /// placeholder that the caller replaces with [`Cpl0ProfileSetExit::UserEntry`].
-    iretq_user_entry: Option<&'a Cell<Option<IretqUserEntry>>>,
+    iretq_user_entry: Option<&'a IretqUserBoundary>,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -20841,9 +20880,11 @@ pub fn run_with_cpl0_profile_set(
     // A pending effect means the run loop stopped right after the retired
     // MOV CR3; its placeholder exit is replaced by the typed one. A pending
     // user entry means an `IRETQ` to CPL3 was validated and not executed (S4-38L9H);
-    // the instruction did not retire, so it and a CR3 effect cannot both be pending.
+    // the instruction did not retire, so it and a CR3 effect cannot both be pending. A
+    // committed return (S4-39b) retired and stopped the run, so it excludes the CR3 effect too.
     let exit = match (user_entry, cr3_effect) {
-        (Some(entry), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (Some(UserEntryOutcome::Boundary(entry)), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (Some(UserEntryOutcome::Committed(entry)), _) => Cpl0ProfileSetExit::UserModeEntered(entry),
         (None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
         (None, None) => Cpl0ProfileSetExit::Run(result.exit),
     };
@@ -20890,7 +20931,10 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
     // cannot be pending together.
     let exit = match (capture.error, user_entry, cr3_effect) {
         (Some(error), _, _) => Cpl0ProfileSetExit::PortIo(error),
-        (None, Some(entry), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (None, Some(UserEntryOutcome::Boundary(entry)), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (None, Some(UserEntryOutcome::Committed(entry)), _) => {
+            Cpl0ProfileSetExit::UserModeEntered(entry)
+        }
         (None, None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
         (None, None, None) => Cpl0ProfileSetExit::Run(result.exit),
     };
@@ -20979,7 +21023,7 @@ pub fn run_with_cpl3_profile_set(
         retired += result.instructions_executed;
         rflags_defined = result.rflags_defined;
         let exit = if cr3_effect.is_some() || user_entry.is_some() {
-            // Unreachable: MOV CR3 and IRETQ are not allow-listed.
+            // Unreachable: MOV CR3 and IRETQ are not allow-listed (S4-39b: not committed either).
             RunExit::Unsupported { opcode: 0x0f }
         } else {
             result.exit
@@ -21045,6 +21089,13 @@ fn cpl3_allows(instruction: &long_decode::Instruction) -> bool {
     }
 }
 
+/// What an `IRETQ` to CPL3 left in the cell of a set run (S4-38L9H boundary, S4-39b commit).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserEntryOutcome {
+    Boundary(IretqUserEntry),
+    Committed(IretqUserEntry),
+}
+
 /// Erases the port error type for the run loop and keeps the real error for
 /// the caller.
 struct PortErrorCapture<'p, P: crate::PortIo> {
@@ -21107,7 +21158,7 @@ fn run_cpl0_profile_set_inner(
     (
         RunResult,
         Option<TranslationContextChange>,
-        Option<IretqUserEntry>,
+        Option<UserEntryOutcome>,
     ),
     Cpl0ProfileSetInputError,
 > {
@@ -21195,7 +21246,11 @@ fn run_cpl0_profile_set_inner(
         return Err(Error::CliPreconditionFailed);
     }
     let cr3_effect = Cell::new(None);
-    let user_entry = Cell::new(None);
+    let user_entry = IretqUserBoundary {
+        entry: Cell::new(None),
+        commit: set.user_mode,
+        committed: Cell::new(false),
+    };
     let mut pio = pio;
     // Shorten the trait-object lifetime to this call; the cell is invariant.
     let pio_cell = match pio.as_deref_mut() {
@@ -21392,7 +21447,14 @@ fn run_cpl0_profile_set_inner(
             stop_requested: &mut stop_requested,
         },
     );
-    Ok((result, cr3_effect.get(), user_entry.get()))
+    let user_outcome = user_entry.entry.get().map(|entry| {
+        if user_entry.committed.get() {
+            UserEntryOutcome::Committed(entry)
+        } else {
+            UserEntryOutcome::Boundary(entry)
+        }
+    });
+    Ok((result, cr3_effect.get(), user_outcome))
 }
 
 fn run_configured(
@@ -21651,6 +21713,18 @@ fn run_configured(
                     if profiles
                         .cpu_owned_cr3
                         .is_some_and(|effect| effect.get().is_some())
+                    {
+                        return RunResult {
+                            exit: RunExit::StopAddress,
+                            instructions_executed: retired,
+                            rflags_defined,
+                        };
+                    }
+                    // S4-39b: stop right after a committed `IRETQ` to CPL3, before the next
+                    // fetch: the CPL0 loop must not run CPL3 code (the caller owns the privilege).
+                    if profiles
+                        .iretq_user_entry
+                        .is_some_and(|boundary| boundary.committed.get())
                     {
                         return RunResult {
                             exit: RunExit::StopAddress,
@@ -52092,7 +52166,8 @@ fn step_configured(
             };
         }
         Operation::IretQ => {
-            return match iretq_cpl0(state, memory, context) {
+            let commit_user = iretq_user_entry.is_some_and(|boundary| boundary.commit);
+            return match iretq_cpl0(state, memory, context, commit_user) {
                 Ok(IretqCpl0::Retired) => {
                     *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
                     Ok(StepOutcome::Branched)
@@ -52104,12 +52179,22 @@ fn step_configured(
                 // that owns the cell turns the placeholder into `Cpl0ProfileSetExit::UserEntry`;
                 // without the cell it stays the refusal it was.
                 Ok(IretqCpl0::UserEntry(entry)) => {
-                    if let Some(cell) = iretq_user_entry {
-                        cell.set(Some(entry));
+                    if let Some(boundary) = iretq_user_entry {
+                        boundary.entry.set(Some(entry));
                     }
                     Ok(StepOutcome::Unsupported {
                         opcode: instruction.opcode.byte,
                     })
+                }
+                // S4-39b: the committed return retired like a branch; the cell tells the run
+                // loop to stop at this boundary. `iretq_cpl0` returns it only when `commit_user`.
+                Ok(IretqCpl0::UserCommitted(entry)) => {
+                    *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+                    if let Some(boundary) = iretq_user_entry {
+                        boundary.entry.set(Some(entry));
+                        boundary.committed.set(true);
+                    }
+                    Ok(StepOutcome::Branched)
                 }
                 Err(error) => report_memory_error(error),
             };
@@ -54396,6 +54481,7 @@ fn iretq_cpl0(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
+    commit_user: bool,
 ) -> Result<IretqCpl0, MemoryError> {
     let Some(gdtr) = state.gdtr else {
         return Ok(IretqCpl0::NotModeled);
@@ -54508,9 +54594,12 @@ fn iretq_cpl0(
         Some(raw)
     };
 
-    // The return to user mode ends here: every check has passed, nothing is written (not even
-    // the accessed bits, the instruction does not retire) and no CPL3 code runs in the set.
-    if user {
+    // Without `commit_user` the return to user mode ends here: every check has passed, nothing
+    // is written (not even the accessed bits, the instruction does not retire) and no CPL3 code
+    // runs in the set. With it (S4-39b, `with_user_mode`) the return is committed below, after
+    // the data segment registers were checked (SDM nulls an outer-level DS/ES/FS/GS with
+    // DPL < CPL; the set does not model that and refuses instead).
+    if user && !commit_user {
         return Ok(IretqCpl0::UserEntry(IretqUserEntry {
             rip: target,
             cs: cs_selector,
@@ -54518,6 +54607,9 @@ fn iretq_cpl0(
             rsp: new_rsp,
             ss: ss_selector,
         }));
+    }
+    if user && !user_return_data_segments_admitted(state) {
+        return Ok(IretqCpl0::NotModeled);
     }
 
     // Accessed bits: the board adapter writes only whole qwords, so each descriptor is
@@ -54574,7 +54666,13 @@ fn iretq_cpl0(
         access: cs_access | 1,
         flags: cs_flags,
     });
-    state.rflags = (state.rflags & !IRETQ_CPL0_FLAGS) | (new_rflags & IRETQ_CPL0_FLAGS);
+    state.rflags = if user {
+        // The return to CPL3 executes at CPL0: IF and IOPL load too (POPFQ_CPL0_FLAGS); RF is
+        // cleared and bit 1 is set. TF/VM/VIF/VIP are zero (frame and state were checked).
+        ((state.rflags & !POPFQ_CPL0_FLAGS) | (new_rflags & POPFQ_CPL0_FLAGS)) & !(1 << 16) | 2
+    } else {
+        (state.rflags & !IRETQ_CPL0_FLAGS) | (new_rflags & IRETQ_CPL0_FLAGS)
+    };
     state.gpr[Register::Rsp as usize] = new_rsp;
     state.ss_selector = Some(ss_selector);
     match ss_cache {
@@ -54585,7 +54683,29 @@ fn iretq_cpl0(
         // Null SS: the hidden cache is kept as it was and marked unusable (S2-46 convention).
         None => state.ss_unusable = true,
     }
+    if user {
+        return Ok(IretqCpl0::UserCommitted(IretqUserEntry {
+            rip: target,
+            cs: cs_selector,
+            rflags: state.rflags,
+            rsp: new_rsp,
+            ss: ss_selector,
+        }));
+    }
     Ok(IretqCpl0::Retired)
+}
+
+/// S4-39b: DS, ES, FS and GS may stay untouched by a committed return to CPL3 only when each is
+/// a null selector or has a modeled cache with DPL 3 (a register whose DPL is below the new CPL
+/// would be nulled by the SDM; that is not modeled, so the commit is refused).
+fn user_return_data_segments_admitted(state: &LongModeState) -> bool {
+    let admitted = |selector: u16, access: Option<u8>| {
+        selector & 0xfffc == 0 || access.is_some_and(|access| (access >> 5) & 3 == 3)
+    };
+    admitted(state.ds_selector, state.ds_cache.map(|cache| cache.access))
+        && admitted(state.es_selector, state.es_cache.map(|cache| cache.access))
+        && admitted(state.fs_selector, state.fs_cache.map(|cache| cache.access))
+        && admitted(state.gs_selector, state.gs_cache.map(|cache| cache.access))
 }
 
 /// Reads the raw 8-byte GDT descriptor of `selector` (index checked against the GDT limit,
