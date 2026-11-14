@@ -863,6 +863,15 @@ mod tests {
             a.iter().map(|r| r.linear).collect::<Vec<_>>(),
             b.iter().map(|r| r.linear).collect::<Vec<_>>()
         );
+        let sequential_order: Vec<u64> = build_requests(sequential, 256)
+            .iter()
+            .map(|r| r.linear)
+            .collect();
+        assert_ne!(
+            a.iter().map(|r| r.linear).collect::<Vec<_>>(),
+            sequential_order,
+            "random order must differ from sequential"
+        );
         let mut sorted: Vec<u64> = a.iter().map(|r| r.linear).collect();
         sorted.sort_unstable();
         assert_eq!(
