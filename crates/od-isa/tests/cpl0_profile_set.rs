@@ -6626,7 +6626,13 @@ fn iretq_rejects_bad_cs_with_exact_faults_and_no_mutation() {
         (3, selector_fault_exit(13, 0), "null CS with RPL"),
         (0x38, selector_fault_exit(13, 0x38), "beyond the GDT limit"),
         (0x14, unsupported_cf(), "LDT CS"),
-        (0x13, unsupported_cf(), "RPL 3 CS"),
+        // S4-38L9H: RPL 3 is the return to user mode; slot 2 holds a DPL 0 descriptor, so the
+        // outer-return check DPL = RPL fails with #GP(selector) (it was `Unsupported` before).
+        (
+            0x13,
+            selector_fault_exit(13, 0x10),
+            "RPL 3 CS, DPL 0 descriptor",
+        ),
     ] {
         assert_iretq_refused(|_, memory| memory.put(STACK + 8, cs), expected, label);
     }
@@ -6833,6 +6839,346 @@ fn iretq_outside_the_set_and_with_other_prefixes_stays_unsupported() {
         assert_eq!(state, before);
         assert!(memory.reads.is_empty());
     }
+}
+
+// ---- S4-38L9H: IRETQ to CPL3 is a validated boundary, never executed in the set ----
+
+const USER_CODE64: u64 = 0x00af_fb00_0000_ffff;
+const USER_DATA: u64 = 0x00cf_f300_0000_ffff;
+const USER_RIP: u64 = 0x0000_7fff_0000_1000;
+const USER_RSP: u64 = 0x0000_7fff_ffff_e000;
+
+/// Frame for a return to user mode: CS `0x13` (GDT slot 2), SS `0x1b` (slot 3), both DPL 3.
+fn user_iretq() -> (LongModeState, LretqMemory) {
+    let (state, mut memory) = iretq_state(USER_RIP, 0x13, 0x202, USER_RSP, 0x1b);
+    memory.put(IRETQ_CS_SLOT, USER_CODE64);
+    memory.put(IRETQ_SS_SLOT, USER_DATA);
+    (state, memory)
+}
+
+fn user_entry() -> od_isa::IretqUserEntry {
+    od_isa::IretqUserEntry {
+        rip: USER_RIP,
+        cs: 0x13,
+        rflags: 0x202,
+        rsp: USER_RSP,
+        ss: 0x1b,
+    }
+}
+
+/// Run the user return after `tweak` and expect `expected` as the typed exit, no retirement and
+/// no CPU or memory change.
+fn assert_user_iretq_exit(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: Cpl0ProfileSetExit,
+    label: &str,
+) {
+    let (mut state, mut memory) = user_iretq();
+    tweak(&mut state, &mut memory);
+    let before = state.clone();
+    let ram = memory.ram.clone();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.exit, expected, "{label}");
+    assert_eq!(result.instructions_executed, 0, "{label}");
+    assert_eq!(state, before, "{label}");
+    assert_eq!(memory.ram, ram, "{label}");
+    assert_eq!(memory.writes, 0, "{label}");
+}
+
+fn assert_user_iretq_run_exit(
+    tweak: impl FnOnce(&mut LongModeState, &mut LretqMemory),
+    expected: RunExit,
+    label: &str,
+) {
+    assert_user_iretq_exit(tweak, Cpl0ProfileSetExit::Run(expected), label);
+}
+
+#[test]
+fn iretq_to_cpl3_is_a_user_entry_boundary_and_commits_nothing() {
+    // The descriptors have A = 0 (a real return would write the accessed bits): no write happens.
+    assert_user_iretq_exit(
+        |_, memory| {
+            memory.put(IRETQ_CS_SLOT, 0x00af_fa00_0000_ffff);
+            memory.put(IRETQ_SS_SLOT, 0x00cf_f200_0000_ffff);
+        },
+        Cpl0ProfileSetExit::UserEntry(user_entry()),
+        "accessed bits clear",
+    );
+    assert_user_iretq_exit(
+        |_, _| {},
+        Cpl0ProfileSetExit::UserEntry(user_entry()),
+        "accessed bits set",
+    );
+    // A conforming code segment is admitted for RPL 3 when DPL <= RPL.
+    for descriptor in [0x00af_ff00_0000_ffff, 0x00af_9f00_0000_ffff] {
+        assert_user_iretq_exit(
+            |_, memory| memory.put(IRETQ_CS_SLOT, descriptor),
+            Cpl0ProfileSetExit::UserEntry(user_entry()),
+            "conforming code",
+        );
+    }
+    // The frame is reported as read: the low sixteen bits of the selector qwords, RIP, RFLAGS
+    // and RSP verbatim.
+    assert_user_iretq_exit(
+        |_, memory| {
+            memory.put(STACK + 8, 0xdead_beef_0000_0013);
+            memory.put(STACK + 32, 0xbeef_dead_0000_001b);
+        },
+        Cpl0ProfileSetExit::UserEntry(user_entry()),
+        "high selector bits ignored",
+    );
+    assert_user_iretq_exit(
+        |_, memory| memory.put(STACK + 16, 0x3202),
+        Cpl0ProfileSetExit::UserEntry(od_isa::IretqUserEntry {
+            rflags: 0x3202,
+            ..user_entry()
+        }),
+        "IOPL 3 frame",
+    );
+}
+
+#[test]
+fn iretq_to_cpl3_reads_the_frame_and_both_descriptors_in_order() {
+    let (mut state, mut memory) = user_iretq();
+    let result = run_iretq(&mut state, &mut memory);
+    assert_eq!(result.exit, Cpl0ProfileSetExit::UserEntry(user_entry()));
+    assert_eq!(
+        memory.reads,
+        vec![
+            (STACK, 8, AccessOrigin::Explicit),
+            (STACK + 8, 8, AccessOrigin::Explicit),
+            (STACK + 16, 8, AccessOrigin::Explicit),
+            (STACK + 24, 8, AccessOrigin::Explicit),
+            (STACK + 32, 8, AccessOrigin::Explicit),
+            (IRETQ_CS_SLOT, 8, AccessOrigin::DescriptorTable),
+            (IRETQ_SS_SLOT, 8, AccessOrigin::DescriptorTable),
+        ]
+    );
+}
+
+#[test]
+fn iretq_to_cpl3_after_other_instructions_stops_on_the_iretq() {
+    // `nop; iretq`: the NOP retires, the boundary leaves RIP on the IRETQ and counts one.
+    let (mut state, mut memory) = user_iretq();
+    memory.code = vec![0x90, 0x48, 0xcf];
+    let cs_before = state.cs_selector;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 5),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::UserEntry(user_entry()));
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 1);
+    assert_eq!(state.cs_selector, cs_before);
+    assert_eq!(state.gpr[4], STACK);
+}
+
+#[test]
+fn iretq_to_cpl3_through_the_pio_entry_is_the_same_boundary() {
+    let cli = CliProfile::NonPviLong64V1;
+    let (mut state, mut memory) = user_iretq();
+    let before = state.clone();
+    let mut pio = TestPio::default();
+    let result = run_with_cpl0_profile_set_and_pio(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &pio_set(&cli),
+        None,
+        &mut pio,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::UserEntry(user_entry()));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert!(pio.reads.is_empty() && pio.writes.is_empty());
+}
+
+#[test]
+fn iretq_to_cpl3_cs_refusals_are_exact_and_leave_everything_untouched() {
+    for (descriptor, expected, label) in [
+        (DATA_DESCRIPTOR, selector_fault_exit(13, 0x10), "data CS"),
+        (
+            0x00af_f300_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "data CS DPL 3",
+        ),
+        (
+            0x00ef_fb00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "L = D = 1",
+        ),
+        (
+            0x00af_9b00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "non-conforming DPL 0",
+        ),
+        (
+            0x00af_bb00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "non-conforming DPL 1",
+        ),
+        (
+            0x00af_db00_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "non-conforming DPL 2",
+        ),
+        (
+            0x00af_7b00_0000_ffff,
+            selector_fault_exit(11, 0x10),
+            "not present",
+        ),
+        (
+            0x00af_e100_0000_ffff,
+            selector_fault_exit(13, 0x10),
+            "system",
+        ),
+        (0, selector_fault_exit(13, 0x10), "empty slot"),
+        (0x00cf_fb00_0000_ffff, unsupported_cf(), "compatibility CS"),
+    ] {
+        assert_user_iretq_run_exit(
+            |_, memory| memory.put(IRETQ_CS_SLOT, descriptor),
+            expected,
+            label,
+        );
+    }
+    for (cs, expected, label) in [
+        (3, selector_fault_exit(13, 0), "null CS with RPL 3"),
+        (0x3b, selector_fault_exit(13, 0x38), "beyond the GDT limit"),
+        (0x17, unsupported_cf(), "LDT CS"),
+        (0x11, unsupported_cf(), "RPL 1 CS"),
+        (0x12, unsupported_cf(), "RPL 2 CS"),
+    ] {
+        assert_user_iretq_run_exit(|_, memory| memory.put(STACK + 8, cs), expected, label);
+    }
+    assert_user_iretq_run_exit(
+        |_, memory| memory.put(STACK, 0x0001_0000_0000_0000),
+        selector_fault_exit(13, 0),
+        "non-canonical user RIP",
+    );
+    // A bad CS wins over a bad SS.
+    assert_user_iretq_run_exit(
+        |_, memory| {
+            memory.put(IRETQ_CS_SLOT, DATA_DESCRIPTOR);
+            memory.put(IRETQ_SS_SLOT, 0);
+        },
+        selector_fault_exit(13, 0x10),
+        "bad CS before bad SS",
+    );
+}
+
+#[test]
+fn iretq_to_cpl3_ss_refusals_are_exact_and_leave_everything_untouched() {
+    for (descriptor, expected, label) in [
+        (
+            0x00af_fb00_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "code SS",
+        ),
+        (
+            0x00cf_f100_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "read-only SS",
+        ),
+        (
+            0x00cf_9300_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "DPL 0 SS",
+        ),
+        (
+            0x00cf_d300_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "DPL 2 SS",
+        ),
+        (
+            0x00cf_7300_0000_ffff,
+            selector_fault_exit(12, 0x18),
+            "not present SS",
+        ),
+        (
+            0x00cf_e300_0000_ffff,
+            selector_fault_exit(13, 0x18),
+            "system SS",
+        ),
+        (0, selector_fault_exit(13, 0x18), "empty SS slot"),
+    ] {
+        assert_user_iretq_run_exit(
+            |_, memory| memory.put(IRETQ_SS_SLOT, descriptor),
+            expected,
+            label,
+        );
+    }
+    for (ss, expected, label) in [
+        (
+            0x3b,
+            selector_fault_exit(13, 0x38),
+            "SS beyond the GDT limit",
+        ),
+        (0x18, selector_fault_exit(13, 0x18), "SS RPL 0"),
+        (0x19, selector_fault_exit(13, 0x18), "SS RPL 1"),
+        (0x1a, selector_fault_exit(13, 0x18), "SS RPL 2"),
+        (0x1f, unsupported_cf(), "LDT SS"),
+        (0x00, unsupported_cf(), "null SS (not modeled for CPL3)"),
+        (0x03, unsupported_cf(), "null SS with RPL 3"),
+    ] {
+        assert_user_iretq_run_exit(|_, memory| memory.put(STACK + 32, ss), expected, label);
+    }
+}
+
+#[test]
+fn iretq_to_cpl3_unmodeled_flags_and_state_are_unsupported() {
+    for (bit, label) in [
+        (8, "frame TF"),
+        (17, "frame VM"),
+        (19, "frame VIF"),
+        (20, "frame VIP"),
+    ] {
+        assert_user_iretq_run_exit(
+            |_, memory| memory.put(STACK + 16, 0x202 | (1 << bit)),
+            unsupported_cf(),
+            label,
+        );
+    }
+    assert_user_iretq_run_exit(
+        |state, _| state.rflags |= 1 << 8,
+        unsupported_cf(),
+        "current TF",
+    );
+    assert_user_iretq_run_exit(|state, _| state.gdtr = None, unsupported_cf(), "no GDTR");
+    // NT is #GP(0) before the frame is read, as for the same-privilege return.
+    assert_user_iretq_run_exit(
+        |state, _| state.rflags |= 1 << 14,
+        selector_fault_exit(13, 0),
+        "current NT",
+    );
+}
+
+#[test]
+fn iretq_to_cpl3_outside_the_set_stays_unsupported() {
+    // Bare `run` has no set and no cell: the validated return is the refusal it always was.
+    let (mut state, mut memory) = user_iretq();
+    state.cr0 = None;
+    state.cr4 = None;
+    state.activity = None;
+    state.sti_shadow = None;
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        || false,
+    );
+    assert_eq!(result.exit, unsupported_cf());
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
 }
 
 // ---- S4-38L5c: delivery of a #PF through the IDT gate of vector 14 ----------

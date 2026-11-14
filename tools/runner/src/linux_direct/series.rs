@@ -427,6 +427,7 @@ fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
             | "backend"
             | "port_io"
             | "cpuid_divergence"
+            | "user_entry"
     ) {
         return Err(format!(
             "unsupported --expected-stop-kind '{expected_stop_kind}'"

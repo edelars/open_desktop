@@ -2300,6 +2300,34 @@ pub enum Cpl0ProfileSetExit<E = std::convert::Infallible> {
     /// it, AL is unchanged and `instructions_executed` counts only the earlier
     /// instructions.
     PortIo(E),
+    /// S4-38L9H: an `IRETQ` (`48 CF`) whose frame returns to CPL3 passed every check of the
+    /// return (CS and SS selectors and descriptors, canonical RIP, modeled RFLAGS) and was NOT
+    /// executed: the set never runs CPL3 code. The instruction did not retire: RIP stays on it,
+    /// no register, segment, flag or memory (descriptor accessed bits included) changed, and
+    /// `instructions_executed` counts only the earlier instructions. The frame is the one the
+    /// guest would have been returned to.
+    UserEntry(IretqUserEntry),
+}
+
+/// The validated frame of an `IRETQ` to CPL3 that the CPL0 set stops at (S4-38L9H).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IretqUserEntry {
+    pub rip: u64,
+    pub cs: u16,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u16,
+}
+
+/// Result of [`iretq_cpl0`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IretqCpl0 {
+    /// A same-privilege return was committed.
+    Retired,
+    /// A legal form the set does not model; the CPU state is untouched.
+    NotModeled,
+    /// A fully validated return to CPL3; nothing was committed.
+    UserEntry(IretqUserEntry),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2584,6 +2612,10 @@ struct ExecutionProfiles<'a> {
     /// S4-38L9e: the bare `INT3` (`CC`) delivered through the IDT gate of vector 3, set only by a
     /// `Cpl0ProfileSet` built with `with_int3`.
     int3_cpl0: bool,
+    /// S4-38L9H: the cell that receives the validated frame of an `IRETQ` to CPL3 inside the
+    /// CPL0 set. Only a `Cpl0ProfileSet` run sets it; the step then returns an `Unsupported`
+    /// placeholder that the caller replaces with [`Cpl0ProfileSetExit::UserEntry`].
+    iretq_user_entry: Option<&'a Cell<Option<IretqUserEntry>>>,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -3720,6 +3752,7 @@ pub fn run_with_maxss_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -3881,6 +3914,7 @@ pub fn run_with_minsd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4042,6 +4076,7 @@ pub fn run_with_maxsd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4203,6 +4238,7 @@ pub fn run_with_minpd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4364,6 +4400,7 @@ pub fn run_with_minps_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4525,6 +4562,7 @@ pub fn run_with_maxps_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4686,6 +4724,7 @@ pub fn run_with_maxpd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -4847,6 +4886,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5008,6 +5048,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5169,6 +5210,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5330,6 +5372,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5491,6 +5534,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5652,6 +5696,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5813,6 +5858,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -5974,6 +6020,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -6135,6 +6182,7 @@ pub fn run_with_cvtss2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -6296,6 +6344,7 @@ pub fn run_with_cvttss2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -6456,6 +6505,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -6650,6 +6700,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -6811,6 +6862,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7007,6 +7059,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7172,6 +7225,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7366,6 +7420,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7527,6 +7582,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7688,6 +7744,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -7882,6 +7939,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8044,6 +8102,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8205,6 +8264,7 @@ pub fn run_with_cvtdq2pd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8366,6 +8426,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8526,6 +8587,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8687,6 +8749,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -8881,6 +8944,7 @@ fn run_with_cvtdq2ps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9042,6 +9106,7 @@ pub fn run_with_cvtps2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9203,6 +9268,7 @@ pub fn run_with_cvttps2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9397,6 +9463,7 @@ fn run_with_cvtps2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9591,6 +9658,7 @@ fn run_with_cvttps2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9785,6 +9853,7 @@ fn run_with_cvttpd2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -9979,6 +10048,7 @@ fn run_with_cvtpd2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10140,6 +10210,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10301,6 +10372,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10462,6 +10534,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10623,6 +10696,7 @@ pub fn run_with_cvtss2sd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10784,6 +10858,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -10981,6 +11056,7 @@ fn run_with_cvtpi2ps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -11309,6 +11385,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -11470,6 +11547,7 @@ pub fn run_with_cvtps2pd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -11631,6 +11709,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -11792,6 +11871,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -11952,6 +12032,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12113,6 +12194,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12332,6 +12414,7 @@ fn run_with_cmpss_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12493,6 +12576,7 @@ pub fn run_with_cmpsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12654,6 +12738,7 @@ pub fn run_with_cmppd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12814,6 +12899,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -12974,6 +13060,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -13157,6 +13244,7 @@ fn run_with_minsd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -13318,6 +13406,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -13506,6 +13595,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -13679,6 +13769,7 @@ fn run_with_minpd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -13875,6 +13966,7 @@ fn run_with_minps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14036,6 +14128,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14197,6 +14290,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14357,6 +14451,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14517,6 +14612,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14677,6 +14773,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -14870,6 +14967,7 @@ fn run_with_sqrtps_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -15030,6 +15128,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -15222,6 +15321,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -15414,6 +15514,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -15613,6 +15714,7 @@ fn run_with_maxpd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -15812,6 +15914,7 @@ fn run_with_maxps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -16025,6 +16128,7 @@ fn run_minss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -16228,6 +16332,7 @@ fn run_maxss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -16388,6 +16493,7 @@ pub fn run_with_cmpps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -16549,6 +16655,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -16763,6 +16870,7 @@ pub fn run_with_efer_rdmsr_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -17169,6 +17277,7 @@ pub fn run_with_cr0_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -17389,6 +17498,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -20681,6 +20791,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -20716,7 +20827,7 @@ pub fn run_with_cpl0_profile_set(
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     stop_requested: impl FnMut() -> bool,
 ) -> Result<Cpl0ProfileSetResult, Cpl0ProfileSetInputError> {
-    let (result, cr3_effect) = run_cpl0_profile_set_inner(
+    let (result, cr3_effect, user_entry) = run_cpl0_profile_set_inner(
         state,
         memory,
         config,
@@ -20727,10 +20838,13 @@ pub fn run_with_cpl0_profile_set(
         stop_requested,
     )?;
     // A pending effect means the run loop stopped right after the retired
-    // MOV CR3; its placeholder exit is replaced by the typed one.
-    let exit = match cr3_effect {
-        Some(effect) => Cpl0ProfileSetExit::TranslationContextChange(effect),
-        None => Cpl0ProfileSetExit::Run(result.exit),
+    // MOV CR3; its placeholder exit is replaced by the typed one. A pending
+    // user entry means an `IRETQ` to CPL3 was validated and not executed (S4-38L9H);
+    // the instruction did not retire, so it and a CR3 effect cannot both be pending.
+    let exit = match (user_entry, cr3_effect) {
+        (Some(entry), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
+        (None, None) => Cpl0ProfileSetExit::Run(result.exit),
     };
     Ok(Cpl0ProfileSetResult {
         exit,
@@ -20760,7 +20874,7 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
         port: pio,
         error: None,
     };
-    let (result, cr3_effect) = run_cpl0_profile_set_inner(
+    let (result, cr3_effect, user_entry) = run_cpl0_profile_set_inner(
         state,
         memory,
         config,
@@ -20770,12 +20884,13 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
         Some(&mut capture),
         stop_requested,
     )?;
-    // The failed instruction did not retire, so a port error and a CR3 effect
-    // cannot both be pending.
-    let exit = match (capture.error, cr3_effect) {
-        (Some(error), _) => Cpl0ProfileSetExit::PortIo(error),
-        (None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
-        (None, None) => Cpl0ProfileSetExit::Run(result.exit),
+    // The failed instruction did not retire, so a port error, a user entry and a CR3 effect
+    // cannot be pending together.
+    let exit = match (capture.error, user_entry, cr3_effect) {
+        (Some(error), _, _) => Cpl0ProfileSetExit::PortIo(error),
+        (None, Some(entry), _) => Cpl0ProfileSetExit::UserEntry(entry),
+        (None, None, Some(effect)) => Cpl0ProfileSetExit::TranslationContextChange(effect),
+        (None, None, None) => Cpl0ProfileSetExit::Run(result.exit),
     };
     Ok(Cpl0ProfileSetResult {
         exit,
@@ -20841,7 +20956,14 @@ fn run_cpl0_profile_set_inner(
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     pio: Option<&mut dyn crate::PortIo<Error = ()>>,
     mut stop_requested: impl FnMut() -> bool,
-) -> Result<(RunResult, Option<TranslationContextChange>), Cpl0ProfileSetInputError> {
+) -> Result<
+    (
+        RunResult,
+        Option<TranslationContextChange>,
+        Option<IretqUserEntry>,
+    ),
+    Cpl0ProfileSetInputError,
+> {
     use Cpl0ProfileSetInputError as Error;
     // Formally unreachable while `InstructionMode` has the single variant
     // `Long64`: no `RunConfig` can carry another mode, so a test for this
@@ -20926,6 +21048,7 @@ fn run_cpl0_profile_set_inner(
         return Err(Error::CliPreconditionFailed);
     }
     let cr3_effect = Cell::new(None);
+    let user_entry = Cell::new(None);
     let mut pio = pio;
     // Shorten the trait-object lifetime to this call; the cell is invariant.
     let pio_cell = match pio.as_deref_mut() {
@@ -21112,6 +21235,7 @@ fn run_cpl0_profile_set_inner(
             popf_cpl0: set.popf_cpl0,
             sti_cpl0: set.sti.is_some(),
             int3_cpl0: set.int3,
+            iretq_user_entry: Some(&user_entry),
             cr4: None,
         },
         StepRuntime {
@@ -21121,7 +21245,7 @@ fn run_cpl0_profile_set_inner(
             stop_requested: &mut stop_requested,
         },
     );
-    Ok((result, cr3_effect.get()))
+    Ok((result, cr3_effect.get(), user_entry.get()))
 }
 
 fn run_configured(
@@ -21575,6 +21699,7 @@ pub fn step_with_cr0_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -21979,6 +22104,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -22140,6 +22266,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -22525,6 +22652,7 @@ fn run_with_comparison_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -22688,6 +22816,7 @@ pub fn run_with_sqrtss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -22849,6 +22978,7 @@ pub fn run_with_sqrtsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23010,6 +23140,7 @@ pub fn run_with_sqrtps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23171,6 +23302,7 @@ pub fn run_with_sqrtpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23337,6 +23469,7 @@ fn run_with_subpd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23553,6 +23686,7 @@ pub fn run_with_mulpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23717,6 +23851,7 @@ fn run_with_addpd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -23911,6 +24046,7 @@ fn run_with_mulpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -24127,6 +24263,7 @@ pub fn run_with_addsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -24288,6 +24425,7 @@ pub fn run_with_divpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -24482,6 +24620,7 @@ fn run_with_divpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -24643,6 +24782,7 @@ pub fn run_with_addss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -24838,6 +24978,7 @@ fn run_with_addss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25032,6 +25173,7 @@ fn run_with_addsd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25229,6 +25371,7 @@ fn run_with_addps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25390,6 +25533,7 @@ pub fn run_with_divsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25587,6 +25731,7 @@ fn run_with_divps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25748,6 +25893,7 @@ pub fn run_with_divss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -25909,6 +26055,7 @@ pub fn run_with_mulsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -26070,6 +26217,7 @@ pub fn run_with_mulss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -26267,6 +26415,7 @@ fn run_with_mulps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -26428,6 +26577,7 @@ pub fn run_with_subsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -26589,6 +26739,7 @@ pub fn run_with_subss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -26750,6 +26901,7 @@ fn run_with_scalar_float_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -27155,6 +27307,7 @@ fn run_with_subps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -27315,6 +27468,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            iretq_user_entry: None,
             cr4: None,
         },
         StepRuntime {
@@ -27785,6 +27939,7 @@ fn step_configured(
         popf_cpl0,
         sti_cpl0,
         int3_cpl0,
+        iretq_user_entry,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -51791,13 +51946,24 @@ fn step_configured(
         }
         Operation::IretQ => {
             return match iretq_cpl0(state, memory, context) {
-                Ok(true) => {
+                Ok(IretqCpl0::Retired) => {
                     *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
                     Ok(StepOutcome::Branched)
                 }
-                Ok(false) => Ok(StepOutcome::Unsupported {
+                Ok(IretqCpl0::NotModeled) => Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
                 }),
+                // S4-38L9H: the validated return to CPL3 is a boundary, not an execution. A run
+                // that owns the cell turns the placeholder into `Cpl0ProfileSetExit::UserEntry`;
+                // without the cell it stays the refusal it was.
+                Ok(IretqCpl0::UserEntry(entry)) => {
+                    if let Some(cell) = iretq_user_entry {
+                        cell.set(Some(entry));
+                    }
+                    Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    })
+                }
                 Err(error) => report_memory_error(error),
             };
         }
@@ -54071,18 +54237,21 @@ const IRETQ_UNMODELED_FLAGS: u64 = POPFQ_CPL0_TF | (1 << 17) | (1 << 19) | (1 <<
 /// `[RIP][CS][RFLAGS][RSP][SS]` (SDM Vol.2 IRET; section number in Vol.3 not verified), also for a return to the
 /// same privilege level.
 ///
-/// Returns `Ok(true)` after committing RIP, CS (selector and cache), RFLAGS (the
-/// `IRETQ_CPL0_FLAGS` bits), RSP and SS (selector, cache, unusable mark); `Ok(false)` for a
-/// legal form the set does not model; an error for a guest fault or a memory error. In
-/// every non-`Ok(true)` case the CPU state is untouched; the only memory writes are the
-/// accessed bits of the CS and SS descriptors, done after every check has passed.
+/// Returns `Retired` after committing RIP, CS (selector and cache), RFLAGS (the
+/// `IRETQ_CPL0_FLAGS` bits), RSP and SS (selector, cache, unusable mark); `NotModeled` for a
+/// legal form the set does not model; `UserEntry` (S4-38L9H) for a fully validated return to
+/// CPL3 (RPL 3 CS, DPL 3 present 64-bit code, DPL 3 present writable data SS, canonical RIP),
+/// which is reported and not committed; an error for a guest fault or a memory error. In
+/// every non-`Retired` case the CPU state and memory are untouched; the only memory writes are
+/// the accessed bits of the CS and SS descriptors of a `Retired` return, done after every
+/// check has passed.
 fn iretq_cpl0(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
-) -> Result<bool, MemoryError> {
+) -> Result<IretqCpl0, MemoryError> {
     let Some(gdtr) = state.gdtr else {
-        return Ok(false);
+        return Ok(IretqCpl0::NotModeled);
     };
     // The set models SS only over a loaded cache; the interrupt shadow must be clear (as for
     // POPFQ); a current TF/VM/VIF/VIP is not modeled.
@@ -54091,7 +54260,7 @@ fn iretq_cpl0(
         || state.sti_shadow != Some(crate::StiShadow::Clear)
         || state.rflags & IRETQ_UNMODELED_FLAGS != 0
     {
-        return Ok(false);
+        return Ok(IretqCpl0::NotModeled);
     }
     // NT = 1 in IA-32e mode is #GP(0) before the frame is read (SDM IRET task-return path,
     // per the S4-38L5b review; not checked against the SDM text, which is not in the repo).
@@ -54112,14 +54281,20 @@ fn iretq_cpl0(
     let cs_selector = cs_qword as u16;
     let ss_selector = ss_qword as u16;
 
-    // CS: null is #GP(0); LDT selectors and inter-privilege returns (RPL > CPL) are not
-    // modeled. Check order follows `far_return_cpl0` (SDM IRET, IA-32e mode).
+    // CS: null is #GP(0); LDT selectors and returns to RPL 1 or 2 are not modeled. RPL 3 is the
+    // return to user mode (S4-38L9H): it is validated like the CPL0 return but never committed
+    // (see `IretqCpl0::UserEntry`). Check order follows `far_return_cpl0` (SDM IRET, IA-32e).
     if cs_selector & 0xfffc == 0 {
         return Err(general_protection());
     }
-    if cs_selector & 4 != 0 || cs_selector & 3 != 0 {
-        return Ok(false);
+    if cs_selector & 4 != 0 {
+        return Ok(IretqCpl0::NotModeled);
     }
+    let rpl = (cs_selector & 3) as u8;
+    if rpl == 1 || rpl == 2 {
+        return Ok(IretqCpl0::NotModeled);
+    }
+    let user = rpl == 3;
     let cs_raw = read_gdt_raw_descriptor(gdtr, memory, context, cs_selector)?;
     let cs_access = cs_raw.1[5];
     let cs_flags = cs_raw.1[6] >> 4;
@@ -54129,7 +54304,15 @@ fn iretq_cpl0(
     if cs_flags & 0x2 != 0 && cs_flags & 0x4 != 0 {
         return Err(selector_fault(13, cs_selector));
     }
-    if (cs_access >> 5) & 3 != 0 {
+    // Outer-level return: a non-conforming code segment needs DPL = RPL, a conforming one
+    // DPL <= RPL (for RPL 0 both mean DPL = 0, as before).
+    let cs_dpl = (cs_access >> 5) & 3;
+    let cs_dpl_rejected = if cs_access & 0x04 != 0 {
+        cs_dpl > rpl
+    } else {
+        cs_dpl != rpl
+    };
+    if cs_dpl_rejected {
         return Err(selector_fault(13, cs_selector));
     }
     if cs_access & 0x80 == 0 {
@@ -54137,7 +54320,7 @@ fn iretq_cpl0(
     }
     // A compatibility-mode CS (L = 0) is legal but switches the instruction mode.
     if cs_flags & 0x2 == 0 {
-        return Ok(false);
+        return Ok(IretqCpl0::NotModeled);
     }
     if !canonical(target) {
         return Err(general_protection());
@@ -54145,22 +54328,23 @@ fn iretq_cpl0(
 
     // RFLAGS: TF, VM, VIF and VIP in the frame are not modeled (see CPU_CONTRACT S4-38L5b).
     if new_rflags & IRETQ_UNMODELED_FLAGS != 0 {
-        return Ok(false);
+        return Ok(IretqCpl0::NotModeled);
     }
 
     // SS. A null selector is legal for a return to 64-bit code at RPL 0 (SDM IRET); a null
-    // selector with RPL bits is not modeled. Otherwise the descriptor must be a present,
-    // writable data segment with DPL = RPL = CPL = 0.
+    // selector with RPL bits is not modeled, nor is a null SS on the return to user mode.
+    // Otherwise the descriptor must be a present, writable data segment with DPL = RPL of the
+    // new CS (0 for the same-privilege return, 3 for the return to user mode).
     let ss_descriptor = if ss_selector & 0xfffc == 0 {
-        if ss_selector != 0 {
-            return Ok(false);
+        if ss_selector != 0 || user {
+            return Ok(IretqCpl0::NotModeled);
         }
         None
     } else {
         if ss_selector & 4 != 0 {
-            return Ok(false);
+            return Ok(IretqCpl0::NotModeled);
         }
-        if ss_selector & 3 != 0 {
+        if (ss_selector & 3) as u8 != rpl {
             return Err(selector_fault(13, ss_selector));
         }
         let raw = read_gdt_raw_descriptor(gdtr, memory, context, ss_selector)?;
@@ -54168,7 +54352,7 @@ fn iretq_cpl0(
         if access & 0x10 == 0 || access & 0x08 != 0 || access & 0x02 == 0 {
             return Err(selector_fault(13, ss_selector));
         }
-        if (access >> 5) & 3 != 0 {
+        if (access >> 5) & 3 != rpl {
             return Err(selector_fault(13, ss_selector));
         }
         if access & 0x80 == 0 {
@@ -54176,6 +54360,18 @@ fn iretq_cpl0(
         }
         Some(raw)
     };
+
+    // The return to user mode ends here: every check has passed, nothing is written (not even
+    // the accessed bits, the instruction does not retire) and no CPL3 code runs in the set.
+    if user {
+        return Ok(IretqCpl0::UserEntry(IretqUserEntry {
+            rip: target,
+            cs: cs_selector,
+            rflags: new_rflags,
+            rsp: new_rsp,
+            ss: ss_selector,
+        }));
+    }
 
     // Accessed bits: the board adapter writes only whole qwords, so each descriptor is
     // written back as one qword with bit 40 set. The writes follow every check.
@@ -54242,7 +54438,7 @@ fn iretq_cpl0(
         // Null SS: the hidden cache is kept as it was and marked unusable (S2-46 convention).
         None => state.ss_unusable = true,
     }
-    Ok(true)
+    Ok(IretqCpl0::Retired)
 }
 
 /// Reads the raw 8-byte GDT descriptor of `selector` (index checked against the GDT limit,

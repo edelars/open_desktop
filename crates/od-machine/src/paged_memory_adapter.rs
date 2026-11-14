@@ -8,7 +8,6 @@ use crate::{
     MemoryRegionKind, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
     TrackedAccessRequest,
 };
-use od_isa::LongModeState;
 use od_isa::execute::{
     Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, InvlpgExit, InvlpgLong64V1,
     InvlpgResult, RunConfig, RunExit, RunInputError, RunResult, TranslationContextChange,
@@ -31,6 +30,7 @@ use od_isa::{
     deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set,
     deliver_page_fault_cpl0_set,
 };
+use od_isa::{IretqUserEntry, LongModeState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -455,6 +455,11 @@ pub(crate) enum PagedCpl0SetExit {
     /// one the diagnostic profile must not answer. Nothing was fetched past the opcode bytes
     /// and the instruction did not execute: RIP is on it and no register changed.
     CpuidDivergence { leaf: u32 },
+    /// The `IRETQ` user_entry boundary (S4-38L9I, from S4-38L9H): the set stopped at an `IRETQ`
+    /// whose validated frame returns to CPL3. The instruction did not retire: RIP is on it and
+    /// no register, flag or memory changed. The frame is the one the guest would have been
+    /// returned to. The set loop ends the run here; nothing is walked or fetched past it.
+    UserEntry(IretqUserEntry),
     /// The set reported an exit variant this board does not know (the exit enum
     /// is `#[non_exhaustive]`).
     UnknownSetExit,
@@ -1193,6 +1198,7 @@ fn handle_set_exit(
         }
         Cpl0ProfileSetExit::Run(exit) => Some(PagedCpl0SetExit::Run(exit)),
         Cpl0ProfileSetExit::PortIo(error) => Some(PagedCpl0SetExit::PortIo(error)),
+        Cpl0ProfileSetExit::UserEntry(entry) => Some(PagedCpl0SetExit::UserEntry(entry)),
         // `Cpl0ProfileSetExit` is `#[non_exhaustive]`: an exit this board does not know
         // cannot be resumed from, so it ends the run as unhandled.
         _ => Some(PagedCpl0SetExit::UnknownSetExit),
@@ -3052,6 +3058,34 @@ mod tests {
         );
         assert_eq!(exit, Some(PagedCpl0SetExit::PortIo(error())));
         assert_eq!((run.reported_cr3, run.changes), (ROOT, Vec::new()));
+    }
+
+    #[test]
+    fn set_loop_a_user_entry_ends_the_run_with_its_frame_and_changes_nothing_else() {
+        // S4-38L9I: the IRETQ user_entry exit is a stop carrying the frame, also when it is the
+        // first instruction of the call (nothing retired); the walker and the CR3 report stay.
+        let entry = IretqUserEntry {
+            rip: 0x0000_7fff_0000_1000,
+            cs: 0x33,
+            rflags: 0x246,
+            rsp: 0x0000_7fff_ffff_f000,
+            ss: 0x2b,
+        };
+        for retired in [0, 7] {
+            let mut run = SetLoop::new();
+            let exit = run.handle(
+                Cpl0ProfileSetExit::UserEntry(entry),
+                retired,
+                &set_loop_state(ROOT),
+            );
+            assert_eq!(exit, Some(PagedCpl0SetExit::UserEntry(entry)));
+            assert_eq!(
+                run.paging,
+                Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+                "the walker was not touched"
+            );
+            assert_eq!((run.reported_cr3, run.changes), (ROOT, Vec::new()));
+        }
     }
 
     #[test]

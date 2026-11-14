@@ -31,8 +31,8 @@ pub use cli::CliProfile;
 pub use execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
     Cpl0ProfileSetResult, Cr0Profile, FlatLidtLong64V1, GuestFpState, InvlpgExit, InvlpgLong64V1,
-    InvlpgResult, InvlpgWpLong64V1, MovCr0WpLong64V1, MovCr3Exit, MovCr3InputError, MovCr3Long64V1,
-    MovCr3Result, MovCr3WpLong64V1, PagedCpl0Cr0WpMovV1, PagedCpl0Cr0WpProbeV1,
+    InvlpgResult, InvlpgWpLong64V1, IretqUserEntry, MovCr0WpLong64V1, MovCr3Exit, MovCr3InputError,
+    MovCr3Long64V1, MovCr3Result, MovCr3WpLong64V1, PagedCpl0Cr0WpMovV1, PagedCpl0Cr0WpProbeV1,
     PagedCpl0Cr3ProbeV1, PagedCpl0PageTableRepairMovV1, PagedHltLong64V1, PagedLgdtLong64V1,
     PagedLidtLong64V1, PagedMovDwordStoreLong64V1, PagedProbeExit, PagedProbeRejection,
     PagedProbeResult, PagedStiLong64V1, TranslationContextChange, TranslationInvalidation,
