@@ -21145,6 +21145,14 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
 /// without REX.W (MOV r/m32, r32), a memory operand and `88`/`8B` stay outside.
 ///
+/// S4-39f6: `[REX] C6 /0 ib` (MOV r/m8, imm8) with a memory operand (mod != 11: SIB, disp8/disp32,
+/// RIP-relative; REX.X and REX.B reach the index and the base) with no prefix other than REX, as in
+/// `43 c6 04 2e 00` (`movb $0x0, (%r14,%r13)`) of `/init` at `0x40013e`. The CPL0
+/// `Operation::MovImmediate` is reused: the byte store goes through `write_operand` with the CPL3
+/// context, so the U/S and W checks of the paged adapter apply (#PF with U and W on a supervisor
+/// page, no write). `C6 /1..7` (the decoder refuses them), the register form (`c6 c0 ib`) and any
+/// prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
@@ -21187,6 +21195,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
                 ..
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0xc6,
+            Operation::MovImmediate {
+                dst: Operand::Memory(dst),
+                ..
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Byte
+                && dst.size == OperandSize::Byte
+                && dst.address_size == OperandSize::Qword
+        }
         (
             OpcodeMap::Primary,
             0x31,
