@@ -21137,9 +21137,13 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 ///
 /// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
 /// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
-/// its `openat` `SYSCALL` (the `read` `SYSCALL` follows at `0x40011f`). `85` without REX.W
-/// (TEST r/m32, r32), a memory operand, `84` (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay
-/// outside.
+/// its `openat` `SYSCALL` (the `read` `SYSCALL` follows at `0x40011f`). A memory operand, `84`
+/// (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay outside.
+///
+/// S4-39f9: `85 /r` without REX.W (TEST r/m32, r32), register form (mod = 11, REX.R and REX.B
+/// select r8d..r15d), as in `85 c9` (`testl %ecx, %ecx`) of `/init` at `0x40016b`: the same CPL0
+/// `Operation::Logic { kind: Test }` is reused (the operand size is dword, no result is written, so
+/// no zero-extension). The memory form and every prefix other than REX stay outside.
 ///
 /// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
 /// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
@@ -21257,7 +21261,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
-        ) => instruction.operand_size == OperandSize::Qword,
+        ) => matches!(
+            instruction.operand_size,
+            OperandSize::Dword | OperandSize::Qword
+        ),
         (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
             instruction.operand_size == OperandSize::Qword
                 && src.address_size == OperandSize::Qword

@@ -411,11 +411,24 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("repne xor eax, eax", &[0xf2, 0x31, 0xc0], 0x31),
         ("rep xor eax, eax", &[0xf3, 0x31, 0xc0], 0x31),
         ("lock xor eax, eax (register)", &[0xf0, 0x31, 0xc0], 0x31),
-        // S4-39f4: `REX.W 85 /r` in the register form is allowed; the variants below stay outside.
-        ("test eax, eax (85 /r, no REX.W)", &[0x85, 0xc0], 0x85),
+        // S4-39f4/S4-39f9: `85 /r` in the register form (with or without REX.W) is allowed; the
+        // variants below stay outside. Prefixes keep the dword register form outside too.
+        ("66 test ax, ax (66 85 /r)", &[0x66, 0x85, 0xc0], 0x85),
+        ("lock test eax, eax", &[0xf0, 0x85, 0xc0], 0x85),
+        ("fs test eax, eax", &[0x64, 0x85, 0xc0], 0x85),
+        ("gs test eax, eax", &[0x65, 0x85, 0xc0], 0x85),
+        ("addr32 test eax, eax", &[0x67, 0x85, 0xc0], 0x85),
+        ("repne test eax, eax", &[0xf2, 0x85, 0xc0], 0x85),
+        ("rep test eax, eax", &[0xf3, 0x85, 0xc0], 0x85),
+        ("66 REX test r8w, r9w", &[0x66, 0x45, 0x85, 0xc8], 0x85),
         (
-            "test r8d, r9d (85 /r, REX.RB without W)",
-            &[0x45, 0x85, 0xc8],
+            "test [rip+0], eax (85 /r, RIP-relative)",
+            &[0x85, 0x05, 0, 0, 0, 0],
+            0x85,
+        ),
+        (
+            "test [r8], r9d (REX.RB 85 /r, memory)",
+            &[0x45, 0x85, 0x08],
             0x85,
         ),
         ("test [rax], eax (85 /r, memory)", &[0x85, 0x00], 0x85),
@@ -1477,6 +1490,140 @@ fn test_r64_with_rex_x_in_the_register_form_executes() {
     assert_eq!(state.rip, RIP + 3);
     assert_eq!(state.gpr[Register::Rax as usize], 0x8000_0000_0000_0000);
     assert_eq!(state.rflags & ARITH & (CF | OF | SF | ZF | PF), SF | PF);
+    assert_eq!(memory.accesses, 0);
+}
+
+// ---- S4-39f9: `85 /r` without REX.W (TEST r/m32, r32), register form ----
+
+#[test]
+fn test_r32_register_form_sets_flags_and_writes_no_result() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, rm register index, its value, reg register index, its value, flags)
+    // The flags are those of the 32-bit `rm & reg`; CF = OF = 0.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, usize, u64, u64)] = &[
+        // `/init` at 0x40016b: testl %ecx, %ecx.
+        ("85 c9 zero", &[0x85, 0xc9], 1, 0, 1, 0, ZF | PF),
+        (
+            "85 c9 negative dword",
+            &[0x85, 0xc9],
+            1,
+            0x8000_0000,
+            1,
+            0x8000_0000,
+            SF | PF,
+        ),
+        ("85 c9 positive", &[0x85, 0xc9], 1, 1, 1, 1, 0),
+        ("85 c9 positive even parity", &[0x85, 0xc9], 1, 3, 1, 3, PF),
+        // The high half is not part of a 32-bit test: ZF and PF only.
+        (
+            "85 c9 high half ignored",
+            &[0x85, 0xc9],
+            1,
+            0xffff_ffff_0000_0000,
+            1,
+            0xffff_ffff_0000_0000,
+            ZF | PF,
+        ),
+        (
+            "85 c9 bit 31 with garbage high half",
+            &[0x85, 0xc9],
+            1,
+            0x1234_5678_8000_0001,
+            1,
+            0x1234_5678_8000_0001,
+            SF,
+        ),
+        // testl %ebx, %ecx with disjoint bits: ZF, PF.
+        (
+            "85 d9 disjoint",
+            &[0x85, 0xd9],
+            1,
+            0xf0f0_f0f0,
+            3,
+            0x0f0f_0f0f,
+            ZF | PF,
+        ),
+        // REX.RB without W: testl %r9d, %r10d (45 85 ca): rm = r10, reg = r9.
+        (
+            "45 85 ca REX.RB",
+            &[0x45, 0x85, 0xca],
+            10,
+            0x8000_0003,
+            9,
+            0xc000_0001,
+            SF,
+        ),
+        // REX.R only: testl %r8d, %eax (44 85 c0): rm = rax, reg = r8.
+        ("44 85 c0 REX.R", &[0x44, 0x85, 0xc0], 0, 0x7, 8, 0x6, PF),
+        // REX.B only: testl %eax, %r15d (41 85 c7): rm = r15, reg = rax.
+        (
+            "41 85 c7 REX.B",
+            &[0x41, 0x85, 0xc7],
+            15,
+            0x100,
+            0,
+            0x100,
+            PF,
+        ),
+        // Plain REX (40) and REX.X (42) without W: the same register form.
+        (
+            "40 85 c9 REX",
+            &[0x40, 0x85, 0xc9],
+            1,
+            0x8000_0000,
+            1,
+            0x8000_0000,
+            SF | PF,
+        ),
+        ("42 85 c9 REX.X", &[0x42, 0x85, 0xc9], 1, 0, 1, 0, ZF | PF),
+    ];
+    for (name, bytes, a, a_value, b, b_value, flags) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        state.gpr[*a] = *a_value;
+        state.gpr[*b] = *b_value;
+        // CF, OF, SF, ZF, PF, AF all set before: TEST clears CF/OF and recomputes SF/ZF/PF.
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        expected.rip = RIP + bytes.len() as u64;
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        // No register changes (the result is not written, so no zero-extension of the high half).
+        assert_eq!(state.gpr, expected.gpr, "{name}");
+        assert_eq!(state.rip, expected.rip, "{name}");
+        let arithmetic = state.rflags & ARITH;
+        assert_eq!(arithmetic & (CF | OF), 0, "{name}");
+        assert_eq!(arithmetic & (SF | ZF | PF), *flags, "{name}");
+        assert_eq!(state.rflags & !ARITH, expected.rflags & !ARITH, "{name}");
+        // AF is undefined after TEST (SDM, from memory): it leaves the defined set.
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !AF, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn test_r32_then_je_chain_keeps_the_boundary_state() {
+    // `/init` at 0x40016b: `85 c9` (testl %ecx, %ecx), `74 01` (je, taken on a zero low dword),
+    // a skipped `90`, then `8a 06` (movb (%rsi), %al, memory form, still outside) stops the run.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0000;
+    let mut memory = Memory::code(&[0x85, 0xc9, 0x74, 0x01, 0x90, 0x8a, 0x06]);
+    let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8a });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 5);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0xffff_ffff_0000_0000);
+    assert_eq!(state.rflags & (ZF | CF | OF), ZF);
     assert_eq!(memory.accesses, 0);
 }
 
