@@ -865,4 +865,216 @@ mod tests {
         let value = check_report(&report, &sha, &allowing);
         assert_eq!(value["verdict"], "PASS_DIAGNOSTIC_NOT_COUNTED", "{value:#}");
     }
+
+    // S4-40: negative reports for every failure class; none may be PASS or
+    // PASS_DIAGNOSTIC_NOT_COUNTED, with and without --allow-diagnostic-acceptance.
+
+    fn never_a_pass(report: &Value, expected: &[&str]) {
+        for allow in [false, true] {
+            let mut options = options();
+            options.allow_diagnostic = allow;
+            let value = check_report(report, "00", &options);
+            assert_eq!(value["verdict"], "FAIL", "allow={allow}: {value:#}");
+            assert_eq!(value["counted"], false);
+            let failures = value["failures"].as_array().unwrap();
+            for name in expected {
+                assert!(
+                    failures
+                        .iter()
+                        .any(|f| f.as_str().unwrap().starts_with(&format!("{name}:"))),
+                    "no failure for {name} (allow={allow}): {value:#}"
+                );
+            }
+        }
+    }
+
+    /// The journal cut after `kept` calls (the guest never reached exit).
+    fn cut_journal(report: &mut Value, kept: usize) {
+        let journal = &mut report["stop"]["syscall_journal"];
+        journal["entries"].as_array_mut().unwrap().truncate(kept);
+        journal["entered"] = json!(kept);
+        journal["returned"] = json!(kept);
+    }
+
+    fn set_com1(report: &mut Value, text: String) {
+        report["stop"]["com1_text"] = json!(text);
+    }
+
+    #[test]
+    fn s4_40_a_timeout_before_exit_is_not_a_pass() {
+        // Budget exhausted while /init sleeps: the journal ends at nanosleep, no exit, no panic.
+        let mut report = good();
+        report["stop"]["exit_kind"] = json!("budget_exhausted");
+        cut_journal(&mut report, 8);
+        set_com1(
+            &mut report,
+            format!("OD_NONCE={NONCE}\r\n[ 2.0] Run /init as init process\r\n"),
+        );
+        never_a_pass(
+            &report,
+            &["journal_sequence", "journal_exit", "com1_panic_line"],
+        );
+        // The same cut with the panic line still in the text (the journal alone is enough).
+        let mut report = good();
+        cut_journal(&mut report, 8);
+        never_a_pass(&report, &["journal_sequence", "journal_exit"]);
+    }
+
+    #[test]
+    fn s4_40_a_panic_that_is_not_an_init_kill_is_not_a_pass() {
+        let mut report = good();
+        let other =
+            "Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)";
+        set_com1(
+            &mut report,
+            format!("OD_NONCE={NONCE}\r\n[ 2.3] {other}\r\n[ 2.4] ---[ end {other} ]---\r\n"),
+        );
+        never_a_pass(&report, &["com1_panic_line"]);
+        // The kernel died before init: no calls in the journal either.
+        cut_journal(&mut report, 0);
+        never_a_pass(
+            &report,
+            &["com1_panic_line", "journal_sequence", "journal_exit"],
+        );
+    }
+
+    #[test]
+    fn s4_40_a_shutdown_before_init_is_not_a_pass() {
+        for kind in ["halted", "shutdown", "stopped"] {
+            let mut report = good();
+            report["stop"]["exit_kind"] = json!(kind);
+            report["stop"]["machine_stop_reason"] = json!("shutdown");
+            cut_journal(&mut report, 0);
+            set_com1(&mut report, "[ 0.5] ACPI: PM-Timer\r\n".to_string());
+            never_a_pass(
+                &report,
+                &["com1_nonce_line", "com1_panic_line", "journal_sequence"],
+            );
+            // Shorter journal, the nonce line already printed, still no exit.
+            let mut report = good();
+            report["stop"]["exit_kind"] = json!(kind);
+            cut_journal(&mut report, 5);
+            set_com1(&mut report, format!("OD_NONCE={NONCE}\r\n"));
+            never_a_pass(
+                &report,
+                &["com1_panic_line", "journal_sequence", "journal_exit"],
+            );
+        }
+    }
+
+    #[test]
+    fn s4_40_an_unsupported_instruction_is_not_a_pass() {
+        let mut report = good();
+        report["stop"]["exit_kind"] = json!("unsupported");
+        report["stop"]["unsupported_opcode"] = json!("0xfc");
+        cut_journal(&mut report, 3);
+        set_com1(&mut report, "[ 1.0] Booting\r\n".to_string());
+        never_a_pass(
+            &report,
+            &[
+                "com1_nonce_line",
+                "com1_panic_line",
+                "journal_sequence",
+                "journal_exit",
+            ],
+        );
+    }
+
+    #[test]
+    fn s4_40_a_wrong_or_missing_nonce_in_com1_is_not_a_pass() {
+        let mut report = good();
+        let text = report["stop"]["com1_text"]
+            .as_str()
+            .unwrap()
+            .replace(NONCE, "s4-38l4b");
+        set_com1(&mut report, text);
+        never_a_pass(&report, &["com1_nonce_line"]);
+        // Missing: the line is gone, everything else is intact.
+        let mut report = good();
+        set_com1(
+            &mut report,
+            format!("[ 2.2] Run /init as init process\r\n[ 2.3] {PANIC_LINE}\r\n"),
+        );
+        never_a_pass(&report, &["com1_nonce_line"]);
+        // Empty or absent COM1.
+        let mut report = good();
+        set_com1(&mut report, String::new());
+        never_a_pass(&report, &["com1_nonce_line", "com1_panic_line"]);
+        report["stop"]["com1_text"] = Value::Null;
+        never_a_pass(&report, &["com1_nonce_line", "com1_panic_line"]);
+    }
+
+    #[test]
+    fn s4_40_exit_with_another_panic_line_or_a_nonzero_exitcode_is_not_a_pass() {
+        // exit(60) is in the journal, but the kernel's last words are different.
+        let mut report = good();
+        let other = "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100";
+        set_com1(
+            &mut report,
+            format!("OD_NONCE={NONCE}\r\n[ 2.3] {other}\r\n"),
+        );
+        never_a_pass(&report, &["com1_panic_line"]);
+        let mut report = good();
+        let other = "Kernel panic - not syncing: Fatal exception in interrupt";
+        set_com1(
+            &mut report,
+            format!("OD_NONCE={NONCE}\r\n[ 2.3] {other}\r\n"),
+        );
+        never_a_pass(&report, &["com1_panic_line"]);
+        // Look-alikes inside another line are not the panic line either.
+        let mut report = good();
+        set_com1(
+            &mut report,
+            format!("OD_NONCE={NONCE}\r\nnote: {PANIC_LINE}\r\nx{PANIC_LINE}\r\n"),
+        );
+        never_a_pass(&report, &["com1_panic_line"]);
+    }
+
+    #[test]
+    fn s4_40_a_nonce_without_a_write_of_the_right_length_is_not_a_pass() {
+        // COM1 has the line, the journal has a short write.
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][5]["rax_return"] = json!("0x5");
+        never_a_pass(&report, &["journal_write_length"]);
+        // No write at all in the journal (the call is replaced, the sequence breaks too).
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][5]["nr"] = json!(2);
+        never_a_pass(&report, &["journal_write_length", "journal_sequence"]);
+        // A write that failed (negative errno as unsigned).
+        let mut report = good();
+        report["stop"]["syscall_journal"]["entries"][5]["rax_return"] = json!("0xfffffffffffffff7");
+        never_a_pass(&report, &["journal_write_length"]);
+    }
+
+    #[test]
+    fn s4_40_a_refused_or_failed_run_report_is_not_a_pass() {
+        let refused = json!({
+            "acceptance": "counted",
+            "status": "refused",
+            "guest_started": true,
+            "nonce": NONCE,
+            "error": {"code": "run_failed"},
+        });
+        never_a_pass(&refused, &["journal_sequence", "com1_nonce_line"]);
+        never_a_pass(&json!({}), &["acceptance", "journal_sequence"]);
+        never_a_pass(&Value::Null, &["acceptance", "journal_sequence"]);
+    }
+
+    #[test]
+    fn s4_40_the_real_counted_cold_reports_pass_without_flags() {
+        for name in [
+            "s4-39j-gate-counted-cold1-stage4a-run.json",
+            "s4-39j-gate-counted-cold2-stage4a-run.json",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/reports/data/stage4")
+                .join(name);
+            let bytes = std::fs::read(path).unwrap();
+            let report: Value = serde_json::from_slice(&bytes).unwrap();
+            let value = check_report(&report, &sha256_hex(&bytes), &options());
+            assert_eq!(value["verdict"], "PASS", "{name}: {value:#}");
+            assert_eq!(value["counted"], true);
+            assert_eq!(value["exit_kind"], "budget_exhausted");
+        }
+    }
 }
