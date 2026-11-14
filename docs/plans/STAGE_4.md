@@ -1927,7 +1927,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-34a. Метод: реальное CPL0 исполнение через KVM на Mac mini
 
-- [x] Метод принят после ревью (Claude Opus, high); статус S4-34 — не принят. Оговорки: один образ, по одному запуску на случай; повторяемость между запусками и перезагрузками хоста не измерена; guest CPUID = KVM_GET_SUPPORTED_CPUID хоста; irqchip/APIC/таймер отсутствуют; модель CPU из /proc/cpuinfo (план говорил lscpu). Открыто: ISSUE-071.
+- [x] Метод принят после ревью (Claude Opus, high); S4-34b добавил повторы и identity, S4-34cde закрыл выбранные архитектурные cases. Ограничения: повторы после host reboot не выполнялись; guest CPUID = KVM_GET_SUPPORTED_CPUID хоста; irqchip/APIC/таймер topology не проверялась; ISSUE-071 закрыта для риска единичного прогона.
 - **Контракт:** хост-раннер `tools/kvm-runner/` (C, один файл, gcc на хосте) создаёт VM через `/dev/kvm`, загружает собственный freestanding-образ в guest RAM, задаёт entry state (Long64/CPL0, GDT и собственные page tables гостя, EFER.LME/LMA, CR0.PG/PE, CR4.PAE), запускает `KVM_RUN` и собирает UART-байты через I/O-exit на порт `0x3f8`. Исполнение — только VT-x гостя; наш MMU не участвует.
 - **Где:** Mac собирает образ (clang/lld, как фикстуры), хост на mini собирает раннер gcc'ом в `/home/senya/od-kvm/` (новый каталог; ничего вне него, boot и системные файлы не трогаются). Обмен: scp образа и раннера, результат — JSON evidence.
 - **Проверка:** гость пишет `OK\n` в COM1 и `HLT`; раннер фиксирует: hardware identity (`hostname`, `uname -a`, `lscpu` model, KVM API version), SHA-256 образа и раннера, entry state (RIP, RSP, CR0/CR3/CR4/EFER, CS), последовательность exit'ов (I/O, HLT, shutdown), вывод UART, число шагов. Инъекция: образ с другой строкой или без `HLT` (шатдаун/таймаут) даёт различимый результат.
@@ -1936,20 +1936,30 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-34b. Повторяемость KVM cases и фиксация CPU identity
 
-- [ ] Реализация и трёхкратный прогон каждого method case завершены; независимое ревью ожидается. Родительский S4-34 остаётся открытым.
+- [x] Реализация и трёхкратный прогон каждого method case приняты после независимого ревью `gpt-6.1-sol/high` (2026-11-14). Родительский S4-34 остаётся открытым.
 - **Где:** `tools/kvm-runner/kvm_runner.c`, `tools/build/build_stage4_kvm_method.py`, focused builder tests; evidence — `docs/reports/data/stage4/s4-34b-kvm-repeatability.json` только после физического прогона.
 - **Сделано локально:** runner serializes the exact CPUID entries passed to `KVM_SET_CPUID2` from `KVM_GET_SUPPORTED_CPUID` and reads host microcode from `/proc/cpuinfo`; builder strictly validates CPUID structure and required host identity, supports bounded 1–100 invocations per case, preserves each invocation's raw CPUID model/hash, compares CPUID identities after clearing only CPUID.1:EBX[31:24] and CPUID.0B:EDX (per-logical-processor APIC IDs), validates injection-specific exact I/O/HLT traces against UART text/hex, rejects unstable guest behavior/identity, checks runner source hash before compilation, and verifies image and compiled-runner hashes before and after every run.
 - **Физическая проверка:** на `senya@192.168.1.14:/home/senya/od-kvm` собран и выполнен runner для трёх существующих method images, по 3 повтора каждого. Все cases стабильны: `main` — HLT/`OK\n`; `no_hlt` — wall deadline/`OK\n`; `wrong_str` — HLT/`NO\n`. Raw CPUID entries и hashes сохранены для каждой попытки. CPUID identity сравнивается после маскирования только per-CPU APIC ID в CPUID.1:EBX[31:24] и CPUID.0B:EDX; все 9 normalized hashes совпали, хотя raw hashes в нескольких повторах различались. Host: Intel Core i5-3210M, microcode `0x21`, KVM API 12, VMX enabled. Образы совпали по SHA-256 до/после каждой попытки; source hash перед компиляцией совпал с локальным файлом; runner binary hash совпал между before/after каждой попытки, локального binary comparison не было.
 - **Проверки:** `python3 tools/build/test_build_stage4_kvm_method.py` — 41 tests passed; `python3 -m py_compile ...`, `git diff --check` passed. `graphify update .` выполнен после изменений кода. Local C syntax check is unavailable because this macOS host has no `linux/kvm.h`.
-- **Ограничение:** это повторяемость в одной KVM-сессии, не проверка после reboot и не bare-metal. S4-34b ждёт независимого ревью; родительский S4-34 не принят.
+- **Ограничение:** это повторяемость в одной KVM-сессии, не проверка после reboot и не bare-metal. Принят только методический срез S4-34b; родительский S4-34 не принят.
 - **Отчёт:** [S4-34b status report](../reports/STAGE_4_S4-34B_2026-11-14.md).
-- **Следующий шаг:** завершить независимое ревью. Page-walk/rights/A/D/CR2, CR transitions, descriptors and interrupt cases remain separate S4-34 work.
+- **Следующий шаг:** эти архитектурные slices завершены в S4-34cde; см. ниже. Повторы после перезагрузки хоста остаются ограничением ISSUE-071.
+
+#### S4-34cde. Page walks, control/descriptors, privilege и KVM-injected interrupt
+
+- [x] Локальная сборка, независимое review и физический прогон приняты 2026-11-14; родительский S4-34 остаётся открытым из-за незакрытых prerequisites S4-00/S4-01.
+- **Где:** `tests/fixtures/guest/stage4/kvm_system/`, `tools/kvm-runner/kvm_runner.c`, `tools/build/build_stage4_kvm_system.py`, `tools/build/test_build_stage4_kvm_system.py`; evidence — `docs/reports/data/stage4/s4-34cde-kvm-system.json`.
+- **Cases:** paging IDs 101–108 (read/write 4 KiB, not-present, CR0.WP on/off, NX fetch, CR3 root switch, INVLPG remap); control ID 201 (CR0/CR3/CR4); descriptors IDs 0x21–0x22 (GDTR/IDTR/GDT/TSS and same-CPL interrupt frame/IRETQ); privilege IDs 0x23–0x24 (CPL3 entry/return and CPL3 MOV CR0 #GP recovery); interrupt ID 0x31 (vector 0x41 queued through `KVM_INTERRUPT` after HLT).
+- **Физическая проверка:** Mac собрал 14 образов размером 281–870 байт. На `senya@192.168.1.14:/home/senya/od-kvm` runner выполнил 3 независимые VM invocation каждого образа; 42/42 приняты, result blocks и нормализованная hardware identity стабильны во всех повторах. Хост: Intel Core i5-3210M, microcode `0x21`, KVM API 12, VMX enabled. SHA-256 образов, runner source и удалённого runner binary до/после каждого запуска сохранены в evidence.
+- **Проверки:** `python3 tools/build/test_build_stage4_kvm_system.py` — 9 tests passed; `python3 tools/build/test_build_stage4_kvm_method.py` — 41 regression tests passed; все 14 fixture images assembled/linked; `python3 -m py_compile ...` и `git diff --check` passed. Mini собрал runner с `gcc -O2 -Wall -Wextra -Werror -std=c11`.
+- **Граница:** это Intel VT-x через Linux KVM, не исполнение нашего MMU/CPU и не bare-metal. Случай 0x31 проверяет только user-space `KVM_INTERRUPT` и архитектурную доставку/IRETQ на этой KVM-конфигурации; physical APIC/IOAPIC/PIT/timer topology не проверялась. Использованы только 2 MiB RAM и KVM exits; guest OS и reboot не запускались. S4-00 и S4-01 не закрыты, поэтому S4-34 не принимается.
+- **Отчёт:** [S4-34cde report](../reports/STAGE_4_S4-34CDE_2026-11-14.md).
 
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
-- [ ] Методика/harness приняты; физический запуск принят отдельно.
+- [x] Методика/harness приняты; физический запуск выбранных cases принят отдельно. Parent-acceptance gate остаётся открытым до prerequisites S4-00/S4-01.
 - **Где:** `docs/testing/MACHINE.md`, собственные freestanding fixtures, `tools/x86-runner/` только для допустимой host orchestration; evidence в report/data.
-- **Сделать:** составить минимальный набор для page walks/rights/A/D/CR2/errorcode, CR transitions, descriptor/delivery/return и требуемого interrupt path. Использовать единственный Mac mini по SSH `192.168.1.14`; сначала доказать способ реального CPL0 выполнения и сбора результатов. Проверить recovery, ограничения memory/device writes и независимость oracle.
+- **Сделать:** закрыть prerequisites S4-00/S4-01 и после этого повторно оценить приёмку полного parent scope. Минимальные архитектурные cases для page walks/rights/A-D/CR2/error code, CR transitions, descriptors/delivery/return и interrupt path выполнены в S4-34cde.
 - **Проверка:** фиксировать hardware identity, environment/execution kind, artifact hashes, entry state, expected defined fields и raw output. Не считать обычный Linux signal adapter проверкой всей системной семантики. Hardware topology может отличаться от virtual board: сравнивать явно общий архитектурный контракт, не абсолютные platform addresses.
 - **Готово:** выбранные cases действительно выполнены независимо от нашего MMU. При отсутствии разрешённого privileged запуска статус `blocked`/`not_run`; методику нельзя отметить как physical pass. Reboot/изменение загрузки — только по отдельному конкретному разрешению согласно разделу 5.
 
