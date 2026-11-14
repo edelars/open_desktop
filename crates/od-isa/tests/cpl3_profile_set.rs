@@ -678,6 +678,264 @@ fn lea_variants_outside_the_allowed_form_stop_without_change() {
     }
 }
 
+// ---- S4-39f8: `REX.W 8D /r` (LEA r64, m) with a SIB operand ----
+
+/// RFLAGS with IF, CF, PF, ZF, SF and OF set: LEA must leave every bit as it is.
+const LEA_FLAGS: u64 = 2 | (1 << 9) | 0x1 | 0x4 | 0x40 | 0x80 | 0x800;
+
+fn gpr(state: &LongModeState, index: usize) -> u64 {
+    state.gpr[index]
+}
+
+#[test]
+fn init_lea_r14_rbx_into_rdi_is_allowed() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // `49 8d 3c 1e` = `leaq (%r14,%rbx), %rdi` of `/init` at 0x400162, then a stop on the budget.
+    let mut state = user_state();
+    state.rflags = LEA_FLAGS;
+    state.gpr[14] = 0x7000_1000;
+    state.gpr[Register::Rbx as usize] = 0x20;
+    state.gpr[Register::Rdi as usize] = u64::MAX;
+    let mut memory = Memory::code(&[0x49, 0x8d, 0x3c, 0x1e, 0x90]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x7000_1020);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(state.rflags, LEA_FLAGS);
+    assert_eq!(memory.accesses, 0);
+    // The destination is the only register that changed.
+    assert_eq!(state.gpr[14], 0x7000_1000);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x20);
+}
+
+#[test]
+fn lea_sib_forms_compute_the_address() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, destination register, expected value). Registers: rbx = 0x1000, rcx = 0x30,
+    // rsi = 0x2000, rsp = 0x7fff_0000, rbp = 0x5000, r11 = 0x300, r12 = 0x4000, r13 = 0x6000,
+    // r14 = 0x9000.
+    let forms: &[(&str, &[u8], usize, u64)] = &[
+        // base rsi, index rbx
+        ("rsi+rbx", &[0x48, 0x8d, 0x3c, 0x1e], 7, 0x3000),
+        // REX.X: index r11
+        ("rsi+r11 (REX.X)", &[0x4a, 0x8d, 0x3c, 0x1e], 7, 0x2300),
+        // REX.R: destination r15
+        (
+            "rsi+rbx into r15 (REX.R)",
+            &[0x4c, 0x8d, 0x3c, 0x1e],
+            15,
+            0x3000,
+        ),
+        // REX.B: base r14
+        ("r14+rbx (REX.B)", &[0x49, 0x8d, 0x3c, 0x1e], 7, 0xa000),
+        // all four
+        (
+            "r14+r11 into r15 (REX.WRXB)",
+            &[0x4f, 0x8d, 0x3c, 0x1e],
+            15,
+            0x9300,
+        ),
+        // scale 4, disp8
+        (
+            "rbx+rcx*4+0x10",
+            &[0x48, 0x8d, 0x44, 0x8b, 0x10],
+            0,
+            0x1000 + 0xc0 + 0x10,
+        ),
+        // negative disp8
+        (
+            "rbx+rcx*4-0x10",
+            &[0x48, 0x8d, 0x44, 0x8b, 0xf0],
+            0,
+            0x1000 + 0xc0 - 0x10,
+        ),
+        // scale 8, disp32
+        (
+            "rbx+rcx*8+0x100",
+            &[0x48, 0x8d, 0x84, 0xcb, 0x00, 0x01, 0x00, 0x00],
+            0,
+            0x1000 + 0x180 + 0x100,
+        ),
+        // negative disp32
+        (
+            "rbx-0x100",
+            &[0x48, 0x8d, 0x84, 0x23, 0x00, 0xff, 0xff, 0xff],
+            0,
+            0x1000 - 0x100,
+        ),
+        // index field 100 without REX.X: no index (the scale is irrelevant)
+        ("rbx, no index", &[0x48, 0x8d, 0x04, 0x23], 0, 0x1000),
+        (
+            "rbx, no index, scale 8",
+            &[0x48, 0x8d, 0x04, 0xe3],
+            0,
+            0x1000,
+        ),
+        // index field 100 with REX.X: r12 is a real index
+        (
+            "rbx+r12 (REX.X, index 100)",
+            &[0x4a, 0x8d, 0x04, 0x23],
+            0,
+            0x5000,
+        ),
+        // base rsp
+        ("rsp", &[0x48, 0x8d, 0x04, 0x24], 0, 0x7fff_0000),
+        ("rsp+0x8", &[0x48, 0x8d, 0x44, 0x24, 0x08], 0, 0x7fff_0008),
+        // base rbp needs mod != 00; mod = 01 makes it a base
+        ("rbp+0x8", &[0x48, 0x8d, 0x44, 0x25, 0x08], 0, 0x5008),
+        // mod = 00 with base field 101: disp32 without a base
+        (
+            "disp32 only",
+            &[0x48, 0x8d, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+            0,
+            0x1000,
+        ),
+        // ... also with an index
+        (
+            "rcx*2+disp32",
+            &[0x48, 0x8d, 0x04, 0x4d, 0x00, 0x10, 0x00, 0x00],
+            0,
+            0x1000 + 0x60,
+        ),
+        // ... and with REX.B: the base field 101 still means "no base" at mod = 00
+        (
+            "disp32 only (REX.B)",
+            &[0x49, 0x8d, 0x04, 0x25, 0x00, 0x20, 0x00, 0x00],
+            0,
+            0x2000,
+        ),
+        // REX.B turns base 100 into r12 and base 101 (mod = 01) into r13
+        ("r12 (REX.B)", &[0x49, 0x8d, 0x04, 0x24], 0, 0x4000),
+        (
+            "r13+0x8 (REX.B)",
+            &[0x49, 0x8d, 0x44, 0x25, 0x08],
+            0,
+            0x6008,
+        ),
+    ];
+    for (name, bytes, dst, expected) in forms {
+        let mut state = user_state();
+        state.rflags = LEA_FLAGS;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        state.gpr[Register::Rcx as usize] = 0x30;
+        state.gpr[Register::Rsi as usize] = 0x2000;
+        state.gpr[Register::Rsp as usize] = 0x7fff_0000;
+        state.gpr[Register::Rbp as usize] = 0x5000;
+        state.gpr[11] = 0x300;
+        state.gpr[12] = 0x4000;
+        state.gpr[13] = 0x6000;
+        state.gpr[14] = 0x9000;
+        let mut before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(gpr(&state, *dst), *expected, "{name}");
+        assert_eq!(state.rip, RIP + bytes.len() as u64, "{name}");
+        assert_eq!(state.rflags, LEA_FLAGS, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+        // Nothing but the destination and RIP changed.
+        before.gpr[*dst] = *expected;
+        before.rip = state.rip;
+        assert_eq!(state, before, "{name}");
+    }
+}
+
+#[test]
+fn lea_sib_never_touches_memory_and_does_not_check_the_address() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // A non-canonical result (and a wrapping one) is just a value: no #GP, no #SS, no access.
+    let mut state = user_state();
+    state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+    state.gpr[Register::Rcx as usize] = u64::MAX;
+    state.gpr[Register::Rsp as usize] = 0xffff_ffff_ffff_fff8;
+    let mut memory = Memory::code(&[
+        0x48, 0x8d, 0x04, 0x23, // lea (%rbx), %rax (no index)
+        0x48, 0x8d, 0x14, 0x0b, // lea (%rbx,%rcx), %rdx = rbx - 1
+        0x48, 0x8d, 0x5c, 0x24, 0x10, // lea 0x10(%rsp), %rbx (wraps to 8)
+    ]);
+    let result = run3(&mut state, &mut memory, &set, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x0000_8000_0000_0000);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0000_7fff_ffff_ffff);
+    assert_eq!(state.gpr[Register::Rbx as usize], 8);
+    assert_eq!(state.rip, RIP + 13);
+    assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn lea_with_a_register_operand_is_invalid_opcode_without_change() {
+    // `LEA` with mod = 11 is #UD (the decoder rejects it); the allow-list does not change that.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bytes in [&[0x48, 0x8d, 0xc3][..], &[0x49, 0x8d, 0xfe][..]] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, 0);
+    }
+}
+
+#[test]
+fn lea_sib_variants_outside_the_allowed_form_stop_without_change() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8])] = &[
+        (
+            "no REX.W (lea edi, [r14+rbx] needs REX.B only)",
+            &[0x41, 0x8d, 0x3c, 0x1e],
+        ),
+        ("no REX at all", &[0x8d, 0x3c, 0x1e]),
+        ("operand-size prefix", &[0x66, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("address-size prefix", &[0x67, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("lock prefix", &[0xf0, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("repe prefix", &[0xf3, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("repne prefix", &[0xf2, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("fs segment prefix", &[0x64, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("gs segment prefix", &[0x65, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("cs segment prefix", &[0x2e, 0x49, 0x8d, 0x3c, 0x1e]),
+        ("ds segment prefix", &[0x3e, 0x49, 0x8d, 0x3c, 0x1e]),
+        // Register-base forms without a SIB byte stay outside (S4-39f8 allows the SIB form only).
+        ("[rbx] without SIB", &[0x48, 0x8d, 0x03]),
+        ("[r14] without SIB", &[0x49, 0x8d, 0x3e]),
+        ("[rbx+0x8] without SIB", &[0x48, 0x8d, 0x43, 0x08]),
+        (
+            "[rbx+0x100] without SIB",
+            &[0x48, 0x8d, 0x83, 0x00, 0x01, 0x00, 0x00],
+        ),
+    ];
+    for (name, bytes) in forms {
+        let mut state = user_state();
+        state.gpr[14] = 0x9000;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8d },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
 #[test]
 fn mov_imm32_with_a_repeat_prefix_is_not_allowed() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
@@ -1845,22 +2103,24 @@ fn init_path_runs_the_movb_then_xor_and_stops_at_the_next_forbidden_form() {
     // cmpq %r13, %rbx; jae +0xc6; testq %rbx, %rbx; je +8; cmpb $0x20, -1(%r14,%rbx)` (S4-39f7:
     // `4c 39 eb` and the short `74 08` now execute; `jae` is not taken as 0 < 5, `je` is taken as
     // rbx = 0 and skips the 8 bytes of `cmpb` and `jne`, `leaq 0x107(%rip), %rsi` retires, and
-    // `leaq (%r14,%rbx), %rdi` (`49 8d 3c 1e`, a LEA that is not RIP-relative) stops the run).
+    // `leaq (%r14,%rbx), %rdi` (`49 8d 3c 1e`) retires since S4-39f8, and the run stops at the
+    // `hlt` placed after it).
     let bytes = [
         0x4c, 0x8d, 0x35, 0xc2, 0x0e, 0x00, 0x00, 0x43, 0xc6, 0x04, 0x2e, 0x00, 0x31, 0xdb, 0x4c,
         0x39, 0xeb, 0x0f, 0x83, 0xc6, 0x00, 0x00, 0x00, 0x48, 0x85, 0xdb, 0x74, 0x08, 0x41, 0x80,
         0x7c, 0x1e, 0xff, 0x20, 0x75, 0x24, 0x48, 0x8d, 0x35, 0x07, 0x01, 0x00, 0x00, 0x49, 0x8d,
-        0x3c, 0x1e,
+        0x3c, 0x1e, 0xf4,
     ];
     let mut state = mov_byte_state();
     state.gpr[Register::R13 as usize] = 5;
     let target = RIP + 7 + 0xec2 + 5;
     let mut memory = DataMemory::new(&bytes).with_user(target, b'x');
     let result = run3_data(&mut state, &mut memory, 16).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8d });
-    // lea, movb, xor, cmp, jae (not taken), test, je (taken), lea (rip-relative).
-    assert_eq!(result.instructions_executed, 8);
-    assert_eq!(state.rip, RIP + 43);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    // lea, movb, xor, cmp, jae (not taken), test, je (taken), lea (rip-relative), lea (SIB).
+    assert_eq!(result.instructions_executed, 9);
+    assert_eq!(state.rip, RIP + 47);
+    assert_eq!(state.gpr[Register::Rdi as usize], RIP + 7 + 0xec2);
     assert_eq!(state.gpr[Register::R14 as usize], RIP + 7 + 0xec2);
     assert_eq!(state.gpr[Register::Rbx as usize], 0);
     assert_eq!(state.gpr[Register::Rsi as usize], RIP + 43 + 0x107);
