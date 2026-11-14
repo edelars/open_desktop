@@ -2287,6 +2287,15 @@ pub enum Operation {
     PushMemory {
         source: MemoryOperand,
     },
+    /// S4-39f1: `64 [REX] FF /6` (PUSH m64 with the FS base), memory source only. Executed only in
+    /// the CPL0 set: the qword is read from FS base + effective address, then pushed on the stack.
+    PushFsMem {
+        source: MemoryOperand,
+    },
+    /// S4-39f1: `65 ...` (as `PushFsMem` with the GS base).
+    PushGsMem {
+        source: MemoryOperand,
+    },
     /// Long-mode qword POP to an ordinary memory effective address.
     PopMemory {
         destination: MemoryOperand,
@@ -9669,21 +9678,53 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // Memory PUSH reads its complete source before changing
                     // RSP. Only qword default and explicit word operands use
                     // the ordinary flat EA profile in this slice.
-                    if modrm >> 6 == 3
-                        || prefixes.group1.is_some()
-                        || matches!(prefixes.segment, Some(0x64 | 0x65))
-                    {
-                        return Err(self.unsupported(opcode));
-                    }
-                    size = if rex & 8 != 0 || !prefixes.operand_override {
-                        OperandSize::Qword
+                    if matches!(prefixes.segment, Some(0x64 | 0x65)) && modrm >> 6 != 3 {
+                        // S4-39f1: `[64|65] [REX] FF /6` (PUSH m64 with the FS/GS base). The
+                        // operand is always a qword (REX.W is optional and changes nothing); LOCK/
+                        // REP, 0x66, 0x67, a second segment byte (the shared duplicate check) and a
+                        // REX byte that is not immediately before the opcode are refused with the
+                        // opcode byte. The register form (mod = 11) and the bare memory form keep
+                        // their previous decoding/refusal.
+                        let stale_rex = prefix_bytes[..prefix_count]
+                            .iter()
+                            .enumerate()
+                            .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                        if stale_rex
+                            || prefixes.group1.is_some()
+                            || prefixes.operand_override
+                            || prefixes.address_override
+                        {
+                            return Err(self.unsupported(opcode));
+                        }
+                        size = OperandSize::Qword;
+                        let Operand::Memory(source) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                        else {
+                            unreachable!("the register form is excluded above")
+                        };
+                        if prefixes.segment == Some(0x64) {
+                            Operation::PushFsMem { source }
+                        } else {
+                            Operation::PushGsMem { source }
+                        }
                     } else {
-                        OperandSize::Word
-                    };
-                    let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)? else {
-                        unreachable!("register-mode PUSH r/m is rejected above")
-                    };
-                    Operation::PushMemory { source }
+                        if modrm >> 6 == 3
+                            || prefixes.group1.is_some()
+                            || matches!(prefixes.segment, Some(0x64 | 0x65))
+                        {
+                            return Err(self.unsupported(opcode));
+                        }
+                        size = if rex & 8 != 0 || !prefixes.operand_override {
+                            OperandSize::Qword
+                        } else {
+                            OperandSize::Word
+                        };
+                        let Operand::Memory(source) = self.rm_operand(modrm, prefixes, size)?
+                        else {
+                            unreachable!("register-mode PUSH r/m is rejected above")
+                        };
+                        Operation::PushMemory { source }
+                    }
                 } else if byte == 0xff && group == 4 {
                     // In long mode near indirect JMP uses a 64-bit operand.
                     // The memory case uses only the existing ordinary flat EA
@@ -21639,10 +21680,9 @@ mod tests {
         }
 
         for bytes in [
-            &[0xff, 0xf0][..],       // register mode is not PUSH r/m
+            &[0xff, 0xf0][..], // register mode is not PUSH r/m
             &[0xf0, 0xff, 0x30][..], // LOCK
-            &[0x64, 0xff, 0x30][..], // FS
-            &[0x65, 0xff, 0x30][..], // GS
+                               // S4-39f1: `64 ff 30` / `65 ff 30` (FS/GS) now decode as PushFsMem/PushGsMem.
         ] {
             assert!(
                 matches!(
@@ -26511,12 +26551,12 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::LockIncMem { .. }
         ));
-        // The other FF group members (CALL/JMP/PUSH; DEC is S4-38L7q), LOCK/REP, 0x66, 0x67, a second segment prefix and a stale
+        // The other FF group members (CALL/JMP; PUSH is S4-39f1; DEC is S4-38L7q), LOCK/REP, 0x66, 0x67, a second segment prefix and a stale
         // REX stay unsupported with the FF opcode.
         for bytes in [
             &[0x65, 0xff, 0x13][..],
             &[0x64, 0xff, 0x23][..],
-            &[0x65, 0xff, 0x33][..],
+            // S4-39f1: `65 ff 33` (FS/GS PUSH m64) now decodes as PushGsMem.
             &[0xf0, 0x65, 0xff, 0x03][..],
             &[0x65, 0xf0, 0xff, 0x03][..],
             &[0xf3, 0x65, 0xff, 0x03][..],
@@ -26541,6 +26581,100 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn segment_push_decodes_fs_gs_memory_forms_only() {
+        // S4-39f1: `[64|65] [REX] FF /6` with a memory operand. The S4-39f boundary is
+        // `push %gs:0x3409f64(%rip)`, 7 bytes long.
+        let qword = |base, index, scale, displacement| MemoryOperand {
+            base,
+            index,
+            scale,
+            displacement,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Qword,
+        };
+        let instruction = Memory::new(&[0x65, 0xff, 0x35, 0x64, 0x9f, 0x40, 0x03])
+            .decode()
+            .unwrap();
+        assert_eq!(instruction.length, 7);
+        assert_eq!(instruction.operand_size, OperandSize::Qword);
+        assert_eq!(
+            instruction.operation,
+            Operation::PushGsMem {
+                source: qword(AddressBase::NextRip, None, 1, 0x0340_9f64),
+            }
+        );
+        // PUSH changes no flag.
+        assert_eq!(instruction.flag_effects().defined, 0);
+        assert_eq!(instruction.flag_effects().undefined, 0);
+        // FS, REX.W (no effect), REX.B base R8, disp8 and SIB.
+        assert_eq!(
+            Memory::new(&[0x64, 0xff, 0x30]).decode().unwrap().operation,
+            Operation::PushFsMem {
+                source: qword(AddressBase::Register(Register::Rax), None, 1, 0),
+            }
+        );
+        let rex_w = Memory::new(&[0x65, 0x48, 0xff, 0x30]).decode().unwrap();
+        assert_eq!(rex_w.length, 4);
+        assert_eq!(
+            rex_w.operation,
+            Operation::PushGsMem {
+                source: qword(AddressBase::Register(Register::Rax), None, 1, 0),
+            }
+        );
+        assert_eq!(
+            Memory::new(&[0x65, 0x41, 0xff, 0x70, 0x08])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PushGsMem {
+                source: qword(AddressBase::Register(Register::R8), None, 1, 8),
+            }
+        );
+        let sib = Memory::new(&[0x64, 0xff, 0x34, 0x8b]).decode().unwrap();
+        assert_eq!(sib.length, 4);
+        assert_eq!(
+            sib.operation,
+            Operation::PushFsMem {
+                source: qword(
+                    AddressBase::Register(Register::Rbx),
+                    Some(Register::Rcx),
+                    4,
+                    0
+                ),
+            }
+        );
+        // The register form, LOCK/REP/REPNE, 0x66, 0x67, a second segment byte and a stale REX
+        // stay unsupported with the FF opcode.
+        for bytes in [
+            &[0x65, 0xff, 0xf0][..],
+            &[0x64, 0xff, 0xf0][..],
+            &[0xf0, 0x65, 0xff, 0x30][..],
+            &[0x65, 0xf0, 0xff, 0x30][..],
+            &[0xf3, 0x65, 0xff, 0x30][..],
+            &[0xf2, 0x65, 0xff, 0x30][..],
+            &[0x66, 0x65, 0xff, 0x30][..],
+            &[0x65, 0x66, 0xff, 0x30][..],
+            &[0x65, 0x67, 0xff, 0x30][..],
+            &[0x64, 0x65, 0xff, 0x30][..],
+            &[0x48, 0x65, 0xff, 0x30][..],
+            &[0x48, 0x65, 0x48, 0xff, 0x30][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { opcode, .. }) if opcode.byte == 0xff
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // Without a segment prefix the previous decoding is unchanged.
+        assert!(matches!(
+            Memory::new(&[0xff, 0x30]).decode().unwrap().operation,
+            Operation::PushMemory { .. }
+        ));
     }
 
     #[test]
