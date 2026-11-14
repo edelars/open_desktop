@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod calibration_report;
 pub mod page_walk_compare;
+pub mod translation_micro;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod stage6_host_memory;
 
