@@ -21148,7 +21148,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
 /// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
 /// RFLAGS, a taken branch goes to `next_rip + rel32`, a non-canonical target is #GP, flags stay).
-/// The short `7x` Jcc, `JMP` and `CALL` stay outside. `[REX.W] 89 /r` (MOV r/m64, r64) in the
+/// The short `7x` Jcc, `JMP` and `CALL` stay outside (`EB` joined in S4-39f13). `[REX.W] 89 /r` (MOV r/m64, r64) in the
 /// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
 /// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
 /// without REX.W (MOV r/m32, r32), a memory operand and `88`/`8B` stay outside.
@@ -21205,6 +21205,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// kept. Without REX.W (dword INC), the memory form, `FF /1` (DEC) and `FF /2..7` stay outside
 /// (`FE` has opcode byte `0xfe` and never matches).
 ///
+/// S4-39f13: the short `EB cb` (JMP rel8, `eb c1` = `jmp 0x400145` of `/init` at `0x400182`)
+/// without REX and without any prefix. The CPL0 `Operation::Jump` is reused (the decoder
+/// sign-extends rel8): RIP becomes `next + rel8`, a non-canonical target is #GP(0) before RIP
+/// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
+/// the opcode byte is part of the match), `E8`, `FF /4` and the far forms stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21232,6 +21238,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
         (
             OpcodeMap::Primary,
             0x89,
