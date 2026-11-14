@@ -21153,6 +21153,17 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// page, no write). `C6 /1..7` (the decoder refuses them), the register form (`c6 c0 ib`) and any
 /// prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay outside.
 ///
+/// S4-39f7: `REX.W 39 /r` (CMP r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
+/// r8..r15) with no prefix other than REX, as in `4c 39 eb` (`cmpq %r13, %rbx`) of `/init` at
+/// `0x400145`. The CPL0 `Operation::Arithmetic { kind: Cmp }` is reused (flags as `dst - src`, the
+/// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand and the other CMP
+/// opcodes (`38`, `3A`..`3D`, `80`/`81`/`83 /7`) stay outside.
+///
+/// S4-39f7 (continued): the short `7x rel8` Jcc (`74 08` = `je` of `/init` at `0x400151`) without
+/// REX and without any prefix: the same `Operation::Branch` as `0F 8x` (the decoder sign-extends
+/// rel8). `JMP` (`EB`/`E9`), `CALL`, `LOOP`/`JRCXZ` (`E0`..`E3`) and Jcc with REX or a prefix stay
+/// outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
@@ -21179,6 +21190,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
         ) => instruction.operand_size == OperandSize::Dword,
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (
             OpcodeMap::Primary,
             0x89,
@@ -21216,6 +21228,15 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool) -> bool {
                 src: Operand::Register(_),
             },
         ) => instruction.operand_size == OperandSize::Dword,
+        (
+            OpcodeMap::Primary,
+            0x39,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x85,

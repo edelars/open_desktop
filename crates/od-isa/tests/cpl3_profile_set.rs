@@ -500,7 +500,44 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("mov bl, al (88 /r)", &[0x88, 0xc3], 0x88),
         ("mov rbx, rax (REX.W 8B /r)", &[0x48, 0x8b, 0xd8], 0x8b),
         // S4-39f5: Jcc rel32 is allowed without any prefix and without REX; the rest stays outside.
-        ("jne rel8 (75)", &[0x75, 0x00], 0x75),
+        // S4-39f7: the short Jcc is allowed without REX/prefix; JMP/LOOP rel8 and prefixed Jcc stay.
+        ("jmp rel8 (EB)", &[0xeb, 0x00], 0xeb),
+        ("rex jne rel8", &[0x40, 0x75, 0x00], 0x75),
+        ("rex.w je rel8", &[0x48, 0x74, 0x00], 0x74),
+        ("operand-size jne rel8", &[0x66, 0x75, 0x00], 0x75),
+        ("addr32 jne rel8", &[0x67, 0x75, 0x00], 0x75),
+        ("fs jne rel8", &[0x64, 0x75, 0x00], 0x75),
+        ("repne jne rel8", &[0xf2, 0x75, 0x00], 0x75),
+        // S4-39f7 review: LOOP/LOOPE/LOOPNE/JRCXZ rel8 and the branch hints before a short Jcc stay outside.
+        ("loopne rel8 (E0)", &[0xe0, 0x00], 0xe0),
+        ("loope rel8 (E1)", &[0xe1, 0x00], 0xe1),
+        ("loop rel8 (E2)", &[0xe2, 0x00], 0xe2),
+        ("jrcxz rel8 (E3)", &[0xe3, 0x00], 0xe3),
+        ("cs-hint jne rel8", &[0x2e, 0x75, 0x00], 0x75),
+        ("ds-hint je rel8", &[0x3e, 0x74, 0x00], 0x74),
+        ("lock je rel8", &[0xf0, 0x74, 0x00], 0x74),
+        // S4-39f7: CMP r/m64, r64 is allowed only as `[REX.W] 39 /r` with mod = 11 and no prefix.
+        ("cmp ebx, r13d (REX.R 39 /r)", &[0x44, 0x39, 0xeb], 0x39),
+        ("cmp ebx, ecx (39 /r)", &[0x39, 0xcb], 0x39),
+        (
+            "cmp [rbx], rcx (REX.W 39 /r memory)",
+            &[0x48, 0x39, 0x0b],
+            0x39,
+        ),
+        ("cmp [rbx], ecx (39 /r memory)", &[0x39, 0x0b], 0x39),
+        ("operand-size cmp rbx, rcx", &[0x66, 0x48, 0x39, 0xcb], 0x39),
+        ("lock cmp rbx, rcx", &[0xf0, 0x48, 0x39, 0xcb], 0x39),
+        ("rep cmp rbx, rcx", &[0xf3, 0x48, 0x39, 0xcb], 0x39),
+        ("fs cmp rbx, rcx", &[0x64, 0x48, 0x39, 0xcb], 0x39),
+        ("addr32 cmp rbx, rcx", &[0x67, 0x48, 0x39, 0xcb], 0x39),
+        ("cmp rcx, rbx (REX.W 3B /r)", &[0x48, 0x3b, 0xcb], 0x3b),
+        ("cmp bl, cl (38 /r)", &[0x38, 0xcb], 0x38),
+        (
+            "cmpq $imm8, rbx (REX.W 83 /7)",
+            &[0x48, 0x83, 0xfb, 0x01],
+            0x83,
+        ),
+        ("cmpb $imm8, [rbx] (80 /7)", &[0x80, 0x3b, 0x20], 0x80),
         ("jmp rel32 (E9)", &[0xe9, 0, 0, 0, 0], 0xe9),
         ("call rel32 (E8)", &[0xe8, 0, 0, 0, 0], 0xe8),
         ("rex.w je rel32", &[0x48, 0x0f, 0x84, 0, 0, 0, 0], 0x84),
@@ -1627,6 +1664,22 @@ fn movb_imm8_forms_store_the_immediate_without_touching_registers_or_flags() {
             DATA + 0x100,
             0x99,
         ),
+        // S4-39f7: REX.B on `mod = 00, rm = 101` is still RIP-relative (not r13): the base is the
+        // end of the 8-byte instruction, and r13 (= 3 here) plays no part.
+        (
+            "41 c6 05 10 00 00 00 5a 0x10(%rip) REX.B is not r13",
+            &[0x41, 0xc6, 0x05, 0x10, 0x00, 0x00, 0x00, 0x5a],
+            RIP + 8 + 0x10,
+            0x5a,
+        ),
+        // S4-39f7: SIB 25 (scale 1, no index, base field 101, mod = 00) is a pure disp32 even with
+        // REX.B (the base is none, not r13): the address is 0x601000; r13 (3) and rbx play no part.
+        (
+            "41 c6 04 25 00 10 60 00 3c 0x601000 REX.B base none",
+            &[0x41, 0xc6, 0x04, 0x25, 0x00, 0x10, 0x60, 0x00, 0x3c],
+            0x60_1000,
+            0x3c,
+        ),
         // REX.W and REX.R do not change a byte store.
         ("48 c6 03 33 REX.W", &[0x48, 0xc6, 0x03, 0x33], DATA, 0x33),
         ("44 c6 03 34 REX.R", &[0x44, 0xc6, 0x03, 0x34], DATA, 0x34),
@@ -1789,20 +1842,326 @@ fn mov_r64_with_a_hint_or_segment_prefix_or_a_memory_operand_is_refused() {
 #[test]
 fn init_path_runs_the_movb_then_xor_and_stops_at_the_next_forbidden_form() {
     // `/init` from `0x400137`: `leaq 0xec2(%rip), %r14; movb $0, (%r14,%r13); xorl %ebx, %ebx;
-    // cmpq %r13, %rbx` (`4c 39 eb`, REX.WR CMP r/m64, r64: outside the allow-list).
+    // cmpq %r13, %rbx; jae +0xc6; testq %rbx, %rbx; je +8; cmpb $0x20, -1(%r14,%rbx)` (S4-39f7:
+    // `4c 39 eb` and the short `74 08` now execute; `jae` is not taken as 0 < 5, `je` is taken as
+    // rbx = 0 and skips the 8 bytes of `cmpb` and `jne`, `leaq 0x107(%rip), %rsi` retires, and
+    // `leaq (%r14,%rbx), %rdi` (`49 8d 3c 1e`, a LEA that is not RIP-relative) stops the run).
     let bytes = [
         0x4c, 0x8d, 0x35, 0xc2, 0x0e, 0x00, 0x00, 0x43, 0xc6, 0x04, 0x2e, 0x00, 0x31, 0xdb, 0x4c,
-        0x39, 0xeb,
+        0x39, 0xeb, 0x0f, 0x83, 0xc6, 0x00, 0x00, 0x00, 0x48, 0x85, 0xdb, 0x74, 0x08, 0x41, 0x80,
+        0x7c, 0x1e, 0xff, 0x20, 0x75, 0x24, 0x48, 0x8d, 0x35, 0x07, 0x01, 0x00, 0x00, 0x49, 0x8d,
+        0x3c, 0x1e,
     ];
     let mut state = mov_byte_state();
     state.gpr[Register::R13 as usize] = 5;
     let target = RIP + 7 + 0xec2 + 5;
     let mut memory = DataMemory::new(&bytes).with_user(target, b'x');
     let result = run3_data(&mut state, &mut memory, 16).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x39 });
-    assert_eq!(result.instructions_executed, 3);
-    assert_eq!(state.rip, RIP + 14);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8d });
+    // lea, movb, xor, cmp, jae (not taken), test, je (taken), lea (rip-relative).
+    assert_eq!(result.instructions_executed, 8);
+    assert_eq!(state.rip, RIP + 43);
     assert_eq!(state.gpr[Register::R14 as usize], RIP + 7 + 0xec2);
     assert_eq!(state.gpr[Register::Rbx as usize], 0);
+    assert_eq!(state.gpr[Register::Rsi as usize], RIP + 43 + 0x107);
     assert_eq!(memory.writes, [(target, 0)]);
+    // cmp 0 - 5: CF, SF, AF; the test of rbx = 0 then sets ZF and PF and clears CF, OF, SF; AF is
+    // undefined after TEST and keeps the value of the CMP here (checked apart from the rest).
+    assert_eq!(state.rflags & ARITH & !AF, ZF | PF);
+}
+
+#[test]
+fn movb_with_a_stack_base_and_a_non_canonical_address_is_a_stack_fault_without_a_store() {
+    // S4-39f7: SDM (from memory): an EA whose base is RSP or RBP uses SS, and a non-canonical
+    // stack address is #SS(0) (vector 12); every other base is #GP(0) (vector 13).
+    const BAD: u64 = 0x0000_8000_0000_0000;
+    // (name, bytes, register to set, vector)
+    let cases: &[(&str, &[u8], Register, u8)] = &[
+        (
+            "c6 04 24 01 movb $1, (%rsp)",
+            &[0xc6, 0x04, 0x24, 0x01],
+            Register::Rsp,
+            12,
+        ),
+        (
+            "c6 45 00 01 movb $1, 0(%rbp)",
+            &[0xc6, 0x45, 0x00, 0x01],
+            Register::Rbp,
+            12,
+        ),
+        (
+            "c6 45 08 01 movb $1, 8(%rbp)",
+            &[0xc6, 0x45, 0x08, 0x01],
+            Register::Rbp,
+            12,
+        ),
+        (
+            "c6 04 1c 01 movb $1, (%rsp,%rbx)",
+            &[0xc6, 0x04, 0x1c, 0x01],
+            Register::Rsp,
+            12,
+        ),
+        (
+            "c6 44 24 08 01 movb $1, 8(%rsp)",
+            &[0xc6, 0x44, 0x24, 0x08, 0x01],
+            Register::Rsp,
+            12,
+        ),
+        // R12/R13 (REX.B on the same base fields) are not stack bases: #GP(0).
+        (
+            "41 c6 04 24 01 movb $1, (%r12)",
+            &[0x41, 0xc6, 0x04, 0x24, 0x01],
+            Register::R12,
+            13,
+        ),
+        (
+            "41 c6 45 00 01 movb $1, 0(%r13)",
+            &[0x41, 0xc6, 0x45, 0x00, 0x01],
+            Register::R13,
+            13,
+        ),
+        // RBX as the base (RSP only appears as the "no index" field): not a stack base.
+        (
+            "c6 04 63 01 movb $1, (%rbx) via SIB",
+            &[0xc6, 0x04, 0x63, 0x01],
+            Register::Rbx,
+            13,
+        ),
+    ];
+    for (name, bytes, register, vector) in cases {
+        let mut state = mov_byte_state();
+        state.gpr[*register as usize] = BAD;
+        let before = state.clone();
+        let mut memory = DataMemory::new(bytes);
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Fault(fault)
+                if fault.vector == *vector && fault.error_code == Some(0)),
+            "{name}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+    }
+}
+
+// ---- S4-39f7: `[REX.W] 39 /r` (CMP r/m64, r64), register form, and the short Jcc ----
+
+#[test]
+fn cmp_r64_register_form_sets_the_sub_flags_and_writes_no_result() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, dst index, dst value, src index, src value, flags of dst - src); the result of
+    // the subtraction is only the source of the flags.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, usize, u64, u64)] = &[
+        // `/init` at 0x400145: cmpq %r13, %rbx (rm = rbx = dst, reg = r13 = src). 0 - 5 =
+        // 0xffff_ffff_ffff_fffb: CF (borrow), SF, AF (the low nibble borrows); the low byte 0xfb
+        // has seven set bits (odd): PF clear.
+        (
+            "4c 39 eb 0-5",
+            &[0x4c, 0x39, 0xeb],
+            3,
+            0,
+            13,
+            5,
+            CF | SF | AF,
+        ),
+        // Equal: ZF and PF only.
+        ("4c 39 eb equal", &[0x4c, 0x39, 0xeb], 3, 7, 13, 7, ZF | PF),
+        // 5 - 3 = 2 (one set bit: PF clear): no flag.
+        ("4c 39 eb 5-3", &[0x4c, 0x39, 0xeb], 3, 5, 13, 3, 0),
+        // 9 - 1 = 8: no flag.
+        ("4c 39 eb 9-1", &[0x4c, 0x39, 0xeb], 3, 9, 13, 1, 0),
+        // Low-nibble borrow only: 0x10 - 1 = 0x0f (four set bits): AF, PF.
+        (
+            "4c 39 eb 0x10-1",
+            &[0x4c, 0x39, 0xeb],
+            3,
+            0x10,
+            13,
+            1,
+            AF | PF,
+        ),
+        // Signed overflow: i64::MIN - 1 = i64::MAX (low byte 0xff): OF, PF, AF; no CF, no SF.
+        (
+            "4c 39 eb min-1",
+            &[0x4c, 0x39, 0xeb],
+            3,
+            0x8000_0000_0000_0000,
+            13,
+            1,
+            OF | PF | AF,
+        ),
+        // The high half decides: 0x1_0000_0000 - 1 = 0xffff_ffff: PF, AF; no CF, no SF.
+        (
+            "4c 39 eb high half",
+            &[0x4c, 0x39, 0xeb],
+            3,
+            0x1_0000_0000,
+            13,
+            1,
+            PF | AF,
+        ),
+        // Borrow from the high half only: 0 - 2^32 = 0xffff_ffff_0000_0000: CF, SF, PF (low 0).
+        (
+            "4c 39 eb 0-2^32",
+            &[0x4c, 0x39, 0xeb],
+            3,
+            0,
+            13,
+            0x1_0000_0000,
+            CF | SF | PF,
+        ),
+        // REX.W only: cmpq %rcx, %rax (48 39 c8): rm = rax = dst, reg = rcx = src; 1 - 2 = -1.
+        (
+            "48 39 c8 REX.W",
+            &[0x48, 0x39, 0xc8],
+            0,
+            1,
+            1,
+            2,
+            CF | SF | PF | AF,
+        ),
+        // REX.WB: cmpq %rax, %r15 (49 39 c7): rm = r15 = dst, reg = rax = src.
+        ("49 39 c7 REX.WB", &[0x49, 0x39, 0xc7], 15, 4, 0, 4, ZF | PF),
+        // REX.WRB: cmpq %r9, %r10 (4d 39 ca): rm = r10 = dst, reg = r9 = src; 0x10 - 0x20 = -0x10.
+        (
+            "4d 39 ca REX.WRB",
+            &[0x4d, 0x39, 0xca],
+            10,
+            0x10,
+            9,
+            0x20,
+            CF | SF | PF,
+        ),
+        // REX.WX (X is ignored with mod = 11): cmpq %rcx, %rax (4a 39 c8).
+        ("4a 39 c8 REX.WX", &[0x4a, 0x39, 0xc8], 0, 3, 1, 3, ZF | PF),
+        // The same register: cmpq %rbx, %rbx.
+        (
+            "48 39 db same register",
+            &[0x48, 0x39, 0xdb],
+            3,
+            0x1234,
+            3,
+            0x1234,
+            ZF | PF,
+        ),
+    ];
+    for (name, bytes, dst, dst_value, src, src_value, flags) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        state.gpr[*dst] = *dst_value;
+        state.gpr[*src] = *src_value;
+        // Every arithmetic flag set before: CMP recomputes all six.
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        expected.rip = RIP + bytes.len() as u64;
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        // No register changes (the result is not written), RIP advances by the length.
+        assert_eq!(state.gpr, expected.gpr, "{name}");
+        assert_eq!(state.rip, expected.rip, "{name}");
+        assert_eq!(state.rflags & ARITH, *flags, "{name}");
+        // The non-arithmetic flags (IF, the reserved bit 1) stay.
+        assert_eq!(state.rflags & !ARITH, expected.rflags & !ARITH, "{name}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn cmp_then_jae_follows_the_unsigned_comparison() {
+    // `/init` at 0x400145: `cmpq %r13, %rbx; jae +6; <six f4 bytes>; nop`: jae is taken exactly
+    // when rbx >= r13 (CF = 0) and skips the six filler bytes.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let bytes = [
+        0x4c, 0x39, 0xeb, 0x0f, 0x83, 0x06, 0x00, 0x00, 0x00, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4,
+        0x90,
+    ];
+    for (rbx, r13, taken) in [(0_u64, 5_u64, false), (5, 5, true), (6, 5, true)] {
+        let mut state = user_state();
+        state.gpr[Register::Rbx as usize] = rbx;
+        state.gpr[Register::R13 as usize] = r13;
+        let mut memory = Memory::code(&bytes);
+        let result = run3(&mut state, &mut memory, &set, 3).unwrap();
+        assert_eq!(result.instructions_executed, 2, "{rbx}");
+        if taken {
+            assert_eq!(
+                exit(&result),
+                &RunExit::Unsupported { opcode: 0x90 },
+                "{rbx}"
+            );
+            assert_eq!(state.rip, RIP + 15, "{rbx}");
+        } else {
+            assert_eq!(
+                exit(&result),
+                &RunExit::Unsupported { opcode: 0xf4 },
+                "{rbx}"
+            );
+            assert_eq!(state.rip, RIP + 9, "{rbx}");
+        }
+        assert_eq!(state.gpr[Register::Rbx as usize], rbx);
+        assert_eq!(state.gpr[Register::R13 as usize], r13);
+    }
+}
+
+#[test]
+fn short_jcc_follows_every_condition_over_all_flag_combinations() {
+    // `7x 02; hlt; hlt; nop`: the branch skips the two `hlt` bytes when taken. The condition is
+    // the SDM table (the same `jcc_expected` as `0F 8x`); the displacement is rel8.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for cc in 0..16_u8 {
+        for bits in 0..32_u64 {
+            let flags = [CF, ZF, SF, OF, PF]
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| bits & (1 << index) != 0)
+                .fold(0, |acc, (_, flag)| acc | flag);
+            let mut state = user_state();
+            state.rflags |= flags;
+            let before_flags = state.rflags;
+            let taken = jcc_expected(cc, before_flags);
+            let mut memory = Memory::code(&[0x70 | cc, 0x02, 0xf4, 0xf4, 0x90]);
+            let result = run3(&mut state, &mut memory, &set, 2).unwrap();
+            assert_eq!(state.rflags, before_flags, "cc {cc} flags {bits:#x}");
+            assert_eq!(result.instructions_executed, 1, "cc {cc} flags {bits:#x}");
+            if taken {
+                assert_eq!(state.rip, RIP + 4, "cc {cc} flags {bits:#x}");
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Unsupported { opcode: 0x90 },
+                    "cc {cc} flags {bits:#x}"
+                );
+            } else {
+                assert_eq!(state.rip, RIP + 2, "cc {cc} flags {bits:#x}");
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Unsupported { opcode: 0xf4 },
+                    "cc {cc} flags {bits:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn short_jcc_backward_displacement_is_sign_extended() {
+    // `74 fe` (je -2) with ZF set jumps to its own address: it retires three times and RIP stays.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.rflags |= ZF;
+    let mut memory = Memory::code(&[0x74, 0xfe]);
+    let result = run3(&mut state, &mut memory, &set, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP);
 }
