@@ -396,3 +396,138 @@ fn fetch_from_a_supervisor_page_is_a_user_page_fault() {
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
 }
+
+// ---- S4-39b: gaps of the S4-39a review (CPU_CONTRACT S4-39a, "Замечания ревью", item 4) ----
+
+#[test]
+fn rex_b_mov_imm32_and_rex_r_lea_are_allowed() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // `mov $0x12345678, %r8d` (41 b8) then `lea 0x10(%rip), %r14` (4c 8d 35): REX.R, as in `/init`.
+    let mut state = user_state();
+    state.gpr[8] = u64::MAX;
+    let mut memory = Memory::code(&[
+        0x41, 0xb8, 0x78, 0x56, 0x34, 0x12, 0x4c, 0x8d, 0x35, 0x10, 0x00, 0x00, 0x00,
+    ]);
+    let result = run3(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    // A 32-bit write zero-extends into R8.
+    assert_eq!(state.gpr[8], 0x1234_5678);
+    assert_eq!(state.gpr[14], RIP + 13 + 0x10);
+    assert_eq!(state.rip, RIP + 13);
+    assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn lea_variants_outside_the_allowed_form_stop_without_change() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let disp = [0x10, 0x00, 0x00, 0x00];
+    let forms: &[(&str, Vec<u8>)] = &[
+        (
+            "lea edi, [rip+0x10] (no REX.W)",
+            [&[0x8d, 0x3d][..], &disp].concat(),
+        ),
+        (
+            "address-size prefix",
+            [&[0x67, 0x48, 0x8d, 0x3d][..], &disp].concat(),
+        ),
+        (
+            "fs segment prefix",
+            [&[0x64, 0x48, 0x8d, 0x3d][..], &disp].concat(),
+        ),
+        (
+            "cs segment prefix",
+            [&[0x2e, 0x48, 0x8d, 0x3d][..], &disp].concat(),
+        ),
+        (
+            "gs segment prefix before REX",
+            [&[0x65, 0x4c, 0x8d, 0x35][..], &disp].concat(),
+        ),
+    ];
+    for (name, bytes) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x8d },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn mov_imm32_with_a_repeat_prefix_is_not_allowed() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for prefix in [0xf2_u8, 0xf3] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&[prefix, 0xb8, 0x01, 0x00, 0x00, 0x00]);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xb8 },
+            "{prefix:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn a_stop_request_ends_the_run_at_a_boundary_before_the_next_instruction() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // An always-true request: the first boundary stops, nothing retires, nothing changes.
+    let mut state = user_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&INIT_PREFIX);
+    let mut polls = 0_u32;
+    let result = run_with_cpl3_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 64),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || {
+            polls += 1;
+            true
+        },
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::StopRequested);
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert_eq!(polls, 1);
+
+    // A request that turns true at a later poll: the polls are counted across the single-step
+    // runs (up to two per boundary), and the stop still arrives on an instruction boundary with
+    // `rip` following exactly the retired instructions.
+    for true_from in 2..=6_u32 {
+        let mut state = user_state();
+        let mut memory = Memory::code(&INIT_PREFIX);
+        let mut polls = 0_u32;
+        let result = run_with_cpl3_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 64),
+            od_isa::INTEGER_FLAGS,
+            &set,
+            None,
+            || {
+                polls += 1;
+                polls >= true_from
+            },
+        )
+        .unwrap();
+        assert_eq!(exit(&result), &RunExit::StopRequested, "poll {true_from}");
+        let expected_rip =
+            [RIP, RIP + 7, RIP + 12, RIP + 17][result.instructions_executed as usize];
+        assert_eq!(state.rip, expected_rip, "poll {true_from}");
+    }
+}
