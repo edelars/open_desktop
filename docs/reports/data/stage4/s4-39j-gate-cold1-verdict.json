@@ -1,0 +1,108 @@
+{
+  "acceptance": "diagnostic_not_counted",
+  "checks": [
+    {
+      "detail": "diagnostic_not_counted allowed by --allow-diagnostic-acceptance; NOT counted",
+      "name": "acceptance",
+      "ok": true
+    },
+    {
+      "detail": "guest_started=true, stop is object: true",
+      "name": "guest_started",
+      "ok": true
+    },
+    {
+      "detail": "stop.user_mode=true",
+      "name": "user_mode",
+      "ok": true
+    },
+    {
+      "detail": "report nonce=\"s4-38l4a\", cmdline has od.nonce=s4-38l4a and matches guest memory: true",
+      "name": "nonce_in_report",
+      "ok": true
+    },
+    {
+      "detail": "report \"9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e\", expected \"9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e\"",
+      "name": "hash:inputs.vmlinuz.sha256",
+      "ok": true
+    },
+    {
+      "detail": "report \"9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e\", expected \"9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e\"",
+      "name": "hash:stop.inputs.vmlinuz_sha256",
+      "ok": true
+    },
+    {
+      "detail": "report \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\", expected \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\"",
+      "name": "hash:inputs.initramfs.sha256",
+      "ok": true
+    },
+    {
+      "detail": "report \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\", expected \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\"",
+      "name": "hash:stop.inputs.initramfs_sha256_in_memory",
+      "ok": true
+    },
+    {
+      "detail": "report \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\", expected \"ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588\"",
+      "name": "hash:memory_sha256.initrd",
+      "ok": true
+    },
+    {
+      "detail": "report \"2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2\", expected \"2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2\"",
+      "name": "hash:acpi.manifest_hash",
+      "ok": true
+    },
+    {
+      "detail": "report \"2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2\", expected \"2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2\"",
+      "name": "hash:stop.inputs.acpi_manifest_hash",
+      "ok": true
+    },
+    {
+      "detail": "lines equal to \"OD_NONCE=s4-38l4a\": 1, expected exactly 1",
+      "name": "com1_nonce_line",
+      "ok": true
+    },
+    {
+      "detail": "lines equal to \"Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000\": 1, expected at least 1",
+      "name": "com1_panic_line",
+      "ok": true
+    },
+    {
+      "detail": "syscall numbers [Some(83), Some(165), Some(257), Some(0), Some(3), Some(1), Some(39), Some(35), Some(60)], expected [83, 165, 257, 0, 3, 1, 39, 35, 60]",
+      "name": "journal_sequence",
+      "ok": true
+    },
+    {
+      "detail": "entered=9, returned=8, entries=9, expected 9/8/9 (no overflow)",
+      "name": "journal_counters",
+      "ok": true
+    },
+    {
+      "detail": "every call before the last has returned (rax_return set)",
+      "name": "journal_returns",
+      "ok": true
+    },
+    {
+      "detail": "last entry {\"nr\":60,\"rax_return\":null,\"rip\":\"0x40024d\"}, expected exit(60) that did not return, rdi absent or 0x0",
+      "name": "journal_exit",
+      "ok": true
+    },
+    {
+      "detail": "write returned Some(18), expected 18 (length of the nonce line)",
+      "name": "journal_write_length",
+      "ok": true
+    }
+  ],
+  "counted": false,
+  "exit_kind": "budget_exhausted",
+  "expected": {
+    "acpi_manifest_hash": "2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2",
+    "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "failures": [],
+  "gate": "s4-39j",
+  "nonce": "s4-38l4a",
+  "report_sha256": "1d78cebc177d161bfef2cc4b285b3eeb923ddc338fda4ed68f26df1e0b88e5b5",
+  "run_id": "05d6a8068d639f4be4bd8415051ab92d02a1be2defb57278d79ebbba0e6ebf57",
+  "verdict": "PASS_DIAGNOSTIC_NOT_COUNTED"
+}
