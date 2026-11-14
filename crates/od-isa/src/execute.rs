@@ -21218,6 +21218,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// `read_operand` with the CPL3 context (U/S check, #PF with U and no register write), the 32-bit
 /// destination is written with the upper half cleared, flags stay.
 ///
+/// S4-39f17: `[REX] 84 /r` (TEST r/m8, r8, `testb %al, %al` = `84 c0` of `/init` at `0x40018e`) in
+/// the register form only (mod = 11) with no prefix other than REX. The CPL0
+/// `Operation::Logic { kind: Test }` at byte size is reused: CF = OF = 0, SF/ZF/PF of the byte
+/// `rm & reg`, AF undefined, nothing is written. REX.W does not change a byte test and is accepted
+/// as for `8A`/`38`/`C6`. The memory form, `A8` (TEST AL, imm8) and `F6 /0` stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21304,6 +21310,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             instruction.operand_size,
             OperandSize::Dword | OperandSize::Qword
         ),
+        // S4-39f17: `[REX] 84 /r` (TEST r/m8, r8) in the register form only (both operands are
+        // registers; the memory form decodes to a memory destination and stays refused with
+        // `0x84`). The byte views follow the decoder (AH..BH without REX, SPL..DIL with any REX).
+        (
+            OpcodeMap::Primary,
+            0x84,
+            Operation::Logic {
+                kind: LogicKind::Test,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Byte,
         (
             OpcodeMap::Primary,
             0x8a,

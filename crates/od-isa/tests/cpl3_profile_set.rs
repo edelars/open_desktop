@@ -461,7 +461,19 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("addr32 test rax, rax", &[0x67, 0x48, 0x85, 0xc0], 0x85),
         ("repne test rax, rax", &[0xf2, 0x48, 0x85, 0xc0], 0x85),
         ("rep test rax, rax", &[0xf3, 0x48, 0x85, 0xc0], 0x85),
-        ("test al, al (84 /r)", &[0x84, 0xc0], 0x84),
+        // S4-39f17: `84 c0` (register form) executes; the memory form stays outside.
+        ("test [rax], al (84 /r, memory)", &[0x84, 0x00], 0x84),
+        ("test [rbx], al (84 /r, memory)", &[0x84, 0x03], 0x84),
+        (
+            "test [rip+0], al (84 /r, RIP-relative)",
+            &[0x84, 0x05, 0, 0, 0, 0],
+            0x84,
+        ),
+        (
+            "test [r8+rcx], al (REX.XB 84 /r)",
+            &[0x43, 0x84, 0x04, 0x08],
+            0x84,
+        ),
         ("test eax, imm32 (A9)", &[0xa9, 1, 0, 0, 0], 0xa9),
         (
             "test rax, imm32 (REX.W A9)",
@@ -3920,13 +3932,13 @@ fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
 #[test]
 fn jmp_rel8_then_an_outside_form_stops_at_that_form() {
     // Synthetic block modelled on the `/init` loop tail: `eb 01` jumps over one `hlt` to a
-    // `84 c0` (testb %al,%al), which is outside (`41 0f b6 04 08` joined in S4-39f16); the test
-    // checks the fetch after a jump, not the real next boundary of `/init`.
+    // `3c 20` (cmpb $0x20, %al), which is outside (`84 c0` joined in S4-39f17); the test checks
+    // the fetch after a jump, not the real next boundary of `/init`.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
-    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x84, 0xc0]);
+    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x3c, 0x20]);
     let result = run3(&mut state, &mut memory, &set, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x84 });
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, RIP + 3);
 }
@@ -4906,19 +4918,225 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movzbl_then_testb_chain_stops_at_testb() {
-    // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16) then `84 c0`
-    // (testb %al, %al), the next boundary of `/init` at `0x40018e`.
+fn init_movzbl_testb_chain_stops_at_cmpb_imm8() {
+    // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16), `84 c0`
+    // (testb %al, %al; executes since S4-39f17) and `3c 20` (cmpb $0x20, %al; outside), the
+    // boundary of `/init` at `0x400192` after `je` (not exercised here).
     let mut state = mov_byte_state();
     state.gpr[Register::R8 as usize] = DATA;
     state.gpr[Register::Rcx as usize] = 5;
     state.rflags |= ARITH;
-    let expected = after_movzx(&state, Register::Rax, b' ', 5);
-    let mut memory =
-        DataMemory::new(&[0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0]).with_user(DATA + 5, b' ');
+    let mut expected = after_movzx(&state, Register::Rax, b' ', 5 + 2);
+    // al = 0x20: CF = OF = 0, SF = 0, ZF = 0, PF = 0 (one bit); other flags stay.
+    expected.rflags &= !(CF | OF | SF | ZF | PF);
+    let mut memory = DataMemory::new(&[0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0, 0x3c, 0x20])
+        .with_user(DATA + 5, b' ');
     let result = run3_data(&mut state, &mut memory, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x84 });
-    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
+    assert_eq!(result.instructions_executed, 2);
+    // AF is undefined after TEST: compare without it.
+    state.rflags &= !AF;
+    expected.rflags &= !AF;
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 1);
+}
+
+// ---- S4-39f17: `[REX] 84 /r` (TEST r/m8, r8), register form ----
+
+#[test]
+fn test_r8_register_form_sets_flags_and_writes_no_result() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, registers to preset (index, value), flags)
+    // The flags are those of the byte `rm & reg`; CF = OF = 0. The other bytes of the
+    // registers are garbage and must neither matter nor change.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], &[(usize, u64)], u64)] = &[
+        // `/init` at 0x40018e: testb %al, %al.
+        (
+            "84 c0 al=00",
+            &[0x84, 0xc0],
+            &[(0, 0xaabb_ccdd_eeff_ff00)],
+            ZF | PF,
+        ),
+        (
+            "84 c0 al=01",
+            &[0x84, 0xc0],
+            &[(0, 0xaabb_ccdd_eeff_ff01)],
+            0,
+        ),
+        (
+            "84 c0 al=03",
+            &[0x84, 0xc0],
+            &[(0, 0x1234_5678_9abc_de03)],
+            PF,
+        ),
+        (
+            "84 c0 al=7f",
+            &[0x84, 0xc0],
+            &[(0, 0xffff_ffff_ffff_ff7f)],
+            0,
+        ),
+        (
+            "84 c0 al=80",
+            &[0x84, 0xc0],
+            &[(0, 0xaabb_ccdd_eeff_ff80)],
+            SF,
+        ),
+        (
+            "84 c0 al=ff",
+            &[0x84, 0xc0],
+            &[(0, 0x0123_4567_89ab_cdff)],
+            SF | PF,
+        ),
+        // testb %bl, %al (reg = bl, rm = al): disjoint bits.
+        (
+            "84 d8 al/bl disjoint",
+            &[0x84, 0xd8],
+            &[(0, 0x1111_2222_3333_44f0), (3, 0x5555_6666_7777_880f)],
+            ZF | PF,
+        ),
+        // testb %cl, %al: 0xaa & 0x55 = 0.
+        (
+            "84 c8 al/cl disjoint",
+            &[0x84, 0xc8],
+            &[(0, 0x55), (1, 0xaa)],
+            ZF | PF,
+        ),
+        // REX.R: reg = r8b, rm = al: 0xc3 & 0x83 = 0x83 (SF, three bits).
+        (
+            "44 84 c0 REX.R",
+            &[0x44, 0x84, 0xc0],
+            &[(0, 0xc3), (8, 0x83)],
+            SF,
+        ),
+        // REX.B: rm = r9b, reg = al: 0x0f & 0x0f (four bits).
+        (
+            "41 84 c1 REX.B",
+            &[0x41, 0x84, 0xc1],
+            &[(0, 0x0f), (9, 0x0f)],
+            PF,
+        ),
+        // REX.RB: reg = r9b, rm = r10b: 0x03 & 0x06 = 0x02 (one bit).
+        (
+            "45 84 ca REX.RB",
+            &[0x45, 0x84, 0xca],
+            &[(9, 0x03), (10, 0x06)],
+            0,
+        ),
+        // REX.WRB: the same byte test on r15b (REX.W does not widen a byte test).
+        ("4d 84 ff REX.WRB", &[0x4d, 0x84, 0xff], &[(15, 0x40)], 0),
+        // REX.W: the byte test ignores bits 8..63 (a 64-bit test of this value would set SF).
+        (
+            "48 84 c0 REX.W",
+            &[0x48, 0x84, 0xc0],
+            &[(0, 0xffff_ffff_ffff_ff00)],
+            ZF | PF,
+        ),
+        // With REX the byte registers are SPL, BPL, SIL, DIL.
+        ("40 84 e4 spl", &[0x40, 0x84, 0xe4], &[(4, 0x80)], SF),
+        ("40 84 ed bpl", &[0x40, 0x84, 0xed], &[(5, 0)], ZF | PF),
+        (
+            "40 84 f7 sil/dil",
+            &[0x40, 0x84, 0xf7],
+            &[(6, 0xf0), (7, 0x0f)],
+            ZF | PF,
+        ),
+        ("40 84 ff dil", &[0x40, 0x84, 0xff], &[(7, 0x01)], 0),
+        // Without REX the encodings 4..7 are AH, CH, DH, BH (bits 8..15 of RAX, RCX, RDX, RBX).
+        ("84 e4 ah", &[0x84, 0xe4], &[(0, 0x1234_5678_9abc_8001)], SF),
+        (
+            "84 ed ch",
+            &[0x84, 0xed],
+            &[(1, 0xffff_ffff_ffff_00ff)],
+            ZF | PF,
+        ),
+        // BH = 0x01 here; DIL (the wrong register) would be 0x88 and give SF | PF.
+        ("84 ff bh", &[0x84, 0xff], &[(3, 0x1111_2222_3333_0100)], 0),
+    ];
+    for (name, bytes, presets, flags) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        for (index, value) in *presets {
+            state.gpr[*index] = *value;
+        }
+        // CF, OF, SF, ZF, PF, AF all set before: TEST clears CF/OF and recomputes SF/ZF/PF.
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        expected.rip = RIP + bytes.len() as u64;
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        // No register changes (the result is not written), RIP advances by the length.
+        assert_eq!(state.gpr, expected.gpr, "{name}");
+        assert_eq!(state.rip, expected.rip, "{name}");
+        let arithmetic = state.rflags & ARITH;
+        assert_eq!(arithmetic & (CF | OF), 0, "{name}");
+        assert_eq!(arithmetic & (SF | ZF | PF), *flags, "{name}");
+        assert_eq!(state.rflags & !ARITH, expected.rflags & !ARITH, "{name}");
+        // AF is undefined after TEST (SDM, from memory): it leaves the defined set.
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !AF, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn test_r8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u8)] = &[
+        ("66 84 c0 operand-size", &[0x66, 0x84, 0xc0], 0x84),
+        ("67 84 c0 address-size", &[0x67, 0x84, 0xc0], 0x84),
+        ("f0 84 c0 lock", &[0xf0, 0x84, 0xc0], 0x84),
+        ("f2 84 c0 repne", &[0xf2, 0x84, 0xc0], 0x84),
+        ("f3 84 c0 rep", &[0xf3, 0x84, 0xc0], 0x84),
+        ("64 84 c0 fs", &[0x64, 0x84, 0xc0], 0x84),
+        ("65 84 c0 gs", &[0x65, 0x84, 0xc0], 0x84),
+        ("2e 84 c0 cs", &[0x2e, 0x84, 0xc0], 0x84),
+        ("3e 84 c0 ds", &[0x3e, 0x84, 0xc0], 0x84),
+        ("26 84 c0 es", &[0x26, 0x84, 0xc0], 0x84),
+        ("36 84 c0 ss", &[0x36, 0x84, 0xc0], 0x84),
+        (
+            "66 40 84 c0 prefix before REX",
+            &[0x66, 0x40, 0x84, 0xc0],
+            0x84,
+        ),
+        ("a8 00 test al, imm8", &[0xa8, 0x00], 0xa8),
+        ("f6 c0 01 test al, imm8", &[0xf6, 0xc0, 0x01], 0xf6),
+    ];
+    for (name, bytes, opcode) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn test_r8_then_je_then_cmpb_imm8_stops_at_cmpb() {
+    // `84 c0` (testb %al, %al), `74 02` (je, taken on al == 0) skipping two bytes, then
+    // `3c 20` (cmpb $0x20, %al; outside): the boundary of `/init` after `je`.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rax as usize] = 0x1234_5678_9abc_de00;
+    let mut memory = Memory::code(&[0x84, 0xc0, 0x74, 0x02, 0xf4, 0xf4, 0x3c, 0x20]);
+    let result = run3(&mut state, &mut memory, &set, 4).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 6);
+    assert_eq!(state.rflags & (SF | ZF | PF | CF | OF), ZF | PF);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_de00);
 }
