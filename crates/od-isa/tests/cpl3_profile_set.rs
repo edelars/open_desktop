@@ -4918,11 +4918,11 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movzbl_testb_cmpb_chain_stops_at_cmpq_imm32() {
+fn init_movzbl_testb_cmpb_cmpq_chain_stops_at_rep_movsb() {
     // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16), `84 c0`
-    // (testb %al, %al; S4-39f17), `3c 20` (cmpb $0x20, %al; S4-39f18) and then
-    // `48 81 f9 80 00 00 00` (cmpq $0x80, %rcx; outside): the boundary of `/init` after the
-    // `je`/`cmpb $0x0a` pair (the jumps are not exercised here).
+    // (testb %al, %al; S4-39f17), `3c 20` (cmpb $0x20, %al; S4-39f18), `48 81 f9 80 00 00 00`
+    // (cmpq $0x80, %rcx; S4-39f19) and then `f3 a4` (rep movsb; outside): a stand-in for the
+    // boundary of `/init` at `0x4001c1` (the jumps between them are not exercised here).
     let mut state = mov_byte_state();
     state.gpr[Register::R8 as usize] = DATA;
     state.gpr[Register::Rcx as usize] = 5;
@@ -4930,14 +4930,17 @@ fn init_movzbl_testb_cmpb_chain_stops_at_cmpq_imm32() {
     let mut expected = after_movzx(&state, Register::Rax, b' ', 5 + 2 + 2);
     // al = 0x20 - 0x20: ZF | PF; CF = OF = SF = AF = 0; other flags stay.
     expected.rflags = (expected.rflags & !ARITH) | ZF | PF;
+    // rcx = 5: 5 - 0x80 = 0xffff_ffff_ffff_ff85: CF | SF (three set bits: PF clear), no AF.
+    expected.rip = RIP + 16;
+    expected.rflags = (expected.rflags & !ARITH) | CF | SF;
     let mut memory = DataMemory::new(&[
         0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0, 0x3c, 0x20, 0x48, 0x81, 0xf9, 0x80, 0x00, 0x00,
-        0x00,
+        0x00, 0xf3, 0xa4,
     ])
     .with_user(DATA + 5, b' ');
-    let result = run3_data(&mut state, &mut memory, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x81 });
-    assert_eq!(result.instructions_executed, 3);
+    let result = run3_data(&mut state, &mut memory, 5).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xa4 });
+    assert_eq!(result.instructions_executed, 4);
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 1);
 }
@@ -5141,6 +5144,312 @@ fn test_r8_then_je_then_cmpb_imm8_executes() {
     // al = 0x00 - 0x20: CF | SF (0xe0 has three bits: PF clear), ZF clear.
     assert_eq!(state.rflags & ARITH, CF | SF);
     assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_de00);
+}
+
+// ---- S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32), register form ----
+
+/// The arithmetic flags of `a - b` at qword size per the SDM (SUB/CMP): CF borrow, OF signed
+/// overflow, SF, ZF, PF of the low byte, AF borrow from bit 4.
+fn cmp64_flags(a: u64, b: u64) -> u64 {
+    let result = a.wrapping_sub(b);
+    let mut flags = 0;
+    if a < b {
+        flags |= CF;
+    }
+    if ((a ^ b) & (a ^ result)) >> 63 != 0 {
+        flags |= OF;
+    }
+    if result >> 63 != 0 {
+        flags |= SF;
+    }
+    if result == 0 {
+        flags |= ZF;
+    }
+    if (result as u8).count_ones() % 2 == 0 {
+        flags |= PF;
+    }
+    if (a & 0xf) < (b & 0xf) {
+        flags |= AF;
+    }
+    flags
+}
+
+#[test]
+fn cmp_r64_imm32_register_form_sets_the_sub_flags_and_writes_nothing() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, register index, value, literal flags). The flags are those of
+    // `reg - sign_extend(imm32)` at qword size, checked by hand against the helper below.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, u64)] = &[
+        // `/init` at 0x40019d: cmpq $0x80, %rcx.
+        (
+            "48 81 f9 80 rcx=0x80",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0x80,
+            ZF | PF,
+        ),
+        // 0x7f - 0x80 = -1: CF | SF, eight set bits: PF, no low-nibble borrow.
+        (
+            "48 81 f9 80 rcx=0x7f",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0x7f,
+            CF | SF | PF,
+        ),
+        // 0 - 0x80 = 0xffff_ffff_ffff_ff80: CF | SF, one set bit in the low byte: PF clear.
+        (
+            "48 81 f9 80 rcx=0",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0,
+            CF | SF,
+        ),
+        // 0x81 - 0x80 = 1: one set bit, PF clear; no flag at all.
+        (
+            "48 81 f9 80 rcx=0x81",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0x81,
+            0,
+        ),
+        // i64::MIN - 0x80 = 0x7fff_ffff_ffff_ff80: signed overflow only.
+        (
+            "48 81 f9 80 rcx=i64::MIN",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0x8000_0000_0000_0000,
+            OF,
+        ),
+        // The upper dword matters (64-bit compare): 0x1_0000_0080 - 0x80 = 0x1_0000_0000.
+        (
+            "48 81 f9 80 rcx=0x1_0000_0080",
+            &[0x48, 0x81, 0xf9, 0x80, 0, 0, 0],
+            1,
+            0x1_0000_0080,
+            PF,
+        ),
+        // `cmpq $-1, %rbx`: the imm32 0xffff_ffff sign-extends to u64::MAX.
+        (
+            "48 81 fb -1 rbx=-1",
+            &[0x48, 0x81, 0xfb, 0xff, 0xff, 0xff, 0xff],
+            3,
+            u64::MAX,
+            ZF | PF,
+        ),
+        // 0 - (-1) = 1: CF and the low-nibble borrow AF.
+        (
+            "48 81 fb -1 rbx=0",
+            &[0x48, 0x81, 0xfb, 0xff, 0xff, 0xff, 0xff],
+            3,
+            0,
+            CF | AF,
+        ),
+        // 0x7fff_ffff - (-1) = 0x8000_0000 (qword compare, no dword wrap): CF, PF (low byte 0);
+        // equal low nibbles: no AF; no OF (the sign of the qword result is clear).
+        (
+            "48 81 fb -1 rbx=0x7fff_ffff",
+            &[0x48, 0x81, 0xfb, 0xff, 0xff, 0xff, 0xff],
+            3,
+            0x7fff_ffff,
+            CF | PF,
+        ),
+        // 0x8000_0000 imm32 is negative: sign-extended to 0xffff_ffff_8000_0000.
+        (
+            "48 81 f8 imm=0x8000_0000 rax=0xffff_ffff_8000_0000",
+            &[0x48, 0x81, 0xf8, 0x00, 0x00, 0x00, 0x80],
+            0,
+            0xffff_ffff_8000_0000,
+            ZF | PF,
+        ),
+        // The same imm32 against a zero-extended 0x8000_0000: 0x8000_0000 - 0xffff_ffff_8000_0000
+        // = 0x1_0000_0000: CF only (low byte 0: PF).
+        (
+            "48 81 f8 imm=0x8000_0000 rax=0x8000_0000",
+            &[0x48, 0x81, 0xf8, 0x00, 0x00, 0x00, 0x80],
+            0,
+            0x8000_0000,
+            CF | PF,
+        ),
+        // REX.B: `cmpq $0x80, %r8` and `cmpq $0x80, %r15`.
+        (
+            "49 81 f8 80 r8=0x80",
+            &[0x49, 0x81, 0xf8, 0x80, 0, 0, 0],
+            8,
+            0x80,
+            ZF | PF,
+        ),
+        (
+            "49 81 ff 80 r15=0x7f",
+            &[0x49, 0x81, 0xff, 0x80, 0, 0, 0],
+            15,
+            0x7f,
+            CF | SF | PF,
+        ),
+    ];
+    for (name, bytes, register, value, flags) in cases {
+        let imm = i64::from(i32::from_le_bytes(bytes[3..7].try_into().unwrap())) as u64;
+        assert_eq!(cmp64_flags(*value, imm), *flags, "{name} helper");
+        for initial in [0, ARITH] {
+            let mut state = user_state();
+            for (index, slot) in state.gpr.iter_mut().enumerate() {
+                *slot = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+            }
+            state.gpr[*register] = *value;
+            state.rflags |= initial;
+            let expected = after_cmpb(&state, 7, *flags);
+            let mut memory = Memory::code(bytes);
+            let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+            assert_eq!(memory.accesses, 0, "{name}");
+        }
+    }
+}
+
+#[test]
+fn cmp_r64_imm32_then_jb_loops_as_in_init() {
+    // `48 81 f9 80 00 00 00` (cmpq $0x80, %rcx) then `72 e3` (jb back by 29 bytes, taken for
+    // rcx < 0x80): the loop tail of `/init` at 0x40019d.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for (rcx, taken) in [(0x7f_u64, true), (0x80, false), (0x81, false)] {
+        let mut state = user_state();
+        state.gpr[Register::Rcx as usize] = rcx;
+        let mut memory = Memory::code(&[0x48, 0x81, 0xf9, 0x80, 0, 0, 0, 0x72, 0xe3]);
+        let result = run3(&mut state, &mut memory, &set, 2).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 2);
+        let next = RIP + 9;
+        assert_eq!(
+            state.rip,
+            if taken { next - 29 } else { next },
+            "rcx={rcx:#x}"
+        );
+        assert_eq!(state.gpr[Register::Rcx as usize], rcx);
+    }
+}
+
+#[test]
+fn cmp_r64_imm32_outside_the_register_form_stays_refused() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u8)] = &[
+        // Dword form (no REX.W) and REX without W.
+        (
+            "81 f9 80 cmpl $0x80, %ecx",
+            &[0x81, 0xf9, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "41 81 f9 80 cmpl $0x80, %r9d",
+            &[0x41, 0x81, 0xf9, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "40 81 f9 80 cmpl $0x80, %ecx (REX)",
+            &[0x40, 0x81, 0xf9, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        // Memory forms.
+        (
+            "48 81 3b 80 cmpq $0x80, (%rbx)",
+            &[0x48, 0x81, 0x3b, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "48 81 7b 08 80 cmpq $0x80, 8(%rbx)",
+            &[0x48, 0x81, 0x7b, 0x08, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "49 81 38 80 cmpq $0x80, (%r8)",
+            &[0x49, 0x81, 0x38, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        // The other `81 /n` selectors, register form.
+        (
+            "48 81 c1 80 addq $0x80, %rcx (/0)",
+            &[0x48, 0x81, 0xc1, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "48 81 c9 80 orq $0x80, %rcx (/1)",
+            &[0x48, 0x81, 0xc9, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "48 81 e1 80 andq $0x80, %rcx (/4)",
+            &[0x48, 0x81, 0xe1, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "48 81 e9 80 subq $0x80, %rcx (/5)",
+            &[0x48, 0x81, 0xe9, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        (
+            "48 81 f1 80 xorq $0x80, %rcx (/6)",
+            &[0x48, 0x81, 0xf1, 0x80, 0, 0, 0],
+            0x81,
+        ),
+        // Neighbouring opcodes.
+        (
+            "48 83 f9 80 cmpq $-128, %rcx (83 /7)",
+            &[0x48, 0x83, 0xf9, 0x80],
+            0x83,
+        ),
+        (
+            "3d 80 00 00 00 cmpl $0x80, %eax",
+            &[0x3d, 0x80, 0, 0, 0],
+            0x3d,
+        ),
+        (
+            "48 3d 80 00 00 00 cmpq $0x80, %rax",
+            &[0x48, 0x3d, 0x80, 0, 0, 0],
+            0x3d,
+        ),
+    ];
+    for (name, bytes, opcode) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn cmp_r64_imm32_with_a_prefix_stays_refused() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for prefix in [
+        0x66_u8, 0x67, 0xf0, 0xf2, 0xf3, 0x64, 0x65, 0x2e, 0x3e, 0x26, 0x36,
+    ] {
+        let bytes = [prefix, 0x48, 0x81, 0xf9, 0x80, 0, 0, 0];
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x81 },
+            "prefix {prefix:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0, "prefix {prefix:#x}");
+        assert_eq!(state, before, "prefix {prefix:#x}");
+        assert_eq!(memory.accesses, 0, "prefix {prefix:#x}");
+    }
 }
 
 // ---- S4-39f18: `3C ib` (CMP AL, imm8) ----

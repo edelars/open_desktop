@@ -21229,6 +21229,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// flags are those of `al - imm8` (SUB rules), nothing is written. `3D` (CMP eAX, imm32), `3A`/`3B`,
 /// `A8` (TEST AL, imm8) and `80 /7` with a register operand stay outside.
 ///
+/// S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32, `cmpq $0x80, %rcx` = `48 81 f9 80 00 00 00` of
+/// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
+/// `Operation::Arithmetic { kind: Cmp }` at qword size is reused: the imm32 is sign-extended to 64
+/// bits by the decoder, the flags are those of `reg - imm` (SUB rules, 64-bit), nothing is written.
+/// The memory form, the dword form (no REX.W), `81 /0..6`, `83 /7` and `3D` stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21339,6 +21345,20 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
+        // S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32) in the register form only. The decoder
+        // names it `Arithmetic { Cmp, dst: Register, src: Immediate }` at qword size with the
+        // imm32 sign-extended to 64 bits; the memory form decodes to a memory destination, the
+        // dword form (no REX.W) to `Dword`, and `81 /0..6`, `83 /7` and `3D` to other operations
+        // or opcode bytes: all of them stay refused.
+        (
+            OpcodeMap::Primary,
+            0x81,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x8a,
