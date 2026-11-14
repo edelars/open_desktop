@@ -4921,7 +4921,7 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
 fn init_movzbl_testb_chain_stops_at_cmpb_imm8() {
     // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16), `84 c0`
     // (testb %al, %al; executes since S4-39f17) and `3c 20` (cmpb $0x20, %al; outside), the
-    // boundary of `/init` at `0x400190` after `je` (not exercised here).
+    // boundary of `/init` at `0x400192` after `je` (not exercised here).
     let mut state = mov_byte_state();
     state.gpr[Register::R8 as usize] = DATA;
     state.gpr[Register::Rcx as usize] = 5;
@@ -5050,12 +5050,8 @@ fn test_r8_register_form_sets_flags_and_writes_no_result() {
             &[(1, 0xffff_ffff_ffff_00ff)],
             ZF | PF,
         ),
-        (
-            "84 ff bh",
-            &[0x84, 0xff],
-            &[(3, 0x1111_2222_3333_8100)],
-            SF | PF,
-        ),
+        // BH = 0x01 here; DIL (the wrong register) would be 0x88 and give SF | PF.
+        ("84 ff bh", &[0x84, 0xff], &[(3, 0x1111_2222_3333_0100)], 0),
     ];
     for (name, bytes, presets, flags) in cases {
         let mut state = user_state();
