@@ -860,6 +860,9 @@ pub(crate) struct LinuxSetRunReport {
     /// CPL3 the set does not execute. The instruction did not retire: RIP is on it. `None` for
     /// every other exit.
     pub(crate) user_entry: Option<IretqUserEntry>,
+    /// Instructions retired through the CPL3 entry in this call (S4-39c, `with_user_mode`); part
+    /// of `run.retired`. `0` for a set without the member.
+    pub(crate) cpl3_retired: u64,
     /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
@@ -1562,6 +1565,7 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         let mut changes: Vec<TranslationContextChange> = Vec::new();
         let mut exceptions_delivered = 0u64;
+        let mut cpl3_retired = 0u64;
         self.com1_log.clear();
         let nvme = self.nvme.clone();
         let acpi_pm = self.acpi_pm.clone();
@@ -1660,6 +1664,7 @@ impl LoadedFirmwareBoard {
             self.page_table_root = report.cr3;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
+            cpl3_retired += report.cpl3_retired;
             if let Some(nvme) = &nvme {
                 nvme.service(&mut self.bus, |_| {});
             }
@@ -1766,6 +1771,7 @@ impl LoadedFirmwareBoard {
             set_exit_detail,
             cpuid_divergence_leaf,
             user_entry,
+            cpl3_retired,
             exceptions_delivered,
             irq: irq_counters,
         })

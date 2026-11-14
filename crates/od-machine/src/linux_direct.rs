@@ -436,7 +436,9 @@ pub struct LinuxStopRecord {
     /// `integration_error`, `unsupported`, `fault`, `backend` or `port_io`; or `cpuid_divergence`
     /// (S4-38L4: the set path stopped before a `CPUID` of leaf 1 or 0x8000_0001; `exit` is
     /// `Stopped` then, see `cpuid_divergence_leaf`); or `user_entry` (S4-38L9I: the set path
-    /// stopped at an `IRETQ` returning to CPL3; `exit` is `Stopped` then, see `user_entry`).
+    /// stopped at an `IRETQ` returning to CPL3; `exit` is `Stopped` then, see `user_entry`);
+    /// or, in a user-mode run that stopped in CPL3 (S4-39c), `user_mode_fault` (`exit` is
+    /// `Fault`) or `user_mode_unsupported` (`exit` is `Unsupported`).
     pub exit_kind: &'static str,
     /// The `Debug` text of `exit` (carries the fault, rejection or backend details).
     pub exit_detail: String,
@@ -545,6 +547,14 @@ pub struct LinuxStopRecord {
     /// RIP is on it, `retired` counts what came before and no register changed. `None` for every
     /// other exit.
     pub user_entry: Option<IretqUserEntry>,
+    /// S4-39c: the run was made with the user mode of the board ([`run_linux_direct_board_set_user_mode`]):
+    /// a committed `IRETQ` to CPL3 continues with the CPL3 entry instead of stopping. `false` on
+    /// every other run. With it a stop in CPL3 (`cpl` 3) is `user_mode_fault` or
+    /// `user_mode_unsupported` instead of `fault` / `unsupported`.
+    pub user_mode: bool,
+    /// S4-39c: instructions retired in CPL3 (through the CPL3 entry); part of `retired`. `0`
+    /// without `user_mode` and while CPL3 was not reached.
+    pub cpl3_retired: u64,
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
@@ -612,6 +622,8 @@ pub fn run_linux_direct_board(
             changes: &[],
             cpuid_divergence_leaf: None,
             user_entry: None,
+            user_mode: false,
+            cpl3_retired: 0,
             exceptions_delivered: 0,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
@@ -627,6 +639,8 @@ struct SetExtras<'a> {
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
     user_entry: Option<IretqUserEntry>,
+    user_mode: bool,
+    cpl3_retired: u64,
     exceptions_delivered: u64,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
@@ -650,6 +664,13 @@ fn stop_record(
             "cpuid_divergence"
         } else if extras.user_entry.is_some() {
             "user_entry"
+        } else if extras.user_mode && state.cs_selector.is_some_and(|cs| cs & 3 == 3) {
+            // S4-39c: a stop in CPL3 of a user-mode run.
+            match exit_kind(&report.exit) {
+                "fault" => "user_mode_fault",
+                "unsupported" => "user_mode_unsupported",
+                other => other,
+            }
         } else {
             exit_kind(&report.exit)
         },
@@ -700,6 +721,8 @@ fn stop_record(
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
         user_entry: extras.user_entry,
+        user_mode: extras.user_mode,
+        cpl3_retired: extras.cpl3_retired,
         exceptions_delivered: extras.exceptions_delivered,
         irqs_delivered: extras.irq.irqs_delivered,
         irq0_edges: extras.irq.irq0_edges,
@@ -967,6 +990,34 @@ pub fn run_linux_direct_board_set(
     instruction_budget: u64,
     members: LinuxCpl0SetMembers,
 ) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, false)
+}
+
+/// [`run_linux_direct_board_set`] with the user mode of the board (S4-39c): the set is built
+/// `with_user_mode` (named `user_mode` in `set_members`), so an `IRETQ` to CPL3 that passes every
+/// check commits, and the board then follows the CPL of the state: CS RPL 0 runs the CPL0 entry,
+/// RPL 3 the CPL3 entry (`run_with_cpl3_profile_set`, its allow-list and Ring3 context). The run
+/// goes on from CPL0 into CPL3 on the same state; the record carries `user_mode` and
+/// `cpl3_retired`, and a stop in CPL3 is `user_mode_fault` / `user_mode_unsupported`. Fault
+/// delivery and interrupts from CPL3 are refused by the CPU delivery (S4-39d, S4-39g), which ends
+/// the run as an `ExceptionDeliveryFailed` fault (`set_exit_detail`). Without the user mode the
+/// `IRETQ` stops at the `user_entry` boundary as before.
+pub fn run_linux_direct_board_set_user_mode(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
+    run_linux_direct_board_set_with(boot, input, instruction_budget, members, true)
+}
+
+fn run_linux_direct_board_set_with(
+    boot: &mut LinuxDirectBoot,
+    input: &LinuxDirectInput<'_>,
+    instruction_budget: u64,
+    members: LinuxCpl0SetMembers,
+    user_mode: bool,
+) -> Result<LinuxStopRecord, LinuxDirectError> {
     let cli = CliProfile::NonPviLong64V1;
     let cpuid = members.cpuid_profile;
     // The profile only names the member and seeds nothing under the cell, so it carries the
@@ -1080,6 +1131,10 @@ pub fn run_linux_direct_board_set(
     if members.irq {
         names.push("irq".into());
     }
+    if user_mode {
+        set = set.with_user_mode();
+        names.push("user_mode".into());
+    }
     let result = boot.board.run_linux_boot_cpl0_set(
         instruction_budget,
         &set,
@@ -1118,6 +1173,8 @@ pub fn run_linux_direct_board_set(
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
             user_entry: report.user_entry,
+            user_mode,
+            cpl3_retired: report.cpl3_retired,
             exceptions_delivered: report.exceptions_delivered,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
@@ -10861,6 +10918,187 @@ mod tests {
         assert_ne!(record.exit_kind, "user_entry", "{record:?}");
         assert_eq!(record.user_entry, None);
         assert_eq!(record.retired, 1);
+    }
+
+    // ---- S4-39c: the board follows the CPL of the state under the user mode ----
+
+    const USER_GDT: u64 = 0x12_0000;
+    const USER_CODE_AT: u64 = ENTRY + 0x400;
+
+    /// A board whose entry is an `IRETQ` to CPL3 (CS 0x13, SS 0x1b, DPL 3 descriptors in the
+    /// board GDT) onto `user_code` at `USER_CODE_AT`. With `user_page` the page-table entries
+    /// that map it (PML4E, PDPTE and the 2 MiB PDE of the first GiB) get the user bit; without
+    /// it the page stays supervisor-only.
+    fn user_mode_board(user_code: &[u8], user_page: bool) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x10,
+            &0x00af_fb00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x18,
+            &0x00cf_f300_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(&mut boot, USER_CODE_AT, user_code);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        for (offset, value) in [
+            (0u64, USER_CODE_AT),
+            (8, 0x13),
+            (16, 0x202),
+            (24, ENTRY + 0x800),
+            (32, 0x1b),
+        ] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        let state = boot.board.state_mut();
+        state.gpr[Register::Rsp as usize] = rsp;
+        // As after the kernel's `startup_64` prologue: DS/ES/FS/GS are null, so the commit (which
+        // refuses a non-null selector over a cache with DPL < 3) is not stopped by them.
+        (state.ds_selector, state.es_selector) = (0, 0);
+        (state.fs_selector, state.gs_selector) = (0, 0);
+        if user_page {
+            let cr3 = boot.board.cr3();
+            for entry in [
+                cr3,
+                cr3 + 0x1000,
+                cr3 + 2 * 0x1000 + (USER_CODE_AT / (2 * MIB)) * 8,
+            ] {
+                let mut raw = [0u8; 8];
+                read(&mut boot.board, entry, &mut raw).expect("read entry");
+                let value = u64::from_le_bytes(raw) | 4;
+                write_phys(&mut boot, entry, &value.to_le_bytes());
+            }
+        }
+        (boot, file)
+    }
+
+    fn run_user_facade(boot: &mut LinuxDirectBoot, file: &[u8], budget: u64) -> LinuxStopRecord {
+        run_linux_direct_board_set_user_mode(
+            boot,
+            &input(file, &[], BLOB, board_hash()),
+            budget,
+            LinuxCpl0SetMembers::minimal(),
+        )
+        .expect("runs")
+    }
+
+    #[test]
+    fn user_mode_facade_continues_from_the_committed_iretq_into_the_cpl3_entry() {
+        // `mov eax, 0x53; syscall`: the first form is allowed in CPL3, `SYSCALL` is outside the
+        // allow-list (S4-39e) and stops the run as an honest `Unsupported` in CPL3.
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0, 0x0f, 0x05], true);
+        let record = run_user_facade(&mut boot, &file, 8);
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x05 },
+            "{record:?}"
+        );
+        assert_eq!(record.exit_kind, "user_mode_unsupported", "{record:?}");
+        assert_eq!(record.unsupported_opcode, Some(0x05));
+        assert_eq!(record.cpl, 3);
+        // The `IRETQ` retired in CPL0, the `mov` in CPL3; the `syscall` did not retire.
+        assert_eq!((record.retired, record.cpl3_retired), (2, 1), "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 5);
+        assert_eq!(record.gpr[Register::Rax as usize], 0x53);
+        assert_eq!(record.gpr[Register::Rsp as usize], ENTRY + 0x800);
+        assert!(record.user_mode);
+        assert_eq!(record.user_entry, None);
+        assert_eq!(record.set_members, ["cli", "cpu_owned_cr3", "user_mode"]);
+        assert_eq!(record.path, "cpl0_set");
+    }
+
+    #[test]
+    fn user_mode_facade_budget_and_same_privilege_returns() {
+        // The budget counts the CPL3 instruction too.
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0, 0x0f, 0x05], true);
+        let record = run_user_facade(&mut boot, &file, 2);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired, record.cpl), (2, 1, 3));
+        // A return to CPL0 selectors under the user mode never touches the CPL3 entry.
+        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        let target = ENTRY + 0x400;
+        for (offset, value) in [(0u64, target), (8, 0x10), (16, 2), (24, rsp), (32, 0x18)] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        boot.board.state_mut().gpr[Register::Rsp as usize] = rsp;
+        let record = run_user_facade(&mut boot, &file, 1);
+        assert_eq!((record.retired, record.cpl3_retired, record.cpl), (1, 0, 0));
+        assert!(record.user_mode);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+    }
+
+    #[test]
+    fn user_mode_facade_a_supervisor_only_page_is_a_cpl3_fetch_fault_that_is_not_delivered() {
+        let (mut boot, file) = user_mode_board(&[0xb8, 0x53, 0, 0, 0], false);
+        // An IDT with a present #PF gate is loaded: delivery from CPL3 is the CPU delivery's
+        // refusal (S4-39d), not a board decision.
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
+        gate[2..4].copy_from_slice(&0x10u16.to_le_bytes());
+        gate[5] = 0x8E;
+        write_phys(&mut boot, DATA + 0x2000 + 14 * 16, &gate);
+        boot.board.state_mut().idtr = Some(od_isa::state::Idtr {
+            base: DATA + 0x2000,
+            limit: 0xFF,
+        });
+        let record = run_user_facade(&mut boot, &file, 8);
+        assert_eq!(record.exit_kind, "user_mode_fault", "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired, record.cpl), (1, 0, 3));
+        assert_eq!(record.rip, USER_CODE_AT);
+        assert_eq!(record.exceptions_delivered, 0);
+        let detail = record.set_exit_detail.as_deref().expect("detail");
+        assert!(
+            detail.starts_with("ExceptionDeliveryFailed {") && detail.contains("NotRing0Long64"),
+            "{detail}"
+        );
+        assert!(record.exit_detail.contains("vector: 14"), "{record:?}");
+        assert!(record.page_fault.is_some());
+    }
+
+    #[test]
+    fn the_board_refuses_a_cpl0_entry_with_a_cs_of_rpl_3() {
+        // Review S4-39b (3): without the user mode no user code runs through the CPL0 entry. The
+        // state is the one a committed return would leave; the run is a typed rejection, nothing
+        // retires and nothing is fetched.
+        for user_mode in [false, true] {
+            let (mut boot, file) = boot_with_entry(&[0xfa, 0xf4]);
+            let state = boot.board.state_mut();
+            state.cs_selector = Some(0x13);
+            let record = if user_mode {
+                // With the member the CPL3 entry runs instead: the board page is supervisor-only,
+                // so its first fetch under Ring3 is a #PF with P, U and I/D set.
+                state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                    base: 0,
+                    limit: u32::MAX,
+                    access: 0xfb,
+                    flags: 0xa,
+                });
+                state.ss_selector = Some(0x1b);
+                state.ss_cache = Some(od_isa::DataSegmentDescriptorCache {
+                    base: 0,
+                    limit: u32::MAX,
+                    access: 0xf3,
+                    flags: 0xc,
+                });
+                run_user_facade(&mut boot, &file, 4)
+            } else {
+                run_set_facade(&mut boot, &file, 4, LinuxCpl0SetMembers::minimal())
+            };
+            assert_eq!(record.retired, 0, "{record:?}");
+            assert_eq!(record.rip, ENTRY);
+            if user_mode {
+                assert_eq!(record.exit_kind, "user_mode_fault", "{record:?}");
+                assert!(record.exit_detail.contains("error_code: Some(21)"));
+                assert_eq!(record.cpl3_retired, 0);
+            } else {
+                assert_eq!(record.exit_kind, "rejected", "{record:?}");
+                assert!(record.exit_detail.contains("WrongPrivilege"), "{record:?}");
+                assert!(!record.user_mode);
+            }
+        }
     }
 
     // ---- S4-13: the fetch translation cache of the set loop ----

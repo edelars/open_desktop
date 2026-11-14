@@ -705,3 +705,85 @@ fn a_same_privilege_iretq_is_unaffected_by_the_member() {
         assert_eq!(state.cs_selector, Some(0x10));
     }
 }
+
+#[test]
+fn a_conforming_cs_with_a_dpl_below_three_refuses_the_commit_and_keeps_the_boundary() {
+    // S4-39c (review S4-39b, note 2): the return passes the outer-level checks (conforming,
+    // DPL <= RPL) but would leave a CS cache the CPL3 entry does not admit.
+    for dpl in 0..3u64 {
+        let descriptor = 0x00af_0000_0000_ffff | ((0x9c | (dpl << 5)) << 40);
+        assert_commit_refused(
+            |_, memory| memory.put(CS_SLOT, descriptor),
+            &format!("conforming CS DPL {dpl}"),
+        );
+        // Without the member the same frame is still the validated boundary, as in S4-38L9H.
+        let mut state = kernel_state();
+        let mut memory = user_frame();
+        memory.put(CS_SLOT, descriptor);
+        let before = state.clone();
+        let result = run0(&mut state, &mut memory, &set(), 1);
+        assert!(
+            matches!(result.exit, Cpl0ProfileSetExit::UserEntry(_)),
+            "DPL {dpl}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before);
+    }
+    // A conforming CS with DPL 3 commits.
+    let mut state = kernel_state();
+    let mut memory = user_frame();
+    memory.put(CS_SLOT, 0x00af_0000_0000_ffff | (0xfc << 40));
+    let result = run0(&mut state, &mut memory, &set().with_user_mode(), 1);
+    assert_eq!(result.exit, entered(0x202));
+}
+
+#[test]
+fn the_cpl0_entries_refuse_a_state_whose_cs_has_rpl_3() {
+    // S4-39c (review S4-39b, note 3): the state the commit leaves is for the CPL3 entry only.
+    let mut state = kernel_state();
+    let mut memory = user_frame();
+    run0(&mut state, &mut memory, &set().with_user_mode(), 1);
+    assert_eq!(state.cs_selector, Some(0x13));
+    memory.user = vec![0xb8, 1, 0, 0, 0];
+    let before = state.clone();
+    let fetches = memory.fetches.len();
+    for member in [false, true] {
+        let set = if member {
+            set().with_user_mode()
+        } else {
+            set()
+        };
+        let plain = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &set,
+            None,
+            || false,
+        );
+        assert_eq!(
+            plain,
+            Err(od_isa::execute::Cpl0ProfileSetInputError::WrongPrivilege)
+        );
+        let with_port = run_with_cpl0_profile_set_and_pio(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &set,
+            None,
+            &mut NoPort,
+            || false,
+        );
+        assert_eq!(
+            with_port,
+            Err(od_isa::execute::Cpl0ProfileSetInputError::WrongPrivilege)
+        );
+    }
+    assert_eq!(state, before);
+    assert_eq!(memory.fetches.len(), fetches, "nothing was fetched");
+    // The CPL3 entry still runs it.
+    let result = run3(&mut state, &mut memory, &set().with_user_mode(), 1);
+    assert_eq!(result.instructions_executed, 1);
+}

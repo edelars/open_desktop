@@ -70,6 +70,7 @@ use od_isa::cpuid::CpuidProfile;
 use od_machine::{
     LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectError, LinuxDirectInput, LinuxStopRecord,
     MachineStopReason, load_linux_direct_board, run_linux_direct_board, run_linux_direct_board_set,
+    run_linux_direct_board_set_user_mode,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -81,7 +82,7 @@ pub(crate) mod series;
 
 const USAGE: &str = "linux-direct --vmlinuz <file> --initramfs <file> --acpi-blob <file> \
 --nonce <token> --expected-vmlinuz-sha256 <hex> --expected-acpi-manifest-hash <hex> \
---ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a]]]";
+--ram-mib <n> --out <json> --expected-initramfs-sha256 <hex> [--run --budget <n> [--set-cpl0 [--diagnostic-past-c7] [--cpuid-profile diagnostic|stage4a] [--user-mode]]]";
 
 /// Kernel command line of the S4-29g audit (`docs/reports/STAGE_4_S4-29G_2026-11-09.md`); the
 /// nonce is appended as `od.nonce=<nonce>`.
@@ -117,6 +118,9 @@ struct Options {
     /// `--cpuid-profile diagnostic|stage4a` (S4-38L9a, only with `--set-cpl0`): the CPUID profile
     /// of the set; `diagnostic` (DiagnosticV1, with the C7 boundary) when absent.
     cpuid_profile: CpuidProfile,
+    /// `--user-mode` (S4-39c, only with `--set-cpl0 --cpuid-profile stage4a`): a committed `IRETQ`
+    /// to CPL3 continues with the CPL3 entry instead of stopping at `user_entry`.
+    user_mode: bool,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -266,8 +270,13 @@ fn evaluate(options: &Options) -> (Value, u8) {
         Ok(mut boot) => {
             describe(&mut evidence, &boot, &cmdline, &vmlinuz, &initramfs_sha);
             if let Some(budget) = options.budget {
+                let run_set = if options.user_mode {
+                    run_linux_direct_board_set_user_mode
+                } else {
+                    run_linux_direct_board_set
+                };
                 let result = if options.set_cpl0 {
-                    run_linux_direct_board_set(
+                    run_set(
                         &mut boot,
                         &machine_input,
                         budget,
@@ -635,6 +644,13 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
             "ss": format!("0x{:x}", entry.ss),
         });
     }
+    // S4-39c: under `--user-mode` the stop record also says that the run was one, and how many
+    // instructions retired in CPL3 (`cpl` above is the CPL at the stop). The keys exist only then,
+    // so the record of every other run is unchanged.
+    if record.user_mode {
+        stop["user_mode"] = json!(true);
+        stop["cpl3_retired"] = json!(record.cpl3_retired);
+    }
     // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
     stop["irqs_delivered"] = json!(record.irqs_delivered);
     stop["irq0_edges"] = json!(record.irq0_edges);
@@ -692,6 +708,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut run = false;
     let mut set_cpl0 = false;
     let mut diagnostic_past_c7 = false;
+    let mut user_mode = false;
     let mut budget = None;
     let mut cpuid_profile_text: Option<String> = None;
     let mut index = 0;
@@ -717,6 +734,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 return Err(format!(
                     "duplicate option --diagnostic-past-c7; usage: {USAGE}"
                 ));
+            }
+            index += 1;
+            continue;
+        }
+        if name == "--user-mode" {
+            if std::mem::replace(&mut user_mode, true) {
+                return Err(format!("duplicate option --user-mode; usage: {USAGE}"));
             }
             index += 1;
             continue;
@@ -784,6 +808,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
             ));
         }
     };
+    // S4-39c: the user mode needs the CPUID subset the kernel boots with; `linux_default` (the
+    // `diagnostic` profile) never turns it on.
+    if user_mode && cpuid_profile != CpuidProfile::X8664V1Stage4A {
+        return Err(format!(
+            "--user-mode needs --run, --set-cpl0 and --cpuid-profile stage4a; usage: {USAGE}"
+        ));
+    }
     let nonce = required(nonce, "--nonce")?;
     if nonce.is_empty()
         || nonce.chars().count() > MAX_NONCE_CHARS
@@ -831,6 +862,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         set_cpl0,
         diagnostic_past_c7,
         cpuid_profile,
+        user_mode,
     })
 }
 
@@ -954,6 +986,7 @@ mod tests {
                 set_cpl0: false,
                 diagnostic_past_c7: false,
                 cpuid_profile: CpuidProfile::DiagnosticV1,
+                user_mode: false,
             };
             Self { dir, options }
         }
@@ -1920,6 +1953,113 @@ mod tests {
         assert!(value["stop"].get("user_entry").is_none(), "{value:#}");
     }
 
+    /// `xor eax, eax; mov ds, ax; mov es, ax` (the `startup_64` prologue: null data segments, which
+    /// the committed return to CPL3 needs), the board GDT entries 0x10/0x18 as DPL 3 descriptors,
+    /// then the frame (CS 0x13, SS 0x1b, RIP 0x1000, RFLAGS 0x202) and the `IRETQ`.
+    fn iretq_to_cpl3_program() -> Vec<u8> {
+        let mut code = vec![0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0];
+        for (at, qword) in [
+            (0x12_0010u32, 0x00af_fb00_0000_ffff_u64),
+            (0x12_0018, 0x00cf_f300_0000_ffff),
+        ] {
+            code.extend([0x48, 0xB8]);
+            code.extend(qword.to_le_bytes());
+            code.extend([0x48, 0x89, 0x04, 0x25]);
+            code.extend(at.to_le_bytes());
+        }
+        code.extend([0x6A, 0x1B]);
+        code.extend([0x68, 0x00, 0xF0, 0xFF, 0x7F]);
+        code.extend([0x68, 0x02, 0x02, 0x00, 0x00]);
+        code.extend([0x6A, 0x13]);
+        code.extend([0x68, 0x00, 0x10, 0x00, 0x00]);
+        code.extend([0x48, 0xCF]);
+        code
+    }
+
+    #[test]
+    fn user_mode_flag_needs_the_stage4a_profile_and_defaults_off() {
+        let run = ["--run", "--budget", "1", "--set-cpl0"];
+        let with = |tail: &[&str]| parse_base(&[&run[..], tail].concat());
+        assert!(!with(&[]).unwrap().user_mode);
+        assert!(!with(&["--cpuid-profile", "stage4a"]).unwrap().user_mode);
+        let ok = with(&["--cpuid-profile", "stage4a", "--user-mode"]).unwrap();
+        assert!(ok.user_mode);
+        assert_eq!(ok.cpuid_profile, CpuidProfile::X8664V1Stage4A);
+        for bad in [
+            vec!["--user-mode"],
+            vec!["--cpuid-profile", "diagnostic", "--user-mode"],
+            vec!["--cpuid-profile", "stage4a", "--user-mode", "--user-mode"],
+        ] {
+            assert!(with(&bad).is_err(), "{bad:?}");
+        }
+        // Needs --run and --set-cpl0 as well.
+        assert!(parse_base(&["--user-mode"]).is_err());
+        assert!(parse_base(&["--run", "--budget", "1", "--user-mode"]).is_err());
+        assert!(
+            parse_base(&[
+                "--run",
+                "--budget",
+                "1",
+                "--cpuid-profile",
+                "stage4a",
+                "--user-mode"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn user_mode_runs_the_board_into_cpl3_and_the_record_says_so() {
+        let mut case = Case::new(
+            "set-user-mode",
+            &bzimage_with_entry(&iretq_to_cpl3_program()),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        case.options.cpuid_profile = CpuidProfile::X8664V1Stage4A;
+        case.options.user_mode = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        // The `IRETQ` retired and the run went on in CPL3: its first fetch (the board page is
+        // supervisor-only) is a #PF with P, U and I/D set; the guest has no IDT here, so it stays
+        // a plain fault (with an IDT the CPU delivery refuses it from CPL3, see od-machine).
+        assert_eq!(stop["exit_kind"], "user_mode_fault", "{value:#}");
+        assert_eq!(stop["cpl"], 3);
+        assert_eq!(stop["user_mode"], true);
+        assert_eq!(stop["cpl3_retired"], 0);
+        assert_eq!(stop["rip"], "0x1000");
+        assert_eq!(stop["retired"], 13, "{value:#}");
+        assert!(stop.get("user_entry").is_none(), "{value:#}");
+        assert!(
+            stop["exit_detail"]
+                .as_str()
+                .unwrap()
+                .contains("vector: 14, error_code: Some(21)"),
+            "{value:#}"
+        );
+        let members = stop["set_members"].as_array().unwrap();
+        assert_eq!(members.last().unwrap(), "user_mode");
+        // The same program without the flag stops at the boundary and has none of the new keys.
+        case.options.user_mode = false;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "user_entry", "{value:#}");
+        assert_eq!(stop["cpl"], 0);
+        assert!(stop.get("user_mode").is_none(), "{value:#}");
+        assert!(stop.get("cpl3_retired").is_none(), "{value:#}");
+        assert!(
+            !stop["set_members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == "user_mode")
+        );
+    }
+
     fn cpuid_leaf_case(name: &str, leaf: u8, diagnostic: bool) -> (Value, u8) {
         // CLI; MOV EAX, leaf; CPUID; HLT.
         let code = [0xFA, 0xB8, leaf, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0xF4];
@@ -2440,6 +2580,7 @@ mod tests {
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
+            user_mode: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2482,6 +2623,7 @@ mod tests {
             set_cpl0: false,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
+            user_mode: false,
         };
         let (value, exit) = evaluate(&options);
         assert_eq!(exit, 0, "{value:#}");
@@ -2531,6 +2673,7 @@ mod tests {
             set_cpl0: true,
             diagnostic_past_c7: false,
             cpuid_profile: CpuidProfile::DiagnosticV1,
+            user_mode: false,
         };
         let (value, exit) = evaluate(&options);
         println!("{value:#}");
