@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const SERIES_SCHEMA_VERSION: u32 = 1;
+const SERIES_SCHEMA_VERSION: u32 = 2;
 const RUN_PROFILE: &str = "smoke_not_acceptance";
 const COM1_CAPTURE_SCOPE: &str = "linux_direct_run_boot_com1";
 
@@ -83,6 +83,8 @@ pub(crate) struct HostEvidence {
     pub arch: String,
     pub runner_version: String,
     pub source_revision: Option<String>,
+    #[serde(default)]
+    pub source_dirty: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -308,7 +310,8 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
                 runner_version: env!("CARGO_PKG_VERSION").to_string(),
-                source_revision: option_env!("OD_SOURCE_REVISION").map(str::to_string),
+                source_revision: build_source_revision(),
+                source_dirty: build_source_dirty(),
             },
             configuration: configuration_from_runner(&runner_value),
             artifact_hashes: artifact_hashes(&runner_value),
@@ -366,6 +369,32 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         ScenarioStatus::Failed => ExitCode::from(1),
         ScenarioStatus::NotRun | ScenarioStatus::Blocked => ExitCode::from(78),
     }
+}
+
+fn build_source_revision() -> Option<String> {
+    source_revision_from_env(option_env!("OD_SOURCE_REVISION"))
+}
+
+fn build_source_dirty() -> Option<bool> {
+    source_dirty_from_env(option_env!("OD_SOURCE_DIRTY"))
+}
+
+fn source_revision_from_env(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|revision| *revision != "unknown")
+        .map(str::to_string)
+}
+
+fn source_dirty_from_env(value: Option<&str>) -> Option<bool> {
+    match value {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn supported_schema_version(version: u32) -> bool {
+    matches!(version, 1 | SERIES_SCHEMA_VERSION)
 }
 
 fn parse_series_args(args: &[String]) -> Result<SeriesCli, String> {
@@ -752,7 +781,7 @@ fn fresh_manifest(path: &Path) -> Result<SeriesManifest, String> {
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
     let manifest: SeriesManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid Stage 5 series JSON: {error}"))?;
-    if manifest.schema_version != SERIES_SCHEMA_VERSION
+    if !supported_schema_version(manifest.schema_version)
         || manifest.requested_runs == 0
         || manifest.runs.len() != manifest.requested_runs
         || manifest.series_id.is_empty()
@@ -872,7 +901,7 @@ fn load_run_manifest(series_path: &Path, reference: &RunReference) -> Result<Run
     }
     let manifest: RunManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid run manifest JSON: {error}"))?;
-    if manifest.schema_version != SERIES_SCHEMA_VERSION || manifest.run_id != reference.run_id {
+    if !supported_schema_version(manifest.schema_version) || manifest.run_id != reference.run_id {
         return Err("run manifest identity or schema mismatch".into());
     }
     if !valid_nonce(&manifest.nonce) {
@@ -1211,6 +1240,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_source_revision_is_a_git_hash_when_available() {
+        if let Some(revision) = build_source_revision() {
+            assert!(matches!(revision.len(), 40 | 64));
+            assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn build_source_metadata_parser_preserves_available_and_unavailable_values() {
+        let revision = "0123456789012345678901234567890123456789";
+        assert_eq!(
+            source_revision_from_env(Some(revision)).as_deref(),
+            Some(revision)
+        );
+        assert_eq!(source_revision_from_env(Some("unknown")), None);
+        assert_eq!(source_revision_from_env(None), None);
+        assert_eq!(source_dirty_from_env(Some("true")), Some(true));
+        assert_eq!(source_dirty_from_env(Some("false")), Some(false));
+        assert_eq!(source_dirty_from_env(Some("unknown")), None);
+        assert_eq!(source_dirty_from_env(None), None);
+    }
+
+    #[test]
+    fn legacy_v1_host_metadata_defaults_dirty_state_to_unobserved() {
+        let host: HostEvidence = serde_json::from_value(json!({
+            "os":"linux",
+            "arch":"x86_64",
+            "runner_version":"0.1.0",
+            "source_revision":"0123456789012345678901234567890123456789"
+        }))
+        .unwrap();
+        assert_eq!(host.source_dirty, None);
+        assert!(supported_schema_version(1));
+        assert!(supported_schema_version(SERIES_SCHEMA_VERSION));
+        assert!(!supported_schema_version(0));
+    }
+
+    #[test]
+    fn legacy_v1_series_and_run_manifests_remain_readable() {
+        let temp = std::env::temp_dir().join(format!(
+            "od-runner-stage5-v1-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let series_path = write_test_series(&temp, "series-v1", "nonceLegacyV10001", "PASS");
+        let mut series: Value = serde_json::from_slice(&fs::read(&series_path).unwrap()).unwrap();
+        series["schema_version"] = json!(1);
+
+        let reference = series["runs"][0].clone();
+        let run_path = series_path
+            .parent()
+            .unwrap()
+            .join(reference["manifest"].as_str().unwrap());
+        let mut run: Value = serde_json::from_slice(&fs::read(&run_path).unwrap()).unwrap();
+        run["schema_version"] = json!(1);
+        run["host"].as_object_mut().unwrap().remove("source_dirty");
+        let run_bytes = serde_json::to_vec_pretty(&run).unwrap();
+        fs::write(&run_path, &run_bytes).unwrap();
+        series["runs"][0]["manifest_sha256"] = json!(od_testkit::sha256_hex(&run_bytes));
+        fs::write(&series_path, serde_json::to_vec_pretty(&series).unwrap()).unwrap();
+
+        let manifest = fresh_manifest(&series_path).unwrap();
+        let run = load_run_manifest(&series_path, &manifest.runs[0]).unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(run.schema_version, 1);
+        assert_eq!(run.host.source_dirty, None);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn marker_validator_requires_exact_nonce_order_and_no_duplicates() {
         let expected = vec!["A_FILE".to_string(), "A_PASS".to_string()];
         let good = b"kernel: boot\nOD_NONCE=runNonce001\nOD_S5_A_FILE nonce=runNonce001 path=/tmp/a sha256=abc\nOD_S5_A_PASS nonce=runNonce001 result=ok\n";
@@ -1409,6 +1511,7 @@ mod tests {
                 arch: "test-arch".into(),
                 runner_version: "0.1.0".into(),
                 source_revision: None,
+                source_dirty: None,
             },
             configuration: configuration_from_runner(&raw_value),
             artifact_hashes: artifact_hashes(&raw_value),

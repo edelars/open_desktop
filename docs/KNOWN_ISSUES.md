@@ -12,6 +12,16 @@
 
 ## Записи
 
+<a id="issue-090-stage4-uart-echo-cli-test-exit-code-mismatch"></a>
+
+### ISSUE-090 — S4 UART echo CLI test: exit-code assertion mismatch
+
+- **Дата обнаружения:** 2026-11-14, при проверке `cargo test -p od-runner --offline`.
+- **Компонент:** `tools/runner/tests/stage4_probe_cli.rs` (`uart_echo_profile_checks_rx_expectation_budgets_and_stop`) и exit mapping Stage 4 UART echo probe.
+- **Статус:** открыта; причина несовпадения test expectation и CLI exit mapping не установлена.
+- **Основание и последствия:** полный `od-runner` test run останавливается на assertion, ожидающем exit code `6` для `--stage4-uart-echo-probe --expect-byte 1`, тогда как текущий runner возвращает `5`. Повтор того же теста отдельно воспроизводит несовпадение. Тест прерывается на проверке кода и не подтверждает последующие JSON assertions. Это не связано с изменениями S5 build provenance.
+- **Следующий шаг:** проверить контракт exit codes и реализацию pio-error path; затем исправить реализацию или expectation на основании подтверждённого контракта и повторить тест.
+
 <a id="issue-081-s5-07-series-evidence-prepared-but-stand-blocked"></a>
 
 ### ISSUE-081 — S5-07: серия и evidence schema подготовлены, но стенд заблокирован
@@ -22,6 +32,8 @@
 - **Статус:** открыта; подготовленный implementation slice одобрен независимым ревью; полная S5-07 остаётся `blocked/unaccepted`, checkbox пустой, до функциональной живой серии Stage 4 на initramfs. Numeric gate S5-01 не блокирует S5-07.
 - **Основание и последствия:** добавлен явный smoke-series path с per-run nonce, collision-refusing evidence directories, raw runner JSON, stop record, runner-recorded COM1 bytes/hash/count, manifests и ordered marker validation. Fixture comparator сохранён; `--linux-stage5` добавляет schema comparison. Stop record теперь переносит типизированную причину ACPI PM (`reset`/`shutdown`/`null`) из `FirmwareRunReport`; отсутствующее поле в старом JSON трактуется как ненаблюдавшееся. Series повторно выводит поле из raw JSON, проверяет целостность и сравнивает причины отдельно от `exit_kind`; наличие причины само по себе не ставит сценарий в pass. Синтетические и runner tests проверяют передачу/сравнение. Выполнен один live `smoke_not_acceptance` run с nonce `OD518e74b980609c9e800003ecc00000000`, budget 1,200,000,000 и `diagnostic_past_c7=false`: `guest_started=true`, ожидаемый и фактический stop — `cpuid_divergence` leaf `0x1`, `retired=1,137,476,410`, wall elapsed 422.901293667 s, `machine_stop_reason=null`. COM1 содержал 0 bytes, exact `OD_NONCE=<nonce>` marker отсутствовал; поэтому scenario/series outcome `failed`, `/init` не достигнут, S5-07 не принят. Host из manifest — macOS/aarch64, runner 0.1.0, source revision отсутствует. Kernel из sibling main worktree, прочитан read-only, SHA-256 `9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`; initramfs оттуда же, SHA-256 `ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588`; ACPI blob из codex worktree, SHA-256 `b1ba6078a4d9bc7a8d224980713d8242e4a708743ce4f56093b00a07c631ffaf`, manifest hash `2bd690ae0817705b1b128675f9628dd7212fee74ab97c88da3599a1ae8e398f2`. Raw evidence в ignored `work/stage5/stage4-c7-live-20261112-02/`: series SHA-256 `080108859b67a964d3c1eec8247b6d8155f01ef1e18ad7aef1d89a916661d194`, run manifest SHA-256 `d708f5f57cd71c795a10d51443a72a42ac2767f190e42ec5d16c9e30f69f3962`, raw runner JSON SHA-256 `6bff397201eaafc0836aeb6dbddfa6577d4844cc4601c5680ed827b3d51eeb7c`. Предыдущий debug run `stage4-c7-live-20261112-01` был технически отменён SIGINT (exit 130) после 20 минут CPU-bound вычисления до записи run evidence; это не сценарный отказ. Текущий COM1 источник — stop-scoped `linux_direct_run_boot_com1`, а не независимая streaming UART capture. `loaded` не означает guest scenario pass; Stage 5 A–G остаются `not_run`, поскольку scripts ещё не вызываются boot runner. Отсутствие host/user CPU measurements, `N` или soak budget относится к Numeric gate для S5-15/16, а не к блокеру S5-07.
 - **Следующий шаг:** получить валидную nonce marker из обычного Linux `/init` с полным run evidence по критериям S5-07; до этого сохранять S5-07 blocked и не выводить acceptance из достигнутого C7 stop, `loaded`, синтетических tests или единичного non-acceptance probe. Интеграция A–G требует отдельной задачи S5-08 и фактического гостевого запуска.
+
+- **Обновление (2026-11-14):** новые runner builds фиксируют Git revision и dirty state production source inputs, а S5 series writer выдаёт schema v2; reader сохраняет совместимость с v1, где отсутствующее `source_dirty` остаётся unobserved. Dirty bool не является fingerprint исходников. Live guest run по-прежнему не имеет nonce marker; это обновление не снимает блокировку S5-07.
 
 <a id="issue-080-s5-06-guest-suite-unverified-and-f-endpoint-blocked"></a>
 
@@ -2165,10 +2177,10 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 ### ISSUE-062 — `cargo fmt --all -- --check` fails in files outside stage 11
 
 - **Дата обнаружения:** 2026-11-06, при проверке S11-07.
-- **Компонент:** `crates/od-host/src/display.rs` (строки 13, 812, 1995), `crates/od-machine/src/lib.rs` (строка 33), `tools/power-loss/src/main.rs` (строки 170, 301).
+- **Компонент:** ранее отмеченные `crates/od-host/src/display.rs`, `crates/od-machine/src/lib.rs` и `tools/power-loss/src/main.rs`; на 2026-11-14 также `crates/od-host/src/storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`.
 - **Статус:** открыта; проверка форматирования, не runtime-дефект.
 - **Суть и последствия:** на HEAD `cargo fmt --all -- --check` возвращает exit 1 из-за неотформатированных файлов, которые не относятся к задаче S11-07. Новый код этапа 11 проверяется `rustfmt --check` по своим файлам и проходит.
-- **Основание:** вывод `cargo fmt --all -- --check` на worktree `feat/s9-stage` после S11-07 (exit 1; перечисленные строки).
+- **Основание:** вывод `cargo fmt --all -- --check` на worktree `feat/s9-stage` после S11-07 (exit 1); повтор 2026-11-14 в `codex` (exit 1; diff в `storage_abi_v1.rs` и `tools/image-tool/tests/cli.rs`). Затронутые файлы не относятся к Stage 5 изменениям.
 - **Следующий шаг:** отдельным change-only-формат коммитом привести перечисленные файлы к `rustfmt`, не смешивая с функциональными правками; после этого вернуть полный `cargo fmt --all -- --check` в обязательные проверки.
 
 <a id="issue-056-layout-check-unmapped-smoke-root"></a>
