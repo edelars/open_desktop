@@ -21224,6 +21224,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// `rm & reg`, AF undefined, nothing is written. REX.W does not change a byte test and is accepted
 /// as for `8A`/`38`/`C6`. The memory form, `A8` (TEST AL, imm8) and `F6 /0` stay outside.
 ///
+/// S4-39f18: `3C ib` (CMP AL, imm8, `cmpb $0x20, %al` = `3c 20` of `/init` at `0x400192`) with no
+/// REX and no prefix. The CPL0 `Operation::Arithmetic { kind: Cmp }` at byte size is reused: the
+/// flags are those of `al - imm8` (SUB rules), nothing is written. `3D` (CMP eAX, imm32), `3A`/`3B`,
+/// `A8` (TEST AL, imm8) and `80 /7` with a register operand stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21322,6 +21327,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Register(_),
             },
         ) => instruction.operand_size == OperandSize::Byte,
+        // S4-39f18: `3C ib` (CMP AL, imm8) with no REX and no prefix. The decoder names it
+        // `Arithmetic { Cmp, dst: Register(AL), src: Immediate }` at byte size; `3D` (CMP eAX,
+        // imm32), `3A`/`3B` and `A8` have their own opcode bytes and stay outside.
+        (
+            OpcodeMap::Primary,
+            0x3c,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Immediate(_),
+            },
+        ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
         (
             OpcodeMap::Primary,
             0x8a,

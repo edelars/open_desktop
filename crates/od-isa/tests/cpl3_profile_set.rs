@@ -3465,11 +3465,10 @@ fn cmpb_refusals_stop_as_unsupported_38_without_change() {
 #[test]
 fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
     // The other CMP forms with a memory operand are not part of S4-39f11 (`80 /7` joined in
-    // S4-39f14).
+    // S4-39f14, `3C ib` in S4-39f18).
     let forms: &[(&str, &[u8], u8)] = &[
         ("3a 03 cmpb (%rbx), %al", &[0x3a, 0x03], 0x3a),
         ("3b 03 cmpl (%rbx), %eax", &[0x3b, 0x03], 0x3b),
-        ("3c 05 cmpb $5, %al", &[0x3c, 0x05], 0x3c),
         ("3d 00 00 00 00 cmpl $0, %eax", &[0x3d, 0, 0, 0, 0], 0x3d),
         (
             "81 3b 00 00 00 00 cmpl $0, (%rbx)",
@@ -3932,13 +3931,14 @@ fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
 #[test]
 fn jmp_rel8_then_an_outside_form_stops_at_that_form() {
     // Synthetic block modelled on the `/init` loop tail: `eb 01` jumps over one `hlt` to a
-    // `3c 20` (cmpb $0x20, %al), which is outside (`84 c0` joined in S4-39f17); the test checks
-    // the fetch after a jump, not the real next boundary of `/init`.
+    // `3d 20 00 00 00` (cmpl $0x20, %eax), which is outside (`84 c0` joined in S4-39f17 and
+    // `3c 20` in S4-39f18); the test checks the fetch after a jump, not the real next boundary of
+    // `/init`.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
-    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x3c, 0x20]);
+    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x3d, 0x20, 0x00, 0x00, 0x00]);
     let result = run3(&mut state, &mut memory, &set, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3d });
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, RIP + 3);
 }
@@ -4918,25 +4918,26 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movzbl_testb_chain_stops_at_cmpb_imm8() {
+fn init_movzbl_testb_cmpb_chain_stops_at_cmpq_imm32() {
     // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16), `84 c0`
-    // (testb %al, %al; executes since S4-39f17) and `3c 20` (cmpb $0x20, %al; outside), the
-    // boundary of `/init` at `0x400192` after `je` (not exercised here).
+    // (testb %al, %al; S4-39f17), `3c 20` (cmpb $0x20, %al; S4-39f18) and then
+    // `48 81 f9 80 00 00 00` (cmpq $0x80, %rcx; outside): the boundary of `/init` after the
+    // `je`/`cmpb $0x0a` pair (the jumps are not exercised here).
     let mut state = mov_byte_state();
     state.gpr[Register::R8 as usize] = DATA;
     state.gpr[Register::Rcx as usize] = 5;
     state.rflags |= ARITH;
-    let mut expected = after_movzx(&state, Register::Rax, b' ', 5 + 2);
-    // al = 0x20: CF = OF = 0, SF = 0, ZF = 0, PF = 0 (one bit); other flags stay.
-    expected.rflags &= !(CF | OF | SF | ZF | PF);
-    let mut memory = DataMemory::new(&[0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0, 0x3c, 0x20])
-        .with_user(DATA + 5, b' ');
+    let mut expected = after_movzx(&state, Register::Rax, b' ', 5 + 2 + 2);
+    // al = 0x20 - 0x20: ZF | PF; CF = OF = SF = AF = 0; other flags stay.
+    expected.rflags = (expected.rflags & !ARITH) | ZF | PF;
+    let mut memory = DataMemory::new(&[
+        0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0, 0x3c, 0x20, 0x48, 0x81, 0xf9, 0x80, 0x00, 0x00,
+        0x00,
+    ])
+    .with_user(DATA + 5, b' ');
     let result = run3_data(&mut state, &mut memory, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
-    assert_eq!(result.instructions_executed, 2);
-    // AF is undefined after TEST: compare without it.
-    state.rflags &= !AF;
-    expected.rflags &= !AF;
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x81 });
+    assert_eq!(result.instructions_executed, 3);
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 1);
 }
@@ -5126,17 +5127,130 @@ fn test_r8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
 }
 
 #[test]
-fn test_r8_then_je_then_cmpb_imm8_stops_at_cmpb() {
+fn test_r8_then_je_then_cmpb_imm8_executes() {
     // `84 c0` (testb %al, %al), `74 02` (je, taken on al == 0) skipping two bytes, then
-    // `3c 20` (cmpb $0x20, %al; outside): the boundary of `/init` after `je`.
+    // `3c 20` (cmpb $0x20, %al; executes since S4-39f18): the sequence of `/init` after `je`.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     state.gpr[Register::Rax as usize] = 0x1234_5678_9abc_de00;
     let mut memory = Memory::code(&[0x84, 0xc0, 0x74, 0x02, 0xf4, 0xf4, 0x3c, 0x20]);
-    let result = run3(&mut state, &mut memory, &set, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x3c });
-    assert_eq!(result.instructions_executed, 2);
-    assert_eq!(state.rip, RIP + 6);
-    assert_eq!(state.rflags & (SF | ZF | PF | CF | OF), ZF | PF);
+    let result = run3(&mut state, &mut memory, &set, 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.rip, RIP + 8);
+    // al = 0x00 - 0x20: CF | SF (0xe0 has three bits: PF clear), ZF clear.
+    assert_eq!(state.rflags & ARITH, CF | SF);
     assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_de00);
+}
+
+// ---- S4-39f18: `3C ib` (CMP AL, imm8) ----
+
+#[test]
+fn cmp_al_imm8_sets_the_byte_sub_flags_and_writes_nothing() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, al, expected flags). Flags of `al - imm8` at byte size. Hand-checked:
+    // 0x00 - 0x20 = 0xe0 (CF, SF, three bits: PF clear), 0x20 - 0x20 = 0 (ZF, PF),
+    // 0x80 - 0x20 = 0x60 (OF, two bits: PF), 0xff - 0x20 = 0xdf (SF, seven bits: PF clear).
+    let cases: &[(&str, &[u8], u8, u64)] = &[
+        ("3c 20 al=00", &[0x3c, 0x20], 0x00, CF | SF),
+        ("3c 20 al=01", &[0x3c, 0x20], 0x01, CF | SF | PF),
+        ("3c 20 al=20", &[0x3c, 0x20], 0x20, ZF | PF),
+        ("3c 20 al=7f", &[0x3c, 0x20], 0x7f, PF),
+        ("3c 20 al=80", &[0x3c, 0x20], 0x80, OF | PF),
+        ("3c 20 al=ff", &[0x3c, 0x20], 0xff, SF),
+        // `/init` at 0x400196 (after the `je` that follows the first `cmpb`).
+        ("3c 0a al=0a", &[0x3c, 0x0a], 0x0a, ZF | PF),
+        ("3c 0a al=20", &[0x3c, 0x0a], 0x20, AF),
+        ("3c 0a al=00", &[0x3c, 0x0a], 0x00, CF | SF | PF | AF),
+        // A negative immediate (0x80) is a plain byte.
+        ("3c 80 al=7f", &[0x3c, 0x80], 0x7f, CF | OF | SF | PF),
+        ("3c 00 al=00", &[0x3c, 0x00], 0x00, ZF | PF),
+    ];
+    for (name, bytes, al, _) in cases {
+        for initial in [0, ARITH] {
+            let mut state = user_state();
+            for (index, value) in state.gpr.iter_mut().enumerate() {
+                *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+            }
+            // The upper bytes of RAX are garbage and must neither matter nor change.
+            state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_ee00 | u64::from(*al);
+            state.rflags |= initial;
+            let flags = cmp8_flags(*al, bytes[1]);
+            let expected = after_cmpb(&state, 2, flags);
+            let mut memory = Memory::code(bytes);
+            let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+            assert_eq!(memory.accesses, 0, "{name}");
+        }
+    }
+    // The literal flags of the table agree with the SDM helper.
+    for (name, bytes, al, flags) in cases {
+        assert_eq!(cmp8_flags(*al, bytes[1]), *flags, "{name}");
+    }
+}
+
+#[test]
+fn cmp_al_imm8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u8)] = &[
+        ("66 3c 20 operand-size", &[0x66, 0x3c, 0x20], 0x3c),
+        ("67 3c 20 address-size", &[0x67, 0x3c, 0x20], 0x3c),
+        ("f0 3c 20 lock", &[0xf0, 0x3c, 0x20], 0x3c),
+        ("f2 3c 20 repne", &[0xf2, 0x3c, 0x20], 0x3c),
+        ("f3 3c 20 rep", &[0xf3, 0x3c, 0x20], 0x3c),
+        ("64 3c 20 fs", &[0x64, 0x3c, 0x20], 0x3c),
+        ("65 3c 20 gs", &[0x65, 0x3c, 0x20], 0x3c),
+        ("2e 3c 20 cs", &[0x2e, 0x3c, 0x20], 0x3c),
+        ("3e 3c 20 ds", &[0x3e, 0x3c, 0x20], 0x3c),
+        ("26 3c 20 es", &[0x26, 0x3c, 0x20], 0x3c),
+        ("36 3c 20 ss", &[0x36, 0x3c, 0x20], 0x3c),
+        ("40 3c 20 REX", &[0x40, 0x3c, 0x20], 0x3c),
+        ("41 3c 20 REX.B", &[0x41, 0x3c, 0x20], 0x3c),
+        ("48 3c 20 REX.W", &[0x48, 0x3c, 0x20], 0x3c),
+        (
+            "66 40 3c 20 prefix before REX",
+            &[0x66, 0x40, 0x3c, 0x20],
+            0x3c,
+        ),
+        (
+            "3d 20 00 00 00 cmp eax, imm32",
+            &[0x3d, 0x20, 0, 0, 0],
+            0x3d,
+        ),
+        (
+            "48 3d 20 00 00 00 cmp rax, imm32",
+            &[0x48, 0x3d, 0x20, 0, 0, 0],
+            0x3d,
+        ),
+        ("3a c0 cmp al, al (3A)", &[0x3a, 0xc0], 0x3a),
+        ("3b c0 cmp eax, eax (3B)", &[0x3b, 0xc0], 0x3b),
+        ("a8 20 test al, imm8", &[0xa8, 0x20], 0xa8),
+        // The register form of `80 /7` stays outside (only the memory form joined in S4-39f14).
+        (
+            "80 f8 20 cmpb $0x20, %al (80 /7)",
+            &[0x80, 0xf8, 0x20],
+            0x80,
+        ),
+    ];
+    for (name, bytes, opcode) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
 }
