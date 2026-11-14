@@ -9752,7 +9752,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     // (ambiguous spelling; the dword rule of S4-38L7m). The register form
                     // (mod = 11) is not touched: the segment prefix is irrelevant there and it
                     // keeps decoding as the plain INC/DEC. Other FF group members with FS/GS
-                    // (CALL, JMP, PUSH) stay refused.
+                    // (CALL, JMP) stay refused; PUSH (/6) with FS/GS is decoded by its own
+                    // branch (S4-39f1: `PushFsMem`/`PushGsMem`).
                     let stale_rex = prefix_bytes[..prefix_count]
                         .iter()
                         .enumerate()

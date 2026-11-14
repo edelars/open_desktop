@@ -332,7 +332,28 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
         ("int3", &[0xcc], 0xcc),
         // Ordinary forms that `/init` runs after its first syscall stay outside this slice.
-        ("xor eax, eax", &[0x31, 0xc0], 0x31),
+        // S4-39f2: `xor eax, eax` (`31 c0`) is allowed now (register form, dword); the variants
+        // below stay outside: REX.W, a memory operand and the other XOR opcodes.
+        ("xor rax, rax (REX.W)", &[0x48, 0x31, 0xc0], 0x31),
+        ("xor r10, r10 (REX.W+R+B)", &[0x4d, 0x31, 0xd2], 0x31),
+        ("xor [rax], eax (memory)", &[0x31, 0x00], 0x31),
+        (
+            "xor [rip+0], r10d (memory)",
+            &[0x44, 0x31, 0x15, 0, 0, 0, 0],
+            0x31,
+        ),
+        ("xor ax, ax (0x66)", &[0x66, 0x31, 0xc0], 0x31),
+        ("lock xor [rax], eax", &[0xf0, 0x31, 0x00], 0x31),
+        ("xor al, bl (30 /r)", &[0x30, 0xd8], 0x30),
+        ("xor eax, ebx (33 /r)", &[0x33, 0xc3], 0x33),
+        ("xor eax, imm32 (35)", &[0x35, 1, 0, 0, 0], 0x35),
+        ("xor eax, imm8 (83 /6)", &[0x83, 0xf0, 0x01], 0x83),
+        // The form after the second syscall of `/init` (`48 c7 c7`): the S4-39f2 boundary.
+        (
+            "mov rdi, imm32 (C7 /0, REX.W)",
+            &[0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff],
+            0xc7,
+        ),
         ("mov rbx, rax", &[0x48, 0x89, 0xc3], 0x89),
         // Prefixed variants of the allowed forms and a different operand size.
         (
@@ -530,4 +551,204 @@ fn a_stop_request_ends_the_run_at_a_boundary_before_the_next_instruction() {
             [RIP, RIP + 7, RIP + 12, RIP + 17][result.instructions_executed as usize];
         assert_eq!(state.rip, expected_rip, "poll {true_from}");
     }
+}
+
+// ---- S4-39f2: `XOR r/m32, r32` (31 /r), register form, and the `/init` path to the mount syscall ----
+
+const CF: u64 = 1;
+const PF: u64 = 1 << 2;
+const AF: u64 = 1 << 4;
+const ZF: u64 = 1 << 6;
+const SF: u64 = 1 << 7;
+const OF: u64 = 1 << 11;
+const ARITH: u64 = CF | PF | AF | ZF | SF | OF;
+
+#[test]
+fn xor_r32_register_form_executes_with_flags_and_zero_extension() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (bytes, dst register index, initial dst, src register index, initial src, result, flags)
+    // The destination is ModRM.rm (REX.B), the source is ModRM.reg (REX.R); a 32-bit write
+    // zeroes bits 63:32 of the destination.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, usize, u64, u64, u64)] = &[
+        // xor eax, ebx: 0x8000_0003 ^ 0x1 = 0x8000_0002 (SF, odd parity of 0x02 -> PF clear).
+        (
+            "31 d8",
+            &[0x31, 0xd8],
+            0,
+            0x1234_5678_8000_0003,
+            3,
+            0xffff_ffff_0000_0001,
+            0x8000_0002,
+            SF,
+        ),
+        // xor r8d, r9d (REX.R + REX.B): 0xff ^ 0xf0 = 0x0f (four bits -> PF set).
+        (
+            "45 31 c8",
+            &[0x45, 0x31, 0xc8],
+            8,
+            0xffff_ffff_0000_00ff,
+            9,
+            0x0000_0001_0000_00f0,
+            0x0f,
+            PF,
+        ),
+        // xor eax, r9d (REX.R only): equal low halves -> zero (ZF, PF).
+        (
+            "44 31 c8",
+            &[0x44, 0x31, 0xc8],
+            0,
+            0xdead_beef_0000_0042,
+            9,
+            0x0000_0000_0000_0042,
+            0,
+            ZF | PF,
+        ),
+        // xor r10d, r10d (REX.R + REX.B, `/init`): zero idiom, upper half cleared.
+        (
+            "45 31 d2",
+            &[0x45, 0x31, 0xd2],
+            10,
+            0xffff_ffff_ffff_ffff,
+            10,
+            0xffff_ffff_ffff_ffff,
+            0,
+            ZF | PF,
+        ),
+        // xor r8d, r8d (`/init`).
+        (
+            "45 31 c0",
+            &[0x45, 0x31, 0xc0],
+            8,
+            0x8000_0000_8000_0000,
+            8,
+            0x8000_0000_8000_0000,
+            0,
+            ZF | PF,
+        ),
+        // xor eax, eax and xor edx, edx without REX.
+        ("31 c0", &[0x31, 0xc0], 0, u64::MAX, 0, u64::MAX, 0, ZF | PF),
+        (
+            "31 d2",
+            &[0x31, 0xd2],
+            2,
+            0x1_0000_0001,
+            2,
+            0x1_0000_0001,
+            0,
+            ZF | PF,
+        ),
+        // xor r8d, ecx (REX.B only): 0x7fff_ffff ^ 0 = 0x7fff_ffff (positive; low byte 0xff has
+        // eight bits -> PF set).
+        (
+            "41 31 c8",
+            &[0x41, 0x31, 0xc8],
+            8,
+            0x5555_5555_7fff_ffff,
+            1,
+            0x0000_0007_0000_0000,
+            0x7fff_ffff,
+            PF,
+        ),
+    ];
+    for (name, bytes, dst, dst_value, src, src_value, expected, flags) in cases {
+        let mut state = user_state();
+        // CF, OF, SF, ZF, PF, AF all set before: XOR must clear CF/OF and recompute the rest.
+        state.rflags |= ARITH;
+        state.gpr[*dst] = *dst_value;
+        if dst != src {
+            state.gpr[*src] = *src_value;
+        }
+        let src_before = state.gpr[*src];
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(state.rip, RIP + bytes.len() as u64, "{name}");
+        assert_eq!(state.gpr[*dst], *expected, "{name}");
+        if dst != src {
+            assert_eq!(state.gpr[*src], src_before, "{name}");
+        }
+        let arithmetic = state.rflags & ARITH;
+        // CF = OF = 0; SF, ZF, PF from the result; AF is not asserted (undefined).
+        assert_eq!(arithmetic & (CF | OF), 0, "{name}");
+        assert_eq!(arithmetic & (SF | ZF | PF), *flags, "{name}");
+        // AF is undefined after XOR (SDM, from memory): it leaves the defined set, like OR/AND.
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS & !AF, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn xor_r32_leaves_the_other_registers_and_non_arithmetic_flags_unchanged() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    for (index, value) in state.gpr.iter_mut().enumerate() {
+        *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+    }
+    let mut expected = state.clone();
+    let mut memory = Memory::code(&[0x45, 0x31, 0xd2]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    expected.gpr[10] = 0;
+    expected.rip = RIP + 3;
+    // IF (bit 9) and the reserved bit 1 stay; the arithmetic flags are recomputed.
+    expected.rflags = (expected.rflags & !ARITH) | ZF | PF;
+    assert_eq!(state.gpr, expected.gpr);
+    assert_eq!(state.rip, expected.rip);
+    assert_eq!(state.rflags & !AF, expected.rflags & !AF);
+}
+
+/// `/init` after the first `SYSCALL` (`mkdir`) up to the second one (`mount`, 165), taken from
+/// `work/stage4/initramfs/init` at `0x4000c3`:
+/// `lea 0x18c(%rip), %rdi; lea 0x17f(%rip), %rsi; lea 0x17e(%rip), %rdx; xor %r10d, %r10d;
+/// xor %r8d, %r8d; mov $0xa5, %eax; syscall`.
+const INIT_MOUNT_PATH: [u8; 33] = [
+    0x48, 0x8d, 0x3d, 0x8c, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x35, 0x7f, 0x01, 0x00, 0x00, 0x48, 0x8d,
+    0x15, 0x7e, 0x01, 0x00, 0x00, 0x45, 0x31, 0xd2, 0x45, 0x31, 0xc0, 0xb8, 0xa5, 0x00, 0x00, 0x00,
+    0x0f,
+];
+
+#[test]
+fn init_path_after_mkdir_runs_in_ring3_up_to_the_mount_syscall() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut bytes = INIT_MOUNT_PATH.to_vec();
+    bytes.push(0x05);
+    let mut state = user_state();
+    state.gpr[10] = 0xdead_beef_dead_beef;
+    state.gpr[8] = 0xcafe_f00d_cafe_f00d;
+    state.rflags |= ARITH;
+    let mut memory = Memory::code(&bytes);
+    let result = run3(&mut state, &mut memory, &set, 64).unwrap();
+    // Without the `with_syscall` member the loop stops at `SYSCALL` (`Unsupported 0x05`).
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x05 });
+    assert_eq!(result.instructions_executed, 6);
+    assert_eq!(state.rip, RIP + 32);
+    assert_eq!(state.gpr[Register::Rdi as usize], RIP + 7 + 0x18c);
+    assert_eq!(state.gpr[Register::Rsi as usize], RIP + 14 + 0x17f);
+    assert_eq!(state.gpr[Register::Rdx as usize], RIP + 21 + 0x17e);
+    assert_eq!(state.gpr[10], 0);
+    assert_eq!(state.gpr[8], 0);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xa5);
+    assert_eq!(state.rflags & (CF | OF | SF), 0);
+    assert_eq!(state.rflags & (ZF | PF), ZF | PF);
+    assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn the_form_after_the_mount_syscall_is_still_outside_the_allow_list() {
+    // `/init` at `0x4000e5`: `mov $-0x64, %rdi` (`48 c7 c7 9c ff ff ff`, C7 /0 with REX.W).
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    // `xor %r10d, %r10d` first: it retires, then the REX.W C7 form stops the run.
+    let mut memory = Memory::code(&[0x45, 0x31, 0xd2, 0x48, 0xc7, 0xc7, 0x9c, 0xff, 0xff, 0xff]);
+    let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xc7 });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0);
 }
