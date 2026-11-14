@@ -37,6 +37,7 @@ mod pic_8259;
 mod pio_step;
 mod pit_8254;
 mod pit_ioapic_irq_source;
+mod pit_pic_irq_source;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
