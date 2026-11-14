@@ -4918,17 +4918,18 @@ fn neighbouring_movzx_and_movsx_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movzbl_testb_cmpb_cmpq_rep_movsb_chain_stops_at_subq() {
+fn init_movzbl_testb_cmpb_cmpq_rep_movsb_subq_chain_stops_at_hlt() {
     // `41 0f b6 04 08` (movzbl (%r8,%rcx), %eax; executes since S4-39f16), `84 c0`
     // (testb %al, %al; S4-39f17), `3c 20` (cmpb $0x20, %al; S4-39f18), `48 81 f9 80 00 00 00`
     // (cmpq $0x80, %rcx; S4-39f19), `f3 a4` (rep movsb; executes since S4-39f20) and then
-    // `48 29 f2` (subq %rsi, %rdx; outside): the boundary of `/init` after `0x4001c1` (the jumps
-    // between them are not exercised here).
+    // `48 29 f2` (subq %rsi, %rdx; executes since S4-39f21) and then `f4` (outside, a sentinel
+    // instead of the `movl` of `/init`): the jumps between them are not exercised here.
     let mut state = mov_byte_state();
     state.gpr[Register::R8 as usize] = DATA;
     state.gpr[Register::Rcx as usize] = 5;
     state.gpr[Register::Rsi as usize] = DATA + 0x10;
     state.gpr[Register::Rdi as usize] = DATA + 0x200;
+    state.gpr[Register::Rdx as usize] = DATA + 0x215;
     state.rflags |= ARITH;
     let mut expected = after_movzx(&state, Register::Rax, b' ', 5 + 2 + 2);
     // al = 0x20 - 0x20: ZF | PF; CF = OF = SF = AF = 0; other flags stay.
@@ -4941,9 +4942,13 @@ fn init_movzbl_testb_cmpb_cmpq_rep_movsb_chain_stops_at_subq() {
     expected.gpr[Register::Rcx as usize] = 0;
     expected.gpr[Register::Rsi as usize] = DATA + 0x15;
     expected.gpr[Register::Rdi as usize] = DATA + 0x205;
+    // `subq %rsi, %rdx`: rdx = (DATA + 0x215) - (DATA + 0x15) = 0x200: PF (low byte 0) only.
+    expected.rip = RIP + 21;
+    expected.gpr[Register::Rdx as usize] = 0x200;
+    expected.rflags = (expected.rflags & !ARITH) | PF;
     let mut memory = DataMemory::new(&[
         0x41, 0x0f, 0xb6, 0x04, 0x08, 0x84, 0xc0, 0x3c, 0x20, 0x48, 0x81, 0xf9, 0x80, 0x00, 0x00,
-        0x00, 0xf3, 0xa4, 0x48, 0x29, 0xf2,
+        0x00, 0xf3, 0xa4, 0x48, 0x29, 0xf2, 0xf4,
     ])
     .with_user(DATA + 5, b' ');
     for index in 0..5 {
@@ -4952,9 +4957,9 @@ fn init_movzbl_testb_cmpb_cmpq_rep_movsb_chain_stops_at_subq() {
             .with_user(DATA + 0x200 + index, 0);
     }
     let result = run3_data(&mut state, &mut memory, 20).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x29 });
-    // Four instructions, then one unit per iteration of the string.
-    assert_eq!(result.instructions_executed, 4 + 5);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    // Four instructions, then one unit per iteration of the string, then the `subq`.
+    assert_eq!(result.instructions_executed, 4 + 5 + 1);
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 1 + 5);
     for index in 0..5 {
@@ -5978,4 +5983,269 @@ fn rep_movsb_with_rcx_zero_stops_on_a_stop_request_before_retiring() {
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
     assert_eq!(state.rip, RIP);
+}
+
+// ---- S4-39f21: `REX.W 29 /r` (SUB r/m64, r64), register form ----
+
+#[test]
+fn sub_r64_register_form_writes_the_difference_and_sets_the_sub_flags() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // (name, bytes, dst index, dst value, src index, src value, literal flags of dst - src). The
+    // literals are checked by hand and against `cmp64_flags` (the SUB flag rules) below.
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[u8], usize, u64, usize, u64, u64)] = &[
+        // `/init` at 0x4001db: subq %rsi, %rdx (rm = rdx = dst, reg = rsi = src). Equal: 0.
+        ("48 29 f2 equal", &[0x48, 0x29, 0xf2], 2, 7, 6, 7, ZF | PF),
+        // 3 - 5 = 0xffff_ffff_ffff_fffe: CF, SF, AF (the low nibble borrows); the low byte 0xfe
+        // has seven set bits (odd): PF clear.
+        (
+            "48 29 f2 3-5",
+            &[0x48, 0x29, 0xf2],
+            2,
+            3,
+            6,
+            5,
+            CF | SF | AF,
+        ),
+        // 5 - 3 = 2 (one set bit: PF clear): no flag.
+        ("48 29 f2 5-3", &[0x48, 0x29, 0xf2], 2, 5, 6, 3, 0),
+        // The `/init` shape: end pointer minus start pointer, 0x402014 - 0x402000 = 0x14: two set
+        // bits, PF; no borrow.
+        (
+            "48 29 f2 pointers",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0x40_2014,
+            6,
+            0x40_2000,
+            PF,
+        ),
+        // Low-nibble borrow only: 0x10 - 1 = 0x0f (four set bits): AF, PF.
+        (
+            "48 29 f2 0x10-1",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0x10,
+            6,
+            1,
+            AF | PF,
+        ),
+        // Signed overflow: i64::MIN - 1 = i64::MAX (low byte 0xff): OF, PF, AF; no CF, no SF.
+        (
+            "48 29 f2 min-1",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0x8000_0000_0000_0000,
+            6,
+            1,
+            OF | PF | AF,
+        ),
+        // 0 - i64::MIN = 0x8000_0000_0000_0000: CF, OF, SF, PF (low byte 0); equal low nibbles.
+        (
+            "48 29 f2 0-min",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0,
+            6,
+            0x8000_0000_0000_0000,
+            CF | OF | SF | PF,
+        ),
+        // The high half decides: 0x1_0000_0000 - 1 = 0xffff_ffff (no dword wrap): PF, AF.
+        (
+            "48 29 f2 high half",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0x1_0000_0000,
+            6,
+            1,
+            PF | AF,
+        ),
+        // Borrow from the high half only: 0 - 2^32 = 0xffff_ffff_0000_0000: CF, SF, PF.
+        (
+            "48 29 f2 0-2^32",
+            &[0x48, 0x29, 0xf2],
+            2,
+            0,
+            6,
+            0x1_0000_0000,
+            CF | SF | PF,
+        ),
+        // REX.W only, other registers: subq %rcx, %rax (48 29 c8): rm = rax = dst, reg = rcx.
+        (
+            "48 29 c8 REX.W",
+            &[0x48, 0x29, 0xc8],
+            0,
+            1,
+            1,
+            2,
+            CF | SF | PF | AF,
+        ),
+        // REX.WB: subq %rax, %r15 (49 29 c7): rm = r15 = dst, reg = rax = src.
+        ("49 29 c7 REX.WB", &[0x49, 0x29, 0xc7], 15, 4, 0, 4, ZF | PF),
+        // REX.WR: subq %r9, %rbx (4c 29 cb): rm = rbx = dst, reg = r9 = src.
+        (
+            "4c 29 cb REX.WR",
+            &[0x4c, 0x29, 0xcb],
+            3,
+            0x10,
+            9,
+            0x20,
+            CF | SF | PF,
+        ),
+        // REX.WRB: subq %r9, %r10 (4d 29 ca): rm = r10 = dst, reg = r9 = src.
+        (
+            "4d 29 ca REX.WRB",
+            &[0x4d, 0x29, 0xca],
+            10,
+            0x50,
+            9,
+            0x20,
+            PF,
+        ),
+        // REX.WX (X is ignored with mod = 11): subq %rcx, %rax (4a 29 c8).
+        ("4a 29 c8 REX.WX", &[0x4a, 0x29, 0xc8], 0, 3, 1, 3, ZF | PF),
+        // The same register: subq %rbx, %rbx is zero whatever the value.
+        (
+            "48 29 db same register",
+            &[0x48, 0x29, 0xdb],
+            3,
+            0x1234,
+            3,
+            0x1234,
+            ZF | PF,
+        ),
+    ];
+    for (name, bytes, dst, dst_value, src, src_value, flags) in cases {
+        let mut state = user_state();
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111_u64.wrapping_mul(index as u64 + 1);
+        }
+        state.gpr[*dst] = *dst_value;
+        state.gpr[*src] = *src_value;
+        // Every arithmetic flag set before: SUB recomputes all six.
+        state.rflags |= ARITH;
+        let mut expected = state.clone();
+        expected.rip = RIP + bytes.len() as u64;
+        // The whole 64-bit destination is written.
+        expected.gpr[*dst] = dst_value.wrapping_sub(*src_value);
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        // Only the destination register changes; RIP advances by the length.
+        assert_eq!(state.gpr, expected.gpr, "{name}");
+        assert_eq!(state.rip, expected.rip, "{name}");
+        assert_eq!(state.rflags & ARITH, *flags, "{name}");
+        assert_eq!(
+            state.rflags & ARITH,
+            cmp64_flags(*dst_value, *src_value),
+            "{name}"
+        );
+        // The non-arithmetic flags (IF, the reserved bit 1) stay.
+        assert_eq!(state.rflags & !ARITH, expected.rflags & !ARITH, "{name}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn sub_r64_then_movl_chain_follows_init_after_the_pointer_difference() {
+    // `/init` at 0x4001d8..: `movq %rdi, %rdx; subq %rsi, %rdx; movl $1, %edi; movl $1, %eax`
+    // then a `f4` sentinel (outside) instead of the `syscall`: rdx = rdi - rsi, rdi and rax = 1.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rdi as usize] = 0x40_2014;
+    state.gpr[Register::Rsi as usize] = 0x40_2000;
+    let mut memory = Memory::code(&[
+        0x48, 0x89, 0xfa, 0x48, 0x29, 0xf2, 0xbf, 1, 0, 0, 0, 0xb8, 1, 0, 0, 0, 0xf4,
+    ]);
+    let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(state.rip, RIP + 16);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x14);
+    assert_eq!(state.gpr[Register::Rdi as usize], 1);
+    assert_eq!(state.gpr[Register::Rax as usize], 1);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x40_2000);
+    // The flags are those of the `subq` (the `movl`s leave them).
+    assert_eq!(state.rflags & ARITH, PF);
+}
+
+#[test]
+fn sub_r64_outside_the_register_form_stays_refused() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u8)] = &[
+        // Dword form (no REX.W) and REX without W.
+        ("29 f2 subl %esi, %edx", &[0x29, 0xf2], 0x29),
+        ("41 29 f2 subl %esi, %r10d", &[0x41, 0x29, 0xf2], 0x29),
+        ("40 29 f2 subl %esi, %edx (REX)", &[0x40, 0x29, 0xf2], 0x29),
+        // Memory forms.
+        ("48 29 0a subq %rcx, (%rdx)", &[0x48, 0x29, 0x0a], 0x29),
+        (
+            "48 29 4a 08 subq %rcx, 8(%rdx)",
+            &[0x48, 0x29, 0x4a, 0x08],
+            0x29,
+        ),
+        ("49 29 08 subq %rcx, (%r8)", &[0x49, 0x29, 0x08], 0x29),
+        // Neighbouring opcodes keep their own bytes.
+        ("48 2b f2 subq %rdx, %rsi (2B)", &[0x48, 0x2b, 0xf2], 0x2b),
+        ("48 2a f2 (2A)", &[0x48, 0x2a, 0xf2], 0x2a),
+        ("48 28 f2 (28)", &[0x48, 0x28, 0xf2], 0x28),
+        ("48 2c 01 (2C)", &[0x48, 0x2c, 0x01], 0x2c),
+        (
+            "48 2d 01 00 00 00 subq $1, %rax (2D)",
+            &[0x48, 0x2d, 1, 0, 0, 0],
+            0x2d,
+        ),
+        (
+            "48 83 ea 01 subq $1, %rdx (83 /5)",
+            &[0x48, 0x83, 0xea, 0x01],
+            0x83,
+        ),
+        (
+            "48 81 ea 80 00 00 00 subq $0x80, %rdx (81 /5)",
+            &[0x48, 0x81, 0xea, 0x80, 0, 0, 0],
+            0x81,
+        ),
+    ];
+    for (name, bytes, opcode) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn sub_r64_with_a_prefix_stays_refused() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for prefix in [
+        0x66_u8, 0x67, 0xf0, 0xf2, 0xf3, 0x64, 0x65, 0x2e, 0x3e, 0x26, 0x36,
+    ] {
+        let bytes = [prefix, 0x48, 0x29, 0xf2];
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(&bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x29 },
+            "prefix {prefix:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0, "prefix {prefix:#x}");
+        assert_eq!(state, before, "prefix {prefix:#x}");
+        assert_eq!(memory.accesses, 0, "prefix {prefix:#x}");
+    }
 }

@@ -21391,6 +21391,13 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// executes it in [`cpl3_rep_movsb`], one iteration per unit of the instruction budget, with
 /// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
 ///
+/// S4-39f21: `REX.W 29 /r` (SUB r/m64, r64, `subq %rsi, %rdx` = `48 29 f2` of `/init` at
+/// `0x4001db`) in the register form only (mod = 11; REX.R reaches the source r8..r15, REX.B the
+/// destination). The CPL0 `Operation::Arithmetic { kind: Sub }` at qword size is reused:
+/// `dst = dst - src` is written back in full and CF/OF/SF/ZF/PF/AF are those of the 64-bit SUB.
+/// The memory form, the dword form (no REX.W), `28`/`2A`/`2B`/`2C`/`2D`, `81 /5` and `83 /5` stay
+/// outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21461,6 +21468,18 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             0x39,
             Operation::Arithmetic {
                 kind: ArithmeticKind::Cmp,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
+        // S4-39f21: `REX.W 29 /r` (SUB r/m64, r64) in the register form only (both operands are
+        // registers; the memory form decodes to a memory destination and stays refused with
+        // `0x29`). REX.W is required: the dword form (`29 /r` without REX.W) stays refused.
+        (
+            OpcodeMap::Primary,
+            0x29,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Sub,
                 dst: Operand::Register(_),
                 src: Operand::Register(_),
             },
