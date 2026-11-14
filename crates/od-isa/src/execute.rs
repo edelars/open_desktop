@@ -21205,6 +21205,12 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// kept. Without REX.W (dword INC), the memory form, `FF /1` (DEC) and `FF /2..7` stay outside
 /// (`FE` has opcode byte `0xfe` and never matches).
 ///
+/// S4-39f13: the short `EB cb` (JMP rel8, `eb c1` = `jmp 0x400145` of `/init` at `0x400182`)
+/// without REX and without any prefix. The CPL0 `Operation::Jump` is reused (the decoder
+/// sign-extends rel8): RIP becomes `next + rel8`, a non-canonical target is #GP(0) before RIP
+/// changes, flags and memory are untouched. `E9` (JMP rel32; it decodes to the same operation, so
+/// the opcode byte is part of the match), `E8`, `FF /4` and the far forms stay outside.
+///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
 fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
@@ -21232,6 +21238,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
+        (OpcodeMap::Primary, 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
         (
             OpcodeMap::Primary,
             0x89,

@@ -23,15 +23,22 @@ struct Memory {
     accesses: usize,
     /// The code page is supervisor-only: a fetch whose page privilege is Ring3 is a #PF with U.
     supervisor_only_code: bool,
+    /// The linear address of `bytes[0]` (`RIP` unless built with `code_at`).
+    base: u64,
 }
 
 impl Memory {
     fn code(bytes: &[u8]) -> Self {
+        Self::code_at(RIP, bytes)
+    }
+
+    fn code_at(base: u64, bytes: &[u8]) -> Self {
         Self {
             bytes: bytes.to_vec(),
             fetches: 0,
             accesses: 0,
             supervisor_only_code: false,
+            base,
         }
     }
 }
@@ -52,7 +59,7 @@ impl GuestMemory for Memory {
                 linear_address: Some(address),
             }));
         }
-        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        let offset = address.checked_sub(self.base).unwrap_or(u64::MAX) as usize;
         self.bytes
             .get(offset)
             .copied()
@@ -515,8 +522,8 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("mov bl, al (88 /r)", &[0x88, 0xc3], 0x88),
         ("mov rbx, rax (REX.W 8B /r)", &[0x48, 0x8b, 0xd8], 0x8b),
         // S4-39f5: Jcc rel32 is allowed without any prefix and without REX; the rest stays outside.
-        // S4-39f7: the short Jcc is allowed without REX/prefix; JMP/LOOP rel8 and prefixed Jcc stay.
-        ("jmp rel8 (EB)", &[0xeb, 0x00], 0xeb),
+        // S4-39f7: the short Jcc is allowed without REX/prefix; LOOP rel8 and prefixed Jcc stay
+        // (S4-39f13: JMP rel8 `EB` joined; its refusals are in the S4-39f13 tests below).
         ("rex jne rel8", &[0x40, 0x75, 0x00], 0x75),
         ("rex.w je rel8", &[0x48, 0x74, 0x00], 0x74),
         ("operand-size jne rel8", &[0x66, 0x75, 0x00], 0x75),
@@ -1617,21 +1624,22 @@ fn test_r32_then_je_chain_keeps_the_boundary_state() {
     // Synthetic bytes modelled on the `/init` loop (not the real `/init` bytes at 0x40016b):
     // `85 c9` (testl %ecx, %ecx), `74 01` (je, taken on a zero low dword),
     // a skipped `90`, then `8a 06` (movb (%rsi), %al), `38 07` (cmpb %al, (%rdi); executes since
-    // S4-39f11) and `48 ff c6` (incq %rsi; executes since S4-39f12) retire, and `eb 00` (jmp rel8,
-    // still outside) stops the run.
+    // S4-39f11) and `48 ff c6` (incq %rsi; executes since S4-39f12) retire, `eb 00` (jmp rel8;
+    // executes since S4-39f13) retires too, and `e9` (jmp rel32, still outside) stops the run.
     let mut state = user_state();
     state.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0000;
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;
     let mut memory = DataMemory::new(&[
-        0x85, 0xc9, 0x74, 0x01, 0x90, 0x8a, 0x06, 0x38, 0x07, 0x48, 0xff, 0xc6, 0xeb, 0x00,
+        0x85, 0xc9, 0x74, 0x01, 0x90, 0x8a, 0x06, 0x38, 0x07, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0xe9,
+        0x00, 0x00, 0x00, 0x00,
     ])
     .with_user(DATA, 0x5a)
     .with_user(DATA + 0x40, 0x5a);
     let result = run3_data(&mut state, &mut memory, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xeb });
-    assert_eq!(result.instructions_executed, 5);
-    assert_eq!(state.rip, RIP + 12);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xe9 });
+    assert_eq!(result.instructions_executed, 6);
+    assert_eq!(state.rip, RIP + 14);
     assert_eq!(state.gpr[Register::Rcx as usize], 0xffff_ffff_0000_0000);
     assert_eq!(state.gpr[Register::Rax as usize], 0x5a);
     assert_eq!(state.gpr[Register::Rsi as usize], DATA + 1);
@@ -2973,13 +2981,12 @@ fn movb_load_refusals_stop_as_unsupported_8a_without_change() {
 
 #[test]
 fn neighbouring_byte_mov_and_compare_opcodes_stay_outside() {
-    // `88` (MOV r/m8, r8), `8b` (MOV r32, m32), `ff /1` (DEC r/m) and `eb` (JMP rel8) are not part
-    // of S4-39f10 (`38` joined in S4-39f11, `REX.W ff /0` in S4-39f12).
+    // `88` (MOV r/m8, r8), `8b` (MOV r32, m32) and `ff /1` (DEC r/m) are not part of S4-39f10
+    // (`38` joined in S4-39f11, `REX.W ff /0` in S4-39f12, `eb` in S4-39f13).
     let forms: &[(&str, &[u8], u8)] = &[
         ("88 03 movb %al, (%rbx)", &[0x88, 0x03], 0x88),
         ("8b 03 movl (%rbx), %eax", &[0x8b, 0x03], 0x8b),
         ("ff c9 decl %ecx", &[0xff, 0xc9], 0xff),
-        ("eb 00 jmp +0", &[0xeb, 0x00], 0xeb),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = mov_byte_state();
@@ -2999,29 +3006,31 @@ fn neighbouring_byte_mov_and_compare_opcodes_stay_outside() {
 }
 
 #[test]
-fn init_movb_load_then_cmpb_then_jne_then_incq_chain_stops_at_jmp() {
+fn init_movb_load_then_cmpb_then_jne_then_incq_then_jmp_chain_stops_at_jmp_rel32() {
     // Synthetic bytes modelled on the `/init` loop (the real `/init` at 0x40016f has `jne +0x0a`
     // and `incq %rsi`/`incq %rdi` at 0x400175/0x400178): `8a 06` (movb (%rsi), %al), `38 07`
     // (cmpb %al, (%rdi); executes since S4-39f11), `75 00` (jne rel8 with displacement 0: taken and
     // not taken reach the same RIP, so this test does not tell them apart), `48 ff c6` (incq %rsi;
-    // executes since S4-39f12) and `eb 00` (jmp rel8, outside).
+    // executes since S4-39f12), `eb 00` (jmp rel8, executes since S4-39f13) and `e9` (jmp rel32,
+    // outside).
     let mut state = mov_byte_state();
     state.gpr[Register::Rsi as usize] = DATA;
     state.gpr[Register::Rdi as usize] = DATA + 0x40;
     state.rflags |= ARITH;
     let mut expected = with_byte(&state, Register::Rax, 0, b'a');
-    expected.rip = RIP + 9;
+    expected.rip = RIP + 11;
     expected.gpr[Register::Rsi as usize] = DATA + 1;
     // (rdi) - al = 'b' - 'a' = 1: no arithmetic flag set; DATA + 1 has none either.
     expected.rflags &= !ARITH;
     let mut memory = DataMemory::new(&[
-        0x8a, 0x06, 0x38, 0x07, 0x75, 0x00, 0x48, 0xff, 0xc6, 0xeb, 0x00,
+        0x8a, 0x06, 0x38, 0x07, 0x75, 0x00, 0x48, 0xff, 0xc6, 0xeb, 0x00, 0xe9, 0x00, 0x00, 0x00,
+        0x00,
     ])
     .with_user(DATA, b'a')
     .with_user(DATA + 0x40, b'b');
     let result = run3_data(&mut state, &mut memory, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xeb });
-    assert_eq!(result.instructions_executed, 4);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xe9 });
+    assert_eq!(result.instructions_executed, 5);
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 2);
     assert!(memory.writes.is_empty());
@@ -3724,15 +3733,198 @@ fn ff_forms_outside_the_register_inc_r64_are_refused_without_change() {
 }
 
 #[test]
-fn init_incq_then_jmp_chain_stops_at_the_jmp() {
-    // `/init` at 0x40017f: `48 ff c3` (incq %rbx) retires, `eb c1` (jmp rel8, outside) stops.
+fn init_incq_then_jmp_chain_jumps_back() {
+    // `/init` at 0x40017f: `48 ff c3` (incq %rbx) and `eb c1` (jmp rel8, since S4-39f13) retire;
+    // the jump goes back to RIP + 5 - 63.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = user_state();
     state.gpr[Register::Rbx as usize] = 41;
     let mut memory = Memory::code(&[0x48, 0xff, 0xc3, 0xeb, 0xc1]);
+    let result = run3(&mut state, &mut memory, &set, 2).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, RIP + 5 - 63);
+    assert_eq!(state.gpr[Register::Rbx as usize], 42);
+}
+
+// ---- S4-39f13: `EB cb` (JMP rel8) ----
+
+#[test]
+fn jmp_rel8_goes_to_next_rip_plus_the_sign_extended_displacement() {
+    // `eb c1` is the `/init` jump at 0x400182 (target 0x400145 = 0x400184 - 63); the budget of one
+    // instruction stops right after the jump, and the code buffer is not needed at the target.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u64)] = &[
+        ("eb c1 backward", &[0xeb, 0xc1], RIP + 2 - 63),
+        ("eb 05 forward", &[0xeb, 0x05], RIP + 2 + 5),
+        ("eb 00 next", &[0xeb, 0x00], RIP + 2),
+        ("eb 7f maximum forward", &[0xeb, 0x7f], RIP + 2 + 127),
+        ("eb 80 maximum backward", &[0xeb, 0x80], RIP + 2 - 128),
+        ("eb fe to itself", &[0xeb, 0xfe], RIP),
+    ];
+    for (name, bytes, target) in forms {
+        let mut state = user_state();
+        let mut expected = state.clone();
+        expected.rip = *target;
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{name}");
+        assert_eq!(state, expected, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS, "{name}");
+    }
+}
+
+#[test]
+fn jmp_rel8_keeps_every_flag_combination() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bits in 0..32_u64 {
+        let flags = [CF, ZF, SF, OF, PF]
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| bits & (1 << index) != 0)
+            .fold(0, |acc, (_, flag)| acc | flag);
+        let mut state = user_state();
+        state.rflags |= flags;
+        let mut expected = state.clone();
+        expected.rip = RIP + 4;
+        let mut memory = Memory::code(&[0xeb, 0x02, 0xf4, 0xf4, 0x90]);
+        let result = run3(&mut state, &mut memory, &set, 2).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x90 },
+            "{bits:#x}"
+        );
+        assert_eq!(result.instructions_executed, 1, "{bits:#x}");
+        assert_eq!(state, expected, "{bits:#x}");
+    }
+}
+
+#[test]
+fn jmp_rel8_loops_on_itself_without_writing_anything() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    let before = state.clone();
+    let mut memory = Memory::code(&[0xeb, 0xfe]);
+    let result = run3(&mut state, &mut memory, &set, 5).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 5);
+    assert_eq!(state, before);
+    assert_eq!(memory.accesses, 0);
+}
+
+#[test]
+fn jmp_rel8_to_a_non_canonical_target_is_a_general_protection_fault_without_a_state_change() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    // The first non-canonical address is 0x0000_8000_0000_0000; the lower hole edge is
+    // 0xffff_8000_0000_0000.
+    let cases: &[(&str, u64, &[u8])] = &[
+        (
+            "forward past the lower half",
+            0x0000_7fff_ffff_fffe,
+            &[0xeb, 0x05],
+        ),
+        (
+            "forward to the first hole address",
+            0x0000_7fff_ffff_fffe,
+            &[0xeb, 0x00],
+        ),
+        (
+            "backward below the upper half",
+            0xffff_8000_0000_0000,
+            &[0xeb, 0xfb],
+        ),
+    ];
+    for (name, rip, bytes) in cases {
+        let mut state = user_state();
+        state.rip = *rip;
+        let before = state.clone();
+        let mut memory = Memory::code_at(*rip, bytes);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13 && fault.error_code == Some(0)),
+            "{name}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+    // The last canonical addresses on both sides are legal targets.
+    let mut state = user_state();
+    state.rip = 0x0000_7fff_ffff_fffc;
+    let mut memory = Memory::code_at(state.rip, &[0xeb, 0x00]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x0000_7fff_ffff_fffe);
+    let mut state = user_state();
+    state.rip = 0xffff_8000_0000_0000;
+    let mut memory = Memory::code_at(state.rip, &[0xeb, 0xfe]);
+    let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0xffff_8000_0000_0000);
+}
+
+#[test]
+fn jmp_forms_outside_the_short_jmp_are_refused_without_change() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let forms: &[(&str, &[u8], u8)] = &[
+        ("66 eb 00", &[0x66, 0xeb, 0x00], 0xeb),
+        ("67 eb 00", &[0x67, 0xeb, 0x00], 0xeb),
+        ("f0 eb 00", &[0xf0, 0xeb, 0x00], 0xeb),
+        ("f2 eb 00", &[0xf2, 0xeb, 0x00], 0xeb),
+        ("f3 eb 00", &[0xf3, 0xeb, 0x00], 0xeb),
+        ("64 eb 00", &[0x64, 0xeb, 0x00], 0xeb),
+        ("65 eb 00", &[0x65, 0xeb, 0x00], 0xeb),
+        ("2e eb 00", &[0x2e, 0xeb, 0x00], 0xeb),
+        ("3e eb 00", &[0x3e, 0xeb, 0x00], 0xeb),
+        ("26 eb 00", &[0x26, 0xeb, 0x00], 0xeb),
+        ("36 eb 00", &[0x36, 0xeb, 0x00], 0xeb),
+        ("40 eb 00 REX", &[0x40, 0xeb, 0x00], 0xeb),
+        ("48 eb 00 REX.W", &[0x48, 0xeb, 0x00], 0xeb),
+        ("41 eb 00 REX.B", &[0x41, 0xeb, 0x00], 0xeb),
+        ("e9 rel32", &[0xe9, 0x00, 0x00, 0x00, 0x00], 0xe9),
+        ("66 e9 jmp", &[0x66, 0xe9, 0x00, 0x00, 0x00, 0x00], 0xe9),
+        ("e8 rel32", &[0xe8, 0x00, 0x00, 0x00, 0x00], 0xe8),
+        ("ff e0 jmp *%rax", &[0xff, 0xe0], 0xff),
+        ("ff e3 jmp *%rbx", &[0xff, 0xe3], 0xff),
+        ("ff 20 jmp *(%rax)", &[0xff, 0x20], 0xff),
+        ("ff 28 ljmp *(%rax)", &[0xff, 0x28], 0xff),
+        ("ea ljmp", &[0xea, 0, 0, 0, 0, 0, 0], 0xea),
+        ("e3 00 jrcxz", &[0xe3, 0x00], 0xe3),
+        ("e2 00 loop", &[0xe2, 0x00], 0xe2),
+    ];
+    for (name, bytes, opcode) in forms {
+        let mut state = user_state();
+        state.rflags |= ARITH;
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 4).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: *opcode },
+            "{name}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+}
+
+#[test]
+fn init_loop_tail_jumps_back_and_stops_at_the_movzbl() {
+    // `/init` from 0x400182: `eb c1` (jmp 0x400145). The synthetic block jumps over one `hlt`
+    // to a `41 0f b6 04 08` (movzbl (%r8,%rcx),%eax), the next boundary: it is outside.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    let mut memory = Memory::code(&[0xeb, 0x01, 0xf4, 0x41, 0x0f, 0xb6, 0x04, 0x08]);
     let result = run3(&mut state, &mut memory, &set, 4).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xeb });
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xb6 });
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, RIP + 3);
-    assert_eq!(state.gpr[Register::Rbx as usize], 42);
 }
