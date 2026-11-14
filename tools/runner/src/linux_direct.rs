@@ -622,6 +622,19 @@ fn describe_stop(record: &LinuxStopRecord, budget: u64) -> Value {
         },
     });
     stop["machine_stop_reason"] = machine_stop_reason_json(record.stop_reason);
+    // S4-38L9I: the validated frame of the `IRETQ` the run stopped at (`exit_kind`
+    // `user_entry`). The key exists only then, so the stop record of every other run (the base
+    // DiagnosticV1 run included) is unchanged. The IRETQ did not retire: `rip` is on it. Set
+    // apart from the literal above to stay under the `json!` macro recursion limit.
+    if let Some(entry) = record.user_entry {
+        stop["user_entry"] = json!({
+            "rip": hex64(entry.rip),
+            "cs": format!("0x{:x}", entry.cs),
+            "rflags": hex64(entry.rflags),
+            "rsp": hex64(entry.rsp),
+            "ss": format!("0x{:x}", entry.ss),
+        });
+    }
     // S4-38L8b: the counters of the board interrupt hook; all 0 while the board has no source.
     stop["irqs_delivered"] = json!(record.irqs_delivered);
     stop["irq0_edges"] = json!(record.irq0_edges);
@@ -1853,6 +1866,58 @@ mod tests {
         assert!(stop["rip_bytes"].as_str().unwrap().starts_with("0f a2 f4"));
         assert_eq!(stop["gpr"]["rax"], "0x1");
         assert_eq!(stop["set_exit_detail"], "CpuidDivergence { leaf: 1 }");
+    }
+
+    #[test]
+    fn set_cpl0_reports_an_iretq_to_cpl3_as_a_user_entry_stop_with_its_frame() {
+        // S4-38L9I: DPL 3 descriptors over the board GDT entries 0x10/0x18 (selectors 0x13 and
+        // 0x1b), then PUSH SS, RSP, RFLAGS, CS, RIP and IRETQ: the frame is the stop.
+        let mut code = Vec::new();
+        for (at, qword) in [
+            (0x12_0010u32, 0x00af_fb00_0000_ffff_u64),
+            (0x12_0018, 0x00cf_f300_0000_ffff),
+        ] {
+            code.extend([0x48, 0xB8]);
+            code.extend(qword.to_le_bytes());
+            code.extend([0x48, 0x89, 0x04, 0x25]);
+            code.extend(at.to_le_bytes());
+        }
+        code.extend([0x6A, 0x1B]);
+        code.extend([0x68, 0x00, 0xF0, 0xFF, 0x7F]);
+        code.extend([0x68, 0x02, 0x02, 0x00, 0x00]);
+        code.extend([0x6A, 0x13]);
+        code.extend([0x68, 0x00, 0x10, 0x00, 0x00]);
+        code.extend([0x48, 0xCF]);
+        let mut case = Case::new(
+            "set-user-entry",
+            &bzimage_with_entry(&code),
+            &[0xAB; 4688],
+            BLOB,
+        );
+        case.options.budget = Some(64);
+        case.options.set_cpl0 = true;
+        let (value, exit) = evaluate(&case.options);
+        assert_eq!(exit, 0, "{value:#}");
+        let stop = &value["stop"];
+        assert_eq!(stop["exit_kind"], "user_entry", "{value:#}");
+        assert_eq!(stop["user_entry"]["rip"], "0x1000");
+        assert_eq!(stop["user_entry"]["cs"], "0x13");
+        assert_eq!(stop["user_entry"]["rflags"], "0x202");
+        assert_eq!(stop["user_entry"]["rsp"], "0x7ffff000");
+        assert_eq!(stop["user_entry"]["ss"], "0x1b");
+        assert_eq!(stop["unsupported_opcode"], Value::Null);
+        assert_eq!(stop["cpuid_divergence_leaf"], Value::Null);
+        assert_eq!(stop["retired"], 9, "{value:#}");
+        assert!(stop["rip_bytes"].as_str().unwrap().starts_with("48 cf"));
+        assert!(
+            stop["set_exit_detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("UserEntry(")
+        );
+        // Every other stop carries no frame.
+        let value = run_case("user-entry-control", &[0xF4], 10);
+        assert!(value["stop"].get("user_entry").is_none(), "{value:#}");
     }
 
     fn cpuid_leaf_case(name: &str, leaf: u8, diagnostic: bool) -> (Value, u8) {

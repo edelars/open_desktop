@@ -35,7 +35,7 @@ use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextC
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, InstructionMode, PageFaultRecord, PrivilegeLevel,
 };
-use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register, StiShadow};
+use od_isa::{CpuActivity, INTEGER_FLAGS, IretqUserEntry, LongModeState, Register, StiShadow};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -856,6 +856,10 @@ pub(crate) struct LinuxSetRunReport {
     /// The leaf (EAX) of the `CPUID` the run stopped before (S4-38L4, `cpuid_divergence`): the
     /// instruction did not execute. `None` for every other exit.
     pub(crate) cpuid_divergence_leaf: Option<u32>,
+    /// The validated frame of the `IRETQ` the run stopped at (S4-38L9I, `user_entry`): a return to
+    /// CPL3 the set does not execute. The instruction did not retire: RIP is on it. `None` for
+    /// every other exit.
+    pub(crate) user_entry: Option<IretqUserEntry>,
     /// `#PF` exceptions delivered to the guest through its IDT in this call (S4-38L5c); a
     /// delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
@@ -973,6 +977,9 @@ fn set_exit_to_probe_exit(
         // A stop of the board, not an exit of the CPU: `Stopped`, told apart by the report's
         // `cpuid_divergence_leaf` (the exit enum gets no new variant).
         PagedCpl0SetExit::CpuidDivergence { .. } => PagedProbeExit::Stopped,
+        // S4-38L9I: likewise a stop of the board (the set never runs CPL3 code), told apart by the
+        // report's `user_entry` frame.
+        PagedCpl0SetExit::UserEntry(_) => PagedProbeExit::Stopped,
         PagedCpl0SetExit::UnknownSetExit => {
             return Err("the CPL0 set returned an exit variant the board does not know");
         }
@@ -1695,6 +1702,10 @@ impl LoadedFirmwareBoard {
                 PagedCpl0SetExit::CpuidDivergence { leaf } => Some(leaf),
                 _ => None,
             };
+            let user_entry = match report.exit {
+                PagedCpl0SetExit::UserEntry(entry) => Some(entry),
+                _ => None,
+            };
             // A quantum stopped by a tick flag (no PM stop request) with budget left resumes,
             // and so does a partial REP exit (S4-38L4b); decided before the exit is converted,
             // so the `Debug` text is built only for the exit that ends the run. The CPUID
@@ -1721,7 +1732,8 @@ impl LoadedFirmwareBoard {
                 PagedProbeExit::Stopped
                     if stop_reason.is_none()
                         && remaining == 0
-                        && cpuid_divergence_leaf.is_none() =>
+                        && cpuid_divergence_leaf.is_none()
+                        && user_entry.is_none() =>
                 {
                     PagedProbeExit::BudgetExhausted
                 }
@@ -1738,7 +1750,7 @@ impl LoadedFirmwareBoard {
                 tsc_hz: self.clock().tsc_hz(),
                 stop_reason,
             })
-            .map(|run| (run, set_exit_detail, cpuid_divergence_leaf));
+            .map(|run| (run, set_exit_detail, cpuid_divergence_leaf, user_entry));
         };
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.state.cr3 = None;
@@ -1746,13 +1758,14 @@ impl LoadedFirmwareBoard {
         // it had.
         self.guest_cr2 = self.state.cr2;
         self.state.cr2 = prior_cr2;
-        let (run, set_exit_detail, cpuid_divergence_leaf) = result?;
+        let (run, set_exit_detail, cpuid_divergence_leaf, user_entry) = result?;
         irq_counters.irq0_edges = self.irq_source.irq0_edges();
         Ok(LinuxSetRunReport {
             run,
             translation_context_changes: changes,
             set_exit_detail,
             cpuid_divergence_leaf,
+            user_entry,
             exceptions_delivered,
             irq: irq_counters,
         })
@@ -5104,6 +5117,29 @@ mod tests {
                 "CpuidDivergence { leaf: 1 }".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn user_entry_is_a_stop_of_the_board_with_its_frame_in_the_detail_not_an_error() {
+        let entry = IretqUserEntry {
+            rip: 0x0000_7fff_0000_1000,
+            cs: 0x33,
+            rflags: 0x246,
+            rsp: 0x0000_7fff_ffff_f000,
+            ss: 0x2b,
+        };
+        let exit = PagedCpl0SetExit::UserEntry(entry);
+        assert_eq!(
+            set_exit_to_probe_exit(exit),
+            Ok((PagedProbeExit::Stopped, format!("UserEntry({entry:?})")))
+        );
+        // The stop never resumes, whatever budget is left.
+        assert!(!resumes_set_exit(
+            &PagedCpl0SetExit::UserEntry(entry),
+            false,
+            5,
+            1
+        ));
     }
 
     #[test]

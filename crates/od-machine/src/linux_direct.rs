@@ -52,7 +52,7 @@ use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, TranslationContextChange,
 };
 use od_isa::msr::MsrProfile;
-use od_isa::{CliProfile, HaltProfile, Register, StiProfile};
+use od_isa::{CliProfile, HaltProfile, IretqUserEntry, Register, StiProfile};
 use std::cell::{Cell, RefCell};
 
 /// `boot_params.acpi_rsdp_addr` (u64) offset.
@@ -435,7 +435,8 @@ pub struct LinuxStopRecord {
     /// Stable name of `exit`: `budget_exhausted`, `stopped`, `halted`, `shutdown`, `rejected`,
     /// `integration_error`, `unsupported`, `fault`, `backend` or `port_io`; or `cpuid_divergence`
     /// (S4-38L4: the set path stopped before a `CPUID` of leaf 1 or 0x8000_0001; `exit` is
-    /// `Stopped` then, see `cpuid_divergence_leaf`).
+    /// `Stopped` then, see `cpuid_divergence_leaf`); or `user_entry` (S4-38L9I: the set path
+    /// stopped at an `IRETQ` returning to CPL3; `exit` is `Stopped` then, see `user_entry`).
     pub exit_kind: &'static str,
     /// The `Debug` text of `exit` (carries the fault, rejection or backend details).
     pub exit_detail: String,
@@ -539,6 +540,11 @@ pub struct LinuxStopRecord {
     /// `retired` counts what came before, no register changed, nothing was answered. `None` for
     /// every other exit.
     pub cpuid_divergence_leaf: Option<u32>,
+    /// S4-38L9I: the validated frame of the `IRETQ` the run stopped at (`exit_kind` is
+    /// `user_entry`): a return to CPL3 the set does not execute. The instruction did not retire:
+    /// RIP is on it, `retired` counts what came before and no register changed. `None` for every
+    /// other exit.
+    pub user_entry: Option<IretqUserEntry>,
     /// S4-38L5c: how many guest `#PF` exceptions the CPL0 set board delivered through the guest
     /// IDT in this run (0 on the `paged_probe` path). A delivery is not a retired instruction.
     pub exceptions_delivered: u64,
@@ -605,6 +611,7 @@ pub fn run_linux_direct_board(
             exit_detail: None,
             changes: &[],
             cpuid_divergence_leaf: None,
+            user_entry: None,
             exceptions_delivered: 0,
             irq: IrqCounters::default(),
             diagnostic_past_c7: false,
@@ -619,6 +626,7 @@ struct SetExtras<'a> {
     exit_detail: Option<String>,
     changes: &'a [TranslationContextChange],
     cpuid_divergence_leaf: Option<u32>,
+    user_entry: Option<IretqUserEntry>,
     exceptions_delivered: u64,
     irq: IrqCounters,
     diagnostic_past_c7: bool,
@@ -640,6 +648,8 @@ fn stop_record(
     LinuxStopRecord {
         exit_kind: if extras.cpuid_divergence_leaf.is_some() {
             "cpuid_divergence"
+        } else if extras.user_entry.is_some() {
+            "user_entry"
         } else {
             exit_kind(&report.exit)
         },
@@ -689,6 +699,7 @@ fn stop_record(
         set_members: extras.members,
         set_exit_detail: extras.exit_detail,
         cpuid_divergence_leaf: extras.cpuid_divergence_leaf,
+        user_entry: extras.user_entry,
         exceptions_delivered: extras.exceptions_delivered,
         irqs_delivered: extras.irq.irqs_delivered,
         irq0_edges: extras.irq.irq0_edges,
@@ -1106,6 +1117,7 @@ pub fn run_linux_direct_board_set(
             exit_detail: Some(report.set_exit_detail),
             changes: &report.translation_context_changes,
             cpuid_divergence_leaf: report.cpuid_divergence_leaf,
+            user_entry: report.user_entry,
             exceptions_delivered: report.exceptions_delivered,
             irq: report.irq,
             diagnostic_past_c7: members.diagnostic_past_c7,
@@ -10780,6 +10792,75 @@ mod tests {
         let (state, report) = run_set(&mut boot, true, 1, &minimal_set(&cli));
         assert_eq!(report.instructions_executed, 1, "{report:?}");
         assert_eq!(state.rflags & (1 << 16), 0);
+    }
+
+    #[test]
+    fn set_facade_an_iretq_to_cpl3_is_a_user_entry_stop_with_its_frame() {
+        // S4-38L9I: the board GDT (base 0x12_0000, limit 31) gets a DPL 3 64-bit code descriptor
+        // at 0x10 and a DPL 3 data descriptor at 0x18 (selectors 0x13 and 0x1b); the guest
+        // `IRETQ` frame returns to them.
+        const GDT: u64 = 0x12_0000;
+        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        write_phys(
+            &mut boot,
+            GDT + 0x10,
+            &0x00af_fb00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(
+            &mut boot,
+            GDT + 0x18,
+            &0x00cf_f300_0000_ffff_u64.to_le_bytes(),
+        );
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        let (user_rip, user_rsp, user_rflags) =
+            (0x0000_7fff_0000_1000u64, 0x0000_7fff_ffff_f000u64, 0x202u64);
+        for (offset, value) in [
+            (0u64, user_rip),
+            (8, 0x13),
+            (16, user_rflags),
+            (24, user_rsp),
+            (32, 0x1b),
+        ] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        boot.board.state_mut().gpr[Register::Rsp as usize] = rsp;
+        let record = run_set_facade(&mut boot, &file, 8, LinuxCpl0SetMembers::minimal());
+        assert_eq!(record.exit, PagedProbeExit::Stopped, "{record:?}");
+        assert_eq!(record.exit_kind, "user_entry", "{record:?}");
+        assert_eq!(
+            record.user_entry,
+            Some(od_isa::IretqUserEntry {
+                rip: user_rip,
+                cs: 0x13,
+                rflags: user_rflags,
+                rsp: user_rsp,
+                ss: 0x1b,
+            })
+        );
+        // The IRETQ did not retire: RIP is on it, the stack pointer is the one before.
+        assert_eq!((record.retired, record.rip), (0, ENTRY), "{record:?}");
+        assert_eq!(record.gpr[Register::Rsp as usize], rsp);
+        assert_eq!(record.rip_bytes.get(..2), Some(&[0x48u8, 0xCF][..]));
+        assert_eq!(record.cpuid_divergence_leaf, None);
+        assert!(
+            record
+                .set_exit_detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("UserEntry(")),
+            "{record:?}"
+        );
+        // The same frame to CPL0 selectors is the old same-privilege return, not a stop.
+        let (mut boot, file) = boot_with_entry(&[0x48, 0xCF]);
+        let rsp = boot.board.state().gpr[Register::Rsp as usize] - 0x100;
+        let target = ENTRY + 0x400;
+        for (offset, value) in [(0u64, target), (8, 0x10), (16, 2), (24, rsp), (32, 0x18)] {
+            write_phys(&mut boot, rsp + offset, &value.to_le_bytes());
+        }
+        boot.board.state_mut().gpr[Register::Rsp as usize] = rsp;
+        let record = run_set_facade(&mut boot, &file, 1, LinuxCpl0SetMembers::minimal());
+        assert_ne!(record.exit_kind, "user_entry", "{record:?}");
+        assert_eq!(record.user_entry, None);
+        assert_eq!(record.retired, 1);
     }
 
     // ---- S4-13: the fetch translation cache of the set loop ----
