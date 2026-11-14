@@ -21006,6 +21006,14 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
 /// `IRETQ` boundary are never reached because they are not allow-listed.
 ///
+/// S4-39f20: the one exception to the single-instruction steps is `F3 A4` (REP MOVSB, DF = 0): it
+/// bypasses the step of the set and runs in [`cpl3_rep_movsb`], one iteration per unit of the
+/// instruction budget (and of `instructions_executed`), with the STOP callback polled once before
+/// each iteration. The admission of the step is checked first by a zero-budget run of the same
+/// inner entry; a state that fails it refuses the form with `Unsupported { opcode: 0xa4 }`. A stop
+/// in the middle of a string (budget, STOP, #PF, #GP) leaves RIP on the instruction, so a count
+/// above zero means progress, not a completed instruction.
+///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
 /// entry on the same state.
@@ -21031,23 +21039,73 @@ pub fn run_with_cpl3_profile_set(
     let mut rflags_defined = initial_rflags_defined;
     loop {
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
-        if !boundary
-            && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
-            && !cpl3_allows(
+        if !boundary && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
+        {
+            // S4-39f20: `F3 A4` (REP MOVSB) runs iteration by iteration here, not through the
+            // step: the set's REP path ignores the instruction budget inside a string.
+            // The string path never enters the step, so the admission the step makes (flags
+            // defined, CR0/CR4/CR3 and policy, FP state, activity, STI shadow, RFLAGS.VM and
+            // bit 1, HLT/STI preconditions) is made here by a zero-budget run of the same inner
+            // entry: it checks the admission and then stops before any fetch. A state that does
+            // not pass is refused like any other unadmitted `F3 A4` (`Unsupported { 0xa4 }`
+            // from the allow-list), with no read, write or register change.
+            if cpl3_is_rep_movsb(&instruction)
+                && state.rflags & (1 << 10) == 0
+                && run_cpl0_profile_set_inner(
+                    state,
+                    memory,
+                    RunConfig {
+                        instruction_budget: 0,
+                        stop_rip: None,
+                        ..config
+                    },
+                    rflags_defined,
+                    set,
+                    None,
+                    None,
+                    || false,
+                    PrivilegeLevel::Ring3,
+                )
+                .is_ok_and(|(probe, cr3_effect, user_entry)| {
+                    probe.exit == RunExit::InstructionBudgetExhausted
+                        && probe.instructions_executed == 0
+                        && cr3_effect.is_none()
+                        && user_entry.is_none()
+                })
+            {
+                let next_rip = state.rip.wrapping_add(instruction.length as u64);
+                if let Some(exit) = cpl3_rep_movsb(
+                    state,
+                    memory,
+                    config.context,
+                    next_rip,
+                    &mut retired,
+                    config.instruction_budget,
+                    &mut stop_requested,
+                ) {
+                    return Ok(Cpl0ProfileSetResult {
+                        exit: Cpl0ProfileSetExit::Run(exit),
+                        instructions_executed: retired,
+                        rflags_defined,
+                    });
+                }
+                continue;
+            }
+            if !cpl3_allows(
                 &instruction,
                 set.syscall,
                 lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
-            )
-        {
-            return Ok(Cpl0ProfileSetResult {
-                exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
-                    // The opcode byte as the decoder reports it (the byte after `0F` for the
-                    // two-byte map), like the `Unsupported` of an undecodable form.
-                    opcode: instruction.opcode.byte,
-                }),
-                instructions_executed: retired,
-                rflags_defined,
-            });
+            ) {
+                return Ok(Cpl0ProfileSetResult {
+                    exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
+                        // The opcode byte as the decoder reports it (the byte after `0F` for the
+                        // two-byte map), like the `Unsupported` of an undecodable form.
+                        opcode: instruction.opcode.byte,
+                    }),
+                    instructions_executed: retired,
+                    rflags_defined,
+                });
+            }
         }
         let step_config = RunConfig {
             instruction_budget: u64::from(!boundary),
@@ -21068,8 +21126,10 @@ pub fn run_with_cpl3_profile_set(
             PrivilegeLevel::Ring3,
         );
         let Ok((result, cr3_effect, user_entry)) = inner else {
-            // Only reachable after a retired instruction changed an admitted input; the state has
-            // already moved, so a typed admission error would misreport it.
+            // An admission error of the step: after a retired instruction changed an admitted
+            // input, or already at the first step (the entry checks only the Ring3 state and the
+            // syscall cells). Reported as `Unsupported` with the state as it is, not as a typed
+            // error, because earlier instructions may have moved it.
             return Ok(Cpl0ProfileSetResult {
                 exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x0f }),
                 instructions_executed: retired,
@@ -21103,6 +21163,97 @@ pub fn run_with_cpl3_profile_set(
             });
         }
     }
+}
+
+/// S4-39f20: whether the decoded form is exactly `F3 A4` (REP MOVSB): no REX, no other prefix, two
+/// bytes, 64-bit address size. `F3 A5`, `A4` without REP, REX/66/67/F2/segment forms are not.
+fn cpl3_is_rep_movsb(instruction: &long_decode::Instruction) -> bool {
+    instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xa4
+        && instruction.operation
+            == (Operation::RepMovs {
+                size: OperandSize::Byte,
+            })
+        && instruction.length == 2
+        && instruction.address_size == OperandSize::Qword
+        && instruction.prefixes
+            == (Prefixes {
+                group1: Some(0xf3),
+                ..Prefixes::default()
+            })
+}
+
+/// S4-39f20: `F3 A4` at CPL3, one iteration per unit of the instruction budget. Returns `None`
+/// when the instruction retired (RIP advanced) and the exit otherwise. The caller guarantees DF = 0
+/// and that the budget and STOP address were checked before the first iteration.
+///
+/// Before the first iteration the STOP request is polled; before each later one the STOP request,
+/// then the budget (`retired` counts iterations, as the budget counts them). A stop in the middle
+/// leaves the finished iterations in `rsi`/`rdi`/`rcx` and RIP on the instruction. Each iteration
+/// reads `ds:[rsi]` then writes `es:[rdi]` (flat 64-bit, CPL3 access context); a fault (#GP(0) for a
+/// non-canonical address, #PF from the memory) leaves the state of the start of that iteration.
+/// `rcx = 0` retires the instruction as a no-op (one unit). Flags are never touched.
+fn cpl3_rep_movsb(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    retired: &mut u64,
+    budget: u64,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> Option<RunExit> {
+    if stop_requested() {
+        return Some(RunExit::StopRequested);
+    }
+    if state.gpr[Register::Rcx as usize] == 0 {
+        state.rip = next_rip;
+        *retired += 1;
+        return None;
+    }
+    let mut first = true;
+    while state.gpr[Register::Rcx as usize] != 0 {
+        if !first {
+            if stop_requested() {
+                return Some(RunExit::StopRequested);
+            }
+            if *retired >= budget {
+                return Some(RunExit::InstructionBudgetExhausted);
+            }
+        }
+        first = false;
+        let source = Operand::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rsi),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Byte,
+        });
+        let destination = Operand::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rdi),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Byte,
+        });
+        let value = match read_operand(state, memory, context, next_rip, source) {
+            Ok(value) => value,
+            Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
+            Err(error) => return Some(RunExit::MemoryError(error)),
+        };
+        match write_operand(state, memory, context, next_rip, destination, value) {
+            Ok(()) => {}
+            Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
+            Err(error) => return Some(RunExit::MemoryError(error)),
+        }
+        state.gpr[Register::Rsi as usize] = state.gpr[Register::Rsi as usize].wrapping_add(1);
+        state.gpr[Register::Rdi as usize] = state.gpr[Register::Rdi as usize].wrapping_add(1);
+        state.gpr[Register::Rcx as usize] -= 1;
+        *retired += 1;
+    }
+    state.rip = next_rip;
+    None
 }
 
 /// S4-39a Ring3 admission by the cached state: CS selector RPL 3 over a CS cache with DPL 3 and
@@ -21234,6 +21385,11 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// `Operation::Arithmetic { kind: Cmp }` at qword size is reused: the imm32 is sign-extended to 64
 /// bits by the decoder, the flags are those of `reg - imm` (SUB rules, 64-bit), nothing is written.
 /// The memory form, the dword form (no REX.W), `81 /0..6`, `83 /7` and `3D` stay outside.
+///
+/// S4-39f20: `F3 A4` (REP MOVSB, `rep movsb` at `0x4001c1` of `/init`) is not matched here (the
+/// prefix check above refuses it): the run loop recognizes it with [`cpl3_is_rep_movsb`] and
+/// executes it in [`cpl3_rep_movsb`], one iteration per unit of the instruction budget, with
+/// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
 ///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
