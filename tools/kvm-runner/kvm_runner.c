@@ -67,6 +67,8 @@ static unsigned exit_count;
 static unsigned exit_dropped;
 static unsigned char uart[MAX_UART];
 static unsigned uart_len;
+static struct kvm_cpuid_entry2 guest_cpuid[CPUID_MAX_ENT];
+static unsigned guest_cpuid_count;
 
 static void on_alarm(int sig)
 {
@@ -121,12 +123,15 @@ static void json_string(const char *s)
     putchar('"');
 }
 
-static void host_identity(char *cpu_model, size_t cpu_len, int *vmx)
+static void host_identity(char *cpu_model, size_t cpu_len, char *microcode, size_t microcode_len,
+                          int *vmx)
 {
     FILE *f = fopen("/proc/cpuinfo", "r");
     char line[1024];
     int have_model = 0;
+    int have_microcode = 0;
     cpu_model[0] = '\0';
+    microcode[0] = '\0';
     *vmx = 0;
     if (!f)
         return;
@@ -144,6 +149,16 @@ static void host_identity(char *cpu_model, size_t cpu_len, int *vmx)
         } else if (strncmp(line, "flags", 5) == 0) {
             if (strstr(line, " vmx") != NULL)
                 *vmx = 1;
+        } else if (!have_microcode && strncmp(line, "microcode", 9) == 0) {
+            char *colon = strchr(line, ':');
+            if (colon) {
+                colon++;
+                while (*colon == ' ' || *colon == '\t')
+                    colon++;
+                colon[strcspn(colon, "\r\n")] = '\0';
+                snprintf(microcode, microcode_len, "%s", colon);
+                have_microcode = 1;
+            }
         }
     }
     fclose(f);
@@ -300,12 +315,13 @@ static void print_json(const char *exit_kind, const char *error, const struct en
 {
     struct utsname un;
     char cpu_model[256];
+    char microcode[64];
     char uname_str[512];
     char text[MAX_UART + 1];
     int vmx;
     unsigned i;
 
-    host_identity(cpu_model, sizeof(cpu_model), &vmx);
+    host_identity(cpu_model, sizeof(cpu_model), microcode, sizeof(microcode), &vmx);
     memset(&un, 0, sizeof(un));
     un.nodename[0] = '\0';
     if (uname(&un) == 0)
@@ -333,7 +349,15 @@ static void print_json(const char *exit_kind, const char *error, const struct en
                    e->size, e->dir_out ? "out" : "in", (unsigned long long)e->data);
         putchar('}');
     }
-    printf("],\"exits_dropped\":%u", exit_dropped);
+    printf("],\"exits_dropped\":%u,\"guest_cpuid_model\":[", exit_dropped);
+    for (i = 0; i < guest_cpuid_count; i++) {
+        const struct kvm_cpuid_entry2 *e = &guest_cpuid[i];
+        if (i)
+            putchar(',');
+        printf("{\"function\":%u,\"index\":%u,\"flags\":%u,\"eax\":%u,\"ebx\":%u,\"ecx\":%u,\"edx\":%u}",
+               e->function, e->index, e->flags, e->eax, e->ebx, e->ecx, e->edx);
+    }
+    putchar(']');
     if (en)
         printf(",\"entry\":{\"rip\":%llu,\"rsp\":%llu,\"rflags\":%llu,\"cr0\":%llu,\"cr3\":%llu,"
                "\"cr4\":%llu,\"efer\":%llu,\"cs_selector\":%u,\"cs_l\":%u,\"cs_db\":%u,"
@@ -396,6 +420,8 @@ static void print_json(const char *exit_kind, const char *error, const struct en
     json_string(uname_str);
     printf(",\"cpu_model\":");
     json_string(cpu_model);
+    printf(",\"host_microcode\":");
+    json_string(microcode);
     printf(",\"vmx\":%s}\n", vmx ? "true" : "false");
 }
 
@@ -583,6 +609,9 @@ int main(int argc, char **argv)
             cpuid->nent = nent;
             if (ioctl(kvm, KVM_GET_SUPPORTED_CPUID, cpuid) == 0) {
                 unsigned j;
+                guest_cpuid_count = cpuid->nent;
+                memcpy(guest_cpuid, cpuid->entries,
+                       guest_cpuid_count * sizeof(guest_cpuid[0]));
                 for (j = 0; j < cpuid->nent; j++) {
                     if (cpuid->entries[j].function == 1 && cpuid->entries[j].index == 0) {
                         cpuid_signature = cpuid->entries[j].eax;
