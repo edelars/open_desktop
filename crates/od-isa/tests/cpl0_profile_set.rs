@@ -14672,7 +14672,8 @@ fn lock_inc_write_fault_leaves_flags_rip_and_memory_unchanged() {
 #[test]
 fn lock_inc_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutation() {
     let cases: [&[u8]; 23] = [
-        // The other FF group members (CALL, far CALL, JMP, far JMP, PUSH, /7); DEC is S4-38L7bn.
+        // The other FF group members with LOCK (CALL, far CALL, JMP, far JMP, /7, and PUSH /6:
+        // PUSH is executed only without LOCK, S4-39f1); DEC is S4-38L7bn.
         &[0xf0, 0xff, 0x53, 0x58],
         &[0xf0, 0xff, 0x5b, 0x58],
         &[0xf0, 0xff, 0x63, 0x58],
@@ -15074,7 +15075,8 @@ fn lock_dec_read_fault_leaves_state_unchanged_and_never_writes() {
 #[test]
 fn lock_dec_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutation() {
     let cases: [&[u8]; 21] = [
-        // The other FF group members with LOCK (CALL, far CALL, JMP, far JMP, PUSH, /7).
+        // The other FF group members with LOCK (CALL, far CALL, JMP, far JMP, /7, and PUSH /6:
+        // PUSH is executed only without LOCK, S4-39f1).
         &[0xf0, 0xff, 0x53, 0x58],
         &[0xf0, 0xff, 0x5b, 0x58],
         &[0xf0, 0xff, 0x63, 0x58],
@@ -18075,8 +18077,8 @@ fn segment_inc_read_fault_leaves_everything_unchanged() {
 #[test]
 fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
     let cases: [(&[u8], u8); 30] = [
-        // The other FF group members with a segment base (CALL, far CALL, JMP, far JMP, PUSH, /7)
-        // stay outside this slice (DEC, /1, is S4-38L7q).
+        // The other FF group members with a segment base (CALL, far CALL, JMP, far JMP, /7) stay
+        // outside this slice (DEC, /1, is S4-38L7q; PUSH /6 with FS/GS is S4-39f1, below).
         (&[0x65, 0xff, 0x13], 0xff),
         (&[0x65, 0xff, 0x1b], 0xff),
         (&[0x64, 0xff, 0x23], 0xff),
@@ -18736,7 +18738,8 @@ fn segment_dec_read_fault_leaves_everything_unchanged() {
 fn segment_dec_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
     let cases: &[(&[u8], u8)] = &[
         // The other FF group members with a segment base stay outside this slice (CALL, far CALL,
-        // JMP, far JMP, PUSH, /7); INC (/0) is S4-38L7p and DEC (/1) is this slice.
+        // JMP, far JMP, /7); INC (/0) is S4-38L7p, DEC (/1) is this slice and PUSH (/6) with
+        // FS/GS is S4-39f1.
         (&[0x65, 0xff, 0x13], 0xff),
         (&[0x65, 0xff, 0x1b], 0xff),
         (&[0x64, 0xff, 0x23], 0xff),
@@ -53619,7 +53622,7 @@ fn segment_push_write_fault_leaves_rsp_rip_flags_and_memory_unchanged() {
 
 #[test]
 fn segment_push_non_canonical_source_or_stack_is_a_fault_without_mutation_or_write() {
-    // Non-canonical source: the start, or the last byte of the qword, is outside the canonical range.
+    // Non-canonical source, the start already outside the canonical range: #GP(0).
     for segment_base in [
         0x0000_8000_0000_0000u64,
         0x0000_7fff_ffff_fffc,
@@ -53637,18 +53640,46 @@ fn segment_push_non_canonical_source_or_stack_is_a_fault_without_mutation_or_wri
         assert_eq!(state, before);
         assert!(memory.reads.is_empty() && memory.writes.is_empty());
     }
-    // Non-canonical new RSP: the source is read, the stack write is refused before any write.
-    let mut state = push_state();
-    state.gpr[Register::Rbx as usize] = 0x20_0000;
-    state.gpr[Register::Rsp as usize] = 0x0000_8000_0000_0000 + 4;
-    let before = state.clone();
-    let mut memory = BitsMemory::new(&GS_PUSH_RBX_58);
-    memory.set_qword(INC_GS_BASE + 0x20_0058, PUSH_VALUE);
-    let result = run_inc_set(&mut state, &mut memory).unwrap();
-    assert!(matches!(exit(&result), RunExit::Fault(_)), "{result:?}");
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
-    assert!(memory.writes.is_empty());
+    // S4-39f2 (review S4-39f1, item 2): the start is canonical, the last byte of the qword is not.
+    // EA = base + 0x58 = 0x7fff_ffff_fffc, the eight bytes end at 0x8000_0000_0003.
+    for (name, use_fs) in [("gs", false), ("fs", true)] {
+        let code: &[u8] = if use_fs {
+            &[0x64, 0xff, 0x73, 0x58]
+        } else {
+            &GS_PUSH_RBX_58
+        };
+        let mut state = push_state();
+        let base = 0x0000_7fff_ffff_fffc_u64 - 0x58;
+        state.gs_base = base;
+        state.fs_base = base;
+        state.gpr[Register::Rbx as usize] = 0;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(code);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(GP0), "{name}");
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert!(
+            memory.reads.is_empty() && memory.writes.is_empty(),
+            "{name}"
+        );
+    }
+    // Non-canonical new RSP: the source is read, the stack write is refused before any write with
+    // the exact #SS(0) (vector 12, code 0). RSP - 8 = 0x7fff_ffff_fffc: the start is canonical and
+    // the last byte of the qword (0x8000_0000_0003) is not; RSP = 0x8000_0000_0008 starts outside.
+    for rsp in [0x0000_8000_0000_0000u64 + 4, 0x0000_8000_0000_0008] {
+        let mut state = push_state();
+        state.gpr[Register::Rbx as usize] = 0x20_0000;
+        state.gpr[Register::Rsp as usize] = rsp;
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&GS_PUSH_RBX_58);
+        memory.set_qword(INC_GS_BASE + 0x20_0058, PUSH_VALUE);
+        let result = run_inc_set(&mut state, &mut memory).unwrap();
+        assert_eq!(exit(&result), &RunExit::Fault(SS0), "{rsp:#x}: {result:?}");
+        assert_eq!(result.instructions_executed, 0, "{rsp:#x}");
+        assert_eq!(state, before, "{rsp:#x}");
+        assert!(memory.writes.is_empty(), "{rsp:#x}");
+    }
 }
 
 #[test]
